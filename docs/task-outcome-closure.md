@@ -9,7 +9,10 @@ force.
 
 - [x] Deploy service/host outcome verification to h610 first.
 - [x] Persist per-task acceptance criteria and immutable, scoped tool evidence.
-- [ ] Verify host inspection coverage, service effects and disk before/after data.
+- [x] Verify fresh, complete host-inspection coverage in a real three-host workflow.
+- [x] Verify bounded cleanup disk before/after data and unchanged service identities.
+- [ ] Verify service effects through the deployed operation workflow; isolated
+      service-verification tests do not substitute for a controlled live action.
 - [x] Require structured findings, completed/unresolved work, authorization needs
       and next verification from specialists; validate their evidence references.
 - [x] Bind supervisor conclusions to the acceptance matrix, including partial work.
@@ -22,6 +25,11 @@ force.
 - [x] Exercise authorized cleanup only on explicitly scoped disposable test data;
       compare before/after and verify unrelated services/files are untouched.
 - [ ] Commit, deploy and verify the complete flow on h610.
+
+The read-only reporting flow passed post-deployment acceptance on 2026-09-13.
+The remaining complete-flow gate includes one task carrying its own approved
+cleanup through verification and final delivery. Reviewing an earlier successful
+cleanup in a new read-only task does not establish that same-task gate.
 
 ## Boundaries
 
@@ -817,3 +825,50 @@ planning correction, old-plan recovery, runtime progress availability and a
 same-cycle inspection that cannot pass a disk-delta check. Deployment and the
 latest live report/receipt verification remain pending. No new attachment upload
 or cleanup was performed in this follow-up.
+
+## Post-deployment Read-only Closure Accepted
+
+2026-09-13: the running Bot package contained the committed `f4c8a45` planning
+correction and the prior draft/review/outbox changes. Deployment had completed
+before this acceptance run. The shared system configuration subsequently changed
+independently; this audit did not switch an older system over it or restart a
+production service. Local shared configuration was fetched and synchronized.
+
+A fresh, separately identified read-only workflow used the real planner, model
+providers, four operator steps and persistent dispatcher. It inspected all three
+hosts and read the full existing log for the previously authorized bounded
+cleanup. The plan contained no extra final-send or duplicate-review worker.
+The task completed in about three minutes, with five of five criteria passing
+and one durable-job attempt. All four specialists and the independent reviewer
+completed successfully. No previous failed task was replayed.
+
+The three machine-checked host criteria contained fresh root-disk, CPU, memory
+and authorized service observations. The report accurately preserved a failing
+database-health check and three network-path warnings on one host: finishing
+an inspection did not imply that these findings were repaired. Historical
+directory sizes, Docker accounting, the exact 16 MiB cleanup target, measured
+free-space change and unchanged service identities were checked against the
+complete original log. Current samples and historical values stayed separate;
+the earlier timed-out store-size measurement remained unknown.
+
+The report draft was persisted once before independent review and its stored
+SHA-256 matched its contents. Final synthesis reused that exact reviewed
+narrative. The durable text outbox committed a native QQ receipt. A separate
+read-only `get_msg` request then verified the bot sender, group, message identity
+and all 4,377 text characters against the rendered outbox body, with identical
+SHA-256 values. This proves real final-message delivery, not merely a database
+status flag. Operational identifiers and full receipts remain in private audit
+storage and are not published here.
+
+This run executed no server commands, created no authorization or sandbox,
+performed no cleanup and uploaded no attachment. The previously consumed
+four-upload transport-test limit was not reset. The existing authenticated
+browser acceptance remains dated separately; the current console session was
+logged out, so this run does not claim a new browser interaction check.
+
+Still open: a controlled live service-effect verification and a single fresh
+task completing approved bounded cleanup, postconditions and final delivery.
+Those actions require their own concrete authorization; neither this read-only
+acceptance nor a historical approval grants a new mutation. The overall goal
+is not yet marked complete. Publishing this evidence-only update does not
+require another system rebuild.
