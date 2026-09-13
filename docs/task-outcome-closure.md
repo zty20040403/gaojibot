@@ -24,12 +24,14 @@ force.
       (task 59; unresolved acceptance is recorded below, not silently promoted).
 - [x] Exercise authorized cleanup only on explicitly scoped disposable test data;
       compare before/after and verify unrelated services/files are untouched.
-- [ ] Commit, deploy and verify the complete flow on h610.
+- [x] Commit, deploy and verify the complete flow on h610.
 
 The read-only reporting flow passed post-deployment acceptance on 2026-09-13.
-The remaining complete-flow gate includes one task carrying its own approved
-cleanup through verification and final delivery. Reviewing an earlier successful
-cleanup in a new read-only task does not establish that same-task gate.
+The bounded same-task service/cleanup gate is now closed, including deployment
+of two receipt-evaluation fixes and an audited correction delivered to QQ. This
+was a re-evaluation of the original task's real evidence, not a new execution of
+its mutations. The original partial result and report remain preserved. Details
+and the separately reviewed numerical wording correction are recorded below.
 
 ## Boundaries
 
@@ -913,3 +915,47 @@ immutable task evidence and unchanged independent review passed all seven checks
 including the additional mandatory operation and host-coverage guards. Deploying
 this correction and delivering an explicitly identified corrected result remain
 pending; the already committed original message and action receipts are retained.
+
+## Final Deployment and Corrected Delivery
+
+2026-09-13: Bot commit `df69125` and shared configuration `a817f97` were pushed.
+The shared repository was fetched again immediately before activation; no new
+remote commits were pending. The running h610 generation matched the latest
+shared baseline. The new h610 closure was built on tank, copied to h610 and
+dry-activated before the authorized switch. No tank switch or sandbox-image
+rebuild was performed.
+
+Activation restarted only the Bot and controller among the long-running system
+services. Post-switch checks confirmed the deployed outcome module SHA-256 and
+package path; both services were active with zero automatic restarts. Worker,
+database node, Docker and the other owner's bot retained their pre-switch
+invocation identities. The final h610 failed-unit list was empty. This does not
+claim that the earlier database-health finding on tank was repaired.
+
+The original bounded task's immutable evidence and independent review were
+re-evaluated using the deployed code. All seven checks passed, including the
+mandatory service-effect and host-coverage checks. No action was replayed, no
+approval was fabricated, and no receipt was replaced. The old result, evidence
+hashes, corrected result and administrator-delegated review were checkpointed
+before the task was corrected to completed.
+
+The original model narrative also incorrectly equated the 16,781,312-byte
+filesystem change with the file's 16,777,216 allocated bytes. Its model reviewer
+had not caught that wording error. Codex separately checked the original full
+log and typed disk observations, corrected the text, and recorded the original
+draft hash, correction hash and review provenance. The original model review
+was not relabeled as a review of the edited text. The corrected report separates
+file allocation, immediate filesystem change and the wider monitoring interval;
+it does not attribute all net disk activity to this deletion.
+
+The explicit correction went through the normal durable text outbox with a
+separate idempotency key. Its native QQ receipt committed, then a read-only
+message lookup verified the sender, destination, native message identity and
+all 2,077 text characters against the queued body. The verification hash was
+recorded in the task checkpoint. The original message remains intact. There
+were no extra attachment uploads, fixture creations, cleanups or Worker restarts.
+
+This closes the bounded outcome-flow gate with the documented correction; it
+does not claim another full mutation workflow ran after the fix, that arbitrary
+model prose is mathematically verified, or that every application endpoint and
+all fleet findings are healthy. The focused regression suite covered 48 tests.
