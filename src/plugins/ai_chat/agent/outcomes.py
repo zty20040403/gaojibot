@@ -6,6 +6,8 @@ import math
 import re
 from typing import Any, Mapping
 
+from .external import remote_record
+
 
 KINDS = ("evidence", "host_inspection", "disk_delta", "service_effect", "host_reboot")
 CHECK_SCHEMA = {"type": "array", "maxItems": 16, "items": {
@@ -84,9 +86,7 @@ def fresh_at_capture(value: Any, item: dict, task_created_at: int) -> bool:
 
 
 def operation(item: dict) -> dict:
-    payload = item["payload"]
-    record = payload.get("operation", payload)
-    return record if isinstance(record, dict) else {}
+    return remote_record(item["payload"])
 
 
 def successful_evidence(item: dict) -> bool:
@@ -288,17 +288,23 @@ def _check_server(check: dict, items: list[dict], created: int) -> tuple[str, st
         if (after[0] <= before[0] or after[1]["total_bytes"] != before[1]["total_bytes"]
                 or not before[1].get("device") or after[1].get("device") != before[1]["device"]):
             return "unverified", "空间观测时间未前进或文件系统容量发生变化，不能直接相减", {}
-        operations = [operation(item) for item in items if item["tool_name"] in {"ops_call", "operation_status"}
+        operation_items = [item for item in items if item["tool_name"] in {"ops_call", "operation_status"}
                       and successful_evidence(item) and operation(item).get("host_id") == host
-                      and before[0] <= (timestamp(operation(item).get("created_at")) or 0)
-                      and (timestamp(operation(item).get("updated_at")) or math.inf) <= after[0]]
-        if not operations:
+                      and max(created, before[0]) <= (timestamp(operation(item).get("created_at")) or 0)
+                      and (timestamp(operation(item).get("updated_at")) or math.inf) <= after[0]
+                      and not any(operation(later).get("operation_id") == operation(item).get("operation_id")
+                          and later["recorded_at"] >= item["recorded_at"]
+                          and operation(later).get("status") in {"failed", "cancelled", "needs_attention", "timed_out"}
+                          for later in items)]
+        if not operation_items:
             return "unverified", "缺少两次空间采样之间本任务已完成的目标操作回执", {}
         delta = after[1]["available_bytes"] - before[1]["available_bytes"]
         comparison = {"host_id": host, "mountpoint": mount, "before": before[1], "after": after[1],
                       "before_at": before[0], "after_at": after[0], "delta_bytes": delta,
-                      "evidence_refs": [before[2], after[2]],
-                      "operation_ids": [item["operation_id"] for item in operations if item.get("operation_id")],
+                      "evidence_refs": list(dict.fromkeys([before[2], after[2],
+                          *(item["evidence_id"] for item in operation_items)])),
+                      "operation_ids": list(dict.fromkeys(operation(item)["operation_id"]
+                          for item in operation_items if operation(item).get("operation_id"))),
                       "attribution": "observed_change_not_exclusive_cleanup_attribution"}
         passed = delta >= check.get("minimum_delta_bytes", 1)
         return "passed" if passed else "failed", f"可用空间观测变化 {delta} 字节；不能把同期所有变化归因于清理", comparison
@@ -331,12 +337,24 @@ def evaluate_acceptance(contract: Mapping[str, Any], evidence: list[dict], revie
                     status, reason = "passed", str(review["reason"])
                     detail = {"level": "evidence_backed_review", "not_a_machine_proof": True}
             else:
-                status, reason, detail = _check_server(check, selected, task_created_at)
+                candidates = selected
+                if check["kind"] == "disk_delta" and any(
+                    ((value := _host_observation(item, check["host_id"], task_created_at))
+                     and (value.get("root_disk") or {}).get("mountpoint") == check.get("mountpoint", "/"))
+                    for item in selected
+                ):
+                    # A cited target sample anchors the composite check. Its counterpart
+                    # and operation receipt come from this task's trusted evidence, not prose.
+                    candidates = evidence
+                status, reason, detail = _check_server(check, candidates, task_created_at)
                 if status == "passed":
                     # A valid citation still cannot hide a newer contradictory observation.
                     status, reason, detail = _check_server(check, evidence, task_created_at)
         rows.append({**check, "description": criteria[index], "status": status, "reason": reason,
-                     "evidence_refs": refs if valid else [], "detail": detail})
+                     "evidence_refs": list(dict.fromkeys([
+                         *(refs if valid else []), *detail.get("evidence_refs", []),
+                         *([detail["evidence_ref"]] if detail.get("evidence_ref") else []),
+                     ])), "detail": detail})
     # Typed mutations create mandatory effect checks even if the planner omitted one.
     effects = {}
     for item in evidence:

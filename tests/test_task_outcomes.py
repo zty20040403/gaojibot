@@ -143,6 +143,58 @@ class TaskEvidenceTests(unittest.TestCase):
         old_operation = self.record(payload, tool="operation_status")
         self.assertEqual(self.evaluate(plan, [old_operation["ref"]])["status"], "unverified")
 
+    def test_flat_and_wrapped_native_service_receipts_have_the_same_effect(self):
+        plan = contract("service_effect", host_id="h610", unit="test.service", action="restart")
+        payload = {"operation": "maxops.execute", "operation_id": "op_native",
+            "host_id": "h610", "status": "succeeded", "created_at": 1005,
+            "result": {"verification": {"level": "service_state", "verified": True,
+                "host": "h610", "unit": "test.service", "action": "restart",
+                "current": {"observed_at": 1010}}}}
+        for body in (payload, {"ok": True, "operation": payload}):
+            ref = self.record(body, tool="ops_call", args={"operation": "units.restart",
+                "params": {"host": "h610", "unit": "test.service"}})
+            result = self.evaluate(plan, [ref["ref"]])
+            self.assertEqual(result["status"], "passed")
+            self.assertTrue(all(row["status"] == "passed" for row in result["criteria"]))
+        self.record({**payload, "status": "needs_attention"}, tool="operation_status", at=1020)
+        self.assertEqual(self.evaluate(plan, [ref["ref"]])["status"], "unverified")
+
+    def test_flat_failed_operation_is_not_successful_generic_evidence(self):
+        for state in ("failed", "awaiting_approval", "running", "needs_attention"):
+            with self.subTest(state=state):
+                ref = self.record({"operation": "maxops.execute", "operation_id": "op_native",
+                    "host_id": "h610", "created_at": 1005, "status": state}, tool="operation_status")
+                self.assertEqual(self.evaluate(contract(), [ref["ref"]])["status"], "unverified")
+
+    def test_disk_review_can_anchor_a_complete_task_evidence_bundle_with_one_sample(self):
+        before = self.record(observation(1010, 200))
+        after = self.record(observation(1040, 300), at=1040)
+        plan = contract("disk_delta", host_id="h610", mountpoint="/", minimum_delta_bytes=50)
+        self.assertEqual(self.evaluate(plan, [after["ref"]])["status"], "unverified")
+        op = self.record({"operation": "maxops.execute", "operation_id": "op_cleanup",
+            "host_id": "h610", "status": "succeeded", "created_at": 1020, "updated_at": 1030},
+            tool="operation_status", at=1030)
+        result = self.evaluate(plan, [after["ref"]])
+        self.assertEqual(result["status"], "passed")
+        row = result["criteria"][0]
+        self.assertEqual(row["detail"]["delta_bytes"], 100)
+        self.assertEqual(set(row["evidence_refs"]), {before["ref"], after["ref"], op["ref"]})
+        self.assertEqual(row["detail"]["operation_ids"], ["op_cleanup"])
+        for payload, tool, args in (
+            (observation(1040, 300, host="tank"), "host_inspect", {"host_id": "tank"}),
+            (observation(1040, 300), "sandbox_exec", {"host_id": "h610"}),
+            ({"ok": True, "operation": "jobs.logs", "result": {"stdout": "freed 100 bytes"}}, "ops_call", {}),
+        ):
+            ref = self.record(payload, tool=tool, at=1040, args=args)
+            self.assertEqual(self.evaluate(plan, [ref["ref"]])["status"], "unverified")
+        plan["outcome_checks"][0]["minimum_delta_bytes"] = 101
+        self.assertEqual(self.evaluate(plan, [after["ref"]])["status"], "failed")
+        self.record({"operation": "maxops.execute", "operation_id": "op_cleanup",
+            "host_id": "h610", "status": "failed", "created_at": 1020, "updated_at": 1041},
+            tool="operation_status", at=1041)
+        plan["outcome_checks"][0]["minimum_delta_bytes"] = 1
+        self.assertEqual(self.evaluate(plan, [after["ref"]])["status"], "unverified")
+
     def test_planner_cannot_omit_the_effect_of_a_typed_mutation(self):
         read = self.record({"ok": True, "content": "read fine"}, tool="web_search")
         self.record({"operation_id": "op_unverified", "host_id": "h610", "created_at": 1005,

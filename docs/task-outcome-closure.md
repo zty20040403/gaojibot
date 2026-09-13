@@ -11,7 +11,7 @@ force.
 - [x] Persist per-task acceptance criteria and immutable, scoped tool evidence.
 - [x] Verify fresh, complete host-inspection coverage in a real three-host workflow.
 - [x] Verify bounded cleanup disk before/after data and unchanged service identities.
-- [ ] Verify service effects through the deployed operation workflow; isolated
+- [x] Verify service effects through the deployed operation workflow; isolated
       service-verification tests do not substitute for a controlled live action.
 - [x] Require structured findings, completed/unresolved work, authorization needs
       and next verification from specialists; validate their evidence references.
@@ -872,3 +872,44 @@ Those actions require their own concrete authorization; neither this read-only
 acceptance nor a historical approval grants a new mutation. The overall goal
 is not yet marked complete. Publishing this evidence-only update does not
 require another system rebuild.
+
+## Delegated Bounded Acceptance
+
+2026-09-13: the administrator explicitly authorized one idle gaoji Worker
+restart and one new 16 MiB disposable fixture cleanup, using normal controller
+approval. This authorization does not extend to databases, real user files,
+images, other services or additional attachment uploads.
+
+The new workflow's native service operation completed with one execution
+attempt. Its expected invocation guard matched the original instance; the
+returned instance changed. Two fresh unit observations, 6.118 seconds apart,
+confirmed the same new running instance. The persisted service-state proof
+reported `verified=true` and `restart_confirmed=true`; application endpoint
+health remained explicitly `not_checked`. No direct SSH restart substituted
+for the controller operation.
+
+The same workflow then completed its single approved cleanup. The complete
+3,408-byte decoded log verified the fixture identity and hash, exact file and
+empty-parent removal, and unchanged identities for all five observed services
+during cleanup. Instantaneous filesystem available space increased by
+16,781,312 bytes; independent monitoring samples showed a 13,910,016-byte net
+increase over a wider interval. Neither number is substituted for the file's
+16,777,216 allocated bytes. Other concurrent disk activity remains unattributed.
+
+The final text arrived in QQ and its entire rendered body matched a read-back,
+but the task incorrectly reported partial completion. This exposed two real
+acceptance defects: flat controller receipts with an `operation` string were
+discarded as if they were malformed envelopes, and disk checks required the
+reviewer to enumerate every member of a composite proof. The shared receipt
+decoder now handles flat and wrapped records consistently. A cited trusted
+sample anchors disk checks to the same task's full evidence bundle; timestamps,
+filesystem identity, intervening successful operations, negative later receipts
+and the minimum space threshold remain mandatory. The expanded source references
+are included in the result. Unrelated citations and untrusted tool output cannot
+anchor this check.
+
+The focused 48-test regression passed. Read-only re-evaluation of the actual
+immutable task evidence and unchanged independent review passed all seven checks,
+including the additional mandatory operation and host-coverage guards. Deploying
+this correction and delivering an explicitly identified corrected result remain
+pending; the already committed original message and action receipts are retained.
