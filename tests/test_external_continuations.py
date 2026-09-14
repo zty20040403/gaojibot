@@ -62,6 +62,48 @@ class ExternalContinuationTests(unittest.IsolatedAsyncioTestCase):
         tracker.arguments = {"operation": "exec.run", "host_id": "h610"}
         return tracker
 
+    async def test_failed_reconciliation_does_not_cancel_execution_loop(self):
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def execution_loop():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        with patch.object(self.dispatcher, "reconcile_once", new=AsyncMock(side_effect=ConnectionError("offline"))), \
+                patch.object(self.dispatcher.worker, "run_forever", side_effect=execution_loop):
+            running = asyncio.create_task(self.dispatcher.run_forever())
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                await asyncio.sleep(0.02)
+                self.assertFalse(running.done())
+                self.assertFalse(stopped.is_set())
+                self.services.context.logger.error.assert_called_once()
+            finally:
+                running.cancel()
+                await asyncio.gather(running, return_exceptions=True)
+        self.assertTrue(stopped.is_set())
+
+    async def test_one_bad_task_does_not_block_queue_reconciliation(self):
+        enqueue = self.dispatcher.enqueue
+
+        def enqueue_with_bad_record(task_id):
+            if task_id == -1:
+                raise ValueError("invalid dispatch")
+            return enqueue(task_id)
+
+        with patch.object(self.store, "dispatchable_tasks", return_value=[-1, self.task.task_id]), \
+                patch.object(self.dispatcher, "enqueue", side_effect=enqueue_with_bad_record), \
+                patch.object(self.dispatcher, "prune_workspaces", new=AsyncMock()):
+            await self.dispatcher.reconcile_once()
+            await self.dispatcher.reconcile_once()
+        jobs = self.jobs.claim_due("worker")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].payload["task_id"], self.task.task_id)
+
     async def submit_remote(self, perform=None):
         tracker = self.tracker()
         perform = perform or AsyncMock(return_value={"operation": {"operation_id": "op_test", "status": "running"}})

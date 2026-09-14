@@ -35,6 +35,8 @@ class SubAgentDispatcher:
         self.coordinator = self.context.subagent_coordinator
         self.worker = DurableJobWorker(self.jobs, logger=self.context.logger, concurrency=2, per_scope_limit=1)
         self.worker.register(self.kind, self.execute, compensator=self.settle_failed_dispatch)
+        self._next_artifact_prune = 0.0
+        self._next_message_reconcile = 0.0
 
     @staticmethod
     def restore_event(dispatch):
@@ -100,53 +102,63 @@ class SubAgentDispatcher:
 
     async def run_forever(self):
         async def reconcile_queue():
-            next_artifact_prune = 0.0
-            next_message_reconcile = 0.0
             while True:
-                for task_id in await asyncio.to_thread(self.store.dispatchable_tasks):
-                    await asyncio.to_thread(self.enqueue, task_id)
-                for task_id in await asyncio.to_thread(self.store.finalizable_tasks):
-                    try:
-                        await asyncio.to_thread(self.enqueue_final, task_id)
-                    except Exception as exc:
-                        self.context.logger.warning(f"task#{task_id} final outbox reconciliation deferred: {type(exc).__name__}")
-                for task_id in await asyncio.to_thread(self.store.queued_file_tasks):
-                    try:
-                        await self.deliver_queued_files(task_id)
-                    except Exception as exc:
-                        self.context.logger.warning(f"task#{task_id} file outbox deferred: {type(exc).__name__}")
-                for task_id in await asyncio.to_thread(self.store.uncertain_deliveries):
-                    try:
-                        await self.reconcile(task_id)
-                    except Exception as exc:
-                        self.context.logger.warning("Sub-Agent delivery reconciliation failed for task#%s: %s", task_id, type(exc).__name__)
-                for task_id in await asyncio.to_thread(self.store.unsettled_file_receipts):
-                    try:
-                        await asyncio.to_thread(self.settle_file_receipts, task_id)
-                    except Exception as exc:
-                        self.context.logger.warning(f"task#{task_id} file receipt settlement deferred: {type(exc).__name__}")
-                for task_id in await asyncio.to_thread(self.store.rejected_file_tasks):
-                    try:
-                        await asyncio.to_thread(self.notify_rejected_files, task_id)
-                    except Exception as exc:
-                        self.context.logger.warning(f"task#{task_id} file failure notice deferred: {type(exc).__name__}")
-                now = time.time()
-                if now >= next_message_reconcile:
-                    try:
-                        await self.reconcile_final_messages()
-                    except Exception as exc:
-                        self.context.logger.warning(f"Final message reconciliation deferred: {type(exc).__name__}")
-                    next_message_reconcile = now + 30
-                if now >= next_artifact_prune:
-                    try:
-                        await self.prune_workspaces()
-                    except Exception as exc:
-                        self.context.logger.warning("Task workspace cleanup failed; retained for retry: %s", type(exc).__name__)
-                    next_artifact_prune = now + 30
+                try:
+                    await self.reconcile_once()
+                except Exception as exc:
+                    # A failed scan must not cancel the independent execution worker.
+                    self.context.logger.error(
+                        f"Sub-Agent queue reconciliation failed: {type(exc).__name__}; retrying in 10s."
+                    )
                 await asyncio.sleep(10)
         async with asyncio.TaskGroup() as group:
             group.create_task(reconcile_queue())
             group.create_task(self.worker.run_forever())
+
+    async def reconcile_once(self):
+        for task_id in await asyncio.to_thread(self.store.dispatchable_tasks):
+            try:
+                await asyncio.to_thread(self.enqueue, task_id)
+            except Exception as exc:
+                self.context.logger.warning(f"task#{task_id} queue reconciliation deferred: {type(exc).__name__}")
+        for task_id in await asyncio.to_thread(self.store.finalizable_tasks):
+            try:
+                await asyncio.to_thread(self.enqueue_final, task_id)
+            except Exception as exc:
+                self.context.logger.warning(f"task#{task_id} final outbox reconciliation deferred: {type(exc).__name__}")
+        for task_id in await asyncio.to_thread(self.store.queued_file_tasks):
+            try:
+                await self.deliver_queued_files(task_id)
+            except Exception as exc:
+                self.context.logger.warning(f"task#{task_id} file outbox deferred: {type(exc).__name__}")
+        for task_id in await asyncio.to_thread(self.store.uncertain_deliveries):
+            try:
+                await self.reconcile(task_id)
+            except Exception as exc:
+                self.context.logger.warning("Sub-Agent delivery reconciliation failed for task#%s: %s", task_id, type(exc).__name__)
+        for task_id in await asyncio.to_thread(self.store.unsettled_file_receipts):
+            try:
+                await asyncio.to_thread(self.settle_file_receipts, task_id)
+            except Exception as exc:
+                self.context.logger.warning(f"task#{task_id} file receipt settlement deferred: {type(exc).__name__}")
+        for task_id in await asyncio.to_thread(self.store.rejected_file_tasks):
+            try:
+                await asyncio.to_thread(self.notify_rejected_files, task_id)
+            except Exception as exc:
+                self.context.logger.warning(f"task#{task_id} file failure notice deferred: {type(exc).__name__}")
+        now = time.time()
+        if now >= self._next_message_reconcile:
+            try:
+                await self.reconcile_final_messages()
+            except Exception as exc:
+                self.context.logger.warning(f"Final message reconciliation deferred: {type(exc).__name__}")
+            self._next_message_reconcile = now + 30
+        if now >= self._next_artifact_prune:
+            try:
+                await self.prune_workspaces()
+            except Exception as exc:
+                self.context.logger.warning("Task workspace cleanup failed; retained for retry: %s", type(exc).__name__)
+            self._next_artifact_prune = now + 30
 
     async def reconcile_final_messages(self):
         """Confirm lost receipts from matching self-messages, never resend on absence."""

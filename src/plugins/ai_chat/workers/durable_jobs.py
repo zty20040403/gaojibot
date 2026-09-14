@@ -96,20 +96,53 @@ class DurableJobWorker:
         return len(jobs)
 
     async def run_forever(self) -> None:
-        pending: set[asyncio.Task] = set()
+        pending: set[asyncio.Task[None]] = set()
+        loop = asyncio.get_running_loop()
+        next_claim = 0.0
+        retry_delay = self.poll_seconds
         try:
             while True:
-                if len(pending) < self.concurrency:
-                    jobs = await asyncio.to_thread(self.store.claim_due, self.worker_id,
-                        limit=self.concurrency - len(pending), kinds=self.registered_kinds, per_scope_limit=self.per_scope_limit)
-                    pending.update(asyncio.create_task(self._execute(job)) for job in jobs)
+                if len(pending) < self.concurrency and loop.time() >= next_claim:
+                    try:
+                        jobs = await asyncio.to_thread(
+                            self.store.claim_due,
+                            self.worker_id,
+                            limit=self.concurrency - len(pending),
+                            kinds=self.registered_kinds,
+                            per_scope_limit=self.per_scope_limit,
+                        )
+                    except Exception as exc:
+                        self.logger.error(
+                            f"Durable queue claim failed: {type(exc).__name__}; "
+                            f"retrying in {retry_delay:g}s."
+                        )
+                        next_claim = loop.time() + retry_delay
+                        retry_delay = min(retry_delay * 2, 60.0)
+                    else:
+                        retry_delay = self.poll_seconds
+                        next_claim = loop.time() + (0 if jobs else self.poll_seconds)
+                        pending.update(
+                            asyncio.create_task(self._execute(job), name=f"durable-job:{job.job_id}")
+                            for job in jobs
+                        )
                 if pending:
-                    done, pending = await asyncio.wait(pending, timeout=self.poll_seconds,
-                        return_when=asyncio.FIRST_COMPLETED)
+                    done, pending = await asyncio.wait(
+                        pending, timeout=self.poll_seconds,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
                     for task in done:
-                        task.result()
+                        if task.cancelled():
+                            continue
+                        try:
+                            task.result()
+                        except Exception as exc:
+                            # The durable lease/checkpoint, not a blind replay, owns recovery.
+                            self.logger.error(
+                                f"{task.get_name()} settlement failed: {type(exc).__name__}; "
+                                "retained for lease recovery."
+                            )
                 else:
-                    await asyncio.sleep(self.poll_seconds)
+                    await asyncio.sleep(max(next_claim - loop.time(), 0.1))
         finally:
             for task in pending:
                 task.cancel()
@@ -151,16 +184,6 @@ class DurableJobWorker:
                 else await handler_task
             )
             safe_result = dict(result or {})
-            changed = await asyncio.to_thread(
-                self.store.mark_succeeded,
-                job.job_id,
-                self.worker_id,
-                result=safe_result,
-            )
-            if not changed:
-                self.logger.warning(
-                    f"Durable job {job.handle} finished after losing its lease."
-                )
         except JobDeferred as exc:
             await asyncio.to_thread(self.store.defer, job, delay_seconds=exc.delay_seconds, reason=str(exc))
         except TimeoutError:
@@ -175,12 +198,21 @@ class DurableJobWorker:
             if changed:
                 self.logger.warning(f"Durable job {job.handle} timed out.")
         except asyncio.CancelledError:
-            current = await asyncio.to_thread(self.store.get, job.job_id)
-            if current is not None and current.status == "cancelled":
-                await self._compensate(job, "cancelled")
-                self.logger.info(f"Durable job {job.handle} was cancelled.")
-                return
-            await asyncio.to_thread(self.store.defer, job, delay_seconds=0, reason="worker shutdown interrupted the task")
+            try:
+                current = await asyncio.to_thread(self.store.get, job.job_id)
+                if current is not None and current.status == "cancelled":
+                    await self._compensate(job, "cancelled")
+                    self.logger.info(f"Durable job {job.handle} was cancelled.")
+                    return
+                await asyncio.to_thread(
+                    self.store.defer, job, delay_seconds=0,
+                    reason="worker stopped or could not confirm its lease",
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"Durable job {job.handle} could not release its lease: "
+                    f"{type(exc).__name__}; waiting for lease expiry."
+                )
             raise
         except Exception as exc:
             retryable = job.attempts < job.max_attempts
@@ -197,6 +229,16 @@ class DurableJobWorker:
             if changed:
                 self.logger.warning(
                     f"Durable job {job.handle} failed on attempt {job.attempts}: {exc}"
+                )
+        else:
+            # A lost success acknowledgement is not proof that the handler failed.
+            changed = await asyncio.to_thread(
+                self.store.mark_succeeded, job.job_id, self.worker_id,
+                result=safe_result,
+            )
+            if not changed:
+                self.logger.warning(
+                    f"Durable job {job.handle} finished after losing its lease."
                 )
         finally:
             self._running.pop(job.job_id, None)
@@ -237,11 +279,16 @@ class DurableJobWorker:
         interval = min(max(self.store.lease_seconds / 3, 1.0), 2.0)
         while True:
             await asyncio.sleep(interval)
-            renewed = await asyncio.to_thread(
-                self.store.renew_lease,
-                job.job_id,
-                self.worker_id,
-            )
+            try:
+                renewed = await asyncio.to_thread(
+                    self.store.renew_lease, job.job_id, self.worker_id,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"Durable job {job.handle} lease renewal failed: "
+                    f"{type(exc).__name__}; stopping the handler."
+                )
+                renewed = False
             if not renewed:
                 if not handler_task.done():
                     handler_task.cancel()
