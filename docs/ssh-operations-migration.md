@@ -109,5 +109,30 @@ native jobs persist host receipts without the retired executor's job directory.
 The native observation-to-conversation check also verifies disk visibility,
 failure counts, unit-policy filtering, stale samples and honest CPU windows.
 
-Production activation remains pending deployment approval. Real systemd/SSH
-acceptance and QQ delivery acceptance are not implied by the local checks.
+## Production Acceptance: 2026-09-17
+
+With owner approval, h310, tank and h610 were switched in that order using
+bot revision `f2f5709` and shared configuration `a66bfd5`. Each switch completed
+successfully. The dedicated OpenSSH listener is port 2224, reachable through
+the tailnet firewall; port 22 and ordinary administrator access are unchanged.
+
+- All three targets rejected a connection without the dedicated key and returned
+  fresh host facts with it. The controller returned fresh SSH disk, CPU and memory
+  samples for all three. An ungranted actor received HTTP 403.
+- Disposable service operation `op_22c39ea07b724a379c2b0d762006868f` required
+  approval, changed the service invocation ID and passed two independent stable
+  observations. Repeating the same intent returned the same operation and job;
+  a separate systemd read confirmed no second restart.
+- Harmless h310 command operation `op_d2c09fa83f74403eb572aa9bb36ce017` passed
+  target-side executable checks and retained a durable receipt. It correctly
+  reported command-exit success, not unverified business success.
+- Gaoji, the controller, workers and the existing database were active; the QQ
+  WebSocket reconnected and the console returned HTTP 200. No host was rebooted.
+  Target/client/projection checks also passed 41 focused tests under NixOS.
+
+This acceptance did not send a group message/file, interrupt a production task
+to test controller takeover, or reboot a host. Fault recovery remains covered by
+the focused local tests, not by a claimed live outage exercise. Only these three
+hosts have the new transport; other inventory entries do not imply connectivity.
+The retired Hub's alert, Git-workspace and deployment APIs are not recreated by
+SSH. The separate existing Alertmanager notifier and Worker jobs are unchanged.

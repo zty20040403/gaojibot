@@ -1,8 +1,8 @@
 # 服务器管理
 
-> 新的 SSH 接入和迁移步骤见 [Native SSH Operations](ssh-operations-migration.md)。
-> 下方记录的是旧 HTTP 后端的能力，不能据此假定已退役的接口仍可用；
-> 请以 `ops_catalog` 返回的当前后端和操作列表为准。
+> 本文后续内容描述旧 HTTP 运维接口，不能视为当前已开放能力。
+> h610、h310、tank 已改用独立 SSH；现有任务授权、审计与结果验收保留。
+> 当前能力以 `ops_catalog` 为准，迁移与上线记录见 [Native SSH Operations](ssh-operations-migration.md)。
 
 ## 已接入的能力
 
