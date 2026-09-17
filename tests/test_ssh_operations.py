@@ -87,7 +87,7 @@ class TargetTests(unittest.TestCase):
         self.assertIn("dispatch_error", stored)
 
     def test_worker_runs_once_and_preserves_stdout(self):
-        params = {**self.params, "command": {"argv": ["/bin/echo", "SSH evidence"]}}
+        params = {**self.params, "command": {"argv": [sys.executable, "-c", "print('SSH evidence')"]}}
         with patch.object(target, "command", return_value=""):
             target.submit(self.config, "exec.run", params, self.op)
         target.run_job(self.config, self.op)
@@ -137,7 +137,7 @@ class TargetTests(unittest.TestCase):
         config.write_text(json.dumps({**self.config, "default_cwd": str(root),
             "receipt_directory": str(root / "host-receipts"), "cgroup_file": str(cgroup),
             "job_state_root": str(root / "retired-jobs")}))
-        intent = {"host": "h610", "action": "exec", "command": {"argv": ["/bin/echo", "checked native command"]}}
+        intent = {"host": "h610", "action": "exec", "command": {"argv": [sys.executable, "-c", "print('checked native command')"]}}
         params = {**self.params, "command": {"argv": [sys.executable, "-I",
             str(Path(target.__file__).with_name("host_control.py")), "--config", str(config),
             "--request-json", json.dumps({"phase": "run", "intent": intent, "operation_id": self.op})]}}
