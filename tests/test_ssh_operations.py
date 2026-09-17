@@ -263,6 +263,12 @@ class SSHClientTests(unittest.IsolatedAsyncioTestCase):
         for destination in ("-oProxyCommand=evil", "root@host;evil", "root@$(whoami)"):
             with self.assertRaises(ValueError):
                 parse_targets(json.dumps({"h610": {"destination": destination, "helper": "/helper"}}))
+        client = SSHOperationsClient({"h610": {**self.targets["h610"], "port": 2224}}, known_hosts_file=str(self.pins))
+        argv = client.command("h610")
+        self.assertEqual(argv[argv.index("-p") + 1], "2224")
+        for port in (0, 65536, True, "22 -oProxyCommand=evil"):
+            with self.assertRaises(ValueError):
+                parse_targets(json.dumps({"h610": {**self.targets["h610"], "port": port}}))
 
     async def test_readonly_client_cannot_mutate(self):
         readonly = SSHOperationsClient(self.targets, known_hosts_file=str(self.pins))

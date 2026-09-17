@@ -263,6 +263,7 @@ in {
         type = lib.types.attrsOf (lib.types.submodule {
           options = {
             destination = lib.mkOption {type = lib.types.str;};
+            port = lib.mkOption {type = lib.types.port; default = 22;};
             helper = lib.mkOption {type = lib.types.str; default = "/run/current-system/sw/bin/gaoji-ssh-operations";};
           };
         });

@@ -4,6 +4,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit
 
 from .host_operations import parse_helpers
@@ -394,7 +395,7 @@ class ClusterControlSettings:
     ops_management_hosts: tuple[str, ...] = ()
     ops_management_actors: tuple[str, ...] = ()
     host_control_helpers: dict[str, str] = field(default_factory=dict)
-    ssh_targets: dict[str, dict[str, str]] = field(default_factory=dict)
+    ssh_targets: dict[str, dict[str, Any]] = field(default_factory=dict)
     ssh_known_hosts_file: str = ""
     ssh_identity_file: str = ""
     ssh_binary: str = "ssh"

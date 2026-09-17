@@ -16,13 +16,14 @@ from src.ssh_ops_protocol import HOST, MAX_REQUEST, MAX_RESPONSE, PROTOCOL, cata
 from .ops import OpsError, OpsOperation, OpsResponse
 
 
-def parse_targets(raw: str) -> dict[str, dict[str, str]]:
+def parse_targets(raw: str) -> dict[str, dict[str, Any]]:
     targets = json.loads(raw or "{}")
     if not isinstance(targets, dict):
         raise ValueError("SSH targets must be a host map")
     for host, config in targets.items():
         if (not isinstance(host, str) or not HOST.fullmatch(host) or not isinstance(config, dict)
-                or set(config) != {"destination", "helper"}):
+                or not {"destination", "helper"} <= set(config)
+                or set(config) - {"destination", "helper", "port"}):
             raise ValueError("Invalid SSH target configuration")
         destination, helper = config["destination"], config["helper"]
         if not isinstance(destination, str) or not re.fullmatch(
@@ -30,6 +31,9 @@ def parse_targets(raw: str) -> dict[str, dict[str, str]]:
             raise ValueError("SSH destination must be a fixed user@hostname")
         if not isinstance(helper, str) or not re.fullmatch(r"/[A-Za-z0-9_/.-]+", helper):
             raise ValueError("SSH helper must be a fixed absolute executable")
+        port = config.get("port", 22)
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("SSH port must be a fixed valid port number")
     return targets
 
 
@@ -37,7 +41,7 @@ class SSHOperationsClient:
     backend_name = "ssh"
     catalog_version = 2
 
-    def __init__(self, targets: dict[str, dict[str, str]], *, known_hosts_file: str,
+    def __init__(self, targets: dict[str, dict[str, Any]], *, known_hosts_file: str,
                  identity_file: str = "", ssh_binary: str = "ssh", writable: bool = False,
                  timeout_seconds: float = 25, concurrency: int = 4) -> None:
         self.targets = parse_targets(json.dumps(targets))
@@ -76,7 +80,7 @@ class SSHOperationsClient:
         target = self.targets.get(host)
         if target is None:
             raise OpsError("forbidden", "Host is outside the configured SSH inventory")
-        argv = [self.ssh_binary, "-F", "/dev/null", "-T", "-oBatchMode=yes",
+        argv = [self.ssh_binary, "-F", "/dev/null", "-T", "-p", str(target.get("port", 22)), "-oBatchMode=yes",
             "-oStrictHostKeyChecking=yes", f"-oUserKnownHostsFile={self.known_hosts_file}",
             "-oGlobalKnownHostsFile=/dev/null", "-oConnectTimeout=8", "-oConnectionAttempts=1",
             "-oServerAliveInterval=5", "-oServerAliveCountMax=2", "-oForwardAgent=no",

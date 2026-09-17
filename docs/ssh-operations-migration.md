@@ -51,6 +51,7 @@ services.gaoji-cluster-control = {
   ssh = {
     enable = true;
     targets.example.destination = "gaoji-operator@example.internal";
+    targets.example.port = 2224;
     knownHostsFile = ./verified-host-keys;
     identityFile = config.sops.secrets.gaoji-operations-ssh.path;
     managementHosts = [ "example" ];
@@ -66,6 +67,10 @@ only into the controller through `LoadCredential`. Credential, target or host-ke
 changes invalidate old approvals. Tailscale SSH without a private key requires
 an independently provisioned Gaoji network identity and policy; never borrow
 Max's identity or assume host Tailscale access supplies this automatically.
+When Tailscale SSH intercepts port 22, use a separately configured OpenSSH port
+with key-only authentication and a forced Gaoji command, restricted by the
+tailnet firewall. Pin the host as `[hostname]:port` in known_hosts; do not disable
+host verification or reuse the unrestricted Tailscale SSH login for this key.
 
 ## Recovery Invariants
 
