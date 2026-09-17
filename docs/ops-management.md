@@ -1,5 +1,9 @@
 # 服务器管理
 
+> 新的 SSH 接入和迁移步骤见 [Native SSH Operations](ssh-operations-migration.md)。
+> 下方记录的是旧 HTTP 后端的能力，不能据此假定已退役的接口仍可用；
+> 请以 `ops_catalog` 返回的当前后端和操作列表为准。
+
 ## 已接入的能力
 
 gaoji 从已认证的 MaxOps v2 目录读取操作及 JSON Schema，不硬编码一个可能过期的操作清单。

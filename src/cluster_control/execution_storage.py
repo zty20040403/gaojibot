@@ -281,8 +281,8 @@ class ClusterExecutionStore:
         try:
             # Approval and dispatch must come from the same read-only snapshot.
             cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            rows = cursor.execute("""SELECT * FROM fleet_operations WHERE backend_ref='ops-management-v2'
-                AND operation='maxops.execute' AND idempotency_key=? AND actor_id=? AND origin_scope=? LIMIT 2""",
+            rows = cursor.execute("""SELECT * FROM fleet_operations WHERE backend_ref IN ('ops-management-v2','ssh-management-v1')
+                AND operation IN ('maxops.execute','ssh.execute') AND idempotency_key=? AND actor_id=? AND origin_scope=? LIMIT 2""",
                 (intent_key, actor, origin)).fetchall()
             if len(rows) != 1:
                 return None
@@ -317,7 +317,7 @@ class ClusterExecutionStore:
         cursor = connection.cursor()
         try:
             row = cursor.execute("""SELECT * FROM fleet_operations
-                WHERE operation='maxops.execute' AND status IN ('queued','running','reconciling','cancelling')
+                WHERE operation IN ('maxops.execute','ssh.execute') AND status IN ('queued','running','reconciling','cancelling')
                 AND (lease_expires_at IS NULL OR lease_expires_at<=?)
                 ORDER BY updated_at, operation_id LIMIT 1 FOR UPDATE SKIP LOCKED""", (now,)).fetchone()
             if row is None:

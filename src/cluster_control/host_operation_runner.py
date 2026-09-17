@@ -7,7 +7,6 @@ import time
 from typing import Any, TYPE_CHECKING
 
 from .adapters.ops import OpsError
-from .execution_contracts import canonical_json
 from .host_operations import (TERMINAL_JOB_STATES, decode_logs, execution_params, matches_job,
                               preflight_from_logs, reboot_observation)
 
@@ -16,8 +15,7 @@ if TYPE_CHECKING:
 
 
 async def request(manager: OpsManagementService, operation: str, params: dict[str, Any], *, key: str | None = None) -> dict[str, Any]:
-    response = await manager.client._request("POST", "/v1/execute",
-        body=canonical_json({"op": operation, "params": params}).encode(), idempotency_key=key)
+    response = await manager.client.call(operation, params, idempotency_key=key)
     if not isinstance(response.data, dict):
         raise ValueError("Upstream returned a non-object response")
     return response.data
@@ -57,7 +55,7 @@ async def confirm_reboot(manager: OpsManagementService, record: dict[str, Any], 
             result.update(phase="outcome_unknown", summary=f"{record['host_id']} 重启验收超时，最终结果未确认；不重复执行。")
         elif verification["verified"]:
             result.update(phase="verified", command_started=True)
-            result["summary"] = f"{record['host_id']} 已确认重启，开机编号已变化，目标监控代理重新上报了新鲜状态。"
+            result["summary"] = f"{record['host_id']} 已确认重启，开机编号已变化，并已取得目标主机的新鲜状态。"
             result["instruction"] = "可以确认整机已重启；这不等于所有业务服务恢复正常，未检查的服务不要声称正常。"
             if record["status"] == "cancelling":
                 result["cancellation_note"] = "Cancellation arrived after the reboot took effect; it cannot undo a reboot."

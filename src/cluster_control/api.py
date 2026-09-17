@@ -386,6 +386,7 @@ def create_app(
     async def execution_capabilities() -> dict[str, object]:
         result = execution_service().capabilities()
         result["ops_management"] = {"available": management is not None,
+            "backend": management.client.backend_name if management else "unavailable",
             "hosts": sorted(management.hosts) if management else [], "approval_required": True}
         result["guardians"]["remediation_available"] = guardian_ops is not None
         result["guardians"]["target_details"] = [
@@ -491,7 +492,7 @@ def create_app(
         actor, _ = principal
         try:
             item = await asyncio.to_thread(execution_service().store.get_operation, operation_id)
-            if item and item["operation"] == "maxops.execute":
+            if item and item["operation"] in {"maxops.execute", "ssh.execute"}:
                 return await management_service().approve(operation_id, actor=actor,
                     expected_hash=body.contract_hash, expected_version=body.resource_version)
             return await asyncio.to_thread(

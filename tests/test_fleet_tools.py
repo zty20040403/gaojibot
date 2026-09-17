@@ -61,6 +61,49 @@ def fleet_payload(now: int) -> dict:
 
 
 class FleetProjectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_ssh_evidence_reaches_conversation_without_fake_exporter(self):
+        from src import ssh_operations as target
+        from src.cluster_control.adapters.ssh import SSHOperationsClient
+        from src.cluster_control.service import FleetControlService
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory(prefix="gaoji-projection-test-") as root:
+            pins = Path(root) / "known_hosts"
+            pins.write_text("pinned test identity")
+            client = SSHOperationsClient({"h610": {"destination": "gaoji-operator@test.internal", "helper": "/test/helper"}},
+                known_hosts_file=str(pins))
+            service = FleetControlService(client, inventory=({"host_id": "h610", "observe": True,
+                "readable_units": ["example.service"]},))
+            async def observe(host, request):
+                with patch.object(target, "command", return_value="example.service loaded failed failed Example\nprivate.service loaded failed failed Private\n"):
+                    return target.observation({"host_id": host, "mounts": ["/"]}, request["op"], request["params"])
+            with patch.object(client, "_remote", side_effect=observe):
+                payload = await service.fleet_overview()
+            timestamp = int(time.time())
+            result = summarize_fleet(payload, now=timestamp)["hosts"][0]
+            self.assertEqual(result["status"], "online")
+            self.assertEqual(result["failed_service_count"], 1)
+            self.assertEqual(result["failed_services"][0]["unit"], "example.service")
+            self.assertNotIn("private.service", json.dumps(payload))
+            self.assertEqual(result["resource_source"], "ssh")
+            self.assertIsNotNone(result["root_disk"])
+            self.assertEqual(result["exporter_state"], "unknown")
+            self.assertIsNone(result["active_alert_count"])
+            payload["data"]["hosts"][0]["resource_observation"]["sample_at_unix_seconds"] = timestamp - 120
+            self.assertIsNone(summarize_fleet(payload, now=timestamp)["hosts"][0]["root_disk"])
+
+    def test_native_cpu_window_is_not_misreported_as_five_minutes(self):
+        def metric(value, labels=None):
+            return {"samples": [{"state": "available", "value": value, "labels": labels or {}, "sample_at_unix_seconds": 1000}]}
+        metrics = {"memory_total_bytes": metric(1024), "memory_available_bytes": metric(256),
+            "cpu_idle_seconds_per_second": {**metric(0.25, {"cpu": "0"}), "window_seconds": 0.2}}
+        payload = {"status": "fresh", "data": {"host": "h610", "observation": {"source": "ssh", "metrics": metrics}}}
+        result = summarize_resources(payload, "h610", now=1000)
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["cpu_busy_percent"], 75)
+        self.assertEqual(result["cpu_window_seconds"], 0.2)
+
     def test_resource_metrics_require_fresh_unambiguous_host_samples(self):
         def metric(value, labels=None, at=1000):
             return {"samples": [{"labels": labels or {}, "state": "available", "value": value, "sample_at_unix_seconds": at}]}

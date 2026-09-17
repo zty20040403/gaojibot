@@ -18,8 +18,9 @@ def _params_hash(params: dict[str, Any]) -> str:
 class FleetProjectionStore:
     """Small durable projection; Ops and Prometheus remain source systems."""
 
-    def __init__(self, database: PostgresDatabase) -> None:
+    def __init__(self, database: PostgresDatabase, *, backend_name: str = "ops") -> None:
         self.database = database
+        self.backend_name = backend_name
 
     def close(self) -> None:
         self.database.close()
@@ -42,7 +43,7 @@ class FleetProjectionStore:
                 INSERT INTO fleet_backend_states (
                     backend_name, state, catalog_version, operations_json,
                     error_code, last_success_at, checked_at
-                ) VALUES ('ops', ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(backend_name) DO UPDATE SET
                     state = EXCLUDED.state,
                     catalog_version = EXCLUDED.catalog_version,
@@ -52,6 +53,7 @@ class FleetProjectionStore:
                     checked_at = EXCLUDED.checked_at
                 """,
                 (
+                    self.backend_name,
                     state,
                     catalog_version,
                     _json(operations),
@@ -94,10 +96,11 @@ class FleetProjectionStore:
                     source_backend, operation, target_key, params_hash,
                     status, payload_json, sensitive, observed_at, received_at,
                     expires_at, duration_ms, error_code
-                ) VALUES ('ops', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING observation_id
                 """,
                 (
+                    self.backend_name,
                     operation,
                     target_key,
                     params_hash,
@@ -134,7 +137,7 @@ class FleetProjectionStore:
                 SELECT operation, status, payload_json, sensitive, observed_at,
                        received_at, expires_at, duration_ms, error_code
                 FROM fleet_observations
-                WHERE source_backend = 'ops'
+                WHERE source_backend = ?
                   AND operation = ?
                   AND params_hash = ?
                   AND sensitive = FALSE
@@ -143,7 +146,7 @@ class FleetProjectionStore:
                 ORDER BY observation_id DESC
                 LIMIT 1
                 """,
-                (operation, _params_hash(params)),
+                (self.backend_name, operation, _params_hash(params)),
             ).fetchone()
             if row is None:
                 return None
@@ -185,8 +188,8 @@ class FleetProjectionStore:
                 """
                 SELECT backend_name, state, catalog_version, operations_json,
                        error_code, last_success_at, checked_at
-                FROM fleet_backend_states WHERE backend_name = 'ops'
-                """
+                FROM fleet_backend_states WHERE backend_name = ?
+                """, (self.backend_name,)
             ).fetchone()
             if row is None:
                 return None

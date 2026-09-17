@@ -394,9 +394,16 @@ class ClusterControlSettings:
     ops_management_hosts: tuple[str, ...] = ()
     ops_management_actors: tuple[str, ...] = ()
     host_control_helpers: dict[str, str] = field(default_factory=dict)
+    ssh_targets: dict[str, dict[str, str]] = field(default_factory=dict)
+    ssh_known_hosts_file: str = ""
+    ssh_identity_file: str = ""
+    ssh_binary: str = "ssh"
+    ssh_management_hosts: tuple[str, ...] = ()
+    ssh_management_actors: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "ClusterControlSettings":
+        from .adapters.ssh import parse_targets
         schema = os.getenv("AI_POSTGRES_SCHEMA", "qq_bot").strip() or "qq_bot"
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
             raise ValueError("AI_POSTGRES_SCHEMA is not a valid identifier")
@@ -420,6 +427,12 @@ class ClusterControlSettings:
             ops_management_hosts=_identity_list("KC_OPS_MANAGEMENT_HOSTS"),
             ops_management_actors=_identity_list("KC_OPS_MANAGEMENT_ACTORS"),
             host_control_helpers=parse_helpers(os.getenv("KC_HOST_CONTROL_HELPERS_JSON", "")),
+            ssh_targets=parse_targets(os.getenv("KC_SSH_TARGETS_JSON", "")),
+            ssh_known_hosts_file=os.getenv("KC_SSH_KNOWN_HOSTS_FILE", ""),
+            ssh_identity_file=os.getenv("KC_SSH_IDENTITY_FILE", ""),
+            ssh_binary=os.getenv("KC_SSH_BINARY", "ssh"),
+            ssh_management_hosts=_identity_list("KC_SSH_MANAGEMENT_HOSTS"),
+            ssh_management_actors=_identity_list("KC_SSH_MANAGEMENT_ACTORS"),
             cache_seconds=_int("KC_CACHE_SECONDS", 20, 1, 300),
             inventory=_inventory(os.getenv("KC_INVENTORY_JSON", "")),
             diagnostic_targets=_diagnostic_targets(
@@ -463,6 +476,21 @@ class ClusterControlSettings:
         }:
             raise ValueError("KC_LOCAL_HOST_ID must exist in KC_INVENTORY_JSON")
         inventory = {str(item.get("host_id") or ""): item for item in self.inventory}
+        if self.ssh_targets:
+            if self.ops_enabled or self.ops_management_token_file:
+                raise ValueError("Choose SSH or legacy Ops; never route the same write to both")
+            if not self.ssh_known_hosts_file or not self.ssh_known_hosts_file.startswith("/"):
+                raise ValueError("SSH requires administrator-pinned host keys")
+            if any(host not in inventory or inventory[host].get("observe") is not True for host in self.ssh_targets):
+                raise ValueError("SSH targets must be observable inventory hosts")
+            if bool(self.ssh_management_hosts) != bool(self.ssh_management_actors):
+                raise ValueError("SSH writes require explicit hosts and administrators")
+            if any(host not in self.ssh_targets or inventory[host].get("operate") is not True for host in self.ssh_management_hosts):
+                raise ValueError("SSH management host is outside the operation grant")
+            if any(not re.fullmatch(r"(?:qq:[0-9]+|admin:[A-Za-z0-9_-]+)", actor) for actor in self.ssh_management_actors):
+                raise ValueError("Invalid SSH management administrator")
+        elif self.ssh_management_hosts or self.ssh_management_actors:
+            raise ValueError("SSH management requires configured targets")
         if self.ops_management_token_file:
             if not self.ops_enabled or not self.ops_management_hosts or not self.ops_management_actors:
                 raise ValueError("Ops management requires a dedicated identity, hosts and actors")

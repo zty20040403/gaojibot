@@ -13,6 +13,7 @@ from .deployment_service import DeploymentService
 from .deployment_storage import DeploymentStore
 from .diagnostics import DiagnosticStore, IncidentDiagnosticService
 from .adapters.ops import OpsClient
+from .adapters.ssh import SSHOperationsClient
 from .service import FleetControlService
 from .storage import FleetProjectionStore
 from .execution_service import ClusterExecutionService, WorkerAuthenticator
@@ -37,7 +38,9 @@ def main() -> None:
         application_name="gaoji-cluster-control",
     )
     database.require_revision(HEAD_REVISION)
-    ops = (
+    ops = (SSHOperationsClient(settings.ssh_targets,
+        known_hosts_file=settings.ssh_known_hosts_file, identity_file=settings.ssh_identity_file,
+        ssh_binary=settings.ssh_binary) if settings.ssh_targets else (
         OpsClient(
             settings.ops_base_url,
             settings.ops_token_file,
@@ -45,10 +48,10 @@ def main() -> None:
         )
         if settings.ops_enabled
         else None
-    )
+    ))
     service = FleetControlService(
         ops,
-        store=FleetProjectionStore(database),
+        store=FleetProjectionStore(database, backend_name=ops.backend_name if ops else "ops"),
         inventory=settings.inventory,
         cache_seconds=settings.cache_seconds,
     )
@@ -64,6 +67,14 @@ def main() -> None:
         execution_store, hosts=settings.ops_management_hosts, actors=settings.ops_management_actors,
         host_helpers=settings.host_control_helpers,
     ) if settings.ops_management_token_file else None)
+    if settings.ssh_management_hosts:
+        management = OpsManagementService(SSHOperationsClient(
+            {host: settings.ssh_targets[host] for host in settings.ssh_management_hosts},
+            known_hosts_file=settings.ssh_known_hosts_file, identity_file=settings.ssh_identity_file,
+            ssh_binary=settings.ssh_binary, writable=True), execution_store,
+            hosts=settings.ssh_management_hosts, actors=settings.ssh_management_actors,
+            host_helpers={host: path for host, path in settings.host_control_helpers.items()
+                          if host in settings.ssh_management_hosts})
     resource_policies = ResourcePolicyStore(database)
     reliability = ReliabilityStore(database)
     worker_hosts = {

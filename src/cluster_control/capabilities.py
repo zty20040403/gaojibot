@@ -72,6 +72,7 @@ def operation_compatible(operation: OpsOperation) -> bool:
 
 def capability_manifest(
     operations: dict[str, OpsOperation],
+    *, backend_name: str = "ops",
 ) -> list[dict[str, Any]]:
     manifest: list[dict[str, Any]] = []
     for binding in BINDINGS:
@@ -79,7 +80,7 @@ def capability_manifest(
         compatible = operation is not None and operation_compatible(operation)
         manifest.append({
             "name": binding.name,
-            "backend": "ops",
+            "backend": backend_name,
             "operation": binding.operation,
             "available": compatible,
             "read_only": True,

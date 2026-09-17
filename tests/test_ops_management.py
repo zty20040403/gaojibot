@@ -577,6 +577,8 @@ class ManagementPostgresTests(unittest.TestCase):
                 db = PostgresDatabase(dsn, schema=schema, min_size=1, max_size=5)
                 store = ClusterExecutionStore(db, Path(root))
                 fake = SimpleNamespace(base_url='http://test', _credential=lambda: b'test')
+                fake.backend_name = 'ops'
+                fake.authorization_binding = lambda: {'url': fake.base_url, 'identity': fake._credential().hex()}
                 manager = OpsManagementService(fake, store, hosts=('h610',), actors=('qq:3526452465', 'admin:kenneth'))
                 async def definitions():
                     return [{'name': 'units.restart', 'read_only': False, 'kind': 'job_submission', 'idempotency': 'required', 'params_schema': {'type': 'object'}}]

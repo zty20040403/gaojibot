@@ -84,7 +84,7 @@ OPS_CATALOG_TOOL: ToolDefinition = {
     "type": "function",
     "function": {
         "name": OPS_CATALOG_TOOL_NAME,
-        "description": "管理员服务器操作目录。先不带参数查已授权操作，再指定 operation 读取准确参数 schema；包括命令、服务、工作区、部署和持久任务。不要猜参数或权限。",
+        "description": "管理员服务器操作目录。先不带参数查当前后端的已授权操作，再指定 operation 读取准确参数 schema。只调用本次目录中实际存在的操作；SSH 后端可通过 exec.run 执行已授权的 Git、构建和部署命令，不假定有旧 Hub 的专用工作区或部署接口。不要猜参数或权限。",
         "parameters": {"type": "object", "properties": {
             "operation": {"type": "string", "description": "目录中的准确操作名；留空列出目录。"}
         }, "additionalProperties": False},
@@ -94,7 +94,7 @@ OPS_CALL_TOOL: ToolDefinition = {
     "type": "function",
     "function": {
         "name": OPS_CALL_TOOL_NAME,
-        "description": "仅管理员可用的 MaxOps 接口，参数必须来自 ops_catalog。服务启停优先 service_control，整机重启必须用 host_reboot，不拼 systemctl 路径。exec.run 的脚本预检只验证外层程序和语法，不保证内部工具或目录权限；长扫描前先核对所选 profile 的实际身份、工具和访问权，不凭 profile 名称推断权限。检查失败不得自行替换路径、提权或安装依赖。原生只读接口直接返回；exec.run 即使执行只读命令也沿用本任务授权，子任务共享。用 operation_status 查询最终结果；排队、退出零和业务目标完成不同。结果未知时继续查原 operation，不能换 key 重复执行。",
+        "description": "仅管理员可用的服务器运维接口，先读 ops_catalog 确认当前后端和参数，不能沿用历史 MaxOps 工具、资源名或 job_id。SSH 后端通过专用管理身份执行，普通编程沙盒没有管理权限。服务启停优先 service_control，整机重启必须用 host_reboot，不拼 systemctl 路径。exec.run 的脚本预检只验证外层程序和语法，不保证内部工具或目录权限；长扫描前先核对实际身份、工具和访问权。原生只读接口直接返回；exec.run 即使执行只读命令也沿用本任务授权，子任务共享。用 operation_status 查询最终结果；排队、退出零和业务目标完成不同。结果未知时继续查原 operation，不能换 key 重复执行。",
         "parameters": {"type": "object", "properties": {
             "operation": {"type": "string"},
             "params": {"type": "object", "description": "严格符合目录 schema 的参数。"},
@@ -210,7 +210,7 @@ FLEET_OVERVIEW_TOOL: ToolDefinition = {
         "name": FLEET_OVERVIEW_TOOL_NAME,
         "description": (
             "查询已授权服务器集群的当前概况、数据来源和观测时间。用于回答哪些机器"
-            "在线、异常、未接入或观测已过期。结果来自 gaoji 控制服务与 Ops，"
+            "在线、异常、未接入或观测已过期。结果来自 gaoji 控制服务当前配置的运维后端，"
             "不能把查询入口失败解释成所有机器关机。"
             "同时列出 Worker 编号、所在主机、心跳和接单状态；指定执行机器前先查这里。"
         ),
@@ -319,7 +319,7 @@ DIAGNOSE_INCIDENT_TOOL: ToolDefinition = {
     "function": {
         "name": DIAGNOSE_INCIDENT_TOOL_NAME,
         "description": (
-            "运行一次受限、可审计的集群排障流程。它会组合 Ops、Bot Trace、"
+            "运行一次受限、可审计的集群排障流程。它会组合服务器观测、Bot Trace、"
             "Outbox、数据库和预先配置的固定探测，最多两层、六项检查，并返回可在"
             "控制台查看的 diagnostic# 与 evidence#。服务器或 Bot 出问题时优先调用，"
             "不要靠聊天记录猜，也不要自行拼接内网 URL 或 shell 命令。"

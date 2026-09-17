@@ -41,6 +41,9 @@ def policy(host="h610", max_actions=2):
 def manager(store):
     client = SimpleNamespace(base_url="http://ops.test", _credential=lambda: b"test",
         _request=AsyncMock(return_value=SimpleNamespace(data={"job_id": "test-job", "state": "queued"})))
+    client.backend_name = "ops"
+    client.authorization_binding = lambda: {"url": client.base_url, "identity": client._credential().hex()}
+    client.call = client._request
     result = OpsManagementService(client, store, hosts=HOSTS, actors=("admin:kenneth", "qq:3526452465"))
     result.definitions = AsyncMock(return_value=copy.deepcopy(DEFINITIONS))
     return result

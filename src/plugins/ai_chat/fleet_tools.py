@@ -120,6 +120,9 @@ def summarize_fleet(
         exporter = _object(host.get("exporter"))
         sample_at = exporter.get("sample_at_unix_seconds")
         exporter_fresh = _sample_fresh(sample_at, timestamp)
+        direct_sample = _object(host.get("resource_observation"))
+        ssh_fresh = (payload.get("source_backend") == "ssh" and direct_sample.get("source") == "ssh"
+            and _sample_fresh(direct_sample.get("sample_at_unix_seconds"), timestamp))
         # Cache validity belongs to receipt time; sample age is checked at assembly.
         current = snapshot_current and _fresh(payload, captured_at) and bool(host)
         agent_up = agent.get("state") == "reachable"
@@ -152,7 +155,7 @@ def summarize_fleet(
         status = "online" if online else "stale" if host and not current else "unknown"
         summary = f"{name} 在线"
         if online:
-            summary += "，监控采样正常" if exporter_up else "，监控采样未确认"
+            summary += "，监控采样正常" if exporter_up else "，SSH 实时检查正常" if ssh_fresh else "，监控采样未确认"
             if failure_count is not None:
                 summary += f"，已授权服务中有 {failure_count} 个失败"
             if alert_count:
@@ -170,7 +173,8 @@ def summarize_fleet(
                 "agent_observed_at": agent.get("observed_at"),
                 "exporter_state": exporter.get("state", "unknown"),
                 "exporter_sample_at": sample_at,
-                "root_disk": _root_disk(host) if current and exporter_fresh else None,
+                "root_disk": _root_disk(host) if current and (exporter_fresh or ssh_fresh) else None,
+                "resource_source": "ssh" if ssh_fresh else "exporter" if exporter_up else "unknown",
                 "failed_service_count": failure_count,
                 "failed_services": [
                     {
@@ -276,8 +280,11 @@ def summarize_resources(payload: dict[str, Any], host_id: str, *, now: int) -> d
     valid_memory = total and available and 0 <= available["value"] <= total["value"] and total["value"] > 0
     result = {"status": "available" if valid_cpu and valid_memory else "partial"}
     if valid_cpu:
+        window = _object(metrics.get("cpu_idle_seconds_per_second")).get("window_seconds", 300)
+        if type(window) not in (int, float) or not math.isfinite(window) or window <= 0:
+            window = None
         result.update(cpu_busy_percent=round((1 - sum(s["value"] for s in idle) / len(idle)) * 100, 2),
-            cpu_window_seconds=300, cpu_observed_at=min(s["sample_at_unix_seconds"] for s in idle), logical_cpus=len(idle))
+            cpu_window_seconds=window, cpu_observed_at=min(s["sample_at_unix_seconds"] for s in idle), logical_cpus=len(idle))
     if valid_memory:
         result.update(memory_total_bytes=int(total["value"]), memory_available_bytes=int(available["value"]),
             memory_observed_at=min(total["sample_at_unix_seconds"], available["sample_at_unix_seconds"]))

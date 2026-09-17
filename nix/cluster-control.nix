@@ -257,6 +257,27 @@ in {
       };
     };
 
+    ssh = {
+      enable = lib.mkEnableOption "native SSH operations instead of retired MaxOps";
+      targets = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.submodule {
+          options = {
+            destination = lib.mkOption {type = lib.types.str;};
+            helper = lib.mkOption {type = lib.types.str; default = "/run/current-system/sw/bin/gaoji-ssh-operations";};
+          };
+        });
+        default = {};
+        description = "Fixed SSH destinations from the host registry, never model-supplied.";
+      };
+      knownHostsFile = lib.mkOption {type = lib.types.nullOr lib.types.path; default = null;};
+      identityFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str; default = null;
+        description = "Dedicated private key injected as a service credential; never a bot sandbox mount.";
+      };
+      managementHosts = lib.mkOption {type = lib.types.listOf lib.types.str; default = [];};
+      administrators = lib.mkOption {type = lib.types.listOf lib.types.str; default = [];};
+    };
+
     cacheSeconds = lib.mkOption {
       type = lib.types.ints.between 1 300;
       default = 20;
@@ -317,6 +338,13 @@ in {
 
   config = lib.mkIf cfg.enable {
     assertions = [
+      {
+        assertion = !cfg.ssh.enable || (!cfg.ops.enable && !cfg.ops.management.enable
+          && cfg.ssh.targets != {} && cfg.ssh.knownHostsFile != null
+          && lib.all (name: builtins.hasAttr name cfg.ssh.targets) cfg.ssh.managementHosts
+          && ((cfg.ssh.managementHosts == []) == (cfg.ssh.administrators == [])));
+        message = "Gaoji SSH requires pinned host keys, fixed targets and explicit administrators; legacy Ops must be disabled.";
+      }
       {
         assertion = cfg.apiTokenFile != null;
         message = "services.gaoji-cluster-control.apiTokenFile is required";
@@ -460,6 +488,12 @@ in {
         KC_OPS_MANAGEMENT_HOSTS = builtins.toJSON cfg.ops.management.hosts;
         KC_OPS_MANAGEMENT_ACTORS = builtins.toJSON cfg.ops.management.actors;
         KC_HOST_CONTROL_HELPERS_JSON = builtins.toJSON cfg.hostControlHelpers;
+        KC_SSH_TARGETS_JSON = builtins.toJSON (if cfg.ssh.enable then cfg.ssh.targets else {});
+        KC_SSH_KNOWN_HOSTS_FILE = if cfg.ssh.enable then "%d/ssh-known-hosts" else "";
+        KC_SSH_IDENTITY_FILE = if cfg.ssh.enable && cfg.ssh.identityFile != null then "%d/ssh-identity" else "";
+        KC_SSH_BINARY = "${pkgs.openssh}/bin/ssh";
+        KC_SSH_MANAGEMENT_HOSTS = builtins.toJSON (if cfg.ssh.enable then cfg.ssh.managementHosts else []);
+        KC_SSH_MANAGEMENT_ACTORS = builtins.toJSON (if cfg.ssh.enable then cfg.ssh.administrators else []);
         KC_OPS_TIMEOUT_SECONDS = toString cfg.ops.timeoutSeconds;
         KC_CACHE_SECONDS = toString cfg.cacheSeconds;
         KC_INVENTORY_JSON = builtins.toJSON cfg.inventory;
@@ -504,6 +538,8 @@ in {
           WorkingDirectory = "${cfg.package}/share/gaoji";
           LoadCredential =
             lib.optional (cfg.apiTokenFile != null) "api-token:${cfg.apiTokenFile}"
+            ++ lib.optional (cfg.ssh.enable && cfg.ssh.knownHostsFile != null) "ssh-known-hosts:${toString cfg.ssh.knownHostsFile}"
+            ++ lib.optional (cfg.ssh.enable && cfg.ssh.identityFile != null) "ssh-identity:${cfg.ssh.identityFile}"
             ++ lib.optional (cfg.ops.enable && cfg.ops.tokenFile != null) "ops-token:${cfg.ops.tokenFile}"
             ++ lib.optional (cfg.ops.management.enable && cfg.ops.management.tokenFile != null) "ops-management-token:${cfg.ops.management.tokenFile}"
             ++ map (worker: "worker-${worker.workerId}:${worker.tokenFile}") cfg.workers

@@ -7,7 +7,6 @@ import time
 from typing import Any
 
 from .adapters.ops import OpsError
-from .execution_contracts import canonical_json
 
 
 SERVICE_ACTIONS = frozenset({"units.start", "units.stop", "units.restart", "units.reload"})
@@ -33,6 +32,16 @@ def receipt(record: dict[str, Any], job: dict[str, Any], now: float) -> dict[str
     handle, spec, report = job.get("handle", {}), job.get("spec", {}), job.get("result", {})
     if not all(isinstance(item, dict) for item in (handle, spec, report)):
         raise ValueError("Service receipt is incomplete")
+    if record.get("backend_ref") == "ssh-management-v1":
+        argv = report.get("argv")
+        attributed = (report.get("attribution") == "systemctl_exit_and_target_observed"
+            and type(report.get("exit_code")) is int and report["exit_code"] == 0
+            and isinstance(argv, list) and len(argv) == 3 and isinstance(argv[0], str)
+            and argv[0].startswith("/") and argv[0].endswith("/systemctl")
+            and argv[1:] == [operation.removeprefix("units."), params.get("unit")])
+    else:
+        attributed = (report.get("attribution") == "systemd_job_accepted_and_target_observed"
+            and re.fullmatch(r"/org/freedesktop/systemd1/job/\d+", str(report.get("manager_job", ""))) is not None)
     if (handle.get("job_id") != record["backend_operation_id"]
             or handle.get("host") != params["host"] or handle.get("operation") != operation
             or handle.get("state") != "succeeded"
@@ -41,8 +50,7 @@ def receipt(record: dict[str, Any], job: dict[str, Any], now: float) -> dict[str
             or report.get("unit") != params.get("unit")
             or report.get("action") != operation.removeprefix("units.")
             or report.get("success") is not True
-            or report.get("attribution") != "systemd_job_accepted_and_target_observed"
-            or not re.fullmatch(r"/org/freedesktop/systemd1/job/\d+", str(report.get("manager_job", "")))):
+            or not attributed):
         raise ValueError("Service receipt does not prove the requested target action")
     finished = timestamp(job.get("updated_at"))
     if not record["created_at"] <= finished <= now + 5:
@@ -162,8 +170,7 @@ async def verify_service(manager: Any, record: dict[str, Any], job: dict[str, An
         return "failed", result, "service_target_failed"
     status, error = "reconciling", ""
     try:
-        response = await manager.client._request("POST", "/v1/execute", body=canonical_json({
-            "op": "units.status", "params": {"host": proof["host"], "unit": proof["unit"]}}).encode())
+        response = await manager.client.call("units.status", {"host": proof["host"], "unit": proof["unit"]})
         now = time.time()
         current = observe_unit(response.data, proof, record, now)
         proof["current"] = current

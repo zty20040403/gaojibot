@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import re
 import time
@@ -12,7 +10,8 @@ from typing import Any, Awaitable, Callable
 
 from jsonschema import Draft202012Validator, ValidationError
 
-from .adapters.ops import OpsClient, OpsError
+from .adapters.ops import OpsError
+from .adapters.backend import OperationsBackend
 from .execution_contracts import canonical_json, content_hash, new_handle
 from .execution_storage import ClusterExecutionStore
 from .host_operations import REBOOT_DEFINITION, execution_params, host_contract, parse_helpers
@@ -20,7 +19,7 @@ from .service_verification import SERVICE_ACTIONS, verify_service
 
 
 class OpsManagementService:
-    def __init__(self, client: OpsClient, store: ClusterExecutionStore, *,
+    def __init__(self, client: OperationsBackend, store: ClusterExecutionStore, *,
                  hosts: tuple[str, ...], actors: tuple[str, ...], host_helpers: dict[str, str] | None = None) -> None:
         self.client = client
         self.store = store
@@ -40,8 +39,7 @@ class OpsManagementService:
             raise PermissionError("This identity is not an operations administrator")
 
     async def definitions(self) -> list[dict[str, Any]]:
-        result = await self.client._request("GET", "/v1/operations")
-        data = result.data
+        data = await self.client.catalog()
         if not isinstance(data, dict) or data.get("version") != 2:
             raise OpsError("incompatible_catalog", "Management requires Ops protocol 2")
         definitions = data.get("operations")
@@ -74,6 +72,7 @@ class OpsManagementService:
             definitions = [{k: d.get(k) for k in
                 ("name", "summary", "read_only", "kind", "idempotency")} for d in definitions]
         return {"version": 2, "hosts": sorted(self.hosts), "operations": definitions,
+                "backend": self.client.backend_name,
                 "writes_require_approval": True, "checked_execution_hosts": sorted(self.host_helpers)}
 
     async def receipt(self, intent_key: str, *, actor: str, origin: str) -> dict[str, Any]:
@@ -88,8 +87,7 @@ class OpsManagementService:
     def binding_hash(self, definition: dict[str, Any], *, legacy: bool = False) -> str:
         # Credential rotation or a changed schema/scope invalidates an old approval.
         binding = {"definition": definition, "hosts": sorted(self.hosts),
-            "actors": sorted(self.actors), "url": self.client.base_url,
-            "identity": hashlib.sha256(self.client._credential()).hexdigest()}
+            "actors": sorted(self.actors), **self.client.authorization_binding()}
         if not legacy and definition["name"] in {"exec.run", "host.reboot"}:
             binding["host_helpers"] = self.host_helpers
         return content_hash(binding)
@@ -116,8 +114,7 @@ class OpsManagementService:
             if params.get(field) and params[field] not in self.hosts:
                 raise PermissionError("Host is outside the management grant")
         if definition["read_only"]:
-            response = await self.client._request("POST", "/v1/execute",
-                body=canonical_json({"op": operation, "params": params}).encode())
+            response = await self.client.call(operation, params)
             return {"ok": True, "operation": operation, "result": response.data}
         if not 8 <= len(idempotency_key) <= 160:
             raise ValueError("Writes require a stable 8-160 character idempotency key")
@@ -144,8 +141,8 @@ class OpsManagementService:
         record = {"operation_id": new_handle("op"), "task_ref": "", "step_ref": "",
             "actor_id": actor, "origin_scope": origin,
             "host_id": params.get("host") or params.get("target_host") or (deployment or {}).get("host_id", "scoped-resource"),
-            "resource_ref": operation, "operation": "maxops.execute", "operation_version": 1,
-            "arguments": arguments, "backend_ref": "ops-management-v2", "backend_binding_version": 1,
+            "resource_ref": operation, "operation": "ssh.execute" if self.client.backend_name == "ssh" else "maxops.execute", "operation_version": 1,
+            "arguments": arguments, "backend_ref": "ssh-management-v1" if self.client.backend_name == "ssh" else "ops-management-v2", "backend_binding_version": 1,
             "expected_state": {}, "resource_version": 1, "policy_version": 1,
             "deadline_at": now + 1800, "resource_budget": {"wall_seconds": 1800},
             "idempotency_key": idempotency_key, "verification": {}, "compensation": {},
@@ -171,7 +168,7 @@ class OpsManagementService:
                       expected_version: int) -> dict[str, Any]:
         self.authorize(actor)
         record = await asyncio.to_thread(self.store.get_operation, operation_id)
-        if not record or record["operation"] != "maxops.execute":
+        if not record or record["operation"] not in {"maxops.execute", "ssh.execute"}:
             raise LookupError("Management proposal not found")
         if record["arguments"].get("guardian_id"):
             if self.guardian_approver is None:
@@ -186,6 +183,8 @@ class OpsManagementService:
 
     async def validate_binding(self, record: dict[str, Any]) -> dict[str, Any]:
         self.authorize(record["actor_id"])
+        if self.client.backend_name == "ssh" and record.get("backend_ref") != "ssh-management-v1":
+            raise PermissionError("Legacy MaxOps task retained for inspection; it cannot be replayed through SSH")
         arguments = record["arguments"]
         definition = next((d for d in await self.definitions() if d["name"] == arguments["op"]), None)
         valid_hashes = {self.binding_hash(definition)} if definition else set()
@@ -239,8 +238,7 @@ class OpsManagementService:
             if record["deadline_at"] <= int(time.time()):
                 raise OpsError("observation_deadline", "Job observation deadline expired")
             try:
-                response = await self.client._request("POST", "/v1/execute",
-                    body=canonical_json({"op": "jobs.status", "params": {"job_id": backend_id}}).encode())
+                response = await self.client.call("jobs.status", {"job_id": backend_id})
                 if not isinstance(response.data, dict):
                     raise ValueError("Upstream job observation is not an object")
                 return response.data
@@ -259,8 +257,15 @@ class OpsManagementService:
             await run_host_operation(self, record)
             return True
         status, result, error, backend_id = "needs_attention", {}, "", record.get("backend_operation_id")
-        submission_started = bool(backend_id)
+        saved = dict(record.get("result") or {})
+        submission_started = bool(backend_id or saved.get("submission_started"))
         try:
+            if self.client.backend_name == "ssh" and not backend_id and submission_started:
+                # The deterministic handle is known before dispatch. Takeover only
+                # observes it; a missing receipt never triggers another submission.
+                from src.ssh_ops_protocol import handle
+                backend_id = handle(record["host_id"], record["operation_id"])
+                record = {**record, "backend_operation_id": backend_id}
             if backend_id:
                 saved = record.get("result") or {}
                 if (record["arguments"]["op"] in SERVICE_ACTIONS and saved.get("verification_started_at")
@@ -288,9 +293,8 @@ class OpsManagementService:
                             summary=f"{record['host_id']} 的 {record['arguments']['params'].get('unit', '服务')}操作未确认成功，上游任务状态为 {state}。",
                             instruction="不得声称服务已恢复正常；报告任务状态，必要时读取同一服务的状态和日志，不要重复执行。")
                 if record["status"] == "cancelling" and status == "running":
-                    cancelled = await self.client._request("POST", "/v1/execute", body=canonical_json({
-                        "op": "jobs.cancel", "params": {"job_id": backend_id,
-                        "expected_revision": handle["revision"], "reason": "Administrator cancellation"}}).encode())
+                    cancelled = await self.client.call("jobs.cancel", {"job_id": backend_id,
+                        "expected_revision": handle["revision"], "reason": "Administrator cancellation"})
                     result = cancelled.data
                     status = "cancelling"
             else:
@@ -299,9 +303,13 @@ class OpsManagementService:
                     raise PermissionError("Legacy unchecked command must be prepared again with target-side checks")
                 # Persist the claim before any effect; lost submissions are never blindly replayed.
                 submission_started = True
-                response = await self.client._request("POST", "/v1/execute",
-                    body=canonical_json({"op": record["arguments"]["op"],
-                                         "params": record["arguments"]["params"]}).encode(),
+                if self.client.backend_name == "ssh":
+                    checkpoint = {**saved, "phase": "submitting", "submission_started": True,
+                                  "submitted_at": int(time.time())}
+                    await asyncio.to_thread(self.store.checkpoint_managed_operation, record["operation_id"],
+                        owner=self.owner, fence=record["fence"], result=checkpoint)
+                    result = checkpoint
+                response = await self.client.call(record["arguments"]["op"], record["arguments"]["params"],
                     idempotency_key=(record["operation_id"] if definition["idempotency"] == "required" else None))
                 result = response.data
                 if definition.get("kind") == "job_submission":
@@ -322,7 +330,8 @@ class OpsManagementService:
                 result["verification"] = {**result["verification"], "verified": False}
             result.update(phase="outcome_unknown", summary="无法确认操作最终结果：" + str(exc)[:400])
             # An unavailable observation must not turn an existing remote job into a failure.
-            if backend_id and isinstance(exc, OpsError) and exc.retryable and record["deadline_at"] > int(time.time()):
+            recoverable = backend_id or (submission_started and self.client.backend_name == "ssh")
+            if recoverable and isinstance(exc, OpsError) and exc.retryable and record["deadline_at"] > int(time.time()):
                 status = record["status"] if record["status"] == "cancelling" else "reconciling"
             elif isinstance(exc, PermissionError):
                 status = "needs_attention"

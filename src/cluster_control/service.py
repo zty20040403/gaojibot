@@ -15,7 +15,8 @@ from .capabilities import (
     operation_compatible,
 )
 from .contracts import FleetError, FleetQueryResult, FleetStatus
-from .adapters.ops import OpsClient, OpsError, OpsOperation
+from .adapters.ops import OpsError, OpsOperation
+from .adapters.backend import OperationsBackend
 from .storage import FleetProjectionStore
 
 
@@ -31,13 +32,14 @@ class _CacheEntry:
 class FleetControlService:
     def __init__(
         self,
-        ops: OpsClient | None,
+        ops: OperationsBackend | None,
         *,
         store: FleetProjectionStore | None = None,
         inventory: tuple[dict[str, object], ...] = (),
         cache_seconds: int = 20,
     ) -> None:
         self.ops = ops
+        self.backend_name = getattr(ops, "backend_name", "ops")
         self.store = store
         self.inventory = inventory
         self._inventory_by_host = {
@@ -170,7 +172,7 @@ class FleetControlService:
         result = FleetQueryResult(
             operation=operation,
             status=FleetStatus.FRESH,
-            source_backend="ops",
+            source_backend=self.backend_name,
             received_at=int(stored["received_at"]),
             observed_at=(
                 int(stored["observed_at"])
@@ -214,9 +216,10 @@ class FleetControlService:
             raise
         operations = {item.name: item for item in catalog}
         names = set(operations)
-        self._last_success_at = checked_at
+        if self.backend_name != "ssh":
+            self._last_success_at = checked_at
         await self._record_backend(
-            state="online",
+            state="unknown" if self.backend_name == "ssh" else "online",
             catalog_version=self._ops_catalog_version(),
             operations=sorted(names),
             checked_at=checked_at,
@@ -241,10 +244,10 @@ class FleetControlService:
                 "retryable": exc.retryable,
             }
         return {
-            "backend": "ops",
+            "backend": self.backend_name,
             "catalog_version": self._ops_catalog_version(),
             "checked_at": int(time.time()),
-            "capabilities": capability_manifest(operations),
+            "capabilities": capability_manifest(operations, backend_name=self.backend_name),
             "error": error,
         }
 
@@ -306,6 +309,17 @@ class FleetControlService:
                     and str(item.get("host") or item.get("host_id") or "")
                     in allowed_hosts
                 ]
+                if self.backend_name == "ssh":
+                    projected = []
+                    for item in scoped["hosts"]:
+                        item = dict(item)
+                        allowed = self._inventory_by_host[str(item["host"])].get("readable_units", [])
+                        if isinstance(item.get("units"), list):
+                            item["units"] = [unit for unit in item["units"]
+                                if isinstance(unit, dict) and unit.get("unit") in allowed]
+                            item["agent"] = {**item.get("agent", {}), "failed_units": len(item["units"])}
+                        projected.append(item)
+                    scoped["hosts"] = projected
         elif operation == "alerts.active":
             alerts = payload.get("alerts")
             if isinstance(alerts, list):
@@ -398,7 +412,7 @@ class FleetControlService:
             result = FleetQueryResult(
                 operation=binding.operation,
                 status=FleetStatus.UNAVAILABLE,
-                source_backend="ops",
+                source_backend=self.backend_name,
                 received_at=now,
                 error=FleetError("not_configured", "Ops is not configured"),
             )
@@ -498,7 +512,7 @@ class FleetControlService:
                 return FleetQueryResult(
                     operation=operation,
                     status=FleetStatus.STALE,
-                    source_backend="ops",
+                    source_backend=self.backend_name,
                     received_at=received_at,
                     observed_at=cached.result.observed_at,
                     expires_at=cached.result.expires_at,
@@ -517,7 +531,7 @@ class FleetControlService:
             return FleetQueryResult(
                 operation=operation,
                 status=status,
-                source_backend="ops",
+                source_backend=self.backend_name,
                 received_at=received_at,
                 error=FleetError(exc.code, str(exc), exc.retryable),
             )
@@ -525,7 +539,7 @@ class FleetControlService:
         return FleetQueryResult(
             operation=operation,
             status=FleetStatus.FRESH,
-            source_backend="ops",
+            source_backend=self.backend_name,
             received_at=received_at,
             observed_at=self._observed_at(response.data),
             expires_at=received_at + self.cache_seconds,
@@ -586,7 +600,7 @@ class FleetControlService:
     def backend_snapshot(self) -> dict[str, Any]:
         stored = self.store.backend_snapshot() if self.store is not None else None
         return stored or {
-            "backend_name": "ops",
+            "backend_name": self.backend_name,
             "state": "disabled" if self.ops is None else "unknown",
             "catalog_version": self._ops_catalog_version(),
             "operations": [],

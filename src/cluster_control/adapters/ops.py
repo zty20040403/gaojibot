@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,24 @@ class OpsResponse:
 
 
 class OpsClient:
+    backend_name = "ops"
+
+    def authorization_binding(self) -> dict[str, Any]:
+        return {"url": self.base_url, "identity": hashlib.sha256(self._credential()).hexdigest()}
+
+    async def catalog(self) -> dict[str, Any]:
+        response = await self._request("GET", "/v1/operations")
+        if not isinstance(response.data, dict):
+            raise OpsError("invalid_catalog", "Operations catalog must be an object")
+        return response.data
+
+    async def call(self, operation: str, params: dict[str, Any], *,
+                   idempotency_key: str | None = None) -> OpsResponse:
+        body = json.dumps({"op": operation, "params": params}, ensure_ascii=False,
+                          sort_keys=True, separators=(",", ":")).encode()
+        return await self._request("POST", "/v1/execute", body=body,
+                                   idempotency_key=idempotency_key)
+
     def __init__(
         self,
         base_url: str,

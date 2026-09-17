@@ -570,7 +570,7 @@ export function FleetView({ plane }: { plane: Plane }) {
   const diagnosticRuns = rows(payload.diagnostics?.items)
   const executionCapabilities = payload.execution_capabilities ?? {}
   const operationCapability = executionCapabilities.ops_management?.available
-    ? { ...executionCapabilities.ops_management, backend: 'MaxOps' } : executionCapabilities.operations ?? {}
+    ? { ...executionCapabilities.ops_management, backend: executionCapabilities.ops_management.backend ?? 'ops' } : executionCapabilities.operations ?? {}
   const workerCapability = executionCapabilities.worker ?? {}
   const deploymentCapabilities = payload.deployment_capabilities ?? {}
   const deploymentRepositories = rows(deploymentCapabilities.repositories)

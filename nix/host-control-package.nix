@@ -1,11 +1,14 @@
 {pkgs, lib}: pkgs.stdenvNoCC.mkDerivation {
   pname = "gaoji-host-control";
-  version = "1";
-  src = ../src/host_control.py;
+  version = "2";
+  src = lib.fileset.toSource {
+    root = ../src;
+    fileset = lib.fileset.unions [../src/host_control.py ../src/ssh_operations.py ../src/ssh_ops_protocol.py];
+  };
   dontUnpack = true;
   installPhase = ''
     mkdir -p $out/libexec
-    cp $src $out/libexec/host_control.py
+    cp $src/*.py $out/libexec/
   '';
   meta = {
     description = "Target-side command preflight and durable execution receipts";
