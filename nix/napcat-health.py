@@ -64,6 +64,9 @@ def probe(config_path: Path, port: int) -> str:
         return "management_auth_required"
     credential = auth["Credential"]
     login = call("QQLogin/CheckLoginStatus", {}, credential)
+    # Before QR login OneBot is not initialized, so its debug API cannot report status.
+    if login.get("isLogin") is False and login.get("isOffline") is False and login.get("qrcodeurl"):
+        return "login_required"
     result = call("Debug/call", {"action": "get_status", "params": {}}, credential)
     if result.get("retcode") != 0 or not isinstance(result.get("data"), dict):
         return "unknown"

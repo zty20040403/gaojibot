@@ -1,6 +1,10 @@
 import importlib.util
+import io
+import json
 from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location("napcat_health", Path(__file__).parents[1] / "nix/napcat-health.py")
 health = importlib.util.module_from_spec(spec)
@@ -8,6 +12,21 @@ spec.loader.exec_module(health)
 
 
 class NapCatHealthTests(unittest.TestCase):
+    def test_waiting_for_qr_does_not_call_uninitialized_onebot(self):
+        client = Mock()
+        client.open.side_effect = [
+            io.BytesIO(json.dumps({"code": 0, "data": {"Credential": "test"}}).encode()),
+            io.BytesIO(json.dumps({"code": 0, "data": {
+                "isLogin": False, "isOffline": False, "qrcodeurl": "test-qr",
+            }}).encode()),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps({"token": "test-token"}))
+            with patch.object(health.urllib.request, "build_opener", return_value=client):
+                self.assertEqual(health.probe(config, 6100), "login_required")
+        self.assertEqual(client.open.call_count, 2)
+
     def test_actual_account_beats_stale_webui_error(self):
         self.assertEqual(health.classify({"loginError": "用户身份已失效"}, {"online": True, "good": True}), "online")
         self.assertEqual(health.classify({}, {"online": False, "good": True}), "transport_offline")
