@@ -282,7 +282,7 @@ class AlertNotificationService:
             )
         except ActionFailed as exc:
             if "timeout" not in str(exc).casefold():
-                self._defer_send(f"QQ rejected alert delivery (retcode={exc.retcode}).")
+                self._defer_send(f"QQ rejected alert delivery (retcode={exc.info.get('retcode')}).")
                 return 0
             self._logger.warning(
                 "Activity alert notification receipt timed out; treating the "

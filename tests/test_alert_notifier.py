@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import nonebot
+from nonebot.adapters.onebot.v11.exception import ActionFailed
 
 nonebot.init()
 
@@ -109,6 +110,24 @@ class AlertNotificationServiceTests(unittest.IsolatedAsyncioTestCase):
                 with patch("src.plugins.ai_chat.alert_notifier.monotonic", return_value=131):
                     await service.run_once()
                 self.assertEqual(service._retry_after, 191)
+            self.assertEqual(service._notified_incidents, {})
+
+    async def test_qq_network_rejection_uses_exception_info_and_defers(self) -> None:
+        current: list[ActivityAlert] = []
+        bot = Bot()
+        with tempfile.TemporaryDirectory() as directory:
+            service = AlertNotificationService(
+                alertmanager_url="http://alertmanager", group_id=1,
+                check_seconds=30, state_path=Path(directory) / "alerts.json",
+                logger=Logger(), fetcher=lambda: _result(current),
+                bot_provider=lambda: [bot],
+            )
+            await service.run_once()
+            current.append(alert("new"))
+            with patch.object(bot, "send_group_msg", side_effect=ActionFailed(retcode=1200, message="network error")):
+                self.assertEqual(await service.run_once(), 0)
+            self.assertIn("1200", service._delivery_blocker)
+            self.assertEqual(service._send_failures, 1)
             self.assertEqual(service._notified_incidents, {})
 
     def test_failed_save_keeps_previous_preference(self) -> None:
