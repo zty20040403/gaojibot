@@ -30,6 +30,11 @@ class Logger:
 class Bot:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.online = True
+
+    async def call_api(self, api: str, **data: Any) -> dict[str, bool]:
+        assert api == "get_status"
+        return {"online": self.online, "good": True}
 
     async def send_group_msg(self, **data: Any) -> dict[str, int]:
         self.calls.append(data)
@@ -59,6 +64,53 @@ def alert(
 
 
 class AlertNotificationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_offline_account_defers_without_marking_alert_delivered(self) -> None:
+        current: list[ActivityAlert] = []
+        bot = Bot()
+        with tempfile.TemporaryDirectory() as directory:
+            service = AlertNotificationService(
+                alertmanager_url="http://alertmanager", group_id=1,
+                check_seconds=30, state_path=Path(directory) / "alerts.json",
+                logger=Logger(), fetcher=lambda: _result(current),
+                bot_provider=lambda: [bot],
+            )
+            await service.run_once()
+            current.append(alert("new"))
+            bot.online = False
+            with patch("src.plugins.ai_chat.alert_notifier.monotonic", return_value=100):
+                self.assertEqual(await service.run_once(), 0)
+                self.assertEqual(service._retry_after, 130)
+                self.assertEqual(await service.run_once(), 0)
+            self.assertEqual(bot.calls, [])
+            self.assertEqual(service._notified_incidents, {})
+            bot.online = True
+            with patch("src.plugins.ai_chat.alert_notifier.monotonic", return_value=131):
+                self.assertEqual(await service.run_once(), 1)
+            self.assertEqual(len(bot.calls), 1)
+            self.assertEqual(service._send_failures, 0)
+
+    async def test_transport_failure_backs_off_while_polling_history(self) -> None:
+        current: list[ActivityAlert] = []
+        bot = Bot()
+        with tempfile.TemporaryDirectory() as directory:
+            service = AlertNotificationService(
+                alertmanager_url="http://alertmanager", group_id=1,
+                check_seconds=30, state_path=Path(directory) / "alerts.json",
+                logger=Logger(), fetcher=lambda: _result(current),
+                bot_provider=lambda: [bot],
+            )
+            await service.run_once()
+            current.append(alert("new"))
+            with patch.object(bot, "send_group_msg", side_effect=OSError("offline")) as send:
+                with patch("src.plugins.ai_chat.alert_notifier.monotonic", return_value=100):
+                    await service.run_once()
+                    await service.run_once()
+                self.assertEqual(send.call_count, 1)
+                with patch("src.plugins.ai_chat.alert_notifier.monotonic", return_value=131):
+                    await service.run_once()
+                self.assertEqual(service._retry_after, 191)
+            self.assertEqual(service._notified_incidents, {})
+
     def test_failed_save_keeps_previous_preference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "notification-preferences.json"

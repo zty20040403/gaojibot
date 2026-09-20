@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import threading
+from time import monotonic
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -19,6 +20,7 @@ from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
 from nonebot.adapters.onebot.v11.exception import ActionFailed
 
 from src.bot_storage import StateSource, open_json_state
+from .onebot_availability import delivery_blocker
 
 
 class AlertLogger(Protocol):
@@ -28,6 +30,8 @@ class AlertLogger(Protocol):
 
 
 class GroupMessageBot(Protocol):
+    async def call_api(self, api: str, **data: Any) -> Any: ...
+
     async def send_group_msg(self, **data: Any) -> Any: ...
 
 
@@ -163,6 +167,17 @@ class AlertNotificationService:
         self._loaded = False
         self._seen_alerts: dict[str, ActivityAlert] = {}
         self._notified_incidents: dict[str, int] = {}
+        self._retry_after = 0.0
+        self._send_failures = 0
+        self._delivery_blocker: str | None = None
+
+    def _defer_send(self, reason: str) -> None:
+        self._send_failures += 1
+        delay = min(300, self._check_seconds * 2 ** min(self._send_failures - 1, 5))
+        self._retry_after = monotonic() + delay
+        if self._delivery_blocker != reason:
+            self._logger.warning(f"Alert delivery deferred: {reason}")
+        self._delivery_blocker = reason
 
     async def run_forever(self) -> None:
         while True:
@@ -236,11 +251,23 @@ class AlertNotificationService:
                 await asyncio.to_thread(self._write_state)
             return 0
 
+        if monotonic() < self._retry_after:
+            return 0
+
         bots = list(self._bot_provider())
         if not bots:
-            self._logger.warning(
-                "New alerts are waiting because no OneBot connection is available."
-            )
+            self._defer_send("No OneBot connection is available.")
+            return 0
+
+        selected_bot = None
+        blocker = "QQ status unavailable"
+        for bot in bots:
+            blocker = await delivery_blocker(bot, pending_notice="告警等待恢复后发送")
+            if blocker is None:
+                selected_bot = bot
+                break
+        if selected_bot is None:
+            self._defer_send(blocker or "QQ status unavailable")
             return 0
 
         notification_text = format_incident_notification(
@@ -249,22 +276,25 @@ class AlertNotificationService:
         )
         message = Message([MessageSegment.text(notification_text)])
         try:
-            await bots[0].send_group_msg(
+            await selected_bot.send_group_msg(
                 group_id=self._group_id,
                 message=message,
             )
         except ActionFailed as exc:
             if "timeout" not in str(exc).casefold():
-                self._logger.warning(f"Activity alert notification failed: {exc}")
+                self._defer_send(f"QQ rejected alert delivery (retcode={exc.retcode}).")
                 return 0
             self._logger.warning(
                 "Activity alert notification receipt timed out; treating the "
                 "outcome as delivered to avoid duplicate alert messages."
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            self._logger.warning(f"Activity alert notification failed: {exc}")
+            self._defer_send(f"Alert transport error: {type(exc).__name__}.")
             return 0
 
+        self._retry_after = 0.0
+        self._send_failures = 0
+        self._delivery_blocker = None
         for incident in (*firing, *escalations):
             self._notified_incidents[incident.key] = incident.severity_rank
         for incident in recoveries:

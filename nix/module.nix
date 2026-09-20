@@ -388,6 +388,15 @@ in {
         default = 6100;
         description = "Host port used for the dedicated NapCat WebUI.";
       };
+
+      healthCheck = {
+        enable = lib.mkEnableOption "QQ account probes and bounded transport recovery";
+        metricsFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Optional node-exporter textfile path for actual QQ account status.";
+        };
+      };
     };
   };
 
@@ -668,6 +677,38 @@ in {
           "$CREDENTIALS_DIRECTORY/onebot-token" \
           ${lib.escapeShellArg cfg.napcat.reverseWebsocketUrl}
       '');
+    };
+
+    systemd.services."${serviceName}-qq-health" = lib.mkIf (cfg.napcat.enable && cfg.napcat.healthCheck.enable) {
+      description = "Probe actual QQ login and recover stalled transport without restart loops";
+      after = ["${napcatServiceName}.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = lib.concatStringsSep " " ([
+          "${pkgs.python3}/bin/python3" "${./napcat-health.py}"
+          "--config" (lib.escapeShellArg "${cfg.napcat.dataDirectory}/config/webui.json")
+          "--port" (toString cfg.napcat.webuiPort)
+          "--unit" "${napcatServiceName}.service"
+          "--systemctl" "${pkgs.systemd}/bin/systemctl"
+          "--state" "/var/lib/${serviceName}-qq-health/state.json"
+        ] ++ lib.optionals (cfg.napcat.healthCheck.metricsFile != null) [
+          "--metrics" (lib.escapeShellArg cfg.napcat.healthCheck.metricsFile)
+        ]);
+        StateDirectory = "${serviceName}-qq-health";
+        StateDirectoryMode = "0700";
+        TimeoutStartSec = "25s";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        ReadWritePaths = lib.optional (cfg.napcat.healthCheck.metricsFile != null)
+          (builtins.dirOf cfg.napcat.healthCheck.metricsFile);
+      };
+    };
+
+    systemd.timers."${serviceName}-qq-health" = lib.mkIf (cfg.napcat.enable && cfg.napcat.healthCheck.enable) {
+      wantedBy = ["timers.target"];
+      timerConfig = { OnBootSec = "90s"; OnUnitInactiveSec = "30s"; };
     };
 
     systemd.tmpfiles.rules = lib.optionals cfg.napcat.enable [
