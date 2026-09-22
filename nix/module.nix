@@ -71,8 +71,12 @@
     if value
     then "true"
     else "false";
-  napcatServiceName = "docker-${cfg.napcat.containerName}";
+  nativeNapcat = cfg.napcat.backend == "native";
+  napcatServiceName = if nativeNapcat then "${serviceName}-napcat" else "docker-${cfg.napcat.containerName}";
+  napcatOwner = if nativeNapcat then "${serviceName}-napcat" else "root";
 in {
+  imports = [./napcat-native.nix];
+
   options.services.gaoji = {
     enable = lib.mkEnableOption "the gaoji multi-model bot";
 
@@ -327,12 +331,24 @@ in {
     };
 
     napcat = {
-      enable = lib.mkEnableOption "a dedicated NapCat container for this bot";
+      enable = lib.mkEnableOption "a dedicated NapCat instance for this bot";
+
+      backend = lib.mkOption {
+        type = lib.types.enum ["docker" "native"];
+        default = "docker";
+        description = "Run a Docker image or a native, isolated Nix package.";
+      };
+
+      nativePackage = lib.mkOption {
+        type = lib.types.nullOr lib.types.package;
+        default = null;
+        description = "Pinned, patched QQ package providing bin/qq and napcat/; required for the native backend.";
+      };
 
       account = lib.mkOption {
         type = lib.types.str;
         example = "123456789";
-        description = "QQ account logged in by the dedicated NapCat container.";
+        description = "QQ account logged in by the dedicated NapCat instance.";
       };
 
       image = lib.mkOption {
@@ -367,7 +383,7 @@ in {
 
       reverseWebsocketUrl = lib.mkOption {
         type = lib.types.str;
-        default = "ws://host.docker.internal:${toString cfg.port}/onebot/v11/ws";
+        default = "ws://${if nativeNapcat then "127.0.0.1" else "host.docker.internal"}:${toString cfg.port}/onebot/v11/ws";
         description = "OneBot reverse WebSocket URL used by NapCat.";
       };
 
@@ -424,6 +440,15 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = !(cfg.napcat.enable && nativeNapcat) || (
+          cfg.napcat.nativePackage != null
+          && lib.hasPrefix "/var/lib/" cfg.napcat.dataDirectory
+          && builtins.match "[1-9][0-9]{4,19}" cfg.napcat.account != null
+          && builtins.elem cfg.napcat.webuiAddress ["127.0.0.1" "::1"]
+        );
+        message = "Native NapCat requires a pinned QQ package, a /var/lib data directory, a QQ account and a loopback WebUI address";
+      }
+      {
         assertion = builtins.match "^[A-Za-z0-9_.-]+$" cfg.stateDirectory != null;
         message = "services.gaoji.stateDirectory must be a directory name, not a path";
       }
@@ -465,7 +490,7 @@ in {
 
     networking.firewall.allowedTCPPorts = lib.optionals cfg.openFirewall [cfg.port];
 
-    virtualisation.docker.enable = lib.mkDefault (cfg.sandbox.enable || cfg.napcat.enable);
+    virtualisation.docker.enable = lib.mkDefault (cfg.sandbox.enable || (cfg.napcat.enable && !nativeNapcat));
 
     systemd.services.${serviceName} = {
       description = "gaoji multi-model bot";
@@ -681,7 +706,7 @@ in {
       };
     };
 
-    virtualisation.oci-containers = lib.mkIf cfg.napcat.enable {
+    virtualisation.oci-containers = lib.mkIf (cfg.napcat.enable && !nativeNapcat) {
       backend = "docker";
       containers.${cfg.napcat.containerName} = {
         image = cfg.napcat.image;
@@ -711,7 +736,7 @@ in {
       after = ["${serviceName}.service"];
       serviceConfig.LoadCredential = lib.optional (cfg.napcat.reverseWebsocketTokenFile != null)
         "onebot-token:${cfg.napcat.reverseWebsocketTokenFile}";
-      preStart = lib.mkIf (cfg.napcat.reverseWebsocketTokenFile != null) (lib.mkBefore ''
+      preStart = lib.mkIf (!nativeNapcat && cfg.napcat.reverseWebsocketTokenFile != null) (lib.mkBefore ''
         ${pkgs.python3}/bin/python ${./napcat-auth.py} \
           ${lib.escapeShellArg "${cfg.napcat.dataDirectory}/config/onebot11_${cfg.napcat.account}.json"} \
           "$CREDENTIALS_DIRECTORY/onebot-token" \
@@ -795,10 +820,10 @@ in {
     };
 
     systemd.tmpfiles.rules = lib.optionals cfg.napcat.enable [
-      "d ${cfg.napcat.dataDirectory} 0700 root root -"
-      "d ${cfg.napcat.dataDirectory}/QQ 0700 root root -"
-      "d ${cfg.napcat.dataDirectory}/config 0700 root root -"
-      "d ${cfg.napcat.dataDirectory}/outbox 0700 root root -"
+      "d ${cfg.napcat.dataDirectory} 0700 ${napcatOwner} ${napcatOwner} -"
+      "d ${cfg.napcat.dataDirectory}/QQ 0700 ${napcatOwner} ${napcatOwner} -"
+      "d ${cfg.napcat.dataDirectory}/config 0700 ${napcatOwner} ${napcatOwner} -"
+      "d ${cfg.napcat.dataDirectory}/outbox 0700 ${napcatOwner} ${napcatOwner} -"
     ];
   };
 }
