@@ -72,6 +72,11 @@
     then "true"
     else "false";
   nativeNapcat = cfg.napcat.backend == "native";
+  nativeWebsocketHost =
+    if cfg.host == "0.0.0.0" then "127.0.0.1"
+    else if cfg.host == "::" then "[::1]"
+    else if lib.hasInfix ":" cfg.host then "[${cfg.host}]"
+    else cfg.host;
   napcatServiceName = if nativeNapcat then "${serviceName}-napcat" else "docker-${cfg.napcat.containerName}";
   napcatOwner = if nativeNapcat then "${serviceName}-napcat" else "root";
 in {
@@ -383,7 +388,7 @@ in {
 
       reverseWebsocketUrl = lib.mkOption {
         type = lib.types.str;
-        default = "ws://${if nativeNapcat then "127.0.0.1" else "host.docker.internal"}:${toString cfg.port}/onebot/v11/ws";
+        default = "ws://${if nativeNapcat then nativeWebsocketHost else "host.docker.internal"}:${toString cfg.port}/onebot/v11/ws";
         description = "OneBot reverse WebSocket URL used by NapCat.";
       };
 

@@ -5,8 +5,9 @@ under the unprivileged `gaoji-napcat` account and bubblewrap. Set `nativePackage
 to a Nix derivation providing `bin/qq` and `napcat/`. Docker remains the default
 for existing deployments. This changes the transport, not bot data or models.
 
-The native service shares the host network, connects to the bot through loopback,
-and exposes its WebUI on loopback only. It mounts only its own `QQ`, `config`
+The native service shares the host network and connects to the bot's configured
+listening address (`services.gaoji.host` and `port`); wildcard bindings use the
+corresponding loopback address. Its WebUI remains loopback-only. It mounts its own `QQ`, `config`
 and read-only `outbox` directories, plus read-only system dependencies.
 It conflicts with the former dedicated Docker unit so both cannot be started by
 systemd at once. Do not manually launch a second client with the same account.
