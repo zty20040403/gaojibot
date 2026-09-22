@@ -397,6 +397,15 @@ in {
           description = "Optional node-exporter textfile path for actual QQ account status.";
         };
       };
+
+      passwordLogin = {
+        enable = lib.mkEnableOption "bounded password login when QQ is logged out";
+        passwordFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Private runtime QQ password file, outside the Nix store; loaded with systemd credentials. Never put the password in Nix configuration.";
+        };
+      };
     };
   };
 
@@ -413,6 +422,15 @@ in {
       {
         assertion = !cfg.cluster.enable || cfg.cluster.tokenFile != null;
         message = "services.gaoji.cluster.tokenFile is required when cluster tools are enabled";
+      }
+      {
+        assertion = !cfg.napcat.passwordLogin.enable || (
+          cfg.napcat.enable
+          && cfg.napcat.passwordLogin.passwordFile != null
+          && lib.hasPrefix "/" cfg.napcat.passwordLogin.passwordFile
+          && !(lib.hasPrefix "/nix/store/" cfg.napcat.passwordLogin.passwordFile)
+        );
+        message = "NapCat password login requires NapCat and a private absolute passwordFile outside /nix/store";
       }
     ];
 
@@ -709,6 +727,43 @@ in {
     systemd.timers."${serviceName}-qq-health" = lib.mkIf (cfg.napcat.enable && cfg.napcat.healthCheck.enable) {
       wantedBy = ["timers.target"];
       timerConfig = { OnBootSec = "90s"; OnUnitInactiveSec = "30s"; };
+    };
+
+    environment.systemPackages = lib.optionals cfg.napcat.passwordLogin.enable [
+      (pkgs.writeShellScriptBin "${serviceName}-qq-password-login" ''
+        exec ${pkgs.python3}/bin/python3 ${./napcat-password-login.py} "$@"
+      '')
+    ];
+
+    systemd.services."${serviceName}-qq-password-login" = lib.mkIf cfg.napcat.passwordLogin.enable {
+      description = "Attempt QQ password login once; stop for manual verification on failure";
+      after = ["${napcatServiceName}.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecCondition = "${pkgs.systemd}/bin/systemctl is-active --quiet ${napcatServiceName}.service";
+        ExecStart = lib.concatStringsSep " " [
+          "${pkgs.python3}/bin/python3" "${./napcat-password-login.py}"
+          "--config" (lib.escapeShellArg "${cfg.napcat.dataDirectory}/config/webui.json")
+          "--port" (toString cfg.napcat.webuiPort)
+          "--uin" (lib.escapeShellArg cfg.napcat.account)
+          "--password-file" "%d/qq-password"
+          "--state" "/var/lib/${serviceName}-qq-password-login/state.json"
+        ];
+        LoadCredential = ["qq-password:${cfg.napcat.passwordLogin.passwordFile}"];
+        StateDirectory = "${serviceName}-qq-password-login";
+        StateDirectoryMode = "0700";
+        TimeoutStartSec = "90s";
+        UMask = "0077";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+      };
+    };
+
+    systemd.timers."${serviceName}-qq-password-login" = lib.mkIf cfg.napcat.passwordLogin.enable {
+      wantedBy = ["timers.target"];
+      timerConfig = { OnBootSec = "120s"; OnUnitInactiveSec = "60s"; };
     };
 
     systemd.tmpfiles.rules = lib.optionals cfg.napcat.enable [

@@ -57,6 +57,7 @@
         ./THIRD_PARTY_NOTICES.md
         ./nix/napcat-auth.py
         ./nix/napcat-health.py
+        ./nix/napcat-password-login.py
         (lib.fileset.fileFilter (file: file.hasExt "md" || file.hasExt "html") ./docs)
         (lib.fileset.fileFilter (file: file.hasExt "md") ./skills)
         (lib.fileset.fileFilter (
