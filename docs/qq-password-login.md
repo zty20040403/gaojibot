@@ -68,6 +68,21 @@ sudo gaoji-qq-password-login \
 关闭时将 `passwordLogin.enable` 设为 `false` 并 rebuild；临时停止可用
 `sudo systemctl stop gaoji-qq-password-login.timer gaoji-qq-password-login.service`。
 
+## 人工验证提醒
+
+可以使用另一套已经在线的 QQ 实例发送定向提醒，高级自己掉线时仍可通知管理员。
+配置 `passwordLogin.notification` 的 `enable`、`webuiConfigFile`、`webuiPort`、
+`account`、`groupId`、`userId`；发送前核实通知账号和目标群成员，仅 @ 指定用户，不 @ 全体。
+WebUI 凭据只在服务器本机读取，不能写入 Nix 配置或仓库。
+
+设备确认、验证码、安全验证、账号不符或登录结果不明会使用不同的固定短提示。
+通知不会代替腾讯的手机确认，不会把验证码、密码或带令牌的验证链接发到群里。
+同一次阻塞只发送一次，记录持久化到同一状态文件的 `notification` 字段；
+核实 QQ 恢复在线后清除本次提醒记录，下次新的阻塞可重新提醒。
+通知账号离线、接口不可用或群成员无法核实时，每 5 分钟重新检查一次，期间不发消息。
+发送前保存 `sending`，收到消息 ID 后才标记 `sent`；发送结果不明记为 `unconfirmed`，
+不盲目重发。发送过程中崩溃留下的 `sending` 同样不自动重发，可查看服务日志人工核对。
+
 ## 验证范围
 
 接口依据 NapCat v4.18.28 的 `QQLogin/PasswordLogin`。

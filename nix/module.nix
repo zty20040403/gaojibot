@@ -405,6 +405,18 @@ in {
           default = null;
           description = "Private runtime QQ password file, outside the Nix store; loaded with systemd credentials. Never put the password in Nix configuration.";
         };
+        notification = {
+          enable = lib.mkEnableOption "one targeted login-verification reminder through another QQ instance";
+          webuiConfigFile = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+            description = "Private runtime WebUI config of the independent notification sender.";
+          };
+          webuiPort = lib.mkOption { type = lib.types.port; default = 6099; };
+          account = lib.mkOption { type = lib.types.strMatching "[1-9][0-9]{4,19}"; };
+          groupId = lib.mkOption { type = lib.types.strMatching "[1-9][0-9]{4,19}"; };
+          userId = lib.mkOption { type = lib.types.strMatching "[1-9][0-9]{4,19}"; };
+        };
       };
     };
   };
@@ -431,6 +443,16 @@ in {
           && !(lib.hasPrefix "/nix/store/" cfg.napcat.passwordLogin.passwordFile)
         );
         message = "NapCat password login requires NapCat and a private absolute passwordFile outside /nix/store";
+      }
+      {
+        assertion = !cfg.napcat.passwordLogin.notification.enable || (
+          cfg.napcat.passwordLogin.enable
+          && lib.hasPrefix "/" cfg.napcat.passwordLogin.notification.webuiConfigFile
+          && !(lib.hasPrefix "/nix/store/" cfg.napcat.passwordLogin.notification.webuiConfigFile)
+          && cfg.napcat.passwordLogin.notification.account != cfg.napcat.account
+          && cfg.napcat.passwordLogin.notification.webuiPort != cfg.napcat.webuiPort
+        );
+        message = "Login notifications require a separate QQ instance and its private runtime WebUI config";
       }
     ];
 
@@ -741,18 +763,24 @@ in {
       serviceConfig = {
         Type = "oneshot";
         ExecCondition = "${pkgs.systemd}/bin/systemctl is-active --quiet ${napcatServiceName}.service";
-        ExecStart = lib.concatStringsSep " " [
+        ExecStart = lib.concatStringsSep " " ([
           "${pkgs.python3}/bin/python3" "${./napcat-password-login.py}"
           "--config" (lib.escapeShellArg "${cfg.napcat.dataDirectory}/config/webui.json")
           "--port" (toString cfg.napcat.webuiPort)
           "--uin" (lib.escapeShellArg cfg.napcat.account)
           "--password-file" "%d/qq-password"
           "--state" "/var/lib/${serviceName}-qq-password-login/state.json"
-        ];
+        ] ++ lib.optionals cfg.napcat.passwordLogin.notification.enable [
+          "--notify-config" (lib.escapeShellArg cfg.napcat.passwordLogin.notification.webuiConfigFile)
+          "--notify-port" (toString cfg.napcat.passwordLogin.notification.webuiPort)
+          "--notify-uin" cfg.napcat.passwordLogin.notification.account
+          "--notify-group" cfg.napcat.passwordLogin.notification.groupId
+          "--notify-user" cfg.napcat.passwordLogin.notification.userId
+        ]);
         LoadCredential = ["qq-password:${cfg.napcat.passwordLogin.passwordFile}"];
         StateDirectory = "${serviceName}-qq-password-login";
         StateDirectoryMode = "0700";
-        TimeoutStartSec = "90s";
+        TimeoutStartSec = "120s";
         UMask = "0077";
         NoNewPrivileges = true;
         ProtectSystem = "strict";

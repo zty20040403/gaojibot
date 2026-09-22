@@ -66,11 +66,13 @@ class PasswordLoginTests(unittest.TestCase):
         self.assertEqual(self.run_login([
             {"isLogin": False, "isOffline": False}, {}, {"isLogin": False, "isOffline": False},
         ]), "login_submitted_not_verified")
+        self.state["notification"] = {"status": "sent"}
         self.password.reset_mock()
         self.assertEqual(self.run_login([{"isLogin": True}]), "online")
         self.password.assert_not_called()
         self.assertEqual(self.state["attempts"], [100000])
         self.assertEqual(self.state["blocked"], "")
+        self.assertNotIn("notification", self.state)
 
     def test_different_online_account_is_never_replaced(self):
         self.client.online_account.return_value = "987654321"
@@ -166,6 +168,92 @@ class PasswordLoginTests(unittest.TestCase):
                 login.init_password(path)
             self.assertEqual(login.read_private(path), "test-secret")
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+class ManualNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.state = {"blocked": "device_confirmation_required", "attempts": [100000]}
+        self.saved = []
+        self.client = Mock()
+        self.client.online_account.return_value = "987654321"
+        self.client.call.side_effect = [
+            {"retcode": 0, "data": {"user_id": 111111}},
+            {"retcode": 0, "data": {"message_id": -12345}},
+        ]
+        self.factory = Mock(return_value=self.client)
+
+    def notify(self, now=100010, save=None):
+        return login.notify_manual_required(
+            self.state, self.factory, sender_uin="987654321", port=6099,
+            group_id="222222", user_id="111111", now=now,
+            save=save or (lambda value: self.saved.append(copy.deepcopy(value))),
+        )
+
+    def test_notice_mentions_only_owner_and_persists_before_send(self):
+        def call(endpoint, payload):
+            self.assertEqual(endpoint, "Debug/call")
+            if payload["action"] == "get_group_member_info":
+                return {"retcode": 0, "data": {"user_id": 111111}}
+            self.assertEqual(self.saved[-1]["notification"]["status"], "sending")
+            self.assertEqual(payload["params"]["group_id"], 222222)
+            segments = payload["params"]["message"]
+            self.assertEqual(segments[0], {"type": "at", "data": {"qq": "111111"}})
+            self.assertIn("设备确认", segments[1]["data"]["text"])
+            self.assertNotIn("http", segments[1]["data"]["text"])
+            return {"retcode": 0, "data": {"message_id": -12345}}
+
+        self.client.call.side_effect = call
+        self.assertEqual(self.notify(), "sent")
+        self.assertEqual(self.state["notification"]["message_id"], "-12345")
+        self.state = json.loads(json.dumps(self.state))
+        self.assertIsNone(self.notify(now=200000))
+        self.factory.assert_called_once()
+
+    def test_preflight_failure_retries_without_sending(self):
+        self.client.authenticate.side_effect = login.LoginError("api_unavailable")
+        self.assertEqual(self.notify(), "waiting_for_sender")
+        self.client.call.assert_not_called()
+        self.assertIsNone(self.notify(now=100200))
+        self.factory.assert_called_once()
+        self.client.authenticate.side_effect = None
+        self.assertEqual(self.notify(now=100310), "sent")
+
+    def test_wrong_sender_or_recipient_never_sends(self):
+        self.client.online_account.return_value = "555555"
+        self.assertEqual(self.notify(), "waiting_for_sender")
+        self.client.call.assert_not_called()
+        self.client.online_account.return_value = "987654321"
+        self.client.call.side_effect = [{"retcode": 0, "data": {"user_id": 555555}}]
+        self.assertEqual(self.notify(now=100310), "waiting_for_sender")
+        self.assertEqual(self.client.call.call_count, 1)
+
+    def test_ambiguous_receipt_and_crash_are_not_replayed(self):
+        self.client.call.side_effect = [
+            {"retcode": 0, "data": {"user_id": 111111}}, login.LoginError("api_unavailable"),
+        ]
+        self.assertEqual(self.notify(), "unconfirmed")
+        self.assertIsNone(self.notify(now=200000))
+        self.state["notification"]["status"] = "sending"
+        self.assertIsNone(self.notify(now=300000))
+        self.factory.assert_called_once()
+
+    def test_save_failure_prevents_side_effect(self):
+        with self.assertRaises(OSError):
+            self.notify(save=Mock(side_effect=OSError()))
+        self.assertEqual(self.client.call.call_count, 1)
+
+    def test_no_incident_is_noop_and_new_incident_can_notify(self):
+        self.state["blocked"] = ""
+        self.assertIsNone(self.notify())
+        self.factory.assert_not_called()
+        self.state["blocked"] = "captcha_required"
+        self.assertEqual(self.notify(), "sent")
+        self.state["attempts"].append(200000)
+        self.client.call.side_effect = [
+            {"retcode": 0, "data": {"user_id": 111111}},
+            {"retcode": 0, "data": {"message_id": 12346}},
+        ]
+        self.assertEqual(self.notify(now=200010), "sent")
 
 
 if __name__ == "__main__":

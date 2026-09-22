@@ -156,6 +156,8 @@ def run_once(client, state: dict, password, save, now: float) -> str:
         state.update(status=status, checked_at=now)
         if blocked is not None:
             state["blocked"] = blocked
+        if status == "online":
+            state.pop("notification", None)
         save(state)
         return status
 
@@ -204,6 +206,77 @@ def run_once(client, state: dict, password, save, now: float) -> str:
     return finish("login_submitted_not_verified", blocked="attempt_unconfirmed")
 
 
+def notify_manual_required(state, client_factory, *, sender_uin, port, group_id, user_id, save, now):
+    if not state.get("blocked"):
+        return None
+    reason = state["blocked"]
+    incident = f"{reason}:{state['attempts'][-1] if state['attempts'] else 0}"
+    destination = f"{port}:{sender_uin}:{group_id}:{user_id}"
+    previous = state.get("notification", {})
+    if not isinstance(previous, dict):
+        raise LoginError("invalid_notification_state")
+    if previous.get("incident") == incident and previous.get("destination") == destination:
+        if previous.get("status") in {"sending", "sent", "unconfirmed"}:
+            return None
+        if previous.get("retry_at", 0) > now:
+            return None
+    notice = {"incident": incident, "destination": destination, "checked_at": now}
+
+    def record(status):
+        notice["status"] = status
+        state["notification"] = notice
+        save(state)
+        return status
+
+    try:
+        client = client_factory()
+        client.authenticate()
+        if client.online_account() != sender_uin:
+            raise LoginError("notification_sender_mismatch")
+        member = client.call("Debug/call", {"action": "get_group_member_info", "params": {
+            "group_id": int(group_id), "user_id": int(user_id), "no_cache": True,
+        }})
+        if (member.get("retcode") != 0 or not isinstance(member.get("data"), dict)
+                or str(member["data"].get("user_id")) != user_id):
+            raise LoginError("notification_recipient_unverified")
+    except (LoginError, OSError, ValueError, TypeError):
+        notice["retry_at"] = now + 300
+        return record("waiting_for_sender")
+
+    descriptions = {
+        "device_confirmation_required": "高级 QQ 登录需要设备确认，自动登录已暂停，请在手机 QQ 上确认。",
+        "captcha_required": "高级 QQ 登录需要验证码，自动登录已暂停，请打开受保护的 NapCat 登录页完成验证。",
+        "security_confirmation_required": "高级 QQ 被安全验证拦住了，自动登录已暂停，请查看手机 QQ 安全提醒并手动处理。",
+        "different_account_online": "高级的登录实例出现了其他 QQ 账号，自动登录已暂停，请检查，系统不会替你退出那个账号。",
+        "attempt_unconfirmed": "高级 QQ 的登录结果未能确认，已暂停重试，请查看手机 QQ 或 NapCat 登录页。",
+    }
+    message = descriptions.get(reason, "高级 QQ 登录需要人工处理，自动登录已暂停，请检查手机 QQ 和 NapCat 登录页。")
+    # A crash or an ambiguous send receipt must not produce a new @ every minute.
+    record("sending")
+    try:
+        reply = client.call("Debug/call", {"action": "send_group_msg", "params": {
+            "group_id": int(group_id), "message": [
+                {"type": "at", "data": {"qq": user_id}},
+                {"type": "text", "data": {"text": " " + message}},
+            ],
+        }})
+        data = reply.get("data")
+        if (reply.get("retcode") == 0 and isinstance(data, dict)
+                and re.fullmatch(r"-?[0-9]{1,20}", str(data.get("message_id", "")))):
+            notice["message_id"] = str(data["message_id"])
+            return record("sent")
+    except LoginError:
+        pass
+    return record("unconfirmed")
+
+
+def configured_client(path: Path, port: int) -> Client:
+    config = json.loads(path.read_text())
+    if not isinstance(config, dict) or not isinstance(config.get("token"), str) or not config["token"]:
+        raise LoginError("missing_webui_token")
+    return Client(config["token"], port)
+
+
 def init_password(path: Path) -> None:
     if not sys.stdin.isatty():
         raise LoginError("interactive_terminal_required")
@@ -229,6 +302,11 @@ def main() -> None:
     parser.add_argument("--password-file", type=Path)
     parser.add_argument("--state", type=Path)
     parser.add_argument("--rearm", action="store_true", help="Explicitly allow a new attempt; preserves rate limits")
+    parser.add_argument("--notify-config", type=Path)
+    parser.add_argument("--notify-port", type=int)
+    parser.add_argument("--notify-uin")
+    parser.add_argument("--notify-group")
+    parser.add_argument("--notify-user")
     args = parser.parse_args()
     if args.init_password:
         init_password(args.init_password)
@@ -236,6 +314,13 @@ def main() -> None:
     if (not args.config or not args.password_file or not args.state
             or not re.fullmatch(r"[1-9][0-9]{4,19}", args.uin or "") or not 1 <= args.port <= 65535):
         parser.error("Require --config, --password-file, --state, --uin and a valid --port")
+    notification_args = [args.notify_config, args.notify_port, args.notify_uin, args.notify_group, args.notify_user]
+    if any(value is not None for value in notification_args):
+        if (not all(notification_args) or not 1 <= args.notify_port <= 65535
+                or any(not re.fullmatch(r"[1-9][0-9]{4,19}", value or "")
+                       for value in [args.notify_uin, args.notify_group, args.notify_user])
+                or args.notify_uin == args.uin or args.notify_port == args.port):
+            parser.error("Notification requires a separate sender, local port, group and user")
     private_directory(args.state.parent)
     with os.fdopen(private_open(args.state.with_suffix(".lock"), os.O_RDWR | os.O_CREAT), "r+") as lock:
         try:
@@ -249,12 +334,19 @@ def main() -> None:
             save_state(args.state, state)
             print("QQ password login: rearmed; rate limits retained")
             return
-        config = json.loads(args.config.read_text())
-        if not isinstance(config.get("token"), str) or not config["token"]:
-            raise LoginError("missing_webui_token")
-        result = run_once(Client(config["token"], args.port), state,
-                          lambda: read_private(args.password_file),
-                          lambda value: save_state(args.state, value), time.time())
+        save = lambda value: save_state(args.state, value)
+        try:
+            result = run_once(configured_client(args.config, args.port), state,
+                              lambda: read_private(args.password_file), save, time.time())
+        finally:
+            if args.notify_config:
+                notification = notify_manual_required(
+                    state, lambda: configured_client(args.notify_config, args.notify_port),
+                    sender_uin=args.notify_uin, port=args.notify_port,
+                    group_id=args.notify_group, user_id=args.notify_user, save=save, now=time.time(),
+                )
+                if notification:
+                    print("QQ login notification: " + notification)
         print("QQ password login: " + result)
 
 
