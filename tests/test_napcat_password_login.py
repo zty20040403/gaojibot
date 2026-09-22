@@ -17,6 +17,13 @@ spec.loader.exec_module(login)
 
 
 class PasswordLoginTests(unittest.TestCase):
+    def test_readiness_waits_for_local_webui_without_login(self):
+        with patch.object(login.socket, "create_connection", side_effect=ConnectionRefusedError):
+            self.assertFalse(login.webui_ready(6100))
+        with patch.object(login.socket, "create_connection") as connect:
+            self.assertTrue(login.webui_ready(6100))
+            connect.assert_called_once_with(("127.0.0.1", 6100), timeout=2)
+
     def setUp(self):
         self.state = {"schema": 1, "uin": "123456789", "port": 6100, "blocked": "", "attempts": []}
         self.saved = []

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import socket
 import sys
 import tempfile
 import time
@@ -277,6 +278,14 @@ def configured_client(path: Path, port: int) -> Client:
     return Client(config["token"], port)
 
 
+def webui_ready(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 def init_password(path: Path) -> None:
     if not sys.stdin.isatty():
         raise LoginError("interactive_terminal_required")
@@ -298,6 +307,7 @@ def main() -> None:
     parser.add_argument("--init-password", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--port", type=int, default=6100)
+    parser.add_argument("--check-ready", action="store_true", help="Check local WebUI readiness without authentication or login")
     parser.add_argument("--uin")
     parser.add_argument("--password-file", type=Path)
     parser.add_argument("--state", type=Path)
@@ -308,6 +318,10 @@ def main() -> None:
     parser.add_argument("--notify-group")
     parser.add_argument("--notify-user")
     args = parser.parse_args()
+    if args.check_ready:
+        if not 1 <= args.port <= 65535:
+            parser.error("Require a valid --port")
+        raise SystemExit(0 if webui_ready(args.port) else 1)
     if args.init_password:
         init_password(args.init_password)
         return

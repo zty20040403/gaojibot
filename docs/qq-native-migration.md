@@ -32,6 +32,8 @@ systemd at once. Do not manually launch a second client with the same account.
 
 Health recovery and the bounded password-login timer automatically use the
 selected service. A previous CAPTCHA/security latch is intentionally retained.
+The password-login unit skips a tick while the local WebUI port is not yet
+listening, rather than reporting an expected startup delay as a service failure.
 Changing software versions does not bypass account verification or guarantee
 continuous login.
 

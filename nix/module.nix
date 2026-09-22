@@ -787,7 +787,10 @@ in {
       after = ["${napcatServiceName}.service"];
       serviceConfig = {
         Type = "oneshot";
-        ExecCondition = "${pkgs.systemd}/bin/systemctl is-active --quiet ${napcatServiceName}.service";
+        ExecCondition = [
+          "${pkgs.systemd}/bin/systemctl is-active --quiet ${napcatServiceName}.service"
+          "${pkgs.python3}/bin/python3 ${./napcat-password-login.py} --check-ready --port ${toString cfg.napcat.webuiPort}"
+        ];
         ExecStart = lib.concatStringsSep " " ([
           "${pkgs.python3}/bin/python3" "${./napcat-password-login.py}"
           "--config" (lib.escapeShellArg "${cfg.napcat.dataDirectory}/config/webui.json")
