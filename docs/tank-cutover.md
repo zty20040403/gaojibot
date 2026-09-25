@@ -20,12 +20,19 @@ cutover was `d9df721`, with bot revision `4149bc5`.
   writable by the bot user.
 - A disposable KVM guest was created, executed `id && pwd` as its unprivileged
   sandbox user, and was destroyed with no remaining test domain or directory.
+- A real group message in group 611798505 reached the tank bot through h610
+  NapCat. The bot answered that its process runs on tank; turn 1717 succeeded,
+  and delivery 3752 was committed once with QQ message ID 2032948770.
+- A second disposable tank KVM guest generated a PDF with the Chinese title
+  `tank 迁移验收`. The host read back 2,412 bytes with a PDF header and EOF
+  marker, then destroyed the guest and verified its domain and directory were
+  gone. This checks sandbox artifact creation, not QQ file delivery.
 
 The following still require a real QQ task and delivery receipt before the
-entire migration is considered accepted: a group question and model answer,
-file/PDF delivery, durable task replay, and confirmation that the outbound
-queue neither drops nor duplicates messages. An accepted WebSocket and HTTP
-200 alone do not prove those workflows.
+entire migration is considered accepted: file/PDF delivery, durable task
+replay, and confirmation that the outbound queue neither drops nor duplicates
+messages for that workflow. A successful group answer and HTTP 200 alone do
+not prove file delivery.
 
 ## Preparation procedure for a future cutover
 
