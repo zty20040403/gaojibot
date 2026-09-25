@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from pathlib import PurePosixPath
 from typing import Any, Iterator, Literal
 
 from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
@@ -2933,6 +2934,21 @@ class SubAgentCoordinator:
                         )
                     result = _normalize_worker_scope_result(_parse_worker_result(answer))
                     result = separate_cluster_artifacts(result, allowed_evidence())
+                    contract = task.plan.get("contract")
+                    delivery_required = (
+                        bool(contract.get("delivery_required"))
+                        if isinstance(contract, Mapping)
+                        else bool(_DELIVERY_REQUEST_PATTERN.search(task.objective))
+                    )
+                    if delivery_required and not result.get("artifacts"):
+                        recovered = _single_observed_artifact(
+                            allowed_evidence(), run.run_id, task.objective,
+                        )
+                        if recovered is not None:
+                            result["artifacts"] = [recovered]
+                            self.store.append_event(task.task_id, "artifact.recovered", {
+                                "run_id": run.run_id, "handle": recovered["handle"],
+                            }, run_id=run.run_id)
             if review_only and correction_checkpoint is None:
                 result = separate_review_artifacts(result, {
                     key: upstream[key] for key in step.dependencies if key in upstream
@@ -3716,6 +3732,47 @@ def _delivery_outcomes(
     # A publish-only leaf must not make us upload both the draft and its validated successor.
     superseded = set().union(*(ancestors(outcome.step.key) for outcome in with_artifacts))
     return [outcome for outcome in with_artifacts if canonical(outcome.step.key) not in superseded]
+
+
+def _single_observed_artifact(
+    evidence: Sequence[Mapping[str, Any]], run_id: int, objective: str,
+) -> dict[str, str] | None:
+    """Recover an unreported deliverable only when host observations are unambiguous."""
+    deliverable_suffixes = frozenset({
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".csv", ".zip", ".tar", ".gz", ".7z",
+    })
+    expected_suffix = ".pdf" if re.search(r"\bpdf\b", objective, re.I) else None
+    candidates: set[tuple[str, str]] = set()
+    for item in evidence:
+        if item.get("run_id") != run_id or item.get("tool_name") != "sandbox_exec":
+            continue
+        arguments = item.get("arguments")
+        payload = item.get("payload")
+        if not isinstance(arguments, Mapping) or not isinstance(payload, Mapping):
+            continue
+        sandbox_id = str(arguments.get("sandbox_id") or "")
+        if not re.fullmatch(r"s[0-9a-f]{6}", sandbox_id):
+            continue
+        manifest = payload.get("observed_manifest")
+        paths = manifest.get("changed_workspace_paths") if isinstance(manifest, Mapping) else None
+        if not isinstance(paths, list):
+            continue
+        for raw_path in paths:
+            if not isinstance(raw_path, str):
+                continue
+            path = PurePosixPath(raw_path)
+            if path.is_absolute() or ".." in path.parts or path.parts[:1] == ("upstream",):
+                continue
+            if path.suffix.lower() not in deliverable_suffixes:
+                continue
+            if expected_suffix and path.suffix.lower() != expected_suffix:
+                continue
+            candidates.add((sandbox_id, f"/workspace/{path}"))
+    if len(candidates) != 1:
+        return None
+    sandbox_id, path = candidates.pop()
+    return {"handle": f"{sandbox_id}:{path}", "kind": "file", "name": PurePosixPath(path).name}
 
 
 def _is_retryable_worker_exception(exc: BaseException) -> bool:

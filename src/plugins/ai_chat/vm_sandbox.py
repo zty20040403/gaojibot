@@ -478,7 +478,13 @@ runcmd:
             )
             self._active_execs[activity_id] = activity
             started_at = time.monotonic()
+            marker = f"/tmp/gaoji-exec-{activity_id}"
+            marker_ready = False
             try:
+                marker_code, _, _ = await self._guest_exec(
+                    sandbox_id, "/usr/bin/touch", [marker], timeout=10,
+                )
+                marker_ready = marker_code == 0
                 code, out, err = await self._guest_exec(
                     sandbox_id, "/usr/sbin/runuser", [
                         "-u", "sandbox", "--", "/usr/bin/timeout", "--signal=TERM",
@@ -490,6 +496,23 @@ runcmd:
                     **{**activity.__dict__, "status": "completed" if code == 0 else "failed",
                        "finished_at": int(time.time()), "returncode": code},
                 )
+                changed_paths: tuple[str, ...] = ()
+                if marker_ready:
+                    try:
+                        scan_code, scan_out, _ = await self._guest_exec(
+                            sandbox_id, "/usr/bin/find", [
+                                "/workspace", "-xdev", "-type", "f", "-newer", marker,
+                                "-print",
+                            ], timeout=20,
+                        )
+                        if scan_code == 0:
+                            changed_paths = tuple(
+                                path.removeprefix("/workspace/")[:500]
+                                for path in scan_out.decode(errors="replace").splitlines()
+                                if path.startswith("/workspace/")
+                            )[:200]
+                    except SandboxError:
+                        pass
                 return SandboxResult(
                     stdout=out.decode(errors="replace")[:self.max_output_chars],
                     stderr=err.decode(errors="replace")[:self.max_output_chars],
@@ -499,10 +522,17 @@ runcmd:
                         duration_ms=max(int((time.monotonic() - started_at) * 1000), 0),
                         stdout_sha256=hashlib.sha256(out).hexdigest(), stdout_bytes=len(out),
                         stderr_sha256=hashlib.sha256(err).hexdigest(), stderr_bytes=len(err),
-                        changed_workspace_paths=(), container_diff=(), network_mode="user-nat",
+                        changed_workspace_paths=changed_paths, container_diff=(), network_mode="user-nat",
                     ),
                 )
             finally:
+                if marker_ready:
+                    try:
+                        await self._guest_exec(
+                            sandbox_id, "/usr/bin/rm", ["-f", marker], timeout=10,
+                        )
+                    except SandboxError:
+                        pass
                 self._active_execs.pop(activity_id, None)
 
     async def _guest_file(self, sandbox_id: str, method: str, arguments: dict[str, object]) -> object:
