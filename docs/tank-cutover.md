@@ -26,6 +26,15 @@ path have passed acceptance.
 5. Confirm the tank PostgreSQL node is healthy and caught up with h610. Check
    current primary, replication lag, latest successful backup and restore
    check. Do not switch roles while replication is behind or backup is bad.
+   Both hosts publish a non-secret summary at
+   `/run/qq-bot-postgres-health/health.json`; require fresh `healthy` results
+   with h610 `primary` and tank `secondary` before the switch. This file does
+   **not** measure WAL lag. Query both database nodes for receive/replay LSN
+   and verify catch-up separately. Check the latest successful
+   `qq-bot-postgres-backup.service` and
+   `qq-bot-postgres-restore-check.service` runs on tank, plus the actual
+   restore-check marker under `/data/backup/postgresql/qq-bot-ha`. A green
+   systemd unit alone is not evidence that the newest backup was restored.
 
 ## Maintenance window
 
@@ -40,6 +49,8 @@ path have passed acceptance.
    while h610 is a healthy secondary. Nix option values alone do not change
    an already registered node's live priority. Bot DSN must list tank first,
    h610 second, with `target_session_attrs=read-write`.
+   Re-read both health summaries and query the database nodes directly after
+   the switchover; do not infer success from `systemctl is-active`.
 4. Prepare one cutover revision: tank bot enabled with its QQ transport
    disabled, h610 bot disabled (`runBot = false`) while NapCat stays enabled,
    and h610 NapCat WebSocket/admin proxy pointed at tank's Tailscale address.
