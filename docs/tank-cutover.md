@@ -27,12 +27,17 @@ cutover was `d9df721`, with bot revision `4149bc5`.
   `tank 迁移验收`. The host read back 2,412 bytes with a PDF header and EOF
   marker, then destroyed the guest and verified its domain and directory were
   gone. This checks sandbox artifact creation, not QQ file delivery.
+- On tank's PostgreSQL 17 HA node, the two `test_file_outbox_process_loss`
+  tests passed in a separate disposable database. They cover recovery after
+  database unavailability and process death at each file-delivery boundary,
+  with a simulated QQ receipt. The test database and temporary files were
+  removed afterward; this does not replace a live QQ receipt.
 
 The following still require a real QQ task and delivery receipt before the
 entire migration is considered accepted: file/PDF delivery, durable task
-replay, and confirmation that the outbound queue neither drops nor duplicates
-messages for that workflow. A successful group answer and HTTP 200 alone do
-not prove file delivery.
+replay in the running service, and confirmation from a real QQ receipt that
+the outbound queue neither drops nor duplicates that file. Passing isolated
+recovery tests and a successful group answer do not prove live file delivery.
 
 ## Preparation procedure for a future cutover
 
