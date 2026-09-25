@@ -1,7 +1,7 @@
 # KVM sandbox backend
 
 The bot can use isolated Debian virtual machines for code and file tasks. The
-default sandbox backend remains OCI. Switching to VMs is explicit:
+default sandbox backend remains OCI; production tank explicitly enables VMs:
 
 ```nix
 services.gaoji.sandbox = {
@@ -34,14 +34,15 @@ error is returned. On restart, a missing libvirt domain is redefined from the
 saved XML and its disk is reused. A failed or undelivered task must not have its
 VM disk reclaimed.
 
-The disposable test on tank has verified creation, command execution, file
+The pre-cutover disposable test on tank verified creation, command execution, file
 write/read, read-only handoff, ZIP export, filesystem-frozen stop, removal of
 the libvirt domain, redefinition, restart and persisted file readback. The test
 VM and temporary source files were removed. This does **not** verify the bot's
 systemd service, QQ delivery, or production database migration.
 
 The guest uses QEMU user-mode networking and can make outbound connections.
-It is not a network-isolated security boundary. The Nix module does not enable
-VM mode for tank by default; keep the established Podman backend during the
-initial bot/database migration, then enable VM mode in a separate change after
-systemd-level and QQ file-delivery acceptance.
+It is not a network-isolated security boundary. Tank enabled VM mode during
+the cutover after its Podman image loader failed. A post-cutover disposable
+guest was created and destroyed as the bot's Unix user, and executed a command
+inside the guest. Running-service QQ file delivery remains an acceptance gate;
+this Unix-user smoke test does not prove the full systemd and QQ path.

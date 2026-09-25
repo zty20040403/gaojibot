@@ -1,12 +1,33 @@
 # Gaoji tank cutover
 
-This is a gated production runbook, not a claim that the migration has run.
-The current bot and NapCat remain on h610. Tank is a PostgreSQL secondary and
-the staged tank bot is disabled. Keep the existing OCI sandbox for the first
-cutover; enable the KVM backend only after the bot, database and file-delivery
-path have passed acceptance.
+This records the production cutover performed on 2026-09-26 (HKT) and the
+remaining acceptance gates. The bot runs on tank; the only QQ/NapCat process
+remains on h610. Tank is the PostgreSQL primary and h610 is its secondary.
+Tank uses the KVM sandbox backend, not Podman. The active Nix revision at
+cutover was `d9df721`, with bot revision `4149bc5`.
 
-## Prepare without interrupting service
+## Verified after cutover
+
+- h610 has no active `gaoji.service`; tank has one active bot process. The
+  OneBot reverse WebSocket connected from h610 to tank, and tank received QQ
+  notice events after the user reauthenticated QQ.
+- Direct SQL and the pg_auto_failover monitor agreed: tank was writable
+  primary with priority 100; h610 was healthy secondary with priority 50.
+  Both nodes loaded HBA rules allowing the tank bot client, and PostgreSQL
+  reported no HBA parse errors.
+- Tank's bot started its PostgreSQL and durable workers. The admin endpoint
+  and `/metrics` returned HTTP 200; the media, archive and VM roots were
+  writable by the bot user.
+- A disposable KVM guest was created, executed `id && pwd` as its unprivileged
+  sandbox user, and was destroyed with no remaining test domain or directory.
+
+The following still require a real QQ task and delivery receipt before the
+entire migration is considered accepted: a group question and model answer,
+file/PDF delivery, durable task replay, and confirmation that the outbound
+queue neither drops nor duplicates messages. An accepted WebSocket and HTTP
+200 alone do not prove those workflows.
+
+## Preparation procedure for a future cutover
 
 1. Fetch both Git origins and compare with local branches before merging. Do
    not rebuild either shared host from an older nix-config revision. Pin the
@@ -36,7 +57,7 @@ path have passed acceptance.
    restore-check marker under `/data/backup/postgresql/qq-bot-ha`. A green
    systemd unit alone is not evidence that the newest backup was restored.
 
-## Maintenance window
+## Cutover procedure (performed)
 
 1. Stop **only** the h610 `gaoji.service`. Leave h610 NapCat, PostgreSQL,
    Max and other users' services untouched. Record the last processed QQ
@@ -61,19 +82,23 @@ path have passed acceptance.
 5. Verify a group reply, a file/PDF delivery receipt, unfinished task replay,
    admin login, model request, metrics and database writes. Confirm the
    delivery queue is not dropping or duplicating messages. Check tank storage
-   and PostgreSQL replication again after real traffic.
+   and PostgreSQL replication again after real traffic. These end-to-end
+   gates remain open as described above.
 
 ## Rollback
 
-If tank bot startup or QQ delivery fails, stop tank bot before restarting
-h610 bot. Restore NapCat's h610 WebSocket endpoint and the admin proxy. Do not
-flip PostgreSQL back blindly: inspect which node has accepted writes and
-ensure the would-be new primary has caught up before a second switchover.
+If tank bot startup or QQ delivery fails, stop tank bot before restoring the
+older h610 configuration that contains `gaoji.service`; the current h610
+generation deliberately omits that unit, so `systemctl start gaoji` alone
+cannot restore it. Restore NapCat's h610 WebSocket endpoint and the admin
+proxy. Do not flip PostgreSQL back blindly: inspect which node has accepted
+writes and ensure the would-be new primary has caught up before a second
+switchover.
 Preserve tank state, failed deliveries and logs for reconciliation; never run
 both bot instances against one QQ session. Changes to shared services must be
 scoped to Gaoji and PostgreSQL's planned role change.
 
-The optional KVM sandbox is a separate rollout. Its VM disks belong on
-`/data/services/gaoji/vms`, not the tank system partition. Before enabling it
-for QQ tasks, validate libvirt from the actual systemd service identity and
-repeat file-delivery acceptance with one disposable VM.
+KVM is enabled on tank and its VM disks belong on `/data/services/gaoji/vms`,
+not the tank system partition. Creation, execution and destruction were
+verified as the bot's Unix user, but QQ file-delivery acceptance through the
+running service is still required.
