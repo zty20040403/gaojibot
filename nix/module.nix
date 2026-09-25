@@ -11,6 +11,8 @@
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
   defaultSandboxImage = self.packages.${pkgs.stdenv.hostPlatform.system}.sandbox-image;
   sandboxUsesDocker = cfg.sandbox.backend == "docker";
+  sandboxUsesPodman = cfg.sandbox.backend == "podman";
+  sandboxUsesVm = cfg.sandbox.backend == "vm";
   sandboxCli =
     if sandboxUsesDocker
     then pkgs.docker
@@ -245,9 +247,21 @@ in {
     };
 
     sandbox.backend = lib.mkOption {
-      type = lib.types.enum ["docker" "podman"];
+      type = lib.types.enum ["docker" "podman" "vm"];
       default = "docker";
-      description = "OCI runtime for the existing advanced sandbox; Podman runs rootless without a Docker daemon.";
+      description = "Sandbox runtime: Docker, rootless Podman, or KVM virtual machines.";
+    };
+
+    sandbox.vmImage = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      description = "Pinned Debian genericcloud QCOW2 image used as the KVM sandbox backing disk.";
+    };
+
+    sandbox.vmRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${statePath}/vms";
+      description = "Persistent root for per-task VM disks and metadata.";
     };
 
     sandbox.imageArchive = lib.mkOption {
@@ -470,6 +484,14 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = !(cfg.sandbox.enable && sandboxUsesVm) || (
+          cfg.sandbox.vmImage != null
+          && lib.hasPrefix "/" cfg.sandbox.vmRoot
+          && !(lib.hasPrefix "/nix/store/" cfg.sandbox.vmRoot)
+        );
+        message = "KVM sandboxes require a pinned vmImage and a persistent absolute vmRoot outside the Nix store";
+      }
+      {
         assertion = !(cfg.napcat.enable && nativeNapcat) || (
           cfg.napcat.nativePackage != null
           && lib.hasPrefix "/var/lib/" cfg.napcat.dataDirectory
@@ -521,7 +543,8 @@ in {
     networking.firewall.allowedTCPPorts = lib.optionals cfg.openFirewall [cfg.port];
 
     virtualisation.docker.enable = lib.mkDefault ((cfg.sandbox.enable && sandboxUsesDocker) || (cfg.napcat.enable && !nativeNapcat));
-    virtualisation.podman.enable = lib.mkDefault (cfg.sandbox.enable && !sandboxUsesDocker);
+    virtualisation.podman.enable = lib.mkDefault (cfg.sandbox.enable && sandboxUsesPodman);
+    virtualisation.libvirtd.enable = lib.mkDefault (cfg.sandbox.enable && sandboxUsesVm);
 
     systemd.services.${serviceName} = lib.mkIf cfg.runBot {
       description = "gaoji multi-model bot";
@@ -529,18 +552,19 @@ in {
       wants =
         ["network-online.target"]
         ++ lib.optional (cfg.cluster.enable && cfg.cluster.localControlService) "gaoji-cluster-control.service";
-      requires = lib.optionals cfg.sandbox.enable [
+      requires = lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
         "${serviceName}-sandbox-image.service"
       ];
       after =
         ["network-online.target"]
         ++ lib.optional (cfg.cluster.enable && cfg.cluster.localControlService) "gaoji-cluster-control.service"
-        ++ lib.optionals cfg.sandbox.enable [
+        ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
           "${serviceName}-sandbox-image.service"
         ];
       path =
         cfg.runtimePackages
-        ++ lib.optionals cfg.sandbox.enable [sandboxCli]
+        ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [sandboxCli]
+        ++ lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [pkgs.libvirt pkgs.qemu pkgs.cloud-utils]
         ++ lib.optionals cfg.browser.enable [cfg.browser.package]
         ++ lib.optionals cfg.codesnap.enable [cfg.codesnap.package]
         ++ lib.optionals cfg.videoDeep.enable [
@@ -553,14 +577,20 @@ in {
           AI_STATE_DIR = "${statePath}/state";
           AI_CACHE_DIR = cachePath;
           AI_SANDBOX_ENABLED = boolString cfg.sandbox.enable;
+          AI_SANDBOX_BACKEND = if sandboxUsesVm then "vm" else "oci";
           AI_SANDBOX_IMAGE = cfg.sandbox.imageName;
           AI_SANDBOX_NIX_CACHE_VOLUME = cfg.sandbox.nixCacheVolume;
           HOST = cfg.host;
           PORT = toString cfg.port;
           PYTHONUNBUFFERED = "1";
         }
-        // lib.optionalAttrs (cfg.sandbox.enable && !sandboxUsesDocker) {
+        // lib.optionalAttrs (cfg.sandbox.enable && sandboxUsesPodman) {
           XDG_RUNTIME_DIR = "${statePath}/podman-runtime";
+        }
+        // lib.optionalAttrs (cfg.sandbox.enable && sandboxUsesVm) {
+          XDG_RUNTIME_DIR = "${statePath}/vm-runtime";
+          AI_SANDBOX_VM_IMAGE = toString cfg.sandbox.vmImage;
+          AI_SANDBOX_VM_ROOT = cfg.sandbox.vmRoot;
         }
         // lib.optionalAttrs (cfg.admin.secretFile != null) {
           AI_ADMIN_SECRET_FILE = "/run/credentials/${serviceName}.service/admin-authorization-key";
@@ -612,7 +642,8 @@ in {
           Type = "simple";
           User = cfg.user;
           Group = cfg.group;
-          SupplementaryGroups = lib.optional (cfg.sandbox.enable && sandboxUsesDocker) "docker";
+          SupplementaryGroups = lib.optional (cfg.sandbox.enable && sandboxUsesDocker) "docker"
+            ++ lib.optional (cfg.sandbox.enable && sandboxUsesVm) "kvm";
           StateDirectory = cfg.stateDirectory;
           CacheDirectory = cfg.cacheDirectory;
           WorkingDirectory = "${cfg.package}/share/gaoji";
@@ -642,7 +673,7 @@ in {
         };
     };
 
-    systemd.services."${serviceName}-sandbox-image" = lib.mkIf (cfg.runBot && cfg.sandbox.enable) {
+    systemd.services."${serviceName}-sandbox-image" = lib.mkIf (cfg.runBot && cfg.sandbox.enable && !sandboxUsesVm) {
       description = "Load the gaoji advanced sandbox image";
       wantedBy = ["multi-user.target"];
       requires = lib.optional sandboxUsesDocker "docker.service";
@@ -707,7 +738,7 @@ in {
       };
     };
 
-    systemd.services."${serviceName}-sandbox-nix-gc" = lib.mkIf (cfg.runBot && cfg.sandbox.enable) {
+    systemd.services."${serviceName}-sandbox-nix-gc" = lib.mkIf (cfg.runBot && cfg.sandbox.enable && !sandboxUsesVm) {
       description = "Collect expired gaoji on-demand Nix packages";
       requires = lib.optional sandboxUsesDocker "docker.service" ++ ["${serviceName}-sandbox-image.service"];
       after = lib.optional sandboxUsesDocker "docker.service" ++ ["${serviceName}-sandbox-image.service"];
@@ -750,7 +781,7 @@ in {
       };
     };
 
-    systemd.timers."${serviceName}-sandbox-nix-gc" = lib.mkIf (cfg.runBot && cfg.sandbox.enable) {
+    systemd.timers."${serviceName}-sandbox-nix-gc" = lib.mkIf (cfg.runBot && cfg.sandbox.enable && !sandboxUsesVm) {
       description = "Schedule gaoji sandbox Nix cache collection";
       wantedBy = ["timers.target"];
       timerConfig = {
@@ -877,9 +908,14 @@ in {
     };
 
     systemd.tmpfiles.rules =
-      lib.optionals (cfg.sandbox.enable && !sandboxUsesDocker) [
+      lib.optionals (cfg.sandbox.enable && sandboxUsesPodman) [
         "d ${statePath} 0700 ${cfg.user} ${cfg.group} -"
         "d ${statePath}/podman-runtime 0700 ${cfg.user} ${cfg.group} -"
+      ]
+      ++ lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [
+        "d ${statePath} 0700 ${cfg.user} ${cfg.group} -"
+        "d ${statePath}/vm-runtime 0700 ${cfg.user} ${cfg.group} -"
+        "d ${cfg.sandbox.vmRoot} 0700 ${cfg.user} ${cfg.group} -"
       ]
       ++ lib.optionals cfg.napcat.enable [
         "d ${cfg.napcat.dataDirectory} 0700 ${napcatOwner} ${napcatOwner} -"

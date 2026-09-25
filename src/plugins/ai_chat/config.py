@@ -304,7 +304,10 @@ class Settings:
     codesnap_timeout_seconds: int
     codesnap_cache_entries: int
     sandbox_enabled: bool
+    sandbox_backend: str
     sandbox_image: str
+    sandbox_vm_image: str
+    sandbox_vm_root: str
     sandbox_nix_cache_volume: str
     sandbox_allowed_users: set[int]
     sandbox_max_per_user: int
@@ -922,7 +925,10 @@ class Settings:
                 max(_get_int("AI_CODESNAP_CACHE_ENTRIES", 256), 16), 2048
             ),
             sandbox_enabled=_get_bool("AI_SANDBOX_ENABLED", False),
+            sandbox_backend=os.getenv("AI_SANDBOX_BACKEND", "oci").strip().lower(),
             sandbox_image=os.getenv("AI_SANDBOX_IMAGE", "").strip(),
+            sandbox_vm_image=os.getenv("AI_SANDBOX_VM_IMAGE", "").strip(),
+            sandbox_vm_root=os.getenv("AI_SANDBOX_VM_ROOT", "").strip(),
             sandbox_nix_cache_volume=(
                 os.getenv("AI_SANDBOX_NIX_CACHE_VOLUME", "gaoji-nix-v2").strip()
                 or "gaoji-nix-v2"

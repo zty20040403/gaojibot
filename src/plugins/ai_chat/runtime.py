@@ -53,6 +53,7 @@ from .pins import PinStore
 from .quota import UsageStore
 from .reminders import ReminderStore
 from .sandbox import DockerSandboxManager
+from .vm_sandbox import VmSandboxManager
 from .self_source import SelfSource
 from .semantic_recall import (
     EmbeddingClient,
@@ -120,7 +121,7 @@ class AppContext:
     recent_images: RecentImageStore
     recent_voices: RecentVoiceStore
     recent_videos: RecentVideoStore
-    sandbox_manager: DockerSandboxManager
+    sandbox_manager: DockerSandboxManager | VmSandboxManager
     bridge_router: MirrorRouter
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None
@@ -708,14 +709,28 @@ def build_app_context(
             warning=logger.warning,
         )
 
-    sandbox_manager = DockerSandboxManager(
-        image=settings.sandbox_image,
-        max_per_owner=settings.sandbox_max_per_user,
-        max_total=settings.sandbox_max_total,
-        default_timeout_seconds=settings.sandbox_timeout_seconds,
-        max_file_bytes=settings.sandbox_max_file_bytes,
-        nix_cache_volume=settings.sandbox_nix_cache_volume,
-    )
+    if settings.sandbox_backend == "vm":
+        if not settings.sandbox_vm_image or not settings.sandbox_vm_root:
+            raise RuntimeError("VM sandbox requires AI_SANDBOX_VM_IMAGE and AI_SANDBOX_VM_ROOT")
+        sandbox_manager = VmSandboxManager(
+            image=settings.sandbox_vm_image,
+            root=settings.sandbox_vm_root,
+            max_per_owner=settings.sandbox_max_per_user,
+            max_total=settings.sandbox_max_total,
+            default_timeout_seconds=settings.sandbox_timeout_seconds,
+            max_file_bytes=settings.sandbox_max_file_bytes,
+        )
+    elif settings.sandbox_backend == "oci":
+        sandbox_manager = DockerSandboxManager(
+            image=settings.sandbox_image,
+            max_per_owner=settings.sandbox_max_per_user,
+            max_total=settings.sandbox_max_total,
+            default_timeout_seconds=settings.sandbox_timeout_seconds,
+            max_file_bytes=settings.sandbox_max_file_bytes,
+            nix_cache_volume=settings.sandbox_nix_cache_volume,
+        )
+    else:
+        raise RuntimeError(f"Unsupported sandbox backend: {settings.sandbox_backend}")
 
     job_store: DurableJobStore | None = None
     job_worker: DurableJobWorker | None = None

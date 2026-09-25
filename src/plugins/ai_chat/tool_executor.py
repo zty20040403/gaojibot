@@ -34,6 +34,7 @@ from nonebot.exception import (
 )
 from .agent_tools import (
     AGENT_TOOL_PROMPT,
+    VM_AGENT_TOOL_PROMPT,
     AgentToolExecutor,
 )
 from .ai_tools import (
@@ -507,6 +508,7 @@ class ToolExecutor(HandlerService):
                 )
 
         tools = available_tools(
+            sandbox_backend=self.context.settings.sandbox_backend,
             include_web_search=(
                 self.context.settings.search_enabled
                 and (force_search or self.context.settings.search_auto_enabled)
@@ -2391,7 +2393,11 @@ class ToolExecutor(HandlerService):
                 )
             agent_tool_context = ""
             if sandbox_tools_enabled:
-                agent_tool_context = AGENT_TOOL_PROMPT
+                agent_tool_context = (
+                    VM_AGENT_TOOL_PROMPT
+                    if self.context.settings.sandbox_backend == "vm"
+                    else AGENT_TOOL_PROMPT
+                )
                 replied_message_id = reply_message_id(event.original_message)
                 if replied_message_id is not None:
                     canonical_reply_id: int | None = None
