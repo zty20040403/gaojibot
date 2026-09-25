@@ -10,6 +10,13 @@
   cachePath = "/var/cache/${cfg.cacheDirectory}";
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
   defaultSandboxImage = self.packages.${pkgs.stdenv.hostPlatform.system}.sandbox-image;
+  sandboxUsesDocker = cfg.sandbox.backend == "docker";
+  sandboxCli =
+    if sandboxUsesDocker
+    then pkgs.docker
+    else pkgs.writeShellScriptBin "docker" ''
+      exec ${pkgs.podman}/bin/podman "$@"
+    '';
   codesnapFonts = pkgs.runCommand "qq-bot-codesnap-fonts" {} ''
     mkdir -p "$out/share/fonts"
     cp ${pkgs.sarasa-gothic}/share/fonts/truetype/Sarasa-Regular.ttc \
@@ -84,6 +91,12 @@ in {
 
   options.services.gaoji = {
     enable = lib.mkEnableOption "the gaoji multi-model bot";
+
+    runBot = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Run the bot process on this host; disable to keep only a local QQ transport during a single-active migration.";
+    };
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -228,7 +241,13 @@ in {
     sandbox.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Allow the bot to create Docker-backed execution sandboxes.";
+      description = "Allow the bot to create OCI execution sandboxes.";
+    };
+
+    sandbox.backend = lib.mkOption {
+      type = lib.types.enum ["docker" "podman"];
+      default = "docker";
+      description = "OCI runtime for the existing advanced sandbox; Podman runs rootless without a Docker daemon.";
     };
 
     sandbox.imageArchive = lib.mkOption {
@@ -501,9 +520,10 @@ in {
 
     networking.firewall.allowedTCPPorts = lib.optionals cfg.openFirewall [cfg.port];
 
-    virtualisation.docker.enable = lib.mkDefault (cfg.sandbox.enable || (cfg.napcat.enable && !nativeNapcat));
+    virtualisation.docker.enable = lib.mkDefault ((cfg.sandbox.enable && sandboxUsesDocker) || (cfg.napcat.enable && !nativeNapcat));
+    virtualisation.podman.enable = lib.mkDefault (cfg.sandbox.enable && !sandboxUsesDocker);
 
-    systemd.services.${serviceName} = {
+    systemd.services.${serviceName} = lib.mkIf cfg.runBot {
       description = "gaoji multi-model bot";
       wantedBy = ["multi-user.target"];
       wants =
@@ -520,7 +540,7 @@ in {
         ];
       path =
         cfg.runtimePackages
-        ++ lib.optionals cfg.sandbox.enable [pkgs.docker]
+        ++ lib.optionals cfg.sandbox.enable [sandboxCli]
         ++ lib.optionals cfg.browser.enable [cfg.browser.package]
         ++ lib.optionals cfg.codesnap.enable [cfg.codesnap.package]
         ++ lib.optionals cfg.videoDeep.enable [
@@ -538,6 +558,9 @@ in {
           HOST = cfg.host;
           PORT = toString cfg.port;
           PYTHONUNBUFFERED = "1";
+        }
+        // lib.optionalAttrs (cfg.sandbox.enable && !sandboxUsesDocker) {
+          XDG_RUNTIME_DIR = "${statePath}/podman-runtime";
         }
         // lib.optionalAttrs (cfg.admin.secretFile != null) {
           AI_ADMIN_SECRET_FILE = "/run/credentials/${serviceName}.service/admin-authorization-key";
@@ -589,7 +612,7 @@ in {
           Type = "simple";
           User = cfg.user;
           Group = cfg.group;
-          SupplementaryGroups = lib.optional cfg.sandbox.enable "docker";
+          SupplementaryGroups = lib.optional (cfg.sandbox.enable && sandboxUsesDocker) "docker";
           StateDirectory = cfg.stateDirectory;
           CacheDirectory = cfg.cacheDirectory;
           WorkingDirectory = "${cfg.package}/share/gaoji";
@@ -619,21 +642,26 @@ in {
         };
     };
 
-    systemd.services."${serviceName}-sandbox-image" = lib.mkIf cfg.sandbox.enable {
+    systemd.services."${serviceName}-sandbox-image" = lib.mkIf (cfg.runBot && cfg.sandbox.enable) {
       description = "Load the gaoji advanced sandbox image";
       wantedBy = ["multi-user.target"];
-      requires = ["docker.service"];
-      after = ["docker.service"];
+      requires = lib.optional sandboxUsesDocker "docker.service";
+      after = lib.optional sandboxUsesDocker "docker.service";
+      path = [sandboxCli];
+      environment = lib.optionalAttrs (!sandboxUsesDocker) {
+        HOME = statePath;
+        XDG_RUNTIME_DIR = "${statePath}/podman-runtime";
+      };
       script = ''
         set -euo pipefail
-        ${pkgs.docker}/bin/docker load --input ${cfg.sandbox.imageArchive}
+        ${sandboxCli}/bin/docker load --input ${cfg.sandbox.imageArchive}
         image=${lib.escapeShellArg cfg.sandbox.imageName}
-        image_id=$(${pkgs.docker}/bin/docker image inspect --format '{{.Id}}' "$image")
+        image_id=$(${sandboxCli}/bin/docker image inspect --format '{{.Id}}' "$image")
 
         volume=${lib.escapeShellArg cfg.sandbox.nixCacheVolume}
-        ${pkgs.docker}/bin/docker volume create \
+        ${sandboxCli}/bin/docker volume create \
           --label io.gaoji.nix-cache=true "$volume" >/dev/null
-        ${pkgs.docker}/bin/docker run --rm \
+        ${sandboxCli}/bin/docker run --rm \
           --pull=never \
           --network none \
           --user 0:0 \
@@ -650,7 +678,7 @@ in {
           gaoji-cache-seed
 
         # Loading an image must never collect images; verify the task path last.
-        ${pkgs.docker}/bin/docker run --rm -i \
+        ${sandboxCli}/bin/docker run --rm -i \
           --pull=never \
           --network none \
           --user 1000:1000 \
@@ -666,21 +694,30 @@ in {
           --tmpfs /workspace:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=700 \
           --mount type=volume,source="$volume",target=/nix,readonly \
           "$image" python - < ${./sandbox-smoke.py}
-        test "$(${pkgs.docker}/bin/docker image inspect --format '{{.Id}}' "$image")" = "$image_id"
+        test "$(${sandboxCli}/bin/docker image inspect --format '{{.Id}}' "$image")" = "$image_id"
       '';
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
         TimeoutStartSec = "15min";
+      } // lib.optionalAttrs (!sandboxUsesDocker) {
+        User = cfg.user;
+        Group = cfg.group;
+        StateDirectory = cfg.stateDirectory;
       };
     };
 
-    systemd.services."${serviceName}-sandbox-nix-gc" = lib.mkIf cfg.sandbox.enable {
+    systemd.services."${serviceName}-sandbox-nix-gc" = lib.mkIf (cfg.runBot && cfg.sandbox.enable) {
       description = "Collect expired gaoji on-demand Nix packages";
-      requires = ["docker.service" "${serviceName}-sandbox-image.service"];
-      after = ["docker.service" "${serviceName}-sandbox-image.service"];
+      requires = lib.optional sandboxUsesDocker "docker.service" ++ ["${serviceName}-sandbox-image.service"];
+      after = lib.optional sandboxUsesDocker "docker.service" ++ ["${serviceName}-sandbox-image.service"];
+      path = [sandboxCli];
+      environment = lib.optionalAttrs (!sandboxUsesDocker) {
+        HOME = statePath;
+        XDG_RUNTIME_DIR = "${statePath}/podman-runtime";
+      };
       script = ''
-        ${pkgs.docker}/bin/docker run --rm \
+        ${sandboxCli}/bin/docker run --rm \
           --pull=never \
           --network none \
           --user 0:0 \
@@ -704,10 +741,16 @@ in {
             nix-store --gc
           ''}
       '';
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+      } // lib.optionalAttrs (!sandboxUsesDocker) {
+        User = cfg.user;
+        Group = cfg.group;
+        StateDirectory = cfg.stateDirectory;
+      };
     };
 
-    systemd.timers."${serviceName}-sandbox-nix-gc" = lib.mkIf cfg.sandbox.enable {
+    systemd.timers."${serviceName}-sandbox-nix-gc" = lib.mkIf (cfg.runBot && cfg.sandbox.enable) {
       description = "Schedule gaoji sandbox Nix cache collection";
       wantedBy = ["timers.target"];
       timerConfig = {
@@ -743,8 +786,8 @@ in {
     };
 
     systemd.services.${napcatServiceName} = lib.mkIf cfg.napcat.enable {
-      wants = ["${serviceName}.service"];
-      after = ["${serviceName}.service"];
+      wants = lib.optional cfg.runBot "${serviceName}.service";
+      after = lib.optional cfg.runBot "${serviceName}.service";
       serviceConfig.LoadCredential = lib.optional (cfg.napcat.reverseWebsocketTokenFile != null)
         "onebot-token:${cfg.napcat.reverseWebsocketTokenFile}";
       preStart = lib.mkIf (!nativeNapcat && cfg.napcat.reverseWebsocketTokenFile != null) (lib.mkBefore ''
@@ -833,11 +876,16 @@ in {
       timerConfig = { OnBootSec = "120s"; OnUnitInactiveSec = "60s"; };
     };
 
-    systemd.tmpfiles.rules = lib.optionals cfg.napcat.enable [
-      "d ${cfg.napcat.dataDirectory} 0700 ${napcatOwner} ${napcatOwner} -"
-      "d ${cfg.napcat.dataDirectory}/QQ 0700 ${napcatOwner} ${napcatOwner} -"
-      "d ${cfg.napcat.dataDirectory}/config 0700 ${napcatOwner} ${napcatOwner} -"
-      "d ${cfg.napcat.dataDirectory}/outbox 0700 ${napcatOwner} ${napcatOwner} -"
-    ];
+    systemd.tmpfiles.rules =
+      lib.optionals (cfg.sandbox.enable && !sandboxUsesDocker) [
+        "d ${statePath} 0700 ${cfg.user} ${cfg.group} -"
+        "d ${statePath}/podman-runtime 0700 ${cfg.user} ${cfg.group} -"
+      ]
+      ++ lib.optionals cfg.napcat.enable [
+        "d ${cfg.napcat.dataDirectory} 0700 ${napcatOwner} ${napcatOwner} -"
+        "d ${cfg.napcat.dataDirectory}/QQ 0700 ${napcatOwner} ${napcatOwner} -"
+        "d ${cfg.napcat.dataDirectory}/config 0700 ${napcatOwner} ${napcatOwner} -"
+        "d ${cfg.napcat.dataDirectory}/outbox 0700 ${napcatOwner} ${napcatOwner} -"
+      ];
   };
 }
