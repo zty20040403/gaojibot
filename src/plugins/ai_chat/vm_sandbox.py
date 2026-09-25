@@ -715,6 +715,13 @@ runcmd:
         for metadata in await self._all_metadata():
             sandbox_id = str(metadata["id"])
             running = await self._running(sandbox_id)
+            directory = self._directory(sandbox_id)
+            disk_allocated_bytes = 0
+            for filename in ("disk.qcow2", "seed.iso"):
+                try:
+                    disk_allocated_bytes += (directory / filename).stat().st_blocks * 512
+                except OSError:
+                    pass
             items.append({
                 "sandbox_id": sandbox_id, "name": self._name(sandbox_id),
                 "runtime": metadata.get("runtime", "debian"),
@@ -723,11 +730,11 @@ runcmd:
                 "owner_hash": metadata.get("owner_hash", ""),
                 "status": "Up (VM)" if running else "Exited",
                 "running": running, "cpu_percent": "-", "memory_usage": "-",
-                "memory_percent": "-", "workspace_size_bytes": 0,
-                "workspace_file_count": 0, "workspace_files": [],
+                "memory_percent": "-", "disk_allocated_bytes": disk_allocated_bytes,
+                "workspace_files": [],
                 "workspace_error": "", "activities": [
                     {"command": item.command, "started_at": item.started_at, "status": item.status}
                     for item in self._active_execs.values() if item.sandbox_id == sandbox_id
                 ], "last_activity": None,
             })
-        return {"items": items, "active_commands": len(self._active_execs)}
+        return {"items": items, "active_commands": len(self._active_execs), "backend": self.backend}

@@ -59,7 +59,7 @@ const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group:
   { id: 'usage', label: '模型用量', description: '按日期、会话和来源统计 Token', group: '运行', icon: BarChart3 },
   { id: 'traces', label: 'Trace 与上下文', description: '回放回答链路与上下文选择过程', group: '运行', icon: BrainCircuit },
   { id: 'context-debug', label: '上下文调试', description: '查看话题、原消息、候选评分、Token 和人工反馈', group: '运行', icon: ScanSearch },
-  { id: 'sandboxes', label: '沙盒', description: '临时容器、命令和资源使用情况', group: '资源', icon: Boxes },
+  { id: 'sandboxes', label: '沙盒', description: '隔离环境、命令和资源使用情况', group: '资源', icon: Boxes },
   { id: 'media', label: '媒体审核', description: '表情候选、识图和分享内容记录', group: '资源', icon: Image },
   { id: 'groups', label: '模型与群友', description: '配置群开关、统一模型和个人模型', group: '配置', icon: Users },
   { id: 'tools', label: '工具权限', description: '控制 Agent 可见工具与执行策略', group: '配置', icon: Wrench },
