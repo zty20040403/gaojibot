@@ -2259,6 +2259,14 @@ class SubAgentCoordinator:
         if has_artifacts and (not tool_enabled("sandbox_create") or not tool_enabled("sandbox_exec")):
             return {"status": "failed", "reason": "管理员已禁止验收所需的沙盒工具"}
         self.store.set_task_state(task.task_id, "verifying")
+        if (
+            has_artifacts and hooks and hooks.workspaces
+            and getattr(getattr(hooks.workspaces, "manager", None), "backend", "oci") == "vm"
+        ):
+            try:
+                await hooks.workspaces.quiesce_for_validation(task.task_id, completed)
+            except Exception as exc:
+                return {"status": "not_verified", "reason": f"Could not reserve an artifact verifier: {exc}"}
         checks = []
         checked_artifacts: set[str] = set()
         for outcome in _delivery_outcomes(task, completed):

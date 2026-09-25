@@ -110,6 +110,8 @@ with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
 
 
 class VmSandboxManager:
+    backend = "vm"
+
     def __init__(
         self,
         *,
