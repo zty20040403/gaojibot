@@ -188,6 +188,12 @@ in {
     cluster = {
       enable = lib.mkEnableOption "read-only gaoji fleet tools";
 
+      localControlService = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Order the bot after a cluster-control service on this host; disable when using a remote control URL.";
+      };
+
       controlUrl = lib.mkOption {
         type = lib.types.str;
         default = "http://127.0.0.1:8091";
@@ -502,13 +508,13 @@ in {
       wantedBy = ["multi-user.target"];
       wants =
         ["network-online.target"]
-        ++ lib.optional cfg.cluster.enable "gaoji-cluster-control.service";
+        ++ lib.optional (cfg.cluster.enable && cfg.cluster.localControlService) "gaoji-cluster-control.service";
       requires = lib.optionals cfg.sandbox.enable [
         "${serviceName}-sandbox-image.service"
       ];
       after =
         ["network-online.target"]
-        ++ lib.optional cfg.cluster.enable "gaoji-cluster-control.service"
+        ++ lib.optional (cfg.cluster.enable && cfg.cluster.localControlService) "gaoji-cluster-control.service"
         ++ lib.optionals cfg.sandbox.enable [
           "${serviceName}-sandbox-image.service"
         ];
