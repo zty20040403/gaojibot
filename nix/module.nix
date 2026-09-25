@@ -549,6 +549,7 @@ in {
     systemd.services.${serviceName} = lib.mkIf cfg.runBot {
       description = "gaoji multi-model bot";
       wantedBy = ["multi-user.target"];
+      unitConfig.RequiresMountsFor = lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [cfg.sandbox.vmRoot];
       wants =
         ["network-online.target"]
         ++ lib.optional (cfg.cluster.enable && cfg.cluster.localControlService) "gaoji-cluster-control.service";
@@ -666,6 +667,7 @@ in {
           ProtectKernelModules = true;
           ProtectKernelTunables = true;
           ProtectSystem = "strict";
+          ReadWritePaths = lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [cfg.sandbox.vmRoot];
           RestrictSUIDSGID = true;
         }
         // lib.optionalAttrs (cfg.environmentFile != null) {
