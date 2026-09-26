@@ -114,11 +114,17 @@ def outcome_report(validation: Mapping[str, Any], narrative: str = "", deliverie
         return narrative
     rows = matrix.get("criteria", [])
     passed = sum(row.get("status") == "passed" for row in rows)
-    if passed == len(rows) and rows:
+    criteria_passed = bool(rows) and passed == len(rows) and matrix.get("status") == "passed"
+    files_confirmed = not deliveries or all(item.get("ok") is True for item in deliveries)
+    if criteria_passed and validation.get("status") == "passed" and files_confirmed:
         heading = f"已完成并核实 {passed} 项验收。"
+    elif criteria_passed:
+        heading = f"已核实 {passed} 项验收，但任务尚未全部完成。"
     else:
         heading = f"任务尚未全部完成：已核实 {passed}/{len(rows)} 项。"
     lines = [heading]
+    if validation.get("status") == "failed":
+        lines.append("独立复核仍有未通过项，不能把验收条目通过当成整项任务完成。")
     labels = {"passed": "已核实", "failed": "未达标", "unverified": "尚未验证"}
     for row in rows:
         lines.append(f"{labels.get(row['status'], '尚未验证')}：{row['description']}。{row['reason']}")
@@ -133,7 +139,8 @@ def outcome_report(validation: Mapping[str, Any], narrative: str = "", deliverie
                          f"{detail['before']['available_bytes'] / 1024**3:.2f} → "
                          f"{detail['after']['available_bytes'] / 1024**3:.2f} GiB。")
     # A failed gate must not be followed by an unverified model claim of success.
-    if matrix.get("status") == "passed" and narrative.strip():
+    # File delivery is authoritative here; a model-written pre-upload draft is not.
+    if criteria_passed and validation.get("status") == "passed" and not deliveries and narrative.strip():
         lines.append(narrative.strip())
     if deliveries:
         confirmed = sum(item.get("ok") is True for item in deliveries)

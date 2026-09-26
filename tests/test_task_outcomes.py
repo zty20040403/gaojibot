@@ -293,6 +293,30 @@ class TaskEvidenceTests(unittest.TestCase):
         self.assertNotIn("所有服务器都修好了", text)
         self.assertIn("尚未验证", text)
 
+    def test_file_report_does_not_repeat_stale_pre_delivery_claim(self):
+        matrix = {"status": "passed", "criteria": [{"kind": "evidence",
+            "description": "单页 PDF", "status": "passed", "reason": "页数已核实"}]}
+        receipt = [{"ok": True, "state": "acknowledged", "filename": "report.pdf"}]
+        stale_draft = "文件还不能发到群里"
+        failed_review = {"status": "failed", "task_outcome": matrix,
+            "unresolved": ["验收沙盒误产生了临时文件"]}
+        text = outcome_report(failed_review, stale_draft, receipt)
+        self.assertIn("任务尚未全部完成", text)
+        self.assertIn("文件交付：1/1 个已确认送达", text)
+        self.assertNotIn("已完成并核实", text)
+        self.assertNotIn(stale_draft, text)
+
+        verified = {"status": "passed", "task_outcome": matrix}
+        text = outcome_report(verified, stale_draft, receipt)
+        self.assertIn("已完成并核实", text)
+        self.assertIn("文件交付：1/1 个已确认送达", text)
+        self.assertNotIn(stale_draft, text)
+
+        pending = [{"ok": False, "state": "queued", "filename": "report.pdf"}]
+        text = outcome_report(verified, stale_draft, pending)
+        self.assertIn("任务尚未全部完成", text)
+        self.assertIn("文件交付：0/1 个已确认送达", text)
+
     def test_timeline_never_confuses_execution_with_delivery(self):
         self.store.set_task_state(self.task.task_id, "completed", plan={"contract": {"delivery_required": True}},
                                   result={"execution_state": "succeeded"})
