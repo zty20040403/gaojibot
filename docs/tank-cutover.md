@@ -138,6 +138,31 @@ citations without regenerating or resending the document. Honest failed or
 unverified conclusions are not pressured into passing. Thirty-eight focused
 acceptance and revision tests passed, including feedback limits across resume.
 
+At 04:13 HKT, an explicitly recorded operator maintenance recheck read the
+same SHA-256 PDF in the original independent verifier VM, without generating
+or uploading another file. A successful standalone pypdf check confirmed one
+page and the exact revised title. Those new immutable receipts replaced only
+the two invalid citations in the reconciled matrix; the original reviewer,
+old final message and previous result remain in the audit history. The normal
+acceptance evaluator then passed all four rows and task#175 became `completed`.
+Correction delivery 3787 committed once; OneBot `get_msg` independently
+retrieved message `525007249`. QQ's file list still contained exactly one
+revision-5 attachment. This was an audited repair of the existing task, not a
+new end-to-end run of the automatic feedback behavior.
+
+Bot revision `e756457` is deployed on tank via nix-config `fc04ae5`:
+`/nix/store/9i7qvpd7i0i9250arjjxc2r212460zap-nixos-system-tank-26.05.20260911.21a67dc`.
+Only Gaoji restarted. QQ PID 1329069 retained its 00:14 HKT start time and
+reported online/good after the switch. Tank had no failed units and remained
+the PostgreSQL primary; h610 remained in recovery as its secondary, with both
+old Gaoji services absent and the unrelated bot services still active.
+The maintenance outbox client explicitly skips startup lease recovery, so it
+cannot mark another live sender's attempts ambiguous; eight focused outbox
+tests passed, including that coexistence and normal restart recovery.
+The real PDF creation, content, rendering and group delivery checks are now
+closed for this revision. Production-process crash recovery remains a separate
+unverified gate; the isolated SIGKILL tests above do not claim to replace it.
+
 ## Initial bot cutover
 
 At the initial cutover, tank was the PostgreSQL primary and h610 its secondary;
@@ -184,12 +209,13 @@ The durable file outbox recorded one acknowledged QQ group-file delivery:
 `32516537cdca40f0ad53703b96305e91`, with no retry. This proves the live
 KVM-to-QQ file path for that task; it does not prove process-loss recovery.
 
-The historical task remains `partial` because the verifier's scratch
+Revision 1 ended `partial` because the verifier's scratch
 `review.pdf` was incorrectly auto-recovered as a new deliverable. Its final
 text also reused a pre-delivery draft. Bot revisions `2756609` and `87d704c`
 removed those paths for future file tasks and passed focused regression tests;
-the old task and QQ file receipt were not rewritten or replayed. A new live
-file task is still needed to confirm the corrected final status and wording.
+the old execution and QQ file receipt were not rewritten or replayed. At that
+point a new live file run was still needed; later revisions and the final
+audited reconciliation are recorded above.
 Running-service process-loss recovery and no-duplicate delivery after a real
 restart remain separate acceptance gates. Isolated recovery tests do not
 establish either gate in production.
