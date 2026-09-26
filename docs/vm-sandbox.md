@@ -48,6 +48,15 @@ inside the guest. The later live task#175 generated and independently validated
 a PDF in tank KVM guests and obtained a QQ group-file receipt; its final task
 status and wording exposed separate defects, subsequently fixed. After the QQ
 transport also moved to tank, isolated real-QQ file-outbox process-loss tests
-passed. Neither result proves recovery of the running bot service or the fixed
-final report in a fresh model task. See `tank-cutover.md` for the distinct
-evidence and remaining gates.
+passed. Those checks alone did not prove production-service recovery.
+
+The later explicitly authorized task#176 test killed tank's bot main process
+once after a persisted tool result. systemd restarted it in six seconds; after
+the normal 300-second execution lease expired, the same task and producer
+resumed, restarted the original guest and generated a new PDF. Independent
+validation passed, and actual QQ lookups confirmed one attachment and one
+correct final message. QQ and PostgreSQL were not restarted. See
+`tank-cutover.md` for timestamps, receipt IDs and the distinction between this
+safe checkpoint boundary and uncertain non-idempotent operations. Under the
+current service control-group policy, bot failure stops its session-libvirt
+and QEMU children too; recovery reuses guest disks, not guest RAM state.

@@ -1,7 +1,7 @@
 # Gaoji tank cutover
 
-This records the staged production cutover on 2026-09-26/27 (HKT) and the
-remaining acceptance gates. Bot, QQ/NapCat, primary PostgreSQL, media and KVM
+This records the staged production cutover on 2026-09-26/27 (HKT) and its
+scoped acceptance evidence. Bot, QQ/NapCat, primary PostgreSQL, media and KVM
 sandboxes now run on tank. h610 remains the PostgreSQL secondary and monitor;
 shared ingress, model services and cluster control also remain external
 dependencies on h610. The initial cutover below kept QQ on h610; the final
@@ -159,9 +159,60 @@ old Gaoji services absent and the unrelated bot services still active.
 The maintenance outbox client explicitly skips startup lease recovery, so it
 cannot mark another live sender's attempts ambiguous; eight focused outbox
 tests passed, including that coexistence and normal restart recovery.
-The real PDF creation, content, rendering and group delivery checks are now
-closed for this revision. Production-process crash recovery remains a separate
-unverified gate; the isolated SIGKILL tests above do not claim to replace it.
+The real PDF creation, content, rendering and group delivery checks were
+closed for this revision. Production-process crash recovery was still a
+separate gate at this point; its later authorized check is recorded below.
+
+## Production process-loss acceptance on 2026-09-27
+
+The owner explicitly authorized one interruption of tank's Gaoji main process.
+No unrelated task or message/file send was active at the interruption boundary.
+Task#176 was submitted through the coordinator as an **administrator-initiated
+acceptance task**, with an audit event and the existing task#175 group/user
+delivery envelope. It was not a fabricated incoming QQ message or a revision
+of task#175. Its objective was a new one-page Chinese recovery-test PDF, with
+ordinary model execution, independent validation and durable QQ delivery.
+
+- At 04:32:21 HKT, after sandbox creation and a successful `gaoji-pdf --help`
+  call, the worker transcript version 6 durably covered event sequence 19.
+  The fault harness briefly froze only the main process, rechecked that the
+  boundary was unchanged and no sends were active, recorded
+  `task.acceptance_fault_armed`, then sent its single SIGKILL to PID 1473581.
+- systemd automatically started PID 1484794 at 04:32:27; `NRestarts=1`.
+  OneBot reconnected at 04:32:36. QQ PID 1329069 and PostgreSQL PID 1251657
+  were unchanged. h610's unrelated bot services were not restarted.
+- The old durable execution lease was allowed to expire normally, without
+  editing the queue or forcing a retry. Around 04:37:20, job 19899 transferred
+  to the new worker. Task#176 and producer agent#334 resumed from the saved
+  transcript. The same sandbox `sfb7e08` was restarted and reused; its creation
+  and completed pre-crash command were not repeated. A bot service failure
+  also stops its session-libvirt/QEMU children under the current control-group
+  policy, so this check exercised guest restart as well as task takeover.
+- The resumed producer generated `recovery_acceptance.pdf`, 25,326 bytes,
+  SHA-256 `bfc03de9e314bcf79d17e0d53d5031a1150c6bf99323837dd4d20ad54a54cece`.
+  Independent reviewer agent#335 passed all three criteria: one page and the
+  exact Chinese title, embedded WenQuanYi font and actual nonblank raster
+  rendering, and valid unencrypted PDF structure. No operator changed the
+  acceptance matrix or task result to obtain this pass.
+- The normal file outbox uploaded once and acknowledged at 04:43:52.
+  A separate QQ group-file lookup found exactly one matching file,
+  `kb-176-r1-bfc03de9e3-recovery_acceptance.pdf`, with the correct size and
+  bot uploader. Final message outbox 3788 committed once at 04:43:58;
+  OneBot `get_msg` independently retrieved message `1439885070`. It correctly
+  reported three verified criteria and `1/1` file delivered, without the
+  previous contradictory claim that the file could not be sent.
+- The final task and job both succeeded. The production lifecycle stopped
+  the task guests and scheduled normal one-hour cleanup; no completed task
+  or audit evidence was deleted. The temporary maintenance harness was
+  removed. Tank remained primary, h610 remained secondary, and QQ was
+  independently confirmed online/good after delivery.
+
+This closes the production-service recovery gate for a persisted, safe tool
+boundary and a fresh PDF task on deployed code `e756457`. It is **not** a
+claim of instant recovery (the current lease is 300 seconds), guaranteed
+QQ uptime, or safe replay of an interrupted non-idempotent operation. Unknown
+upload outcomes still require receipt reconciliation, not blind resending.
+The isolated outbox fault cases above cover separate delivery boundaries.
 
 ## Initial bot cutover
 
