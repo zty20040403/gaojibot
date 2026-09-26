@@ -101,7 +101,7 @@ def artifact_draft_allowed(artifact: Mapping[str, Any], validation: Mapping[str,
     if not isinstance(checks, list):
         return False
     matching = [c for c in checks if isinstance(c, Mapping) and c.get("artifact_key") == digest]
-    if len(matching) != 1 or matching[0].get("ok") is not True:
+    if len(matching) != 1 or not (matching[0].get("ok") is True or matching[0].get("readable") is True):
         return False
     required = {"nonempty", "sha256"}
     if PurePosixPath(str(artifact.get("name", ""))).suffix.lower() in {

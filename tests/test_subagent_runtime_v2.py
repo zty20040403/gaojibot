@@ -1096,6 +1096,21 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(checked, ["acceptance.txt"])
         executor.send_file_content.assert_awaited_once_with(b"test", "result.txt")
 
+    async def test_pdf_readability_is_separate_from_full_font_acceptance(self):
+        executor = Mock(owner="owner")
+        manager = executor.sandbox_manager
+        manager.create = AsyncMock(return_value={"sandbox_id": "s123abc"})
+        manager.destroy = AsyncMock()
+        manager.write_file = AsyncMock()
+        workspaces = StepWorkspaces(Path(self.tmp.name), executor)
+        artifact = {"name": "draft.pdf", "snapshot": workspaces._persist(1, b"pdf")}
+        info = SimpleNamespace(returncode=0, stdout="Pages: 3\nCJK TrueType yes yes yes 9 0\nHelvetica Type1 no no no 2 0", stderr="")
+        for render_code in (0, 1):
+            manager.exec = AsyncMock(side_effect=[info, SimpleNamespace(returncode=render_code)])
+            result = await workspaces.validate(1, artifact)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["readable"], render_code == 0)
+
     async def test_scheduler_cancellation_releases_slot_and_avoids_group_head_of_line(self):
         scheduler = SpecialistScheduler(total=2, per_group=1, per_model=2)
         async with scheduler.slot("group:1", "luna"):

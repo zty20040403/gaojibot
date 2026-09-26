@@ -138,16 +138,18 @@ class StepWorkspaces:
                 owner, sid, command, 45,
                 packages=vm_packages,
             )
-            ok = check.returncode == 0
+            readable = check.returncode == 0
+            ok = readable
             if suffix == ".pdf":
-                ok = ok and bool(re.search(r"Pages:\s*[1-9][0-9]*", check.stdout))
+                readable = readable and bool(re.search(r"Pages:\s*[1-9][0-9]*", check.stdout))
                 font_lines = [line for line in check.stdout.splitlines() if re.search(r"\s+(yes|no)\s+(yes|no)\s+(yes|no)\s+\d+\s+\d+\s*$", line)]
-                ok = ok and bool(font_lines) and all(re.search(r"\s+yes\s+(?:yes|no)\s+(?:yes|no)\s+\d+\s+\d+\s*$", line) for line in font_lines)
+                fonts_embedded = bool(font_lines) and all(re.search(r"\s+yes\s+(?:yes|no)\s+(?:yes|no)\s+\d+\s+\d+\s*$", line) for line in font_lines)
                 # A rendered first page catches broken PDFs that text extraction alone misses.
                 rendered = await self.manager.exec(owner, sid,
                     "pdftoppm -f 1 -singlefile -scale-to 1000 -png /workspace/acceptance.pdf /workspace/rendered", 45)
-                ok = ok and rendered.returncode == 0
-            return {"ok": ok, "checks": ["nonempty", "sha256", "format"],
+                readable = readable and rendered.returncode == 0
+                ok = readable and fonts_embedded
+            return {"ok": ok, "readable": readable, "checks": ["nonempty", "sha256", "format"],
                     "details": (check.stdout + check.stderr)[-4000:], "functional": "requires_review"}
         finally:
             await self.manager.destroy(owner, sid)

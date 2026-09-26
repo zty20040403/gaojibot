@@ -64,6 +64,7 @@ class ArtifactAcceptanceTests(unittest.TestCase):
         file = artifact()
         check = {**check_for(file), "checks": ["nonempty", "sha256", "format"]}
         self.assertTrue(artifact_draft_allowed(file, {"checks": [check]}))
+        self.assertTrue(artifact_draft_allowed(file, {"checks": [{**check, "ok": False, "readable": True}]}))
         for checks in ([], [check, check], [{**check, "ok": False}],
                        [{**check, "artifact_key": "b" * 64}],
                        [{**check, "checks": ["nonempty", "sha256"]}]):
