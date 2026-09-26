@@ -1,11 +1,55 @@
 # Gaoji tank cutover
 
-This records the production cutover performed on 2026-09-26 (HKT) and the
-remaining acceptance gates. The bot runs on tank; the only QQ/NapCat process
-remains on h610. At cutover, tank was the PostgreSQL primary and h610 its secondary;
-the later network incident below changed those live roles.
-Tank uses the KVM sandbox backend, not Podman. The active Nix revision at
-cutover was `d9df721`, with bot revision `4149bc5`.
+This records the staged production cutover on 2026-09-26/27 (HKT) and the
+remaining acceptance gates. Bot, QQ/NapCat, primary PostgreSQL, media and KVM
+sandboxes now run on tank. h610 remains the PostgreSQL secondary and monitor;
+shared ingress, model services and cluster control also remain external
+dependencies on h610. The initial cutover below kept QQ on h610; the final
+QQ move is recorded first to distinguish current placement from that history.
+
+## QQ transport cutover on 2026-09-27
+
+Nix revision `6d3a8ac` moves the sole Gaoji QQ transport to tank without a
+client upgrade: QQ `3.2.29-2026-05-28`, NapCat `4.18.19`, same pinned native
+package and bubblewrap isolation. Bot code remains `3296d82`.
+
+- Stopped h610's Gaoji QQ service and both its login/health timers before
+  copying. Rebuilt h610 first; those three units are now absent, so an ordinary
+  rebuild from the current configuration cannot resurrect the old login.
+- Copied `QQ`, `config` and `outbox` into tank's `/var/lib/napcat-gaoji`:
+  2,129 regular files, 1,418,227,663 bytes. A checksum rsync dry run found no
+  differences before tank started. The source data was not deleted.
+- Transferred the OneBot credential and password privately with root-only
+  permissions; compared the OneBot credential with the live tank bot in memory.
+  The persisted login-attempt/recovery state was copied without resetting its
+  limits. No credential values were printed or committed.
+- Rebuilt tank and verified its bot and native QQ services running, its two
+  timers active, and no failed units. WebUI listens only on `127.0.0.1:6100`;
+  the local SSH forward `127.0.0.1:16100` now goes to `kenneth@tank`.
+- The QQ API still reports expired authentication, requiring the owner's
+  phone confirmation. A newly generated tank QR code was provided. Process
+  startup alone is not QQ online or group-delivery acceptance.
+
+The h610 rollback copy `/var/lib/napcat-chat-bot` is root-owned and mode 0700
+at its root after its service account was removed. For a deliberate rollback,
+stop tank QQ and its timers first, restore the h610 declaration, and restore
+ownership to the declared h610 QQ service user before starting it. Never run
+both copies. Max's independent QQ reminder credential was not copied to tank;
+that cross-account password-login notification is disabled. The existing
+Prometheus QQ health checks remain available from tank, while h610's obsolete
+textfile is removed by its tmpfiles configuration.
+
+Deployed systems after this switch:
+
+- h610: `/nix/store/pgbr6sn7774na3z5yh7iips9vzzzd59w-nixos-system-h610-26.05.20260911.21a67dc`
+- tank: `/nix/store/69mwzxj2gpi47yirwrn05cb7aqykfa5r-nixos-system-tank-26.05.20260911.21a67dc`
+
+## Initial bot cutover
+
+At the initial cutover, tank was the PostgreSQL primary and h610 its secondary;
+the later network incident below changed those live roles before controlled
+recovery. Tank uses the KVM sandbox backend, not Podman. The initial Nix
+revision was `d9df721`, with bot revision `4149bc5`.
 
 ## Verified after cutover
 
@@ -134,7 +178,10 @@ recovery. No NixOS rebuild or new application revision was needed for this
 database role switch; both repositories were fetched and had no newer
 upstream commits before the operation.
 
-## Preparation procedure for a future cutover
+## Initial bot-only cutover procedure (historical)
+
+These steps describe the earlier bot-only move. They intentionally kept QQ
+on h610 and must not be used as the current QQ placement or rollback plan.
 
 1. Fetch both Git origins and compare with local branches before merging. Do
    not rebuild either shared host from an older nix-config revision. Pin the
@@ -193,7 +240,7 @@ upstream commits before the operation.
    first live PDF receipt have been observed; the remaining gates are listed
    above and must not be inferred from that one successful upload.
 
-## Rollback
+## Bot-only rollback (historical)
 
 If tank bot startup or QQ delivery fails, stop tank bot before restoring the
 older h610 configuration that contains `gaoji.service`; the current h610
