@@ -26,9 +26,16 @@ package and bubblewrap isolation. Bot code remains `3296d82`.
 - Rebuilt tank and verified its bot and native QQ services running, its two
   timers active, and no failed units. WebUI listens only on `127.0.0.1:6100`;
   the local SSH forward `127.0.0.1:16100` now goes to `kenneth@tank`.
-- The QQ API still reports expired authentication, requiring the owner's
-  phone confirmation. A newly generated tank QR code was provided. Process
-  startup alone is not QQ online or group-delivery acceptance.
+- QQ initially required the owner's phone confirmation. At 00:19 HKT the
+  tank client became online: `CheckLoginStatus` reported `isLogin=true` and
+  `isOffline=false`, and OneBot `get_status` reported `online=true` and
+  `good=true`. A fresh check after the group reply confirmed it stayed online.
+- The owner's real group message `1906185096` (group 611798505, 00:19:30 HKT)
+  produced successful turn 1738 and committed delivery 3781 with one attempt.
+  OneBot `get_msg` independently retrieved QQ reply `899215867`, including
+  the reference to that original message. This proves group reception, a
+  model reply, the database write and QQ delivery through tank's own client.
+  It does not prove a new file task or running-service crash recovery.
 
 The h610 rollback copy `/var/lib/napcat-chat-bot` is root-owned and mode 0700
 at its root after its service account was removed. For a deliberate rollback,
@@ -168,15 +175,16 @@ At 23:47, the isolated restore check successfully restored the new backup:
 schema `0029_native_ssh_operations`, 93 business tables, 30,172 messages.
 Its temporary restore instance was cleaned up by the existing check.
 
-QQ account authentication is a separate outstanding gate: the health probe
-reported `login_required`, and the live WebUI API returned `isLogin=false`
-with a QR login URL. The reverse WebSocket connection is not evidence of
-an online QQ account. New group replies, corrected live task reports and
-running-service process-loss delivery acceptance remain unverified until
-the owner logs in. No old task was replayed or marked delivered during this
-recovery. No NixOS rebuild or new application revision was needed for this
-database role switch; both repositories were fetched and had no newer
-upstream commits before the operation.
+QQ account authentication was still outstanding at this database recovery:
+the health probe reported `login_required`, and the live WebUI API returned
+`isLogin=false` with a QR login URL. The reverse WebSocket connection was
+not evidence of an online QQ account. The later complete QQ transport move
+and real group reply are recorded at the top of this document. Corrected
+live file-task reports and running-service process-loss delivery acceptance
+remain separate unverified gates. No old task was replayed or marked
+delivered during this recovery. No NixOS rebuild or new application revision
+was needed for this database role switch; both repositories were fetched
+and had no newer upstream commits before the operation.
 
 ## Initial bot-only cutover procedure (historical)
 
