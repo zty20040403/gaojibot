@@ -124,6 +124,20 @@ PDF was generated, its sole font resource checked for embedded TrueType data,
 and its rendered page visually verified; a dedicated regression test checks
 that no default unembedded font returns.
 
+Revision 5 produced the 21,119-byte `tank-整套迁移验收.pdf`, SHA-256
+`c88972306d51cc9f80f5c2dd0595e25b6acfc3e59fcd4c5f3e9ae41df60f0eb7`.
+Its immutable snapshot passed the format gate and independent content review;
+QQ's actual group-file listing confirmed the revision-5 attachment. The final
+text was also committed once, but reported only two of four criteria verified:
+the reviewer cited failed compound shell commands for page count and title,
+although their early subcommands had printed those facts. A nonzero command
+is still not accepted as successful evidence. The reviewer now receives up to
+two durable, criterion-specific feedback rounds inside its existing execution
+budget, before finalization. It can perform isolated read-only checks and fix
+citations without regenerating or resending the document. Honest failed or
+unverified conclusions are not pressured into passing. Thirty-eight focused
+acceptance and revision tests passed, including feedback limits across resume.
+
 ## Initial bot cutover
 
 At the initial cutover, tank was the PostgreSQL primary and h610 its secondary;

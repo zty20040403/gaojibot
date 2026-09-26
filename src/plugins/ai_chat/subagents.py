@@ -31,7 +31,7 @@ from .ai_tools import ToolDefinition
 from .agent.execution import DECISION_TOOL, ENTRY_PROMPT, EntryDecision, ExecutionEntryError, active_agent_step
 from .agent.evidence import (EVIDENCE_SQL, EvidenceStoreMixin, READ_TASK_EVIDENCE, READ_TASK_EVIDENCE_BATCH,
                              decode_result, evidence_index, read_evidence, read_evidence_batch)
-from .agent.outcomes import (acceptance_blocks_completion, evaluate_acceptance,
+from .agent.outcomes import (acceptance_blocks_completion, acceptance_feedback, evaluate_acceptance,
                              outcome_report, validate_report)
 from .agent.file_outbox import FileOutboxStoreMixin, attempt_file
 from .agent.artifact_acceptance import (
@@ -3005,6 +3005,29 @@ class SubAgentCoordinator:
         worker_input += f"\n[本步骤工作目录]\n/workspace/tasks/{task.task_id}/steps/{step.key}\n"
         worker_input += "\n[宿主证据索引，必要时用 read_task_evidence 读取]\n" + json.dumps(evidence_index(allowed_evidence()), ensure_ascii=False)
         worker_input += "\n报告中每个 evidence# 必须使用本轮工具返回或当前索引中的完整编号；不要复制上一修订的编号。来源观测时间以证据原文为准，不把收取时间当作采样时间。"
+
+        def review_feedback(answer: str) -> str | None:
+            assert_job_owned()
+            contract = task.plan.get("contract", {})
+            if contract.get("version", 1) < 2:
+                return None
+            previous = self.store.latest_run_checkpoint(task.task_id, run.run_id, "acceptance_feedback")
+            attempts = int((previous or {}).get("attempts", 0))
+            if attempts >= 2:
+                return None
+            try:
+                report = _parse_worker_result(answer)
+            except (ValueError, TypeError):
+                feedback = "发送前验收报告无法解析。请保留真实检查结果，按要求返回完整 JSON。"
+            else:
+                feedback = acceptance_feedback(contract, allowed_evidence(), report,
+                    task_created_at=task.created_at)
+            if feedback:
+                self.store.append_checkpoint(task.task_id, "acceptance_feedback", {
+                    "attempts": attempts + 1, "feedback": feedback,
+                }, run_id=run.run_id)
+            return feedback
+
         try:
             correction_checkpoint = self.store.latest_run_checkpoint(task.task_id, run.run_id, "report_correction")
             async with self.scheduler.slot(task.scope_key, profile.name), asyncio.timeout(min(self.timeout_seconds, spec.timeout_seconds)):
@@ -3032,6 +3055,7 @@ class SubAgentCoordinator:
                             compensate_tool=(hooks.compensate_tool if hooks else None),
                             transcript_sink=save_transcript,
                             after_tool_round=external.pause if external else None,
+                            final_feedback=review_feedback if review_only else None,
                         )
                     result = _normalize_worker_scope_result(_parse_worker_result(answer))
                     result = separate_cluster_artifacts(result, allowed_evidence())

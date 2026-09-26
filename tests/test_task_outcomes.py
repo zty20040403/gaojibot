@@ -10,7 +10,7 @@ from tests.test_subagent_v2 import decision
 from src.plugins.ai_chat.agent.evidence import MAX_EVIDENCE_BYTES, read_evidence
 from src.plugins.ai_chat.agent.execution import EntryDecision
 from src.plugins.ai_chat.agent.outcomes import (
-    acceptance_blocks_completion, evaluate_acceptance, normalize_checks,
+    acceptance_blocks_completion, acceptance_feedback, evaluate_acceptance, normalize_checks,
     outcome_report, validate_report,
 )
 from src.plugins.ai_chat.subagents import SubAgentStore, TaskStep
@@ -212,6 +212,27 @@ class TaskEvidenceTests(unittest.TestCase):
         value["metadata"]["criterion_reviews"] *= 2
         self.assertEqual(evaluate_acceptance(contract(), items, value, task_created_at=1000)["status"], "unverified")
         self.assertEqual(self.evaluate(contract(), ["evidence#invented"])["status"], "unverified")
+
+    def test_failed_compound_check_requires_successful_evidence_not_partial_stdout(self):
+        failed = self.record({"ok": False, "returncode": 1, "stdout": "Pages: 1\nTITLE_OK=yes"},
+                             tool="sandbox_exec")
+        succeeded = self.record({"ok": True, "returncode": 0, "stdout": "Pages: 1"}, tool="sandbox_exec")
+        refs = [failed["ref"], succeeded["ref"]]
+        self.assertEqual(self.evaluate(contract(), refs)["status"], "unverified")
+        feedback = acceptance_feedback(contract(), self.store.task_evidence(self.task.task_id),
+            review(refs), task_created_at=1000)
+        self.assertIn(failed["ref"], feedback)
+        self.assertIn("单独运行缺失的只读检查", feedback)
+        self.assertIsNone(acceptance_feedback(contract(), self.store.task_evidence(self.task.task_id),
+            review([succeeded["ref"]]), task_created_at=1000))
+        self.assertEqual(self.evaluate(contract(), [succeeded["ref"]])["status"], "passed")
+
+    def test_feedback_does_not_pressure_honest_unverified_or_failed_review_to_pass(self):
+        for status in ("failed", "unverified"):
+            value = review([])
+            value["metadata"]["criterion_reviews"][0]["status"] = status
+            self.assertIsNone(acceptance_feedback(contract(), [], value, task_created_at=1000))
+        self.assertIn("acceptance[0]", acceptance_feedback(contract(), [], {}, task_created_at=1000))
 
     def test_reviewer_cannot_cherry_pick_an_old_success_over_a_later_failure(self):
         ref = self.record(observation(1010))

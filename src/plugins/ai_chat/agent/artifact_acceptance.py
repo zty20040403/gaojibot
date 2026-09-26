@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 
-ACCEPTANCE_VERSION = 3
+ACCEPTANCE_VERSION = 4
 
 
 def separate_review_artifacts(

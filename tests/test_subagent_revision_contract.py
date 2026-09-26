@@ -123,3 +123,41 @@ class RevisionContractTests(unittest.IsolatedAsyncioTestCase):
         model.assert_awaited_once()
         workspaces.restore_step.assert_not_awaited()
         self.assertNotEqual(outcome.state, "failed")
+
+    async def test_acceptance_feedback_is_bounded_durable_and_uses_new_check_evidence(self):
+        task = self.submit()
+        plan = {"contract": {"version": 2, "acceptance": ["one page"], "delivery_required": True}}
+        self.store.set_task_state(task.task_id, "running", plan=plan)
+        task = self.store.get(task.task_id)
+        step = TaskStep("acceptance_test", "coder", "verify one page", "review")
+        run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="gpt-5.6-luna")
+        calls = 0
+        async def model(text, history, tools, execute, **kwargs):
+            nonlocal calls
+            calls += 1
+            bad = await execute("sandbox_exec", {"command": "first check"})
+            ref = json.loads(bad)["_task_evidence"]["ref"]
+            value = {"status": "success", "summary": "reviewed", "artifacts": [],
+                "findings": [], "completed": [], "authorization": [], "next_verification": [],
+                "metadata": {"criterion_reviews": [{"criterion_index": 0, "status": "passed",
+                    "reason": "page check", "evidence_refs": [ref]}]}}
+            feedback = kwargs["final_feedback"]
+            if calls == 1:
+                self.assertIn(ref, feedback(json.dumps(value)))
+                self.assertIsNotNone(feedback(json.dumps(value)))
+            self.assertIsNone(feedback(json.dumps(value)))
+            good = await execute("sandbox_exec", {"command": "isolated page check"})
+            value["metadata"]["criterion_reviews"][0]["evidence_refs"] = [json.loads(good)["_task_evidence"]["ref"]]
+            self.assertIsNone(feedback(json.dumps(value)))
+            return json.dumps(value)
+        async def execute(name, args):
+            return json.dumps({"ok": args["command"] != "first check", "stdout": "Pages: 1"})
+        with patch("src.plugins.ai_chat.subagents.ask_deepseek_with_tools", side_effect=model):
+            for _ in range(2):
+                outcome = await self.coordinator._run_step(task, step, run, context=self.packet,
+                    upstream={}, selected_profile=self.catalog.default, tools_by_name={},
+                    execute_tool=execute, hooks=None, review_only=True)
+                self.assertEqual(outcome.state, "success")
+        checkpoint = self.store.latest_run_checkpoint(task.task_id, run.run_id, "acceptance_feedback")
+        self.assertEqual(checkpoint["attempts"], 2)
+        self.assertEqual(self.store.deliveries(task.task_id), [])
