@@ -96,6 +96,44 @@ option bounds unacknowledged transmitted data on supported platforms; it is
 not a 15-second SQL execution deadline. These settings help detect broken
 sockets and do not repair a lossy route or prove database recovery.
 
+## Recovery and controlled return to tank on 2026-09-26
+
+At 23:39-23:44 HKT, both nodes reported healthy, h610 was primary and tank
+was a streaming secondary with zero measured replay lag. A fresh 25-packet
+probe from tank to h610 had no packet loss (10-15 ms RTT). This establishes
+recovery during the observation window, not a diagnosis or permanent fix of
+the earlier network failure.
+
+Before switching, tank created `qq_bot-20260926T154131Z.dump` successfully
+(218,321,338 bytes). There were no running subagent tasks. Only the tank
+`gaoji.service` was stopped; h610's QQ client and other services were left
+running. The monitor's `qq-bot-postgres-prefer-tank` command completed the
+controlled switchover at 23:45:41. Direct SQL and the monitor agreed that
+tank was the read-write primary and h610 the read-only secondary on timeline
+16, with matching LSNs. The CLI emitted a `get_nodes` display-query error
+before the state notifications; it did not prevent the switchover, whose
+outcome was verified independently rather than inferred from its exit code.
+
+At 23:46, tank restarted the deployed bot revision `3296d82`: the required
+plugin loaded, startup completed, and OneBot connected. The bot process's
+PostgreSQL sockets connected to tank (`100.64.0.4:55432`). Its metrics and
+the HTTPS admin page both returned HTTP 200. The h610 bot unit remains
+absent, preventing a second consumer. Both hosts had no failed systemd units.
+
+At 23:47, the isolated restore check successfully restored the new backup:
+schema `0029_native_ssh_operations`, 93 business tables, 30,172 messages.
+Its temporary restore instance was cleaned up by the existing check.
+
+QQ account authentication is a separate outstanding gate: the health probe
+reported `login_required`, and the live WebUI API returned `isLogin=false`
+with a QR login URL. The reverse WebSocket connection is not evidence of
+an online QQ account. New group replies, corrected live task reports and
+running-service process-loss delivery acceptance remain unverified until
+the owner logs in. No old task was replayed or marked delivered during this
+recovery. No NixOS rebuild or new application revision was needed for this
+database role switch; both repositories were fetched and had no newer
+upstream commits before the operation.
+
 ## Preparation procedure for a future cutover
 
 1. Fetch both Git origins and compare with local branches before merging. Do
