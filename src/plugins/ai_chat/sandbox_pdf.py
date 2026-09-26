@@ -201,6 +201,7 @@ def main() -> int:
     title = args.title.strip() or source.stem
     document = SimpleDocTemplate(
         str(output), pagesize=A4, title=title,
+        initialFontName=FONT_NAME,
         leftMargin=18 * mm, rightMargin=18 * mm,
         topMargin=18 * mm, bottomMargin=18 * mm,
     )

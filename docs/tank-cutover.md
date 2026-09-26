@@ -116,6 +116,14 @@ upstream import also resume only their named VM with ownership checks intact.
 The quota is unchanged. Twenty-two focused contract, artifact and publication
 checks passed. Revision 3 remains recorded as partial, not a successful delivery.
 
+The new helper also explicitly sets ReportLab's initial canvas font to the
+embedded CJK font. Without that setting the PDF resources included an unused,
+unembedded Helvetica font, which our strict format check rejected despite
+correct Chinese text. The embedding requirement is unchanged. A real Chinese
+PDF was generated, its sole font resource checked for embedded TrueType data,
+and its rendered page visually verified; a dedicated regression test checks
+that no default unembedded font returns.
+
 ## Initial bot cutover
 
 At the initial cutover, tank was the PostgreSQL primary and h610 its secondary;
