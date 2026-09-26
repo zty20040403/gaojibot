@@ -102,6 +102,7 @@ class DeliveryStore:
         *,
         max_attempts: int = 5,
         lease_seconds: int = 90,
+        recover_interrupted: bool = True,
     ) -> None:
         self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
@@ -111,7 +112,8 @@ class DeliveryStore:
         if self._legacy_sqlite:
             self._configure()
             self._migrate()
-        self.recovered_ambiguous = self.park_interrupted_attempts()
+        # Only a restarted sender may recover leases; maintenance clients coexist with it.
+        self.recovered_ambiguous = self.park_interrupted_attempts() if recover_interrupted else 0
 
     def close(self) -> None:
         with self._lock:
