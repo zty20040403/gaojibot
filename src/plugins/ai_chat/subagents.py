@@ -3009,8 +3009,8 @@ class SubAgentCoordinator:
             correction_checkpoint = self.store.latest_run_checkpoint(task.task_id, run.run_id, "report_correction")
             async with self.scheduler.slot(task.scope_key, profile.name), asyncio.timeout(min(self.timeout_seconds, spec.timeout_seconds)):
                 self.store.start_run(run.run_id, continuation=run.result.get("status") == "waiting")
-                if session["messages"] and hooks and hooks.workspaces:
-                    await hooks.workspaces.restore_step()
+                # Sandbox tools resume only their addressed workspace. Starting all
+                # retained revisions here exhausts VM quotas before the worker runs.
                 if correction_checkpoint is not None:
                     # The execution pass already ended before this durable checkpoint.
                     # Never reopen server/sandbox command tools just to recover its report.

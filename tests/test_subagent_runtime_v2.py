@@ -906,12 +906,16 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_snapshot_immutable_and_upstream_scope_enforced(self):
         executor = Mock(owner="owner")
+        executor.sandbox_manager.start_owned = AsyncMock()
         executor.sandbox_manager.export_artifact = AsyncMock(return_value=(b"artifact-v1", False))
         executor.sandbox_manager.install_readonly_file = AsyncMock()
         workspaces = StepWorkspaces(Path(self.tmp.name), executor)
         artifact = (await workspaces.capture(1, [{"handle": "s123abc:/workspace/code.zip"}]))[0]
         self.assertEqual(executor.sandbox_manager.export_artifact.await_args.args[2], "code.zip")
         await workspaces.import_artifact(1, {"code": {"artifacts": [artifact]}}, {"step_id": "code", "artifact_index": 0, "sandbox_id": "s456abc"})
+        self.assertEqual([call.args for call in executor.sandbox_manager.start_owned.await_args_list],
+            [("owner", "s123abc"), ("owner", "s456abc")])
+        executor.sandbox_manager.list.assert_not_called()
         self.assertEqual(executor.sandbox_manager.install_readonly_file.await_args.args[2], f"upstream/{artifact['snapshot']}/code.zip")
         with self.assertRaises(ValueError):
             await workspaces.import_artifact(1, {"code": {"artifacts": [artifact]}}, {"step_id": "other", "artifact_index": 0, "sandbox_id": "s456abc"})
@@ -920,6 +924,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_directory_artifact_is_exported_as_zip(self):
         executor = Mock(owner="owner")
+        executor.sandbox_manager.start_owned = AsyncMock()
         executor.sandbox_manager.export_artifact = AsyncMock(return_value=(b"PK-directory", True))
         workspaces = StepWorkspaces(Path(self.tmp.name), executor)
         artifact = (await workspaces.capture(1, [{
@@ -959,6 +964,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recaptured_snapshot_cancels_old_retention_marker(self):
         executor = Mock(owner="owner")
+        executor.sandbox_manager.start_owned = AsyncMock()
         executor.sandbox_manager.export_artifact = AsyncMock(
             return_value=(b"same-artifact", False)
         )
@@ -980,6 +986,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_capture_preserves_valid_artifacts_when_another_path_is_bad(self):
         executor = Mock(owner="owner")
+        executor.sandbox_manager.start_owned = AsyncMock()
         executor.sandbox_manager.export_artifact = AsyncMock(side_effect=[
             (b"valid", False), FileNotFoundError("missing"),
         ])

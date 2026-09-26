@@ -65,6 +65,7 @@ class StepWorkspaces:
                 if not match:
                     raise ValueError("Artifact must reference a real sandbox file or directory")
                 sandbox_id, path = match.groups()
+                await self.manager.start_owned(self.executor.owner, sandbox_id)
                 content, directory = await self.manager.export_artifact(
                     self.executor.owner, sandbox_id, path.removeprefix("/workspace/"))
                 if not content:
@@ -98,6 +99,7 @@ class StepWorkspaces:
         if filename in {"", ".", ".."}:
             raise ValueError("Invalid artifact filename")
         target = f"upstream/{item['snapshot']}/{filename}"
+        await self.manager.start_owned(self.executor.owner, sandbox_id)
         await self.manager.install_readonly_file(self.executor.owner, sandbox_id, target, content)
         return json.dumps({"ok": True, "path": f"/workspace/{target}", "sha256": item["snapshot"], "read_only": True})
 
@@ -187,11 +189,6 @@ class StepWorkspaces:
                     self.executor.owner,
                     sandbox["sandbox_id"],
                 )
-
-    async def restore_step(self):
-        for sandbox in await self.manager.list(self.executor.owner):
-            if sandbox.get("purpose", "task") == "task":
-                await self.manager.start_owned(self.executor.owner, sandbox["sandbox_id"])
 
     async def finalize_task(
         self,

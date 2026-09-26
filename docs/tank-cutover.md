@@ -107,6 +107,15 @@ generated and rendered a one-page Chinese PDF with embedded WenQuanYi fonts;
 the rendered page was visually checked, then that test guest was destroyed.
 No QQ process or production database role was changed for these tests.
 
+The first repaired live continuation (revision 3) then exposed a separate
+workspace bug: after an external operation completed, eager recovery started
+every retained VM belonging to the step, including older revisions. This hit
+the per-owner VM limit before the model could resume. Recovery now leaves
+VMs stopped until a tool addresses a specific workspace; artifact capture and
+upstream import also resume only their named VM with ownership checks intact.
+The quota is unchanged. Twenty-two focused contract, artifact and publication
+checks passed. Revision 3 remains recorded as partial, not a successful delivery.
+
 ## Initial bot cutover
 
 At the initial cutover, tank was the PostgreSQL primary and h610 its secondary;

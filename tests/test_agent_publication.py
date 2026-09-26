@@ -133,7 +133,7 @@ class PublicationWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.tools = {tool["function"]["name"]: tool for tool in definitions}
         self.run = self.store.create_run(self.task.task_id, self.step, allowed_tools=list(self.tools), model_profile="test")
         self.manager = Mock(create=AsyncMock(return_value={"sandbox_id": "s456abc"}), list=AsyncMock(return_value=[]),
-            install_readonly_file=AsyncMock(), read_file=AsyncMock(return_value=b"validated site"))
+            start_owned=AsyncMock(), install_readonly_file=AsyncMock(), read_file=AsyncMock(return_value=b"validated site"))
         self.executor = SimpleNamespace(owner=f"{self.packet.conversation_id}:task#{self.task.task_id}/publish",
             sandbox_manager=self.manager)
         self.workspaces = StepWorkspaces(Path(self.tmp.name), self.executor)

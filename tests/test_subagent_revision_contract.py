@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import json
+from unittest.mock import AsyncMock, Mock, patch
 from dataclasses import replace
 import unittest
 
 from tests import test_subagent_runtime_v2 as runtime
 from src.plugins.ai_chat.agent.control import LeaseLost
 from src.plugins.ai_chat.agent.execution import EntryDecision, ExecutionEntryError
-from src.plugins.ai_chat.subagents import TaskStep
+from src.plugins.ai_chat.subagents import AgentExecutionHooks, TaskStep
 
 
 class RevisionContractTests(unittest.IsolatedAsyncioTestCase):
@@ -103,3 +104,22 @@ class RevisionContractTests(unittest.IsolatedAsyncioTestCase):
                 contract={**old, "acceptance": [], "outcome_checks": []})
         self.assertEqual(self.store.control(task.task_id)["revision"], 1)
         self.assertEqual(self.store.get(task.task_id).plan["contract"], old)
+
+    async def test_resume_does_not_start_all_retained_workspaces(self):
+        task = self.submit()
+        step = TaskStep("pdf", "document", "finish PDF", "PDF")
+        run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="gpt-5.6-luna")
+        self.store.save_agent_session(task.task_id, run.run_id,
+            [{"role": "user", "content": "continue current workspace"}],
+            scope_key=task.scope_key, requester_user_id=task.requester_user_id,
+            model_profile="gpt-5.6-luna", expected_version=0)
+        workspaces = Mock()
+        workspaces.restore_step = AsyncMock(side_effect=RuntimeError("quota exhausted by old revisions"))
+        answer = json.dumps({"status": "success", "summary": "done", "artifacts": []})
+        with patch("src.plugins.ai_chat.subagents.ask_deepseek_with_tools", new=AsyncMock(return_value=answer)) as model:
+            outcome = await self.coordinator._run_step(task, step, run, context=self.packet,
+                upstream={}, selected_profile=self.catalog.default, tools_by_name={},
+                execute_tool=AsyncMock(), hooks=AgentExecutionHooks(workspaces=workspaces))
+        model.assert_awaited_once()
+        workspaces.restore_step.assert_not_awaited()
+        self.assertNotEqual(outcome.state, "failed")
