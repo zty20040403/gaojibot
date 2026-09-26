@@ -2,7 +2,8 @@
 
 This records the production cutover performed on 2026-09-26 (HKT) and the
 remaining acceptance gates. The bot runs on tank; the only QQ/NapCat process
-remains on h610. Tank is the PostgreSQL primary and h610 is its secondary.
+remains on h610. At cutover, tank was the PostgreSQL primary and h610 its secondary;
+the later network incident below changed those live roles.
 Tank uses the KVM sandbox backend, not Podman. The active Nix revision at
 cutover was `d9df721`, with bot revision `4149bc5`.
 
@@ -62,6 +63,38 @@ PostgreSQL instance. It verified schema revision `0029_native_ssh_operations`,
 The tank bot and primary database remained active, with h610 still replicating.
 This proves that backup was restorable at that time, independently of the
 earlier archive-read check.
+
+## Network interruption and empty-process startup on 2026-09-26
+
+Around 19:57 HKT, tank lost reliable connectivity to the monitor on h610.
+The monitor promoted h610; tank rewound and rejoined as a read-only node but
+remained in `catchingup`. Do not force tank writable while the monitor or
+replication is unavailable. At 20:45, h610 was still `wait_primary` and tank
+was still catching up. The migrated topology was therefore not healthy.
+
+Short probes at 20:41-20:45 observed 50-58% loss between their Tailscale IPs,
+70% loss to h610's public IPv4 and 90% to one of its public IPv6 addresses.
+Tank's local gateway and each host's independent probe to 223.5.5.5 had no
+loss in ten-packet samples. Tank to h310 had 90% loss, while h610 to h310 had
+none. Tank's router also lost six of eight probes to h610's public IPv4.
+These are samples, not proof of an ISP root cause, but they show that the
+failure is not confined to PostgreSQL or the Tailscale tunnel. NFS also
+logged timeouts. No database promotion was forced during diagnosis.
+
+The outage exposed a separate application bug: at 20:39, `ai_chat` failed
+to import after a database transaction timed out. NoneBot caught the import
+exception and the entrypoint still started Uvicorn. Systemd reported
+`active`, OneBot accepted connections, but `/metrics` returned 404 because
+the core plugin was absent. The entrypoint now exits unsuccessfully if the
+required plugin cannot load, allowing systemd to retry rather than leaving
+an empty server running.
+
+The shared database pool now supplies connection defaults for a three-second
+connection attempt, TCP keepalives (idle 10s, interval 5s, count 3), and
+`tcp_user_timeout=15000`. Explicit DSN values take precedence. The last
+option bounds unacknowledged transmitted data on supported platforms; it is
+not a 15-second SQL execution deadline. These settings help detect broken
+sockets and do not repair a lossy route or prove database recovery.
 
 ## Preparation procedure for a future cutover
 
