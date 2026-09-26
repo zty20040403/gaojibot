@@ -55,6 +55,14 @@ Running-service process-loss recovery and no-duplicate delivery after a real
 restart remain separate acceptance gates. Isolated recovery tests do not
 establish either gate in production.
 
+On 2026-09-26 at 19:25 HKT, the configured restore-check unit restored the
+newest `qq_bot-20260925T195159Z.dump` into its own network-disabled temporary
+PostgreSQL instance. It verified schema revision `0029_native_ssh_operations`,
+93 business tables and 29,725 messages, then removed the temporary instance.
+The tank bot and primary database remained active, with h610 still replicating.
+This proves that backup was restorable at that time, independently of the
+earlier archive-read check.
+
 ## Preparation procedure for a future cutover
 
 1. Fetch both Git origins and compare with local branches before merging. Do
