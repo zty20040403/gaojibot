@@ -44,5 +44,10 @@ The guest uses QEMU user-mode networking and can make outbound connections.
 It is not a network-isolated security boundary. Tank enabled VM mode during
 the cutover after its Podman image loader failed. A post-cutover disposable
 guest was created and destroyed as the bot's Unix user, and executed a command
-inside the guest. Running-service QQ file delivery remains an acceptance gate;
-this Unix-user smoke test does not prove the full systemd and QQ path.
+inside the guest. The later live task#175 generated and independently validated
+a PDF in tank KVM guests and obtained a QQ group-file receipt; its final task
+status and wording exposed separate defects, subsequently fixed. After the QQ
+transport also moved to tank, isolated real-QQ file-outbox process-loss tests
+passed. Neither result proves recovery of the running bot service or the fixed
+final report in a fresh model task. See `tank-cutover.md` for the distinct
+evidence and remaining gates.

@@ -51,6 +51,34 @@ Deployed systems after this switch:
 - h610: `/nix/store/pgbr6sn7774na3z5yh7iips9vzzzd59w-nixos-system-h610-26.05.20260911.21a67dc`
 - tank: `/nix/store/69mwzxj2gpi47yirwrn05cb7aqykfa5r-nixos-system-tank-26.05.20260911.21a67dc`
 
+## Tank file-transport recovery on 2026-09-27
+
+After tank QQ became online, the deployed code `3296d82` passed all five
+boundaries in `tools/live_file_outbox_acceptance.py` against the actual tank
+NapCat endpoint. This used a disposable PostgreSQL 17.11 instance with
+pgvector, a private Unix socket and no TCP listener, not the production HA
+database. Only owned test child processes received SIGKILL.
+
+- Queued and prepared files survived process loss and uploaded once on recovery.
+- An uploaded file whose acknowledgement had not been saved was found in QQ's
+  group-file list, without uploading it again.
+- A saved acknowledgement survived process loss and repeated recovery without
+  another upload.
+- A claim interrupted before upload remained `unknown`, with no QQ receipt and
+  no retransmission. This is deliberately unresolved: a recovered process
+  cannot assume an unacknowledged send never happened.
+
+The test verified four distinct group-file receipts and one upload per file.
+The test schema, database instance and temporary files were removed afterward.
+The bot and QQ services were not restarted. An initial setup attempt used the
+system-default PostgreSQL 16 package without pgvector and stopped at migration;
+it made zero uploads, and its stopped temporary database was removed too.
+
+This closes the isolated real-QQ file-outbox recovery check on tank. It does
+not establish interruption recovery of the running bot service, a fresh model
+task's PDF validation/final wording, or exactly-once delivery in every failure
+case. Those broader acceptance gates remain open.
+
 ## Initial bot cutover
 
 At the initial cutover, tank was the PostgreSQL primary and h610 its secondary;
