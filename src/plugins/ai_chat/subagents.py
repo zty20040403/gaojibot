@@ -2954,7 +2954,7 @@ class SubAgentCoordinator:
                         if isinstance(contract, Mapping)
                         else bool(_DELIVERY_REQUEST_PATTERN.search(task.objective))
                     )
-                    if delivery_required and not result.get("artifacts"):
+                    if delivery_required and not review_only and not result.get("artifacts"):
                         recovered = _single_observed_artifact(
                             allowed_evidence(), run.run_id, task.objective,
                         )

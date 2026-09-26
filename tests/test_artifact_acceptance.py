@@ -27,6 +27,7 @@ from src.plugins.ai_chat.subagents import (
     _acceptance_repair_target,
     _apply_completed_repairs,
     _delivery_outcomes,
+    _single_observed_artifact,
     _settled_task_status,
 )
 
@@ -213,6 +214,7 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def outcome(self, task, key="build", *, artifacts=(), dependencies=(), state="success"):
         step = TaskStep(key, "coder", key, "source archive", dependencies)
         run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
+        self.workspaces.capture = AsyncMock()
         result = {"status": state, "summary": key, "artifacts": list(artifacts)}
         self.store.finish_run(run.run_id, "succeeded" if state == "success" else state, result=result)
         return StepOutcome(step, run, result, DeepSeekTrace(), state)
@@ -309,6 +311,31 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.state, "failed")
         self.workspaces.capture.assert_not_awaited()
         self.assertEqual(result.result["artifacts"], [])
+
+    async def test_review_scratch_pdf_is_not_recovered_as_deliverable(self):
+        task = self.submit()
+        file = artifact()
+        step = TaskStep("review", "coder", "Check the PDF", "review", ("build",))
+        run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
+        self.workspaces.capture = AsyncMock()
+
+        async def model(text, history, tools, execute, **kwargs):
+            self.store.record_evidence(task.task_id, run.run_id, "sandbox_exec",
+                {"sandbox_id": "s183bee"}, {"ok": True, "observed_manifest": {
+                    "changed_workspace_paths": [f"tasks/{task.task_id}/steps/review/review.pdf"],
+                }})
+            return json.dumps({"status": "success", "summary": "PDF checked",
+                "artifacts": [], "metadata": {"artifact_reviews": [review_for(file)]}})
+
+        with patch("src.plugins.ai_chat.subagents.ask_deepseek_with_tools", side_effect=model):
+            result = await self.coordinator._run_step_reliably(task, step, run, context=self.packet,
+                upstream={"build": {"artifacts": [file]}}, selected_profile=self.catalog.default,
+                tools_by_name={}, execute_tool=self.execute, hooks=self.hooks, review_only=True)
+        self.assertEqual(result.state, "success")
+        self.assertEqual(result.result["artifacts"], [])
+        self.assertIsNotNone(_single_observed_artifact(
+            self.store.task_evidence(task.task_id, run_ids={run.run_id}), run.run_id, task.objective))
+        self.workspaces.capture.assert_not_awaited()
 
     async def test_workflow_sends_exact_passed_file_despite_failed_preview_acceptance(self):
         task = self.submit()
