@@ -2176,21 +2176,32 @@ class SubAgentCoordinator:
         final_profile = self._profile_for("supervisor", selected_profile)
         final_input = _synthesis_input(task.objective, completed) + "\n[宿主实际文件验收与附件交付状态]\n" + json.dumps({"validation": validation, "deliveries": delivery_results}, ensure_ascii=False)
         final_input += "\n上述 deliveries 只表示文件附件，不表示最终文字是否发送。你的回答正文随后由宿主持久消息队列发送；不要声称本文已发出或未发出。附件失败只能说附件失败。"
-        draft = validation.get("report_draft")
-        final_text = str(draft["text"]) if draft else await self._supervisor_text(
-            final_input,
-            [],
-            profile=final_profile,
-            tool_context=(
-                "你是 Sub-Agent 主控。检查各步骤是否真正完成原始目标，再给用户一个"
-                "直接、自然的最终答复。明确说明失败和未解决事项；不要暴露内部 JSON，"
-                "不要声称没有证据的工作已经完成。先用短句说明完成了什么、实际改动、"
-                "未完成事项和下一步；详细流水留在控制台，不加入无关吐槽。"
-                "这是本轮终态通知，不得承诺未登记的自动接续。仅 deliveries 中 state=queued 的附件"
-                "有持久重试；unknown/sending 仅核对回执，其他失败不会自动重做任务。"
-            ),
-            trace=final_trace,
+        contract = task.plan.get("contract", {})
+        file_report = (
+            isinstance(contract, Mapping)
+            and bool(contract.get("delivery_required"))
+            and isinstance(validation.get("task_outcome"), Mapping)
         )
+        draft = validation.get("report_draft")
+        if file_report:
+            final_text = ""
+        elif draft:
+            final_text = str(draft["text"])
+        else:
+            final_text = await self._supervisor_text(
+                final_input,
+                [],
+                profile=final_profile,
+                tool_context=(
+                    "你是 Sub-Agent 主控。检查各步骤是否真正完成原始目标，再给用户一个"
+                    "直接、自然的最终答复。明确说明失败和未解决事项；不要暴露内部 JSON，"
+                    "不要声称没有证据的工作已经完成。先用短句说明完成了什么、实际改动、"
+                    "未完成事项和下一步；详细流水留在控制台，不加入无关吐槽。"
+                    "这是本轮终态通知，不得承诺未登记的自动接续。仅 deliveries 中 state=queued 的附件"
+                    "有持久重试；unknown/sending 仅核对回执，其他失败不会自动重做任务。"
+                ),
+                trace=final_trace,
+            )
         _merge_trace(parent_trace, final_trace)
         report_narrative = final_text
         final_text = outcome_report(validation, report_narrative, delivery_results)
@@ -2289,8 +2300,11 @@ class SubAgentCoordinator:
         if hooks and hooks.operation_receipt:
             await link_operation_receipts(self.store, task, evidence_runs, hooks.operation_receipt)
         source_evidence = self.store.task_evidence(task.task_id, run_ids=evidence_runs)
+        # File delivery happens after acceptance, so a pre-delivery draft can become false
+        # between review and the final QQ upload receipt.
         draft = await self._prepare_report_draft(task, completed, contract, source_evidence,
-            selected_profile=selected_profile, parent_trace=parent_trace) if outcome_v2 and prepare_draft else None
+            selected_profile=selected_profile, parent_trace=parent_trace) if (
+                outcome_v2 and prepare_draft and not contract.get("delivery_required")) else None
         fingerprint = hashlib.sha256(json.dumps({"acceptance_version": ACCEPTANCE_VERSION,
             "report_draft_sha256": draft["sha256"] if draft else None,
             "evidence": evidence_fingerprint(source_evidence),

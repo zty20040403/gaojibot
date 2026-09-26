@@ -445,6 +445,44 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("待验收的精确正文", answer)
         self.assertEqual(self.store.get(task.task_id).result["report_narrative"], "待验收的精确正文")
 
+    async def test_file_report_uses_verified_receipt_instead_of_stale_draft(self):
+        task = self.submit()
+        payload = decision("workflow")
+        payload["delivery_required"] = True
+        contract = EntryDecision.parse(payload).contract.as_payload()
+        self.store.set_task_state(task.task_id, "running", plan={"contract": contract})
+        task = self.store.get(task.task_id)
+        step = TaskStep("inspect", "operator", "inspect", "facts")
+        run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
+        ref = self.store.record_evidence(task.task_id, run.run_id, "host_inspect", {}, {"ok": True, "value": 1})
+        source = StepOutcome(step, run, {"status": "success", "summary": "observed"}, DeepSeekTrace(), "success")
+
+        async def review(task, step, run, **kwargs):
+            self.assertNotIn("report_draft.text", step.objective)
+            return StepOutcome(step, run, {"status": "success", "summary": "checked",
+                "metadata": {"criterion_reviews": [{"criterion_index": 0, "status": "passed",
+                    "reason": "文件内容已核实", "evidence_refs": [ref["ref"]]}]}}, DeepSeekTrace(), "success")
+
+        with patch.object(self.coordinator, "_supervisor_text", new=AsyncMock(side_effect=AssertionError("early draft"))), \
+                patch.object(self.coordinator, "_run_step_reliably", side_effect=review):
+            validation = await self.coordinator._validate_workflow(task, {"inspect": source}, context=self.packet,
+                selected_profile=self.catalog.default, tools_by_name={}, execute_tool=AsyncMock(),
+                hooks=None, parent_trace=None, progress=None, prepare_draft=True)
+        self.assertEqual(validation["status"], "passed")
+        self.assertNotIn("report_draft", validation)
+        receipt = {"ok": True, "state": "acknowledged", "filename": "result.pdf"}
+        with patch.object(self.coordinator, "_validate_workflow", new=AsyncMock(return_value=validation)), \
+                patch.object(self.coordinator, "_deliver_requested_artifacts", new=AsyncMock(return_value=[receipt])), \
+                patch.object(self.coordinator, "_supervisor_text", new=AsyncMock(side_effect=AssertionError("stale narrative"))) as model:
+            answer = await self.coordinator._execute_workflow(task, steps=[], runs={}, context=self.packet,
+                selected_profile=self.catalog.default, tools_by_name={}, execute_tool=AsyncMock(),
+                parent_trace=None, progress=None, initial_completed={"inspect": source})
+        model.assert_not_awaited()
+        self.assertIn("文件交付：1/1 个已确认送达", answer)
+        self.assertNotIn("尚未发送", answer)
+        self.assertEqual(self.store.get(task.task_id).result["report_narrative"], "")
+        self.assertEqual(self.store.get(task.task_id).status, "completed")
+
     async def test_resumed_step_sees_latest_upstream_and_own_previous_snapshot(self):
         task = self.submit()
         step = TaskStep("code", "coder", "new color", "code")
