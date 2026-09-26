@@ -33,11 +33,27 @@ cutover was `d9df721`, with bot revision `4149bc5`.
   with a simulated QQ receipt. The test database and temporary files were
   removed afterward; this does not replace a live QQ receipt.
 
-The following still require a real QQ task and delivery receipt before the
-entire migration is considered accepted: file/PDF delivery, durable task
-replay in the running service, and confirmation from a real QQ receipt that
-the outbound queue neither drops nor duplicates that file. Passing isolated
-recovery tests and a successful group answer do not prove live file delivery.
+## Live PDF delivery on 2026-09-26
+
+Group 611798505 submitted task#175 to the tank bot. A tank KVM sandbox
+generated `tank_migration_acceptance.pdf` (one A4 page, 111,021 bytes). An
+independent sandbox imported the immutable snapshot and checked the page count,
+Chinese title extraction, embedded Noto Sans CJK fonts, PDF structure, rendered
+page and OCR. All four acceptance criteria and the artifact review passed.
+The durable file outbox recorded one acknowledged QQ group-file delivery:
+`kb-175-r1-5266d170f4-tank_migration_acceptance.pdf`, file ID
+`32516537cdca40f0ad53703b96305e91`, with no retry. This proves the live
+KVM-to-QQ file path for that task; it does not prove process-loss recovery.
+
+The historical task remains `partial` because the verifier's scratch
+`review.pdf` was incorrectly auto-recovered as a new deliverable. Its final
+text also reused a pre-delivery draft. Bot revisions `2756609` and `87d704c`
+removed those paths for future file tasks and passed focused regression tests;
+the old task and QQ file receipt were not rewritten or replayed. A new live
+file task is still needed to confirm the corrected final status and wording.
+Running-service process-loss recovery and no-duplicate delivery after a real
+restart remain separate acceptance gates. Isolated recovery tests do not
+establish either gate in production.
 
 ## Preparation procedure for a future cutover
 
@@ -94,8 +110,9 @@ recovery tests and a successful group answer do not prove live file delivery.
 5. Verify a group reply, a file/PDF delivery receipt, unfinished task replay,
    admin login, model request, metrics and database writes. Confirm the
    delivery queue is not dropping or duplicating messages. Check tank storage
-   and PostgreSQL replication again after real traffic. These end-to-end
-   gates remain open as described above.
+   and PostgreSQL replication again after real traffic. The group reply and
+   first live PDF receipt have been observed; the remaining gates are listed
+   above and must not be inferred from that one successful upload.
 
 ## Rollback
 
@@ -113,4 +130,5 @@ scoped to Gaoji and PostgreSQL's planned role change.
 KVM is enabled on tank and its VM disks belong on `/data/services/gaoji/vms`,
 not the tank system partition. Creation, execution and destruction were
 verified as the bot's Unix user, but QQ file-delivery acceptance through the
-running service is still required.
+running service was only established by the later task#175, not by this
+Unix-user smoke test.
