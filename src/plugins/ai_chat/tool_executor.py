@@ -2929,7 +2929,7 @@ class ToolExecutor(HandlerService):
                     control = coordinator.store.control(decision.task_id)
                     revised = coordinator.revise(decision.task_id, scope_key=scope_from_event(event).key,
                         requester_user_id=event.user_id, instruction=user_text, step_keys=decision.step_ids,
-                        expected_version=control["version"])
+                        expected_version=control["version"], contract=decision.contract.as_payload())
                     return f"task#{decision.task_id} 已追加第 {revised['revision']} 版修改，沿用原任务和各 Agent 的独立上下文。"
                 required_tool = RUN_SUBAGENTS_TOOL_NAME if decision.mode == "workflow" else DELEGATE_AGENT_TOOL_NAME
                 if not tool_enabled(required_tool):
@@ -2973,6 +2973,7 @@ class ToolExecutor(HandlerService):
                 if own_tasks:
                     context_parts.append("[当前用户可续作任务，只有明确续作本任务才选 revise]\n" + json.dumps([
                         {"task_id": t.task_id, "objective": t.objective[:600], "status": t.status,
+                         "contract": t.plan.get("contract", {}),
                          "steps": [{"id": r.step_key, "role": r.role, "objective": r.objective[:200]}
                             for r in self.context.subagent_store.runs(t.task_id) if not r.step_key.startswith("acceptance_r")]}
                         for t in own_tasks], ensure_ascii=False))

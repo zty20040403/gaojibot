@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from unittest.mock import AsyncMock
@@ -16,6 +17,16 @@ from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
 
 
 class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_vm_provisions_the_shared_cjk_pdf_helper(self):
+        config = json.loads(VmSandboxManager._cloud_config().split("\n", 1)[1])
+        for package in ("python3-reportlab", "python3-pypdf", "fonts-wqy-microhei", "poppler-utils"):
+            self.assertIn(package, config["packages"])
+        helper = config["write_files"][0]
+        self.assertEqual(helper["path"], "/usr/local/bin/gaoji-pdf")
+        self.assertEqual(helper["owner"], "root:root")
+        self.assertEqual(helper["permissions"], "0755")
+        compile(helper["content"], "gaoji-pdf", "exec")
+
     async def test_vm_exec_reports_created_workspace_files(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = VmSandboxManager(image=f"{directory}/image", root=directory)

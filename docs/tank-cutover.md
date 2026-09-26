@@ -79,6 +79,34 @@ not establish interruption recovery of the running bot service, a fresh model
 task's PDF validation/final wording, or exactly-once delivery in every failure
 case. Those broader acceptance gates remain open.
 
+## Live revised PDF task on 2026-09-27
+
+The owner's next real request was routed as revision 2 of task#175. The new
+PDF `tank_full_migration_acceptance.pdf` was generated in a tank KVM sandbox
+and independently checked: one A4 page, correct title, embedded Noto CJK
+fonts, valid qpdf structure and a successful raster render. Its 119,086 bytes
+have SHA-256 `b716e181db1a582296fe75c287f42ebc2723a62ae3bd0d21582ff5b298fa50de`.
+The revision's QQ file outbox records `acknowledged`, one attempt, and a
+reconciled group-file receipt. This is an actual delivered file, not just a
+valid sandbox artifact.
+
+The task nevertheless ended `partial`: the entry router requested the new
+title but the coordinator retained the original title in its acceptance
+contract. The reviewer correctly reported that contradiction. The repair
+passes a complete revision contract through the entry path, archives the old
+contract, and refreshes console revisions durably before workers run. Worker
+context also replaces the original acceptance constraints. Existing partial
+history is not rewritten as success.
+
+The same run exposed that new KVM guests lacked the `gaoji-pdf` helper already
+available in OCI sandboxes. Both backends now share that implementation;
+new KVM guests provision its lightweight Python, CJK font and PDF inspection
+dependencies. Eleven focused checks passed, including concurrent revision
+fencing and current-contract worker context. A separate real KVM guest
+generated and rendered a one-page Chinese PDF with embedded WenQuanYi fonts;
+the rendered page was visually checked, then that test guest was destroyed.
+No QQ process or production database role was changed for these tests.
+
 ## Initial bot cutover
 
 At the initial cutover, tank was the PostgreSQL primary and h610 its secondary;

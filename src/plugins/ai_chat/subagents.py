@@ -1252,7 +1252,8 @@ class SubAgentCoordinator:
 
     def revise(self, task_id: int, *, scope_key: str, requester_user_id: int, instruction: str,
                step_keys: Sequence[str], expected_version: int,
-               file_delivery_required: bool | None = None) -> dict[str, Any]:
+               file_delivery_required: bool | None = None,
+               contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
         task = self.store.get(task_id)
         if task is None or task.scope_key != scope_key or task.requester_user_id != requester_user_id:
             raise ValueError("Cannot revise a task belonging to another user or conversation")
@@ -1277,6 +1278,10 @@ class SubAgentCoordinator:
             selected = expanded
         if expected_version != control["version"]:
             raise ValueError("Task version changed; refresh before revising")
+        if contract is not None:
+            contract = self._revision_contract(task_id, step_keys, contract)
+            if file_delivery_required is not None:
+                contract["delivery_required"] = file_delivery_required
         updated = {**control, "version": expected_version + 1, "revision": control["revision"] + 1}
         updated["dispatch"] = {**control["dispatch"], "deadline": int(time.time()) + self.timeout_seconds + 900}
         retired = {r.step_key for r in runs if r.step_key.startswith("acceptance_r")
@@ -1284,8 +1289,19 @@ class SubAgentCoordinator:
         checkpoint = {"revision": updated["revision"], "instruction": instruction, "steps": sorted(selected),
             "previous_result": task.result, "previous_runs": [{"run_id": r.run_id, "result": r.result, "status": r.status} for r in runs]}
         plan = dict(task.plan)
+        checkpoint["previous_contract"] = plan.get("contract", {})
+        if contract is not None:
+            plan["contract"] = contract
+            plan.pop("contract_refresh", None)
+            checkpoint["contract"] = contract
+        else:
+            # Console revisions have no entry-model contract. Refresh it durably
+            # before running workers, never verify new output against old criteria.
+            plan["contract_refresh"] = {
+                "revision": updated["revision"], "instruction": instruction,
+                "step_ids": list(step_keys), "file_delivery_required": file_delivery_required,
+            }
         if file_delivery_required is not None:
-            checkpoint["previous_contract"] = plan.get("contract", {})
             plan["contract"] = {**plan.get("contract", {}), "delivery_required": file_delivery_required}
             checkpoint["file_delivery_required"] = file_delivery_required
         with self.store._transaction() as cursor:
@@ -1339,6 +1355,64 @@ class SubAgentCoordinator:
         if self.dispatcher:
             self.dispatcher.enqueue(task_id)
         return updated
+
+    @staticmethod
+    def _revision_contract(task_id, step_keys, contract):
+        decision = EntryDecision.parse({
+            **dict(contract), "mode": "revise", "task_type": "execution",
+            "reason": "Update the current task contract", "answer": "", "steps": [],
+            "task_id": task_id, "step_ids": list(step_keys),
+        })
+        return decision.contract.as_payload()
+
+    async def _refresh_revision_contract(self, task, selected_profile, parent_trace):
+        pending = task.plan.get("contract_refresh")
+        if not pending:
+            return task
+        control = self.store.control(task.task_id)
+        if pending["revision"] != control["revision"]:
+            raise LeaseLost("Task revision changed before contract refresh")
+        prompt = (ENTRY_PROMPT + "\n只更新当前任务的完整验收合同，mode 必须为 revise，steps 留空。"
+            "不能删除用户未取消的要求，不能把已知失败改成更宽松的验收以便通过。"
+            "最新修订明确替换的字段必须更新；任务作用域和权限不会随合同扩大。"
+            "返回 decide_execution 参数 JSON：\n"
+            + json.dumps(DECISION_TOOL["function"]["parameters"], ensure_ascii=False))
+        request = json.dumps({"task_id": task.task_id, "step_ids": pending["step_ids"],
+            "previous_contract": task.plan.get("contract", {}), "objective": task.objective,
+            "revision": pending}, ensure_ascii=False)
+        for attempt in range(2):
+            trace = DeepSeekTrace()
+            try:
+                raw = await self._supervisor_json(prompt, request,
+                    profile=self._profile_for("supervisor", selected_profile), trace=trace)
+            finally:
+                _merge_trace(parent_trace, trace)
+            try:
+                decision = EntryDecision.parse(raw)
+                if (decision.mode != "revise" or decision.task_id != task.task_id
+                        or set(decision.step_ids) != set(pending["step_ids"])):
+                    raise ValueError("Revision planner changed task or step identity")
+                contract = decision.contract.as_payload()
+                break
+            except ValueError as exc:
+                if attempt:
+                    raise ExecutionEntryError(f"Revision contract invalid: {exc}") from exc
+                prompt += f"\n修正格式错误：{exc}"
+        if pending.get("file_delivery_required") is not None:
+            contract["delivery_required"] = pending["file_delivery_required"]
+        plan = {**task.plan, "contract": contract}
+        plan.pop("contract_refresh")
+        with self.store._transaction() as cursor:
+            cursor.execute("""UPDATE subagent_tasks SET plan_json=? WHERE task_id=?
+                AND plan_json=? AND EXISTS (SELECT 1 FROM subagent_controls
+                    WHERE task_id=? AND revision=? AND version=?)""",
+                (_json_dump(plan), task.task_id, _json_dump(task.plan), task.task_id,
+                 control["revision"], control["version"]))
+            if cursor.rowcount != 1:
+                raise LeaseLost("Task changed during contract refresh")
+        self.store.append_checkpoint(task.task_id, "revision_contract_refreshed",
+            {"revision": control["revision"], "contract": contract})
+        return self.store.get(task.task_id)
 
     @staticmethod
     def manifest() -> list[dict[str, object]]:
@@ -1930,6 +2004,19 @@ class SubAgentCoordinator:
         progress: ProgressCallback | None,
         hooks: AgentExecutionHooks | None,
     ) -> str:
+        task = await self._refresh_revision_contract(task, selected_profile, parent_trace)
+        revisions = self.store.revision_checkpoints(task.task_id)
+        if revisions and task.plan.get("contract"):
+            contract = task.plan["contract"]
+            old_constraints = {value for item in revisions
+                for value in item["state"].get("previous_contract", {}).get("constraints", [])}
+            context = replace(context, objective=contract["objective"], constraints=tuple([
+                value for value in context.constraints if value not in old_constraints
+                and not value.startswith(("交付物：", "验收："))
+            ] + list(contract.get("constraints", [])) + [
+                "交付物：" + "；".join(contract["deliverables"]),
+                "验收：" + "；".join(contract["acceptance"]),
+            ]))
         stored_runs = _workflow_runs(self.store.runs(task.task_id))
         if not stored_runs:
             self.store.append_event(

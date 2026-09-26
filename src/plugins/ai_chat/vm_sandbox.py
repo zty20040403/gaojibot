@@ -112,6 +112,22 @@ with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
 class VmSandboxManager:
     backend = "vm"
 
+    @staticmethod
+    def _cloud_config() -> str:
+        # Keep the PDF helper identical in OCI and VM sandboxes.
+        helper = Path(__file__).with_name("sandbox_pdf.py").read_text(encoding="utf-8")
+        return "#cloud-config\n" + json.dumps({
+            "package_update": True,
+            "packages": ["qemu-guest-agent", "python3", "git", "curl", "zip", "unzip",
+                "python3-reportlab", "python3-pypdf", "fonts-wqy-microhei",
+                "fontconfig", "poppler-utils", "qpdf"],
+            "users": ["default", {"name": "sandbox", "uid": 1000, "shell": "/bin/bash"}],
+            "write_files": [{"path": "/usr/local/bin/gaoji-pdf", "permissions": "0755",
+                "owner": "root:root", "content": "#!/usr/bin/python3\n" + helper}],
+            "runcmd": [["systemctl", "enable", "--now", "qemu-guest-agent"],
+                ["mkdir", "-p", "/workspace"], ["chown", "sandbox:sandbox", "/workspace"]],
+        }, ensure_ascii=False)
+
     def __init__(
         self,
         *,
@@ -359,25 +375,7 @@ class VmSandboxManager:
                     "qemu-img", "create", "-f", "qcow2", "-b", str(self.image),
                     "-F", "qcow2", str(directory / "disk.qcow2"), f"{self.disk_gib}G",
                 )
-                (directory / "user-data").write_text("""#cloud-config
-package_update: true
-packages:
-  - qemu-guest-agent
-  - python3
-  - git
-  - curl
-  - zip
-  - unzip
-users:
-  - default
-  - name: sandbox
-    uid: 1000
-    shell: /bin/bash
-runcmd:
-  - [systemctl, enable, --now, qemu-guest-agent]
-  - [mkdir, -p, /workspace]
-  - [chown, sandbox:sandbox, /workspace]
-""", encoding="utf-8")
+                (directory / "user-data").write_text(self._cloud_config(), encoding="utf-8")
                 (directory / "meta-data").write_text(
                     f"instance-id: {self._name(sandbox_id)}\n"
                     f"local-hostname: {self._name(sandbox_id)}\n", encoding="utf-8",
