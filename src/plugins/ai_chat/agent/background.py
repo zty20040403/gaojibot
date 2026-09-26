@@ -361,6 +361,10 @@ class SubAgentDispatcher:
             text = (f"{task.handle}（第 {control['revision']} 版）文件回执更新："
                 f"QQ 群文件已确认收到 {len(names)} 个文件，无需重复上传。\n"
                 + "\n".join(names[:5]) + "\n其他未完成事项仍以原报告为准。")
+            drafts = [item for item in summary["confirmed"] if item.get("draft")]
+            if drafts:
+                text += "\n本次包含未完成草稿，文件收到不等于内容验收通过。\n" + "\n".join(
+                    str(item.get("draft_reason") or "内容尚未全部核实")[:500] for item in drafts[:5])
             body = decode_onebot_message(Message(MessageSegment.text(text))).body
             delivery, _ = outbox.enqueue(
                 idempotency_key=f"subagent-final:{task_id}:{control['revision']}:file-receipts",

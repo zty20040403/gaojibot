@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from pathlib import PurePosixPath
 import re
 from typing import Any
 
@@ -89,3 +90,23 @@ def artifact_delivery_allowed(artifact: Mapping[str, Any], validation: Mapping[s
         return bool(key and len(matching) == 1 and matching[0].get("status") == "passed")
     # Compatibility for already-completed legacy acceptance, never a failed review.
     return validation.get("status") == "passed"
+
+
+def artifact_draft_allowed(artifact: Mapping[str, Any], validation: Mapping[str, Any]) -> bool:
+    """Content may be incomplete, but the exact snapshot must still be readable."""
+    digest = str(artifact.get("snapshot") or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", digest):
+        return False
+    checks = validation.get("checks", [])
+    if not isinstance(checks, list):
+        return False
+    matching = [c for c in checks if isinstance(c, Mapping) and c.get("artifact_key") == digest]
+    if len(matching) != 1 or matching[0].get("ok") is not True:
+        return False
+    required = {"nonempty", "sha256"}
+    if PurePosixPath(str(artifact.get("name", ""))).suffix.lower() in {
+        ".pdf", ".zip", ".docx", ".xlsx", ".pptx", ".png",
+    }:
+        required.add("format")
+    performed = matching[0].get("checks")
+    return isinstance(performed, list) and required.issubset(performed)

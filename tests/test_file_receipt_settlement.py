@@ -92,6 +92,19 @@ class FileReceiptSettlementTests(unittest.TestCase):
         self.dispatcher.settle_file_receipts(self.task.task_id)
         self.assertEqual(self.store.get(self.task.task_id).status, "completed")
 
+    def test_draft_receipt_cannot_promote_task_to_completed(self):
+        with self.store._transaction() as cursor:
+            cursor.execute("DELETE FROM subagent_deliveries WHERE task_id=?", (self.task.task_id,))
+        self.store.begin_delivery(self.task.task_id, "digest", self.payload)
+        self.store.finish_delivery(self.task.task_id, "digest", "acknowledged",
+            {**self.payload, "ok": True, "draft": True, "draft_reason": "价格未核实"})
+        self.result.update(execution_state="succeeded", validation={"acceptance": {"status": "passed"}})
+        self.store.set_task_state(self.task.task_id, "partial", result=self.result)
+        notice = self.dispatcher.settle_file_receipts(self.task.task_id)
+        self.assertEqual(self.store.get(self.task.task_id).status, "partial")
+        self.assertIn("未完成草稿", str(notice.body))
+        self.assertIn("价格未核实", str(notice.body))
+
     def test_unverified_acceptance_cannot_be_promoted(self):
         self.result.update(execution_state="succeeded", validation={"acceptance": "not_independently_verified"})
         self.store.set_task_state(self.task.task_id, "partial", result=self.result)

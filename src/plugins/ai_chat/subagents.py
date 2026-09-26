@@ -35,7 +35,7 @@ from .agent.outcomes import (acceptance_blocks_completion, acceptance_feedback, 
                              outcome_report, validate_report)
 from .agent.file_outbox import FileOutboxStoreMixin, attempt_file
 from .agent.artifact_acceptance import (
-    ACCEPTANCE_VERSION, artifact_delivery_allowed, artifact_identity, artifact_verdicts,
+    ACCEPTANCE_VERSION, artifact_delivery_allowed, artifact_draft_allowed, artifact_identity, artifact_verdicts,
     separate_review_artifacts,
 )
 from .agent.model_routing import agent_profile_names, choose_agent_profile, scoped_agent_models, model_scope_for_role, validate_model_policy
@@ -355,6 +355,41 @@ class SubAgentStore(AgentSessionStoreMixin, TaskControlStoreMixin, ExternalStore
             run_id=run.run_id,
         )
         return run
+
+    def plan_repair(self, task_id: int, target: str, specs: Sequence[tuple[TaskStep, Sequence[str], str]],
+                    *, reason: str) -> list[RunRecord]:
+        """Persist the entire repair chain before any specialist can start."""
+        if not specs:
+            raise ValueError("A repair plan needs at least one step")
+        timestamp = int(time.time())
+        runs = []
+        with self._transaction() as cursor:
+            lock = "" if self._legacy_sqlite else " FOR UPDATE"
+            row = cursor.execute("SELECT plan_json FROM subagent_tasks WHERE task_id=?" + lock, (task_id,)).fetchone()
+            plan = _json_object(row["plan_json"])
+            adaptive = list(plan.get("adaptive_steps", []))
+            for index, (step, allowed, profile) in enumerate(specs):
+                row = cursor.execute("""INSERT INTO subagent_runs
+                    (task_id, step_key, role, objective, deliverable, dependencies_json, allowed_tools_json,
+                     model_profile, status, attempt, result_json, last_error, created_at, started_at, finished_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '{}', '', ?, NULL, NULL) RETURNING *""",
+                    (task_id, step.key, step.role, step.objective, step.deliverable,
+                     _json_dump(list(step.dependencies)), _json_dump(list(allowed)), profile, timestamp)).fetchone()
+                runs.append(self._run_row(row))
+                adaptive.append({**_step_payload(step), "reason": reason,
+                    "replaces" if index == len(specs) - 1 else "supports": target})
+            plan["adaptive_steps"] = adaptive
+            cursor.execute("UPDATE subagent_tasks SET plan_json=?, status='running', updated_at=?, finished_at=NULL WHERE task_id=?",
+                           (_json_dump(plan), timestamp, task_id))
+            sequence = int(cursor.execute("SELECT COALESCE(MAX(sequence),0) AS n FROM subagent_checkpoints WHERE task_id=?",
+                                          (task_id,)).fetchone()["n"]) + 1
+            cursor.execute("""INSERT INTO subagent_checkpoints (task_id, run_id, sequence, phase, state_json, created_at)
+                VALUES (?, ?, ?, 'adaptive_repair_planned', ?, ?)""", (task_id, runs[-1].run_id, sequence,
+                _json_dump({"failed_step": target, "repair_step": _step_payload(specs[-1][0]),
+                    "repair_run_id": runs[-1].run_id, "chain_run_ids": [r.run_id for r in runs], "reason": reason}), timestamp))
+        for run in runs:
+            self.append_event(task_id, "run.created", {"run_id": run.run_id, "step": run.step_key, "role": run.role}, run_id=run.run_id)
+        return runs
 
     def start_run(self, run_id: int, *, now: int | None = None, continuation: bool = False) -> bool:
         timestamp = int(time.time() if now is None else now)
@@ -1272,7 +1307,7 @@ class SubAgentCoordinator:
             raise ValueError("Select existing steps to revise")
         while True:
             expanded = selected | {r.step_key for r in runs
-                if set(r.dependencies) & selected or _repair_target(r.step_key) in selected}
+                if set(r.dependencies) & selected or (_repair_target(r.step_key) or _repair_support_target(r.step_key)) in selected}
             if expanded == selected:
                 break
             selected = expanded
@@ -1285,7 +1320,7 @@ class SubAgentCoordinator:
         updated = {**control, "version": expected_version + 1, "revision": control["revision"] + 1}
         updated["dispatch"] = {**control["dispatch"], "deadline": int(time.time()) + self.timeout_seconds + 900}
         retired = {r.step_key for r in runs if r.step_key.startswith("acceptance_r")
-            or _repair_target(r.step_key) in selected}
+            or (_repair_target(r.step_key) or _repair_support_target(r.step_key)) in selected}
         checkpoint = {"revision": updated["revision"], "instruction": instruction, "steps": sorted(selected),
             "previous_result": task.result, "previous_runs": [{"run_id": r.run_id, "result": r.result, "status": r.status} for r in runs]}
         plan = dict(task.plan)
@@ -2157,7 +2192,7 @@ class SubAgentCoordinator:
         hooks: AgentExecutionHooks | None = None,
     ) -> str:
         completed: dict[str, StepOutcome] = dict(initial_completed or {})
-        _apply_completed_repairs(completed)
+        _apply_completed_repairs(completed, require_artifacts=bool(task.plan.get("contract", {}).get("delivery_required")))
         pending = {step.key: step for step in steps}
         for key in completed:
             pending.pop(key, None)
@@ -2236,10 +2271,9 @@ class SubAgentCoordinator:
                     hooks=hooks, repair_number=repair_sequence)
                 if repaired is not None and repaired.state == "waiting":
                     raise ExternalPending()
-                if attempted and repaired is not None and repaired.usable:
-                    repaired = _repair_with_evidence(target, repaired)
-                    completed[target.step.key] = repaired
-                    completed[repaired.step.key] = repaired
+                if attempted and repaired is not None:
+                    _record_repair(completed, target, repaired,
+                        require_artifacts=bool(task.plan.get("contract", {}).get("delivery_required")))
                     validation = await self._validate_workflow(task, completed, context=context,
                         selected_profile=selected_profile, tools_by_name=tools_by_name,
                         execute_tool=tracked_execute_tool, hooks=hooks, parent_trace=parent_trace, progress=progress,
@@ -2538,16 +2572,13 @@ class SubAgentCoordinator:
                 outcomes.append(outcome)
                 completed[outcome.step.key] = outcome
                 repaired_step = _repair_target(outcome.step.key)
-                if repaired_step and outcome.usable:
-                    outcome = _repair_with_evidence(completed.get(repaired_step), outcome)
-                    completed[outcome.step.key] = outcome
-                    completed[repaired_step] = outcome
+                if repaired_step:
+                    _record_repair(completed, completed.get(repaired_step), outcome,
+                        require_artifacts=bool(task.plan.get("contract", {}).get("delivery_required")))
                 _merge_trace(parent_trace, outcome.trace)
                 if repair is not None:
-                    repair = _repair_with_evidence(outcome, repair)
-                    completed[repair.step.key] = repair
-                    if repair.usable:
-                        completed[outcome.step.key] = repair
+                    _record_repair(completed, outcome, repair,
+                        require_artifacts=bool(task.plan.get("contract", {}).get("delivery_required")))
             self.store.append_checkpoint(
                 task.task_id,
                 "step_completed",
@@ -2648,60 +2679,41 @@ class SubAgentCoordinator:
             )[:1000],
             dependencies=failed.step.dependencies,
         )
-        spec = self.registry.worker(role)
-        profile = self._profile_for(role, selected_profile)
-        run = self.store.create_run(
-            task.task_id,
-            repair_step,
-            allowed_tools=sorted(spec.allowed_tools & tools_by_name.keys()),
-            model_profile=profile.name,
-        )
-        current_plan = dict(self.store.get(task.task_id).plan)  # type: ignore[union-attr]
-        adaptive_steps = list(current_plan.get("adaptive_steps") or [])
-        adaptive_steps.append(
-            {
-                **_step_payload(repair_step),
-                "depends_on": [failed.step.key],
-                "replaces": failed.step.key,
-                "reason": str(decision.get("reason") or "")[:1000],
-            }
-        )
-        current_plan["adaptive_steps"] = adaptive_steps
-        self.store.set_task_state(task.task_id, "running", plan=current_plan)
-        self.store.append_checkpoint(
-            task.task_id,
-            "adaptive_repair_planned",
-            {
-                "failed_step": failed.step.key,
-                "repair_step": _step_payload(repair_step),
-                "repair_run_id": run.run_id,
-                "reason": str(decision.get("reason") or "")[:1000],
-            },
-            run_id=run.run_id,
-        )
+        file_repair = bool(task.plan.get("contract", {}).get("delivery_required")) and _file_producer(failed)
+        chain = [repair_step]
+        if file_repair:
+            rewrite = (
+                "修订原文件并返回实际文件产物句柄，不要只返回调查文字。原步骤：" + failed.step.objective
+                + "\n本次缺陷：" + objective + "\n原交付标准：" + failed.step.deliverable
+                + "\n使用获准的原文件和补查证据；无法核实的内容明确标注，不得编造或冒充已核实。"
+                "尽量保留已完成内容，修订后由宿主独立验收和交付；不要自行重复上传。"
+            )
+            if role != failed.step.role:
+                support = replace(repair_step, key=repair_key + "_sources")
+                chain = [support, replace(repair_step, role=failed.step.role, objective=rewrite[:4000],
+                    deliverable=failed.step.deliverable, dependencies=(*failed.step.dependencies, support.key))]
+            else:
+                chain = [replace(repair_step, objective=rewrite[:4000], deliverable=failed.step.deliverable)]
+        runs = self.store.plan_repair(task.task_id, failed.step.key, [
+            (step, sorted(self.registry.worker(step.role).allowed_tools & tools_by_name.keys()),
+             self._profile_for(step.role, selected_profile).name) for step in chain
+        ], reason=str(decision.get("reason") or "")[:1000])
         await self._notify_progress(
             progress,
-            f"{task.handle} · 主控 Agent：{failed.step.key} 失败，已追加一次受限修复。",
+            f"{task.handle} · 主控 Agent：" + ("先补查资料，再修订原文件并重新验收。" if len(chain) > 1 else "已追加一次受限修复。"),
         )
-        upstream = {
-            dependency: completed[dependency].result
-            for dependency in repair_step.dependencies
-            if dependency in completed
-        }
-        upstream["failed_attempt"] = failed.result
-        repair = await self._run_step_reliably(
-            task,
-            repair_step,
-            run,
-            context=context,
-            upstream=upstream,
-            selected_profile=selected_profile,
-            tools_by_name=tools_by_name,
-            execute_tool=execute_tool,
-            hooks=hooks,
-        )
-        if repair.state == "waiting":
-            return True, repair
+        available = dict(completed)
+        for step, run in zip(chain, runs):
+            if any(not available[key].usable and not available[key].step.optional for key in step.dependencies):
+                repair = self._skip_step(task, step, run, available)
+            else:
+                repair = await self._run_step_reliably(task, step, run, context=context,
+                    upstream={**{key: available[key].result for key in step.dependencies}, "failed_attempt": failed.result},
+                    selected_profile=selected_profile, tools_by_name=tools_by_name, execute_tool=execute_tool, hooks=hooks)
+            if repair.state == "waiting":
+                return True, repair
+            available[step.key] = repair
+            _merge_trace(parent_trace, repair.trace)
         repair.result.setdefault("metadata", {})["replaces_step"] = failed.step.key
         self.store.append_checkpoint(
             task.task_id,
@@ -2714,7 +2726,6 @@ class SubAgentCoordinator:
             },
             run_id=repair.run.run_id,
         )
-        _merge_trace(parent_trace, repair.trace)
         return True, repair
 
     async def _deliver_requested_artifacts(
@@ -2759,15 +2770,23 @@ class SubAgentCoordinator:
                 if parsed is None or identity in seen:
                     continue
                 seen.add(identity)
-                if validation is not None and not artifact_delivery_allowed(raw_artifact, validation):
+                draft = validation is not None and not artifact_delivery_allowed(raw_artifact, validation)
+                if draft and not artifact_draft_allowed(raw_artifact, validation):
                     deliveries.append({"ok": False, "state": "validation_failed", "handle": handle,
                         "filename": raw_artifact.get("name", ""),
-                        "error": "此文件尚未通过独立验收，未发送；不影响其他已通过的文件。"})
+                        "error": "此文件尚未通过完整性或格式检查，不能作为可用草稿发送。"})
                     continue
+                if draft:
+                    reasons = [str(review.get("reason") or "") for review in validation.get("artifacts", [])
+                        if review.get("artifact_key") == identity and review.get("status") != "passed"]
+                    raw_artifact = {**raw_artifact, "draft": True,
+                        "draft_reason": ("；".join(filter(None, reasons)) or "内容尚未全部验收通过，请勿当作最终结论")[:1000]}
                 sandbox_id, path = parsed
                 filename = str(raw_artifact.get("name") or "").strip()
                 if raw_artifact.get("snapshot"):
                     filename = f"kb-{task.task_id}-r{self.store.control(task.task_id)['revision']}-{raw_artifact['snapshot'][:10]}-{filename}"
+                if draft:
+                    filename = "未完成草稿-" + filename
                 if raw_artifact.get("snapshot") and hooks and hooks.workspaces and isinstance(contract, Mapping) and contract.get("version", 1) >= 2:
                     queued = self.store.queue_file(task.task_id, raw_artifact, filename)
                     payload = await attempt_file(self.store, task.task_id, queued,
@@ -2835,6 +2854,8 @@ class SubAgentCoordinator:
                     payload.setdefault("handle", handle)
                     payload.setdefault("filename", filename)
                     payload.setdefault("size", raw_artifact.get("size"))
+                    if draft:
+                        payload.update(draft=True, draft_reason=raw_artifact["draft_reason"])
                     self.store.finish_delivery(task.task_id, delivery_key, "acknowledged" if payload.get("ok") else "unknown", payload)
                 raw_artifact["delivery"] = payload
                 deliveries.append(payload)
@@ -2884,6 +2905,12 @@ class SubAgentCoordinator:
     ) -> StepOutcome:
         profile = self._profile_for(step.role, selected_profile)
         spec = self.registry.worker(step.role)
+        # Restore the original artifact handoff even after a process restart.
+        repair_target = _repair_target(step.key) or _repair_support_target(step.key)
+        if repair_target and "failed_attempt" not in upstream:
+            original = next((r for r in self.store.runs(task.task_id) if r.step_key == repair_target), None)
+            if original is not None:
+                upstream = {**upstream, "failed_attempt": original.result}
         revisions = self.store.revision_checkpoints(task.task_id)
         revision = revisions[-1]["state"] if revisions else None
         if revision:
@@ -3600,6 +3627,10 @@ def _repair_planner_prompt(registry: AgentRegistry) -> str:
 也不要为了看起来积极而盲目重试。可用角色：
 {roles}
 
+修复必须保留原步骤的交付职责。文件任务需要新文件，不能把调查文字当作文件修复完成。
+若文件缺陷需要另一种角色先补查资料，可以选择该角色；宿主会持久化“补查 → 原角色修订文件”两步。
+来源不可用时尝试其他可访问的具体来源，不要反复搜索带有猜测价格的查询来证明原猜测。
+
 输出 JSON：
 {{"action":"repair 或 accept_failure","role":"researcher","objective":"可独立验收的修复目标","deliverable":"交付标准","reason":"原因"}}"""
 
@@ -3618,18 +3649,42 @@ def _repair_target(step_key: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _repair_support_target(step_key: str) -> str | None:
+    match = re.fullmatch(r"(.+)__repair_[1-9][0-9]*_sources", step_key)
+    return match.group(1) if match else None
+
+
 def _workflow_runs(runs: Sequence[RunRecord]) -> list[RunRecord]:
     return [run for run in runs if not run.step_key.startswith("acceptance_r")
         and not run.result.get("metadata", {}).get("superseded_by_revision")]
 
 
-def _apply_completed_repairs(completed: dict[str, StepOutcome]) -> None:
+def _file_producer(outcome: StepOutcome) -> bool:
+    return bool(outcome.result.get("artifacts")) or outcome.step.role in {"document", "coder", "media"}
+
+
+def _record_repair(completed: dict[str, StepOutcome], previous: StepOutcome | None,
+                   repair: StepOutcome, *, require_artifacts: bool = False) -> None:
+    target = _repair_target(repair.step.key)
+    combined = _repair_with_evidence(previous, repair)
+    completed[repair.step.key] = combined
+    if not target:
+        return
+    needs_file = require_artifacts and previous is not None and _file_producer(previous)
+    if repair.usable and (not needs_file or repair.result.get("artifacts")):
+        completed[target] = combined
+    elif needs_file and previous is not None:
+        # Keep the actual draft, but never promote its rejected contents to passed.
+        completed[target] = replace(previous, state="partial", result={**previous.result, "status": "partial",
+            "metadata": {**previous.result.get("metadata", {}), "repair_pending": True,
+                "repair_reason": "补救未产出可替换文件，原文件保留为未完成草稿。"}})
+
+
+def _apply_completed_repairs(completed: dict[str, StepOutcome], *, require_artifacts: bool = False) -> None:
     for key, outcome in tuple(completed.items()):
         target = _repair_target(key)
-        if target and outcome.usable:
-            outcome = _repair_with_evidence(completed.get(target), outcome)
-            completed[key] = outcome
-            completed[target] = outcome
+        if target:
+            _record_repair(completed, completed.get(target), outcome, require_artifacts=require_artifacts)
 
 
 def _repair_with_evidence(previous: StepOutcome | None, repair: StepOutcome) -> StepOutcome:
@@ -3821,10 +3876,11 @@ def _delivery_outcomes(
         outcome for outcome in completed.values()
         if outcome.state != "failed" and isinstance(outcome.result.get("artifacts"), list)
         and outcome.result.get("artifacts")
+        and not _repair_support_target(outcome.step.key)
     ]
     repairs = [
         outcome for outcome in with_artifacts
-        if "__repair_" in outcome.step.key
+        if _repair_target(outcome.step.key)
     ]
     if repairs:
         replaced = {_repair_target(outcome.step.key) for outcome in repairs}
@@ -4042,7 +4098,7 @@ def _settled_task_status(
     deliveries: Sequence[Mapping[str, Any]],
     validation: Mapping[str, Any],
 ) -> Literal["completed", "partial"]:
-    delivery_failed = any(item.get("ok") is not True for item in deliveries)
+    delivery_failed = any(item.get("ok") is not True or item.get("draft") is True for item in deliveries)
     repaired = {_repair_target(outcome.step.key) for outcome in outcomes if outcome.succeeded}
     unresolved_failure = any(outcome.state in {"failed", "skipped"} and not outcome.step.optional
         and outcome.step.key not in repaired for outcome in outcomes)

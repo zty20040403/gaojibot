@@ -115,7 +115,7 @@ def outcome_report(validation: Mapping[str, Any], narrative: str = "", deliverie
     rows = matrix.get("criteria", [])
     passed = sum(row.get("status") == "passed" for row in rows)
     criteria_passed = bool(rows) and passed == len(rows) and matrix.get("status") == "passed"
-    files_confirmed = not deliveries or all(item.get("ok") is True for item in deliveries)
+    files_confirmed = not deliveries or all(item.get("ok") is True and not item.get("draft") for item in deliveries)
     if criteria_passed and validation.get("status") == "passed" and files_confirmed:
         heading = f"已完成并核实 {passed} 项验收。"
     elif criteria_passed:
@@ -149,6 +149,8 @@ def outcome_report(validation: Mapping[str, Any], narrative: str = "", deliverie
                   "unknown": "上传结果不明确，只核对回执，不重复上传", "rejected": "上传被拒绝或准备失败，已停止自动重试",
                   "validation_failed": "未通过文件验收，未发送", "disabled": "文件发送工具已关闭"}
         for item in deliveries:
+            if item.get("draft"):
+                lines.append(f"{item.get('filename') or '附件'}：未完成草稿，内容仍待核实。{item.get('draft_reason') or ''}")
             if item.get("ok") is not True:
                 lines.append(f"{item.get('filename') or '附件'}：{states.get(item.get('state'), '尚未确认送达')}。")
     return "\n".join(lines)

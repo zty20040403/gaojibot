@@ -11,6 +11,7 @@ from tests.test_subagent_v2 import decision, profile
 from src.plugins.ai_chat.agent import ContextPacket
 from src.plugins.ai_chat.agent.artifact_acceptance import (
     artifact_delivery_allowed,
+    artifact_draft_allowed,
     artifact_identity,
     artifact_verdicts,
     separate_review_artifacts,
@@ -59,6 +60,15 @@ def review_for(file, *, status="passed"):
 
 
 class ArtifactAcceptanceTests(unittest.TestCase):
+    def test_draft_requires_exact_structurally_checked_snapshot(self):
+        file = artifact()
+        check = {**check_for(file), "checks": ["nonempty", "sha256", "format"]}
+        self.assertTrue(artifact_draft_allowed(file, {"checks": [check]}))
+        for checks in ([], [check, check], [{**check, "ok": False}],
+                       [{**check, "artifact_key": "b" * 64}],
+                       [{**check, "checks": ["nonempty", "sha256"]}]):
+            self.assertFalse(artifact_draft_allowed(file, {"status": "passed", "checks": checks}))
+
     def test_review_references_are_not_new_artifacts_or_acceptance_evidence(self):
         file = artifact()
         original = {"status": "success", "artifacts": [{"handle": file["handle"]}],
@@ -481,6 +491,24 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(sent[0]["name"], sent[1]["name"])
         self.assertEqual({item["key"] for item in self.store.deliveries(task.task_id)},
                          {first["snapshot"], second["snapshot"]})
+
+    async def test_readable_unaccepted_file_is_sent_as_draft_once_not_completed(self):
+        task = self.submit()
+        file = artifact()
+        completed = {"build": self.outcome(task, artifacts=[file])}
+        validation = {"status": "failed", "checks": [{**check_for(file),
+            "checks": ["nonempty", "sha256", "format"]}],
+            "artifacts": [{**review_for(file, status="failed"), "reason": "价格未核实"}]}
+        sent = await self.deliver(task, completed, validation)
+        self.assertTrue(sent[0]["ok"])
+        self.assertTrue(sent[0]["draft"])
+        self.assertEqual(sent[0]["draft_reason"], "价格未核实")
+        self.assertTrue(sent[0]["filename"].startswith("未完成草稿-"))
+        task, completed = self.reopen(task, completed)
+        restored = await self.deliver(task, completed, validation)
+        self.assertTrue(restored[0]["draft"])
+        self.workspaces.deliver.assert_awaited_once()
+        self.assertEqual(_settled_task_status(list(completed.values()), restored, {"status": "passed"}), "partial")
 
     async def test_rejected_snapshot_at_same_path_does_not_hide_passed_snapshot(self):
         for rejected_first in (True, False):

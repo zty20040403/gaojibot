@@ -285,6 +285,7 @@ class TaskControlStoreMixin:
             if isinstance(acceptance, dict) and acceptance.get("task_outcome"):
                 result["answer"] = outcome_report(acceptance, str(result.get("report_narrative") or ""), updated)
             if (status == "partial" and all_confirmed and result.get("execution_state") == "succeeded"
+                    and not any(item.get("draft") for item in updated)
                     and isinstance(acceptance, dict) and acceptance.get("status") == "passed"
                     and not acceptance_blocks_completion(acceptance)):
                 status = "completed"

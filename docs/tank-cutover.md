@@ -7,6 +7,21 @@ shared ingress, model services and cluster control also remain external
 dependencies on h610. The initial cutover below kept QQ on h610; the final
 QQ move is recorded first to distinguish current placement from that history.
 
+## Partial artifact delivery policy (2026-09-27)
+
+Task 177 exposed a repair-chain bug: a research-only repair replaced the PDF
+producer's result, so the next reviewer saw no artifact even though the PDF
+snapshot still existed. Research support and the original writer's revision
+are now persisted together before either step starts. Failed repairs retain
+the original file as a draft; they do not promote old evidence to accepted.
+
+At the owner's request, readable unfinished files are delivered with an
+explicit draft filename and warning. Draft eligibility requires host checks
+bound to the exact immutable snapshot, including format checks for PDF and
+supported binary formats. Broken or unchecked files remain blocked. Delivery
+receipts are independent from content acceptance: sending a draft cannot
+make a task completed. Draft warnings survive queue retries and restarts.
+
 ## QQ transport cutover on 2026-09-27
 
 Nix revision `6d3a8ac` moves the sole Gaoji QQ transport to tank without a

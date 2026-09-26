@@ -20,6 +20,8 @@ class FileOutboxStoreMixin:
         payload = {"artifact": artifact, "filename": filename, "size": artifact["size"],
                    "handle": artifact["handle"], "attempts": 0, "next_attempt_at": 0,
                    "ok": False, "state": "queued", "error": "等待文件投递"}
+        if artifact.get("draft") is True:
+            payload.update(draft=True, draft_reason=str(artifact.get("draft_reason") or "内容尚未全部验收通过"))
         with self._transaction() as cursor:
             cursor.execute("""INSERT INTO subagent_deliveries
                 (task_id, revision, delivery_key, state, payload_json, updated_at)
