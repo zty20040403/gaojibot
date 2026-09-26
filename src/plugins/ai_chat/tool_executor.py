@@ -2843,6 +2843,19 @@ class ToolExecutor(HandlerService):
                         packet, selected_profile, role=role, parent_trace=turn_trace)
                 if decision is not None:
                     packet = with_task_contract(packet, decision)
+                if self.context.subagent_coordinator.dispatcher is not None and resume_task_id is None:
+                    task = self.context.subagent_coordinator.submit(
+                        packet=packet,
+                        decision=decision,
+                        dispatch={"event": event.model_dump(mode="json"), "bot_id": bot.self_id,
+                                  "profile": selected_profile.name},
+                    )
+                    return {
+                        "task_id": task.task_id,
+                        "task_handle": task.handle,
+                        "status": "queued",
+                        "message": f"{task.handle} 已进入后台执行，完成后会把结果发回这里。",
+                    }
                 return await self.context.subagent_coordinator.delegate(
                     role=role,
                     scope_key=packet.scope_key,
@@ -2930,6 +2943,8 @@ class ToolExecutor(HandlerService):
                     title = self.context.subagent_coordinator.registry.worker(role).title
                     await execute_tool(SAY_TOOL_NAME, {"text": f"{title} Agent 正在处理：{decision.steps[0]['objective'][:120]}"})
                 result = await run_delegate_goal(role, user_text, decision)
+                if result.get("status") == "queued":
+                    return str(result["message"])
                 return json.dumps(result, ensure_ascii=False)
 
             async def run_resume_goal(task_id: int) -> str:

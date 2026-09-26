@@ -58,6 +58,21 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         return self.coordinator.submit(packet=self.packet, decision=EntryDecision.parse(decision("workflow")),
             dispatch={"bot_id": "123", "event": {"user_id": 2}, "profile": "qwen-local"})
 
+    async def test_delegate_submission_survives_into_resumable_workflow(self):
+        entry = EntryDecision.parse(decision("delegate"))
+        task = self.coordinator.submit(packet=self.packet, decision=entry,
+            dispatch={"bot_id": "123", "event": {"user_id": 2}, "profile": "qwen-local"})
+        self.assertEqual(task.status, "queued")
+        self.assertEqual(self.store.control(task.task_id)["dispatch"]["bot_id"], "123")
+        with patch.object(self.coordinator, "_execute_workflow", new=AsyncMock(return_value="done")) as execute:
+            result = await self.coordinator._resume_task(task, context=self.packet,
+                selected_profile=self.catalog.default, tools=[], execute_tool=AsyncMock(),
+                parent_trace=None, progress=None, hooks=None)
+        self.assertEqual(result, "done")
+        self.assertEqual(len(self.store.runs(task.task_id)), 1)
+        self.assertEqual(self.store.get(task.task_id).plan["contract"], entry.contract.as_payload())
+        execute.assert_awaited_once()
+
     async def test_explicit_task_entry_gets_the_same_acceptance_contract(self):
         with patch.object(self.coordinator, "_supervisor_json", new=AsyncMock(return_value=decision("workflow"))) as planner:
             entry = await self.coordinator.prepare_entry(self.packet, self.catalog.default)
