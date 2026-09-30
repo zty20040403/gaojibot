@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.18.0-22c55e?style=for-the-badge">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.20.0-22c55e?style=for-the-badge">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-18181b?style=for-the-badge"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776ab?style=for-the-badge&amp;logo=python&amp;logoColor=white">
   <img alt="NoneBot2" src="https://img.shields.io/badge/NoneBot2-OneBot_V11-ea5252?style=for-the-badge">
@@ -408,8 +408,16 @@ Sub-Agent V2 内核区分直接回答、单专家委派、后台工作流和已�
 每个步骤使用独立 Docker 容器。上游交付物按 SHA-256 存成不可变快照，通过 `import_agent_artifact`
 按依赖授权交接；不是靠提示词假装隔离。原始快照不允许子 Agent 修改，构建时复制到自己的目录。
 文件先做宿主格式检查，再由独立 Agent 检查任务目标；PDF 检查结构、字体嵌入并渲染首页，
-不把这些机器检查夸大成所有页面的人工视觉验收。验收失败不会直接发送，结果不明确的上传会
-核对群文件里的唯一名称、大小和上传者，不重复上传。临时容器结束后清理，文件快照保留用于修订。
+不把这些机器检查夸大成所有页面的人工视觉验收。文件是否可读、内容是否验收通过、QQ 是否收到
+分别记录，不能用其中一项代替另外两项：
+
+- **验收通过**：按正常产物交付，实际群文件回执确认后才标记送达。
+- **可读但尚未完成验收**：通过宿主可读性和快照校验的产物，可以作为“未完成草稿”交付，
+  明确说明未核实的内容或未通过项；草稿送达不会让任务变成“全部完成”。
+- **文件损坏或缺少必要校验**：阻止交付并说明原因，不把不可用文件冒充草稿。
+
+结果不明确的上传会核对群文件里的唯一名称、大小和上传者，不盲目重复上传。
+临时容器结束后清理，文件快照保留用于修订。
 
 在同一群由原发起人说“把刚才那个项目的前端改一下”即可追加修订；保留原 task 编号和各步骤
 自己的会话，仅重做选中步骤及其下游。控制台“任务与投递”可分别设置任务默认和各角色的模型：
