@@ -73,6 +73,9 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "view_video",
                 "transcribe_voice",
                 "reply_with_voice",
+                "find_stickers",
+                "send_sticker",
+                "send_qq_face",
             },
         )
         self.assertEqual(len(names), len(domain_registry.handlers))

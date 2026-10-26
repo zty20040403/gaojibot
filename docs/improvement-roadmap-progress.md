@@ -90,7 +90,8 @@ acceptance are not implied by this roadmap.
 - [x] Scoped context search/expansion, group roster and pin handlers extracted.
 - [x] Web search, installed skills and packaged-source inspection extracted.
 - [x] Image OCR/vision, QQ video and voice handlers extracted.
-- [ ] Move remaining sticker/subagent handlers.
+- [x] Global sticker search and visual reply handlers extracted.
+- [ ] Move remaining subagent, reminder and fleet handlers.
 - [ ] Registry-driven tool availability and complete handler coverage.
 - [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
@@ -324,3 +325,15 @@ isolated roadmap test database is used for validation.
 - Full PG suite: 1,654 tests, OK (12 skipped), 85.021 seconds;
   .cache/roadmap/phase6-media-full.log. CI-path Ruff, diff whitespace check and
   admin TypeScript/Vite build passed. Real OCR/vision/voice/QQ were not invoked.
+
+### Phase 6 sticker extraction validation
+
+- Moved global sticker search, sticker preparation and QQ face preparation into
+  tools/stickers; 20 handlers now use the registry. Matching/variation behavior
+  and the final reply delivery flow remain unchanged.
+- Regressions cover current-turn handles, query precedence over stale handles,
+  recent-image avoidance for change requests, missing matches, safety/type
+  checks, one visual reply per turn and the no-library legacy fallback.
+- Focused tests: 93 passed. Full PG suite: 1,660 tests, OK (12 skipped), 84.609
+  seconds; .cache/roadmap/phase6-stickers-full.log. CI-path Ruff, diff whitespace
+  check and admin TypeScript/Vite build passed. No real group messages sent.

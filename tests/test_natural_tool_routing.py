@@ -790,7 +790,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
                 new=fake_deepseek,
             ),
             patch(
-                "src.plugins.ai_chat.tool_executor.random_sticker_message",
+                "src.plugins.ai_chat.tools.stickers.random_sticker_message",
                 return_value=MessageSegment.face(14),
             ),
         ):

@@ -6,7 +6,6 @@ import json
 import hashlib
 import re
 import sqlite3
-import time
 import asyncio
 from typing import (
     Any,
@@ -42,7 +41,6 @@ from .ai_tools import (
     CLUSTER_JOB_SUBMIT_TOOL_NAME,
     DIAGNOSE_INCIDENT_TOOL_NAME,
     DELEGATE_AGENT_TOOL_NAME,
-    FIND_STICKERS_TOOL_NAME,
     FLEET_OVERVIEW_TOOL_NAME,
     HOST_INSPECT_TOOL_NAME,
     SERVICE_INSPECT_TOOL_NAME,
@@ -57,8 +55,6 @@ from .ai_tools import (
     RUN_SUBAGENTS_TOOL_NAME,
     SAY_TOOL_NAME,
     SERVICE_LOGS_TOOL_NAME,
-    SEND_QQ_FACE_TOOL_NAME,
-    SEND_STICKER_TOOL_NAME,
     TRANSCRIBE_VOICE_TOOL_NAME,
     REMINDER_CANCEL_TOOL_NAME,
     REMINDER_LIST_TOOL_NAME,
@@ -92,10 +88,6 @@ from .deepseek import (
     FinalStreamState,
     ask_deepseek_with_tools,
 )
-from .media_library import (
-    choose_sticker_candidate,
-    requests_sticker_variation,
-)
 from .model_catalog import (
     ModelProfile,
 )
@@ -117,8 +109,6 @@ from .ocr import (
 from .stickers import (
     ai_reply_message,
     choose_ai_reply_kaomoji,
-    qq_face_message,
-    random_sticker_message,
 )
 from .turn_journal import (
     tool_catalog_fingerprint,
@@ -411,7 +401,7 @@ class ToolExecutor(HandlerService):
                     f"Sub-Agent entry unavailable; continuing normal chat: {exc}"
                 )
 
-        tool_capabilities = {"memory", "self"}
+        tool_capabilities = {"memory", "self", "stickers"}
         if self.context.settings.search_enabled and (force_search or self.context.settings.search_auto_enabled):
             tool_capabilities.add("web")
         if alert_tools_enabled:
@@ -1131,178 +1121,10 @@ class ToolExecutor(HandlerService):
                 return json.dumps(payload, ensure_ascii=False)
 
 
-            if name == FIND_STICKERS_TOOL_NAME:
-                if self.context.media_library is None:
-                    return json.dumps(
-                        {"ok": False, "error": "媒体检索暂时不可用。"},
-                        ensure_ascii=False,
-                    )
-                query = str(arguments.get("query") or "").strip()
-                try:
-                    limit = min(max(int(arguments.get("limit") or 5), 1), 10)
-                except (TypeError, ValueError):
-                    limit = 5
-                if not query:
-                    return json.dumps(
-                        {"ok": False, "error": "检索词不能为空。"},
-                        ensure_ascii=False,
-                    )
-                try:
-                    records = await self.context.media_library.search_stickers(
-                        query,
-                        limit=limit,
-                    )
-                    turn.sticker_handles_this_turn.update(item.handle for item in records)
-                except (OSError, RuntimeError, ValueError, DatabaseError) as exc:
-                    self.context.logger.warning(f"Media search tool failed: {exc}")
-                    records = []
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "query": query,
-                        "items": [
-                            {
-                                "media_handle": item.handle,
-                                "summary": item.summary,
-                                "description": item.description,
-                                "subjects": list(item.subjects),
-                                "actions": list(item.actions),
-                                "emotion": list(item.emotions),
-                                "usage": list(item.usage),
-                                "is_sticker": item.is_sticker,
-                                "score": round(item.score, 4),
-                            }
-                            for item in records
-                        ],
-                    },
-                    ensure_ascii=False,
-                )
 
 
 
-            if name == SEND_STICKER_TOOL_NAME:
-                if turn.visual_reply_segment is not None:
-                    return json.dumps(
-                        {"ok": True, "message": "本轮表情已经准备发送。"},
-                        ensure_ascii=False,
-                    )
-                media_handle = str(arguments.get("media_handle") or "").strip()
-                query = str(arguments.get("query") or "").strip()
-                require_different = requests_sticker_variation(user_text)
-                record = None
-                searched_stickers = False
-                if self.context.media_library is not None and query:
-                    searched_stickers = True
-                    try:
-                        candidates = await self.context.media_library.search_stickers(
-                            query,
-                            limit=10,
-                        )
-                        record = choose_sticker_candidate(
-                            candidates,
-                            allow_recent_fallback=not require_different,
-                        )
-                    except (
-                        OSError,
-                        RuntimeError,
-                        TypeError,
-                        ValueError,
-                        DatabaseError,
-                    ) as exc:
-                        self.context.logger.warning(f"Sticker search-and-send tool failed: {exc}")
-                elif (
-                    self.context.media_library is not None
-                    and media_handle in turn.sticker_handles_this_turn
-                    and media_handle.startswith("media#")
-                ):
-                    try:
-                        media_id = int(media_handle.removeprefix("media#"))
-                        record = self.context.media_library.get_sticker(media_id)
-                        if (
-                            require_different
-                            and record is not None
-                            and record.last_sent_at is not None
-                            and record.last_sent_at >= int(time.time()) - 300
-                        ):
-                            record = None
-                    except (OSError, RuntimeError, TypeError, ValueError, DatabaseError):
-                        record = None
-                if (
-                    self.context.media_library is not None
-                    and record is None
-                    and not searched_stickers
-                ):
-                    try:
-                        candidates = await self.context.media_library.search_stickers(
-                            query or user_text,
-                            limit=10,
-                        )
-                        record = choose_sticker_candidate(
-                            candidates,
-                            allow_recent_fallback=not require_different,
-                        )
-                    except (
-                        OSError,
-                        RuntimeError,
-                        TypeError,
-                        ValueError,
-                        DatabaseError,
-                    ) as exc:
-                        self.context.logger.warning(f"Sticker search-and-send tool failed: {exc}")
-                if record is not None and record.is_sticker and record.safety == "safe":
-                    turn.visual_reply_segment = MessageSegment.image(record.storage_path.read_bytes())
-                    self.context.media_library.mark_sent(record.media_id)
-                    return json.dumps(
-                        {
-                            "ok": True,
-                            "message": "已从全局表情库找到并准备发送。",
-                            "media_handle": record.handle,
-                            "summary": record.summary,
-                        },
-                        ensure_ascii=False,
-                    )
-                if self.context.media_library is not None:
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "error": (
-                                "没有别的匹配表情。"
-                                if require_different
-                                else "没有这个表情。"
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
-                sticker_message = random_sticker_message()
-                if isinstance(sticker_message, str):
-                    return json.dumps(
-                        {"ok": False, "error": sticker_message},
-                        ensure_ascii=False,
-                    )
-                turn.visual_reply_segment = sticker_message
-                return json.dumps(
-                    {"ok": True, "message": "表情包已经准备发送。"},
-                    ensure_ascii=False,
-                )
 
-            if name == SEND_QQ_FACE_TOOL_NAME:
-                if turn.visual_reply_segment is not None:
-                    return json.dumps(
-                        {"ok": True, "message": "本轮表情已经准备发送。"},
-                        ensure_ascii=False,
-                    )
-                expression = str(arguments.get("expression", "随机")).strip()
-                face_message = qq_face_message(expression)
-                if isinstance(face_message, str):
-                    return json.dumps(
-                        {"ok": False, "error": face_message},
-                        ensure_ascii=False,
-                    )
-                turn.visual_reply_segment = face_message
-                return json.dumps(
-                    {"ok": True, "message": "QQ 自带表情已经准备发送。"},
-                    ensure_ascii=False,
-                )
 
             if agent_executor is not None:
                 result = await agent_executor.execute(name, arguments)
