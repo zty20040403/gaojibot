@@ -97,7 +97,7 @@ acceptance are not implied by this roadmap.
 - [x] Move agent-executor-backed tool dispatch.
 - [x] Registry-driven tool availability and complete handler coverage.
 - [x] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
-- [ ] Admin API routers split by responsibility.
+- [x] Admin API routers split by responsibility.
 - [ ] Startup-time context assembly; migrate consumers and remove old globals.
 - [ ] Tool/loop/routing regressions, full PG suite and admin UI build.
 
@@ -432,3 +432,32 @@ isolated roadmap test database is used for validation.
 - Phases 6.1 and 6.2 are complete locally. Next: split admin API routers while
   retaining AccountRoute authentication for every child route, then move runtime
   assembly to startup. No push, production rebuild or live provider request made.
+
+### Phase 6 admin router validation
+
+- Split 51 page endpoints across 12 page routers, plus a protected adapter for
+  the existing fleet router. admin.py is now 112 lines instead of 2,918. Shared
+  services, request contracts, versioned mutations and realtime monitoring have
+  explicit owners; existing security and fleet implementations remain in place.
+- Each child router uses the same AccountRoute authentication wrapper. Legacy
+  and v1 paths share handlers, configuration versions, audit records and the
+  event broker. Existing AdminServices and event-broker imports remain usable.
+- AST comparison verified 82 moved endpoint/helper/class definitions unchanged
+  except relative imports. No business behavior, task handling or SSE policy was
+  intentionally changed. Custom nested admin prefixes are covered as well.
+- The first focused run exposed 22 failures: FastAPI's lazy router inclusion
+  meant aliases were absent when scanning the aggregate router. Aliases are now
+  created on each child before inclusion, without depending on framework-private
+  traversal APIs. The corrected focused run: 113 tests, OK (1 skipped).
+- Added five API boundary regressions and an architecture regression. Every
+  registered API rejects anonymous requests; every mutation retains CSRF/origin
+  checks. Version conflicts and audit identities are shared across old/v1 paths.
+  Boundary/architecture run: 14 tests passed. Its initial standalone run needed
+  explicit NoneBot initialization, matching existing admin test fixtures.
+- Full PG suite: 1,694 tests, OK (12 skipped), 89.146 seconds;
+  .cache/roadmap/phase6-admin-full.log. CI-path Ruff, diff whitespace checks and
+  admin TypeScript/Vite build passed. Pre-existing eager-startup annotation
+  warnings remain for Phase 6.4; they are not suppressed by this extraction.
+- Phases 6.1-6.3 are complete locally. Phase 6.4 startup assembly is next;
+  Phases 7-9 and previously listed live acceptance checks remain pending.
+  No push, production connection, deployment or real model/QQ request was made.

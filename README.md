@@ -191,7 +191,8 @@ bot/
         ├── sandbox.py           # Docker 任务沙箱
         ├── browser_tools.py     # 持久浏览器工具
         ├── output_planner.py    # 回复拆分与控制句柄
-        └── admin.py             # 管理控制台 API
+        ├── admin_api/           # 按页面拆分的 API、实时事件与共享写入契约
+        └── admin.py             # 管理控制台路由装配与兼容地址
 ```
 
 ## 运行要求

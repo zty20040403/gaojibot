@@ -92,6 +92,23 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             functions = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
             self.assertEqual(functions, {"__getattr__", "__dir__"})
 
+    def test_admin_entrypoint_only_assembles_protected_page_routers(self) -> None:
+        source = (PLUGIN_ROOT / "admin.py").read_text(encoding="utf-8")
+        self.assertLessEqual(len(source.splitlines()), 150)
+        tree = ast.parse(source)
+        functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+        self.assertEqual([node.name for node in functions], ["register_admin"])
+        self.assertFalse(any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list
+            for node in ast.walk(functions[0])
+        ))
+        for path in (PLUGIN_ROOT / "admin_api").glob("*.py"):
+            module_source = path.read_text(encoding="utf-8")
+            self.assertLessEqual(len(module_source.splitlines()), 450, path.name)
+            for node in ast.walk(ast.parse(module_source)):
+                if isinstance(node, ast.ImportFrom):
+                    self.assertNotEqual(node.module, "admin", path.name)
+
     def test_handlers_keep_native_globals_and_isolated_runtime(self) -> None:
         from src.plugins.ai_chat.handler_services import HandlerServices
         from src.plugins.ai_chat import command_handlers
