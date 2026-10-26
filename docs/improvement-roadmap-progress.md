@@ -98,8 +98,8 @@ acceptance are not implied by this roadmap.
 - [x] Registry-driven tool availability and complete handler coverage.
 - [x] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [x] Admin API routers split by responsibility.
-- [ ] Startup-time context assembly; migrate consumers and remove old globals.
-- [ ] Tool/loop/routing regressions, full PG suite and admin UI build.
+- [x] Startup-time context assembly; migrate consumers and remove old globals.
+- [x] Tool/loop/routing regressions, full PG suite and admin UI build.
 
 ### Phase 7: Nonblocking database work
 
@@ -461,3 +461,30 @@ isolated roadmap test database is used for validation.
 - Phases 6.1-6.3 are complete locally. Phase 6.4 startup assembly is next;
   Phases 7-9 and previously listed live acceptance checks remain pending.
   No push, production connection, deployment or real model/QQ request was made.
+
+### Phase 6 delayed startup validation
+
+- Moved application assembly to the driver startup hook. The 41-line plugin
+  entrypoint retains matcher registration and lifecycle hooks, not service/store
+  instances. OneBotRuntime owns assembly and shutdown; typed matcher adapters
+  forward to its handlers, and background workers start after interrupted-turn
+  recovery. All 28 message/notice handlers retain their original registrations.
+- Concurrent starts assemble once. Events before readiness are rejected, approval
+  messages stay outside chat history, and failed handler/worker initialization
+  closes the returned context. Shutdown releases only this owner's model client.
+  Cleanup of resources allocated inside a failing build_app_context before it
+  returns is not newly guaranteed by this wrapper.
+- Migrated eight handler test modules to isolated per-test service fixtures,
+  removing their dependence on import-time application globals. A fresh-process
+  import regression rejects attempts to open PostgreSQL or SQLite and confirms
+  no runtime state/cache directories are created on import.
+- The first lifecycle run had one failed assertion: Python exposes the imported
+  memory module as a package attribute. Corrected the check to distinguish that
+  module from the removed service instance, without permitting database opens.
+  Handler regressions: 71 tests passed. Lifecycle/architecture/runtime: 25 passed.
+- Added nine startup regressions. Full PG suite: 1,703 tests, OK (12 skipped),
+  90.800 seconds; .cache/roadmap/phase6-startup-full.log. CI-path Ruff, diff
+  whitespace checks and admin TypeScript/Vite build passed.
+- Phases 6.1-6.4 are complete locally. Phases 7-9 and the previously listed live
+  acceptance checks remain pending. No push, production connection, deployment
+  or real model/QQ request was made.

@@ -18,8 +18,13 @@ from src.plugins.ai_chat.tools.state import SubAgentActions, ToolContext, TurnSt
 from src.plugins.ai_chat.tools.subagents import HANDLERS
 
 
-class SubAgentToolHandlerTests(unittest.IsolatedAsyncioTestCase):
+from tests.handler_fixture import HandlerTestCaseMixin
+
+
+
+class SubAgentToolHandlerTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        super().setUp()
         self.actions = SubAgentActions(
             delegate=AsyncMock(return_value={"status": "queued", "task_id": 7}),
             run=AsyncMock(return_value="task#7 queued"),
@@ -120,7 +125,7 @@ class SubAgentToolHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_dispatch_binds_existing_coordinator_with_current_scope_and_user(
         self,
     ) -> None:
-        import src.plugins.ai_chat as ai_chat
+
 
         current = GroupMessageEvent(
             time=1,
@@ -146,7 +151,7 @@ class SubAgentToolHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
         task_store = SimpleNamespace(recent=Mock(return_value=[]))
         settings = replace(
-            ai_chat.app_context.settings,
+            self.app_context.settings,
             subagent_entry_enabled=False,
             tool_intent_enabled=False,
             search_enabled=False,
@@ -171,36 +176,36 @@ class SubAgentToolHandlerTests(unittest.IsolatedAsyncioTestCase):
                     return "done"
 
                 with (
-                    patch.object(ai_chat.app_context, "settings", settings),
+                    patch.object(self.app_context, "settings", settings),
                     patch.object(
-                        ai_chat.app_context, "subagent_coordinator", coordinator
+                        self.app_context, "subagent_coordinator", coordinator
                     ),
-                    patch.object(ai_chat.app_context, "subagent_store", task_store),
-                    patch.object(ai_chat.app_context, "message_ledger", None),
-                    patch.object(ai_chat.app_context, "context_store", None),
-                    patch.object(ai_chat.app_context, "turn_journal", None),
-                    patch.object(ai_chat.app_context, "pin_store", None),
-                    patch.object(ai_chat.app_context, "source_store", None),
-                    patch.object(ai_chat.app_context, "vision_worker", None),
-                    patch.object(ai_chat.handlers, "video_analyzer", None),
+                    patch.object(self.app_context, "subagent_store", task_store),
+                    patch.object(self.app_context, "message_ledger", None),
+                    patch.object(self.app_context, "context_store", None),
+                    patch.object(self.app_context, "turn_journal", None),
+                    patch.object(self.app_context, "pin_store", None),
+                    patch.object(self.app_context, "source_store", None),
+                    patch.object(self.app_context, "vision_worker", None),
+                    patch.object(self.handlers, "video_analyzer", None),
                     patch.object(
-                        ai_chat.handlers.chat,
+                        self.handlers.chat,
                         "_group_turn_context_plan",
                         return_value=None,
                     ),
                     patch.object(
-                        ai_chat.handlers.commands,
+                        self.handlers.commands,
                         "_current_long_term_memory",
                         return_value="",
                     ),
-                    patch.object(ai_chat.app_context.memory, "append_turn"),
-                    patch.object(ai_chat.app_context.group_context, "append"),
+                    patch.object(self.app_context.memory, "append_turn"),
+                    patch.object(self.app_context.group_context, "append"),
                     patch(
                         "src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools",
                         new=model,
                     ),
                 ):
-                    await ai_chat.handlers.tools._ask_ai(
+                    await self.handlers.tools._ask_ai(
                         AsyncMock(), current, "help", available_image_sources=[]
                     )
                 operation.assert_awaited_once()

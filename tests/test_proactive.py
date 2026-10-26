@@ -10,7 +10,7 @@ nonebot.init()
 
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
 
-import src.plugins.ai_chat as ai_chat
+
 from src.plugins.ai_chat.proactive import (
     ProactiveCheckGate,
     ProactiveDecision,
@@ -18,6 +18,10 @@ from src.plugins.ai_chat.proactive import (
     parse_proactive_decision,
     should_use_proactive_voice,
 )
+
+
+from tests.handler_fixture import HandlerTestCaseMixin
+from src.plugins.ai_chat.voice import VoiceError
 
 
 def group_event(message_id: int, text: str) -> GroupMessageEvent:
@@ -130,19 +134,19 @@ class ProactivePolicyTests(unittest.TestCase):
         self.assertFalse(should_use_proactive_voice(60, random_value=lambda: 0.60))
 
 
-class ProactiveHandlerTests(unittest.IsolatedAsyncioTestCase):
+class ProactiveHandlerTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCase):
     async def test_every_candidate_message_reaches_model_decision(self) -> None:
         decide = AsyncMock(return_value=ProactiveDecision(20, "", False))
         finish = AsyncMock(return_value=True)
         with (
-            patch.object(ai_chat.app_context, 'settings', proactive_settings()),
-            patch.object(ai_chat.handlers.triggers, '_generate_proactive_reply', decide),
-            patch.object(ai_chat.handlers.replies, '_finish_safely', finish),
+            patch.object(self.app_context, 'settings', proactive_settings()),
+            patch.object(self.handlers.triggers, '_generate_proactive_reply', decide),
+            patch.object(self.handlers.replies, '_finish_safely', finish),
         ):
-            await ai_chat.handlers.triggers.handle_proactive_chat(
+            await self.handlers.triggers.handle_proactive_chat(
                 AsyncMock(), group_event(1, "第一条值得认真讨论")
             )
-            await ai_chat.handlers.triggers.handle_proactive_chat(
+            await self.handlers.triggers.handle_proactive_chat(
                 AsyncMock(), group_event(2, "第二条也值得认真讨论")
             )
 
@@ -152,9 +156,9 @@ class ProactiveHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_high_interest_reply_can_be_sent_as_voice(self) -> None:
         finish = AsyncMock(return_value=True)
         with (
-            patch.object(ai_chat.app_context, 'settings', proactive_settings()),
+            patch.object(self.app_context, 'settings', proactive_settings()),
             patch.object(
-                ai_chat.handlers.triggers,
+                self.handlers.triggers,
                 '_generate_proactive_reply',
                 new=AsyncMock(
                     return_value=ProactiveDecision(96, "这段确实有意思", True)
@@ -165,9 +169,9 @@ class ProactiveHandlerTests(unittest.IsolatedAsyncioTestCase):
                 'src.plugins.ai_chat.trigger_service.synthesize_silk_voice',
                 new=AsyncMock(return_value=(b"silk", "这段确实有意思")),
             ),
-            patch.object(ai_chat.handlers.replies, '_finish_safely', finish),
+            patch.object(self.handlers.replies, '_finish_safely', finish),
         ):
-            await ai_chat.handlers.triggers.handle_proactive_chat(
+            await self.handlers.triggers.handle_proactive_chat(
                 AsyncMock(), group_event(3, "这里聊到了一个有趣话题")
             )
 
@@ -178,20 +182,20 @@ class ProactiveHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_voice_failure_falls_back_to_text(self) -> None:
         finish = AsyncMock(return_value=True)
         with (
-            patch.object(ai_chat.app_context, 'settings', proactive_settings()),
+            patch.object(self.app_context, 'settings', proactive_settings()),
             patch.object(
-                ai_chat.handlers.triggers,
+                self.handlers.triggers,
                 '_generate_proactive_reply',
                 new=AsyncMock(return_value=ProactiveDecision(95, "我也想聊这个", True)),
             ),
             patch('src.plugins.ai_chat.trigger_service.should_use_proactive_voice', return_value=True),
             patch(
                 'src.plugins.ai_chat.trigger_service.synthesize_silk_voice',
-                new=AsyncMock(side_effect=ai_chat.VoiceError("offline")),
+                new=AsyncMock(side_effect=VoiceError("offline")),
             ),
-            patch.object(ai_chat.handlers.replies, '_finish_safely', finish),
+            patch.object(self.handlers.replies, '_finish_safely', finish),
         ):
-            await ai_chat.handlers.triggers.handle_proactive_chat(
+            await self.handlers.triggers.handle_proactive_chat(
                 AsyncMock(), group_event(4, "继续聊聊这个有趣的话题")
             )
 

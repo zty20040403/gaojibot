@@ -15,13 +15,11 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_plugin_entrypoint_only_composes_and_registers(self) -> None:
         entrypoint = PLUGIN_ROOT / "__init__.py"
         source = entrypoint.read_text(encoding="utf-8")
-        self.assertLessEqual(len(source.splitlines()), 600)
+        self.assertLessEqual(len(source.splitlines()), 100)
         tree = ast.parse(source, filename=str(entrypoint))
         allowed_functions = {
-            "_is_group_enabled",
-            "_is_group_vision_auto_describe_enabled",
             "ignore_disabled_group_event",
-            "start_background_tasks",
+            "startup_app_context",
             "shutdown_app_context",
         }
         definitions = {
@@ -32,6 +30,9 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertEqual(definitions, allowed_functions)
         self.assertNotIn("FunctionType", source)
         self.assertNotIn("globals()", source)
+        self.assertNotIn("build_app_context", source)
+        self.assertNotIn("app_context =", source)
+        self.assertNotIn("handlers =", source)
 
     def test_split_responsibilities_have_single_owners(self) -> None:
         expected = {

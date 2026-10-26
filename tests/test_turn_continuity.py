@@ -12,7 +12,7 @@ from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegme
 from nonebot.adapters.onebot.v11.exception import ActionFailed
 from nonebot.exception import FinishedException
 
-import src.plugins.ai_chat as ai_chat
+
 from src.bot_storage import DatabaseError
 from src.plugins.ai_chat.ai_tools import (
     CONTEXT_EXPAND_TOOL_NAME,
@@ -24,6 +24,13 @@ from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.onebot_codec import record_onebot_event, scope_from_event
 from src.plugins.ai_chat.turn_journal import ReplayBundle, TurnJournal
+
+
+from tests.handler_fixture import HandlerTestCaseMixin
+from src.plugins.ai_chat.agent_loop import DeepSeekConfigError
+from src.plugins.ai_chat.application import ChatTurnResult as TrackedAIResult
+from src.plugins.ai_chat.onebot_codec import decode_onebot_message
+from src.plugins.ai_chat.stickers import ai_reply_message
 
 
 def group_event(
@@ -77,8 +84,9 @@ class TimeoutMatcher:
         )
 
 
-class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
+class TurnContinuityTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        super().setUp()
         self.ledger = MessageLedger(":memory:")
         self.journal = TurnJournal(":memory:")
         self.addCleanup(self.ledger.close)
@@ -87,7 +95,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_failures_deliver_notice_but_persist_failed_turn(self) -> None:
         cases = [
-            (ai_chat.DeepSeekConfigError("bad config"), "model_config"),
+            (DeepSeekConfigError("bad config"), "model_config"),
             (DatabaseError("storage unavailable"), "database"),
             (RuntimeError("provider disconnected"), "model_request"),
             (ValueError("unexpected data"), "internal"),
@@ -98,13 +106,13 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
                 event = group_event(index, Message("answer please"))
                 record_onebot_event(self.ledger, event)
                 with (
-                    patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-                    patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+                    patch.object(self.app_context, 'message_ledger', self.ledger),
+                    patch.object(self.app_context, 'turn_journal', self.journal),
                     patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=AsyncMock(side_effect=error, return_value="")),
-                    patch.object(ai_chat.app_context.memory, "append_turn") as remember,
-                    patch.object(ai_chat.app_context.logger, "exception"),
+                    patch.object(self.app_context.memory, "append_turn") as remember,
+                    patch.object(self.app_context.logger, "exception"),
                 ):
-                    result = await ai_chat.handlers.chat._run_tracked_ai(
+                    result = await self.handlers.chat._run_tracked_ai(
                         AsyncMock(), event, "answer please", available_image_sources=[],
                     )
                 self.assertIsNotNone(result)
@@ -121,12 +129,12 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         event = group_event(86, Message("quote an error message"))
         record_onebot_event(self.ledger, event)
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=AsyncMock(return_value="模型没有返回内容。")),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            result = await ai_chat.handlers.chat._run_tracked_ai(
+            result = await self.handlers.chat._run_tracked_ai(
                 AsyncMock(), event, "quote an error message", available_image_sources=[],
             )
         self.assertEqual(result.status, "succeeded")
@@ -147,13 +155,13 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.journal.finish_turn(turn.turn_id, status="succeeded")
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
             patch.object(
-                ai_chat.handlers.chat,
+                self.handlers.chat,
                 '_run_tracked_ai',
                 new=AsyncMock(
-                    return_value=ai_chat.TrackedAIResult(
+                    return_value=TrackedAIResult(
                         reply="done",
                         turn_id=turn.turn_id,
                     )
@@ -161,7 +169,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(FinishedException):
-                await ai_chat.handlers.replies._finish_tracked_ai(
+                await self.handlers.replies._finish_tracked_ai(
                     FakeMatcher,
                     AsyncMock(),
                     event,
@@ -200,13 +208,13 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.journal.finish_turn(turn.turn_id, status="succeeded")
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
             patch.object(
-                ai_chat.handlers.chat,
+                self.handlers.chat,
                 '_run_tracked_ai',
                 new=AsyncMock(
-                    return_value=ai_chat.TrackedAIResult(
+                    return_value=TrackedAIResult(
                         reply="done",
                         turn_id=turn.turn_id,
                     )
@@ -214,7 +222,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(FinishedException):
-                await ai_chat.handlers.replies._finish_tracked_ai(
+                await self.handlers.replies._finish_tracked_ai(
                     TimeoutMatcher,
                     AsyncMock(),
                     event,
@@ -237,13 +245,13 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         event = group_event(10, Message("explain"))
         bot = AsyncMock()
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
             patch.object(
-                ai_chat.handlers.chat,
+                self.handlers.chat,
                 '_run_tracked_ai',
                 new=AsyncMock(
-                    return_value=ai_chat.TrackedAIResult(
+                    return_value=TrackedAIResult(
                         reply="第一段\n\n第二段",
                         turn_id=None,
                     )
@@ -251,7 +259,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(FinishedException):
-                await ai_chat.handlers.replies._finish_tracked_ai(
+                await self.handlers.replies._finish_tracked_ai(
                     FakeMatcher,
                     bot,
                     event,
@@ -279,13 +287,13 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             {"user_id": 999, "nickname": "Bot", "role": "member"},
         ]
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
             patch.object(
-                ai_chat.handlers.chat,
+                self.handlers.chat,
                 '_run_tracked_ai',
                 new=AsyncMock(
-                    return_value=ai_chat.TrackedAIResult(
+                    return_value=TrackedAIResult(
                         reply=f"[mention#{principal_id}] 过来看一下",
                         turn_id=None,
                     )
@@ -293,7 +301,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(FinishedException):
-                await ai_chat.handlers.replies._finish_tracked_ai(
+                await self.handlers.replies._finish_tracked_ai(
                     FakeMatcher,
                     bot,
                     event,
@@ -326,14 +334,14 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         renderer = AsyncMock()
         renderer.render.return_value = b"unexpected-image"
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
-            patch.object(ai_chat.app_context, 'rich_renderer', renderer),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'rich_renderer', renderer),
             patch.object(
-                ai_chat.handlers.chat,
+                self.handlers.chat,
                 '_run_tracked_ai',
                 new=AsyncMock(
-                    return_value=ai_chat.TrackedAIResult(
+                    return_value=TrackedAIResult(
                         reply=(
                             "| 成员 | 状态 |\n"
                             "| --- | --- |\n"
@@ -345,7 +353,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(FinishedException):
-                await ai_chat.handlers.replies._finish_tracked_ai(
+                await self.handlers.replies._finish_tracked_ai(
                     FakeMatcher,
                     bot,
                     event,
@@ -365,17 +373,17 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         renderer = AsyncMock()
         renderer.render.return_value = b"\x89PNG\r\n\x1a\nrendered-code"
         fenced_code = '```python\nprint("中文")\n```'
-        decorated_reply = ai_chat.ai_reply_message(fenced_code, "写个代码块")
+        decorated_reply = ai_reply_message(fenced_code, "写个代码块")
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
-            patch.object(ai_chat.app_context, 'rich_renderer', renderer),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'rich_renderer', renderer),
             patch.object(
-                ai_chat.handlers.chat,
+                self.handlers.chat,
                 '_run_tracked_ai',
                 new=AsyncMock(
-                    return_value=ai_chat.TrackedAIResult(
+                    return_value=TrackedAIResult(
                         reply=decorated_reply,
                         turn_id=None,
                     )
@@ -383,7 +391,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(FinishedException):
-                await ai_chat.handlers.replies._finish_tracked_ai(
+                await self.handlers.replies._finish_tracked_ai(
                     FakeMatcher,
                     bot,
                     event,
@@ -401,10 +409,10 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         event = group_event(10, Message("ambient ping"))
         bot = AsyncMock()
         with patch.object(
-            ai_chat.handlers.chat,
+            self.handlers.chat,
             '_run_tracked_ai',
             new=AsyncMock(
-                return_value=ai_chat.TrackedAIResult(
+                return_value=TrackedAIResult(
                     reply="[silence:吃瓜]",
                     turn_id=None,
                     status="silence",
@@ -412,7 +420,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(FinishedException):
-                await ai_chat.handlers.replies._finish_tracked_ai(
+                await self.handlers.replies._finish_tracked_ai(
                     FakeMatcher,
                     bot,
                     event,
@@ -464,7 +472,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             native_message_id="20",
             sender_native_user_id="999",
             sender_display="机器人",
-            body=ai_chat.decode_onebot_message(Message("done")).body,
+            body=decode_onebot_message(Message("done")).body,
             occurred_at=16,
             direction="outbound",
             reply_to_native_message_id="10",
@@ -492,10 +500,10 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
         ):
-            context = ai_chat.handlers.chat._current_turn_context(
+            context = self.handlers.chat._current_turn_context(
                 continuation_event,
                 current_turn.turn_id,
             )
@@ -546,10 +554,10 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
         ):
-            context = ai_chat.handlers.chat._current_turn_context(
+            context = self.handlers.chat._current_turn_context(
                 continuation,
                 current_turn.turn_id,
             )
@@ -607,15 +615,15 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             return "ok"
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
             patch(
                 'src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools',
                 new=fake_deepseek,
             ),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            await ai_chat.handlers.tools._ask_ai(
+            await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 event,
                 "continue",
@@ -675,16 +683,16 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             return "ok"
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
-            patch.object(ai_chat.app_context, 'context_store', context),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'context_store', context),
             patch(
                 'src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools',
                 new=fake_deepseek,
             ),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            await ai_chat.handlers.tools._ask_ai(
+            await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 event,
                 "find the old project decision",
@@ -714,7 +722,7 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             native_message_id="20",
             sender_native_user_id="999",
             sender_display="机器人",
-            body=ai_chat.decode_onebot_message(Message("old result")).body,
+            body=decode_onebot_message(Message("old result")).body,
             occurred_at=20,
             direction="outbound",
         )
@@ -760,9 +768,9 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             return "continued"
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
-            patch.object(ai_chat.app_context, 'context_store', None),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'context_store', None),
             patch.object(
                 self.journal,
                 "build_replay",
@@ -772,9 +780,9 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
                 'src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools',
                 new=fake_deepseek,
             ),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            answer = await ai_chat.handlers.tools._ask_ai(
+            answer = await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 event,
                 "continue",
@@ -824,15 +832,15 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
             return "done"
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', self.ledger),
-            patch.object(ai_chat.app_context, 'turn_journal', self.journal),
+            patch.object(self.app_context, 'message_ledger', self.ledger),
+            patch.object(self.app_context, 'turn_journal', self.journal),
             patch(
                 'src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools',
                 new=fake_deepseek,
             ),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            result = await ai_chat.handlers.chat._run_tracked_ai(
+            result = await self.handlers.chat._run_tracked_ai(
                 AsyncMock(),
                 event,
                 "run tests",
@@ -845,15 +853,15 @@ class TurnContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn.tool_call_count, 1)  # type: ignore[union-attr]
         self.assertEqual(
             turn.profile,  # type: ignore[union-attr]
-            ai_chat.app_context.model_catalog.default.name,
+            self.app_context.model_catalog.default.name,
         )
         self.assertEqual(
             turn.provider,  # type: ignore[union-attr]
-            ai_chat.app_context.model_catalog.default.provider_identity,
+            self.app_context.model_catalog.default.provider_identity,
         )
         self.assertEqual(
             turn.model,  # type: ignore[union-attr]
-            ai_chat.app_context.model_catalog.default.model,
+            self.app_context.model_catalog.default.model,
         )
         self.assertEqual(
             [item.state for item in self.journal.events_for_turn(turn.turn_id)],  # type: ignore[union-attr]

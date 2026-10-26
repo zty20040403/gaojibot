@@ -164,7 +164,10 @@ bot/
     ├── cluster_deployer/        # Git/Nix/SSH 固定部署流程与节点验收
     ├── bot_storage/             # PostgreSQL、迁移与存储工具
     └── plugins/ai_chat/
-        ├── __init__.py          # NoneBot Matcher 与兼容入口
+        ├── __init__.py          # NoneBot Matcher 注册与启动/关闭钩子
+        ├── matcher_handlers.py  # 类型明确的消息入口适配
+        ├── onebot_runtime.py    # 启动时装配与运行状态管理
+        ├── onebot_workers.py    # 后台任务启动与恢复
         ├── runtime.py           # Composition Root 与服务生命周期
         ├── command_handlers.py  # 命令解析与控制命令
         ├── message_ingest.py    # 消息入库与群上下文采集

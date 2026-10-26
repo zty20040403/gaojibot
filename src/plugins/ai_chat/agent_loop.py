@@ -178,6 +178,14 @@ def configure_llm_runtime(
     _llm_gateway = gateway
 
 
+def release_llm_runtime(gateway: LLMGateway) -> None:
+    """Discard this runtime's closed client without clearing a newer owner."""
+    global _model_catalog, _llm_gateway
+    if _llm_gateway is gateway:
+        _model_catalog = None
+        _llm_gateway = None
+
+
 def _runtime() -> tuple[ModelCatalog, LLMGateway]:
     global _model_catalog, _llm_gateway
     if _model_catalog is None:

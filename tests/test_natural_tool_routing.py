@@ -17,12 +17,7 @@ from nonebot.adapters.onebot.v11 import (
     PrivateMessageEvent,
 )
 
-from src.plugins.ai_chat import (
-    _ask_ai,
-    _looks_like_secret,
-    group_context as current_group_context,
-    memory as conversation_memory,
-)
+
 from src.plugins.ai_chat.ai_tools import (
     MEMORY_ADD_TOOL_NAME,
     MEMORY_LIST_TOOL_NAME,
@@ -39,6 +34,10 @@ from src.plugins.ai_chat.context_pipeline import TurnContextPlan
 from src.plugins.ai_chat.media_library import MediaRecord
 from src.plugins.ai_chat.model_catalog import ModelCatalog
 from src.plugins.ai_chat.intent_routing import ToolIntent
+
+
+from tests.handler_fixture import HandlerTestCaseMixin
+
 
 
 def _group_event(user_id: int = 321, group_id: int = 789) -> GroupMessageEvent:
@@ -113,10 +112,11 @@ def _private_video_event(user_id: int = 321) -> PrivateMessageEvent:
     )
 
 
-class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
+class NaturalToolRoutingTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        memory_patcher = patch.object(conversation_memory, "append_turn")
-        context_patcher = patch.object(current_group_context, "append")
+        super().setUp()
+        memory_patcher = patch.object(self.app_context.memory, "append_turn")
+        context_patcher = patch.object(self.app_context.group_context, "append")
         memory_patcher.start()
         context_patcher.start()
         self.addCleanup(memory_patcher.stop)
@@ -130,8 +130,8 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             'src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools',
             new=ask_deepseek,
         ):
-            first = await _ask_ai(AsyncMock(), event, "第一个问题")
-            second = await _ask_ai(AsyncMock(), event, "紧接着的第二个问题")
+            first = await self.handlers.tools._ask_ai(AsyncMock(), event, "第一个问题")
+            second = await self.handlers.tools._ask_ai(AsyncMock(), event, "紧接着的第二个问题")
 
         self.assertIn("正常回答", first)
         self.assertIn("正常回答", second)
@@ -139,7 +139,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_simple_chat_profile_does_not_take_media_turns(self) -> None:
         import json
-        import src.plugins.ai_chat as ai_chat
+
 
         catalog = ModelCatalog.from_json(
             json.dumps(
@@ -174,10 +174,10 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             return "正常回答"
 
         with (
-            patch.object(ai_chat.app_context, 'model_catalog', catalog),
+            patch.object(self.app_context, 'model_catalog', catalog),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=fake_deepseek),
         ):
-            await ai_chat.handlers.tools._ask_ai(
+            await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _group_event(),
                 "今天吃什么",
@@ -185,7 +185,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
                 selected_profile_override=catalog.resolve("strong"),
                 simple_chat_profile="qwen-local",
             )
-            await ai_chat.handlers.tools._ask_ai(
+            await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _group_event(),
                 "看看这张图",
@@ -217,7 +217,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
                 new=fake_deepseek,
             ),
             patch.object(
-                conversation_memory,
+                self.app_context.memory,
                 "get",
                 return_value=[
                     {"role": "user", "content": "个人旧问题"},
@@ -225,7 +225,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
                 ],
             ),
         ):
-            answer = await _ask_ai(
+            answer = await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _group_event(user_id=320),
                 "PostgreSQL 主库怎么选",
@@ -259,19 +259,19 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             captured.update(kwargs)
             return "按上面的 h310 现场锐评"
 
-        import src.plugins.ai_chat as ai_chat
+
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', ledger),
-            patch.object(ai_chat.app_context, 'context_store', context_store),
-            patch.object(ai_chat.app_context, 'pin_store', None),
-            patch.object(ai_chat.app_context, 'source_store', None),
-            patch.object(ai_chat.handlers.chat, '_group_turn_context_plan', return_value=None),
-            patch.object(ai_chat.handlers.commands, '_current_long_term_memory', return_value=""),
+            patch.object(self.app_context, 'message_ledger', ledger),
+            patch.object(self.app_context, 'context_store', context_store),
+            patch.object(self.app_context, 'pin_store', None),
+            patch.object(self.app_context, 'source_store', None),
+            patch.object(self.handlers.chat, '_group_turn_context_plan', return_value=None),
+            patch.object(self.handlers.commands, '_current_long_term_memory', return_value=""),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=fake_deepseek),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            answer = await ai_chat.handlers.tools._ask_ai(
+            answer = await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _group_event(),
                 "你锐评一下",
@@ -327,20 +327,20 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             del user_text, history, tools, execute_tool, kwargs
             return "按时间线回答"
 
-        import src.plugins.ai_chat as ai_chat
+
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', ledger),
-            patch.object(ai_chat.app_context, 'context_store', context_store),
-            patch.object(ai_chat.app_context, 'pin_store', None),
-            patch.object(ai_chat.app_context, 'source_store', None),
-            patch.object(ai_chat.app_context, 'turn_journal', journal),
-            patch.object(ai_chat.handlers.chat, '_group_turn_context_plan', return_value=plan),
-            patch.object(ai_chat.handlers.commands, '_current_long_term_memory', return_value=""),
+            patch.object(self.app_context, 'message_ledger', ledger),
+            patch.object(self.app_context, 'context_store', context_store),
+            patch.object(self.app_context, 'pin_store', None),
+            patch.object(self.app_context, 'source_store', None),
+            patch.object(self.app_context, 'turn_journal', journal),
+            patch.object(self.handlers.chat, '_group_turn_context_plan', return_value=plan),
+            patch.object(self.handlers.commands, '_current_long_term_memory', return_value=""),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=fake_deepseek),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            answer = await ai_chat.handlers.tools._ask_ai(
+            answer = await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _group_event(),
                 "你锐评一下",
@@ -388,20 +388,20 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             }
             return "已看图"
 
-        import src.plugins.ai_chat as ai_chat
+
 
         with (
-            patch.object(ai_chat.app_context, 'message_ledger', ledger),
-            patch.object(ai_chat.app_context, 'context_store', context_store),
-            patch.object(ai_chat.app_context, 'pin_store', None),
-            patch.object(ai_chat.app_context, 'source_store', None),
-            patch.object(ai_chat.app_context, 'vision_worker', object()),
-            patch.object(ai_chat.handlers.chat, '_group_turn_context_plan', return_value=None),
-            patch.object(ai_chat.handlers.commands, '_current_long_term_memory', return_value=""),
+            patch.object(self.app_context, 'message_ledger', ledger),
+            patch.object(self.app_context, 'context_store', context_store),
+            patch.object(self.app_context, 'pin_store', None),
+            patch.object(self.app_context, 'source_store', None),
+            patch.object(self.app_context, 'vision_worker', object()),
+            patch.object(self.handlers.chat, '_group_turn_context_plan', return_value=None),
+            patch.object(self.handlers.commands, '_current_long_term_memory', return_value=""),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=fake_deepseek),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            await ai_chat.handlers.tools._ask_ai(
+            await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _group_event(),
                 "锐评下这个",
@@ -429,19 +429,19 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             captured.update(kwargs)
             return "已看图"
 
-        import src.plugins.ai_chat as ai_chat
+
 
         with (
             patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
-            patch.object(ai_chat.app_context, 'vision_worker', object()),
-            patch.object(ai_chat.app_context, 'message_ledger', None),
-            patch.object(ai_chat.app_context, 'pin_store', None),
-            patch.object(ai_chat.app_context, 'source_store', None),
-            patch.object(ai_chat.handlers.commands, '_current_long_term_memory', return_value=""),
+            patch.object(self.app_context, 'vision_worker', object()),
+            patch.object(self.app_context, 'message_ledger', None),
+            patch.object(self.app_context, 'pin_store', None),
+            patch.object(self.app_context, 'source_store', None),
+            patch.object(self.handlers.commands, '_current_long_term_memory', return_value=""),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=fake_deepseek),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            answer = await ai_chat.handlers.tools._ask_ai(
+            answer = await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _private_image_event(),
                 "看看这张图",
@@ -497,19 +497,19 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             captured.update(kwargs)
             return "已经看完了"
 
-        import src.plugins.ai_chat as ai_chat
+
 
         with (
             patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
-            patch.object(ai_chat.handlers, 'video_analyzer', object()),
-            patch.object(ai_chat.app_context, 'message_ledger', None),
-            patch.object(ai_chat.app_context, 'pin_store', None),
-            patch.object(ai_chat.app_context, 'source_store', None),
-            patch.object(ai_chat.handlers.commands, '_current_long_term_memory', return_value=""),
+            patch.object(self.handlers, 'video_analyzer', object()),
+            patch.object(self.app_context, 'message_ledger', None),
+            patch.object(self.app_context, 'pin_store', None),
+            patch.object(self.app_context, 'source_store', None),
+            patch.object(self.handlers.commands, '_current_long_term_memory', return_value=""),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=fake_deepseek),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            answer = await ai_chat.handlers.tools._ask_ai(
+            answer = await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _private_video_event(),
                 "评价一下这个视频",
@@ -563,7 +563,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             'src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools',
             new=fake_deepseek,
         ):
-            await _ask_ai(AsyncMock(), _group_event(), "发个表情包")
+            await self.handlers.tools._ask_ai(AsyncMock(), _group_event(), "发个表情包")
 
         self.assertIn(SEND_STICKER_TOOL_NAME, captured_tool_names)
         self.assertIn(SEND_QQ_FACE_TOOL_NAME, captured_tool_names)
@@ -640,20 +640,20 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             )
             return "h310 最多"
 
-        import src.plugins.ai_chat as ai_chat
+
 
         with (
             patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
-            patch.object(ai_chat.app_context, 'alert_store', alert_store),
-            patch.object(ai_chat.handlers.tools, '_alert_tools_allowed', return_value=True),
-            patch.object(ai_chat.app_context, 'message_ledger', None),
-            patch.object(ai_chat.app_context, 'pin_store', None),
-            patch.object(ai_chat.app_context, 'source_store', None),
-            patch.object(ai_chat.handlers.commands, '_current_long_term_memory', return_value=""),
+            patch.object(self.app_context, 'alert_store', alert_store),
+            patch.object(self.handlers.tools, '_alert_tools_allowed', return_value=True),
+            patch.object(self.app_context, 'message_ledger', None),
+            patch.object(self.app_context, 'pin_store', None),
+            patch.object(self.app_context, 'source_store', None),
+            patch.object(self.handlers.commands, '_current_long_term_memory', return_value=""),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=fake_deepseek),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context.memory, "append_turn"),
         ):
-            answer = await ai_chat.handlers.tools._ask_ai(
+            answer = await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _group_event(group_id=611798505),
                 "告警系统里面谁最多",
@@ -673,7 +673,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(QUERY_ALERTS_TOOL_NAME, classifier.call_args.kwargs["allowed_tools"])
 
     async def test_classifier_auto_does_not_restore_keyword_forcing(self) -> None:
-        import src.plugins.ai_chat as ai_chat
+
 
         captured: list[dict] = []
 
@@ -685,58 +685,58 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=answer),
-            patch.object(ai_chat.app_context, 'vision_worker', object()),
-            patch.object(ai_chat.handlers, 'video_analyzer', object()),
-            patch.object(ai_chat.app_context, 'alert_store', Mock()),
-            patch.object(ai_chat.app_context, 'fleet_client', Mock()),
-            patch.object(ai_chat.handlers.tools, '_alert_tools_allowed', return_value=True),
-            patch.object(ai_chat.handlers.tools, '_fleet_tools_allowed', return_value=True),
+            patch.object(self.app_context, 'vision_worker', object()),
+            patch.object(self.handlers, 'video_analyzer', object()),
+            patch.object(self.app_context, 'alert_store', Mock()),
+            patch.object(self.app_context, 'fleet_client', Mock()),
+            patch.object(self.handlers.tools, '_alert_tools_allowed', return_value=True),
+            patch.object(self.handlers.tools, '_fleet_tools_allowed', return_value=True),
         ):
             for event, text in ((_private_image_event(), "这个算法你觉得呢，先不要看图"),
                                 (_private_video_event(), "先不分析视频，看看这个算法"),
                                 (_group_event(), "解释告警最多是什么意思"),
                                 (_group_event(), "现在千问呢")):
                 with self.subTest(text=text):
-                    await _ask_ai(AsyncMock(), event, text, available_image_sources=["https://example.test/old.jpg"])
+                    await self.handlers.tools._ask_ai(AsyncMock(), event, text, available_image_sources=["https://example.test/old.jpg"])
                     self.assertEqual(captured[-1]["tool_choice"], "auto")
         self.assertEqual(classifier.await_count, 4)
 
     async def test_explicit_ocr_bypasses_classifier(self) -> None:
-        import src.plugins.ai_chat as ai_chat
+
 
         model = AsyncMock(return_value="已看图")
         with (
             patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new_callable=AsyncMock) as classifier,
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=model),
-            patch.object(ai_chat.app_context, 'vision_worker', object()),
+            patch.object(self.app_context, 'vision_worker', object()),
         ):
-            await _ask_ai(AsyncMock(), _private_image_event(), "看看", force_ocr=True,
+            await self.handlers.tools._ask_ai(AsyncMock(), _private_image_event(), "看看", force_ocr=True,
                           available_image_sources=["https://example.test/current.jpg"])
         classifier.assert_not_awaited()
         self.assertEqual(model.call_args.kwargs["tool_choice"]["function"]["name"], VIEW_IMAGE_TOOL_NAME)
 
     async def test_classifier_cannot_enable_unavailable_infrastructure_tools(self) -> None:
-        import src.plugins.ai_chat as ai_chat
+
 
         classifier = AsyncMock()
         model = AsyncMock(return_value="正常回答")
         with (
             patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
             patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=model),
-            patch.object(ai_chat.app_context, 'alert_store', Mock()),
-            patch.object(ai_chat.app_context, 'fleet_client', Mock()),
-            patch.object(ai_chat.handlers.tools, '_alert_tools_allowed', return_value=False),
-            patch.object(ai_chat.handlers.tools, '_fleet_tools_allowed', return_value=False),
+            patch.object(self.app_context, 'alert_store', Mock()),
+            patch.object(self.app_context, 'fleet_client', Mock()),
+            patch.object(self.handlers.tools, '_alert_tools_allowed', return_value=False),
+            patch.object(self.handlers.tools, '_fleet_tools_allowed', return_value=False),
         ):
             for tool in (QUERY_ALERTS_TOOL_NAME, MODEL_STATUS_TOOL_NAME):
                 classifier.return_value = ToolIntent(tool, "semantic", "cheap")
-                await _ask_ai(AsyncMock(), _group_event(), "现在状态呢", available_image_sources=[])
+                await self.handlers.tools._ask_ai(AsyncMock(), _group_event(), "现在状态呢", available_image_sources=[])
                 self.assertNotIn(tool, classifier.call_args.kwargs["allowed_tools"])
                 self.assertNotIn(tool, [item["function"]["name"] for item in model.call_args.args[2]])
                 self.assertEqual(model.call_args.kwargs["tool_choice"], "auto")
 
     def test_classifier_history_and_explicit_reply_are_scoped(self) -> None:
-        import src.plugins.ai_chat as ai_chat
+
         from src.plugins.ai_chat.ledger import MessageLedger
         from src.plugins.ai_chat.onebot_codec import record_onebot_event
 
@@ -757,8 +757,8 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
         record(_group_event(), 654, "current-duplicated-message")
         event = _group_event()
         event.original_message = Message([MessageSegment.reply(1), MessageSegment.text("你觉得呢")])
-        with patch.object(ai_chat.app_context, "message_ledger", ledger):
-            context = ai_chat.handlers.tools._tool_intent_context(event)
+        with patch.object(self.app_context, "message_ledger", ledger):
+            context = self.handlers.tools._tool_intent_context(event)
         self.assertIn("same-group-9", context)
         self.assertIn("[explicit reply]", context)
         self.assertIn("explicit-old-reference", context)
@@ -767,10 +767,10 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("current-duplicated-message", context)
 
     def test_secret_like_content_is_not_eligible_for_memory(self) -> None:
-        self.assertTrue(_looks_like_secret("API_KEY=secret-value"))
-        self.assertTrue(_looks_like_secret("密码：123456"))
-        self.assertTrue(_looks_like_secret("sk-" + "x" * 26))
-        self.assertFalse(_looks_like_secret("我喜欢写 Python"))
+        self.assertTrue(self.handlers.commands._looks_like_secret("API_KEY=secret-value"))
+        self.assertTrue(self.handlers.commands._looks_like_secret("密码：123456"))
+        self.assertTrue(self.handlers.commands._looks_like_secret("sk-" + "x" * 26))
+        self.assertFalse(self.handlers.commands._looks_like_secret("我喜欢写 Python"))
 
     async def test_sticker_is_sent_only_after_model_tool_call(self) -> None:
         async def fake_deepseek(
@@ -794,7 +794,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
                 return_value=MessageSegment.face(14),
             ),
         ):
-            answer = await _ask_ai(
+            answer = await self.handlers.tools._ask_ai(
                 AsyncMock(),
                 _group_event(user_id=322),
                 "发个表情包",
@@ -846,9 +846,9 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
                     'src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools',
                     new=fake_deepseek,
                 ),
-                patch('src.plugins.ai_chat.app_context.media_library', fake_library),
+                patch.object(self.app_context, "media_library", fake_library),
             ):
-                answer = await _ask_ai(
+                answer = await self.handlers.tools._ask_ai(
                     AsyncMock(),
                     _group_event(user_id=323),
                     "发个猫娘表情",

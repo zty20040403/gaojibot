@@ -24,6 +24,10 @@ from src.plugins.ai_chat.sandbox import DockerSandboxManager, SandboxError
 from src.plugins.ai_chat.application.chat_orchestrator import ChatFailure
 
 
+from tests.handler_fixture import HandlerTestCaseMixin
+
+
+
 ARTIFACT_ID = "artifact_" + "a" * 32
 
 
@@ -226,9 +230,9 @@ class PublicationWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.manager.install_readonly_file.assert_not_awaited()
 
 
-class PublicationUploadToolTests(unittest.IsolatedAsyncioTestCase):
+class PublicationUploadToolTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCase):
     async def test_upload_accepts_imported_workspace_path_without_widening_path_access(self):
-        import src.plugins.ai_chat as ai_chat
+
         from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
 
         client = Mock(authorization=None, upload_artifact=AsyncMock(return_value={"artifact_id": ARTIFACT_ID}))
@@ -253,18 +257,18 @@ class PublicationUploadToolTests(unittest.IsolatedAsyncioTestCase):
             original_message=Message("publish"), raw_message="publish", font=0,
             sender={"user_id": 2, "nickname": "tester", "role": "member"}, group_id=1)
         with (
-            patch.object(ai_chat.app_context, "fleet_client", client),
-            patch.object(ai_chat.app_context, "subagent_coordinator", None),
-            patch.object(ai_chat.app_context, "message_ledger", None),
-            patch.object(ai_chat.app_context, "pin_store", None),
-            patch.object(ai_chat.app_context, "source_store", None),
-            patch.object(ai_chat.handlers.tools, "_fleet_tools_allowed", return_value=True),
-            patch.object(ai_chat.handlers.commands, "_current_long_term_memory", return_value=""),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context, "fleet_client", client),
+            patch.object(self.app_context, "subagent_coordinator", None),
+            patch.object(self.app_context, "message_ledger", None),
+            patch.object(self.app_context, "pin_store", None),
+            patch.object(self.app_context, "source_store", None),
+            patch.object(self.handlers.tools, "_fleet_tools_allowed", return_value=True),
+            patch.object(self.handlers.commands, "_current_long_term_memory", return_value=""),
+            patch.object(self.app_context.memory, "append_turn"),
             patch("src.plugins.ai_chat.tool_executor.AgentToolExecutor", return_value=executor),
             patch("src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools", new=model),
         ):
-            await ai_chat.handlers.tools._ask_ai(AsyncMock(), event, "publish", available_image_sources=[])
+            await self.handlers.tools._ask_ai(AsyncMock(), event, "publish", available_image_sources=[])
             self.assertEqual(results[-1]["artifact_id"], ARTIFACT_ID)
             self.assertEqual(manager.read_file.await_args.args[2], "upstream/digest/site.zip")
             self.assertEqual(client.upload_artifact.await_args.kwargs["actor"], "qq:2")
@@ -273,9 +277,9 @@ class PublicationUploadToolTests(unittest.IsolatedAsyncioTestCase):
             for path in ("/etc/passwd", "/workspace/../secret", "../secret"):
                 requested["path"] = path
                 with self.assertRaises(ChatFailure):
-                    await ai_chat.handlers.tools._ask_ai(AsyncMock(), event, "publish", available_image_sources=[])
+                    await self.handlers.tools._ask_ai(AsyncMock(), event, "publish", available_image_sources=[])
             manager.read_file.side_effect = SandboxError("Sandbox belongs to another step")
             requested["path"] = "upstream/digest/site.zip"
             with self.assertRaises(ChatFailure):
-                await ai_chat.handlers.tools._ask_ai(AsyncMock(), event, "publish", available_image_sources=[])
+                await self.handlers.tools._ask_ai(AsyncMock(), event, "publish", available_image_sources=[])
             client.upload_artifact.assert_not_awaited()

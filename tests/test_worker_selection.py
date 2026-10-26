@@ -16,7 +16,11 @@ from tests.test_account_security import PASSWORD, QQ, BOT
 
 nonebot.init()
 
-import src.plugins.ai_chat as ai_chat
+
+
+
+from tests.handler_fixture import HandlerTestCaseMixin
+
 
 
 class RecordingStore:
@@ -37,7 +41,7 @@ def service():
     )
 
 
-class WorkerSelectionTests(unittest.IsolatedAsyncioTestCase):
+class WorkerSelectionTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCase):
     def test_unknown_or_ungranted_worker_is_rejected_before_enqueue(self):
         control = service()
         control.inventory["tank"]["compute"] = False
@@ -79,26 +83,26 @@ class WorkerSelectionTests(unittest.IsolatedAsyncioTestCase):
             original_message=Message("check worker"), raw_message="check worker", font=0,
             sender={"user_id": int(QQ), "nickname": "tester", "role": "member"}, group_id=789)
         with (
-            patch.object(ai_chat.app_context, "mobile_authorization", mobile, create=True),
+            patch.object(self.app_context, "mobile_authorization", mobile, create=True),
             patch("src.plugins.ai_chat.qq_action_authorization.get_bots", return_value={BOT: AsyncMock()}),
-            patch.object(ai_chat.app_context, "fleet_client", client),
-            patch.object(ai_chat.app_context, "subagent_coordinator", None),
-            patch.object(ai_chat.app_context, "message_ledger", None),
-            patch.object(ai_chat.app_context, "pin_store", None),
-            patch.object(ai_chat.app_context, "source_store", None),
-            patch.object(ai_chat.handlers.tools, "_fleet_tools_allowed", return_value=True),
-            patch.object(ai_chat.handlers.commands, "_current_long_term_memory", return_value=""),
-            patch.object(ai_chat.app_context.memory, "append_turn"),
+            patch.object(self.app_context, "fleet_client", client),
+            patch.object(self.app_context, "subagent_coordinator", None),
+            patch.object(self.app_context, "message_ledger", None),
+            patch.object(self.app_context, "pin_store", None),
+            patch.object(self.app_context, "source_store", None),
+            patch.object(self.handlers.tools, "_fleet_tools_allowed", return_value=True),
+            patch.object(self.handlers.commands, "_current_long_term_memory", return_value=""),
+            patch.object(self.app_context.memory, "append_turn"),
             patch("src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools", new=model),
         ):
-            register_qq_executors(ai_chat.handlers)
+            register_qq_executors(self.handlers)
             for index, worker in enumerate(("h310-worker", "h610-worker", "tank-worker", "")):
                 requested["idempotency_key"] = "worker-selection-" + str(index)
                 if worker:
                     requested["worker_id"] = worker
                 else:
                     requested.pop("worker_id", None)
-                await ai_chat.handlers.tools._ask_ai(AsyncMock(), event, "check worker",
+                await self.handlers.tools._ask_ai(AsyncMock(), event, "check worker",
                     available_image_sources=[])
                 self.assertEqual(len(control.store.records), index + 1)
                 self.assertEqual(sent, [])
