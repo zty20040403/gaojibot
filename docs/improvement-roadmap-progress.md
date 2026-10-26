@@ -89,7 +89,8 @@ acceptance are not implied by this roadmap.
 - [x] Typed TurnState owns reply media, source evidence and delegation counters.
 - [x] Scoped context search/expansion, group roster and pin handlers extracted.
 - [x] Web search, installed skills and packaged-source inspection extracted.
-- [ ] Move remaining media/sticker/subagent handlers.
+- [x] Image OCR/vision, QQ video and voice handlers extracted.
+- [ ] Move remaining sticker/subagent handlers.
 - [ ] Registry-driven tool availability and complete handler coverage.
 - [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
@@ -307,3 +308,19 @@ isolated roadmap test database is used for validation.
 - Full PG suite: 1,647 tests, OK (12 skipped), 87.152 seconds;
   .cache/roadmap/phase6-sources-full.log. CI-path Ruff, diff whitespace check and
   admin TypeScript/Vite build passed. No real search/provider/QQ requests made.
+
+### Phase 6 media extraction validation
+
+- Moved five image/video/voice handlers into tools/media; the registry owns 17
+  handlers. Both intent discovery and video execution use one video resolver.
+  Resolved OCR inputs and voice message IDs are explicit per-turn state.
+- Preserved current-message, reply and same-user recent-cache lookup in groups
+  and private chats, canonical-handle scope checking, transient image handling
+  and the existing 45-second foreground vision wait cap. Voice is prepared once
+  per turn and still delivered by the existing reply flow, not the handler.
+- Focused tests: 87 passed. Initial import regression exposed a legacy entrypoint
+  export of _resolve_video_reference; it now forwards to the extracted resolver
+  until delayed startup removes the legacy exports. No duplicate resolver body.
+- Full PG suite: 1,654 tests, OK (12 skipped), 85.021 seconds;
+  .cache/roadmap/phase6-media-full.log. CI-path Ruff, diff whitespace check and
+  admin TypeScript/Vite build passed. Real OCR/vision/voice/QQ were not invoked.

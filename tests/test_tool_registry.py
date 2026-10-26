@@ -68,6 +68,11 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "use_skill",
                 "inspect_source",
                 "web_search",
+                "read_image_text",
+                "view_image",
+                "view_video",
+                "transcribe_voice",
+                "reply_with_voice",
             },
         )
         self.assertEqual(len(names), len(domain_registry.handlers))

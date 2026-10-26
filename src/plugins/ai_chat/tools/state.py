@@ -29,6 +29,8 @@ class TurnState:
     context: ToolContext
     bot: Bot | None = None
     user_text: str = ""
+    image_sources: list[str] = field(default_factory=list)
+    voice_message_id: int | None = None
     search_results: list[SearchResult] = field(default_factory=list)
     used_ocr_texts: list[str] = field(default_factory=list)
     used_voice_texts: list[str] = field(default_factory=list)

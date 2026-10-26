@@ -111,9 +111,7 @@ from .output_planner import (
     plan_reply,
 )
 from .ocr import (
-    OCRError,
     image_sources,
-    recognize_images,
     reply_message_id,
 )
 from .stickers import (
@@ -131,19 +129,12 @@ from .web_search import (
     render_search_sources,
 )
 from .voice import (
-    VoiceError,
     contains_voice,
-    synthesize_silk_voice,
-    transcribe_voice,
 )
 from .video import (
     VideoReference,
     contains_video,
-    indexed_video_sources,
-    message_video_sources,
-    replied_video_message_id,
 )
-from .video_analysis import DeepVideoAnalysisError
 from .handler_services import HandlerService
 from .handler_constants import (TURN_PROMPT_VERSION)
 from .fleet_client import FleetControlError
@@ -155,6 +146,7 @@ from .fleet_tools import fleet_overview, inspect_host, model_status
 from .intent_routing import ToolIntent, classify_tool_intent
 from .tools import domain_registry
 from .tools.state import ToolContext, TurnState
+from .tools.media import resolve_video_reference
 
 
 class ToolExecutor(HandlerService):
@@ -205,56 +197,16 @@ class ToolExecutor(HandlerService):
             )
         )
 
-    async def _resolve_video_reference(self,
-        bot: Bot,
-        event: MessageEvent,
-        *,
-        message_handle: str = "",
-        segment_index: int | None = None,
+
+    async def _resolve_video_reference(
+        self, bot: Bot, event: MessageEvent, *,
+        message_handle: str = "", segment_index: int | None = None,
     ) -> VideoReference | None:
-        scope = scope_from_event(event)
-        requested_handle = str(message_handle).strip()
-        if requested_handle:
-            canonical_id = self.services.commands._canonical_message_id(requested_handle)
-            target = (
-                self.context.message_ledger.get_in_scope(scope, canonical_id)
-                if self.context.message_ledger is not None and canonical_id is not None
-                else None
-            )
-            if target is None or not target.native_message_id:
-                raise ValueError("当前会话看不到这条视频消息。")
-            native_message_id = int(target.native_message_id)
-            source_items = await message_video_sources(bot, native_message_id)
-        else:
-            native_message_id = int(event.message_id)
-            source_items = indexed_video_sources(event.original_message)
-            if contains_video(event.original_message) and not source_items:
-                source_items = await message_video_sources(bot, native_message_id)
-            if not source_items:
-                replied_id = replied_video_message_id(event.original_message)
-                if replied_id is not None:
-                    replied_sources = await message_video_sources(bot, replied_id)
-                    if replied_sources:
-                        native_message_id = replied_id
-                        source_items = replied_sources
-            if not source_items:
-                recent_id = self.context.recent_videos.get(self.services.chat._video_cache_key(event))
-                if recent_id is not None:
-                    recent_sources = await message_video_sources(bot, recent_id)
-                    if recent_sources:
-                        native_message_id = recent_id
-                        source_items = recent_sources
-        if segment_index is None:
-            selected = source_items[0] if source_items else None
-        else:
-            selected = next(
-                (item for item in source_items if item[0] == int(segment_index)),
-                None,
-            )
-        if selected is None:
-            return None
-        selected_index, source_url = selected
-        return VideoReference(native_message_id, selected_index, source_url)
+        # Legacy entrypoint exports remain until startup assembly is migrated.
+        return await resolve_video_reference(
+            self.services, bot, event,
+            message_handle=message_handle, segment_index=segment_index,
+        )
 
     async def _ask_ai(self,
         bot: Bot,
@@ -337,25 +289,6 @@ class ToolExecutor(HandlerService):
             selected_profile = configured_override or selected_profile.with_model(
                 selected_model_override
             )
-        tool_capabilities = {"memory", "self"}
-        if self.context.settings.search_enabled and (force_search or self.context.settings.search_auto_enabled):
-            tool_capabilities.add("web")
-        if alert_tools_enabled:
-            tool_capabilities.add("alerts")
-        if isinstance(event, GroupMessageEvent):
-            tool_capabilities.add("members")
-        if any(store is not None for store in (
-            self.context.turn_journal, self.context.context_store, self.context.message_ledger,
-        )):
-            tool_capabilities.add("context")
-        if self.context.pin_store is not None and self.context.message_ledger is not None:
-            tool_capabilities.add("pins")
-        turn = TurnState(
-            context=ToolContext(self.services, event, frozenset(tool_capabilities)),
-            bot=bot,
-            user_text=user_text,
-            subagent_task_started=resume_task_id is not None,
-        )
         replay_prefix: list[dict[str, Any]] = []
         replay_covered_message_ids: tuple[int, ...] = ()
         replay_digest_prefix = ""
@@ -379,7 +312,7 @@ class ToolExecutor(HandlerService):
         available_video: VideoReference | None = None
         if self.services.video_analyzer is not None:
             try:
-                available_video = await self._resolve_video_reference(bot, event)
+                available_video = await resolve_video_reference(self.services, bot, event)
             except (ActionFailed, OSError, RuntimeError, ValueError) as exc:
                 self.context.logger.warning(f"Could not resolve QQ video for this turn: {exc}")
         intent_tools: set[str] = set()
@@ -478,6 +411,37 @@ class ToolExecutor(HandlerService):
                     f"Sub-Agent entry unavailable; continuing normal chat: {exc}"
                 )
 
+        tool_capabilities = {"memory", "self"}
+        if self.context.settings.search_enabled and (force_search or self.context.settings.search_auto_enabled):
+            tool_capabilities.add("web")
+        if alert_tools_enabled:
+            tool_capabilities.add("alerts")
+        if isinstance(event, GroupMessageEvent):
+            tool_capabilities.add("members")
+        if any(store is not None for store in (
+            self.context.turn_journal, self.context.context_store, self.context.message_ledger,
+        )):
+            tool_capabilities.add("context")
+        if self.context.pin_store is not None and self.context.message_ledger is not None:
+            tool_capabilities.add("pins")
+        if self.context.settings.ocr_enabled and available_image_sources:
+            tool_capabilities.add("ocr")
+        if self.context.vision_worker is not None or self.context.media_library is not None:
+            tool_capabilities.add("media")
+        if self.services.video_analyzer is not None:
+            tool_capabilities.add("video")
+        if self.context.settings.voice_enabled:
+            tool_capabilities.add("voice")
+            if available_voice_message_id is not None:
+                tool_capabilities.add("transcription")
+        turn = TurnState(
+            context=ToolContext(self.services, event, frozenset(tool_capabilities)),
+            bot=bot,
+            user_text=user_text,
+            image_sources=available_image_sources,
+            voice_message_id=available_voice_message_id,
+            subagent_task_started=resume_task_id is not None,
+        )
         tools = available_tools(
             sandbox_backend=self.context.settings.sandbox_backend,
             include_web_search=(
@@ -817,143 +781,7 @@ class ToolExecutor(HandlerService):
 
 
 
-            if name == READ_IMAGE_TEXT_TOOL_NAME:
-                if not available_image_sources:
-                    return json.dumps(
-                        {"ok": False, "error": "本轮没有可读取的图片。"},
-                        ensure_ascii=False,
-                    )
-                try:
-                    text = await recognize_images(
-                        bot,
-                        available_image_sources,
-                        timeout_seconds=self.context.settings.ocr_timeout_seconds,
-                        max_chars=self.context.settings.ocr_max_chars,
-                    )
-                except OCRError as exc:
-                    self.context.logger.warning(f"Image OCR tool failed: {exc}")
-                    return json.dumps(
-                        {"ok": False, "error": "图片文字识别暂时失败。"},
-                        ensure_ascii=False,
-                    )
-                if not text:
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "error": "图片中没有识别到清晰文字，无法理解纯画面。",
-                        },
-                        ensure_ascii=False,
-                    )
-                turn.used_ocr_texts.append(text)
-                return json.dumps(
-                    {"ok": True, "text": text},
-                    ensure_ascii=False,
-                )
 
-            if name == VIEW_IMAGE_TOOL_NAME:
-                if self.context.vision_worker is None:
-                    return json.dumps(
-                        {"ok": False, "error": "图片理解服务暂时不可用。"},
-                        ensure_ascii=False,
-                    )
-                scope = scope_from_event(event)
-                native_message_id: str | int = event.message_id
-                source_items: list[tuple[int, str]] = []
-                requested_handle = str(arguments.get("message_handle") or "").strip()
-                try:
-                    if requested_handle:
-                        canonical_id = self.services.commands._canonical_message_id(requested_handle)
-                        target = (
-                            self.context.message_ledger.get_in_scope(scope, canonical_id)
-                            if self.context.message_ledger is not None and canonical_id is not None
-                            else None
-                        )
-                        if target is None or not target.native_message_id:
-                            return json.dumps(
-                                {"ok": False, "error": "当前会话看不到这条图片消息。"},
-                                ensure_ascii=False,
-                            )
-                        native_message_id = target.native_message_id
-                        raw_target = await bot.get_msg(message_id=int(native_message_id))
-                        source_items = self.services.chat._indexed_image_sources(
-                            raw_target.get("message")
-                            if isinstance(raw_target, dict)
-                            else None
-                        )
-                    else:
-                        source_items = self.services.chat._indexed_image_sources(event.original_message)
-                        if not source_items:
-                            replied_id = reply_message_id(event.original_message)
-                            if replied_id is not None:
-                                native_message_id = replied_id
-                                raw_target = await bot.get_msg(message_id=replied_id)
-                                source_items = self.services.chat._indexed_image_sources(
-                                    raw_target.get("message")
-                                    if isinstance(raw_target, dict)
-                                    else None
-                                )
-                        if not source_items:
-                            recent_sources = self.context.recent_images.get(self.services.chat._image_cache_key(event))
-                            source_items = list(enumerate(recent_sources))
-                    raw_segment_index = arguments.get("segment_index")
-                    if raw_segment_index is not None:
-                        requested_index = int(raw_segment_index)
-                        selected = next(
-                            (item for item in source_items if item[0] == requested_index),
-                            None,
-                        )
-                    else:
-                        selected = source_items[0] if source_items else None
-                    if selected is None:
-                        return json.dumps(
-                            {
-                                "ok": False,
-                                "error": (
-                                    "没有找到可识别的图片，请发送图片、回复图片，"
-                                    "或检查 segment_index。"
-                                ),
-                            },
-                            ensure_ascii=False,
-                        )
-                    segment_index, source_url = selected
-                    mode = str(arguments.get("mode") or "summary").strip().lower()
-                    question = str(arguments.get("question") or "").strip()
-                    result = await self.context.vision_worker.submit_and_wait(
-                        scope_key=scope.key,
-                        native_message_id=native_message_id,
-                        segment_index=segment_index,
-                        requester_native_user_id=event.user_id,
-                        source_url=source_url,
-                        mode=mode,
-                        question=question,
-                        wait_seconds=min(self.context.settings.media_timeout_seconds, 45),
-                    )
-                except (
-                    ActionFailed,
-                    OSError,
-                    RuntimeError,
-                    ValueError,
-                    DatabaseError,
-                ) as exc:
-                    self.context.logger.warning(f"Transient vision tool failed: {exc}")
-                    result = None
-                if result is None:
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "error": "这次识图没有及时完成，请重试；图片不会保存到媒体库。",
-                        },
-                        ensure_ascii=False,
-                    )
-                return json.dumps(
-                    {
-                        "ok": True,
-                        **result.as_dict(),
-                        "stored": False,
-                        "message": "本次结果已消费，仔细查看时会重新调用视觉模型。",
-                    },
-                    ensure_ascii=False,
-                )
 
             if name in {
                 OPS_CATALOG_TOOL_NAME,
@@ -1302,54 +1130,6 @@ class ToolExecutor(HandlerService):
                     )
                 return json.dumps(payload, ensure_ascii=False)
 
-            if name == VIEW_VIDEO_TOOL_NAME:
-                if self.services.video_analyzer is None:
-                    return json.dumps(
-                        {"ok": False, "error": "视频分析服务暂时不可用。"},
-                        ensure_ascii=False,
-                    )
-                try:
-                    raw_index = arguments.get("segment_index")
-                    target_video = await self._resolve_video_reference(
-                        bot,
-                        event,
-                        message_handle=str(arguments.get("message_handle") or ""),
-                        segment_index=(int(raw_index) if raw_index is not None else None),
-                    )
-                    if target_video is None:
-                        return json.dumps(
-                            {
-                                "ok": False,
-                                "error": (
-                                    "没有找到可分析的视频，请发送视频、回复视频，"
-                                    "或检查 message_handle 和 segment_index。"
-                                ),
-                            },
-                            ensure_ascii=False,
-                        )
-                    result = await self.services.video_analyzer.analyze_qq_video(
-                        target_video.source_url,
-                        question=str(arguments.get("question") or "").strip(),
-                    )
-                except (ActionFailed, OSError, RuntimeError, ValueError) as exc:
-                    self.context.logger.warning(f"QQ video analysis tool failed: {exc}")
-                    error = (
-                        str(exc)
-                        if isinstance(exc, (DeepVideoAnalysisError, ValueError))
-                        else "视频读取或分析失败，请稍后重试。"
-                    )
-                    return json.dumps(
-                        {"ok": False, "error": error},
-                        ensure_ascii=False,
-                    )
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "segment_index": target_video.segment_index,
-                        **result,
-                    },
-                    ensure_ascii=False,
-                )
 
             if name == FIND_STICKERS_TOOL_NAME:
                 if self.context.media_library is None:
@@ -1398,71 +1178,7 @@ class ToolExecutor(HandlerService):
                     ensure_ascii=False,
                 )
 
-            if name == TRANSCRIBE_VOICE_TOOL_NAME:
-                if available_voice_message_id is None:
-                    return json.dumps(
-                        {"ok": False, "error": "本轮没有可读取的 QQ 语音。"},
-                        ensure_ascii=False,
-                    )
-                try:
-                    text = await transcribe_voice(
-                        bot,
-                        available_voice_message_id,
-                        timeout_seconds=self.context.settings.voice_timeout_seconds,
-                    )
-                except VoiceError as exc:
-                    self.context.logger.warning(f"Voice transcription tool failed: {exc}")
-                    return json.dumps(
-                        {"ok": False, "error": "QQ 语音转文字暂时失败。"},
-                        ensure_ascii=False,
-                    )
-                if not text:
-                    return json.dumps(
-                        {"ok": False, "error": "这条语音没有识别出清晰文字。"},
-                        ensure_ascii=False,
-                    )
-                turn.used_voice_texts.append(text)
-                return json.dumps(
-                    {"ok": True, "text": text},
-                    ensure_ascii=False,
-                )
 
-            if name == REPLY_WITH_VOICE_TOOL_NAME:
-                text = str(arguments.get("text", "")).strip()
-                if not text:
-                    return json.dumps(
-                        {"ok": False, "error": "没有提供要朗读的回答。"},
-                        ensure_ascii=False,
-                    )
-                if turn.voice_reply_segment is not None:
-                    return json.dumps(
-                        {"ok": True, "message": "语音回复已经生成。"},
-                        ensure_ascii=False,
-                    )
-                try:
-                    audio, speech_text = await synthesize_silk_voice(
-                        text,
-                        provider=self.context.settings.voice_provider,
-                        voice_name=self.context.settings.voice_name,
-                        rate=self.context.settings.voice_rate,
-                        pitch=self.context.settings.voice_pitch,
-                        local_voice_name=self.context.settings.voice_local_name,
-                        local_rate=self.context.settings.voice_local_rate,
-                        max_chars=self.context.settings.voice_max_chars,
-                        timeout_seconds=self.context.settings.voice_timeout_seconds,
-                    )
-                except VoiceError as exc:
-                    self.context.logger.warning(f"Voice reply tool failed: {exc}")
-                    return json.dumps(
-                        {"ok": False, "error": "本地 QQ 语音生成暂时失败。"},
-                        ensure_ascii=False,
-                    )
-                turn.voice_reply_segment = MessageSegment.record(audio)
-                turn.voice_reply_text = speech_text
-                return json.dumps(
-                    {"ok": True, "message": "语音回复已经生成并等待发送。"},
-                    ensure_ascii=False,
-                )
 
             if name == SEND_STICKER_TOOL_NAME:
                 if turn.visual_reply_segment is not None:
