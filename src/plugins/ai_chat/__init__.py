@@ -14,7 +14,7 @@ from .adapters import OneBotIngestAdapter
 from .bootstrap import register_http_surfaces
 from .config import settings
 from .context_pipeline import ReferenceResolver
-from .deepseek import DeepSeekConfigError as DeepSeekConfigError, configure_llm_runtime
+from .agent_loop import DeepSeekConfigError as DeepSeekConfigError, configure_llm_runtime
 from .observability import observed_ai_turn
 from .onebot_codec import decode_onebot_message as decode_onebot_message
 from .proactive import ProactiveCheckGate

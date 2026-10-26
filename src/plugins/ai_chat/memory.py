@@ -8,7 +8,7 @@ from typing import Any
 
 from src.bot_storage import StateSource, open_json_state
 
-from .deepseek import ChatMessage
+from .agent_loop import ChatMessage
 
 
 @dataclass(frozen=True)

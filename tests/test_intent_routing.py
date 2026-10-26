@@ -10,8 +10,8 @@ import nonebot
 
 nonebot.init()
 
-from src.plugins.ai_chat import deepseek, intent_routing, llm_gateway, tool_policy
-from src.plugins.ai_chat.deepseek import DeepSeekTrace
+from src.plugins.ai_chat import agent_loop, intent_routing, llm_gateway, tool_policy
+from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.intent_routing import INTENT_TOOLS, classify_tool_intent
 from src.plugins.ai_chat.model_catalog import ModelCatalog
 
@@ -27,7 +27,7 @@ class IntentRoutingTests(unittest.IsolatedAsyncioTestCase):
         }}), default_profile="large", environ={})
         self.options = dict(catalog=self.catalog, profile_name="cheap", allowed_tools=INTENT_TOOLS,
                             media={"image_available": True, "image_attached_now": False})
-        self.trace = DeepSeekTrace(model="answer-model", profile="large", messages=[
+        self.trace = AgentTrace(model="answer-model", profile="large", messages=[
             {"role": "user", "content": "original"}], input_tokens=7, total_tokens=7)
         overrides = patch.dict(tool_policy._TOOL_ENABLED_OVERRIDES, {}, clear=True)
         overrides.start()
@@ -165,11 +165,11 @@ class IntentRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_json_completion_has_no_extra_recovery_call(self) -> None:
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=""))])
         with (
-            patch.object(deepseek, "_resolve_profile", return_value=self.catalog.resolve("cheap")),
-            patch.object(deepseek, "_completion_once", AsyncMock(return_value=(response, ""))) as once,
-            patch.object(deepseek, "_completion_with_optional_stream", new_callable=AsyncMock) as recovery,
+            patch.object(agent_loop, "_resolve_profile", return_value=self.catalog.resolve("cheap")),
+            patch.object(agent_loop, "_completion_once", AsyncMock(return_value=(response, ""))) as once,
+            patch.object(agent_loop, "_completion_with_optional_stream", new_callable=AsyncMock) as recovery,
         ):
             with self.assertRaisesRegex(RuntimeError, "invalid JSON"):
-                await deepseek.ask_deepseek_json("classify", "request", recover_empty_response=False)
+                await agent_loop.ask_deepseek_json("classify", "request", recover_empty_response=False)
         once.assert_awaited_once()
         recovery.assert_not_awaited()

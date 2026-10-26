@@ -17,7 +17,7 @@ nonebot.init()
 
 from src.plugins.ai_chat.admin import AdminServices, register_admin as locked_register_admin
 from tests.admin_session_fixture import ApprovedClient, register_admin
-from src.plugins.ai_chat.deepseek import DeepSeekTrace, _invoke_completion
+from src.plugins.ai_chat.agent_loop import AgentTrace, _invoke_completion
 from src.plugins.ai_chat.llm_gateway import (
     LLMConnectionError, LLMGateway, LLMRateLimitError, LLMUnavailableError,
 )
@@ -199,9 +199,9 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.control_requests), calls_before)
 
     async def test_trace_records_health_fallback_and_no_private_request_options(self):
-        module = __import__("src.plugins.ai_chat.deepseek", fromlist=["_"])
+        module = __import__("src.plugins.ai_chat.agent_loop", fromlist=["_"])
         with patch.object(module, "_model_catalog", self.catalog), patch.object(module, "_llm_gateway", self.gateway):
-            trace = DeepSeekTrace()
+            trace = AgentTrace()
             await _invoke_completion(QWEN, trace=trace, messages=[])
         decision = trace.to_payload()["model_routing"][0]
         self.assertEqual(decision["actual_profile"], "deepseek")

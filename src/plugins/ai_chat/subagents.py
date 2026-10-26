@@ -49,10 +49,10 @@ from .agent.worker_report import (checked_report, checked_correction, correction
 from .config import settings
 from .agent.control import (CONTROL_SQL, TaskControlStoreMixin, LeaseLost,
                             active_job_fence, active_task_id as active_task_id, active_model_policy, assert_job_owned)
-from .deepseek import (
+from .agent_loop import (
     AgentLoopEvent,
     DeepSeekConfigError,
-    DeepSeekTrace,
+    AgentTrace,
     ask_deepseek,
     ask_deepseek_json,
     ask_deepseek_with_tools,
@@ -1220,7 +1220,7 @@ class StepOutcome:
     step: TaskStep
     run: RunRecord
     result: dict[str, Any]
-    trace: DeepSeekTrace
+    trace: AgentTrace
     state: WorkerOutcomeState = "success"
     error: str = ""
 
@@ -1417,7 +1417,7 @@ class SubAgentCoordinator:
             "previous_contract": task.plan.get("contract", {}), "objective": task.objective,
             "revision": pending}, ensure_ascii=False)
         for attempt in range(2):
-            trace = DeepSeekTrace()
+            trace = AgentTrace()
             try:
                 raw = await self._supervisor_json(prompt, request,
                     profile=self._profile_for("supervisor", selected_profile), trace=trace)
@@ -1544,7 +1544,7 @@ class SubAgentCoordinator:
             return await ask_deepseek(*args, profile=profile, **kwargs)
 
     async def prepare_entry(self, packet: ContextPacket, selected_profile: ModelProfile, *,
-                            role: str | None = None, parent_trace: DeepSeekTrace | None = None) -> EntryDecision:
+                            role: str | None = None, parent_trace: AgentTrace | None = None) -> EntryDecision:
         """Give explicit task tools the same contract as automatic routing."""
         if role is not None and role not in WORKER_ROLES:
             raise ValueError("Unknown explicit task role")
@@ -1559,7 +1559,7 @@ class SubAgentCoordinator:
             + json.dumps(DECISION_TOOL["function"]["parameters"], ensure_ascii=False)
         )
         for attempt in range(2):
-            trace = DeepSeekTrace()
+            trace = AgentTrace()
             try:
                 payload = await self._supervisor_json(
                     prompt, packet.render_for_planner(),
@@ -1600,7 +1600,7 @@ class SubAgentCoordinator:
         selected_profile: ModelProfile,
         tools: Sequence[ToolDefinition],
         execute_tool: ToolExecutor,
-        parent_trace: DeepSeekTrace | None = None,
+        parent_trace: AgentTrace | None = None,
         progress: ProgressCallback | None = None,
         hooks: AgentExecutionHooks | None = None,
     ) -> str:
@@ -1710,7 +1710,7 @@ class SubAgentCoordinator:
         selected_profile: ModelProfile,
         tools: Sequence[ToolDefinition],
         execute_tool: ToolExecutor,
-        parent_trace: DeepSeekTrace | None = None,
+        parent_trace: AgentTrace | None = None,
         progress: ProgressCallback | None = None,
         context_packet: ContextPacket | None = None,
         hooks: AgentExecutionHooks | None = None,
@@ -1808,7 +1808,7 @@ class SubAgentCoordinator:
         selected_profile: ModelProfile,
         tools: Sequence[ToolDefinition],
         execute_tool: ToolExecutor,
-        parent_trace: DeepSeekTrace | None = None,
+        parent_trace: AgentTrace | None = None,
         context_packet: ContextPacket | None = None,
         hooks: AgentExecutionHooks | None = None,
         entry_decision: EntryDecision | None = None,
@@ -1957,7 +1957,7 @@ class SubAgentCoordinator:
         selected_profile: ModelProfile,
         tools: Sequence[ToolDefinition],
         execute_tool: ToolExecutor,
-        parent_trace: DeepSeekTrace | None,
+        parent_trace: AgentTrace | None,
         progress: ProgressCallback | None,
         hooks: AgentExecutionHooks | None,
         entry_decision: EntryDecision | None = None,
@@ -1970,7 +1970,7 @@ class SubAgentCoordinator:
         if entry_decision is not None:
             plan_payload = {"steps": list(entry_decision.steps)}
         else:
-            planner_trace = DeepSeekTrace(trace_id=task.trace_id)
+            planner_trace = AgentTrace(trace_id=task.trace_id)
             planner_profile = self._profile_for("supervisor", selected_profile)
             plan_payload = await self._supervisor_json(
                 _planner_prompt(self.max_steps, self.registry),
@@ -2036,7 +2036,7 @@ class SubAgentCoordinator:
         selected_profile: ModelProfile,
         tools: Sequence[ToolDefinition],
         execute_tool: ToolExecutor,
-        parent_trace: DeepSeekTrace | None,
+        parent_trace: AgentTrace | None,
         progress: ProgressCallback | None,
         hooks: AgentExecutionHooks | None,
     ) -> str:
@@ -2187,7 +2187,7 @@ class SubAgentCoordinator:
         selected_profile: ModelProfile,
         tools_by_name: Mapping[str, ToolDefinition],
         execute_tool: ToolExecutor,
-        parent_trace: DeepSeekTrace | None,
+        parent_trace: AgentTrace | None,
         progress: ProgressCallback | None,
         initial_completed: Mapping[str, StepOutcome] | None = None,
         hooks: AgentExecutionHooks | None = None,
@@ -2294,7 +2294,7 @@ class SubAgentCoordinator:
             progress,
             f"{task.handle} · 主控 Agent：正在核对各 Agent 的结果并整理最终答复。",
         )
-        final_trace = DeepSeekTrace(trace_id=task.trace_id)
+        final_trace = AgentTrace(trace_id=task.trace_id)
         final_profile = self._profile_for("supervisor", selected_profile)
         final_input = _synthesis_input(task.objective, completed) + "\n[宿主实际文件验收与附件交付状态]\n" + json.dumps({"validation": validation, "deliveries": delivery_results}, ensure_ascii=False)
         final_input += "\n上述 deliveries 只表示文件附件，不表示最终文字是否发送。你的回答正文随后由宿主持久消息队列发送；不要声称本文已发出或未发出。附件失败只能说附件失败。"
@@ -2364,7 +2364,7 @@ class SubAgentCoordinator:
                     and previous.get("text") and previous.get("sha256") ==
                     hashlib.sha256(previous["text"].encode()).hexdigest()):
                 return previous
-        trace = DeepSeekTrace(trace_id=task.trace_id)
+        trace = AgentTrace(trace_id=task.trace_id)
         text = await self._supervisor_text(_synthesis_input(task.objective, completed), [],
             profile=self._profile_for("supervisor", selected_profile), trace=trace,
             system_context=("生成将交给独立验收人审阅的最终报告正文，不是报告写作计划。"
@@ -2519,7 +2519,7 @@ class SubAgentCoordinator:
         completed: dict[str, StepOutcome], runs: Mapping[str, RunRecord],
         in_flight: dict[asyncio.Task, TaskStep],
         run_step: Callable[[TaskStep], Awaitable[tuple[StepOutcome, StepOutcome | None]]],
-        parent_trace: DeepSeekTrace | None, progress: ProgressCallback | None,
+        parent_trace: AgentTrace | None, progress: ProgressCallback | None,
     ) -> None:
         waiting = False
         while pending or in_flight:
@@ -2616,7 +2616,7 @@ class SubAgentCoordinator:
         selected_profile: ModelProfile,
         tools_by_name: Mapping[str, ToolDefinition],
         execute_tool: ToolExecutor,
-        parent_trace: DeepSeekTrace | None,
+        parent_trace: AgentTrace | None,
         progress: ProgressCallback | None,
         hooks: AgentExecutionHooks | None,
         repair_number: int,
@@ -2632,7 +2632,7 @@ class SubAgentCoordinator:
                 run_id=failed.run.run_id,
             )
             return False, None
-        supervisor_trace = DeepSeekTrace(trace_id=task.trace_id)
+        supervisor_trace = AgentTrace(trace_id=task.trace_id)
         try:
             decision = await self._supervisor_json(
                 _repair_planner_prompt(self.registry),
@@ -2931,7 +2931,7 @@ class SubAgentCoordinator:
             for name in sorted(spec.allowed_tools)
             if name in tools_by_name
         ]
-        trace = DeepSeekTrace(trace_id=task.trace_id)
+        trace = AgentTrace(trace_id=task.trace_id)
         self.store.hydrate_external_session(task.task_id, run.run_id)
         session = self.store.agent_session(
             task.task_id, run.run_id, scope_key=task.scope_key, requester_user_id=task.requester_user_id,
@@ -3198,7 +3198,7 @@ class SubAgentCoordinator:
 
     async def _correct_worker_report(
         self, task: TaskRecord, run: RunRecord, original: dict, *, evidence: list[dict],
-        spec: AgentSpec, profile: ModelProfile, trace: DeepSeekTrace,
+        spec: AgentSpec, profile: ModelProfile, trace: AgentTrace,
         event_sink,
     ) -> dict:
         required = (self.store.get(task.task_id) or task).plan.get("contract", {}).get("version", 1) >= 2
@@ -3324,7 +3324,7 @@ class SubAgentCoordinator:
         review_only: bool = False,
     ) -> StepOutcome:
         spec = self.registry.worker(step.role)
-        accumulated_trace: DeepSeekTrace | None = None
+        accumulated_trace: AgentTrace | None = None
         while True:
             outcome = await self._run_step(
                 task,
@@ -3409,7 +3409,7 @@ class SubAgentCoordinator:
             step=step,
             run=run,
             result=result,
-            trace=DeepSeekTrace(trace_id=task.trace_id),
+            trace=AgentTrace(trace_id=task.trace_id),
             state="skipped",
             error=error,
         )
@@ -3782,7 +3782,7 @@ def _outcome_from_run(task: TaskRecord, run: RunRecord) -> StepOutcome:
         step=_step_from_run(run),
         run=run,
         result=dict(run.result),
-        trace=DeepSeekTrace(trace_id=task.trace_id),
+        trace=AgentTrace(trace_id=task.trace_id),
         state=states.get(run.status, "failed"),
         error=run.last_error,
     )
@@ -4070,7 +4070,7 @@ def _tool_name(tool: Mapping[str, Any]) -> str:
     return str(function.get("name") or "") if isinstance(function, Mapping) else ""
 
 
-def _merge_trace(parent: DeepSeekTrace | None, child: DeepSeekTrace) -> None:
+def _merge_trace(parent: AgentTrace | None, child: AgentTrace) -> None:
     if parent is None:
         return
     parent.input_tokens += child.input_tokens

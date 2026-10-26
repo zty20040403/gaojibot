@@ -169,7 +169,7 @@ bot/
         ├── command_handlers.py  # 命令解析与控制命令
         ├── message_ingest.py    # 消息入库与群上下文采集
         ├── trigger_service.py   # 主动触发与后台认知任务
-        ├── chat_orchestrator.py # QQ 对话上下文与回合入口
+        ├── onebot_chat.py       # QQ 对话上下文与回合入口
         ├── tool_executor.py     # Agent 工具循环与执行编排
         ├── reply_service.py     # 回复规划、渲染与安全发送
         ├── onebot_delivery.py   # OneBot Outbox 与提醒投递
@@ -179,7 +179,7 @@ bot/
         ├── tools/               # 工具能力目录边界
         ├── storage/             # 持久任务等应用存储
         ├── workers/             # 可恢复后台任务执行器
-        ├── deepseek.py          # Agent Loop 兼容实现
+        ├── agent_loop.py        # 多模型 Agent Loop 与 AgentTrace
         ├── llm_gateway.py       # 多协议模型网关
         ├── context_pipeline/    # 引用图、话题识别、混合召回与 Token 预算
         ├── turn_journal.py      # 持久回合、工具事件和连续任务

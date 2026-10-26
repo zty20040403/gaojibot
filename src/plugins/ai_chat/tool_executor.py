@@ -61,9 +61,9 @@ from .context_pipeline import (
     assess_evidence,
     rule_recall_route,
 )
-from .deepseek import (
+from .agent_loop import (
     AgentLoopEvent,
-    DeepSeekTrace,
+    AgentTrace,
     DeepSeekConfigError,
     FinalStreamState,
     ask_deepseek_with_tools,
@@ -184,7 +184,7 @@ class ToolExecutor(HandlerService):
         available_image_sources: list[str] | None = None,
         available_voice_message_id: int | None = None,
         journal_turn_id: int | None = None,
-        turn_trace: DeepSeekTrace | None = None,
+        turn_trace: AgentTrace | None = None,
         turn_context: str = "",
         selected_model_override: str | None = None,
         selected_profile_override: ModelProfile | None = None,

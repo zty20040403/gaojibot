@@ -10,7 +10,7 @@ from fastapi import FastAPI
 os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 nonebot.init()
 
-from src.plugins.ai_chat.deepseek import DeepSeekTrace
+from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.observability import (
     BotTelemetry,
     current_trace_id,
@@ -77,7 +77,7 @@ class ObservabilityTests(unittest.TestCase):
         telemetry.configure("gaoji-test", service_version="test")
         with telemetry.span("test.turn") as trace_id:
             self.assertEqual(current_trace_id(), trace_id)
-            payload = DeepSeekTrace(profile="test").to_payload()
+            payload = AgentTrace(profile="test").to_payload()
         self.assertEqual(payload["trace_id"], trace_id)
         self.assertEqual(len(trace_id), 32)
 

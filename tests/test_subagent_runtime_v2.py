@@ -39,7 +39,7 @@ from src.plugins.ai_chat.subagents import (
     _synthesis_input,
     _workflow_runs,
 )
-from src.plugins.ai_chat.deepseek import DeepSeekTrace
+from src.plugins.ai_chat.agent_loop import AgentTrace
 
 
 class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
@@ -346,9 +346,9 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
         repaired_run = self.store.create_run(task.task_id, repair_step, allowed_tools=[], model_profile="qwen-local")
         baseline = StepOutcome(step, run, {"status": "success", "summary": "磁盘已用282GiB；0失败服务",
-            "facts": ["/nix/store 66GiB", "较早采样0个失败服务"], "artifacts": [{"handle": "old-artifact"}]}, DeepSeekTrace(), "success")
+            "facts": ["/nix/store 66GiB", "较早采样0个失败服务"], "artifacts": [{"handle": "old-artifact"}]}, AgentTrace(), "success")
         repair = StepOutcome(repair_step, repaired_run, {"status": "success", "summary": "最新2个失败服务",
-            "facts": ["当前2个失败服务"], "artifacts": []}, DeepSeekTrace(), "success")
+            "facts": ["当前2个失败服务"], "artifacts": []}, AgentTrace(), "success")
         combined = _repair_with_evidence(baseline, repair)
         self.assertEqual(combined.result["facts"], ["当前2个失败服务"])
         self.assertEqual(combined.result["artifacts"], [])
@@ -377,9 +377,9 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         self.coordinator.revise(task.task_id, scope_key=task.scope_key, requester_user_id=2,
             instruction="重查", step_keys=["baseline"], expected_version=1)
         self.store.finish_run(run.run_id, "succeeded", result={"status": "success"})
-        baseline = StepOutcome(step, run, {"status": "success"}, DeepSeekTrace(), "success")
+        baseline = StepOutcome(step, run, {"status": "success"}, AgentTrace(), "success")
         repaired = StepOutcome(TaskStep("baseline__repair_3", "operator", "补查", "数据"), run,
-            {"status": "success"}, DeepSeekTrace(), "success")
+            {"status": "success"}, AgentTrace(), "success")
         with patch.object(self.coordinator, "_validate_workflow", new=AsyncMock(side_effect=[
                 {"status": "failed", "checks": [{"step": "baseline", "ok": False}]}, {"status": "passed"}])), patch.object(
                 self.coordinator, "_attempt_adaptive_repair", new=AsyncMock(return_value=(True, repaired))) as repair, patch.object(
@@ -401,7 +401,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="gpt-5.6-luna")
         original = {"status": "partial", "artifacts": [{"handle": "s123abc:/workspace/old.pdf"}]}
         self.store.finish_run(run.run_id, "partial", result=original)
-        failed = StepOutcome(step, run, original, DeepSeekTrace(), "partial")
+        failed = StepOutcome(step, run, original, AgentTrace(), "partial")
         calls = []
 
         async def execute(task, step, run, **kwargs):
@@ -410,7 +410,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
             calls.append(step.role)
             result = {"status": "partial", "artifacts": [], "facts": ["价格仍未核实"]}
             self.store.finish_run(run.run_id, "partial", result=result)
-            return StepOutcome(step, run, result, DeepSeekTrace(), "partial")
+            return StepOutcome(step, run, result, AgentTrace(), "partial")
 
         with patch.object(self.coordinator, "_supervisor_json", new=AsyncMock(return_value={
             "action": "repair", "role": "researcher", "objective": "补查价格", "deliverable": "来源"})), patch.object(
@@ -430,7 +430,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         runs = self.store.runs(task.task_id)
         self.assertEqual(runs[-1].dependencies, ("pdf__repair_1_sources",))
         restored = {r.step_key: StepOutcome(TaskStep(r.step_key, r.role, r.objective, r.deliverable, r.dependencies),
-            r, r.result, DeepSeekTrace(), "partial") for r in runs}
+            r, r.result, AgentTrace(), "partial") for r in runs}
         _apply_completed_repairs(restored, require_artifacts=True)
         self.assertEqual(restored["pdf"].result["artifacts"], original["artifacts"])
         self.assertEqual(self.store.current_revision_adaptive_repair_count(task.task_id), 1)
@@ -451,7 +451,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         step = TaskStep("inspect", "operator", "inspect", "facts")
         run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
         completed = {"inspect": StepOutcome(step, run, {"status": "success", "summary": "observed"},
-                                            DeepSeekTrace(), "success")}
+                                            AgentTrace(), "success")}
         ref = self.store.record_evidence(task.task_id, run.run_id, "host_inspect", {}, {"ok": True, "value": 1})
         args = (task, completed, task.plan["contract"])
         with patch.object(self.coordinator, "_supervisor_text", new=AsyncMock(return_value="保存的正文")) as model:
@@ -478,13 +478,13 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         step = TaskStep("inspect", "operator", "inspect", "facts")
         run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
         ref = self.store.record_evidence(task.task_id, run.run_id, "host_inspect", {}, {"ok": True, "value": 1})
-        source = StepOutcome(step, run, {"status": "success", "summary": "observed"}, DeepSeekTrace(), "success")
+        source = StepOutcome(step, run, {"status": "success", "summary": "observed"}, AgentTrace(), "success")
         async def review(task, step, run, **kwargs):
             self.assertIn("待验收的精确正文", step.objective)
             self.assertIn('"source_kind": "unverified_model_draft"', step.objective)
             return StepOutcome(step, run, {"status": "success", "summary": "checked",
                 "metadata": {"criterion_reviews": [{"criterion_index": 0, "status": "passed",
-                    "reason": "正文与实际证据一致", "evidence_refs": [ref["ref"]]}]}}, DeepSeekTrace(), "success")
+                    "reason": "正文与实际证据一致", "evidence_refs": [ref["ref"]]}]}}, AgentTrace(), "success")
         with patch.object(self.coordinator, "_supervisor_text", new=AsyncMock(return_value="待验收的精确正文")), \
                 patch.object(self.coordinator, "_run_step_reliably", side_effect=review):
             validation = await self.coordinator._validate_workflow(task, {"inspect": source}, context=self.packet,
@@ -510,13 +510,13 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         step = TaskStep("inspect", "operator", "inspect", "facts")
         run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
         ref = self.store.record_evidence(task.task_id, run.run_id, "host_inspect", {}, {"ok": True, "value": 1})
-        source = StepOutcome(step, run, {"status": "success", "summary": "observed"}, DeepSeekTrace(), "success")
+        source = StepOutcome(step, run, {"status": "success", "summary": "observed"}, AgentTrace(), "success")
 
         async def review(task, step, run, **kwargs):
             self.assertNotIn("report_draft.text", step.objective)
             return StepOutcome(step, run, {"status": "success", "summary": "checked",
                 "metadata": {"criterion_reviews": [{"criterion_index": 0, "status": "passed",
-                    "reason": "文件内容已核实", "evidence_refs": [ref["ref"]]}]}}, DeepSeekTrace(), "success")
+                    "reason": "文件内容已核实", "evidence_refs": [ref["ref"]]}]}}, AgentTrace(), "success")
 
         with patch.object(self.coordinator, "_supervisor_text", new=AsyncMock(side_effect=AssertionError("early draft"))), \
                 patch.object(self.coordinator, "_run_step_reliably", side_effect=review):
@@ -611,7 +611,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         self.store.set_task_state(task.task_id, "running", plan={"contract": {"delivery_required": True}})
         step = TaskStep("files", "document", "write", "pdf")
         run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
-        outcome = StepOutcome(step, run, {"status": "success", "artifacts": [{"handle": "s123abc:/workspace/out.pdf", "name": "out.pdf"}]}, DeepSeekTrace(), "success")
+        outcome = StepOutcome(step, run, {"status": "success", "artifacts": [{"handle": "s123abc:/workspace/out.pdf", "name": "out.pdf"}]}, AgentTrace(), "success")
         execute = AsyncMock(side_effect=TimeoutError("receipt unknown"))
         for _ in range(2):
             result = await self.coordinator._deliver_requested_artifacts(task, {"files": outcome}, execute_tool=execute, delivered_artifacts=set(), progress=None)
@@ -854,9 +854,9 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         design_run = self.store.create_run(task.task_id, TaskStep("design", "analyst", "design", "plan"), allowed_tools=[], model_profile="qwen-local")
         repair_run = self.store.create_run(task.task_id, TaskStep("design__repair_1", "coder", "repair", "zip"), allowed_tools=[], model_profile="qwen-local")
         design = StepOutcome(TaskStep("design", "analyst", "design", "plan"), design_run,
-            {"status": "success", "artifacts": [{"handle": "s111111:/workspace/plan.md"}]}, DeepSeekTrace(), "success")
+            {"status": "success", "artifacts": [{"handle": "s111111:/workspace/plan.md"}]}, AgentTrace(), "success")
         repair = StepOutcome(TaskStep("design__repair_1", "coder", "repair", "zip"), repair_run,
-            {"status": "success", "artifacts": [{"handle": "s222222:/workspace/app.zip"}]}, DeepSeekTrace(), "success")
+            {"status": "success", "artifacts": [{"handle": "s222222:/workspace/app.zip"}]}, AgentTrace(), "success")
         selected = _delivery_outcomes(task, {"design": design, "design__repair_1": repair})
         self.assertEqual([item.step.key for item in selected], ["design__repair_1"])
 
@@ -865,9 +865,9 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         failed_run = self.store.create_run(task.task_id, TaskStep("frontend", "coder", "front", "code"), allowed_tools=[], model_profile="qwen-local")
         repair_run = self.store.create_run(task.task_id, TaskStep("frontend__repair_1", "coder", "repair", "zip"), allowed_tools=[], model_profile="qwen-local")
         failed = StepOutcome(TaskStep("frontend", "coder", "front", "code"), failed_run,
-            {"status": "failed"}, DeepSeekTrace(), "failed")
+            {"status": "failed"}, AgentTrace(), "failed")
         repair = StepOutcome(TaskStep("frontend__repair_1", "coder", "repair", "zip"), repair_run,
-            {"status": "success"}, DeepSeekTrace(), "success")
+            {"status": "success"}, AgentTrace(), "success")
         status = _settled_task_status(
             [failed, repair], [{"ok": True}], {"status": "passed"},
         )

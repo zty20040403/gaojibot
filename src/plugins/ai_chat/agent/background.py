@@ -12,7 +12,7 @@ from .workspaces import StepWorkspaces, prune_acknowledged_artifacts
 from .workspace_cleanup import prune_task_workspaces
 from ..onebot_codec import scope_from_event, decode_onebot_message
 from ..onebot_availability import file_delivery_blocker
-from ..deepseek import DeepSeekTrace
+from ..agent_loop import AgentTrace
 from ..workers.durable_jobs import DurableJobWorker, JobDeferred
 from .external import poll_external
 from ..delivery import body_fingerprint
@@ -429,7 +429,7 @@ class SubAgentDispatcher:
                     if task.status not in {"queued", "interrupted"}:
                         self.store.interrupt_task(task_id)
                     remaining = float(dispatch.get("deadline", time.time() + self.coordinator.timeout_seconds)) - time.time()
-                    trace = DeepSeekTrace(trace_id=task.trace_id)
+                    trace = AgentTrace(trace_id=task.trace_id)
                     async with asyncio.timeout(remaining):
                         await self.services.tools._ask_ai(bot, event, task.objective,
                             selected_model_override=dispatch.get("profile"), turn_trace=trace,

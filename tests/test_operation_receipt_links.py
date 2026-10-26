@@ -17,7 +17,7 @@ from src.plugins.ai_chat.agent.progress import task_progress
 from src.plugins.ai_chat.agent.receipt_links import (
     RECEIPT_TOOL, digest, evidence_fingerprint, link_operation_receipts,
 )
-from src.plugins.ai_chat.deepseek import DeepSeekTrace
+from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.model_catalog import ModelCatalog
 from src.plugins.ai_chat.subagents import AgentExecutionHooks, StepOutcome, SubAgentCoordinator, SubAgentStore, TaskStep
 
@@ -229,19 +229,19 @@ class OperationReceiptLinksTests(unittest.IsolatedAsyncioTestCase):
         self.store.set_task_state(self.task.task_id, "running", plan={"contract": contract()})
         catalog = ModelCatalog({"qwen-local": profile("qwen-local")}, default_profile="qwen-local")
         coordinator = SubAgentCoordinator(self.store, catalog, logger=Mock())
-        completed = {"inspect": StepOutcome(self.step, self.run, {"status": "success", "summary": "inspected"}, DeepSeekTrace())}
+        completed = {"inspect": StepOutcome(self.step, self.run, {"status": "success", "summary": "inspected"}, AgentTrace())}
         async def validate(task, step, run, **kwargs):
             items = self.store.task_evidence(task.task_id, run_ids={self.run.run_id})
             refs = [item["evidence_id"] for item in items if item["tool_name"] == RECEIPT_TOOL]
             result = {"status": "success", "summary": "reviewed", **review(refs)}
             self.store.record_evidence(task.task_id, run.run_id, "web_search", {}, {"ok": True, "content": "reviewer own evidence"})
             self.store.finish_run(run.run_id, "succeeded", result=result)
-            return StepOutcome(step, run, result, DeepSeekTrace())
+            return StepOutcome(step, run, result, AgentTrace())
         async def attempt():
             return await coordinator._validate_workflow(self.task, completed,
                 context=ContextPacket(self.task.scope_key, self.task.conversation_id, 2, None, "inspect"),
                 selected_profile=profile("qwen-local"), tools_by_name={}, execute_tool=AsyncMock(),
-                hooks=AgentExecutionHooks(operation_receipt=self.lookup), parent_trace=DeepSeekTrace(), progress=None)
+                hooks=AgentExecutionHooks(operation_receipt=self.lookup), parent_trace=AgentTrace(), progress=None)
         with patch.object(coordinator, "_run_step_reliably", side_effect=validate) as verifier:
             first = await attempt()
             second = await attempt()

@@ -10,7 +10,7 @@ import nonebot
 nonebot.init()
 
 from src.plugins.ai_chat.conversation_scope import ConversationScope
-from src.plugins.ai_chat.deepseek import DeepSeekTrace
+from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.turn_journal import TurnJournal
 
 
@@ -109,7 +109,7 @@ class TurnJournalTests(unittest.TestCase):
             '{"ok":true}',
             (),
         )
-        trace = DeepSeekTrace(
+        trace = AgentTrace(
             provider="provider-b",
             model="model-b",
             profile="fallback",
@@ -141,7 +141,7 @@ class TurnJournalTests(unittest.TestCase):
 
     def test_routing_decisions_survive_archive_and_distinguish_requested_actual(self) -> None:
         turn = self.start(self.group_a, "hello")
-        trace = DeepSeekTrace(model_routing=[{
+        trace = AgentTrace(model_routing=[{
             "requested_profile": "qwen-local", "requested_model": "qwen3.8-27b",
             "actual_profile": "deepseek", "actual_model": "deepseek-test",
             "reason_code": "service_stopped", "reason": "Qwen 服务未启动",
@@ -361,7 +361,7 @@ class TurnJournalTests(unittest.TestCase):
 
     def test_archive_is_compressed_and_secret_turn_is_not_archived(self) -> None:
         safe_turn = self.start(self.group_a)
-        trace = DeepSeekTrace(model="deepseek-chat")
+        trace = AgentTrace(model="deepseek-chat")
         trace.input_tokens = 12
         trace.output_tokens = 8
         trace.total_tokens = 20

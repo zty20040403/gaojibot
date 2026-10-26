@@ -24,8 +24,8 @@ from .context_store import (
 from .conversation_scope import (
     ConversationScope,
 )
-from .deepseek import (
-    DeepSeekTrace,
+from .agent_loop import (
+    AgentTrace,
     DeepSeekConfigError,
     ask_deepseek_json,
 )
@@ -97,7 +97,7 @@ class TriggerService(HandlerService):
                 self.context.model_catalog.try_resolve(self.context.settings.proactive_classifier_profile)
                 or self.context.model_catalog.default
             )
-            trace = DeepSeekTrace(
+            trace = AgentTrace(
                 provider=selected_profile.provider_identity,
                 model=selected_profile.model,
                 profile=selected_profile.name,
@@ -216,7 +216,7 @@ class TriggerService(HandlerService):
     def _record_background_usage(self,
         scope_key: str,
         source: str,
-        trace: DeepSeekTrace,
+        trace: AgentTrace,
     ) -> None:
         if self.context.usage_store is None or not (trace.input_tokens or trace.output_tokens):
             return
@@ -237,7 +237,7 @@ class TriggerService(HandlerService):
             self.context.settings.historian_profile,
             self.context.settings.historian_model,
         )
-        trace = DeepSeekTrace(
+        trace = AgentTrace(
             provider=profile.provider_identity,
             model=profile.model,
             profile=profile.name,
@@ -322,7 +322,7 @@ class TriggerService(HandlerService):
             self.context.settings.dream_profile,
             self.context.settings.dream_model,
         )
-        trace = DeepSeekTrace(
+        trace = AgentTrace(
             provider=profile.provider_identity,
             model=profile.model,
             profile=profile.name,

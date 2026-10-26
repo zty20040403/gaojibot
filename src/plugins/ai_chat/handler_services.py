@@ -11,7 +11,7 @@ from .runtime import AppContext
 
 if TYPE_CHECKING:
     from .adapters import OneBotIngestAdapter
-    from .chat_orchestrator import OneBotChatService
+    from .onebot_chat import OneBotChatService
     from .command_handlers import CommandHandlers
     from .message_ingest import MessageIngest
     from .onebot_delivery import OneBotDelivery
@@ -43,7 +43,7 @@ class HandlerServices:
     delivery: OneBotDelivery = field(init=False)
 
     def __post_init__(self) -> None:
-        from .chat_orchestrator import OneBotChatService
+        from .onebot_chat import OneBotChatService
         from .command_handlers import CommandHandlers
         from .message_ingest import MessageIngest
         from .onebot_delivery import OneBotDelivery

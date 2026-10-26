@@ -16,7 +16,7 @@ async def evaluate(cases, profile_name):
     nonebot.init()
     from src.plugins.ai_chat.agent.execution import ENTRY_PROMPT
     from src.plugins.ai_chat.agent.model_routing import agent_profile_names
-    from src.plugins.ai_chat.deepseek import DeepSeekTrace, _execution_entry, _runtime
+    from src.plugins.ai_chat.agent_loop import AgentTrace, _execution_entry, _runtime
 
     catalog, gateway = _runtime()
     profile = catalog.resolve(profile_name)
@@ -26,7 +26,7 @@ async def evaluate(cases, profile_name):
     results = []
     try:
         for case in cases:
-            trace = DeepSeekTrace()
+            trace = AgentTrace()
             try:
                 decision, _ = await _execution_entry([
                     {"role": "system", "content": ENTRY_PROMPT},

@@ -293,7 +293,7 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raw.close_count, 1)
 
     async def test_chat_stream_uses_backup_and_records_final_route(self):
-        agent = importlib.import_module("src.plugins.ai_chat.deepseek")
+        agent = importlib.import_module("src.plugins.ai_chat.agent_loop")
         primary, backup = profile("primary"), profile("backup")
         catalog = ModelCatalog({p.name: p for p in (primary, backup)}, default_profile=primary.name)
         provider = RecordingProvider()
@@ -302,7 +302,7 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
             FakeStream(stream_chunk(), stream_chunk("answer\n\n", "stop")),
         ])
         gateway = LLMGateway({"openai-chat": provider}, catalog=catalog)
-        sink, trace = AsyncMock(), agent.DeepSeekTrace()
+        sink, trace = AsyncMock(), agent.AgentTrace()
         with (
             patch.object(agent, "_model_catalog", catalog),
             patch.object(agent, "_llm_gateway", gateway),
@@ -319,7 +319,7 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace.model_routing[0]["outcomes"][-1]["status"], "succeeded")
 
     def test_qwen_thinking_uses_native_switch(self) -> None:
-        agent = importlib.import_module("src.plugins.ai_chat.deepseek")
+        agent = importlib.import_module("src.plugins.ai_chat.agent_loop")
         for mode, expected in (
             ("enabled", {"enable_thinking": True}),
             ("disabled", {"enable_thinking": False}),
@@ -507,7 +507,7 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         gateway = ConcurrentGateway()
-        agent = importlib.import_module("src.plugins.ai_chat.deepseek")
+        agent = importlib.import_module("src.plugins.ai_chat.agent_loop")
         with (
             patch.object(agent, "_model_catalog", catalog),
             patch.object(agent, "_llm_gateway", gateway),

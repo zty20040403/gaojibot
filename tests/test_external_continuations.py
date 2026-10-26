@@ -21,7 +21,7 @@ from src.plugins.ai_chat.model_catalog import ModelCatalog
 from src.plugins.ai_chat.onebot_codec import scope_from_event
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.plugins.ai_chat.subagents import SubAgentCoordinator, SubAgentStore, TaskStep, StepOutcome
-from src.plugins.ai_chat.deepseek import DeepSeekTrace
+from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 
 
@@ -295,7 +295,7 @@ class ExternalContinuationTests(unittest.IsolatedAsyncioTestCase):
     async def test_waiting_dependency_is_not_partial_and_does_not_start_child(self):
         child = TaskStep("report", "analyst", "整理结论", "报告", ("disk",))
         child_run = self.store.create_run(self.task.task_id, child, allowed_tools=[], model_profile="qwen-local")
-        worker = AsyncMock(return_value=(StepOutcome(self.step, self.run, {}, DeepSeekTrace(), "waiting"), None))
+        worker = AsyncMock(return_value=(StepOutcome(self.step, self.run, {}, AgentTrace(), "waiting"), None))
         completed = {}
         with self.assertRaises(ExternalPending):
             await self.coordinator._schedule_workflow(self.task, pending={"disk": self.step, "report": child}, completed=completed,
@@ -304,7 +304,7 @@ class ExternalContinuationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed, {})
 
     async def test_workflow_resumes_only_unfinished_steps_then_queues_final(self):
-        from src.plugins.ai_chat.deepseek import AgentLoopEvent
+        from src.plugins.ai_chat.agent_loop import AgentLoopEvent
         baseline = self.store.create_run(self.task.task_id, TaskStep("baseline", "operator", "已做检查", "证据"),
             allowed_tools=[], model_profile="qwen-local")
         self.store.finish_run(baseline.run_id, "succeeded", result={"status": "success", "summary": "服务正常"})
@@ -357,7 +357,7 @@ class ExternalContinuationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visited.count(self.run.run_id), 2)
 
     async def test_tool_plan_is_saved_before_execution_and_receipt_before_suspension(self):
-        from src.plugins.ai_chat.deepseek import ask_deepseek_with_tools
+        from src.plugins.ai_chat.agent_loop import ask_deepseek_with_tools
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=[
             SimpleNamespace(id="clock", type="function", function=SimpleNamespace(name="noop", arguments="{}"))]))])
         snapshots = []
@@ -374,7 +374,7 @@ class ExternalContinuationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snapshots[-1][-1]["role"], "tool")
             raise ExternalPending()
 
-        with patch("src.plugins.ai_chat.deepseek._create_completion", new=AsyncMock(return_value=response)) as llm:
+        with patch("src.plugins.ai_chat.agent_loop._create_completion", new=AsyncMock(return_value=response)) as llm:
             with self.assertRaises(ExternalPending):
                 await ask_deepseek_with_tools("noop", [], [{"type": "function", "function": {
                     "name": "noop", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}],

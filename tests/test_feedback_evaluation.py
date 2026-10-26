@@ -132,9 +132,9 @@ class FeedbackEvaluationTests(unittest.IsolatedAsyncioTestCase):
             kwargs["trace"].profile = "judge"
             return {"winner": "tie", "reason": "fixture"}
 
-        with patch("src.plugins.ai_chat.deepseek._runtime", return_value=(catalog, gateway)), \
-             patch("src.plugins.ai_chat.deepseek.ask_deepseek", side_effect=candidate), \
-             patch("src.plugins.ai_chat.deepseek.ask_deepseek_json", side_effect=reviewer):
+        with patch("src.plugins.ai_chat.agent_loop._runtime", return_value=(catalog, gateway)), \
+             patch("src.plugins.ai_chat.agent_loop.ask_deepseek", side_effect=candidate), \
+             patch("src.plugins.ai_chat.agent_loop.ask_deepseek_json", side_effect=reviewer):
             report = await replay_feedback([case], "candidate", "judge")
         self.assertEqual(report["groups"]["negative"]["tie"], 1)
         gateway.close.assert_awaited_once()

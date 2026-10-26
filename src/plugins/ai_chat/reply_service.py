@@ -21,7 +21,7 @@ from nonebot.adapters.onebot.v11.exception import (
 from nonebot.exception import (
     FinishedException,
 )
-from .deepseek import (
+from .agent_loop import (
     FinalStreamState,
 )
 from .delivery import (

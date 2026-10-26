@@ -22,7 +22,7 @@ from src.plugins.ai_chat.agent.execution import (
 )
 from src.plugins.ai_chat.agent.model_routing import agent_profile_names, choose_agent_profile
 from src.plugins.ai_chat.agent.sessions import read_upstream_result
-from src.plugins.ai_chat.deepseek import DeepSeekTrace, ask_deepseek_with_tools
+from src.plugins.ai_chat.agent_loop import AgentTrace, ask_deepseek_with_tools
 from src.plugins.ai_chat.llm_gateway import LLMGateway, completion_profile_scope
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
 from src.plugins.ai_chat.subagents import (
@@ -206,8 +206,8 @@ class EntryContractTests(unittest.TestCase):
 
 class EntryLoopTests(unittest.IsolatedAsyncioTestCase):
     async def test_direct_uses_one_model_call_and_current_context(self):
-        trace, handler = DeepSeekTrace(), AsyncMock(return_value=None)
-        with patch("src.plugins.ai_chat.deepseek._completion_with_optional_stream", new=AsyncMock(return_value=completion(decision()))) as model:
+        trace, handler = AgentTrace(), AsyncMock(return_value=None)
+        with patch("src.plugins.ai_chat.agent_loop._completion_with_optional_stream", new=AsyncMock(return_value=completion(decision()))) as model:
             result = await ask_deepseek_with_tools("你好", [], [TOOL], AsyncMock(), profile=profile(),
                                                   group_context="本群当前话题", entry_handler=handler, trace=trace)
         self.assertEqual(result, "你好")
@@ -225,7 +225,7 @@ class EntryLoopTests(unittest.IsolatedAsyncioTestCase):
         })
         handler = AsyncMock(return_value=None)
         with patch(
-            "src.plugins.ai_chat.deepseek._completion_with_optional_stream",
+            "src.plugins.ai_chat.agent_loop._completion_with_optional_stream",
             new=AsyncMock(return_value=completion(noisy)),
         ) as model:
             result = await ask_deepseek_with_tools(
@@ -243,7 +243,7 @@ class EntryLoopTests(unittest.IsolatedAsyncioTestCase):
     async def test_workflow_uses_host_result_without_redundant_main_call(self):
         handler = AsyncMock(return_value="task#1 成品")
         execute = AsyncMock()
-        with patch("src.plugins.ai_chat.deepseek._completion_with_optional_stream", new=AsyncMock(return_value=completion(decision("workflow")))) as model:
+        with patch("src.plugins.ai_chat.agent_loop._completion_with_optional_stream", new=AsyncMock(return_value=completion(decision("workflow")))) as model:
             result = await ask_deepseek_with_tools("精心写个谷粒商城", [], [TOOL], execute,
                                                   profile=profile(), entry_handler=handler)
         self.assertEqual(result, "task#1 成品")
@@ -257,7 +257,7 @@ class EntryLoopTests(unittest.IsolatedAsyncioTestCase):
             side_effect=[completion({}), completion({}), completion(content="入口失败，未执行项目")]
         )
         with patch(
-            "src.plugins.ai_chat.deepseek._completion_with_optional_stream",
+            "src.plugins.ai_chat.agent_loop._completion_with_optional_stream",
             new=model,
         ):
             result = await ask_deepseek_with_tools(
@@ -277,7 +277,7 @@ class EntryLoopTests(unittest.IsolatedAsyncioTestCase):
         payload["steps"][0].update(agent="operator", required_tools=["ops_call"])
         handler, execute = AsyncMock(), AsyncMock()
         model = AsyncMock(side_effect=[completion(payload), completion(payload), completion(content="工具未开启，未执行")])
-        with patch("src.plugins.ai_chat.deepseek._completion_with_optional_stream", new=model):
+        with patch("src.plugins.ai_chat.agent_loop._completion_with_optional_stream", new=model):
             result = await ask_deepseek_with_tools("检查服务器", [], [TOOL], execute,
                 profile=profile(), entry_handler=handler)
         self.assertEqual(result, "工具未开启，未执行")
@@ -287,7 +287,7 @@ class EntryLoopTests(unittest.IsolatedAsyncioTestCase):
         execute.assert_not_awaited()
 
     async def test_delegate_returns_control_to_parent(self):
-        with patch("src.plugins.ai_chat.deepseek._completion_with_optional_stream", new=AsyncMock(side_effect=[
+        with patch("src.plugins.ai_chat.agent_loop._completion_with_optional_stream", new=AsyncMock(side_effect=[
             completion(decision("delegate")), completion(content="脚本运行通过"),
         ])) as model:
             result = await ask_deepseek_with_tools("运行脚本", [], [TOOL], AsyncMock(), profile=profile(),

@@ -96,7 +96,7 @@ acceptance are not implied by this roadmap.
 - [x] Fleet read/management/job/artifact/guardian handlers extracted.
 - [x] Move agent-executor-backed tool dispatch.
 - [x] Registry-driven tool availability and complete handler coverage.
-- [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
+- [x] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
 - [ ] Startup-time context assembly; migrate consumers and remove old globals.
 - [ ] Tool/loop/routing regressions, full PG suite and admin UI build.
@@ -409,3 +409,26 @@ isolated roadmap test database is used for validation.
   diff whitespace check and admin TypeScript/Vite build passed.
 - Phase 6.1 is complete locally. Naming/compatibility, admin routers and delayed
   startup assembly remain in Phase 6; Phases 7-9 have not begun.
+
+### Phase 6 naming and compatibility validation
+
+- Moved the model-independent loop to agent_loop.py and renamed DeepSeekTrace
+  to AgentTrace. Moved the OneBot service to onebot_chat.py; the separate
+  application/chat_orchestrator.py remains unchanged. Updated internal callers,
+  test patch targets, evaluation tools and README paths.
+- deepseek.py and chat_orchestrator.py are one-release import-only shims. The
+  compatibility trace names reference the same type, and legacy runtime setup
+  configures the canonical runtime rather than making a second instance.
+- AST comparison against the previous commit verified that both moved modules
+  contain only the planned naming/import/docstring changes. Compatibility and
+  architecture regressions enforce one implementation and bounded shim size.
+- First full regression failed two tests: an architecture assertion still named
+  chat_orchestrator.py, and an intent-routing mock patched the legacy module.
+  Corrected both references without weakening behavior assertions. The initial
+  failure log remains .cache/roadmap/phase6-naming-full.log.
+- Focused tests after correction: 113 passed. Final PG suite: 1,688 tests, OK
+  (12 skipped), 85.486 seconds; .cache/roadmap/phase6-naming-full-retry.log.
+  CI-path Ruff, diff whitespace check and admin TypeScript/Vite build passed.
+- Phases 6.1 and 6.2 are complete locally. Next: split admin API routers while
+  retaining AccountRoute authentication for every child route, then move runtime
+  assembly to startup. No push, production rebuild or live provider request made.

@@ -1,6 +1,6 @@
 """Stable Agent contracts exported to application orchestration."""
 
-from ..deepseek import DeepSeekTrace as AgentTrace
+from ..agent_loop import AgentTrace as AgentTrace
 from .contracts import (
     AgentContext,
     AgentResult,

@@ -13,7 +13,7 @@ nonebot.init()
 from src.plugins.ai_chat.llm_gateway import LLMEmptyResponseError, LLMGateway
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
 
-agent = importlib.import_module("src.plugins.ai_chat.deepseek")
+agent = importlib.import_module("src.plugins.ai_chat.agent_loop")
 
 
 def completion(content="", *, reasoning="thinking", finish="length", calls=None):
@@ -68,7 +68,7 @@ class ReasoningRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reasoning_only_repairs_once_and_accounts_both_requests(self):
         provider, runtime = self.runtime([completion(), completion("323", reasoning="", finish="stop")])
-        trace = agent.DeepSeekTrace()
+        trace = agent.AgentTrace()
         with runtime:
             answer = await agent.ask_deepseek("17 * 19", [], profile=self.qwen, trace=trace)
         self.assertEqual(answer, "323")
@@ -83,7 +83,7 @@ class ReasoningRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_second_empty_excludes_qwen_and_uses_fallback(self):
         provider, runtime = self.runtime([completion(), completion(), completion("answer", reasoning="", finish="stop")])
-        trace = agent.DeepSeekTrace()
+        trace = agent.AgentTrace()
         with runtime:
             answer = await agent.ask_deepseek("question", [], profile=self.qwen, trace=trace)
         self.assertEqual(answer, "answer")
@@ -94,7 +94,7 @@ class ReasoningRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_all_empty_stops_after_two_recovery_requests(self):
         provider, runtime = self.runtime([completion(), completion(), completion()])
-        trace = agent.DeepSeekTrace()
+        trace = agent.AgentTrace()
         with runtime, self.assertRaises(LLMEmptyResponseError):
             await agent.ask_deepseek("question", [], profile=self.qwen, trace=trace)
         self.assertEqual(len(provider.calls), 3)
@@ -146,7 +146,7 @@ class ReasoningRecoveryTests(unittest.IsolatedAsyncioTestCase):
         stream = ReasoningStream()
         provider, runtime = self.runtime([stream, completion("323", reasoning="", finish="stop")])
         sink = AsyncMock()
-        trace = agent.DeepSeekTrace()
+        trace = agent.AgentTrace()
         with runtime, patch.object(agent, "settings", SimpleNamespace(stream_enabled=True)):
             response, emitted = await agent._completion_with_optional_stream(sink, self.qwen, trace=trace, messages=[{"role":"user", "content":"17 * 19"}])
         self.assertEqual(response.choices[0].message.content, "323")

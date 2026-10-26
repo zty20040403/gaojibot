@@ -10,7 +10,7 @@ import nonebot
 nonebot.init()
 
 from src.plugins.ai_chat.context_store import ContextStore, estimate_tokens
-from src.plugins.ai_chat.deepseek import DeepSeekTrace, _build_messages, _completion_kwargs
+from src.plugins.ai_chat.agent_loop import AgentTrace, _build_messages, _completion_kwargs
 from src.plugins.ai_chat.llm_gateway import _anthropic_response, _convert_anthropic_messages
 from src.plugins.ai_chat.observability import BotTelemetry
 from src.plugins.ai_chat.prompt_context import quote_evidence
@@ -20,7 +20,7 @@ from src.plugins.ai_chat.config import settings
 
 class PromptContextTests(unittest.TestCase):
     def test_dynamic_data_never_changes_stable_history_prefix(self):
-        with patch("src.plugins.ai_chat.deepseek.runtime_clock_prompt", side_effect=["clock-one", "clock-two"]):
+        with patch("src.plugins.ai_chat.agent_loop.runtime_clock_prompt", side_effect=["clock-one", "clock-two"]):
             first = _build_messages("question-one", [], group_context="same history",
                 memory_context="memory-one", current_user="person-one", tool_context="dynamic-one", system_context="stable policy")
             second = _build_messages("question-two", [], group_context="same history",
@@ -75,7 +75,7 @@ class PromptContextTests(unittest.TestCase):
 
     def test_tool_budget_includes_escaping_and_complete_boundaries(self):
         raw = [{"role": "tool", "tool_call_id": f"call-{index}", "content": "<&>" * 1000} for index in range(3)]
-        with patch("src.plugins.ai_chat.deepseek.settings", replace(settings,
+        with patch("src.plugins.ai_chat.agent_loop.settings", replace(settings,
             tool_max_result_chars=500, tool_max_context_chars=750)):
             wire = _completion_kwargs(raw, profile("test"))["messages"]
         self.assertLessEqual(sum(len(item["content"]) for item in wire), 750)
@@ -97,8 +97,8 @@ class PromptContextTests(unittest.TestCase):
 
     def test_cache_tokens_are_normalized_recorded_and_clamped(self):
         metrics = BotTelemetry()
-        trace = DeepSeekTrace(profile="fixture")
-        with patch("src.plugins.ai_chat.deepseek.telemetry", metrics):
+        trace = AgentTrace(profile="fixture")
+        with patch("src.plugins.ai_chat.agent_loop.telemetry", metrics):
             for usage in (
                 {"prompt_tokens": 100, "completion_tokens": 2, "prompt_tokens_details": {"cached_tokens": 60}},
                 {"prompt_tokens": 100, "completion_tokens": 2, "prompt_cache_hit_tokens": 70},

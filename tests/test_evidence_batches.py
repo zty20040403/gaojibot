@@ -8,7 +8,7 @@ from tests import test_subagent_v2  # noqa: F401 - initialize the isolated NoneB
 from src.plugins.ai_chat.agent.evidence import (
     READ_TASK_EVIDENCE_BATCH, canonical, read_evidence, read_evidence_batch,
 )
-from src.plugins.ai_chat.deepseek import _bounded_tool_result
+from src.plugins.ai_chat.agent_loop import _bounded_tool_result
 from src.plugins.ai_chat.tool_policy import ToolCatalog
 
 

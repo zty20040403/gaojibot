@@ -17,7 +17,7 @@ from src.plugins.ai_chat.agent.artifact_acceptance import (
     separate_review_artifacts,
 )
 from src.plugins.ai_chat.agent.execution import EntryDecision
-from src.plugins.ai_chat.deepseek import DeepSeekTrace
+from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.model_catalog import ModelCatalog
 from src.plugins.ai_chat.subagents import (
     AgentExecutionHooks,
@@ -228,7 +228,7 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.workspaces.capture = AsyncMock()
         result = {"status": state, "summary": key, "artifacts": list(artifacts)}
         self.store.finish_run(run.run_id, "succeeded" if state == "success" else state, result=result)
-        return StepOutcome(step, run, result, DeepSeekTrace(), state)
+        return StepOutcome(step, run, result, AgentTrace(), state)
 
     def reopen(self, task, completed):
         self.store.close()
@@ -237,7 +237,7 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         runs = {run.run_id: run for run in self.store.runs(task.task_id)}
         restored = {
             key: StepOutcome(value.step, runs[value.run.run_id], runs[value.run.run_id].result,
-                             DeepSeekTrace(), value.state)
+                             AgentTrace(), value.state)
             for key, value in completed.items()
         }
         return self.store.get(task.task_id), restored
@@ -259,7 +259,7 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
             state = result["status"]
             self.store.finish_run(run.run_id, "succeeded" if state == "success" else state, result=result)
-            return StepOutcome(step, run, result, DeepSeekTrace(), state)
+            return StepOutcome(step, run, result, AgentTrace(), state)
         return AsyncMock(side_effect=run_review)
 
     async def validate(self, task, completed):

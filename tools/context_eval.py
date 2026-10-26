@@ -25,7 +25,7 @@ async def replay_feedback(cases, profile_name, judge_name, *, timeout=120.0):
     from src.plugins.ai_chat.config import settings
     from src.plugins.ai_chat.context_store import ContextStore
     from src.plugins.ai_chat.conversation_scope import ConversationScope
-    from src.plugins.ai_chat.deepseek import ask_deepseek, ask_deepseek_json, DeepSeekTrace, _runtime
+    from src.plugins.ai_chat.agent_loop import ask_deepseek, ask_deepseek_json, AgentTrace, _runtime
     from src.plugins.ai_chat.ledger import MessageLedger
     from src.plugins.ai_chat.llm_gateway import completion_profile_scope
     from src.plugins.ai_chat.message_ir import MessageBody, TextNode
@@ -57,7 +57,7 @@ async def replay_feedback(cases, profile_name, judge_name, *, timeout=120.0):
 
         async def generate(case):
             projection = project(case)
-            trace = DeepSeekTrace()
+            trace = AgentTrace()
             with completion_profile_scope(frozenset({candidate.name})):
                 answer = await ask_deepseek(case["question"]["text"], [],
                     group_context=projection.text,
@@ -68,7 +68,7 @@ async def replay_feedback(cases, profile_name, judge_name, *, timeout=120.0):
 
         async def judge(case):
             projection = project(case)
-            trace = DeepSeekTrace()
+            trace = AgentTrace()
             with completion_profile_scope(frozenset({reviewer.name})):
                 result = await ask_deepseek_json(
                     "Compare answers A and B to the same historical group-chat question. "
@@ -97,7 +97,7 @@ async def live_predictions(cases, profile_name, embeddings):
     from src.plugins.ai_chat.config import settings
     from src.plugins.ai_chat.context_store import ContextStore
     from src.plugins.ai_chat.conversation_scope import ConversationScope
-    from src.plugins.ai_chat.deepseek import ask_deepseek_json, DeepSeekTrace, _runtime
+    from src.plugins.ai_chat.agent_loop import ask_deepseek_json, AgentTrace, _runtime
     from src.plugins.ai_chat.ledger import MessageLedger
     from src.plugins.ai_chat.message_ir import MessageBody, TextNode
     from src.plugins.ai_chat.semantic_recall import EmbeddingClient
@@ -145,7 +145,7 @@ async def live_predictions(cases, profile_name, embeddings):
                             norm = math.sqrt(sum(x*x for x in vector) * sum(x*x for x in query))
                             return sum(x*y for x,y in zip(vector, query)) / norm if norm else 0.0
                         retrieved = [case["messages"][index]["id"] for index in sorted(range(len(vectors)), key=lambda i: cosine(vectors[i]), reverse=True)[:5]]
-                    trace = DeepSeekTrace()
+                    trace = AgentTrace()
                     try:
                         response = await ask_deepseek_json(
                             settings.system_prompt + "\n请正常回答当前群友。为评测另附结构化依据，只输出 JSON："

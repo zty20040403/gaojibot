@@ -16,7 +16,7 @@ from nonebot.adapters.onebot.v11 import (
     MessageSegment,
     PrivateMessageEvent,
 )
-from src.plugins.ai_chat.chat_orchestrator import OneBotChatService
+from src.plugins.ai_chat.onebot_chat import OneBotChatService
 from src.plugins.ai_chat.ocr import OCRError, RecentImageStore
 from src.plugins.ai_chat.onebot_codec import scope_from_event
 from src.plugins.ai_chat.tools.media import HANDLERS

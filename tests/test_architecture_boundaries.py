@@ -44,7 +44,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 "handle_proactive_chat",
                 "_semantic_index_loop",
             },
-            "chat_orchestrator.py": {
+            "onebot_chat.py": {
                 "_current_turn_context",
                 "_run_tracked_ai",
             },
@@ -82,6 +82,15 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 and node.func.id in {"globals", "FunctionType", "on_message", "on_command"}
                 for node in ast.walk(tree)
             ))
+
+    def test_legacy_agent_paths_remain_import_only_shims(self) -> None:
+        for name in ("deepseek.py", "chat_orchestrator.py"):
+            source = (PLUGIN_ROOT / name).read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            self.assertLessEqual(len(source.splitlines()), 25)
+            self.assertFalse(any(isinstance(node, ast.ClassDef) for node in tree.body))
+            functions = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            self.assertEqual(functions, {"__getattr__", "__dir__"})
 
     def test_handlers_keep_native_globals_and_isolated_runtime(self) -> None:
         from src.plugins.ai_chat.handler_services import HandlerServices

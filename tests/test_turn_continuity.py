@@ -19,7 +19,7 @@ from src.plugins.ai_chat.ai_tools import (
     CONTEXT_SEARCH_TOOL_NAME,
 )
 from src.plugins.ai_chat.context_store import ContextStore
-from src.plugins.ai_chat.deepseek import AgentLoopEvent
+from src.plugins.ai_chat.agent_loop import AgentLoopEvent
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.onebot_codec import record_onebot_event, scope_from_event

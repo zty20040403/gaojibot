@@ -16,7 +16,7 @@ from src.plugins.ai_chat.agent.control import LeaseLost
 from src.plugins.ai_chat.agent.worker_report import (
     checked_report, retain_execution_facts, separate_cluster_artifacts,
 )
-from src.plugins.ai_chat.deepseek import DeepSeekTrace
+from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.model_catalog import ModelCatalog
 from src.plugins.ai_chat.subagents import SubAgentCoordinator, SubAgentStore, TaskStep
@@ -51,7 +51,7 @@ class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
         return await self.coordinator._correct_worker_report(self.task, self.run, original or report(),
             evidence=self.store.task_evidence(self.task.task_id),
             spec=DEFAULT_AGENT_REGISTRY.worker("operator"), profile=self.profile,
-            trace=DeepSeekTrace(), event_sink=AsyncMock())
+            trace=AgentTrace(), event_sink=AsyncMock())
 
     async def valid_correction(self, text, history, tools, execute, **kwargs):
         await execute("read_task_evidence", {"ref": self.ref})
@@ -140,7 +140,7 @@ class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
                     name="read_task_evidence", arguments=json.dumps({"ref": self.ref})))]
             message = SimpleNamespace(content="" if tool_calls else json.dumps(report(self.ref)), tool_calls=tool_calls)
             return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None), ""
-        with patch("src.plugins.ai_chat.deepseek._completion_with_optional_stream", side_effect=completion):
+        with patch("src.plugins.ai_chat.agent_loop._completion_with_optional_stream", side_effect=completion):
             result = await self.correct()
         self.assertEqual(calls, 3)
         self.assertEqual(result["report_validation"]["status"], "passed")
@@ -158,7 +158,7 @@ class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_final_feedback_exhausts_same_budget_and_stays_partial(self):
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
             content=json.dumps(report(self.ref)), tool_calls=[]))], usage=None), ""
-        with patch("src.plugins.ai_chat.deepseek._completion_with_optional_stream",
+        with patch("src.plugins.ai_chat.agent_loop._completion_with_optional_stream",
                    new=AsyncMock(return_value=response)) as model:
             result = await self.correct()
         self.assertEqual(model.await_count, 4)
@@ -209,8 +209,8 @@ class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
             return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None), ""
 
         with patch("src.plugins.ai_chat.subagents.settings", limits), patch(
-            "src.plugins.ai_chat.deepseek.settings", limits), patch(
-            "src.plugins.ai_chat.deepseek._completion_with_optional_stream", side_effect=completion):
+            "src.plugins.ai_chat.agent_loop.settings", limits), patch(
+            "src.plugins.ai_chat.agent_loop._completion_with_optional_stream", side_effect=completion):
             result = await self.correct(original)
         self.assertGreater(len(seen_calls), 1)
         self.assertEqual(result["status"], "success", result)

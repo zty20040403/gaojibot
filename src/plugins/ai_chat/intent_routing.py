@@ -8,7 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
-from .deepseek import DeepSeekTrace, ask_deepseek_json
+from .agent_loop import AgentTrace, ask_deepseek_json
 from .llm_gateway import completion_profile_scope
 from .model_catalog import ModelCatalog
 from .observability import telemetry
@@ -51,11 +51,11 @@ async def classify_tool_intent(
     user_text: str, *, catalog: ModelCatalog, profile_name: str,
     allowed_tools: frozenset[str], media: dict[str, bool],
     local_model=None, load_context: Callable[[], Awaitable[str]] | None = None,
-    trace: DeepSeekTrace | None = None, enabled: bool = True,
+    trace: AgentTrace | None = None, enabled: bool = True,
     timeout_seconds: float = 3.0,
 ) -> ToolIntent:
     started = time.monotonic()
-    child = DeepSeekTrace()
+    child = AgentTrace()
     decision = ToolIntent()
     resolved_name = ""
     try:

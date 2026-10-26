@@ -10,7 +10,7 @@ import nonebot
 
 nonebot.init()
 
-from src.plugins.ai_chat.deepseek import ask_deepseek_with_tools
+from src.plugins.ai_chat.agent_loop import ask_deepseek_with_tools
 from src.plugins.ai_chat.tool_policy import (
     TOOL_POLICIES,
     ToolPolicy,
@@ -69,7 +69,7 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
             events.append(event)
 
         with patch.dict(TOOL_POLICIES, {"browser_clear": ToolPolicy(risk="critical", approval="explicit")}), patch(
-            "src.plugins.ai_chat.deepseek._create_completion",
+            "src.plugins.ai_chat.agent_loop._create_completion",
             new=AsyncMock(
                 side_effect=[
                     _tool_response("browser_clear", {}, "call-clear"),
@@ -101,7 +101,7 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
             events.append(event)
 
         with patch(
-            "src.plugins.ai_chat.deepseek._create_completion",
+            "src.plugins.ai_chat.agent_loop._create_completion",
             new=AsyncMock(
                 side_effect=[
                     _tool_response("say", {"text": "处理中"}, "call-1"),
@@ -145,7 +145,7 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
             max_identical_calls=1,
         )
         with patch.dict(TOOL_POLICIES, {"sandbox_exec": short_policy}), patch(
-            "src.plugins.ai_chat.deepseek._create_completion",
+            "src.plugins.ai_chat.agent_loop._create_completion",
             new=AsyncMock(
                 side_effect=[
                     _tool_response(
@@ -191,7 +191,7 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
             events.append(event)
 
         with patch(
-            "src.plugins.ai_chat.deepseek._create_completion",
+            "src.plugins.ai_chat.agent_loop._create_completion",
             new=AsyncMock(
                 side_effect=[
                     _tool_response(
