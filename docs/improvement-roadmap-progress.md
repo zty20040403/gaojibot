@@ -93,7 +93,8 @@ acceptance are not implied by this roadmap.
 - [x] Global sticker search and visual reply handlers extracted.
 - [x] Sub-Agent delegate/run/resume handlers and typed dispatch callbacks extracted.
 - [x] Existing scoped reminder create/list/cancel handlers extracted.
-- [ ] Move remaining fleet handlers and agent-executor-backed tool dispatch.
+- [x] Fleet read/management/job/artifact/guardian handlers extracted.
+- [ ] Move agent-executor-backed tool dispatch.
 - [ ] Registry-driven tool availability and complete handler coverage.
 - [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
@@ -371,3 +372,19 @@ isolated roadmap test database is used for validation.
 - tool_executor.py is now 1,909 lines (3,126 before Phase 6). Remaining work is
   fleet/agent-backed dispatch, registry-only catalog selection, agent naming,
   admin routers and startup assembly. Phases 7-9 have not begun.
+
+### Phase 6 fleet extraction validation
+
+- Moved 19 fleet handlers into tools/fleet; 45 handlers now share registry
+  visibility and execution checks. Host-granted fleet/log/management capabilities
+  remain separate, and management execution rechecks administrator registration.
+- Preserved actor/origin derivation from the actual event, scoped sandbox artifact
+  reads, worker-vs-probe targeting, operation verification/idempotency payloads,
+  bounded logs and observe-only guardians. Semantic runbook failures retain
+  lexical retrieval; remote failures remain structured and cancellation propagates.
+- Seven new regressions plus existing dispatch/provider coverage: 88 focused
+  tests passed. Full PG suite: 1,676 tests, OK (12 skipped), 85.725 seconds;
+  .cache/roadmap/phase6-fleet-full.log. CI-path Ruff, diff whitespace check and
+  admin TypeScript/Vite build passed. No production host or external API contacted.
+- tool_executor.py is 1,550 lines. Registry-only selection, executor-backed tools,
+  naming, admin routers and delayed startup remain pending in Phase 6.

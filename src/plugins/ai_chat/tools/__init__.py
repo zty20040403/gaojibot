@@ -7,6 +7,7 @@ migrate behind this package boundary.
 from ..ai_tools import ToolDefinition, available_tools
 from .alerts import HANDLERS as ALERT_HANDLERS
 from .context import HANDLERS as CONTEXT_HANDLERS
+from .fleet import HANDLERS as FLEET_HANDLERS
 from .media import HANDLERS as MEDIA_HANDLERS
 from .memory import HANDLERS as MEMORY_HANDLERS
 from .registry import ToolRegistry
@@ -25,6 +26,7 @@ domain_registry = ToolRegistry(
         *STICKER_HANDLERS,
         *SUBAGENT_HANDLERS,
         *REMINDER_HANDLERS,
+        *FLEET_HANDLERS,
     )
 )
 

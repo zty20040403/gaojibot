@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent, MessageSegment
 
 if TYPE_CHECKING:
+    from ..agent_tools import AgentToolExecutor
     from ..handler_services import HandlerServices
     from ..runtime import AppContext
     from ..web_search import SearchResult
@@ -36,6 +37,7 @@ class SubAgentActions:
 class TurnState:
     context: ToolContext
     bot: Bot | None = None
+    agent_executor: AgentToolExecutor | None = None
     user_text: str = ""
     image_sources: list[str] = field(default_factory=list)
     voice_message_id: int | None = None
