@@ -57,12 +57,15 @@ class SandboxConfigurationTests(unittest.TestCase):
         self.assertEqual(manager.nix_cache_volume, f"gaoji-app-{INSTANCE}-nix")
         self.assertNotEqual(manager._sandbox_label, DockerSandboxManager()._sandbox_label)
 
-    def test_default_production_names_and_limits_remain_unchanged(self):
+    def test_default_production_names_preserved_and_helpers_always_bounded(self):
         manager = DockerSandboxManager()
         self.assertEqual(manager._container_name(ID), f"qqbot-{ID}")
         self.assertEqual(manager._workspace_volume_name(ID), f"gaoji-work-{ID}")
         self.assertEqual(manager._memory_limit(), "8g")
-        self.assertEqual(manager._docker_command(("docker", "run", "image")), ("docker", "run", "image"))
+        command = manager._docker_command(("docker", "run", "image"))
+        self.assertEqual(command[command.index("--cpus") + 1], "2")
+        self.assertEqual(command[command.index("--pids-limit") + 1], "256")
+        self.assertEqual(command[command.index("--network") + 1], "gaoji-sandbox")
 
     def test_instances_bound_helper_and_workload_resources(self):
         manager = driver(memory_mib=768, cpus=1, pids_limit=128)
@@ -267,6 +270,7 @@ class SandboxIsolationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_helper_timeout_reclaims_only_its_generated_name(self):
         manager = driver()
+        manager._verify_network_policy = AsyncMock()
         manager._run_process = AsyncMock(side_effect=SandboxError("timeout"))
         manager._cleanup_helper = AsyncMock()
         with self.assertRaises(SandboxError):
@@ -294,6 +298,7 @@ class SandboxIsolationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_helper_cancellation_also_reclaims_its_container(self):
         manager = driver()
+        manager._verify_network_policy = AsyncMock()
         started = asyncio.Event()
 
         async def running(*args, **kwargs):
@@ -318,6 +323,7 @@ class SandboxIsolationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_package_helpers_are_serialized(self):
         manager = driver()
+        manager._verify_network_policy = AsyncMock()
         active = maximum = 0
 
         async def running(*args, **kwargs):

@@ -155,7 +155,7 @@ def _worker_identities(raw: str) -> tuple[dict[str, object], ...]:
     return tuple(result)
 
 
-def _diagnostic_targets(raw: str) -> tuple[dict[str, str], ...]:
+def _diagnostic_targets(raw: str, *, default_host: str = "local") -> tuple[dict[str, str], ...]:
     if not raw.strip():
         return ()
     try:
@@ -180,7 +180,7 @@ def _diagnostic_targets(raw: str) -> tuple[dict[str, str], ...]:
         url = _validate_url(str(item.get("url") or ""), "diagnostic target URL")
         if not url:
             raise ValueError(f"Diagnostic target {target_id!r} requires a URL")
-        observer_host = str(item.get("observer_host") or "h610").strip()
+        observer_host = str(item.get("observer_host") or default_host).strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", observer_host):
             raise ValueError(
                 f"Invalid diagnostic observer_host: {observer_host!r}"
@@ -410,7 +410,7 @@ class ClusterControlSettings:
             raise ValueError("AI_POSTGRES_SCHEMA is not a valid identifier")
         min_size = _int("AI_POSTGRES_POOL_MIN_SIZE", 1, 1, 20)
         max_size = _int("AI_POSTGRES_POOL_MAX_SIZE", 5, min_size, 100)
-        local_host_id = os.getenv("KC_LOCAL_HOST_ID", "h610").strip() or "h610"
+        local_host_id = os.getenv("KC_LOCAL_HOST_ID", "local").strip() or "local"
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", local_host_id):
             raise ValueError("KC_LOCAL_HOST_ID is not a valid host identifier")
         return cls(
@@ -437,7 +437,7 @@ class ClusterControlSettings:
             cache_seconds=_int("KC_CACHE_SECONDS", 20, 1, 300),
             inventory=_inventory(os.getenv("KC_INVENTORY_JSON", "")),
             diagnostic_targets=_diagnostic_targets(
-                os.getenv("KC_DIAGNOSTIC_TARGETS_JSON", "")
+                os.getenv("KC_DIAGNOSTIC_TARGETS_JSON", ""), default_host=local_host_id
             ),
             worker_identities=_worker_identities(
                 os.getenv("KC_WORKER_IDENTITIES_JSON", "")

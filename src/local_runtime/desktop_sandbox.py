@@ -15,6 +15,28 @@ from src.storage_admission import CapacityError
 ROOT = Path("/var/lib/gaoji-app")
 
 
+def ensure_desktop_network(deployment):
+    from .desktop_updates import docker, image
+    digest = deployment.get("controller_checksum", deployment["checksum"])
+    _, identity = image("controller", digest)
+    volume = "gaoji-sandbox-network-policy"
+    # The helper runs fixed, trusted code in Docker's Linux network namespace,
+    # not a user task. It never mounts the Mac/Windows filesystem or bot data.
+    names = docker("volume", "ls", "--format", "{{.Name}}").splitlines()
+    if volume not in names:
+        docker("volume", "create", "--label", "gaoji.sandbox.network-policy=1", volume)
+    record = json.loads(docker("volume", "inspect", volume))
+    if len(record) != 1 or (record[0].get("Labels") or {}).get("gaoji.sandbox.network-policy") != "1":
+        raise SetupError("沙盒网络锁卷归属不符，未修改网络")
+    docker("run", "--rm", "--pull=never", "--network", "host", "--user", "0:0",
+           "--cap-drop", "ALL", "--cap-add", "NET_ADMIN", "--security-opt", "no-new-privileges",
+           "--read-only", "--memory", "128m", "--cpus", "1", "--pids-limit", "64",
+           "--mount", "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock",
+           "--mount", f"type=volume,source={volume},target=/policy",
+           "--entrypoint", "python3", identity, "-m", "src.sandbox_runtime.network",
+           "--lock-file", "/policy/network.lock", timeout=120)
+
+
 class DockerConnection(http.client.HTTPConnection):
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

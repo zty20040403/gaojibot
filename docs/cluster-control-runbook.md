@@ -36,7 +36,7 @@ services.gaoji-cluster-control = {
   apiTokenFile = config.sops.secrets."gaoji/cluster_control_token".path;
   ops = {
     enable = true;
-    baseUrl = "http://100.64.0.3:9721";
+    baseUrl = "http://control.example:9721";
     tokenFile = config.sops.secrets."ops/gaoji_token".path;
   };
   inventory = [{
@@ -57,7 +57,7 @@ services.gaoji-cluster-control = {
 services.gaoji.cluster = {
   enable = true;
   tokenFile = config.sops.secrets."gaoji/cluster_control_token".path;
-  allowedGroups = [611798505];
+  allowedGroups = []; # Fill with the groups explicitly allowed by the operator.
   logAllowedGroups = [];
 };
 ```

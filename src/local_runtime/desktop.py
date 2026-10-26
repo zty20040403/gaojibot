@@ -305,12 +305,18 @@ def main():
         import asyncio
         from .sandbox_service import maintenance_allows_start
         from src.sandbox_runtime.server import load_config, serve
+        from .desktop_sandbox import ensure_desktop_network
         identifier = sys.argv[2]
         if not re.fullmatch(r"[a-f0-9]{32}", identifier):
             raise SetupError("沙盒实例编号无效")
         directory = InstanceStore(ROOT / "data").directory(identifier)
         if not (directory / "config/sandbox.enabled").exists() or not maintenance_allows_start(directory):
             return
+        seed = read_json(SEED)
+        deployment = read_json(ROOT / "jobs" / (seed["job"] + ".json"))
+        if deployment.get("instance_id") != directory.name:
+            raise SetupError("沙盒启动记录不属于当前实例")
+        ensure_desktop_network(deployment)
         asyncio.run(serve(load_config(directory / "config/sandbox-runner.json")))
         return
     if len(sys.argv) == 3 and sys.argv[1] == "update":

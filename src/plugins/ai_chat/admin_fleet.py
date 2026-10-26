@@ -21,7 +21,7 @@ _TARGET_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 class FleetDiagnosticRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     template: str = Field(min_length=1, max_length=64)
-    host_id: str = Field(default="h610", min_length=1, max_length=64)
+    host_id: str = Field(default="local", min_length=1, max_length=64)
     target_id: str = Field(default="", max_length=64)
     subject: str = Field(default="", max_length=1000)
 

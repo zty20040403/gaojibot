@@ -310,6 +310,17 @@ class FleetControlClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ClusterControlConfigTests(unittest.TestCase):
+    def test_defaults_are_local_and_observer_follows_configured_host(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ClusterControlSettings.from_env().local_host_id, "local")
+        with patch.dict(os.environ, {"KC_LOCAL_HOST_ID": "worker-a",
+            "KC_DIAGNOSTIC_TARGETS_JSON": json.dumps([{"target_id": "model", "kind": "model",
+                                                     "url": "http://127.0.0.1:8000/health"}])}, clear=True):
+            settings = ClusterControlSettings.from_env()
+        self.assertEqual(settings.local_host_id, "worker-a")
+        self.assertEqual(settings.diagnostic_targets[0]["observer_host"], "worker-a")
+        self.assertEqual(settings.diagnostic_targets[0]["host_id"], "worker-a")
+
     def test_inventory_is_normalized_and_requires_explicit_observation(self) -> None:
         inventory = _inventory(json.dumps([
             {
@@ -346,6 +357,7 @@ class ClusterControlConfigTests(unittest.TestCase):
 
     def test_settings_reject_unreadable_diagnostic_service(self) -> None:
         environment = {
+            "KC_LOCAL_HOST_ID": "h610",
             "KC_API_TOKEN_FILE": "/run/credentials/control-token",
             "AI_POSTGRES_DSN": "postgresql://localhost/gaoji",
             "KC_INVENTORY_JSON": json.dumps([
@@ -727,6 +739,7 @@ class IncidentDiagnosticServiceTests(unittest.IsolatedAsyncioTestCase):
             fleet,
             store,  # type: ignore[arg-type]
             targets,
+            local_host_id="h610",
         )
         await diagnostics._http.aclose()
         diagnostics._http = httpx.AsyncClient(

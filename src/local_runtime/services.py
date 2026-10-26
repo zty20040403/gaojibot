@@ -94,7 +94,31 @@ def controller_units(root: Path, directory: Path, job: str, deployment: dict, py
     identifier = deployment["instance_id"]
     if directory != root / "data/instances" / identifier:
         raise SetupError("控制服务路径不属于此实例")
+    docker, docker_host = deployment["docker"], deployment["docker_host"]
+    if (not re.fullmatch(r"/[a-zA-Z0-9/._-]+", docker)
+            or not re.fullmatch(r"unix:///[a-zA-Z0-9/._-]+", docker_host)):
+        raise SetupError("沙盒网络安装器只允许本机 Docker")
     return {"gaoji-app-sandbox-" + identifier + ".service": sandbox,
+        "gaoji-app-network-" + identifier + ".service": f"""[Unit]
+Description=Gaoji sandbox egress policy {identifier}
+After={deployment['engine_unit']}
+Requires={deployment['engine_unit']}
+PartOf={deployment['engine_unit']}
+Before=gaoji-app-sandbox-{identifier}.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={release}
+Environment=PYTHONPATH={release}
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PATH={RUNTIME_PATH}
+Environment=DOCKER_HOST={docker_host}
+ExecStart={python} -m src.sandbox_runtime.network --docker {docker}
+TimeoutStartSec=120
+UMask=0077
+[Install]
+WantedBy={deployment['engine_unit']}
+""",
         "gaoji-app-control-" + identifier + ".service": f"""[Unit]
 Description=Gaoji per-instance desktop controller
 After=network-online.target {deployment['engine_unit']}

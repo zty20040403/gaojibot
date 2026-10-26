@@ -239,7 +239,7 @@ HOST_INSPECT_TOOL: ToolDefinition = {
                 "host_id": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
-                    "description": "已登记主机名称，例如 tank、h610、h310。",
+                    "description": "已登记的主机名称，须从当前集群清单获取，不要猜测名称。",
                 },
             },
             "required": ["host_id"],
@@ -344,7 +344,7 @@ DIAGNOSE_INCIDENT_TOOL: ToolDefinition = {
                 "host_id": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
-                    "description": "要检查的已登记主机，未明确时通常为 h610。",
+                    "description": "要检查的已登记主机；local 表示控制服务配置的本地主机。",
                 },
                 "target_id": {
                     "type": "string",

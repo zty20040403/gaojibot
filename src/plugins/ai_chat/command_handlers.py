@@ -754,6 +754,13 @@ class CommandHandlers(HandlerService):
         command = args.extract_plain_text().strip()
         action = command.casefold()
 
+        if action in {"reset", "重建", "destroy", "销毁"} and event.user_id not in self.context.settings.admin_user_ids:
+            await self.services.replies._finish_safely(
+                shell_command,
+                self.services.replies._reply_message(event, "只有管理员可以重建或销毁命令行沙盒。"),
+            )
+            return
+
         if not command or action in {"help", "帮助"}:
             await self.services.replies._finish_safely(
                 shell_command,

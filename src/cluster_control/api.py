@@ -41,7 +41,7 @@ _TARGET_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 class DiagnosticRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     template: str = Field(min_length=1, max_length=64)
-    host_id: str = Field(default="h610", min_length=1, max_length=64)
+    host_id: str = Field(default="local", min_length=1, max_length=64)
     target_id: str = Field(default="", max_length=64)
     subject: str = Field(default="", max_length=1000)
     requested_by: str = Field(default="gaoji", min_length=1, max_length=200)
@@ -332,7 +332,7 @@ def create_app(
     async def run_diagnostic(request: DiagnosticRunRequest) -> dict[str, object]:
         if diagnostics is None:
             raise HTTPException(status_code=503, detail="Diagnostics unavailable")
-        host_id = valid_host(request.host_id)
+        host_id = valid_host(diagnostics.local_host_id if request.host_id == "local" else request.host_id)
         if request.target_id and _TARGET_RE.fullmatch(request.target_id) is None:
             raise HTTPException(status_code=422, detail="Invalid diagnostic target")
         try:

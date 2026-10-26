@@ -140,6 +140,7 @@ class VmSandboxManager:
         max_file_bytes: int = 20 * 1024 * 1024,
         memory_mib: int = 4096,
         vcpus: int = 1,
+        pids_limit: int = 256,
         disk_gib: int = 20,
     ) -> None:
         self.image = Path(image)
@@ -149,8 +150,15 @@ class VmSandboxManager:
         self.default_timeout_seconds = max(5, default_timeout_seconds)
         self.max_output_chars = max(1000, max_output_chars)
         self.max_file_bytes = max(0, max_file_bytes)
-        self.memory_mib = min(max(memory_mib, 512), 8192)
+        if type(memory_mib) is not int or not 512 <= memory_mib <= 8192:
+            raise ValueError("VM sandbox memory must be between 512 and 8192 MiB")
+        if type(vcpus) is not int or not 1 <= vcpus <= 16:
+            raise ValueError("VM sandbox CPUs must be between 1 and 16 (capped at 4)")
+        if type(pids_limit) is not int or not 32 <= pids_limit <= 4096:
+            raise ValueError("VM sandbox process limit must be between 32 and 4096")
+        self.memory_mib = memory_mib
         self.vcpus = min(max(vcpus, 1), 4)
+        self.pids_limit = pids_limit
         self.disk_gib = min(max(disk_gib, 4), 100)
         self._exec_locks: dict[str, asyncio.Lock] = {}
         self._create_lock = asyncio.Lock()
@@ -485,7 +493,9 @@ class VmSandboxManager:
                 marker_ready = marker_code == 0
                 code, out, err = await self._guest_exec(
                     sandbox_id, "/usr/sbin/runuser", [
-                        "-u", "sandbox", "--", "/usr/bin/timeout", "--signal=TERM",
+                        "-u", "sandbox", "--", "/usr/bin/prlimit",
+                        f"--nproc={self.pids_limit}:{self.pids_limit}", "--",
+                        "/usr/bin/timeout", "--signal=TERM",
                         "--kill-after=5s", str(timeout), "/bin/sh", "-lc",
                         "cd /workspace && " + command,
                     ], timeout=timeout + 15,

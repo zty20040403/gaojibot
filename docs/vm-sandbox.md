@@ -56,7 +56,7 @@ the normal 300-second execution lease expired, the same task and producer
 resumed, restarted the original guest and generated a new PDF. Independent
 validation passed, and actual QQ lookups confirmed one attachment and one
 correct final message. QQ and PostgreSQL were not restarted. See
-`tank-cutover.md` for timestamps, receipt IDs and the distinction between this
+the operator's private cutover log for timestamps, receipt IDs and the distinction between this
 safe checkpoint boundary and uncertain non-idempotent operations. Under the
 current service control-group policy, bot failure stops its session-libvirt
 and QEMU children too; recovery reuses guest disks, not guest RAM state.

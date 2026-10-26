@@ -52,7 +52,7 @@ class DockerSandboxCancellationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.stderr.endswith("error: final failure"))
         self.assertLess(len(result.stderr), 1100)
 
-    async def test_create_only_applies_eight_gibibyte_memory_limit(self) -> None:
+    async def test_create_always_applies_memory_cpu_and_process_limits(self) -> None:
         manager = DockerSandboxManager()
         manager.list = AsyncMock(return_value=[])  # type: ignore[method-assign]
         manager._list_by_label = AsyncMock(  # type: ignore[method-assign]
@@ -64,11 +64,12 @@ class DockerSandboxCancellationTests(unittest.IsolatedAsyncioTestCase):
 
         await manager.create("owner", "python")
 
-        command = manager._run.await_args.args
+        command = manager._docker_command(manager._run.await_args.args)
         self.assertEqual(command[command.index("--memory") + 1], "8g")
         self.assertEqual(command[command.index("--memory-swap") + 1], "8g")
-        self.assertNotIn("--cpus", command)
-        self.assertNotIn("--pids-limit", command)
+        self.assertEqual(command[command.index("--cpus") + 1], "2")
+        self.assertEqual(command[command.index("--pids-limit") + 1], "256")
+        self.assertEqual(command[command.index("--network") + 1], "gaoji-sandbox")
         self.assertNotIn("--pull=never", command)
         self.assertIn("qqbot.owner_ref=owner", command)
         self.assertIn("qqbot.purpose=task", command)
@@ -288,7 +289,7 @@ class DockerSandboxCancellationTests(unittest.IsolatedAsyncioTestCase):
         manager._run_bytes = AsyncMock(return_value=(b"ok", b"", 0))  # type: ignore[method-assign]
         manager._run = AsyncMock(  # type: ignore[method-assign]
             side_effect=[
-                SandboxResult("bridge\n", "", 0),
+                SandboxResult("gaoji-sandbox\n", "", 0),
                 SandboxResult("", "", 0),
                 SandboxResult("", "", 0),
                 SandboxResult("", "", 0),
@@ -360,7 +361,7 @@ class DockerSandboxCancellationTests(unittest.IsolatedAsyncioTestCase):
         manager._run_bytes = AsyncMock(return_value=(b"hello", b"warn", 0))  # type: ignore[method-assign]
         manager._run = AsyncMock(  # type: ignore[method-assign]
             side_effect=[
-                SandboxResult("bridge\n", "", 0),
+                SandboxResult("gaoji-sandbox\n", "", 0),
                 SandboxResult("", "", 0),
                 SandboxResult("/workspace/main.py\n", "", 0),
                 SandboxResult("C /workspace/main.py\n", "", 0),
@@ -373,7 +374,7 @@ class DockerSandboxCancellationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.stdout, "hello")
         self.assertEqual(result.stderr, "warn")
         self.assertIsNotNone(result.manifest)
-        self.assertEqual(result.manifest.network_mode, "bridge")  # type: ignore[union-attr]
+        self.assertEqual(result.manifest.network_mode, "gaoji-sandbox")  # type: ignore[union-attr]
         self.assertEqual(
             result.manifest.changed_workspace_paths,  # type: ignore[union-attr]
             ("main.py",),

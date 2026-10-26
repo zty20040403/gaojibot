@@ -131,7 +131,7 @@ class SandboxService:
         write_json(self.enabled_path, {"schema": 1, "instance_id": self.identifier})
         try:
             self.command("start", timeout=30)
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + 120
             while time.monotonic() < deadline:
                 try:
                     async def probe():
@@ -159,8 +159,8 @@ def service_unit(directory: Path, release: Path, python: str, engine_unit: str) 
     config = directory / "config/sandbox-runner.json"
     return f"""[Unit]
 Description=Gaoji isolated sandbox runner {identifier}
-After=network-online.target {engine_unit}
-Requires={engine_unit}
+After=network-online.target {engine_unit} gaoji-app-network-{identifier}.service
+Requires={engine_unit} gaoji-app-network-{identifier}.service
 PartOf=gaoji-app-{identifier}.service
 Before=gaoji-app-{identifier}.service
 ConditionPathExists={directory}/config/sandbox.enabled

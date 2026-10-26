@@ -170,6 +170,8 @@ class InstanceTests(unittest.TestCase):
         enabled = runtime_environment(config, private, sandbox=connection)
         self.assertEqual(enabled["AI_SANDBOX_RUNNER_TOKEN"], connection["token"])
         self.assertEqual(enabled["AI_SANDBOX_ENABLED"], "true")
+        self.assertEqual(enabled["AI_SANDBOX_ALLOWED_USERS"], config["settings"]["admin_qq"])
+        self.assertEqual(enabled["AI_SANDBOX_ALLOW_ALL"], "false")
         self.assertEqual(enabled["AI_SANDBOX_MAX_FILE_MB"], "20")
         for invalid in ({**connection, "socket": "/var/run/docker.sock"}, {**connection, "token": "short"}):
             with self.assertRaises(InstanceError):

@@ -45,7 +45,7 @@ services.gaoji-cluster-control.ops.management = {
   enable = true;
   tokenFile = "/run/secrets/gaoji/ops_management_token";
   hosts = [ "h310" "h610" "tank" ];
-  actors = [ "qq:3526452465" "admin:kenneth" ];
+  actors = [ "qq:<ADMIN_QQ>" "admin:<ADMIN_NAME>" ];
 };
 ```
 
@@ -84,7 +84,7 @@ MaxOps 返回持久 `job_id` 后，gaoji 重启只会继续查任务，不会重
 
 ## 三节点使用
 
-h310、h610、tank 已配置独立 Worker。管理员 QQ `3526452465` 是服务端登记的所有者别名，
+每台执行节点需配置独立 Worker。管理员 QQ `<ADMIN_QQ>` 是服务端登记的所有者别名，
 其他群友需要指定任务类型、资源和截止时间的借用授权。默认不开放 GPU。
 
 - 查询：`@gaoji 检查 h310、h610、tank 的状态，给出观测时间。`

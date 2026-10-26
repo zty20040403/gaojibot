@@ -25,6 +25,17 @@ def _get_float(name: str, default: float) -> float:
         return default
 
 
+def _get_resource_limit(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, "").strip()
+    try:
+        value = int(raw) if raw else default
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer between {minimum} and {maximum}") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 def _get_bool(name: str, default: bool) -> bool:
     value = os.getenv(name, "").strip().lower()
     if not value:
@@ -322,6 +333,11 @@ class Settings:
     groups_require_allowlist: bool = False
     sandbox_runner_socket: str = ""
     sandbox_runner_token: str = field(default="", repr=False)
+    sandbox_allow_all: bool = False
+    sandbox_cpus: int = 2
+    sandbox_pids_limit: int = 256
+    sandbox_memory_mib: int = 8192
+    sandbox_network: str = "isolated"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -934,6 +950,11 @@ class Settings:
                 max(_get_int("AI_CODESNAP_CACHE_ENTRIES", 256), 16), 2048
             ),
             sandbox_enabled=_get_bool("AI_SANDBOX_ENABLED", False),
+            sandbox_allow_all=_get_bool("AI_SANDBOX_ALLOW_ALL", False),
+            sandbox_cpus=_get_resource_limit("AI_SANDBOX_CPUS", 2, 1, 16),
+            sandbox_pids_limit=_get_resource_limit("AI_SANDBOX_PIDS_LIMIT", 256, 32, 4096),
+            sandbox_memory_mib=_get_resource_limit("AI_SANDBOX_MEMORY_MIB", 8192, 256, 8192),
+            sandbox_network=os.getenv("AI_SANDBOX_NETWORK", "isolated").strip().lower(),
             sandbox_backend=os.getenv("AI_SANDBOX_BACKEND", "oci").strip().lower(),
             sandbox_image=os.getenv("AI_SANDBOX_IMAGE", "").strip(),
             sandbox_vm_image=os.getenv("AI_SANDBOX_VM_IMAGE", "").strip(),
@@ -974,7 +995,7 @@ class Settings:
 
     def is_sandbox_user_allowed(self, user_id: int) -> bool:
         return self.sandbox_enabled and (
-            not self.sandbox_allowed_users
+            self.sandbox_allow_all
             or user_id in self.sandbox_allowed_users
         )
 

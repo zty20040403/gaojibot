@@ -40,6 +40,9 @@ class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             result = await manager.exec("owner", "s183bee", "gaoji-pdf input.md report.pdf")
             self.assertEqual(result.manifest.changed_workspace_paths, ("report.pdf", "input.md"))
             self.assertEqual(result.stdout, "built")
+            invocation = manager._guest_exec.await_args_list[1].args[2]
+            self.assertIn("/usr/bin/prlimit", invocation)
+            self.assertIn("--nproc=256:256", invocation)
 
     def test_recovers_only_one_observed_pdf_in_same_run(self):
         evidence = [{

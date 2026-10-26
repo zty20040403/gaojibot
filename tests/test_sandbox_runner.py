@@ -359,6 +359,14 @@ class RuntimeTransportTests(unittest.TestCase):
             manager = manager_from_settings(settings)
         self.assertIs(manager, module.VmSandboxManager.return_value)
         self.assertEqual(module.VmSandboxManager.call_args.kwargs["image"], "/test/base.qcow2")
+        self.assertEqual(module.VmSandboxManager.call_args.kwargs["pids_limit"], 256)
+
+    def test_oci_configuration_passes_resource_caps_to_driver(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"AI_SANDBOX_CPUS": "3", "AI_SANDBOX_PIDS_LIMIT": "100",
+                                    "AI_SANDBOX_MEMORY_MIB": "768"}, clear=True):
+            manager = manager_from_settings(self.settings_type.from_env())
+        self.assertEqual((manager.cpus, manager.pids_limit, manager.memory_mib), (3, 100, 768))
 
     def test_invalid_or_ambiguous_backend_never_falls_back_to_docker(self):
         from unittest.mock import patch

@@ -10,7 +10,7 @@ h610: gaoji
     |
     | libpq 自动选择当前 read-write 节点
     v
-h610 100.64.0.3:55432  <==同步复制==>  Tank 100.64.0.4:55432
+primary db-primary.example:55432  <==同步复制==>  standby db-standby.example:55432
 首选主库，优先级 100                    热备副本，优先级 50
 ```
 

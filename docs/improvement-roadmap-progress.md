@@ -33,15 +33,17 @@ acceptance are not implied by this roadmap.
 
 ### Phase 1: Safe defaults
 
-- [ ] Empty sandbox allowlist denies access; explicit allow-all option.
-- [ ] CPU, memory and PID limits apply in every sandbox mode.
-- [ ] Dedicated sandbox network; deny LAN, Tailscale, metadata and host access
+- [x] Empty sandbox allowlist denies access; explicit allow-all option.
+- [x] CPU, memory and PID limits apply in every sandbox mode.
+- [x] Dedicated OCI sandbox network; deny LAN, Tailscale, metadata and host access
       while retaining public package downloads. Modes: isolated, none, bridge.
-- [ ] Provision and verify network policy in NixOS and App server installation.
-- [ ] Restrict shared `/shell reset` and `/shell destroy` to administrators.
-- [ ] Remove personal identifiers from public docs; keep ops logs untracked.
-- [ ] Replace personal host defaults with configurable, generic defaults.
-- [ ] Focused tests, full PG suite, Nix checks and isolated network acceptance.
+- [x] Provision and verify network policy in NixOS and App server installation.
+- [x] Restrict shared `/shell reset` and `/shell destroy` to administrators.
+- [x] Remove personal identifiers from public docs; keep ops logs untracked.
+- [x] Replace personal host defaults with configurable, generic defaults.
+- [x] Focused tests, full PG suite, Nix checks and Linux module evaluation.
+- [ ] Live isolated-network acceptance and rebuilt Desktop helper image test.
+      VM networking is not covered by the OCI bridge policy; see sandbox-security.
 
 ### Phase 2: CI and dependencies
 
@@ -128,3 +130,19 @@ filesystem and a loopback-only port. No existing database is reused.
 Starting Docker Desktop automatically resumed three pre-existing Desktop test
 containers. They were stopped again without deleting their data; only the
 isolated roadmap test database is used for validation.
+
+### Phase 1 validation
+
+- Permissions/resource regressions: 125 tests passed; network, installer and
+  update regressions: 163 tests passed. Both used mocked host mutations.
+- Full PG suite: 1,591 tests, OK (12 skipped), 86.852 seconds. Log:
+  `.cache/roadmap/phase1-final.log`. A fixture relying on an implicit personal
+  hostname now declares that hostname explicitly; validation was not relaxed.
+- `nix flake check`: local aarch64-darwin package and import checks passed.
+  Other architectures were not built. The x86_64-linux NixOS module was evaluated
+  separately, confirming limits, deny-by-default access and network dependencies.
+- Existing containers on an unrestricted bridge are rejected, not silently
+  recreated or deleted. Public downloads, private-network denial and process
+  exhaustion still require an isolated live environment before rollout.
+- Private ops documents remain on disk under ignored `ops-notes/`; Git history
+  was not rewritten. No production host, QQ account or user database was touched.

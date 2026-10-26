@@ -81,9 +81,9 @@ WSL 配置：
 ```nix
 services.gaoji-qwen-control = {
   enable = true;
-  listenAddress = "100.64.0.14";
+  listenAddress = "192.0.2.10"; # Replace with the model server's private address.
   port = 8001;
-  allowedPeers = [ "100.64.0.3" ]; # h610，部署前确认地址
+  allowedPeers = [ "192.0.2.11" ]; # Replace with the bot server's private address.
   tokenFile = "/var/lib/gaoji-secrets/qwen-control-token";
 };
 ```

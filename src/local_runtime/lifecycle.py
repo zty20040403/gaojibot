@@ -48,7 +48,8 @@ class Lifecycle:
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
             raise SetupError("实例维护记录目录归属不符")
         self.names = [f"gaoji-app-install-{self.job}.service", f"gaoji-app-{self.identifier}.service",
-            f"gaoji-app-sandbox-{self.identifier}.service", f"gaoji-app-control-{self.identifier}.service"]
+            f"gaoji-app-sandbox-{self.identifier}.service", f"gaoji-app-network-{self.identifier}.service",
+            f"gaoji-app-control-{self.identifier}.service"]
 
     def systemctl(self, *arguments):
         try:
@@ -327,7 +328,7 @@ class Lifecycle:
         record.setdefault("sandbox_was_enabled", self.c.sandbox.enabled_path.exists())
         self.save(record)
         self.c.sandbox.pause(service_stopped=self.unit_snapshot(self.names[2])["body"] is None)
-        for name in (self.names[2], self.names[1], self.names[0]):
+        for name in (self.names[2], self.names[3], self.names[1], self.names[0]):
             if self.unit_snapshot(name)["body"] is not None:
                 self.systemctl("stop", name)
         self.c.compose(["stop"], timeout=180)

@@ -60,7 +60,7 @@ sudo cat /var/lib/gaoji-qq-password-login/state.json
 ```sh
 sudo gaoji-qq-password-login \
   --config /var/lib/napcat-chat-bot/config/webui.json --port 6100 \
-  --uin 3580515978 --password-file /var/lib/gaoji-qq-login-secret/password \
+  --uin "$BOT_QQ" --password-file /var/lib/gaoji-qq-login-secret/password \
   --state /var/lib/gaoji-qq-password-login/state.json --rearm
 ```
 

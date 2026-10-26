@@ -498,6 +498,7 @@ WantedBy=multi-user.target
             owned_unit(name, body)
         unit = "gaoji-app-control-" + self.state["instance_id"] + ".service"
         self.run(["systemctl", "daemon-reload"], timeout=30)
+        self.run(["systemctl", "start", "gaoji-app-network-" + self.state["instance_id"] + ".service"], timeout=130)
         self.run(["systemctl", "start", unit], timeout=30)
 
 

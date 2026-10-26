@@ -128,7 +128,7 @@ class MobileIntegrationTests(unittest.IsolatedAsyncioTestCase):
         allowed = Mock(return_value=True)
         context = SimpleNamespace(
             sandbox_manager=manager, mobile_authorization=self.mobile, logger=Mock(),
-            settings=SimpleNamespace(is_sandbox_user_allowed=allowed),
+            settings=SimpleNamespace(is_sandbox_user_allowed=allowed, admin_user_ids={int(QQ)}),
         )
         replies = SimpleNamespace(_finish_safely=AsyncMock(), _reply_message=lambda _, text: text)
         commands = CommandHandlers(SimpleNamespace(context=context, replies=replies))
@@ -143,6 +143,22 @@ class MobileIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         allowed.return_value = False
         await commands.handle_shell_command(event("/shell reset", group=True), Message("reset"))
+        manager.list.assert_not_awaited()
+        manager.destroy.assert_not_awaited()
+        self.assertFalse(self.sent)
+
+    async def test_shell_destructive_aliases_require_admin_even_when_allowed(self):
+        manager = SimpleNamespace(list=AsyncMock(), destroy=AsyncMock())
+        context = SimpleNamespace(
+            sandbox_manager=manager, mobile_authorization=self.mobile, logger=Mock(),
+            settings=SimpleNamespace(is_sandbox_user_allowed=lambda _: True, admin_user_ids=set()),
+        )
+        replies = SimpleNamespace(_finish_safely=AsyncMock(), _reply_message=lambda _, text: text)
+        commands = CommandHandlers(SimpleNamespace(context=context, replies=replies))
+        for is_group in (True, False):
+            for action in ("reset", "RESET", "destroy", "重建", "销毁"):
+                await commands.handle_shell_command(event("/shell " + action, group=is_group), Message(action))
+                self.assertIn("只有管理员", replies._finish_safely.await_args.args[1])
         manager.list.assert_not_awaited()
         manager.destroy.assert_not_awaited()
         self.assertFalse(self.sent)

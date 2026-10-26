@@ -1,5 +1,7 @@
 .venv/
 .cache/
+ops-notes/
+feedback-exports/
 __pycache__/
 *.py[cod]
 .env

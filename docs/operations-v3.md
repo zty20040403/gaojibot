@@ -30,7 +30,7 @@ OPENAI_API_KEY=你的OpenAIKey
 ANTHROPIC_API_KEY=你的AnthropicKey
 AI_MODEL_DEFAULT_PROFILE=deepseek
 AI_MODEL_PROFILES_JSON={"default":"deepseek","profiles":{"deepseek":{"provider":"deepseek","protocol":"openai-chat","base_url":"https://api.deepseek.com","api_key_env":"DEEPSEEK_API_KEY","model":"deepseek-v4-flash","thinking":"disabled","aliases":["ds","flash"]},"openai":{"provider":"openai","protocol":"openai-chat","base_url":"https://api.openai.com/v1","api_key_env":"OPENAI_API_KEY","model":"gpt-5-mini","aliases":["gpt"]},"claude":{"provider":"anthropic","protocol":"anthropic-messages","base_url":"https://api.anthropic.com","api_key_env":"ANTHROPIC_API_KEY","model":"claude-sonnet-4-6","max_output_tokens":4096}}}
-AI_GROUP_MODEL_PROFILES_JSON={"201644592":"openai"}
+AI_GROUP_MODEL_PROFILES_JSON={"<GROUP_ID>":"openai"}
 ```
 
 每个 profile 支持这些主要字段：
@@ -143,7 +143,7 @@ AI_ADMIN_SECRET_FILE=/run/secrets/gaoji/admin-authorization-key
 AI_ADMIN_ORIGIN=https://bot.example.com
 AI_ADMIN_BOT_ID=机器人QQ号
 AI_ADMIN_PATH=/bot-admin
-AI_ADMIN_USER_IDS=3526452465
+AI_ADMIN_USER_IDS=<ADMIN_QQ>
 AI_QUOTA_ENABLED=true
 AI_QUOTA_DAILY_CALLS=100
 AI_QUOTA_DAILY_INPUT_TOKENS=500000
@@ -182,7 +182,7 @@ docker run -d --name qqbot-pgvector \
 
 ```text
 AI_SEMANTIC_ENABLED=true
-AI_POSTGRES_DSN=postgresql://qq_bot:强密码@100.64.0.4:5432/qq_bot
+AI_POSTGRES_DSN=postgresql://qq_bot:replace-password@db-primary.example:5432/qq_bot
 AI_EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
 AI_EMBEDDING_API_KEY=ollama-local
 AI_EMBEDDING_MODEL=bge-m3

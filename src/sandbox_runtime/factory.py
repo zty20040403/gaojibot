@@ -33,6 +33,9 @@ def manager_from_settings(settings) -> DockerSandboxManager | SandboxClient | Vm
             max_total=settings.sandbox_max_total,
             default_timeout_seconds=settings.sandbox_timeout_seconds,
             max_file_bytes=settings.sandbox_max_file_bytes,
+            memory_mib=settings.sandbox_memory_mib,
+            vcpus=settings.sandbox_cpus,
+            pids_limit=settings.sandbox_pids_limit,
         )
     return DockerSandboxManager(
         image=settings.sandbox_image,
@@ -41,4 +44,8 @@ def manager_from_settings(settings) -> DockerSandboxManager | SandboxClient | Vm
         default_timeout_seconds=settings.sandbox_timeout_seconds,
         max_file_bytes=settings.sandbox_max_file_bytes,
         nix_cache_volume=settings.sandbox_nix_cache_volume,
+        memory_mib=settings.sandbox_memory_mib,
+        cpus=settings.sandbox_cpus,
+        pids_limit=settings.sandbox_pids_limit,
+        network=settings.sandbox_network,
     )

@@ -85,6 +85,7 @@ class DockerSandboxManager:
         memory_mib: int = 8192,
         cpus: int | None = None,
         pids_limit: int | None = None,
+        network: str = "isolated",
     ) -> None:
         if namespace and re.fullmatch(r"[a-f0-9]{32}", namespace) is None:
             raise ValueError("Sandbox namespace must be an instance ID")
@@ -99,11 +100,14 @@ class DockerSandboxManager:
         if type(memory_mib) is not int or not 256 <= memory_mib <= 8192:
             raise ValueError("Sandbox memory must be between 256 and 8192 MiB")
         self.namespace = namespace
+        if network not in {"isolated", "none", "bridge"}:
+            raise ValueError("Sandbox network must be isolated, none or bridge")
+        self.network = network
         self.docker_executable = docker_executable
         self.docker_host = docker_host or ("unix:///var/run/docker.sock" if namespace else None)
         self.memory_mib = memory_mib
-        self.cpus = (2 if cpus is None else cpus) if namespace else cpus
-        self.pids_limit = (256 if pids_limit is None else pids_limit) if namespace else pids_limit
+        self.cpus = 2 if cpus is None else cpus
+        self.pids_limit = 256 if pids_limit is None else pids_limit
         if self.cpus is not None and (type(self.cpus) is not int or not 1 <= self.cpus <= 16):
             raise ValueError("Sandbox CPUs must be between 1 and 16")
         if self.pids_limit is not None and (type(self.pids_limit) is not int or not 32 <= self.pids_limit <= 4096):
@@ -821,7 +825,7 @@ class DockerSandboxManager:
             "--pull=never",
             "--rm",
             "--network",
-            "bridge",
+            self._network_name,
             "--user",
             "0:0",
             "--cap-drop",
@@ -1209,7 +1213,26 @@ with tempfile.TemporaryFile() as output:
             name,
             timeout=10,
         )
-        return result.stdout.strip()[:80] if result.returncode == 0 else "unknown"
+        mode = result.stdout.strip()[:80] if result.returncode == 0 else "unknown"
+        if mode != self._network_name:
+            raise SandboxError("旧沙盒网络不符合当前策略，请管理员重建工作区后再执行。")
+        return mode
+
+    @property
+    def _network_name(self) -> str:
+        return "gaoji-sandbox" if self.network == "isolated" else self.network
+
+    async def _verify_network_policy(self) -> None:
+        if self.network != "isolated":
+            return
+        from .network import NETWORK, validate_network
+        result = await self._run("docker", "network", "inspect", NETWORK, timeout=10)
+        try:
+            if result.returncode:
+                raise ValueError("Network is unavailable")
+            validate_network(json.loads(result.stdout))
+        except (ValueError, TypeError, KeyError) as exc:
+            raise SandboxError("沙盒隔离网络未配置，请管理员运行网络安装步骤；不会退回普通 bridge。") from exc
 
     async def _changed_workspace_paths(
         self,
@@ -1459,6 +1482,9 @@ with tempfile.TemporaryFile() as output:
         timeout: int,
     ) -> tuple[bytes, bytes, int]:
         command = self._docker_command(command)
+        if len(command) > 1 and command[1] in {"run", "exec"}:
+            if command[1] == "exec" or command[command.index("--network") + 1] != "none":
+                await self._verify_network_policy()
         helper = None
         if self.namespace and len(command) > 1 and command[1] == "run" and "-d" not in command:
             helper = command[command.index("--name") + 1]
@@ -1609,6 +1635,11 @@ with tempfile.TemporaryFile() as output:
             raise SandboxError("沙盒驱动只接受内部 Docker 操作。")
         additions: list[str] = []
         if len(command) > 1 and command[1] == "run":
+            if "--network" not in command:
+                additions.extend(("--network", self._network_name))
+            elif command[command.index("--network") + 1] not in {"none", self._network_name}:
+                raise SandboxError("辅助沙盒不能绕过当前网络隔离策略。")
+            additions.extend(("--sysctl", "net.ipv6.conf.all.disable_ipv6=1"))
             if self.cpus is not None:
                 additions.extend(("--cpus", str(self.cpus)))
             if self.pids_limit is not None:

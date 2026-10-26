@@ -13,6 +13,13 @@
   sandboxUsesDocker = cfg.sandbox.backend == "docker";
   sandboxUsesPodman = cfg.sandbox.backend == "podman";
   sandboxUsesVm = cfg.sandbox.backend == "vm";
+  sandboxIsolated = cfg.sandbox.enable && sandboxUsesDocker && cfg.sandbox.network == "isolated";
+  sandboxNetworkSetup = pkgs.writeShellScript "gaoji-sandbox-network" ''
+    exec ${pkgs.python3}/bin/python ${../src/sandbox_runtime/network.py} \
+      --docker ${pkgs.docker}/bin/docker \
+      --iptables ${pkgs.iptables}/bin/iptables \
+      --ip6tables ${pkgs.iptables}/bin/ip6tables
+  '';
   sandboxCli =
     if sandboxUsesDocker
     then pkgs.docker
@@ -252,6 +259,42 @@ in {
       description = "Sandbox runtime: Docker, rootless Podman, or KVM virtual machines.";
     };
 
+    sandbox.allowedUsers = lib.mkOption {
+      type = lib.types.listOf lib.types.ints.unsigned;
+      default = [];
+      description = "QQ users allowed to use sandboxes. An empty list denies access.";
+    };
+
+    sandbox.network = lib.mkOption {
+      type = lib.types.enum ["isolated" "none" "bridge"];
+      default = "isolated";
+      description = "OCI networking: isolated public egress, none, or explicitly unrestricted bridge.";
+    };
+
+    sandbox.allowAll = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Explicitly allow every user to run sandbox commands.";
+    };
+
+    sandbox.cpus = lib.mkOption {
+      type = lib.types.ints.between 1 16;
+      default = 2;
+      description = "CPU limit for each sandbox and package helper (VMs use at most 4 vCPUs).";
+    };
+
+    sandbox.pidsLimit = lib.mkOption {
+      type = lib.types.ints.between 32 4096;
+      default = 256;
+      description = "Process limit for each OCI sandbox or VM sandbox user.";
+    };
+
+    sandbox.memoryMiB = lib.mkOption {
+      type = lib.types.ints.between 256 8192;
+      default = 8192;
+      description = "Memory cap in MiB per sandbox; VMs require at least 512 MiB.";
+    };
+
     sandbox.vmImage = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
       default = null;
@@ -484,6 +527,14 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = !(cfg.sandbox.enable && sandboxUsesPodman && cfg.sandbox.network == "isolated");
+        message = "Isolated egress requires rootful Docker; select none for rootless Podman or explicitly opt into bridge";
+      }
+      {
+        assertion = !(cfg.sandbox.enable && sandboxUsesVm) || cfg.sandbox.memoryMiB >= 512;
+        message = "KVM sandboxes require at least 512 MiB";
+      }
+      {
         assertion = !(cfg.sandbox.enable && sandboxUsesVm) || (
           cfg.sandbox.vmImage != null
           && lib.hasPrefix "/" cfg.sandbox.vmRoot
@@ -555,13 +606,13 @@ in {
         ++ lib.optional (cfg.cluster.enable && cfg.cluster.localControlService) "gaoji-cluster-control.service";
       requires = lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
         "${serviceName}-sandbox-image.service"
-      ];
+      ] ++ lib.optionals sandboxIsolated ["gaoji-sandbox-network.service"];
       after =
         ["network-online.target"]
         ++ lib.optional (cfg.cluster.enable && cfg.cluster.localControlService) "gaoji-cluster-control.service"
         ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
           "${serviceName}-sandbox-image.service"
-        ];
+        ] ++ lib.optionals sandboxIsolated ["gaoji-sandbox-network.service"];
       path =
         cfg.runtimePackages
         ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [sandboxCli]
@@ -578,6 +629,12 @@ in {
           AI_STATE_DIR = "${statePath}/state";
           AI_CACHE_DIR = cachePath;
           AI_SANDBOX_ENABLED = boolString cfg.sandbox.enable;
+          AI_SANDBOX_ALLOWED_USERS = lib.concatMapStringsSep "," toString cfg.sandbox.allowedUsers;
+          AI_SANDBOX_ALLOW_ALL = boolString cfg.sandbox.allowAll;
+          AI_SANDBOX_CPUS = toString cfg.sandbox.cpus;
+          AI_SANDBOX_PIDS_LIMIT = toString cfg.sandbox.pidsLimit;
+          AI_SANDBOX_MEMORY_MIB = toString cfg.sandbox.memoryMiB;
+          AI_SANDBOX_NETWORK = cfg.sandbox.network;
           AI_SANDBOX_BACKEND = if sandboxUsesVm then "vm" else "oci";
           AI_SANDBOX_IMAGE = cfg.sandbox.imageName;
           AI_SANDBOX_NIX_CACHE_VOLUME = cfg.sandbox.nixCacheVolume;
@@ -674,6 +731,25 @@ in {
           EnvironmentFile = cfg.environmentFile;
         };
     };
+
+    systemd.services.gaoji-sandbox-network = lib.mkIf sandboxIsolated {
+      description = "Install fail-closed sandbox egress rules";
+      after = ["docker.service"];
+      requires = ["docker.service"];
+      partOf = ["docker.service"];
+      wantedBy = ["docker.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = sandboxNetworkSetup;
+      };
+    };
+
+    networking.firewall.extraCommands = lib.mkIf sandboxIsolated ''
+      if ${pkgs.systemd}/bin/systemctl is-active --quiet docker.service; then
+        ${sandboxNetworkSetup}
+      fi
+    '';
 
     systemd.services."${serviceName}-sandbox-image" = lib.mkIf (cfg.runBot && cfg.sandbox.enable && !sandboxUsesVm) {
       description = "Load the gaoji advanced sandbox image";

@@ -28,7 +28,7 @@ class DiagnosticTemplate:
     key: str
     title: str
     description: str
-    default_host: str = "h610"
+    default_host: str = "local"
 
     def as_dict(self) -> dict[str, str]:
         return asdict(self)
@@ -525,7 +525,7 @@ class IncidentDiagnosticService:
         store: DiagnosticStore,
         targets: tuple[dict[str, str], ...] = (),
         *,
-        local_host_id: str = "h610",
+        local_host_id: str = "local",
     ) -> None:
         self.fleet = fleet
         self.store = store
@@ -593,6 +593,8 @@ class IncidentDiagnosticService:
         if template is None:
             raise ValueError("unknown diagnostic template")
         host = host_id.strip() or template.default_host
+        if host == "local":
+            host = self.local_host_id
         if self.fleet.inventory_policy(host) is None:
             raise PermissionError("host is outside the configured inventory")
         started_at = int(time.time())

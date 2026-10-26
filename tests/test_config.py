@@ -12,6 +12,32 @@ from src.plugins.ai_chat.config import Settings
 
 
 class SettingsGroupFilterTests(unittest.TestCase):
+    def test_sandbox_allowlist_denies_by_default_and_allow_all_is_explicit(self) -> None:
+        cases = (
+            ({}, False, False),
+            ({"AI_SANDBOX_ENABLED": "true"}, False, False),
+            ({"AI_SANDBOX_ENABLED": "true", "AI_SANDBOX_ALLOWED_USERS": "101"}, True, False),
+            ({"AI_SANDBOX_ENABLED": "true", "AI_SANDBOX_ALLOW_ALL": "true"}, True, True),
+            ({"AI_SANDBOX_ENABLED": "false", "AI_SANDBOX_ALLOW_ALL": "true"}, False, False),
+        )
+        for environment, first, second in cases:
+            with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True):
+                settings = Settings.from_env()
+                self.assertEqual(settings.is_sandbox_user_allowed(101), first)
+                self.assertEqual(settings.is_sandbox_user_allowed(202), second)
+
+    def test_sandbox_limits_are_bounded_and_invalid_configuration_fails(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual((settings.sandbox_cpus, settings.sandbox_pids_limit, settings.sandbox_memory_mib),
+                         (2, 256, 8192))
+        for name, maximum in (("AI_SANDBOX_CPUS", 16), ("AI_SANDBOX_PIDS_LIMIT", 4096),
+                              ("AI_SANDBOX_MEMORY_MIB", 8192)):
+            for value in ("0", "-1", "unlimited", str(maximum + 1)):
+                with self.subTest(name=name, value=value), patch.dict(os.environ, {name: value}, clear=True):
+                    with self.assertRaisesRegex(ValueError, name):
+                        Settings.from_env()
+
     def test_proactive_defaults_use_interest_gate_and_frequent_voice(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings.from_env()
