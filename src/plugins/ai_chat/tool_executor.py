@@ -28,9 +28,6 @@ from nonebot.adapters.onebot.v11 import (
 from nonebot.adapters.onebot.v11.exception import (
     ActionFailed,
 )
-from nonebot.exception import (
-    NetworkError,
-)
 from .agent_tools import (
     AGENT_TOOL_PROMPT,
     VM_AGENT_TOOL_PROMPT,
@@ -43,13 +40,10 @@ from .ai_tools import (
     CLUSTER_GUARDIAN_STATUS_TOOL_NAME,
     CLUSTER_JOB_STATUS_TOOL_NAME,
     CLUSTER_JOB_SUBMIT_TOOL_NAME,
-    CONTEXT_EXPAND_TOOL_NAME,
-    CONTEXT_SEARCH_TOOL_NAME,
     DIAGNOSE_INCIDENT_TOOL_NAME,
     DELEGATE_AGENT_TOOL_NAME,
     FIND_STICKERS_TOOL_NAME,
     FLEET_OVERVIEW_TOOL_NAME,
-    GROUP_MEMBERS_TOOL_NAME,
     HOST_INSPECT_TOOL_NAME,
     SERVICE_INSPECT_TOOL_NAME,
     MODEL_STATUS_TOOL_NAME,
@@ -57,7 +51,6 @@ from .ai_tools import (
     OPERATION_PREPARE_TOOL_NAME,
     OPERATION_STATUS_TOOL_NAME,
     INSPECT_SOURCE_TOOL_NAME,
-    PIN_MESSAGE_TOOL_NAME,
     QUERY_ALERTS_TOOL_NAME,
     READ_IMAGE_TEXT_TOOL_NAME,
     REPLY_WITH_VOICE_TOOL_NAME,
@@ -71,7 +64,6 @@ from .ai_tools import (
     REMINDER_CANCEL_TOOL_NAME,
     REMINDER_LIST_TOOL_NAME,
     REMINDER_SET_TOOL_NAME,
-    UNPIN_MESSAGE_TOOL_NAME,
     USE_SKILL_TOOL_NAME,
     VIEW_IMAGE_TOOL_NAME,
     VIEW_VIDEO_TOOL_NAME,
@@ -115,9 +107,6 @@ from .observability import (
 )
 from .onebot_codec import (
     scope_from_event,
-)
-from .onebot_model_output import (
-    decode_group_members,
 )
 from .output_planner import (
     face_prompt_table,
@@ -353,8 +342,20 @@ class ToolExecutor(HandlerService):
             selected_profile = configured_override or selected_profile.with_model(
                 selected_model_override
             )
+        tool_capabilities = {"memory"}
+        if alert_tools_enabled:
+            tool_capabilities.add("alerts")
+        if isinstance(event, GroupMessageEvent):
+            tool_capabilities.add("members")
+        if any(store is not None for store in (
+            self.context.turn_journal, self.context.context_store, self.context.message_ledger,
+        )):
+            tool_capabilities.add("context")
+        if self.context.pin_store is not None and self.context.message_ledger is not None:
+            tool_capabilities.add("pins")
         turn = TurnState(
-            context=ToolContext(self.services, event, frozenset({"memory"} | ({"alerts"} if alert_tools_enabled else set()))),
+            context=ToolContext(self.services, event, frozenset(tool_capabilities)),
+            bot=bot,
             subagent_task_started=resume_task_id is not None,
         )
         replay_prefix: list[dict[str, Any]] = []
@@ -813,54 +814,6 @@ class ToolExecutor(HandlerService):
                     payload = {"ok": False, "error": str(exc)}
                 return json.dumps(payload, ensure_ascii=False)
 
-            if name in {PIN_MESSAGE_TOOL_NAME, UNPIN_MESSAGE_TOOL_NAME}:
-                if self.context.pin_store is None or self.context.message_ledger is None:
-                    return json.dumps(
-                        {"ok": False, "error": "固定消息存储暂时不可用。"},
-                        ensure_ascii=False,
-                    )
-                message_id = self.services.commands._canonical_message_id(arguments.get("message_handle"))
-                if message_id is None:
-                    return json.dumps(
-                        {"ok": False, "error": "message_handle 格式无效。"},
-                        ensure_ascii=False,
-                    )
-                scope = scope_from_event(event)
-                if name == UNPIN_MESSAGE_TOOL_NAME:
-                    removed = self.context.pin_store.unpin(scope, message_id)
-                    return json.dumps(
-                        {
-                            "ok": removed,
-                            "message_handle": f"msg#{message_id}",
-                            "removed": removed,
-                            "error": None if removed else "这条消息没有被固定。",
-                        },
-                        ensure_ascii=False,
-                    )
-                principal_id = self.context.message_ledger.principal_id_for_native(
-                    scope.platform,
-                    event.user_id,
-                )
-                try:
-                    pinned, created = self.context.pin_store.pin(
-                        self.context.message_ledger,
-                        scope,
-                        message_id,
-                        pinned_by_principal_id=principal_id,
-                    )
-                except ValueError as exc:
-                    return json.dumps(
-                        {"ok": False, "error": str(exc)},
-                        ensure_ascii=False,
-                    )
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "message_handle": f"msg#{pinned.canonical_message_id}",
-                        "created": created,
-                    },
-                    ensure_ascii=False,
-                )
 
             if name in {
                 REMINDER_SET_TOOL_NAME,
@@ -929,253 +882,8 @@ class ToolExecutor(HandlerService):
                     ensure_ascii=False,
                 )
 
-            if name == GROUP_MEMBERS_TOOL_NAME:
-                if not isinstance(event, GroupMessageEvent):
-                    return json.dumps(
-                        {"ok": False, "error": "私聊中没有群成员名单。"},
-                        ensure_ascii=False,
-                    )
-                query = str(arguments.get("query") or "").strip().casefold()
-                try:
-                    limit = min(max(int(arguments.get("limit") or 50), 1), 100)
-                    raw_members = await bot.get_group_member_list(
-                        group_id=event.group_id,
-                    )
-                except (
-                    ActionFailed,
-                    NetworkError,
-                    RuntimeError,
-                    TypeError,
-                    ValueError,
-                ) as exc:
-                    self.context.logger.warning(f"Fetching the QQ group roster failed: {exc}")
-                    return json.dumps(
-                        {"ok": False, "error": "读取当前群成员失败。"},
-                        ensure_ascii=False,
-                    )
-                decoded_members = decode_group_members(raw_members)
-                principal_ids = (
-                    self.context.message_ledger.ensure_principal_identities(
-                        "onebot-v11",
-                        [
-                            (member.native_user_id, member.display)
-                            for member in decoded_members
-                        ],
-                    )
-                    if self.context.message_ledger is not None
-                    else {}
-                )
-                members: list[dict[str, object]] = []
-                for member in decoded_members:
-                    display = member.display
-                    if query and query not in display.casefold():
-                        continue
-                    principal_id = principal_ids.get(member.native_user_id)
-                    members.append(
-                        {
-                            "principal": (
-                                f"[mention#{principal_id}]"
-                                if principal_id is not None
-                                else None
-                            ),
-                            "display_name": display,
-                            "role": member.role,
-                            "title": member.title or None,
-                        }
-                    )
-                    if len(members) >= limit:
-                        break
-                return json.dumps(
-                    {"ok": True, "members": members, "count": len(members)},
-                    ensure_ascii=False,
-                )
 
-            if name == CONTEXT_EXPAND_TOOL_NAME:
-                target = str(arguments.get("target") or "").strip()
-                if target.startswith("episode#"):
-                    if self.context.context_store is None or self.context.message_ledger is None:
-                        return json.dumps(
-                            {"ok": False, "error": "分层上下文暂时没有开启。"},
-                            ensure_ascii=False,
-                        )
-                    handle = target.removeprefix("episode#").strip()
-                    expanded_episode = self.context.context_store.expand(
-                        self.context.message_ledger,
-                        scope_from_event(event),
-                        handle,
-                        max_chars=self.context.settings.turn_expand_max_chars,
-                    )
-                    if expanded_episode is None:
-                        return json.dumps(
-                            {
-                                "ok": False,
-                                "error": "当前会话可见范围内找不到或无法验证这个 episode#。",
-                            },
-                            ensure_ascii=False,
-                        )
-                    return json.dumps(
-                        {
-                            "ok": True,
-                            "target": f"episode#{handle}",
-                            "record": expanded_episode,
-                        },
-                        ensure_ascii=False,
-                    )
-                if self.context.turn_journal is None:
-                    return json.dumps(
-                        {"ok": False, "error": "Turn Journal 暂时没有开启。"},
-                        ensure_ascii=False,
-                    )
-                try:
-                    requested_turn = int(
-                        target.removeprefix("t#")
-                        if target.startswith("t#")
-                        else arguments.get("turn_id") or 0
-                    )
-                except (TypeError, ValueError):
-                    requested_turn = 0
-                expanded = self.context.turn_journal.render_turn(
-                    scope_from_event(event),
-                    requested_turn,
-                    max_chars=self.context.settings.turn_expand_max_chars,
-                )
-                if expanded is None:
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "error": "当前会话可见范围内找不到这个 t#。",
-                        },
-                        ensure_ascii=False,
-                    )
-                return json.dumps(
-                    {"ok": True, "turn": f"t#{requested_turn}", "record": expanded},
-                    ensure_ascii=False,
-                )
 
-            if name == CONTEXT_SEARCH_TOOL_NAME:
-                if self.context.message_ledger is None:
-                    return json.dumps(
-                        {"ok": False, "error": "规范消息账本暂时没有开启。"},
-                        ensure_ascii=False,
-                    )
-                query = str(arguments.get("query") or "").strip()
-                try:
-                    limit = min(max(int(arguments.get("limit") or 5), 1), 10)
-                except (TypeError, ValueError):
-                    limit = 5
-                if not query:
-                    return json.dumps(
-                        {"ok": False, "error": "检索词不能为空。"},
-                        ensure_ascii=False,
-                    )
-                scope = scope_from_event(event)
-                messages = self.context.message_ledger.search_in_scope(scope, query, limit)
-                episodes = (
-                    self.context.context_store.search(scope, query, limit=limit)
-                    if self.context.context_store is not None
-                    else []
-                )
-                pinned_matches = (
-                    self.context.pin_store.search(
-                        self.context.message_ledger,
-                        scope,
-                        query,
-                        limit=limit,
-                    )
-                    if self.context.pin_store is not None
-                    else []
-                )
-                folded_query = query.casefold()
-                memory_matches = [
-                    entry
-                    for entry in self.context.long_term_memory.list_entries(
-                        self.services.commands._memory_scope_keys(event)
-                    )
-                    if folded_query in entry.content.casefold()
-                ][:limit]
-                semantic_hits = []
-                allowed_context_scopes = {
-                    scope.key,
-                    *self.services.commands._memory_scope_keys(event),
-                }
-                if self.context.semantic_recall is not None:
-                    try:
-                        semantic_hits = await self.context.semantic_recall.search(
-                            sorted(allowed_context_scopes),
-                            query,
-                            limit=limit * 2,
-                        )
-                    except (
-                        OSError,
-                        RuntimeError,
-                        TypeError,
-                        ValueError,
-                        httpx.HTTPError,
-                    ) as exc:
-                        self.context.logger.warning(f"Semantic recall failed softly: {exc}")
-                lexical_handles = {
-                    *(f"msg#{message.canonical_message_id}" for message in messages),
-                    *(f"episode#{episode.expand_handle}" for episode in episodes),
-                    *(f"msg#{message.canonical_message_id}" for _pin, message in pinned_matches),
-                    *(f"memory#{entry.id}" for entry in memory_matches),
-                }
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "messages": [
-                            {
-                                "handle": f"msg#{message.canonical_message_id}",
-                                "sender": (
-                                    f"[mention#{message.sender_principal_id}] {message.sender_display}"
-                                    if message.sender_principal_id is not None
-                                    else message.sender_display
-                                ),
-                                "text": message.rendered_text[:500],
-                            }
-                            for message in messages
-                        ],
-                        "episodes": [
-                            {
-                                "handle": f"episode#{episode.expand_handle}",
-                                "range": (
-                                    f"msg#{episode.start_message_id}.."
-                                    f"msg#{episode.end_message_id}"
-                                ),
-                                "summary": episode.summary_p2,
-                            }
-                            for episode in episodes
-                        ],
-                        "pins": [
-                            {
-                                "handle": f"msg#{message.canonical_message_id}",
-                                "sender": (
-                                    f"[mention#{message.sender_principal_id}] {message.sender_display}"
-                                    if message.sender_principal_id is not None
-                                    else message.sender_display
-                                ),
-                                "text": message.rendered_text[:500],
-                            }
-                            for _pin, message in pinned_matches
-                        ],
-                        "memories": [
-                            self.services.commands._memory_entry_payload(entry)
-                            for entry in memory_matches
-                        ],
-                        "semantic": [
-                            {
-                                "handle": hit.source_handle,
-                                "type": hit.source_type,
-                                "text": hit.content[:500],
-                                "score": round(hit.score, 4),
-                                "metadata": hit.metadata,
-                            }
-                            for hit in semantic_hits
-                            if hit.source_handle not in lexical_handles
-                            and str(hit.scope_key) in allowed_context_scopes
-                        ][:limit],
-                    },
-                    ensure_ascii=False,
-                )
 
             if name == WEB_SEARCH_TOOL_NAME:
                 query = str(arguments.get("query", "")).strip() or user_text

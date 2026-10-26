@@ -54,7 +54,18 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
             for handler in domain_registry.handlers
         }
         self.assertEqual(
-            names, {"query_alerts", "memory_add", "memory_list", "memory_remove"}
+            names,
+            {
+                "query_alerts",
+                "memory_add",
+                "memory_list",
+                "memory_remove",
+                "context_expand",
+                "context_search",
+                "group_members",
+                "pin_message",
+                "unpin_message",
+            },
         )
         self.assertEqual(len(names), len(domain_registry.handlers))
         for handler in domain_registry.handlers:

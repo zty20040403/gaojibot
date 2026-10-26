@@ -87,7 +87,8 @@ acceptance are not implied by this roadmap.
 
 - [x] ToolHandler interface and registry; memory and alert handlers extracted.
 - [x] Typed TurnState owns reply media, source evidence and delegation counters.
-- [ ] Move remaining context/media/sticker/subagent/source handlers.
+- [x] Scoped context search/expansion, group roster and pin handlers extracted.
+- [ ] Move remaining media/sticker/subagent/source handlers.
 - [ ] Registry-driven tool availability and complete handler coverage.
 - [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
@@ -274,3 +275,20 @@ isolated roadmap test database is used for validation.
   Ruff, diff whitespace check and admin TypeScript/Vite build passed. No UI source
   or production services were changed. Existing eager-startup ForwardRef warnings
   are still pending the Phase 6 startup-assembly refactor.
+
+### Phase 6 context extraction validation
+
+- Moved context expansion/search, group roster and pin/unpin into tools/context;
+  the registry now owns nine handlers. The current-turn bot and capabilities are
+  explicit state. Legacy catalog ordering and outer execution guards remain.
+- Kept conversation-scope filtering for raw messages, chapters, pins and turn
+  expansion. Semantic results are post-filtered to the current group and allowed
+  memory scopes, then deduplicated against lexical results. Semantic failure
+  leaves lexical results available. Group identities use canonical mentions.
+- Five new regressions cover current/foreign-group evidence, other-user memory,
+  semantic failure, scoped pin/unpin, expansion and current-group roster output.
+- Focused tests: 85 passed. Full PG suite: 1,643 tests, OK (12 skipped), 83.834
+  seconds; .cache/roadmap/phase6-context-full.log. CI-path Ruff, diff whitespace
+  check and admin TypeScript/Vite build passed. No production host was contacted.
+- Phase 6 is still in progress: remaining tool domains, registry-only selection,
+  agent naming, admin routers and delayed startup assembly are not finished.
