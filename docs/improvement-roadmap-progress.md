@@ -94,8 +94,8 @@ acceptance are not implied by this roadmap.
 - [x] Sub-Agent delegate/run/resume handlers and typed dispatch callbacks extracted.
 - [x] Existing scoped reminder create/list/cancel handlers extracted.
 - [x] Fleet read/management/job/artifact/guardian handlers extracted.
-- [ ] Move agent-executor-backed tool dispatch.
-- [ ] Registry-driven tool availability and complete handler coverage.
+- [x] Move agent-executor-backed tool dispatch.
+- [x] Registry-driven tool availability and complete handler coverage.
 - [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
 - [ ] Startup-time context assembly; migrate consumers and remove old globals.
@@ -388,3 +388,24 @@ isolated roadmap test database is used for validation.
   admin TypeScript/Vite build passed. No production host or external API contacted.
 - tool_executor.py is 1,550 lines. Registry-only selection, executor-backed tools,
   naming, admin routers and delayed startup remain pending in Phase 6.
+
+### Phase 6 registry completion validation
+
+- All 74 built-in tools now have registered handlers. Removed the 22-boolean
+  available_tools interface, legacy catalog projection and executor fallthrough.
+  The registry validates full catalog coverage and preserves original prompt order.
+- Sandbox, browser, conversation and shared-source adapters use the existing
+  scoped executor and delivery/error handling. Missing capabilities or executors
+  fail closed both at advertisement and execution, including direct tool calls.
+  Private sessions no longer advertise source tools without a working executor.
+- VM-specific descriptions are projected onto copies; Nix package search is not
+  available for VM sandboxes. Projections cannot rename registered tools, and OCI
+  definitions remain unchanged across VM calls. No nonlocal state remains in
+  tool_executor.py, now 1,491 lines versus 3,126 before Phase 6.
+- Eight new regressions exercise every executor mapping, capability/global
+  disables, absent dependencies, stable catalog order, VM/OCI separation and
+  cancellation. Focused tests: 117 passed. Full PG suite: 1,684 tests, OK (12
+  skipped), 85.276 seconds; .cache/roadmap/phase6-catalog-full.log. CI-path Ruff,
+  diff whitespace check and admin TypeScript/Vite build passed.
+- Phase 6.1 is complete locally. Naming/compatibility, admin routers and delayed
+  startup assembly remain in Phase 6; Phases 7-9 have not begun.

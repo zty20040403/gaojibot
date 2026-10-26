@@ -43,7 +43,6 @@ from .ai_tools import (
     VIEW_IMAGE_TOOL_NAME,
     VIEW_VIDEO_TOOL_NAME,
     WEB_SEARCH_TOOL_NAME,
-    available_tools,
     force_tool,
 )
 from .agent import ContextPacket
@@ -110,7 +109,7 @@ from .handler_services import HandlerService
 from .handler_constants import (TURN_PROMPT_VERSION)
 from .prompt_context import quote_evidence
 from .intent_routing import ToolIntent, classify_tool_intent
-from .tools import domain_registry
+from .tools import available_tools, domain_registry
 from .tools.state import SubAgentActions, ToolContext, TurnState
 from .tools.media import resolve_video_reference
 
@@ -390,6 +389,13 @@ class ToolExecutor(HandlerService):
             tool_capabilities.add("fleet_logs")
         if isinstance(event, GroupMessageEvent):
             tool_capabilities.add("members")
+            tool_capabilities.add("conversation")
+            if self.context.browser_manager is not None:
+                tool_capabilities.add("browser")
+        if sandbox_tools_enabled:
+            tool_capabilities.add("sandbox")
+        if self.context.source_store is not None:
+            tool_capabilities.add("shared_content")
         if any(store is not None for store in (
             self.context.turn_journal, self.context.context_store, self.context.message_ledger,
         )):
@@ -411,55 +417,16 @@ class ToolExecutor(HandlerService):
             if available_voice_message_id is not None:
                 tool_capabilities.add("transcription")
         turn = TurnState(
-            context=ToolContext(self.services, event, frozenset(tool_capabilities)),
+            context=ToolContext(
+                self.services, event, frozenset(tool_capabilities), agent_executor,
+            ),
             bot=bot,
             user_text=user_text,
-            agent_executor=agent_executor,
             image_sources=available_image_sources,
             voice_message_id=available_voice_message_id,
             subagent_task_started=resume_task_id is not None,
         )
-        tools = available_tools(
-            sandbox_backend=self.context.settings.sandbox_backend,
-            include_web_search=(
-                self.context.settings.search_enabled
-                and (force_search or self.context.settings.search_auto_enabled)
-            ),
-            include_alert_tools=alert_tools_enabled,
-            include_fleet_tools=fleet_tools_enabled,
-            include_fleet_logs=fleet_logs_enabled,
-            include_ops_management=fleet_tools_enabled and self._registered_admin(event.user_id),
-            include_image_ocr=(
-                self.context.settings.ocr_enabled and bool(available_image_sources)
-            ),
-            include_voice_transcription=(
-                self.context.settings.voice_enabled and available_voice_message_id is not None
-            ),
-            include_voice_reply=self.context.settings.voice_enabled,
-            include_stickers=True,
-            include_memory_tools=True,
-            include_agent_tools=sandbox_tools_enabled,
-            include_conversation_tools=isinstance(event, GroupMessageEvent),
-            include_browser_tools=(
-                isinstance(event, GroupMessageEvent) and self.context.browser_manager is not None
-            ),
-            include_turn_tools=(
-                self.context.turn_journal is not None
-                or self.context.context_store is not None
-                or self.context.message_ledger is not None
-            ),
-            include_pin_tools=(self.context.pin_store is not None and self.context.message_ledger is not None),
-            include_self_tools=True,
-            include_group_tools=isinstance(event, GroupMessageEvent),
-            include_reminder_tools=self.context.reminder_store is not None,
-            include_media_tools=(
-                self.context.vision_worker is not None or self.context.media_library is not None
-            ),
-            include_video_analysis=self.services.video_analyzer is not None,
-            include_source_tools=self.context.source_store is not None,
-            include_subagents=self.context.subagent_coordinator is not None,
-        )
-        tools = domain_registry.project_legacy_catalog(tools, turn.context)
+        tools = available_tools(turn.context)
         current_tool_catalog_version = tool_catalog_fingerprint(tools)
         if self.context.turn_journal is not None and journal_turn_id is not None:
             try:
@@ -592,35 +559,9 @@ class ToolExecutor(HandlerService):
             }:
                 return json.dumps({"ok": False, "error": "此操作需要绑定专业子任务。单一任务调用 delegate_agent；多项交付调用 run_subagents。不要在主控直接执行或声称已完成。"}, ensure_ascii=False)
 
-            domain_result = await domain_registry.execute(turn, name, arguments)
-            if domain_result is not None:
-                return domain_result
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-            if agent_executor is not None:
-                result = await agent_executor.execute(name, arguments)
-                if result is not None:
-                    return result
-
+            result = await domain_registry.execute(turn, name, arguments)
+            if result is not None:
+                return result
             return json.dumps(
                 {"ok": False, "error": f"不支持的工具：{name}"},
                 ensure_ascii=False,

@@ -20,6 +20,7 @@ class ToolContext:
     services: HandlerServices
     event: MessageEvent
     capabilities: frozenset[str]
+    agent_executor: AgentToolExecutor | None = None
 
     @property
     def app(self) -> AppContext:
@@ -37,7 +38,6 @@ class SubAgentActions:
 class TurnState:
     context: ToolContext
     bot: Bot | None = None
-    agent_executor: AgentToolExecutor | None = None
     user_text: str = ""
     image_sources: list[str] = field(default_factory=list)
     voice_message_id: int | None = None
@@ -51,3 +51,7 @@ class TurnState:
     subagent_task_started: bool = False
     subagent_delegations: int = 0
     subagent_actions: SubAgentActions | None = None
+
+    @property
+    def agent_executor(self) -> AgentToolExecutor | None:
+        return self.context.agent_executor

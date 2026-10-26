@@ -173,8 +173,9 @@ class FleetToolHandlerTests(unittest.IsolatedAsyncioTestCase):
             )["ok"]
         )
         manager = SimpleNamespace(read_file=AsyncMock(return_value=b"zip-data"))
-        self.turn.agent_executor = SimpleNamespace(
-            owner="group:100", sandbox_manager=manager
+        self.turn.context = replace(
+            self.turn.context,
+            agent_executor=SimpleNamespace(owner="group:100", sandbox_manager=manager),
         )
         await self.run_tool(
             "cluster_artifact_upload",

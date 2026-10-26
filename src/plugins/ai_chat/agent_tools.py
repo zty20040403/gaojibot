@@ -207,6 +207,39 @@ def _safe_file_info(raw_file: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+AGENT_TOOL_METHODS = {
+    GET_MESSAGE_BY_ID_TOOL_NAME: "_get_message_by_id",
+    SEARCH_MESSAGES_TOOL_NAME: "_search_messages",
+    SANDBOX_CREATE_TOOL_NAME: "_sandbox_create",
+    SANDBOX_DESTROY_TOOL_NAME: "_sandbox_destroy",
+    SANDBOX_LIST_TOOL_NAME: "_sandbox_list",
+    SANDBOX_EXEC_TOOL_NAME: "_sandbox_exec",
+    NIX_SEARCH_TOOL_NAME: "_nix_search",
+    SANDBOX_WRITE_FILE_TOOL_NAME: "_sandbox_write_file",
+    SANDBOX_READ_FILE_TOOL_NAME: "_sandbox_read_file",
+    SEND_FILE_FROM_SANDBOX_TOOL_NAME: "_send_file_from_sandbox",
+    SEND_IMAGE_FROM_SANDBOX_TOOL_NAME: "_send_image_from_sandbox",
+    LIST_RECENT_FILES_TOOL_NAME: "_list_recent_files",
+    IMPORT_FILE_TO_SANDBOX_TOOL_NAME: "_import_file_to_sandbox",
+    SAY_TOOL_NAME: "_say",
+    VIEW_FORWARD_TOOL_NAME: "_view_forward",
+    VIEW_BILIBILI_TOOL_NAME: "_view_bilibili",
+    INSPECT_SHARED_CONTENT_TOOL_NAME: "_inspect_shared_content",
+    GET_SHARED_CONTENT_TOOL_NAME: "_get_shared_content",
+    BROWSER_NAVIGATE_TOOL_NAME: "_browser_navigate",
+    BROWSER_SNAPSHOT_TOOL_NAME: "_browser_snapshot",
+    BROWSER_CLICK_TOOL_NAME: "_browser_click",
+    BROWSER_TYPE_TOOL_NAME: "_browser_type",
+    BROWSER_PRESS_KEY_TOOL_NAME: "_browser_press_key",
+    BROWSER_WAIT_FOR_TOOL_NAME: "_browser_wait_for",
+    BROWSER_SCROLL_TOOL_NAME: "_browser_scroll",
+    BROWSER_CLOSE_TOOL_NAME: "_browser_close",
+    BROWSER_CLEAR_TOOL_NAME: "_browser_clear",
+    JOB_STATUS_TOOL_NAME: "_job_status",
+    JOB_CANCEL_TOOL_NAME: "_job_cancel",
+}
+
+
 class AgentToolExecutor:
     def __init__(
         self,
@@ -302,43 +335,12 @@ class AgentToolExecutor:
         name: str,
         arguments: dict[str, object],
     ) -> str | None:
-        handlers = {
-            GET_MESSAGE_BY_ID_TOOL_NAME: self._get_message_by_id,
-            SEARCH_MESSAGES_TOOL_NAME: self._search_messages,
-            SANDBOX_CREATE_TOOL_NAME: self._sandbox_create,
-            SANDBOX_DESTROY_TOOL_NAME: self._sandbox_destroy,
-            SANDBOX_LIST_TOOL_NAME: self._sandbox_list,
-            SANDBOX_EXEC_TOOL_NAME: self._sandbox_exec,
-            NIX_SEARCH_TOOL_NAME: self._nix_search,
-            SANDBOX_WRITE_FILE_TOOL_NAME: self._sandbox_write_file,
-            SANDBOX_READ_FILE_TOOL_NAME: self._sandbox_read_file,
-            SEND_FILE_FROM_SANDBOX_TOOL_NAME: self._send_file_from_sandbox,
-            SEND_IMAGE_FROM_SANDBOX_TOOL_NAME: self._send_image_from_sandbox,
-            LIST_RECENT_FILES_TOOL_NAME: self._list_recent_files,
-            IMPORT_FILE_TO_SANDBOX_TOOL_NAME: self._import_file_to_sandbox,
-            SAY_TOOL_NAME: self._say,
-            VIEW_FORWARD_TOOL_NAME: self._view_forward,
-            VIEW_BILIBILI_TOOL_NAME: self._view_bilibili,
-            INSPECT_SHARED_CONTENT_TOOL_NAME: self._inspect_shared_content,
-            GET_SHARED_CONTENT_TOOL_NAME: self._get_shared_content,
-            BROWSER_NAVIGATE_TOOL_NAME: self._browser_navigate,
-            BROWSER_SNAPSHOT_TOOL_NAME: self._browser_snapshot,
-            BROWSER_CLICK_TOOL_NAME: self._browser_click,
-            BROWSER_TYPE_TOOL_NAME: self._browser_type,
-            BROWSER_PRESS_KEY_TOOL_NAME: self._browser_press_key,
-            BROWSER_WAIT_FOR_TOOL_NAME: self._browser_wait_for,
-            BROWSER_SCROLL_TOOL_NAME: self._browser_scroll,
-            BROWSER_CLOSE_TOOL_NAME: self._browser_close,
-            BROWSER_CLEAR_TOOL_NAME: self._browser_clear,
-            JOB_STATUS_TOOL_NAME: self._job_status,
-            JOB_CANCEL_TOOL_NAME: self._job_cancel,
-        }
-        handler = handlers.get(name)
-        if handler is None:
+        method = AGENT_TOOL_METHODS.get(name)
+        if method is None:
             return None
 
         try:
-            return await handler(arguments)
+            return await getattr(self, method)(arguments)
         except SandboxError as exc:
             return _json_result(ok=False, error=str(exc))
         except (

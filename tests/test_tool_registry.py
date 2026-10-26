@@ -11,10 +11,11 @@ import nonebot
 nonebot.init()
 
 from src.plugins.ai_chat.ai_tools import (
+    TOOL_DEFINITIONS,
     MEMORY_ADD_TOOL,
     QUERY_ALERTS_TOOL,
-    WEB_SEARCH_TOOL,
 )
+from src.plugins.ai_chat.agent_tools import AGENT_TOOL_METHODS, AgentToolExecutor
 from src.plugins.ai_chat.long_term_memory import LongTermMemoryError
 from src.plugins.ai_chat import tool_policy
 from src.plugins.ai_chat.tools import domain_registry
@@ -101,9 +102,21 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "cluster_case_search",
                 "cluster_guardian_create",
                 "cluster_guardian_status",
+                *AGENT_TOOL_METHODS,
             },
         )
         self.assertEqual(len(names), len(domain_registry.handlers))
+        self.assertEqual(
+            [
+                handler.definition["function"]["name"]
+                for handler in domain_registry.handlers
+            ],
+            [item["function"]["name"] for item in TOOL_DEFINITIONS],
+        )
+        for method in AGENT_TOOL_METHODS.values():
+            self.assertTrue(
+                inspect.iscoroutinefunction(getattr(AgentToolExecutor, method))
+            )
         for handler in domain_registry.handlers:
             self.assertTrue(inspect.iscoroutinefunction(handler.run))
             self.assertTrue(inspect.iscoroutinefunction(handler.implementation))
@@ -121,22 +134,19 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
             ToolRegistry((*domain_registry.handlers, domain_registry.handlers[0]))
         with self.assertRaisesRegex(TypeError, "no handler"):
             ToolRegistry([SimpleNamespace(definition=MEMORY_ADD_TOOL)])
+        for catalog in ([MEMORY_ADD_TOOL], [QUERY_ALERTS_TOOL, QUERY_ALERTS_TOOL]):
+            with self.assertRaisesRegex(ValueError, "catalog"):
+                ToolRegistry([domain_registry.handlers[0]], catalog=catalog)
 
-    async def test_visibility_and_execution_use_the_same_gate_without_legacy_fallthrough(
+    async def test_visibility_and_execution_use_the_same_gate(
         self,
     ) -> None:
         run = AsyncMock(return_value='{"ok": true}')
         available = Mock(return_value=True)
         registry = ToolRegistry([FunctionTool(QUERY_ALERTS_TOOL, available, run)])
-        original = [WEB_SEARCH_TOOL, QUERY_ALERTS_TOOL, MEMORY_ADD_TOOL]
-        self.assertEqual(
-            registry.project_legacy_catalog(original, self.context), original
-        )
+        self.assertEqual(registry.definitions(self.context), [QUERY_ALERTS_TOOL])
         tool_policy.set_tool_enabled("query_alerts", False)
-        self.assertEqual(
-            registry.project_legacy_catalog(original, self.context),
-            [WEB_SEARCH_TOOL, MEMORY_ADD_TOOL],
-        )
+        self.assertEqual(registry.definitions(self.context), [])
         blocked = json.loads(await registry.execute(self.turn, "query_alerts", {}))
         self.assertEqual(blocked["code"], "tool_unavailable")
         tool_policy.set_tool_enabled("query_alerts", True)

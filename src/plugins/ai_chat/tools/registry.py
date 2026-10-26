@@ -22,6 +22,8 @@ class ToolHandler(Protocol):
 
     def enabled(self, context: ToolContext) -> bool: ...
 
+    def definition_for(self, context: ToolContext) -> ToolDefinition: ...
+
     async def run(self, turn: TurnState, arguments: dict[str, object]) -> str: ...
 
 
@@ -30,6 +32,7 @@ class FunctionTool:
     definition: ToolDefinition
     available: Callable[[ToolContext], bool]
     implementation: Callable[[TurnState, dict[str, object]], Awaitable[str]]
+    project: Callable[[ToolDefinition, ToolContext], None] | None = None
 
     @property
     def policy(self) -> ToolPolicy:
@@ -38,12 +41,25 @@ class FunctionTool:
     def enabled(self, context: ToolContext) -> bool:
         return self.available(context)
 
+    def definition_for(self, context: ToolContext) -> ToolDefinition:
+        definition = deepcopy(self.definition)
+        if self.project is not None:
+            self.project(definition, context)
+        if definition["function"]["name"] != self.definition["function"]["name"]:
+            raise ValueError("Tool projection cannot change its registered name")
+        return definition
+
     async def run(self, turn: TurnState, arguments: dict[str, object]) -> str:
         return await self.implementation(turn, arguments)
 
 
 class ToolRegistry:
-    def __init__(self, handlers: Iterable[ToolHandler]) -> None:
+    def __init__(
+        self,
+        handlers: Iterable[ToolHandler],
+        *,
+        catalog: Iterable[ToolDefinition] | None = None,
+    ) -> None:
         self._handlers: dict[str, ToolHandler] = {}
         for handler in handlers:
             name = handler.definition["function"]["name"]
@@ -52,6 +68,11 @@ class ToolRegistry:
             if not callable(getattr(handler, "run", None)):
                 raise TypeError(f"Tool has no handler: {name}")
             self._handlers[name] = handler
+        if catalog is not None:
+            order = [item["function"]["name"] for item in catalog]
+            if len(order) != len(set(order)) or set(order) != self._handlers.keys():
+                raise ValueError("Tool catalog must match registered handlers exactly")
+            self._handlers = {name: self._handlers[name] for name in order}
 
     @property
     def handlers(self) -> tuple[ToolHandler, ...]:
@@ -59,24 +80,9 @@ class ToolRegistry:
 
     def definitions(self, context: ToolContext) -> list[ToolDefinition]:
         return [
-            deepcopy(handler.definition)
+            handler.definition_for(context)
             for name, handler in self._handlers.items()
             if tool_enabled(name) and handler.enabled(context)
-        ]
-
-    def project_legacy_catalog(
-        self, definitions: list[ToolDefinition], context: ToolContext
-    ) -> list[ToolDefinition]:
-        # Preserve existing prompt order during incremental domain migration.
-        # Unmigrated definitions and execution stay on the old path for now.
-        migrated = {
-            item["function"]["name"]: item for item in self.definitions(context)
-        }
-        return [
-            migrated.get(item["function"]["name"], item)
-            for item in definitions
-            if item["function"]["name"] not in self._handlers
-            or item["function"]["name"] in migrated
         ]
 
     async def execute(

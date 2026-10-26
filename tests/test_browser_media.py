@@ -5,6 +5,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import nonebot
@@ -18,8 +19,9 @@ from src.plugins.ai_chat.ai_tools import (
     INSPECT_SHARED_CONTENT_TOOL_NAME,
     VIEW_BILIBILI_TOOL_NAME,
     VIEW_FORWARD_TOOL_NAME,
-    available_tools,
 )
+from src.plugins.ai_chat.tools import available_tools
+from src.plugins.ai_chat.tools.state import ToolContext
 from src.plugins.ai_chat.browser_tools import (
     BrowserManager,
     BrowserPolicyError,
@@ -231,13 +233,11 @@ class BrowserAndMediaTests(unittest.TestCase):
         self.assertEqual(result["duration_seconds"], 123)
 
     def test_tool_catalog_exposes_conversation_and_browser_tools_separately(self) -> None:
-        tools = available_tools(
-            include_web_search=False,
-            include_image_ocr=False,
-            include_conversation_tools=True,
-            include_browser_tools=True,
-            include_media_tools=True,
-        )
+        executor = SimpleNamespace(browser_manager=object(), source_store=object())
+        tools = available_tools(ToolContext(
+            SimpleNamespace(), SimpleNamespace(),
+            frozenset({"conversation", "browser", "media"}), executor,
+        ))
         names = {
             item["function"]["name"]
             for item in tools
@@ -250,12 +250,10 @@ class BrowserAndMediaTests(unittest.TestCase):
         self.assertNotIn("find_images", names)
         self.assertIn("find_stickers", names)
 
-        source_tools = available_tools(
-            include_web_search=False,
-            include_image_ocr=False,
-            include_conversation_tools=True,
-            include_source_tools=True,
-        )
+        source_tools = available_tools(ToolContext(
+            SimpleNamespace(), SimpleNamespace(),
+            frozenset({"conversation", "shared_content"}), executor,
+        ))
         source_names = {item["function"]["name"] for item in source_tools}
         self.assertIn(INSPECT_SHARED_CONTENT_TOOL_NAME, source_names)
         self.assertIn(GET_SHARED_CONTENT_TOOL_NAME, source_names)

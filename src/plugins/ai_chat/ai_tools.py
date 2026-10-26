@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 
 from typing import Any, Union
 
@@ -1786,112 +1785,28 @@ BROWSER_TOOLS = [
 ]
 
 
-def available_tools(
-    *,
-    include_web_search: bool,
-    sandbox_backend: str = "oci",
-    include_alert_tools: bool = False,
-    include_fleet_tools: bool = False,
-    include_fleet_logs: bool = False,
-    include_ops_management: bool = False,
-    include_image_ocr: bool,
-    include_voice_transcription: bool = False,
-    include_voice_reply: bool = False,
-    include_stickers: bool = False,
-    include_memory_tools: bool = False,
-    include_agent_tools: bool = False,
-    include_conversation_tools: bool = False,
-    include_browser_tools: bool = False,
-    include_turn_tools: bool = False,
-    include_pin_tools: bool = False,
-    include_self_tools: bool = False,
-    include_group_tools: bool = False,
-    include_reminder_tools: bool = False,
-    include_media_tools: bool = False,
-    include_video_analysis: bool = False,
-    include_source_tools: bool = False,
-    include_subagents: bool = False,
-) -> list[ToolDefinition]:
-    tools: list[ToolDefinition] = []
-    if include_web_search:
-        tools.append(WEB_SEARCH_TOOL)
-    if include_alert_tools:
-        tools.append(QUERY_ALERTS_TOOL)
-    if include_ops_management:
-        tools.extend([OPS_CATALOG_TOOL, OPS_CALL_TOOL, SERVICE_CONTROL_TOOL, HOST_REBOOT_TOOL])
-    if include_fleet_tools:
-        tools.extend(
-            [FLEET_OVERVIEW_TOOL, HOST_INSPECT_TOOL, SERVICE_INSPECT_TOOL, MODEL_STATUS_TOOL,
-             DIAGNOSE_INCIDENT_TOOL, OPERATION_PREPARE_TOOL, OPERATION_STATUS_TOOL,
-             OPERATION_CANCEL_TOOL, CLUSTER_ARTIFACT_UPLOAD_TOOL, CLUSTER_JOB_SUBMIT_TOOL,
-             CLUSTER_JOB_STATUS_TOOL, CLUSTER_CASE_SEARCH_TOOL,
-             CLUSTER_GUARDIAN_CREATE_TOOL, CLUSTER_GUARDIAN_STATUS_TOOL]
-        )
-        if include_fleet_logs:
-            tools.append(SERVICE_LOGS_TOOL)
-    if include_image_ocr:
-        tools.append(READ_IMAGE_TEXT_TOOL)
-    if include_media_tools:
-        tools.extend([VIEW_IMAGE_TOOL, FIND_STICKERS_TOOL])
-    if include_video_analysis:
-        tools.append(VIEW_VIDEO_TOOL)
-    if include_voice_transcription:
-        tools.append(TRANSCRIBE_VOICE_TOOL)
-    if include_voice_reply:
-        tools.append(REPLY_WITH_VOICE_TOOL)
-    if include_stickers:
-        tools.extend([SEND_STICKER_TOOL, SEND_QQ_FACE_TOOL])
-    if include_memory_tools:
-        tools.extend(MEMORY_TOOLS)
-    if include_agent_tools:
-        if sandbox_backend == "vm":
-            vm_tools = deepcopy([tool for tool in SANDBOX_TOOLS if tool["function"]["name"] != NIX_SEARCH_TOOL_NAME])
-            for tool in vm_tools:
-                function = tool["function"]
-                if function["name"] == SANDBOX_CREATE_TOOL_NAME:
-                    function["description"] = (
-                        "创建独立 Debian KVM 虚拟机沙盒，工作目录 /workspace。"
-                        "文件保存在该沙盒的独立磁盘中，直到交付后按任务策略回收。"
-                    )
-                elif function["name"] == SANDBOX_LIST_TOOL_NAME:
-                    function["description"] = "列出当前用户拥有的 KVM 虚拟机沙盒及状态。"
-                elif function["name"] == SANDBOX_EXEC_TOOL_NAME:
-                    function["description"] = (
-                        "在 Debian 虚拟机的 /workspace 中运行 shell 命令。"
-                        "缺少工具时可将 Debian apt 软件包名放进 packages，"
-                        "会在该虚拟机内安装；不确定包名先运行 apt-cache search。"
-                    )
-                    function["parameters"]["properties"]["packages"]["description"] = (
-                        "要在该虚拟机内安装的 Debian apt 软件包名。"
-                    )
-            tools.extend(vm_tools)
-        else:
-            tools.extend(SANDBOX_TOOLS)
-    if include_conversation_tools:
-        tools.extend(CONVERSATION_TOOLS)
-        if not include_source_tools:
-            tools.append(VIEW_BILIBILI_TOOL)
-    if include_source_tools:
-        tools.extend(SOURCE_TOOLS)
-    if include_browser_tools:
-        tools.extend(BROWSER_TOOLS)
-    if include_turn_tools:
-        tools.extend([CONTEXT_EXPAND_TOOL, CONTEXT_SEARCH_TOOL])
-    if include_pin_tools:
-        tools.extend([PIN_MESSAGE_TOOL, UNPIN_MESSAGE_TOOL])
-    if include_self_tools:
-        tools.extend([USE_SKILL_TOOL, INSPECT_SOURCE_TOOL])
-    if include_group_tools:
-        tools.append(GROUP_MEMBERS_TOOL)
-    if include_reminder_tools:
-        tools.extend(
-            [REMINDER_SET_TOOL, REMINDER_LIST_TOOL, REMINDER_CANCEL_TOOL]
-        )
-    if include_subagents:
-        tools.extend(
-            [DELEGATE_AGENT_TOOL, RUN_SUBAGENTS_TOOL, RESUME_SUBAGENT_TOOL]
-        )
-    return tools
+TOOL_DEFINITIONS = (
+    WEB_SEARCH_TOOL,
+    QUERY_ALERTS_TOOL,
+    OPS_CATALOG_TOOL, OPS_CALL_TOOL, SERVICE_CONTROL_TOOL, HOST_REBOOT_TOOL,
+    FLEET_OVERVIEW_TOOL, HOST_INSPECT_TOOL, SERVICE_INSPECT_TOOL, MODEL_STATUS_TOOL,
+    DIAGNOSE_INCIDENT_TOOL, OPERATION_PREPARE_TOOL, OPERATION_STATUS_TOOL,
+    OPERATION_CANCEL_TOOL, CLUSTER_ARTIFACT_UPLOAD_TOOL, CLUSTER_JOB_SUBMIT_TOOL,
+    CLUSTER_JOB_STATUS_TOOL, CLUSTER_CASE_SEARCH_TOOL,
+    CLUSTER_GUARDIAN_CREATE_TOOL, CLUSTER_GUARDIAN_STATUS_TOOL, SERVICE_LOGS_TOOL,
+    READ_IMAGE_TEXT_TOOL, VIEW_IMAGE_TOOL, FIND_STICKERS_TOOL, VIEW_VIDEO_TOOL,
+    TRANSCRIBE_VOICE_TOOL, REPLY_WITH_VOICE_TOOL, SEND_STICKER_TOOL, SEND_QQ_FACE_TOOL,
+    *MEMORY_TOOLS,
+    *SANDBOX_TOOLS,
+    *CONVERSATION_TOOLS,
+    VIEW_BILIBILI_TOOL,
+    *SOURCE_TOOLS,
+    *BROWSER_TOOLS,
+    CONTEXT_EXPAND_TOOL, CONTEXT_SEARCH_TOOL, PIN_MESSAGE_TOOL, UNPIN_MESSAGE_TOOL,
+    USE_SKILL_TOOL, INSPECT_SOURCE_TOOL, GROUP_MEMBERS_TOOL,
+    REMINDER_SET_TOOL, REMINDER_LIST_TOOL, REMINDER_CANCEL_TOOL,
+    DELEGATE_AGENT_TOOL, RUN_SUBAGENTS_TOOL, RESUME_SUBAGENT_TOOL,
+)
 
 
 def force_tool(name: str) -> ToolChoice:
