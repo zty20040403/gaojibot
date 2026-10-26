@@ -1,0 +1,121 @@
+name: Windows installer acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+      manifest_sha256:
+        required: true
+        type: string
+      allow_draft:
+        description: Verify an unpublished checksum-pinned draft
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: windows-release-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Fetch checksum-pinned installers without executing them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          ALLOW_DRAFT: ${{ inputs.allow_draft }}
+        run: node qa/download-release-test.cjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: verified-windows-input
+          path: release-input/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+  verify:
+    needs: prepare
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: verified-windows-input
+          path: release-input
+      - name: Reverify installers before Windows execution
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: node qa/verify-staged-input.cjs
+      - name: Install test-only tooling
+        run: npm install --no-audit --no-fund --ignore-scripts --omit=optional playwright@1.62.1 ssh2@1.17.0
+      - name: Install actual NSIS and unpack portable build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP '高级 App 验证'
+          $portable = Join-Path $env:RUNNER_TEMP '高级 便携版 验证'
+          $install = Start-Process -FilePath $env:GAOJI_INSTALLER -ArgumentList @('/S', "/D=$dir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exit code $($install.ExitCode)" }
+          $exe = Join-Path $dir 'Gaoji.exe'
+          if (!(Test-Path -LiteralPath $exe)) { throw 'Installed Gaoji.exe missing' }
+          Get-CimInstance Win32_Process -Filter "Name = 'Gaoji.exe'" | Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          Expand-Archive -LiteralPath $env:GAOJI_PORTABLE_ZIP -DestinationPath $portable
+          "GAOJI_PACKAGED_EXECUTABLE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "GAOJI_PORTABLE_EXECUTABLE=$(Join-Path $portable 'Gaoji.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "GAOJI_TEST_INSTALL_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          New-Item -ItemType Directory -Path release/qa -Force | Out-Null
+          @{ os=(Get-CimInstance Win32_OperatingSystem).Caption; installerExitCode=$install.ExitCode; executable=$exe } | ConvertTo-Json | Set-Content release/qa/windows-install.json
+      - name: Real IPC, SSH, encrypted transfer and layout
+        run: node qa/verify-ui.cjs
+      - name: Real Windows credential persistence and update lookup
+        run: node qa/verify-windows-install.cjs
+      - name: Workspace, themes and diagnostic export
+        if: inputs.tag == 'app-v0.1.26'
+        run: node qa/verify-workspace-ui.cjs
+      - name: Uninstall and verify data retention
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $markers = @()
+          foreach ($name in @('Gaoji', 'gaoji-desktop')) {
+            $folder = Join-Path $env:APPDATA $name
+            New-Item -ItemType Directory -Path $folder -Force | Out-Null
+            $marker = Join-Path $folder 'ci-retention-marker.txt'
+            Set-Content -LiteralPath $marker 'synthetic-data-retention-check'
+            $markers += $marker
+          }
+          $uninstaller = Join-Path $env:GAOJI_TEST_INSTALL_DIR 'Uninstall Gaoji.exe'
+          if (!(Test-Path -LiteralPath $uninstaller)) { throw 'NSIS uninstaller missing' }
+          $result = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Uninstaller exit code $($result.ExitCode)" }
+          for ($i=0; $i -lt 20 -and (Test-Path -LiteralPath $env:GAOJI_PACKAGED_EXECUTABLE); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path -LiteralPath $env:GAOJI_PACKAGED_EXECUTABLE) { throw 'Installed executable still exists after uninstall' }
+          foreach ($marker in $markers) { if (!(Test-Path -LiteralPath $marker)) { throw 'Uninstaller deleted retained data' } }
+          @{ uninstallerExitCode=$result.ExitCode; installedExecutableRemoved=$true; syntheticUserDataRetained=$true } | ConvertTo-Json | Set-Content release/qa/windows-uninstall.json
+      - name: Keep bounded acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-installer-evidence
+          path: |
+            release/qa/**/*.json
+            release/qa/**/*.png
+            release-input/verified.json
+          retention-days: 7
+          if-no-files-found: error

@@ -583,6 +583,11 @@ class VisionWorker:
         )
 
     async def _download(self, source_url: str) -> tuple[bytes, str]:
+        from src.storage_admission import CapacityError, require_capacity
+        try:
+            require_capacity(self.max_source_bytes)
+        except CapacityError as error:
+            raise VisionJobError(str(error)) from None
         if not self._supported_source(source_url):
             raise VisionJobError("unsupported image source URL")
         try:

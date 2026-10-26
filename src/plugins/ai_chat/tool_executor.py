@@ -668,6 +668,13 @@ class ToolExecutor(HandlerService):
 
             self.context.logger.info(f"LLM Tool Call: {name}")
 
+            from src.storage_admission import CapacityError, require_tool_capacity
+            from .tool_policy import policy_for_tool
+            try:
+                require_tool_capacity(name, policy_for_tool(name).side_effects)
+            except CapacityError as error:
+                return json.dumps({"ok": False, "error": str(error), "code": "capacity_blocked"}, ensure_ascii=False)
+
             if semantic_entry_enabled and active_agent_step.get() is None and name in {
                 "sandbox_create", "sandbox_exec", "sandbox_write_file", "import_file_to_sandbox",
             }:

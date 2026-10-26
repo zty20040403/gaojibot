@@ -5,6 +5,8 @@ import copy
 import hashlib
 import hmac
 import json
+import os
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -41,6 +43,25 @@ class FleetControlClientTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         self.token_patch.stop()
         await self.client.close()
+
+    async def test_desktop_file_credential_works_without_bypassing_write_authorization(self):
+        from src.local_runtime.cluster_credentials import cluster_credentials
+        self.token_patch.stop()
+        with patch.dict(os.environ, {"AI_CLUSTER_ENABLED": "true"}):
+            with cluster_credentials(self.credential):
+                token_file = Path(os.environ["AI_CLUSTER_CONTROL_TOKEN_FILE"])
+                client = FleetControlClient("http://control.test", str(token_file), transport=httpx.MockTransport(self.handle))
+                try:
+                    await client.capabilities()
+                    self.assertEqual(self.requests[-1].url.path, "/v1/capabilities")
+                    self.assertEqual(self.requests[-1].headers["Authorization"], "Bearer " + self.credential)
+                    before = len(self.requests)
+                    with self.assertRaises(FleetControlError):
+                        await client._request("POST", "/v1/jobs", {"operation": "service.restart"})
+                    self.assertEqual(len(self.requests), before)
+                finally:
+                    await client.close()
+            self.assertFalse(token_file.exists())
 
     def reply(self, status: int, value: object) -> None:
         self.status = status

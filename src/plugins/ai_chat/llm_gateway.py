@@ -15,6 +15,7 @@ from typing import Any, Callable, Protocol
 
 import httpx
 from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI, RateLimitError
+from src.llm_options import anthropic_messages_url, chat_options, thinking_body
 
 from .model_catalog import ModelCatalog, ModelProfile
 from .local_model import LocalModelRuntime
@@ -966,17 +967,7 @@ def classify_llm_failure(exc: BaseException) -> ClassifiedFailure:
 
 
 def thinking_extra_body(profile: ModelProfile) -> dict[str, object] | None:
-    if profile.protocol != "openai-chat":
-        return None
-    if profile.thinking in {"enabled", "on", "true", "1"}:
-        enabled = True
-    elif profile.thinking in {"disabled", "off", "false", "0"}:
-        enabled = False
-    else:
-        return None
-    if profile.provider == "qwen":
-        return {"enable_thinking": enabled}
-    return {"thinking": {"type": "enabled" if enabled else "disabled"}}
+    return thinking_body(profile.provider, profile.protocol, profile.thinking)
 
 
 def _request_for_profile(
@@ -990,18 +981,12 @@ def _request_for_profile(
     else:
         request["temperature"] = profile.temperature
     if profile.protocol == "openai-chat":
-        extra_body = thinking_extra_body(profile)
-        if extra_body is None:
-            request.pop("extra_body", None)
-        else:
-            request["extra_body"] = extra_body
-        if (
-            profile.provider in {"openai", "cliproxy"}
-            and profile.reasoning_effort
-        ):
-            request["reasoning_effort"] = profile.reasoning_effort
-        else:
-            request.pop("reasoning_effort", None)
+        options = chat_options(profile.provider, profile.protocol, profile.thinking, profile.reasoning_effort)
+        for key in ("extra_body", "reasoning_effort"):
+            if key in options:
+                request[key] = options[key]
+            else:
+                request.pop(key, None)
         if (
             request.get("tools")
             and not profile.capabilities.forced_tool_choice
@@ -1316,12 +1301,7 @@ def _anthropic_response(payload: dict[str, Any]) -> Any:
 
 
 def _anthropic_messages_url(base_url: str) -> str:
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/v1"):
-        return normalized + "/messages"
-    if normalized.endswith("/v1/messages"):
-        return normalized
-    return normalized + "/v1/messages"
+    return anthropic_messages_url(base_url)
 
 
 def _raise_for_anthropic_status(

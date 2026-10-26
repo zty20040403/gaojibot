@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import nonebot
@@ -15,6 +16,8 @@ from src.plugins.ai_chat.bridges import (
     BridgeEvent,
     BridgeManager,
     BridgeOutcomeUnknown,
+    BridgePermanentError,
+    BridgeRetryableError,
     MatrixClient,
     MirrorRouter,
     MirrorStateStore,
@@ -153,6 +156,8 @@ class BridgeTests(unittest.TestCase):
 
         async def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
+            if request.method == "GET":
+                return httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
             return httpx.Response(200, json={"event_id": "$sent"})
 
         async def run() -> str:
@@ -179,13 +184,79 @@ class BridgeTests(unittest.TestCase):
 
         result = asyncio.run(run())
         self.assertEqual(result, "$sent")
-        self.assertEqual(requests[0].method, "PUT")
-        self.assertIn("/send/m.room.message/", requests[0].url.path)
-        payload = json.loads(requests[0].content)
+        self.assertEqual(requests[0].method, "GET")
+        self.assertEqual(requests[1].method, "PUT")
+        self.assertIn("/send/m.room.message/", requests[1].url.path)
+        payload = json.loads(requests[1].content)
         self.assertEqual(
             payload["m.relates_to"]["m.in_reply_to"]["event_id"],
             "$parent",
         )
+
+    def test_queued_bridge_messages_require_the_original_and_target_mapping(self):
+        self.manager.matrix = Mock()
+        source = ConversationScope("matrix", "group", "!room:example.org")
+        event = BridgeEvent(source, "$one", "@alice:example.org", "Alice", MessageBody((TextNode(0, "private text"),)), 100)
+        self.manager.ingest(event)
+        delivery = self.deliveries.get(self.deliveries.recent(limit=1)[0].delivery_id)
+        self.manager.validate_delivery(delivery)
+        self.state.register_source(delivery.source_canonical_message_id, delivery.target_scope, "echo", occurred_at=101)
+        self.assertEqual(self.state.original_scope(delivery.source_canonical_message_id), source)
+        changed = json.loads(ROUTES)
+        changed[0]["endpoints"][1]["id"] = "!different:example.org"
+        self.manager.router = MirrorRouter.from_json(json.dumps(changed))
+        with self.assertRaises(BridgePermanentError):
+            self.manager.validate_delivery(delivery)
+        self.manager.router = self.router
+        self.manager.matrix = None
+        with self.assertRaises(BridgePermanentError):
+            self.manager.validate_delivery(delivery)
+        ignored = self.manager.ingest(BridgeEvent(ConversationScope("matrix", "group", "!unknown:example.org"), "$unknown",
+            "@alice:example.org", "Alice", MessageBody((TextNode(0, "must not store"),)), 102))
+        self.assertEqual(ignored.status, "ignored")
+
+    def test_changed_target_is_rejected_before_transport_send(self):
+        self.manager.matrix = Mock(send=AsyncMock())
+        self.manager.ingest(BridgeEvent(ConversationScope("onebot-v11", "group", "100"), "101", "7", "Alice",
+            MessageBody((TextNode(0, "hello"),)), 100))
+        delivery = self.deliveries.get(self.deliveries.recent(limit=1)[0].delivery_id)
+        self.manager.router = MirrorRouter()
+        with self.assertRaises(BridgePermanentError):
+            asyncio.run(self.manager.deliver(delivery))
+        self.manager.matrix.send.assert_not_awaited()
+
+    def test_matrix_does_not_send_plaintext_after_room_enables_encryption(self):
+        async def run(status, payload):
+            requests = []
+            def handler(request):
+                requests.append(request)
+                return httpx.Response(status, json=payload)
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                matrix = MatrixClient("https://matrix.example.org", "secret", user_id="@bot:example.org", client=client)
+                delivery, _ = self.deliveries.enqueue(idempotency_key="check-encryption", source_scope_key="onebot-v11:group:100",
+                    target_scope=ConversationScope("matrix", "group", "!room:example.org"), body=MessageBody((TextNode(0, "private text"),)))
+                with self.assertRaises((BridgePermanentError, BridgeRetryableError)):
+                    await matrix.send(delivery)
+            self.assertEqual([request.method for request in requests], ["GET"])
+        for status, payload in ((200, {"algorithm": "m.megolm.v1.aes-sha2"}), (404, {"detail": "missing"}), (500, {})):
+            asyncio.run(run(status, payload))
+
+    def test_matrix_failures_do_not_persist_upstream_body_or_token(self):
+        secret = "synthetic-matrix-token-not-real"
+        async def run():
+            def handler(request):
+                if request.url.path.endswith("/state/m.room.encryption/"):
+                    return httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
+                return httpx.Response(403, json={"error": secret, "private_message": "room contents"})
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                matrix = MatrixClient("https://matrix.example.org", secret, user_id="@bot:example.org", client=client)
+                delivery, _ = self.deliveries.enqueue(idempotency_key="matrix-secret-check", source_scope_key="onebot-v11:group:100",
+                    target_scope=ConversationScope("matrix", "group", "!room:example.org"), body=MessageBody((TextNode(0, "hello"),)))
+                for operation in (lambda: matrix.send(delivery), lambda: matrix.sync(), lambda: matrix.backfill("!room:example.org", "cursor")):
+                    with self.assertRaises((BridgePermanentError, BridgeRetryableError)) as error:
+                        await operation()
+                    self.assertEqual(str(error.exception), "Matrix HTTP 403")
+        asyncio.run(run())
 
     def test_bluebubbles_timeout_is_outcome_unknown(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:

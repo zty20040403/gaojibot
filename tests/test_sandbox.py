@@ -5,11 +5,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import nonebot
-
-nonebot.init()
-
-from src.plugins.ai_chat.sandbox import (
+from src.sandbox_runtime.docker import (
     DockerSandboxManager,
     SandboxError,
     SandboxResult,
@@ -43,8 +39,19 @@ class DockerSandboxManagerTests(unittest.TestCase):
         self.assertIn("未在本机加载或已被清理", error)
         self.assertNotIn("docker login", error)
 
+    def test_long_failure_keeps_the_error_after_progress_logs(self) -> None:
+        detail = "copying dependency...\n" * 1000 + "error: final failure reason"
+        self.assertTrue(self.manager._docker_error(detail).endswith("error: final failure reason"))
+
 
 class DockerSandboxCancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_command_failure_retains_bounded_stderr_tail(self) -> None:
+        manager = DockerSandboxManager(max_output_chars=1000)
+        manager._run_bytes = AsyncMock(return_value=(b"", b"progress\n" * 1000 + b"error: final failure", 1))
+        result = await manager._run("docker", "inspect", "fixture", timeout=5)
+        self.assertTrue(result.stderr.endswith("error: final failure"))
+        self.assertLess(len(result.stderr), 1100)
+
     async def test_create_only_applies_eight_gibibyte_memory_limit(self) -> None:
         manager = DockerSandboxManager()
         manager.list = AsyncMock(return_value=[])  # type: ignore[method-assign]
@@ -433,7 +440,7 @@ class DockerSandboxCancellationTests(unittest.IsolatedAsyncioTestCase):
         process = FakeProcess()
         manager = DockerSandboxManager()
         with patch(
-            "src.plugins.ai_chat.sandbox.asyncio.create_subprocess_exec",
+            "src.sandbox_runtime.docker.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=process),
         ):
             task = asyncio.create_task(

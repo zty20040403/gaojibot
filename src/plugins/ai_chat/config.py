@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _get_int(name: str, default: int) -> int:
@@ -289,6 +289,9 @@ class Settings:
     imessage_webhook_token: str
     imessage_chat_guid: str
     imessage_bot_handle: str
+    imessage_poll_enabled: bool
+    imessage_poll_seconds: int
+    imessage_send_method: str
     browser_enabled: bool
     browser_timeout_seconds: int
     browser_max_sessions: int
@@ -313,6 +316,9 @@ class Settings:
     sandbox_max_file_bytes: int
     enabled_groups: set[int]
     disabled_groups: set[int]
+    groups_require_allowlist: bool = False
+    sandbox_runner_socket: str = ""
+    sandbox_runner_token: str = field(default="", repr=False)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -885,6 +891,9 @@ class Settings:
             ).strip(),
             imessage_chat_guid=os.getenv("AI_IMESSAGE_CHAT_GUID", "").strip(),
             imessage_bot_handle=os.getenv("AI_IMESSAGE_BOT_HANDLE", "").strip(),
+            imessage_poll_enabled=_get_bool("AI_IMESSAGE_POLL_ENABLED", False),
+            imessage_poll_seconds=min(max(_get_int("AI_IMESSAGE_POLL_SECONDS", 5), 2), 300),
+            imessage_send_method=os.getenv("AI_IMESSAGE_SEND_METHOD", "private-api").strip(),
             browser_enabled=_get_bool("AI_BROWSER_ENABLED", False),
             browser_timeout_seconds=min(
                 max(_get_int("AI_BROWSER_TIMEOUT_SECONDS", 30), 5), 120
@@ -946,11 +955,15 @@ class Settings:
             ),
             enabled_groups=_get_group_ids("AI_ENABLED_GROUPS"),
             disabled_groups=_get_group_ids("AI_DISABLED_GROUPS"),
+            groups_require_allowlist=_get_bool("AI_GROUPS_REQUIRE_ALLOWLIST", False),
+            sandbox_runner_socket=os.getenv("AI_SANDBOX_RUNNER_SOCKET", "").strip(),
+            sandbox_runner_token=os.getenv("AI_SANDBOX_RUNNER_TOKEN", "").strip(),
         )
 
     def is_group_enabled(self, group_id: int) -> bool:
         return group_id not in self.disabled_groups and (
-            not self.enabled_groups or group_id in self.enabled_groups
+            (not self.enabled_groups and not self.groups_require_allowlist)
+            or group_id in self.enabled_groups
         )
 
     def is_sandbox_user_allowed(self, user_id: int) -> bool:

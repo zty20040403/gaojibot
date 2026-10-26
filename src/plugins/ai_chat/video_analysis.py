@@ -239,7 +239,16 @@ class DeepVideoAnalyzer:
             ],
         }
 
+    @staticmethod
+    def _check_capacity(max_bytes: int) -> None:
+        from src.storage_admission import CapacityError, require_capacity
+        try:
+            require_capacity(max_bytes)
+        except CapacityError as error:
+            raise DeepVideoAnalysisError(str(error)) from None
+
     async def _download(self, url: str, target: Path, *, max_bytes: int) -> None:
+        self._check_capacity(max_bytes)
         if not url.startswith(("http://", "https://")):
             raise DeepVideoAnalysisError("B站媒体流地址无效。")
         headers = {
@@ -270,6 +279,7 @@ class DeepVideoAnalyzer:
             raise DeepVideoAnalysisError("B站媒体流为空。")
 
     async def _download_qq_media(self, url: str, target: Path) -> None:
+        self._check_capacity(self.max_download_bytes)
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) "

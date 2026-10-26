@@ -33,3 +33,13 @@ LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
 OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
+
+## whisper.cpp (Desktop Distribution)
+
+The desktop deployment bundle includes the pinned whisper.cpp v1.9.4 source
+archive, so installation does not need to download it from GitHub again.
+The project retains its upstream MIT license and copyright notices.
+
+- Source: https://github.com/ggml-org/whisper.cpp/tree/v1.9.4
+- Upstream license: `LICENSE` inside the bundled source archive.
+- Installed license: `/usr/local/share/licenses/whisper.cpp/LICENSE` in the runtime image.

@@ -1,4 +1,4 @@
-{pkgs, lib}:
+{pkgs, lib, imageName ? "gaoji-sandbox", imageTag ? "latest"}:
 let
   sandboxToolchainVersion = "toolchain-v3-gaoji";
   python = pkgs.python312.withPackages (ps:
@@ -371,8 +371,8 @@ let
   };
 in
 pkgs.dockerTools.buildLayeredImageWithNixDb {
-  name = "gaoji-sandbox";
-  tag = "latest";
+  name = imageName;
+  tag = imageTag;
   maxLayers = 120;
   contents = [
     baseEnvironment
@@ -430,6 +430,8 @@ pkgs.dockerTools.buildLayeredImageWithNixDb {
       # sandbox toolchain itself has a compatibility-breaking change.
       "org.opencontainers.image.version" = sandboxToolchainVersion;
       "io.gaoji.sandbox" = "advanced";
+    } // lib.optionalAttrs (imageName == "gaoji-app-sandbox") {
+      "io.gaoji.app.recipe" = imageTag;
     };
   };
 }

@@ -64,6 +64,23 @@ class OneBotDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(pending.next_attempt_at, record.next_attempt_at)
         self.bot.send_group_msg.assert_not_awaited()
 
+    async def test_imessage_poll_worker_sleeps_after_success_and_failure_and_cancels(self):
+        from src.plugins.ai_chat.bridges import BridgeRetryableError
+        manager = SimpleNamespace(imessage=object(), imessage_poll_enabled=True,
+            sync_imessage_once=AsyncMock(return_value=1))
+        self.context.bridge_manager = manager
+        self.context.settings.imessage_poll_seconds = 5
+        for failure in (None, BridgeRetryableError("BlueBubbles HTTP 503")):
+            manager.sync_imessage_once.side_effect = failure
+            with patch("src.plugins.ai_chat.onebot_delivery.asyncio.sleep", side_effect=asyncio.CancelledError) as sleep:
+                with self.assertRaises(asyncio.CancelledError):
+                    await self.delivery._imessage_sync_loop()
+                sleep.assert_called_once_with(5)
+        manager.imessage_poll_enabled = False
+        manager.sync_imessage_once.reset_mock()
+        await self.delivery._imessage_sync_loop()
+        manager.sync_imessage_once.assert_not_awaited()
+
     async def test_unknown_status_or_api_error_does_not_send(self):
         for index, status in enumerate((None, {}, {"online": "true"},
                 {"online": True, "good": False}, TimeoutError("unavailable"))):
@@ -115,6 +132,15 @@ class OneBotDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get(record.delivery_id).status, "ambiguous")
         self.bot.call_api.assert_not_awaited()
         self.bot.send_group_msg.assert_not_awaited()
+
+    async def test_disabled_bridge_cannot_flush_old_mirror_into_qq(self):
+        record = self.enqueue("mirror:old-route:1:onebot-v11:group:100")
+        await self.cycle()
+        failed = self.store.get(record.delivery_id)
+        self.assertEqual(failed.status, "failed")
+        self.assertIn("消息互通已关闭", failed.last_error)
+        self.bot.send_group_msg.assert_not_awaited()
+        self.bot.call_api.assert_not_awaited()
 
     async def test_file_guard_keeps_file_specific_notice(self):
         self.bot.call_api.return_value = {"online": False}

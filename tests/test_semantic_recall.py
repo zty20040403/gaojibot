@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+from pathlib import Path
+import sys
 import unittest
 
 import httpx
-import nonebot
-
-nonebot.init()
-
-from src.plugins.ai_chat.semantic_recall import (
-    EmbeddingClient,
-    SemanticDocument,
-    SemanticHit,
-    SemanticIndexState,
-    SemanticRecallService,
-)
+# This pure module can be tested without booting the entire NoneBot application.
+_spec = importlib.util.spec_from_file_location("gaoji_test_semantic_recall", Path(__file__).parents[1] / "src/plugins/ai_chat/semantic_recall.py")
+_module = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _module
+_spec.loader.exec_module(_module)
+EmbeddingClient = _module.EmbeddingClient
+SemanticDocument = _module.SemanticDocument
+SemanticHit = _module.SemanticHit
+SemanticIndexState = _module.SemanticIndexState
+SemanticRecallService = _module.SemanticRecallService
 
 
 class MemoryVectorBackend:
@@ -102,6 +104,19 @@ class SemanticRecallTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             asyncio.run(client.embed(["hello"]))
+
+    def test_keyless_endpoint_omits_authorization_but_keeps_embedding_contract(self) -> None:
+        captured = []
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.2] * 1024}]})
+        client = EmbeddingClient(base_url="https://keyless.test/v1", api_key="", model="bge-m3", dimensions=1024,
+            transport=httpx.MockTransport(handler))
+        self.assertTrue(client.configured)
+        self.assertEqual(len(asyncio.run(client.embed(["connection check"]))[0]), 1024)
+        self.assertNotIn("authorization", captured[0].headers)
+        self.assertEqual(__import__("json").loads(captured[0].content),
+            {"model": "bge-m3", "input": ["connection check"], "dimensions": 1024})
 
     def test_index_state_only_returns_changed_documents(self) -> None:
         state = SemanticIndexState(":memory:")

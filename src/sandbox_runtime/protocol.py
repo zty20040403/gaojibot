@@ -1,0 +1,150 @@
+"""Versioned, bounded sandbox RPC. Binary files are never JSON/base64 encoded."""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+from pathlib import PurePosixPath
+import re
+import struct
+
+from .docker import NIX_ATTRIBUTE_PATTERN, RUNTIME_IMAGES, SANDBOX_ID_PATTERN, SandboxError
+
+
+VERSION = 1
+HEADER_LIMIT = 1024 * 1024
+REQUEST_LIMIT = 64 * 1024
+ID_PATTERN = re.compile(r"[a-f0-9]{32}")
+TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{32,128}")
+MUTATIONS = frozenset({"create", "ensure_default", "destroy", "exec", "write_file",
+                      "install_readonly_file", "start_owned", "stop_owned", "reclaim_stopped"})
+FIELDS = {
+    "health": (set(), set()), "admin_snapshot": (set(), set()),
+    "cancel": ({"request_id"}, set()),
+    "list": ({"owner"}, set()),
+    "create": ({"owner"}, {"runtime", "purpose"}),
+    "ensure_default": ({"owner"}, {"runtime"}),
+    "destroy": ({"owner", "sandbox_id"}, set()),
+    "start_owned": ({"owner", "sandbox_id"}, set()),
+    "stop_owned": ({"owner", "sandbox_id"}, set()),
+    "reclaim_stopped": ({"owner", "sandbox_id"}, {"not_used_since"}),
+    "exec": ({"owner", "sandbox_id", "command"}, {"timeout_seconds", "packages"}),
+    "search_nix_packages": ({"query"}, set()),
+    "write_file": ({"owner", "sandbox_id", "path"}, {"allow_large"}),
+    "install_readonly_file": ({"owner", "sandbox_id", "path"}, set()),
+    "read_file": ({"owner", "sandbox_id", "path"}, {"max_bytes"}),
+    "export_artifact": ({"owner", "sandbox_id", "path"}, set()),
+}
+UPLOADS = {"write_file", "install_readonly_file"}
+
+
+class ProtocolError(SandboxError):
+    pass
+
+
+def encoded(value: dict) -> bytes:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    except (ValueError, TypeError):
+        raise ProtocolError("沙盒请求格式不正确。") from None
+
+
+def _unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate field")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value):
+    raise ValueError(value)
+
+
+async def read_header(reader, *, limit: int = HEADER_LIMIT, timeout: float = 15) -> dict:
+    async def receive():
+        size = struct.unpack("!I", await reader.readexactly(4))[0]
+        if not 0 < size <= limit:
+            raise ProtocolError("沙盒消息头超过大小限制。")
+        try:
+            value = json.loads(await reader.readexactly(size), object_pairs_hook=_unique_pairs,
+                               parse_constant=_reject_constant)
+        except (ValueError, UnicodeError, RecursionError):
+            raise ProtocolError("沙盒消息格式不正确。") from None
+        if not isinstance(value, dict):
+            raise ProtocolError("沙盒消息必须为对象。")
+        return value
+    return await asyncio.wait_for(receive(), timeout)
+
+
+async def write_frame(writer, header: dict, payload: bytes = b"", *, timeout: float = 30) -> None:
+    if header.get("payload_size", 0) != len(payload):
+        raise ProtocolError("沙盒文件长度不一致。")
+    body = encoded(header)
+    if len(body) > HEADER_LIMIT:
+        raise ProtocolError("沙盒响应超过消息头限制。")
+
+    async def send():
+        writer.write(struct.pack("!I", len(body)) + body)
+        await writer.drain()
+        for offset in range(0, len(payload), 65536):
+            writer.write(payload[offset:offset + 65536])
+            await writer.drain()
+    await asyncio.wait_for(send(), timeout)
+
+
+def _text(value, maximum: int, *, blank: bool = False) -> bool:
+    return isinstance(value, str) and len(value) <= maximum and (blank or bool(value.strip())) and "\0" not in value
+
+
+def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
+    if set(request) != {"schema", "id", "token", "method", "args", "payload_size"}:
+        raise ProtocolError("沙盒请求字段不完整或包含未开放字段。")
+    if type(request["schema"]) is not int or request["schema"] != VERSION:
+        raise ProtocolError("沙盒通道版本不兼容。")
+    if not isinstance(request["id"], str) or not ID_PATTERN.fullmatch(request["id"]):
+        raise ProtocolError("沙盒请求编号无效。")
+    method, args, size = request["method"], request["args"], request["payload_size"]
+    if not isinstance(method, str) or method not in FIELDS or not isinstance(args, dict):
+        raise ProtocolError("沙盒通道没有开放此操作。")
+    required, optional = FIELDS[method]
+    if not required <= set(args) or set(args) - required - optional:
+        raise ProtocolError("沙盒操作参数不正确。")
+    if method == "cancel" and (not isinstance(args["request_id"], str) or not ID_PATTERN.fullmatch(args["request_id"]) or args["request_id"] == request["id"]):
+        raise ProtocolError("取消目标编号无效。")
+    if type(size) is not int or not 0 <= size <= file_limit or (method not in UPLOADS and size):
+        raise ProtocolError("沙盒文件大小不正确或超过传输上限。")
+    if "owner" in args and not _text(args["owner"], 200):
+        raise ProtocolError("沙盒所属会话无效。")
+    if "sandbox_id" in args and (not isinstance(args["sandbox_id"], str) or not SANDBOX_ID_PATTERN.fullmatch(args["sandbox_id"])):
+        raise ProtocolError("沙盒编号无效。")
+    if "runtime" in args and (not isinstance(args["runtime"], str) or args["runtime"] not in RUNTIME_IMAGES):
+        raise ProtocolError("沙盒运行环境无效。")
+    if "purpose" in args and args["purpose"] not in ("shell", "task"):
+        raise ProtocolError("沙盒用途无效。")
+    if "path" in args:
+        value = args["path"]
+        if not _text(value, 1024) or PurePosixPath(value).is_absolute() or ".." in PurePosixPath(value).parts or str(PurePosixPath(value)) == ".":
+            raise ProtocolError("文件路径必须在沙盒工作区内。")
+    if "command" in args and not _text(args["command"], 32768):
+        raise ProtocolError("沙盒命令为空或过长。")
+    if "query" in args and not _text(args["query"], 80):
+        raise ProtocolError("软件包检索词为空或过长。")
+    for key, maximum in (("timeout_seconds", 300), ("max_bytes", file_limit), ("not_used_since", 2**53)):
+        if key in args and args[key] is not None and (type(args[key]) is not int or not 0 <= args[key] <= maximum):
+            raise ProtocolError("沙盒数值参数不正确。")
+    if "allow_large" in args and type(args["allow_large"]) is not bool:
+        raise ProtocolError("沙盒写入选项不正确。")
+    if "packages" in args and args["packages"] is not None:
+        packages = args["packages"]
+        if not isinstance(packages, list) or len(packages) > 16 or any(
+            not isinstance(item, str) or len(item) > 128 or not NIX_ATTRIBUTE_PATTERN.fullmatch(item) for item in packages
+        ):
+            raise ProtocolError("沙盒软件包参数不正确。")
+    return method, args
+
+
+def fingerprint(request: dict, payload: bytes) -> str:
+    value = {"method": request["method"], "args": request["args"], "payload_sha256": hashlib.sha256(payload).hexdigest()}
+    return hashlib.sha256(encoded(value)).hexdigest()

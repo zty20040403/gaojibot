@@ -204,6 +204,10 @@ class OneBotDelivery(HandlerService):
             account_blockers: dict[str, str | None] = {}
             for delivery in self.context.delivery_store.claim_due(limit=20, exclude_platforms=() if bots else ("onebot-v11",)):
                 try:
+                    if delivery.idempotency_key.startswith(("mirror:", "mirror-out:")):
+                        if self.context.bridge_manager is None:
+                            raise BridgePermanentError("消息互通已关闭，此条旧投递已停止")
+                        self.context.bridge_manager.validate_delivery(delivery)
                     if delivery.target_platform == "onebot-v11":
                         selected_bot = bots[0] if bots else None
                         if delivery.idempotency_key.startswith("subagent-final:"):
@@ -291,3 +295,18 @@ class OneBotDelivery(HandlerService):
             except (BridgeError, httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
                 self.context.logger.warning(f"Matrix sync failed without advancing its cursor: {exc}")
                 await asyncio.sleep(self.context.settings.matrix_sync_retry_seconds)
+
+    async def _imessage_sync_loop(self) -> None:
+        while True:
+            manager = self.context.bridge_manager
+            if manager is None or manager.imessage is None or not manager.imessage_poll_enabled:
+                return
+            try:
+                processed = await manager.sync_imessage_once()
+                if processed:
+                    self.context.logger.info(f"iMessage bridge ingested {processed} new event(s).")
+            except asyncio.CancelledError:
+                raise
+            except BridgeError as exc:
+                self.context.logger.warning(str(exc))
+            await asyncio.sleep(self.context.settings.imessage_poll_seconds)

@@ -278,6 +278,7 @@ _reminder_loop = handlers.delivery._reminder_loop
 _deliver_onebot_outbox = handlers.delivery._deliver_onebot_outbox
 _delivery_loop = handlers.delivery._delivery_loop
 _matrix_sync_loop = handlers.delivery._matrix_sync_loop
+_imessage_sync_loop = handlers.delivery._imessage_sync_loop
 
 handlers.chat._run_tracked_ai = observed_ai_turn(handlers.chat._run_tracked_ai)
 _run_tracked_ai = handlers.chat._run_tracked_ai
@@ -392,6 +393,13 @@ async def start_background_tasks() -> None:
         and background_tasks.start("matrix-sync", _matrix_sync_loop)
     ):
         logger.info("Matrix durable sync bridge enabled.")
+    if (
+        bridge_manager is not None
+        and bridge_manager.imessage is not None
+        and bridge_manager.imessage_poll_enabled
+        and background_tasks.start("imessage-sync", _imessage_sync_loop)
+    ):
+        logger.info("iMessage configured-chat polling enabled.")
     if semantic_recall is not None and background_tasks.start(
         "semantic-index",
         _semantic_index_loop,

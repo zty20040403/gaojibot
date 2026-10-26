@@ -9,6 +9,12 @@ __pycache__/
 .ruff_cache/
 admin-ui/node_modules/
 admin-ui/dist/
+desktop/node_modules/
+desktop/dist/
+desktop/build/
+desktop/release/
+packaging/build/
+.build-venv/
 logs/
 src/plugins/ai_chat/assets/learned_stickers.json
 src/plugins/ai_chat/assets/warmup_state.json

@@ -53,6 +53,8 @@ from .pins import PinStore
 from .quota import UsageStore
 from .reminders import ReminderStore
 from .sandbox import DockerSandboxManager
+from src.sandbox_runtime.client import SandboxClient
+from src.sandbox_runtime.factory import manager_from_settings
 from .self_source import SelfSource
 from .semantic_recall import (
     EmbeddingClient,
@@ -120,7 +122,7 @@ class AppContext:
     recent_images: RecentImageStore
     recent_voices: RecentVoiceStore
     recent_videos: RecentVideoStore
-    sandbox_manager: DockerSandboxManager
+    sandbox_manager: DockerSandboxManager | SandboxClient
     bridge_router: MirrorRouter
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None
@@ -462,7 +464,8 @@ def build_app_context(
                     if not (
                         settings.imessage_base_url
                         and settings.imessage_password
-                        and settings.imessage_chat_guid
+                        and (settings.imessage_chat_guid or settings.imessage_poll_enabled
+                             and bridge_router.endpoints("imessage"))
                     ):
                         logger.error(
                             "iMessage is enabled but BlueBubbles URL, password, "
@@ -472,6 +475,7 @@ def build_app_context(
                         imessage_client = BlueBubblesClient(
                             settings.imessage_base_url,
                             settings.imessage_password,
+                            send_method=settings.imessage_send_method,
                         )
                 bridge_manager = BridgeManager(
                     bridge_router,
@@ -480,6 +484,7 @@ def build_app_context(
                     mirror_state,
                     matrix=matrix_client,
                     imessage=imessage_client,
+                    imessage_poll_enabled=settings.imessage_poll_enabled,
                 )
             except (
                 OSError,
@@ -708,14 +713,7 @@ def build_app_context(
             warning=logger.warning,
         )
 
-    sandbox_manager = DockerSandboxManager(
-        image=settings.sandbox_image,
-        max_per_owner=settings.sandbox_max_per_user,
-        max_total=settings.sandbox_max_total,
-        default_timeout_seconds=settings.sandbox_timeout_seconds,
-        max_file_bytes=settings.sandbox_max_file_bytes,
-        nix_cache_volume=settings.sandbox_nix_cache_volume,
-    )
+    sandbox_manager = manager_from_settings(settings)
 
     job_store: DurableJobStore | None = None
     job_worker: DurableJobWorker | None = None

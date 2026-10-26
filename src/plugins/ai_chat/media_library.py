@@ -1354,6 +1354,11 @@ class MediaLibrary:
             await asyncio.sleep(0.5)
 
     async def _download(self, source_url: str) -> tuple[bytes, str]:
+        from src.storage_admission import CapacityError, require_capacity
+        try:
+            require_capacity(self.max_source_bytes)
+        except CapacityError as error:
+            raise MediaLibraryError(str(error)) from None
         if not self._supported_source(source_url):
             raise MediaLibraryError("unsupported media source URL")
         try:

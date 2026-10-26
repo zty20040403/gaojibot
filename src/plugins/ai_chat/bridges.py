@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -273,6 +274,22 @@ class MirrorStateStore:
             ).fetchone()
         return row is not None
 
+    def original_scope(self, canonical_message_id: int) -> ConversationScope | None:
+        # Later self-echoes add source rows too. The first row is the actual
+        # origin, before any forwarded copy was enqueued or acknowledged.
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT scope_key FROM bridge_sources WHERE canonical_message_id=? ORDER BY source_id LIMIT 1",
+                (int(canonical_message_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            platform, kind, identifier = str(row["scope_key"]).split(":", 2)
+            return ConversationScope(platform, kind, identifier)
+        except ValueError:
+            return None
+
     def register_source(
         self,
         canonical_message_id: int,
@@ -487,7 +504,7 @@ class MatrixClient:
         self.sync_timeout_ms = max(int(sync_timeout_ms), 1000)
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(max(self.sync_timeout_ms / 1000 + 10, 20))
+            timeout=httpx.Timeout(max(self.sync_timeout_ms / 1000 + 10, 20)), follow_redirects=False, trust_env=False,
         )
 
     async def close(self) -> None:
@@ -495,6 +512,20 @@ class MatrixClient:
             await self.client.aclose()
 
     async def send(self, delivery: Delivery) -> str:
+        # Rooms can enable encryption after setup. This transport has no E2EE
+        # keys, so never downgrade an encrypted destination to a plaintext send.
+        room = quote(delivery.target_native_conversation_id, safe="")
+        try:
+            state = await self.client.get(
+                f"{self.homeserver}/_matrix/client/v3/rooms/{room}/state/m.room.encryption/",
+                headers={"Authorization": f"Bearer {self.access_token}"},
+            )
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise BridgeRetryableError("Matrix encryption state could not be checked") from exc
+        if state.status_code == 200:
+            raise BridgePermanentError("Matrix 房间已开启端到端加密，未发送明文消息")
+        if state.status_code != 404 or _json_object(state).get("errcode") != "M_NOT_FOUND":
+            raise BridgeRetryableError("Matrix encryption state could not be checked")
         origin_platform = delivery.source_scope_key.split(":", 1)[0]
         lowered = lower_message(
             delivery.body,
@@ -515,7 +546,6 @@ class MatrixClient:
         txn_id = hashlib.sha256(
             delivery.idempotency_key.encode("utf-8")
         ).hexdigest()
-        room = quote(delivery.target_native_conversation_id, safe="")
         url = (
             f"{self.homeserver}/_matrix/client/v3/rooms/{room}"
             f"/send/m.room.message/{txn_id}"
@@ -528,11 +558,11 @@ class MatrixClient:
             )
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             # Matrix transaction IDs make repeating this exact PUT idempotent.
-            raise BridgeRetryableError(str(exc)) from exc
+            raise BridgeRetryableError("Matrix message request failed or timed out") from exc
         if response.status_code == 429 or response.status_code >= 500:
-            raise BridgeRetryableError(_http_error(response))
+            raise BridgeRetryableError(f"Matrix HTTP {response.status_code}")
         if response.status_code >= 400:
-            raise BridgePermanentError(_http_error(response))
+            raise BridgePermanentError(f"Matrix HTTP {response.status_code}")
         payload = _json_object(response)
         event_id = str(payload.get("event_id") or "").strip()
         if not event_id:
@@ -549,7 +579,7 @@ class MatrixClient:
             params=params,
         )
         if response.status_code >= 400:
-            raise BridgeRetryableError(_http_error(response))
+            raise BridgeRetryableError(f"Matrix HTTP {response.status_code}")
         return _json_object(response)
 
     async def backfill(
@@ -566,7 +596,7 @@ class MatrixClient:
             params={"from": from_token, "dir": "b", "limit": limit},
         )
         if response.status_code >= 400:
-            raise BridgeRetryableError(_http_error(response))
+            raise BridgeRetryableError(f"Matrix HTTP {response.status_code}")
         return _json_object(response)
 
 
@@ -576,16 +606,72 @@ class BlueBubblesClient:
         base_url: str,
         password: str,
         *,
+        send_method: str = "private-api",
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        if send_method not in {"apple-script", "private-api"}:
+            raise ValueError("unsupported BlueBubbles send method")
         self.base_url = base_url.rstrip("/")
         self.password = password
+        self.send_method = send_method
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(45.0))
 
     async def close(self) -> None:
         if self._owns_client:
             await self.client.aclose()
+
+    async def _request(self, method: str, path: str, *, params: dict | None = None,
+                       payload: dict | None = None) -> dict:
+        uncertain = BridgeOutcomeUnknown if method == "POST" else BridgeRetryableError
+        try:
+            async with asyncio.timeout(45 if method == "POST" else 12), self.client.stream(method, self.base_url + path,
+                    params={**(params or {}), "password": self.password}, json=payload,
+                    follow_redirects=False, timeout=45 if method == "POST" else 10) as response:
+                if not 200 <= response.status_code < 300:
+                    error = BridgePermanentError if 400 <= response.status_code < 500 and response.status_code != 429 else uncertain
+                    raise error(f"BlueBubbles HTTP {response.status_code}")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > 2 * 1024 * 1024:
+                        raise uncertain("BlueBubbles response exceeded the size limit")
+            result = json.loads(body)
+        except (httpx.RequestError, TimeoutError):
+            # Passwords are carried in query parameters. Never log URLs or bodies.
+            raise uncertain("BlueBubbles transport failed") from None
+        except (ValueError, UnicodeError):
+            raise uncertain("BlueBubbles response was not valid JSON") from None
+        if not isinstance(result, dict) or result.get("status", 200) != 200 or result.get("error"):
+            raise uncertain("BlueBubbles response did not confirm success")
+        return result
+
+    async def messages(self, chat_guid: str, *, after: int, before: int,
+                       offset: int = 0, limit: int = 200) -> tuple[list[dict], int]:
+        if not chat_guid or not 0 <= after < before or offset < 0 or not 1 <= limit <= 1000:
+            raise ValueError("invalid BlueBubbles message window")
+        result = await self._request("GET", f"/api/v1/chat/{quote(chat_guid, safe='')}/message",
+            params={"after": after, "before": before, "offset": offset, "limit": limit,
+                    "sort": "ASC", "with": "attachments,message.attributed-body"})
+        data, metadata = result.get("data"), result.get("metadata")
+        total = metadata.get("total") if isinstance(metadata, dict) else None
+        if (not isinstance(data, list) or len(data) > limit or type(total) is not int or total < 0
+                or (data and total < offset + len(data)) or (not data and total > offset)):
+            raise BridgeRetryableError("BlueBubbles returned invalid pagination metadata")
+        previous = after
+        for raw in data:
+            timestamp = raw.get("dateCreated") if isinstance(raw, dict) else None
+            if (type(timestamp) is not int or not after <= timestamp <= before or timestamp < previous
+                    or not isinstance(raw.get("guid"), str) or not raw["guid"].strip()):
+                raise BridgeRetryableError("BlueBubbles returned an invalid message window")
+            previous = timestamp
+            # The API is chat-scoped. Reject contradictory scope data rather than
+            # relabelling another conversation as the requested one.
+            chats = raw.get("chats", [])
+            if (not isinstance(chats, list) or any(not isinstance(chat, dict) or chat.get("guid") != chat_guid for chat in chats)
+                    or raw.get("chatGuid", chat_guid) != chat_guid):
+                raise BridgeRetryableError("BlueBubbles returned a different conversation")
+        return data, total
 
     async def send(self, delivery: Delivery) -> str:
         origin_platform = delivery.source_scope_key.split(":", 1)[0]
@@ -603,25 +689,17 @@ class BlueBubblesClient:
         payload: dict[str, Any] = {
             "chatGuid": delivery.target_native_conversation_id,
             "message": text,
-            "method": "private-api",
+            "method": self.send_method,
         }
-        if delivery.reply_to_native_message_id:
+        if self.send_method == "apple-script":
+            # Correlation only: BlueBubbles does not persist a deduplication key.
+            payload["tempGuid"] = "gaoji-" + hashlib.sha256(delivery.idempotency_key.encode()).hexdigest()
+        if delivery.reply_to_native_message_id and self.send_method == "private-api":
             payload["selectedMessageGuid"] = delivery.reply_to_native_message_id
-        try:
-            response = await self.client.post(
-                f"{self.base_url}/api/v1/message/text",
-                params={"password": self.password},
-                json=payload,
-            )
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
-            # BlueBubbles' POST has no transaction id. The send may have landed.
-            raise BridgeOutcomeUnknown(str(exc)) from exc
-        if response.status_code >= 500:
-            raise BridgeOutcomeUnknown(_http_error(response))
-        if response.status_code >= 400:
-            raise BridgePermanentError(_http_error(response))
-        result = _json_object(response)
+        result = await self._request("POST", "/api/v1/message/text", payload=payload)
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if data.get("error", 0) != 0:
+            raise BridgePermanentError("BlueBubbles reported a message send error")
         guid = str(data.get("guid") or result.get("guid") or "").strip()
         # Some BlueBubbles modes accept before chat.db exposes the GUID. The
         # webhook echo will authoritatively confirm the parked delivery.
@@ -640,6 +718,7 @@ class BridgeManager:
         *,
         matrix: MatrixClient | None = None,
         imessage: BlueBubblesClient | None = None,
+        imessage_poll_enabled: bool = False,
     ) -> None:
         self.router = router
         self.ledger = ledger
@@ -647,6 +726,8 @@ class BridgeManager:
         self.state = state
         self.matrix = matrix
         self.imessage = imessage
+        self.imessage_poll_enabled = imessage_poll_enabled
+        self._imessage_poll_index = 0
 
     async def close(self) -> None:
         if self.matrix is not None:
@@ -655,6 +736,8 @@ class BridgeManager:
             await self.imessage.close()
 
     def ingest(self, event: BridgeEvent) -> BridgeIngestResult:
+        if self.router.bundle_for(event.scope) is None:
+            return BridgeIngestResult("ignored")
         if self.state.source_seen(event.scope, event.native_event_id):
             return BridgeIngestResult("duplicate")
         if event.is_from_bot:
@@ -712,12 +795,6 @@ class BridgeManager:
             },
             identity_platform=event.scope.platform,
         )
-        self.state.register_source(
-            stored.canonical_message_id,
-            event.scope,
-            event.native_event_id,
-            occurred_at=event.occurred_at,
-        )
         created = 0
         bundle = self.router.bundle_for(event.scope)
         for target in self.router.targets(event.scope):
@@ -726,6 +803,8 @@ class BridgeManager:
                 event.reply_to_native_message_id,
                 target.scope,
             )
+            if target.platform == "imessage" and self.imessage is not None and self.imessage.send_method == "apple-script":
+                target_reply = ""
             body = _attributed_body(event, target)
             delivery, was_created = self.deliveries.enqueue(
                 idempotency_key=(
@@ -745,6 +824,12 @@ class BridgeManager:
                 target.scope,
             )
             created += int(was_created)
+        # Only mark the source consumed after all idempotent outbox writes.
+        # Retrying a partial fan-out must finish the missing targets.
+        self.state.register_source(
+            stored.canonical_message_id, event.scope, event.native_event_id,
+            occurred_at=event.occurred_at,
+        )
         return BridgeIngestResult(
             "ingested",
             canonical_message_id=stored.canonical_message_id,
@@ -777,6 +862,8 @@ class BridgeManager:
                 reply_to_native_message_id,
                 target.scope,
             )
+            if target.platform == "imessage" and self.imessage is not None and self.imessage.send_method == "apple-script":
+                target_reply = ""
             delivery, was_created = self.deliveries.enqueue(
                 idempotency_key=(
                     f"mirror-out:{canonical_message_id}:{target.key}"
@@ -796,7 +883,18 @@ class BridgeManager:
             created += int(was_created)
         return created
 
+    def validate_delivery(self, delivery: Delivery) -> None:
+        origin = self.state.original_scope(delivery.source_canonical_message_id or 0)
+        bundle = self.router.bundle_for(origin) if origin is not None else None
+        if (bundle is None or self.router.bundle_for(delivery.target_scope) is not bundle
+            or delivery.source_scope_key != bundle.canonical_endpoint.key or origin.key == delivery.target_scope.key):
+            raise BridgePermanentError("消息互通映射已移除或改变，此条旧投递已停止")
+        for platform in {origin.platform, delivery.target_platform}:
+            if platform == "matrix" and self.matrix is None or platform == "imessage" and self.imessage is None:
+                raise BridgePermanentError("消息互通平台已关闭，此条旧投递已停止")
+
     async def deliver(self, delivery: Delivery) -> str:
+        self.validate_delivery(delivery)
         if delivery.target_platform == "matrix" and self.matrix is not None:
             native_id = await self.matrix.send(delivery)
         elif delivery.target_platform == "imessage" and self.imessage is not None:
@@ -807,6 +905,85 @@ class BridgeManager:
             )
         self.state.confirm_delivery(delivery.delivery_id, native_id)
         return native_id
+
+    def _imessage_cursor_key(self, endpoint: BridgeEndpoint) -> str:
+        identity = [self.imessage.base_url if self.imessage else "", endpoint.key,
+                    endpoint.bot_user_id, self.router.canonical_scope(endpoint.scope).key]
+        return "imessage-poll:" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+    async def sync_imessage_once(self) -> int:
+        if self.imessage is None or not self.imessage_poll_enabled:
+            return 0
+        endpoints = tuple(self.router.endpoints("imessage"))
+        processed, failures = 0, []
+        deadline = time.monotonic() + 45
+        # Round-robin plus per-chat bounds keep an unavailable Mac/chat from
+        # starving other mappings. No task is spawned outside the supervisor.
+        for _ in endpoints:
+            endpoint = endpoints[self._imessage_poll_index % len(endpoints)]
+            self._imessage_poll_index += 1
+            try:
+                async with asyncio.timeout(25):
+                    processed += await self._sync_imessage_chat(endpoint)
+            except TimeoutError:
+                failures.append("BlueBubbles polling timed out")
+            except BridgeError as exc:
+                failures.append(str(exc))
+            if time.monotonic() >= deadline:
+                break
+        if failures:
+            raise BridgeRetryableError(f"iMessage polling failed for {len(failures)} chat(s): {failures[0]}")
+        return processed
+
+    async def _sync_imessage_chat(self, endpoint: BridgeEndpoint) -> int:
+        key = self._imessage_cursor_key(endpoint)
+        raw_cursor = self.state.get_cursor(key)
+        if not raw_cursor:
+            # Start at activation, not the beginning of the user's Messages DB.
+            self.state.set_cursor(key, json.dumps({"start": int(time.time() * 1000),
+                "end": 0, "offset": 0, "total": None}))
+            return 0
+        try:
+            cursor = json.loads(raw_cursor)
+            if (not isinstance(cursor, dict) or set(cursor) != {"start", "end", "offset", "total"}
+                    or any(type(cursor[k]) is not int or cursor[k] < 0 for k in ("start", "end", "offset"))
+                    or cursor["start"] == 0
+                    or cursor["end"] and cursor["end"] < cursor["start"]
+                    or cursor["total"] is not None and (type(cursor["total"]) is not int or cursor["total"] < cursor["offset"])
+                    or not cursor["end"] and (cursor["offset"] or cursor["total"] is not None)):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise BridgeRetryableError("iMessage polling cursor is invalid; progress was preserved") from None
+        if not cursor["end"]:
+            cursor["end"] = int(time.time() * 1000) - 2000
+            if cursor["end"] <= cursor["start"]:
+                return 0
+        processed = 0
+        for _ in range(2):
+            messages, total = await self.imessage.messages(  # type: ignore[union-attr]
+                endpoint.conversation_id, after=cursor["start"], before=cursor["end"], offset=cursor["offset"])
+            if self.router.bundle_for(endpoint.scope) is None or self._imessage_cursor_key(endpoint) != key:
+                raise BridgePermanentError("iMessage mapping changed during polling")
+            if cursor["total"] is not None and total != cursor["total"]:
+                # Deleted/late-imported rows shift offsets. Replay this bounded
+                # window; source IDs and outbox keys make the replay idempotent.
+                cursor.update(offset=0, total=None)
+                self.state.set_cursor(key, json.dumps(cursor))
+                return processed
+            for raw in messages:
+                event = decode_bluebubbles_webhook(raw, configured_chat_guid=endpoint.conversation_id,
+                                                  bot_handle=endpoint.bot_user_id)
+                if event is not None:
+                    processed += int(self.ingest(event).status == "ingested")
+            cursor.update(offset=cursor["offset"] + len(messages), total=total)
+            if cursor["offset"] >= total:
+                # BlueBubbles date bounds are inclusive; deliberately reread the
+                # boundary millisecond so truncated nanosecond dates are safe.
+                cursor = {"start": cursor["end"], "end": 0, "offset": 0, "total": None}
+            self.state.set_cursor(key, json.dumps(cursor))
+            if not cursor["end"]:
+                break
+        return processed
 
     async def sync_matrix_once(self) -> int:
         if self.matrix is None:

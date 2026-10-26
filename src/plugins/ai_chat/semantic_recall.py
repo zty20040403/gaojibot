@@ -84,7 +84,7 @@ class EmbeddingClient:
 
     @property
     def configured(self) -> bool:
-        return bool(self.base_url and self.api_key and self.model)
+        return bool(self.base_url and self.model)
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         cleaned = [" ".join(str(text).split())[:12000] for text in texts]
@@ -105,7 +105,7 @@ class EmbeddingClient:
             response = await client.post(
                 f"{self.base_url}/embeddings",
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
                     "Content-Type": "application/json",
                 },
                 json=payload,
