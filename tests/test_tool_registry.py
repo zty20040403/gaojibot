@@ -76,6 +76,9 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "find_stickers",
                 "send_sticker",
                 "send_qq_face",
+                "delegate_agent",
+                "run_subagents",
+                "resume_subagent",
             },
         )
         self.assertEqual(len(names), len(domain_registry.handlers))

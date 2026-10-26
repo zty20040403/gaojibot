@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent, MessageSegment
 
@@ -24,6 +25,13 @@ class ToolContext:
         return self.services.context
 
 
+@dataclass(frozen=True)
+class SubAgentActions:
+    delegate: Callable[[str, str], Awaitable[dict[str, Any]]]
+    run: Callable[[str], Awaitable[str]]
+    resume: Callable[[int], Awaitable[str]]
+
+
 @dataclass
 class TurnState:
     context: ToolContext
@@ -40,3 +48,4 @@ class TurnState:
     sticker_handles_this_turn: set[str] = field(default_factory=set)
     subagent_task_started: bool = False
     subagent_delegations: int = 0
+    subagent_actions: SubAgentActions | None = None

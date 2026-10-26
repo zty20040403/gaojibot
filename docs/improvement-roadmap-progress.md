@@ -91,7 +91,8 @@ acceptance are not implied by this roadmap.
 - [x] Web search, installed skills and packaged-source inspection extracted.
 - [x] Image OCR/vision, QQ video and voice handlers extracted.
 - [x] Global sticker search and visual reply handlers extracted.
-- [ ] Move remaining subagent, reminder and fleet handlers.
+- [x] Sub-Agent delegate/run/resume handlers and typed dispatch callbacks extracted.
+- [ ] Move remaining reminder and fleet handlers.
 - [ ] Registry-driven tool availability and complete handler coverage.
 - [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
@@ -337,3 +338,20 @@ isolated roadmap test database is used for validation.
 - Focused tests: 93 passed. Full PG suite: 1,660 tests, OK (12 skipped), 84.609
   seconds; .cache/roadmap/phase6-stickers-full.log. CI-path Ruff, diff whitespace
   check and admin TypeScript/Vite build passed. No real group messages sent.
+
+### Phase 6 subagent extraction validation
+
+- Moved delegate_agent, run_subagents and resume_subagent into tools/subagents;
+  the registry owns 23 handlers. Coordinator operations are typed per-turn
+  callbacks; existing context packets, durable dispatch and progress hooks stay
+  in their original orchestration path. No subagents were launched for this work.
+- Preserved the three-delegation budget, shared run/resume gate, input validation
+  and cancellation behavior. An unbound callback returns an unavailable error
+  before changing counters rather than touching a not-yet-defined closure.
+- Added actual chat-dispatch tests for all three handlers with a mocked
+  coordinator, asserting current scope/user and delegated context packets.
+  The first focused command named a nonexistent test module; reran the correct
+  agent modules: 145 tests passed.
+- Full PG suite: 1,665 tests, OK (12 skipped), 85.844 seconds;
+  .cache/roadmap/phase6-subagents-full.log. CI-path Ruff, diff whitespace check and
+  admin TypeScript/Vite build passed. Live delegated-task delivery remains untested.

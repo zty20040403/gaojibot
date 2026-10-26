@@ -51,7 +51,6 @@ from .ai_tools import (
     QUERY_ALERTS_TOOL_NAME,
     READ_IMAGE_TEXT_TOOL_NAME,
     REPLY_WITH_VOICE_TOOL_NAME,
-    RESUME_SUBAGENT_TOOL_NAME,
     RUN_SUBAGENTS_TOOL_NAME,
     SAY_TOOL_NAME,
     SERVICE_LOGS_TOOL_NAME,
@@ -135,7 +134,7 @@ from .prompt_context import quote_evidence
 from .fleet_tools import fleet_overview, inspect_host, model_status
 from .intent_routing import ToolIntent, classify_tool_intent
 from .tools import domain_registry
-from .tools.state import ToolContext, TurnState
+from .tools.state import SubAgentActions, ToolContext, TurnState
 from .tools.media import resolve_video_reference
 
 
@@ -420,6 +419,8 @@ class ToolExecutor(HandlerService):
             tool_capabilities.add("media")
         if self.services.video_analyzer is not None:
             tool_capabilities.add("video")
+        if self.context.subagent_coordinator is not None:
+            tool_capabilities.add("subagents")
         if self.context.settings.voice_enabled:
             tool_capabilities.add("voice")
             if available_voice_message_id is not None:
@@ -609,93 +610,8 @@ class ToolExecutor(HandlerService):
             if domain_result is not None:
                 return domain_result
 
-            if name == DELEGATE_AGENT_TOOL_NAME:
-                if turn.subagent_delegations >= 3:
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "error": "本轮单专家委派已达到 3 次；更多协作请使用 run_subagents。",
-                        },
-                        ensure_ascii=False,
-                    )
-                role = str(arguments.get("role") or "").strip()
-                objective = str(arguments.get("objective") or "").strip()
-                if not objective:
-                    return json.dumps(
-                        {"ok": False, "error": "委派目标不能为空。"},
-                        ensure_ascii=False,
-                    )
-                if self.context.subagent_coordinator is None:
-                    return json.dumps(
-                        {"ok": False, "error": "Sub-Agent 任务模式暂时没有开启。"},
-                        ensure_ascii=False,
-                    )
-                turn.subagent_delegations += 1
-                try:
-                    result = await run_delegate_goal(role, objective)
-                except ValueError as exc:
-                    return json.dumps(
-                        {"ok": False, "error": str(exc)},
-                        ensure_ascii=False,
-                    )
-                return json.dumps({"ok": True, **result}, ensure_ascii=False)
 
-            if name == RUN_SUBAGENTS_TOOL_NAME:
-                if turn.subagent_task_started:
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "error": "本轮已经启动过一次 Sub-Agent 任务，请使用现有结果。",
-                        },
-                        ensure_ascii=False,
-                    )
-                goal = str(arguments.get("goal") or "").strip()
-                if not goal:
-                    return json.dumps(
-                        {"ok": False, "error": "Sub-Agent 任务目标不能为空。"},
-                        ensure_ascii=False,
-                    )
-                if self.context.subagent_coordinator is None:
-                    return json.dumps(
-                        {"ok": False, "error": "Sub-Agent 任务模式暂时没有开启。"},
-                        ensure_ascii=False,
-                    )
-                turn.subagent_task_started = True
-                result = await run_subagent_goal(goal)
-                return json.dumps(
-                    {"ok": True, "result": result},
-                    ensure_ascii=False,
-                )
 
-            if name == RESUME_SUBAGENT_TOOL_NAME:
-                if turn.subagent_task_started:
-                    return json.dumps(
-                        {"ok": False, "error": "本轮已经启动或恢复过一个 Sub-Agent 任务。"},
-                        ensure_ascii=False,
-                    )
-                try:
-                    task_id = int(arguments.get("task_id") or 0)
-                except (TypeError, ValueError):
-                    task_id = 0
-                if task_id <= 0:
-                    return json.dumps(
-                        {"ok": False, "error": "task_id 必须是正整数。"},
-                        ensure_ascii=False,
-                    )
-                if self.context.subagent_coordinator is None:
-                    return json.dumps(
-                        {"ok": False, "error": "Sub-Agent 任务模式暂时没有开启。"},
-                        ensure_ascii=False,
-                    )
-                turn.subagent_task_started = True
-                try:
-                    result = await run_resume_goal(task_id)
-                except (RuntimeError, ValueError) as exc:
-                    return json.dumps(
-                        {"ok": False, "error": str(exc)},
-                        ensure_ascii=False,
-                    )
-                return json.dumps({"ok": True, "result": result}, ensure_ascii=False)
 
 
 
@@ -1885,6 +1801,11 @@ class ToolExecutor(HandlerService):
                     hooks=subagent_hooks,
                 )
 
+            turn.subagent_actions = SubAgentActions(
+                delegate=run_delegate_goal,
+                run=run_subagent_goal,
+                resume=run_resume_goal,
+            )
             if self.context.subagent_coordinator is not None:
                 own_tasks = [t for t in self.context.subagent_store.recent(limit=20, scope_key=scope_from_event(event).key)
                     if t.requester_user_id == event.user_id and self.context.subagent_store.control(t.task_id)["dispatch"]][:5]

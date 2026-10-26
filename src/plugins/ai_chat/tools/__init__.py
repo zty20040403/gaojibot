@@ -12,6 +12,7 @@ from .memory import HANDLERS as MEMORY_HANDLERS
 from .registry import ToolRegistry
 from .sources import HANDLERS as SOURCE_HANDLERS
 from .stickers import HANDLERS as STICKER_HANDLERS
+from .subagents import HANDLERS as SUBAGENT_HANDLERS
 
 domain_registry = ToolRegistry(
     (
@@ -21,6 +22,7 @@ domain_registry = ToolRegistry(
         *SOURCE_HANDLERS,
         *MEDIA_HANDLERS,
         *STICKER_HANDLERS,
+        *SUBAGENT_HANDLERS,
     )
 )
 
