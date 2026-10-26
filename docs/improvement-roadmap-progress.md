@@ -88,7 +88,8 @@ acceptance are not implied by this roadmap.
 - [x] ToolHandler interface and registry; memory and alert handlers extracted.
 - [x] Typed TurnState owns reply media, source evidence and delegation counters.
 - [x] Scoped context search/expansion, group roster and pin handlers extracted.
-- [ ] Move remaining media/sticker/subagent/source handlers.
+- [x] Web search, installed skills and packaged-source inspection extracted.
+- [ ] Move remaining media/sticker/subagent handlers.
 - [ ] Registry-driven tool availability and complete handler coverage.
 - [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
@@ -292,3 +293,17 @@ isolated roadmap test database is used for validation.
   check and admin TypeScript/Vite build passed. No production host was contacted.
 - Phase 6 is still in progress: remaining tool domains, registry-only selection,
   agent naming, admin routers and delayed startup assembly are not finished.
+
+### Phase 6 source extraction validation
+
+- Moved web search, use_skill and inspect_source into tools/sources; twelve
+  handlers now share registry visibility and execution checks. The current user
+  text is explicit TurnState data for a search without a supplied query.
+- Preserved search bounds/freshness, source deduplication across calls, skill
+  lookup and the existing source-inspection whitelist. Cancellation propagates;
+  disabled capabilities do not invoke network search or source/skill readers.
+- Focused tests: 84 passed. An initial new-test failure was a helper argument
+  named name colliding with the skill's name parameter; corrected the helper.
+- Full PG suite: 1,647 tests, OK (12 skipped), 87.152 seconds;
+  .cache/roadmap/phase6-sources-full.log. CI-path Ruff, diff whitespace check and
+  admin TypeScript/Vite build passed. No real search/provider/QQ requests made.

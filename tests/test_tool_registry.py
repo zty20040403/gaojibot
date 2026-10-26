@@ -65,6 +65,9 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "group_members",
                 "pin_message",
                 "unpin_message",
+                "use_skill",
+                "inspect_source",
+                "web_search",
             },
         )
         self.assertEqual(len(names), len(domain_registry.handlers))

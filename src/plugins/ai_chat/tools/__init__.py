@@ -9,7 +9,8 @@ from .alerts import HANDLERS as ALERT_HANDLERS
 from .context import HANDLERS as CONTEXT_HANDLERS
 from .memory import HANDLERS as MEMORY_HANDLERS
 from .registry import ToolRegistry
+from .sources import HANDLERS as SOURCE_HANDLERS
 
-domain_registry = ToolRegistry((*ALERT_HANDLERS, *MEMORY_HANDLERS, *CONTEXT_HANDLERS))
+domain_registry = ToolRegistry((*ALERT_HANDLERS, *MEMORY_HANDLERS, *CONTEXT_HANDLERS, *SOURCE_HANDLERS))
 
 __all__ = ["ToolDefinition", "available_tools", "domain_registry"]

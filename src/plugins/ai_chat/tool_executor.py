@@ -50,7 +50,6 @@ from .ai_tools import (
     OPERATION_CANCEL_TOOL_NAME,
     OPERATION_PREPARE_TOOL_NAME,
     OPERATION_STATUS_TOOL_NAME,
-    INSPECT_SOURCE_TOOL_NAME,
     QUERY_ALERTS_TOOL_NAME,
     READ_IMAGE_TEXT_TOOL_NAME,
     REPLY_WITH_VOICE_TOOL_NAME,
@@ -64,7 +63,6 @@ from .ai_tools import (
     REMINDER_CANCEL_TOOL_NAME,
     REMINDER_LIST_TOOL_NAME,
     REMINDER_SET_TOOL_NAME,
-    USE_SKILL_TOOL_NAME,
     VIEW_IMAGE_TOOL_NAME,
     VIEW_VIDEO_TOOL_NAME,
     WEB_SEARCH_TOOL_NAME,
@@ -130,10 +128,7 @@ from .turn_journal import (
 from .tool_policy import approval_from_user_text, tool_enabled
 from src.bot_security.service import assert_approved
 from .web_search import (
-    SearchError,
     render_search_sources,
-    search_freshness,
-    search_web,
 )
 from .voice import (
     VoiceError,
@@ -342,7 +337,9 @@ class ToolExecutor(HandlerService):
             selected_profile = configured_override or selected_profile.with_model(
                 selected_model_override
             )
-        tool_capabilities = {"memory"}
+        tool_capabilities = {"memory", "self"}
+        if self.context.settings.search_enabled and (force_search or self.context.settings.search_auto_enabled):
+            tool_capabilities.add("web")
         if alert_tools_enabled:
             tool_capabilities.add("alerts")
         if isinstance(event, GroupMessageEvent):
@@ -356,6 +353,7 @@ class ToolExecutor(HandlerService):
         turn = TurnState(
             context=ToolContext(self.services, event, frozenset(tool_capabilities)),
             bot=bot,
+            user_text=user_text,
             subagent_task_started=resume_task_id is not None,
         )
         replay_prefix: list[dict[str, Any]] = []
@@ -745,74 +743,7 @@ class ToolExecutor(HandlerService):
                     )
                 return json.dumps({"ok": True, "result": result}, ensure_ascii=False)
 
-            if name == USE_SKILL_TOOL_NAME:
-                requested = str(arguments.get("name") or "").strip()
-                skill = self.context.skill_registry.get(requested)
-                if skill is None:
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "error": "技能不存在。",
-                            "available": [item.name for item in self.context.skill_registry.list()],
-                        },
-                        ensure_ascii=False,
-                    )
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "name": skill.name,
-                        "title": skill.title,
-                        "instructions": skill.body,
-                    },
-                    ensure_ascii=False,
-                )
 
-            if name == INSPECT_SOURCE_TOOL_NAME:
-                action = str(arguments.get("action") or "").strip()
-                try:
-                    if action == "list":
-                        paths, truncated = self.context.self_source.paths(
-                            str(arguments.get("path") or ""),
-                            limit=int(arguments.get("limit") or 100),
-                        )
-                        payload: dict[str, object] = {
-                            "ok": True,
-                            "paths": paths,
-                            "truncated": truncated,
-                        }
-                    elif action == "search":
-                        matches = self.context.self_source.search(
-                            str(arguments.get("query") or ""),
-                            path_prefix=str(arguments.get("path") or ""),
-                            limit=int(arguments.get("limit") or 20),
-                        )
-                        payload = {
-                            "ok": True,
-                            "matches": [
-                                {
-                                    "path": match.path,
-                                    "line": match.line,
-                                    "text": match.text,
-                                }
-                                for match in matches
-                            ],
-                        }
-                    elif action == "read":
-                        payload = {
-                            "ok": True,
-                            "slice": self.context.self_source.read(
-                                str(arguments.get("path") or ""),
-                                start_line=int(arguments.get("start_line") or 1),
-                                end_line=int(arguments.get("end_line") or 120),
-                            ),
-                        }
-                    elif action == "identity":
-                        payload = {"ok": True, "snapshot": self.context.self_source.identity()}
-                    else:
-                        payload = {"ok": False, "error": "未知的源码自查动作。"}
-                except (OSError, TypeError, ValueError) as exc:
-                    payload = {"ok": False, "error": str(exc)}
-                return json.dumps(payload, ensure_ascii=False)
 
 
             if name in {
@@ -885,50 +816,6 @@ class ToolExecutor(HandlerService):
 
 
 
-            if name == WEB_SEARCH_TOOL_NAME:
-                query = str(arguments.get("query", "")).strip() or user_text
-                query = query[: self.context.settings.max_input_chars]
-                requested_freshness = {
-                    "day": "d",
-                    "week": "w",
-                    "month": "m",
-                    "year": "y",
-                }.get(str(arguments.get("freshness", "auto")))
-                freshness = search_freshness(query) or requested_freshness
-                try:
-                    results = await search_web(
-                        query,
-                        max_results=self.context.settings.search_max_results,
-                        timeout_seconds=self.context.settings.search_timeout_seconds,
-                        freshness=freshness,
-                    )
-                except SearchError as exc:
-                    self.context.logger.warning(f"Web search tool failed: {exc}")
-                    return json.dumps(
-                        {"ok": False, "error": "联网搜索暂时失败。"},
-                        ensure_ascii=False,
-                    )
-
-                known_urls = {result.url for result in turn.search_results}
-                turn.search_results.extend(
-                    result for result in results if result.url not in known_urls
-                )
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "query": query,
-                        "freshness": freshness or "all",
-                        "results": [
-                            {
-                                "title": result.title,
-                                "url": result.url,
-                                "snippet": result.snippet,
-                            }
-                            for result in results
-                        ],
-                    },
-                    ensure_ascii=False,
-                )
 
             if name == READ_IMAGE_TEXT_TOOL_NAME:
                 if not available_image_sources:
