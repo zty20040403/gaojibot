@@ -32,7 +32,7 @@ from .agent.execution import DECISION_TOOL, ENTRY_PROMPT, EntryDecision, Executi
 from .agent.evidence import (EVIDENCE_SQL, EvidenceStoreMixin, READ_TASK_EVIDENCE, READ_TASK_EVIDENCE_BATCH,
                              decode_result, evidence_index, read_evidence, read_evidence_batch)
 from .agent.outcomes import (acceptance_blocks_completion, acceptance_feedback, evaluate_acceptance,
-                             outcome_report, validate_report)
+                             outcome_report, validate_report as validate_report)
 from .agent.file_outbox import FileOutboxStoreMixin, attempt_file
 from .agent.artifact_acceptance import (
     ACCEPTANCE_VERSION, artifact_delivery_allowed, artifact_draft_allowed, artifact_identity, artifact_verdicts,
@@ -48,7 +48,7 @@ from .agent.worker_report import (checked_report, checked_correction, correction
                                   separate_cluster_artifacts, report_refs, REPORT_CORRECTION_PROMPT)
 from .config import settings
 from .agent.control import (CONTROL_SQL, TaskControlStoreMixin, LeaseLost,
-                            active_job_fence, active_task_id, active_model_policy, assert_job_owned)
+                            active_job_fence, active_task_id as active_task_id, active_model_policy, assert_job_owned)
 from .deepseek import (
     AgentLoopEvent,
     DeepSeekConfigError,

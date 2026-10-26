@@ -239,7 +239,7 @@
       virtualenv = pythonSet.mkVirtualEnv "gaoji-dev-env" workspace.deps.default;
     in {
       default = pkgs.mkShell {
-        packages = [virtualenv pkgs.uv pkgs.nodejs_22];
+        packages = [virtualenv pkgs.uv pkgs.ruff pkgs.nodejs_22];
         env = {
           UV_NO_SYNC = "1";
           UV_PYTHON = pythonSet.python.interpreter;

@@ -229,6 +229,18 @@ cp .env.example .env
 nix develop
 ```
 
+开发和 CI 使用 `uv.lock` 锁定依赖。修改 `pyproject.toml` 后运行：
+
+```bash
+uv lock
+uv export --locked --no-dev --no-emit-project --no-header --output-file requirements.txt
+uv sync --locked --python 3.12
+uv run --locked ruff check bot.py src tests tools migrations packaging/server nix
+```
+
+`requirements.txt` 是生成文件，不直接修改。CI 会检查它与锁文件一致，并使用两个
+独立的临时 PostgreSQL 数据库运行测试；文件投递验收库不能和机器人运行库共用。
+
 ### 2. 准备 PostgreSQL
 
 下面是只适合本地开发的 Docker 示例：

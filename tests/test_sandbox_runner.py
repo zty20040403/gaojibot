@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import importlib.util
 import os
 from pathlib import Path

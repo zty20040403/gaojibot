@@ -13,14 +13,14 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 
 from src import host_control
 from src.host_control import REPORT_PREFIX, digest
 from src.cluster_control.adapters.ops import OpsClient
-from src.cluster_control.host_operations import execution_params, matches_job, reboot_observation
+from src.cluster_control.host_operations import execution_params
 from src.cluster_control.ops_management import OpsManagementService
 from tests.test_ops_management import MemoryStore
 

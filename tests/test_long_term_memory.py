@@ -3,11 +3,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import nonebot
 
 nonebot.init()
 
+from nonebot.adapters.onebot.v11 import GroupMessageEvent
+from src.plugins.ai_chat.command_handlers import CommandHandlers
 from src.plugins.ai_chat.long_term_memory import (
     LongTermMemoryError,
     LongTermMemoryStore,
@@ -15,6 +18,31 @@ from src.plugins.ai_chat.long_term_memory import (
 
 
 class LongTermMemoryStoreTests(unittest.TestCase):
+    def test_command_lookup_uses_injected_store_and_visible_scopes(self) -> None:
+        event = GroupMessageEvent.model_validate({
+            "time": 100, "self_id": 9, "post_type": "message", "message_type": "group",
+            "sub_type": "normal", "message_id": 42, "group_id": 1, "user_id": 2,
+            "message": [], "raw_message": "", "font": 0,
+            "sender": {"user_id": 2, "nickname": "tester"},
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = LongTermMemoryStore(Path(directory) / "memory.json")
+            commands = CommandHandlers(SimpleNamespace(
+                context=SimpleNamespace(long_term_memory=store),
+                chat=SimpleNamespace(_conversation_id=lambda _: "group:1:user:2"),
+            ))
+            for scope, kind, visible in (
+                ("group:1", "group", True),
+                ("group:1:user:2", "user", True),
+                ("group:1:user:3", "user", False),
+                ("group:2", "group", False),
+            ):
+                with self.subTest(scope=scope):
+                    entry, _ = store.add(scope, kind, "test memory", creator_user_id=2)
+                    found = commands._find_visible_memory(event, entry.id)
+                    self.assertEqual(found, entry if visible else None)
+            self.assertIsNone(commands._find_visible_memory(event, 9999))
+
     def test_scopes_are_isolated_and_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "memory.json"

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os

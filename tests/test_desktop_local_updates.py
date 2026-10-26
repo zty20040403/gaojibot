@@ -5,10 +5,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.local_runtime.desktop_updates import DesktopRuntimeUpdate, DesktopUpdateWorker, prepare_update
-from src.local_runtime.files import read_json, write_json
+from src.local_runtime.files import write_json
 from src.local_runtime.setup_clients import SetupError
 from test_desktop_local_backups import DesktopBackupTests, LocalController
-from test_desktop_backups import Fixture, FakeMaintenance, Crash, CHECKSUM, DEPENDENCY
+from test_desktop_backups import FakeMaintenance, Crash, CHECKSUM, DEPENDENCY
 
 NEW = "d" * 64
 

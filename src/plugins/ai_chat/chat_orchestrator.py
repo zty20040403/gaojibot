@@ -53,6 +53,7 @@ from .ocr import (
 from .application import (
     ChatOrchestrator,
     ChatPorts,
+    ChatTurnResult,
 )
 from .turn_journal import (
     tool_effect_labels,
@@ -552,7 +553,7 @@ class OneBotChatService(HandlerService):
         event: MessageEvent,
         user_text: str,
         **kwargs: Any,
-    ) -> TrackedAIResult | None:
+    ) -> ChatTurnResult | None:
         return await self._build_chat_orchestrator().run(
             bot,
             event,

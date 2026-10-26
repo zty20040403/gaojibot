@@ -56,6 +56,7 @@ from .stickers import (
     random_sticker_message,
 )
 from .handler_services import HandlerService
+from .application import ChatTurnResult
 from .handler_constants import (SEND_RETRY_DELAY_SECONDS, SEND_RETRY_MAX_CHARS)
 
 
@@ -368,7 +369,7 @@ class ReplyService(HandlerService):
             PROCESSING_FACE_ID,
             added=True,
         )
-        result: TrackedAIResult | None = None
+        result: ChatTurnResult | None = None
         send_index = 0
         delivery_ids: dict[int, int] = {}
         stream_context: dict[str, int | None] = {"turn_id": None}

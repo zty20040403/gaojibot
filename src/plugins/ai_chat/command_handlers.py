@@ -278,8 +278,8 @@ class CommandHandlers(HandlerService):
         return next(
             (
                 entry
-                for entry in long_term_memory.list_entries(
-                    _memory_scope_keys(event)
+                for entry in self.context.long_term_memory.list_entries(
+                    self._memory_scope_keys(event)
                 )
                 if entry.id == memory_id
             ),

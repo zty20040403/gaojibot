@@ -54,7 +54,7 @@ from .conversation_scope import ConversationScope
 from .content_sources import ContentSourceError, ContentSourceStore
 from .ledger import CanonicalMessage, MessageLedger
 from .media_tools import BilibiliClient, BilibiliError
-from .message_ir import ForwardNode, MediaNode, MessageBody, TextNode, render_fallback_text
+from .message_ir import ForwardNode, MediaNode, MessageBody, render_fallback_text
 from .onebot_codec import (
     decode_onebot_message,
     record_onebot_api_message,

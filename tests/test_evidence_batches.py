@@ -4,7 +4,7 @@ import hashlib
 import json
 import unittest
 
-from tests import test_subagent_v2
+from tests import test_subagent_v2  # noqa: F401 - initialize the isolated NoneBot runtime
 from src.plugins.ai_chat.agent.evidence import (
     READ_TASK_EVIDENCE_BATCH, canonical, read_evidence, read_evidence_batch,
 )

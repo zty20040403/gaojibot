@@ -12,7 +12,6 @@ from .adapters.ops import OpsError
 from .deployment_contracts import approval_contract_hash
 from .deployment_ops_protocol import DeploymentTargetBinding, OpsDeploymentProtocol, read_job_result
 from .deployment_service import DeploymentService
-from .deployment_storage import DeploymentStore
 from .execution_contracts import content_hash
 from .ops_management import OpsManagementService
 

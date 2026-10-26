@@ -21,7 +21,7 @@ from alembic import command
 from alembic.config import Config
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 
-from tests import test_subagent_v2  # Initialize the isolated NoneBot test runtime.
+from tests import test_subagent_v2  # noqa: F401 - initialize the isolated NoneBot runtime
 from src.bot_storage.database import PostgresDatabase
 from src.plugins.ai_chat.agent.background import SubAgentDispatcher
 from src.plugins.ai_chat.agent.file_outbox import attempt_file

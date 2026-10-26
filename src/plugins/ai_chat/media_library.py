@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from src.bot_storage import DatabaseError, PostgresDatabase
+from src.bot_storage import PostgresDatabase
 
 from .cold_archive import ColdArchiveError, copy_verified_file
 from .conversation_scope import ConversationScope

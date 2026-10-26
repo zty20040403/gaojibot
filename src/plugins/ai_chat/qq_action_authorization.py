@@ -7,7 +7,7 @@ from functools import wraps
 from typing import Any
 
 from nonebot import get_bots
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, PrivateMessageEvent
+from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, PrivateMessageEvent
 from nonebot.exception import FinishedException
 from nonebot.matcher import Matcher, current_bot, current_event, current_matcher
 

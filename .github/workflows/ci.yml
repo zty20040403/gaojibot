@@ -34,33 +34,50 @@ jobs:
     env:
       AI_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/qq_bot
       AI_POSTGRES_SCHEMA: qq_bot_test
-      TEST_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/qq_bot
+      TEST_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/gaoji_acceptance
       TEST_POSTGRES_SCHEMA: qq_bot_test
-      TEST_OPS_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/qq_bot
-      TEST_SECURITY_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/qq_bot
+      TEST_FILE_ACCEPTANCE_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/gaoji_acceptance
+      TEST_OPS_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/gaoji_acceptance
+      TEST_SECURITY_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/gaoji_acceptance
       AI_ALLOW_LEGACY_SQLITE: "true"
+      PYTHON_DOTENV_DISABLED: "1"
+      AI_STATE_DIR: ${{ runner.temp }}/gaoji-ci-state
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install locked runtime requirements
-        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Install locked dependencies and development tools
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.11.21
+          uv sync --locked --python 3.12
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Check requirements export matches the lockfile
+        run: |
+          uv export --locked --no-dev --no-emit-project --no-header --output-file "$RUNNER_TEMP/requirements.txt"
+          diff -u requirements.txt "$RUNNER_TEMP/requirements.txt"
+      - name: Check Python correctness
+        run: ruff check bot.py src tests tools migrations packaging/server nix
       - name: Compile all Python modules
         run: python -m compileall -q bot.py src migrations tests
-      - name: Install vector in the shared test namespace
+      - name: Create an isolated acceptance database and install vector
         run: |
           python - <<'PY'
           import os
           import psycopg
-          with psycopg.connect(os.environ["TEST_POSTGRES_DSN"]) as connection:
-              connection.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
+          with psycopg.connect(os.environ["AI_POSTGRES_DSN"], autocommit=True) as connection:
+              connection.execute("CREATE DATABASE gaoji_acceptance")
+          for name in ("AI_POSTGRES_DSN", "TEST_POSTGRES_DSN"):
+              with psycopg.connect(os.environ[name]) as connection:
+                  connection.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
           PY
       - name: Apply and verify Alembic schema
         run: |
           python -m src.bot_storage.cli upgrade
           python -m src.bot_storage.cli check
+          AI_POSTGRES_DSN="$TEST_POSTGRES_DSN" python -m src.bot_storage.cli upgrade
+          AI_POSTGRES_DSN="$TEST_POSTGRES_DSN" python -m src.bot_storage.cli check
       - name: Run unit and PostgreSQL integration tests
         run: python -m unittest discover -s tests -p 'test_*.py'
 
@@ -68,7 +85,7 @@ jobs:
     name: Nix package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
@@ -80,7 +97,7 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2

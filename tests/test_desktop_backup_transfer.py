@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_desktop_backups import Fixture, FakeController, FakeMaintenance, CHECKSUM, IMAGE, DEPENDENCY
-from src.local_runtime.backups import BackupError, BackupStore
+from src.local_runtime.backups import BackupError
 from src.local_runtime.backup_transfer import BackupTransfer, import_id, metadata
 from src.local_runtime.files import read_json, write_json
 from src.local_runtime.manager import ManagerServer

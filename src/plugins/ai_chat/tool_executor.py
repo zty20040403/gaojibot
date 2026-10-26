@@ -145,7 +145,7 @@ from .stickers import (
 from .turn_journal import (
     tool_catalog_fingerprint,
 )
-from .tool_policy import approval_from_user_text, tool_enabled, ToolApproval
+from .tool_policy import approval_from_user_text, tool_enabled
 from src.bot_security.service import assert_approved
 from .web_search import (
     SearchError,
@@ -174,7 +174,7 @@ from .fleet_client import FleetControlError
 from .ai_tools import OPS_CATALOG_TOOL_NAME, OPS_CALL_TOOL_NAME
 from .ai_tools import SERVICE_CONTROL_TOOL_NAME, HOST_REBOOT_TOOL_NAME, host_operation_call
 from .fleet_case_recall import semantic_runbook_scores
-from .fleet_tools import fleet_overview, inspect_host, model_status, requires_local_model_status, summarize_fleet
+from .fleet_tools import fleet_overview, inspect_host, model_status, requires_local_model_status
 
 
 class ToolExecutor(HandlerService):

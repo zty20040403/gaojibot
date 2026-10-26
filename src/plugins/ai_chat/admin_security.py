@@ -12,7 +12,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.bot_security.passwords import hash_password
-from src.bot_security.service import MobileAuthorization, approved_request, current_principal, principal, audit_actor
+from src.bot_security.service import MobileAuthorization, approved_request, current_principal, principal
 from src.bot_security.store import SecurityError, canonical
 
 SESSION_COOKIE = "gaoji_session"
@@ -107,7 +107,8 @@ def secure_route(mobile: MobileAuthorization | None, *, prefix: str, origin: str
                             if len(body_bytes) > 128 * 1024:
                                 raise SecurityError("操作内容过长", 413)
                             try:
-                                body = json.loads(body_bytes) if body_bytes else None
+                                if body_bytes:
+                                    json.loads(body_bytes)
                             except (ValueError, UnicodeError):
                                 raise SecurityError("操作参数必须是 JSON", 400) from None
                             # The authenticated admin's click is the authorization.

@@ -20,7 +20,7 @@ from src.bot_security.store import SecurityError, SecurityStore
 from src.plugins.ai_chat.fleet_authorization import FleetAuthorization
 from src.plugins.ai_chat.command_handlers import CommandHandlers
 from src.plugins.ai_chat.mobile_authorization import handle_approval_event, redact_approval_event_logs
-from src.plugins.ai_chat.qq_action_authorization import mobile_command, register_qq_executors, requires_mobile_tool, command_targets
+from src.plugins.ai_chat.qq_action_authorization import mobile_command, register_qq_executors, requires_mobile_tool
 from tests.test_account_security import PASSWORD, QQ, BOT
 
 

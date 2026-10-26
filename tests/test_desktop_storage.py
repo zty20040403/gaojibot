@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from test_desktop_backups import Fixture, FakeController, Crash, CHECKSUM, IMAGE
 from src.local_runtime.files import read_json, write_json
-from src.local_runtime.storage import Storage, StorageError, tree_info
+from src.local_runtime.storage import Storage, StorageError
 from src.local_runtime.setup_clients import SetupError
 from src.local_runtime.validation import ConfigurationConflict
 from src.local_runtime.manager import ManagerServer

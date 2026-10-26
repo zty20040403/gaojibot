@@ -14,16 +14,16 @@ from .adapters import OneBotIngestAdapter
 from .bootstrap import register_http_surfaces
 from .config import settings
 from .context_pipeline import ReferenceResolver
-from .deepseek import DeepSeekConfigError, configure_llm_runtime
+from .deepseek import DeepSeekConfigError as DeepSeekConfigError, configure_llm_runtime
 from .observability import observed_ai_turn
-from .onebot_codec import decode_onebot_message
+from .onebot_codec import decode_onebot_message as decode_onebot_message
 from .proactive import ProactiveCheckGate
 from .paths import CACHE_DIR, PROJECT_ROOT, STATE_DIR
 from .runtime import build_app_context
 from .handler_services import HandlerServices
 from .application import ChatTurnResult
-from .stickers import ai_reply_message
-from .voice import VoiceError
+from .stickers import ai_reply_message as ai_reply_message
+from .voice import VoiceError as VoiceError
 from .video_analysis import DeepVideoAnalysisError, DeepVideoAnalyzer
 from . import matchers
 from .handler_constants import BOT_VERSION

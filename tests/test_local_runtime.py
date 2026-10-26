@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from src.local_runtime.files import read_json, write_json
+from src.local_runtime.files import write_json
 from src.local_runtime.instances import ConfigurationConflict, InstanceError, InstanceStore, validate_settings
 from src.local_runtime.entrypoint import load_environment
 from src.local_runtime.runtime_check import ROOT_FILES, verify_sources

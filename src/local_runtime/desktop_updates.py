@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
 import subprocess
 import time
 from types import SimpleNamespace
 
-from .desktop import DesktopController, DesktopMaintenance, ROOT, SOURCE
+from .desktop import DesktopController, DesktopMaintenance, ROOT
 from .files import file_lock, read_json, write_json
 from .releases import checksum, runtime_check_arguments, RUNTIME_CHECK_TIMEOUT
 from .setup_clients import SetupError, request_json
@@ -121,7 +120,7 @@ def prepare_update(payload, root=ROOT):
     if not isinstance(payload, dict) or set(payload) != {"request", "runner_checksum", "port"}:
         raise SetupError("本机更新请求无效")
     request = validate_request(payload["request"])
-    runner = checksum(payload["runner_checksum"])
+    checksum(payload["runner_checksum"])
     port = payload["port"]
     if type(port) is not int or not 1024 <= port <= 65535:
         raise SetupError("本机管理端口无效")

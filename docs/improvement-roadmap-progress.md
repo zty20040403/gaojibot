@@ -47,10 +47,11 @@ acceptance are not implied by this roadmap.
 
 ### Phase 2: CI and dependencies
 
-- [ ] Fix baseline test failures rather than weakening assertions.
-- [ ] Add Ruff E9/F to CI and the Nix dev shell.
-- [ ] Require Python 3.12; export requirements from uv.lock and check drift in CI.
-- [ ] Update checkout/setup-python Actions; verify Python and Nix gates.
+- [x] Fix baseline test failures rather than weakening assertions.
+- [x] Add Ruff E9/F to CI and the Nix dev shell.
+- [x] Require Python 3.12; export requirements from uv.lock and check drift in CI.
+- [x] Update checkout/setup-python Actions; verify Python and Nix gates locally.
+      Hosted GitHub Actions remain unverified until an authorized push.
 
 ### Phase 3: Prompt caching and untrusted input
 
@@ -146,3 +147,20 @@ isolated roadmap test database is used for validation.
   exhaustion still require an isolated live environment before rollout.
 - Private ops documents remain on disk under ignored `ops-notes/`; Git history
   was not rewritten. No production host, QQ account or user database was touched.
+
+### Phase 2 validation
+
+- CI now creates a separate `gaoji_acceptance` database, enables vector and
+  migrates both databases. Process-loss tests are enabled explicitly. The
+  production/test DSN guards were preserved, not bypassed.
+- Ruff E9/F: 64 initial findings resolved. Compatibility exports and imports
+  needed to initialize test fixtures are retained explicitly. Fixed a real
+  undefined-global bug in command memory lookup, plus stale type names.
+- Memory lookup regression covers visible group/user entries and rejects other
+  users/groups. Full PG suite: 1,592 tests, OK (12 skipped), 85.580 seconds;
+  `.cache/roadmap/phase2-full.log`.
+- Requirements export drift check passed; pinned hashes now come from uv.lock.
+  Only Ruff adds a new package version; old Python-specific alternatives were
+  pruned without upgrading existing Python 3.12 runtime versions.
+- Local `nix flake check` package/import checks passed on aarch64-darwin.
+  Linux builds and hosted CI are not claimed as tested locally.
