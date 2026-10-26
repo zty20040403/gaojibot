@@ -79,6 +79,9 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "delegate_agent",
                 "run_subagents",
                 "resume_subagent",
+                "reminder_set",
+                "reminder_list",
+                "reminder_cancel",
             },
         )
         self.assertEqual(len(names), len(domain_registry.handlers))

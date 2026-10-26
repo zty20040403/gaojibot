@@ -92,7 +92,8 @@ acceptance are not implied by this roadmap.
 - [x] Image OCR/vision, QQ video and voice handlers extracted.
 - [x] Global sticker search and visual reply handlers extracted.
 - [x] Sub-Agent delegate/run/resume handlers and typed dispatch callbacks extracted.
-- [ ] Move remaining reminder and fleet handlers.
+- [x] Existing scoped reminder create/list/cancel handlers extracted.
+- [ ] Move remaining fleet handlers and agent-executor-backed tool dispatch.
 - [ ] Registry-driven tool availability and complete handler coverage.
 - [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
@@ -355,3 +356,18 @@ isolated roadmap test database is used for validation.
 - Full PG suite: 1,665 tests, OK (12 skipped), 85.844 seconds;
   .cache/roadmap/phase6-subagents-full.log. CI-path Ruff, diff whitespace check and
   admin TypeScript/Vite build passed. Live delegated-task delivery remains untested.
+
+### Phase 6 reminder extraction validation
+
+- Moved existing reminder_set/list/cancel into tools/reminders; the registry owns
+  26 handlers. This is not Phase 9's cron/routine feature. Existing ReminderStore
+  scheduling, retry and scope policy remain unchanged.
+- New regressions check group/private scope, host-derived creator identities,
+  absent ledger/store behavior, handle/date validation and disabled execution.
+  Model-supplied scope/creator fields cannot replace the actual event identity.
+- Focused tests: 87 passed. Full PG suite: 1,669 tests, OK (12 skipped), 85.524
+  seconds; .cache/roadmap/phase6-reminders-full.log. CI-path Ruff, diff whitespace
+  check and admin TypeScript/Vite build passed. No real reminders were scheduled.
+- tool_executor.py is now 1,909 lines (3,126 before Phase 6). Remaining work is
+  fleet/agent-backed dispatch, registry-only catalog selection, agent naming,
+  admin routers and startup assembly. Phases 7-9 have not begun.

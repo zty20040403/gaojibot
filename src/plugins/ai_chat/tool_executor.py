@@ -55,9 +55,6 @@ from .ai_tools import (
     SAY_TOOL_NAME,
     SERVICE_LOGS_TOOL_NAME,
     TRANSCRIBE_VOICE_TOOL_NAME,
-    REMINDER_CANCEL_TOOL_NAME,
-    REMINDER_LIST_TOOL_NAME,
-    REMINDER_SET_TOOL_NAME,
     VIEW_IMAGE_TOOL_NAME,
     VIEW_VIDEO_TOOL_NAME,
     WEB_SEARCH_TOOL_NAME,
@@ -421,6 +418,8 @@ class ToolExecutor(HandlerService):
             tool_capabilities.add("video")
         if self.context.subagent_coordinator is not None:
             tool_capabilities.add("subagents")
+        if self.context.reminder_store is not None:
+            tool_capabilities.add("reminders")
         if self.context.settings.voice_enabled:
             tool_capabilities.add("voice")
             if available_voice_message_id is not None:
@@ -616,72 +615,6 @@ class ToolExecutor(HandlerService):
 
 
 
-            if name in {
-                REMINDER_SET_TOOL_NAME,
-                REMINDER_LIST_TOOL_NAME,
-                REMINDER_CANCEL_TOOL_NAME,
-            }:
-                if self.context.reminder_store is None:
-                    return json.dumps(
-                        {"ok": False, "error": "持久提醒功能暂时不可用。"},
-                        ensure_ascii=False,
-                    )
-                scope = scope_from_event(event)
-                if name == REMINDER_LIST_TOOL_NAME:
-                    return json.dumps(
-                        {
-                            "ok": True,
-                            "reminders": [
-                                self.services.commands._reminder_payload(item)
-                                for item in self.context.reminder_store.list_pending(scope)
-                            ],
-                        },
-                        ensure_ascii=False,
-                    )
-                if name == REMINDER_CANCEL_TOOL_NAME:
-                    reminder_id = self.services.commands._reminder_id(
-                        arguments.get("reminder_handle")
-                    )
-                    if reminder_id is None:
-                        return json.dumps(
-                            {"ok": False, "error": "reminder_handle 格式无效。"},
-                            ensure_ascii=False,
-                        )
-                    removed = self.context.reminder_store.cancel(scope, reminder_id)
-                    return json.dumps(
-                        {
-                            "ok": removed,
-                            "handle": f"reminder#{reminder_id}",
-                            "cancelled": removed,
-                            "error": None if removed else "当前会话没有这个待触发提醒。",
-                        },
-                        ensure_ascii=False,
-                    )
-                try:
-                    due_at = self.services.commands._parse_reminder_due_at(arguments.get("due_at"))
-                    reminder = self.context.reminder_store.create(
-                        scope,
-                        creator_native_user_id=event.user_id,
-                        creator_principal_id=(
-                            self.context.message_ledger.principal_id_for_native(
-                                scope.platform,
-                                event.user_id,
-                            )
-                            if self.context.message_ledger is not None
-                            else None
-                        ),
-                        message=str(arguments.get("message") or ""),
-                        scheduled_for=due_at,
-                    )
-                except ValueError as exc:
-                    return json.dumps(
-                        {"ok": False, "error": str(exc)},
-                        ensure_ascii=False,
-                    )
-                return json.dumps(
-                    {"ok": True, "reminder": self.services.commands._reminder_payload(reminder)},
-                    ensure_ascii=False,
-                )
 
 
 

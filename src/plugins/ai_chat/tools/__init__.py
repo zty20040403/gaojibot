@@ -10,6 +10,7 @@ from .context import HANDLERS as CONTEXT_HANDLERS
 from .media import HANDLERS as MEDIA_HANDLERS
 from .memory import HANDLERS as MEMORY_HANDLERS
 from .registry import ToolRegistry
+from .reminders import HANDLERS as REMINDER_HANDLERS
 from .sources import HANDLERS as SOURCE_HANDLERS
 from .stickers import HANDLERS as STICKER_HANDLERS
 from .subagents import HANDLERS as SUBAGENT_HANDLERS
@@ -23,6 +24,7 @@ domain_registry = ToolRegistry(
         *MEDIA_HANDLERS,
         *STICKER_HANDLERS,
         *SUBAGENT_HANDLERS,
+        *REMINDER_HANDLERS,
     )
 )
 
