@@ -57,9 +57,6 @@ from .ai_tools import (
     OPERATION_PREPARE_TOOL_NAME,
     OPERATION_STATUS_TOOL_NAME,
     INSPECT_SOURCE_TOOL_NAME,
-    MEMORY_ADD_TOOL_NAME,
-    MEMORY_LIST_TOOL_NAME,
-    MEMORY_REMOVE_TOOL_NAME,
     PIN_MESSAGE_TOOL_NAME,
     QUERY_ALERTS_TOOL_NAME,
     READ_IMAGE_TEXT_TOOL_NAME,
@@ -105,9 +102,6 @@ from .deepseek import (
     FinalStreamState,
     ask_deepseek_with_tools,
 )
-from .long_term_memory import (
-    LongTermMemoryError,
-)
 from .media_library import (
     choose_sticker_candidate,
     requests_sticker_variation,
@@ -148,7 +142,6 @@ from .tool_policy import approval_from_user_text, tool_enabled
 from src.bot_security.service import assert_approved
 from .web_search import (
     SearchError,
-    SearchResult,
     render_search_sources,
     search_freshness,
     search_web,
@@ -176,6 +169,8 @@ from .fleet_case_recall import semantic_runbook_scores
 from .prompt_context import quote_evidence
 from .fleet_tools import fleet_overview, inspect_host, model_status
 from .intent_routing import ToolIntent, classify_tool_intent
+from .tools import domain_registry
+from .tools.state import ToolContext, TurnState
 
 
 class ToolExecutor(HandlerService):
@@ -358,15 +353,10 @@ class ToolExecutor(HandlerService):
             selected_profile = configured_override or selected_profile.with_model(
                 selected_model_override
             )
-        search_results: list[SearchResult] = []
-        used_ocr_texts: list[str] = []
-        used_voice_texts: list[str] = []
-        voice_reply_segment: MessageSegment | None = None
-        voice_reply_text = ""
-        visual_reply_segment: MessageSegment | None = None
-        sticker_handles_this_turn: set[str] = set()
-        subagent_task_started = resume_task_id is not None
-        subagent_delegations = 0
+        turn = TurnState(
+            context=ToolContext(self.services, event, frozenset({"memory"} | ({"alerts"} if alert_tools_enabled else set()))),
+            subagent_task_started=resume_task_id is not None,
+        )
         replay_prefix: list[dict[str, Any]] = []
         replay_covered_message_ids: tuple[int, ...] = ()
         replay_digest_prefix = ""
@@ -529,6 +519,7 @@ class ToolExecutor(HandlerService):
             include_source_tools=self.context.source_store is not None,
             include_subagents=self.context.subagent_coordinator is not None,
         )
+        tools = domain_registry.project_legacy_catalog(tools, turn.context)
         current_tool_catalog_version = tool_catalog_fingerprint(tools)
         if self.context.turn_journal is not None and journal_turn_id is not None:
             try:
@@ -647,9 +638,6 @@ class ToolExecutor(HandlerService):
             return "上下文范围校验没有通过，已停止使用可能串群或串用户的内容。"
 
         async def _execute_tool_impl(name: str, arguments: dict[str, object]) -> str:
-            nonlocal visual_reply_segment, voice_reply_segment, voice_reply_text
-            nonlocal subagent_task_started, subagent_delegations
-
             self.context.logger.info(f"LLM Tool Call: {name}")
 
             from src.storage_admission import CapacityError, require_tool_capacity
@@ -664,8 +652,12 @@ class ToolExecutor(HandlerService):
             }:
                 return json.dumps({"ok": False, "error": "此操作需要绑定专业子任务。单一任务调用 delegate_agent；多项交付调用 run_subagents。不要在主控直接执行或声称已完成。"}, ensure_ascii=False)
 
+            domain_result = await domain_registry.execute(turn, name, arguments)
+            if domain_result is not None:
+                return domain_result
+
             if name == DELEGATE_AGENT_TOOL_NAME:
-                if subagent_delegations >= 3:
+                if turn.subagent_delegations >= 3:
                     return json.dumps(
                         {
                             "ok": False,
@@ -685,7 +677,7 @@ class ToolExecutor(HandlerService):
                         {"ok": False, "error": "Sub-Agent 任务模式暂时没有开启。"},
                         ensure_ascii=False,
                     )
-                subagent_delegations += 1
+                turn.subagent_delegations += 1
                 try:
                     result = await run_delegate_goal(role, objective)
                 except ValueError as exc:
@@ -696,7 +688,7 @@ class ToolExecutor(HandlerService):
                 return json.dumps({"ok": True, **result}, ensure_ascii=False)
 
             if name == RUN_SUBAGENTS_TOOL_NAME:
-                if subagent_task_started:
+                if turn.subagent_task_started:
                     return json.dumps(
                         {
                             "ok": False,
@@ -715,7 +707,7 @@ class ToolExecutor(HandlerService):
                         {"ok": False, "error": "Sub-Agent 任务模式暂时没有开启。"},
                         ensure_ascii=False,
                     )
-                subagent_task_started = True
+                turn.subagent_task_started = True
                 result = await run_subagent_goal(goal)
                 return json.dumps(
                     {"ok": True, "result": result},
@@ -723,7 +715,7 @@ class ToolExecutor(HandlerService):
                 )
 
             if name == RESUME_SUBAGENT_TOOL_NAME:
-                if subagent_task_started:
+                if turn.subagent_task_started:
                     return json.dumps(
                         {"ok": False, "error": "本轮已经启动或恢复过一个 Sub-Agent 任务。"},
                         ensure_ascii=False,
@@ -742,7 +734,7 @@ class ToolExecutor(HandlerService):
                         {"ok": False, "error": "Sub-Agent 任务模式暂时没有开启。"},
                         ensure_ascii=False,
                     )
-                subagent_task_started = True
+                turn.subagent_task_started = True
                 try:
                     result = await run_resume_goal(task_id)
                 except (RuntimeError, ValueError) as exc:
@@ -1185,108 +1177,6 @@ class ToolExecutor(HandlerService):
                     ensure_ascii=False,
                 )
 
-            if name == MEMORY_ADD_TOOL_NAME:
-                scope_type = str(arguments.get("scope", "user")).strip().lower()
-                content = str(arguments.get("content", "")).strip()
-                group_scope, user_scope = self.services.commands._memory_scopes(event)
-                if scope_type == "group":
-                    if group_scope is None:
-                        return json.dumps(
-                            {"ok": False, "error": "私聊中没有群记忆范围。"},
-                            ensure_ascii=False,
-                        )
-                    if not self.services.commands._can_edit_group_memory(event):
-                        return json.dumps(
-                            {"ok": False, "error": "只有群管理员或机器人授权用户可以修改群记忆。"},
-                            ensure_ascii=False,
-                        )
-                    scope_key = group_scope
-                elif scope_type == "user":
-                    scope_key = user_scope
-                else:
-                    return json.dumps(
-                        {"ok": False, "error": "记忆范围必须是 user 或 group。"},
-                        ensure_ascii=False,
-                    )
-                if self.services.commands._looks_like_secret(content):
-                    return json.dumps(
-                        {"ok": False, "error": "检测到可能的密码、Token 或密钥，拒绝保存。"},
-                        ensure_ascii=False,
-                    )
-                provenance = self.services.commands._memory_provenance(event)
-                try:
-                    entry, created = self.context.long_term_memory.add(
-                        scope_key,
-                        scope_type,
-                        content,
-                        creator_user_id=event.user_id,
-                        creator_principal_id=int(
-                            provenance["actor_principal_id"] or 0
-                        ),
-                        source_message_id=provenance["source_message_id"],
-                        reason="model memory_add tool",
-                    )
-                except LongTermMemoryError as exc:
-                    return json.dumps(
-                        {"ok": False, "error": str(exc)},
-                        ensure_ascii=False,
-                    )
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "created": created,
-                        "memory": self.services.commands._memory_entry_payload(entry),
-                    },
-                    ensure_ascii=False,
-                )
-
-            if name == MEMORY_LIST_TOOL_NAME:
-                requested_scope = str(arguments.get("scope", "all")).strip().lower()
-                if requested_scope not in {"user", "group", "all"}:
-                    requested_scope = "all"
-                entries = self.context.long_term_memory.list_entries(
-                    self.services.commands._memory_scope_keys(event, requested_scope)
-                )
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "memories": [
-                            self.services.commands._memory_entry_payload(entry) for entry in entries
-                        ],
-                    },
-                    ensure_ascii=False,
-                )
-
-            if name == MEMORY_REMOVE_TOOL_NAME:
-                try:
-                    memory_id = int(arguments.get("memory_id") or 0)
-                except (TypeError, ValueError):
-                    memory_id = 0
-                entry = self.services.commands._find_visible_memory(event, memory_id)
-                if (
-                    entry is not None
-                    and entry.scope_type == "group"
-                    and not self.services.commands._can_edit_group_memory(event)
-                ):
-                    return json.dumps(
-                        {"ok": False, "error": "你没有修改群记忆的权限。"},
-                        ensure_ascii=False,
-                    )
-                removed = self.context.long_term_memory.remove(
-                    memory_id,
-                    self.services.commands._memory_scope_keys(event),
-                    **self.services.commands._memory_provenance(event),
-                    reason="model memory_remove tool",
-                )
-                return json.dumps(
-                    {
-                        "ok": removed,
-                        "memory_id": memory_id,
-                        "error": None if removed else "当前会话中找不到这条记忆。",
-                    },
-                    ensure_ascii=False,
-                )
-
             if name == WEB_SEARCH_TOOL_NAME:
                 query = str(arguments.get("query", "")).strip() or user_text
                 query = query[: self.context.settings.max_input_chars]
@@ -1311,8 +1201,8 @@ class ToolExecutor(HandlerService):
                         ensure_ascii=False,
                     )
 
-                known_urls = {result.url for result in search_results}
-                search_results.extend(
+                known_urls = {result.url for result in turn.search_results}
+                turn.search_results.extend(
                     result for result in results if result.url not in known_urls
                 )
                 return json.dumps(
@@ -1359,104 +1249,11 @@ class ToolExecutor(HandlerService):
                         },
                         ensure_ascii=False,
                     )
-                used_ocr_texts.append(text)
+                turn.used_ocr_texts.append(text)
                 return json.dumps(
                     {"ok": True, "text": text},
                     ensure_ascii=False,
                 )
-
-            if name == QUERY_ALERTS_TOOL_NAME:
-                if not alert_tools_enabled or self.context.alert_store is None:
-                    return json.dumps(
-                        {"ok": False, "error": "当前会话无权读取告警状态。"},
-                        ensure_ascii=False,
-                    )
-                try:
-                    days = min(max(int(arguments.get("days") or 7), 1), 365)
-                    limit = min(max(int(arguments.get("limit") or 10), 1), 20)
-                    snapshot = await asyncio.to_thread(
-                        self.context.alert_store.snapshot,
-                        days=days,
-                        limit=100,
-                    )
-                    ranked = await asyncio.to_thread(
-                        self.context.alert_store.rank_incidents,
-                        days=days,
-                        limit=limit,
-                    )
-                    incidents = (
-                        snapshot.get("incidents")
-                        if isinstance(snapshot, dict)
-                        and isinstance(snapshot.get("incidents"), list)
-                        else []
-                    )
-                    details_by_key = {
-                        str(item.get("incident_key") or ""): item
-                        for item in incidents
-                        if isinstance(item, dict)
-                    }
-                    ranked_items = (
-                        ranked.get("items")
-                        if isinstance(ranked, dict)
-                        and isinstance(ranked.get("items"), list)
-                        else []
-                    )
-                    ranking: list[dict[str, object]] = []
-                    for item in ranked_items:
-                        if not isinstance(item, dict):
-                            continue
-                        key = str(item.get("incident_key") or "")
-                        ranking.append({**details_by_key.get(key, {}), **item})
-                    active = sorted(
-                        (
-                            item
-                            for item in incidents
-                            if isinstance(item, dict)
-                            and int(item.get("active_event_count") or 0) > 0
-                        ),
-                        key=lambda item: (
-                            int(item.get("active_event_count") or 0),
-                            int(item.get("last_seen_at") or 0),
-                        ),
-                        reverse=True,
-                    )[:limit]
-
-                    def compact(item: dict[str, object]) -> dict[str, object]:
-                        return {
-                            "target": str(item.get("incident_key") or ""),
-                            "severity": str(item.get("severity") or ""),
-                            "status": str(item.get("status") or ""),
-                            "event_count": int(item.get("event_count") or 0),
-                            "active_event_count": int(
-                                item.get("active_event_count") or 0
-                            ),
-                            "summary": str(item.get("summary") or "")[:300],
-                            "last_seen_at": int(item.get("last_seen_at") or 0),
-                        }
-                    return json.dumps(
-                        {
-                            "ok": True,
-                            "authoritative": True,
-                            "timezone": str(snapshot.get("timezone") or "Asia/Shanghai"),
-                            "days": days,
-                            "range_start": int(ranked.get("range_start") or 0),
-                            "generated_at": int(ranked.get("generated_at") or 0),
-                            "summary": snapshot.get("summary") or {},
-                            "ranking": [compact(item) for item in ranking],
-                            "active": [compact(item) for item in active],
-                            "ranking_basis": (
-                                "按同一 incident_key 在统计周期内的独立告警事件数降序；"
-                                "不是按群聊通知条数。"
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
-                except (OSError, RuntimeError, TypeError, ValueError, DatabaseError) as exc:
-                    self.context.logger.warning(f"Alert query tool failed: {exc}")
-                    return json.dumps(
-                        {"ok": False, "error": "权威告警库查询失败，请稍后重试。"},
-                        ensure_ascii=False,
-                    )
 
             if name == VIEW_IMAGE_TOOL_NAME:
                 if self.context.vision_worker is None:
@@ -1980,7 +1777,7 @@ class ToolExecutor(HandlerService):
                         query,
                         limit=limit,
                     )
-                    sticker_handles_this_turn.update(item.handle for item in records)
+                    turn.sticker_handles_this_turn.update(item.handle for item in records)
                 except (OSError, RuntimeError, ValueError, DatabaseError) as exc:
                     self.context.logger.warning(f"Media search tool failed: {exc}")
                     records = []
@@ -2029,7 +1826,7 @@ class ToolExecutor(HandlerService):
                         {"ok": False, "error": "这条语音没有识别出清晰文字。"},
                         ensure_ascii=False,
                     )
-                used_voice_texts.append(text)
+                turn.used_voice_texts.append(text)
                 return json.dumps(
                     {"ok": True, "text": text},
                     ensure_ascii=False,
@@ -2042,7 +1839,7 @@ class ToolExecutor(HandlerService):
                         {"ok": False, "error": "没有提供要朗读的回答。"},
                         ensure_ascii=False,
                     )
-                if voice_reply_segment is not None:
+                if turn.voice_reply_segment is not None:
                     return json.dumps(
                         {"ok": True, "message": "语音回复已经生成。"},
                         ensure_ascii=False,
@@ -2065,15 +1862,15 @@ class ToolExecutor(HandlerService):
                         {"ok": False, "error": "本地 QQ 语音生成暂时失败。"},
                         ensure_ascii=False,
                     )
-                voice_reply_segment = MessageSegment.record(audio)
-                voice_reply_text = speech_text
+                turn.voice_reply_segment = MessageSegment.record(audio)
+                turn.voice_reply_text = speech_text
                 return json.dumps(
                     {"ok": True, "message": "语音回复已经生成并等待发送。"},
                     ensure_ascii=False,
                 )
 
             if name == SEND_STICKER_TOOL_NAME:
-                if visual_reply_segment is not None:
+                if turn.visual_reply_segment is not None:
                     return json.dumps(
                         {"ok": True, "message": "本轮表情已经准备发送。"},
                         ensure_ascii=False,
@@ -2104,7 +1901,7 @@ class ToolExecutor(HandlerService):
                         self.context.logger.warning(f"Sticker search-and-send tool failed: {exc}")
                 elif (
                     self.context.media_library is not None
-                    and media_handle in sticker_handles_this_turn
+                    and media_handle in turn.sticker_handles_this_turn
                     and media_handle.startswith("media#")
                 ):
                     try:
@@ -2142,7 +1939,7 @@ class ToolExecutor(HandlerService):
                     ) as exc:
                         self.context.logger.warning(f"Sticker search-and-send tool failed: {exc}")
                 if record is not None and record.is_sticker and record.safety == "safe":
-                    visual_reply_segment = MessageSegment.image(record.storage_path.read_bytes())
+                    turn.visual_reply_segment = MessageSegment.image(record.storage_path.read_bytes())
                     self.context.media_library.mark_sent(record.media_id)
                     return json.dumps(
                         {
@@ -2171,14 +1968,14 @@ class ToolExecutor(HandlerService):
                         {"ok": False, "error": sticker_message},
                         ensure_ascii=False,
                     )
-                visual_reply_segment = sticker_message
+                turn.visual_reply_segment = sticker_message
                 return json.dumps(
                     {"ok": True, "message": "表情包已经准备发送。"},
                     ensure_ascii=False,
                 )
 
             if name == SEND_QQ_FACE_TOOL_NAME:
-                if visual_reply_segment is not None:
+                if turn.visual_reply_segment is not None:
                     return json.dumps(
                         {"ok": True, "message": "本轮表情已经准备发送。"},
                         ensure_ascii=False,
@@ -2190,7 +1987,7 @@ class ToolExecutor(HandlerService):
                         {"ok": False, "error": face_message},
                         ensure_ascii=False,
                     )
-                visual_reply_segment = face_message
+                turn.visual_reply_segment = face_message
                 return json.dumps(
                     {"ok": True, "message": "QQ 自带表情已经准备发送。"},
                     ensure_ascii=False,
@@ -2907,7 +2704,6 @@ class ToolExecutor(HandlerService):
                 ))
 
             async def handle_entry(decision: EntryDecision) -> str | None:
-                nonlocal subagent_task_started, subagent_delegations
                 self.context.logger.info("Sub-Agent entry: mode=%s reason=%s", decision.mode, decision.reason)
                 if decision.mode == "direct":
                     return None
@@ -2924,9 +2720,9 @@ class ToolExecutor(HandlerService):
                 if not tool_enabled(required_tool):
                     raise ValueError(f"{required_tool} 已由管理员禁用，不能通过自动入口绕过。")
                 if decision.mode == "workflow":
-                    subagent_task_started = True
+                    turn.subagent_task_started = True
                     return await run_subagent_goal(user_text, decision)
-                subagent_delegations += 1
+                turn.subagent_delegations += 1
                 role = decision.steps[0]["agent"]
                 if agent_executor is not None:
                     title = self.context.subagent_coordinator.registry.worker(role).title
@@ -3053,7 +2849,7 @@ class ToolExecutor(HandlerService):
             self.context.logger.exception(f"Unexpected AI chat error: {exc}")
             raise ChatFailure("我这边处理消息时出错了。", code="internal") from exc
         finally:
-            if agent_executor is not None and not (subagent_task_started or subagent_delegations):
+            if agent_executor is not None and not (turn.subagent_task_started or turn.subagent_delegations):
                 lifecycle = await agent_executor.retain_task_sandboxes()
                 stopped = lifecycle["stopped"]
                 failed = lifecycle["failed"]
@@ -3074,36 +2870,36 @@ class ToolExecutor(HandlerService):
                         + ", ".join(retained)
                     )
 
-        if not answer and not voice_reply_text and visual_reply_segment is None:
+        if not answer and not turn.voice_reply_text and turn.visual_reply_segment is None:
             raise ChatFailure("模型没有返回内容。", code="empty_response")
 
-        answer = voice_reply_text or answer
+        answer = turn.voice_reply_text or answer
         memory_user_text = user_text
-        if used_ocr_texts:
-            memory_user_text += "\n\n[图片 OCR]\n" + "\n\n".join(used_ocr_texts)
-        if used_voice_texts:
-            memory_user_text += "\n\n[语音转文字]\n" + "\n\n".join(used_voice_texts)
+        if turn.used_ocr_texts:
+            memory_user_text += "\n\n[图片 OCR]\n" + "\n\n".join(turn.used_ocr_texts)
+        if turn.used_voice_texts:
+            memory_user_text += "\n\n[语音转文字]\n" + "\n\n".join(turn.used_voice_texts)
         memory_answer = answer or "[工具动作：发送了一个表情]"
         self.context.memory.append_turn(conversation_id, memory_user_text, memory_answer)
         if isinstance(event, GroupMessageEvent) and self.context.message_ledger is None:
             self.context.group_context.append(event.group_id, "机器人", memory_answer)
 
         if (
-            voice_reply_segment is None
-            and visual_reply_segment is None
+            turn.voice_reply_segment is None
+            and turn.visual_reply_segment is None
             and plan_reply(answer).silence
         ):
             return answer
 
-        if voice_reply_segment is not None:
-            return Message([voice_reply_segment])
+        if turn.voice_reply_segment is not None:
+            return Message([turn.voice_reply_segment])
 
-        if visual_reply_segment is not None:
+        if turn.visual_reply_segment is not None:
             reply = Message()
             if answer:
                 reply.append(MessageSegment.text(ai_reply_message(answer, user_text)))
                 reply.append(MessageSegment.text("\n"))
-            reply.append(visual_reply_segment)
+            reply.append(turn.visual_reply_segment)
             return reply
 
         visible_answer = answer
@@ -3120,7 +2916,7 @@ class ToolExecutor(HandlerService):
             reply = choose_ai_reply_kaomoji(answer, user_text)
         else:
             reply = ai_reply_message(answer, user_text)
-        sources = render_search_sources(search_results)
+        sources = render_search_sources(turn.search_results)
         if sources:
             return f"{reply}\n\n{sources}"
         return reply

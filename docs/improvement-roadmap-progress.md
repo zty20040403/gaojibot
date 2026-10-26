@@ -85,7 +85,9 @@ acceptance are not implied by this roadmap.
 
 ### Phase 6: Responsibility boundaries
 
-- [ ] Tool registry, domain handlers and a typed TurnState instead of nonlocals.
+- [x] ToolHandler interface and registry; memory and alert handlers extracted.
+- [x] Typed TurnState owns reply media, source evidence and delegation counters.
+- [ ] Move remaining context/media/sticker/subagent/source handlers.
 - [ ] Registry-driven tool availability and complete handler coverage.
 - [ ] Agent loop/trace and OneBot orchestrator naming with temporary re-exports.
 - [ ] Admin API routers split by responsibility.
@@ -250,3 +252,25 @@ isolated roadmap test database is used for validation.
   and git diff --check pass. This phase does not modify the admin UI.
 - No live model, QQ or production-host calls. Mock classification tests prove
   routing contracts, not semantic accuracy or latency on the user's local Qwen.
+
+### Phase 6 first extraction validation
+
+- Added ToolHandler (definition, availability, host policy and async execution),
+  a registry, scoped ToolContext and mutable per-turn TurnState. All former
+  nonlocal reply/delegation state now belongs to that turn; list/set defaults
+  are independent between turns.
+- Memory add/list/remove and authoritative alert lookup now live in domain
+  modules. Group-edit authorization, provenance, visible-memory scope checks,
+  secret rejection and alert ranking semantics are preserved.
+- Migrated tools share the same visibility/execution gate. A disabled or
+  unavailable registered tool returns an error, never falls through to legacy
+  execution. Capacity, approval, telemetry and durable execution wrappers remain
+  outside domain handlers. Definition projections are copied, not mutated.
+- The temporary legacy catalog projection preserves prompt ordering while other
+  domains still use the old dispatcher. The 22-flag available_tools interface is
+  NOT removed yet; full registry coverage and subsequent Phase 6 work remain open.
+- Focused registry/agent/loop/routing tests: 65 passed. Full PG suite: 1,638 tests,
+  OK (12 skipped), 84.575 seconds; .cache/roadmap/phase6-domain-full.log. CI-path
+  Ruff, diff whitespace check and admin TypeScript/Vite build passed. No UI source
+  or production services were changed. Existing eager-startup ForwardRef warnings
+  are still pending the Phase 6 startup-assembly refactor.
