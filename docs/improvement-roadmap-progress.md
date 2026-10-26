@@ -64,12 +64,15 @@ acceptance are not implied by this roadmap.
 
 ### Phase 4: Reaction feedback and replay
 
-- [ ] Scoped NapCat reaction ingestion, filtering and configurable emoji mapping.
-- [ ] PG vote migration, per-principal deduplication, retraction and asker flag.
-- [ ] Context-debug vote totals and negative-feedback filter.
-- [ ] Preserve administrator judgement as the authoritative final label.
-- [ ] Private case export and candidate-vs-original replay/judge reports.
-- [ ] Vote/notice/replay tests, PG/UI gates and live reaction acceptance.
+- [x] Scoped NapCat reaction ingestion, filtering and configurable emoji mapping.
+- [x] PG vote migration, per-principal deduplication, retraction and asker flag.
+- [x] Context-debug vote totals and negative-feedback filter.
+- [x] Preserve administrator judgement as the authoritative final label.
+- [x] Private case export and bounded candidate-vs-original replay/judge reports.
+- [x] Vote/notice/replay tests, PostgreSQL concurrency/export and UI gates.
+- [ ] Real QQ emoji-ID confirmation and live reaction acceptance.
+- [ ] Real-provider A/B quality comparison; tool/multimodal and historical-memory
+      replay remain unsupported and are not counted as evaluated improvements.
 
 ### Phase 5: Intent routing
 
@@ -193,3 +196,33 @@ isolated roadmap test database is used for validation.
 - Temporary chart fixtures were removed and their Vite process stopped. No
   real provider, QQ account or production server was contacted. Live one-day
   cache-hit comparison remains pending an authorized deployment.
+
+### Phase 4 validation
+
+- Added Alembic 0030 and upgraded only the two disposable local databases.
+  Six notice/store regressions cover filtering, repeat events, replacement,
+  retraction, different reply chunks and administrator-label independence.
+- PostgreSQL concurrency test sent 16 identical writes through two journal
+  instances: exactly one change persisted. A scoped read-only repeatable-read
+  export excludes other groups, future messages and hidden questions.
+- Export files use exclusive creation with mode 0600; feedback-exports remains
+  ignored. Reports contain private raw chat and require review before sharing.
+  Replay requires explicit provider-data consent, exact profile restrictions,
+  bounded cases/timeouts and no tool execution. The candidate sees no old answer
+  or feedback label. Eight local tests exercise scoring, privacy boundaries,
+  cancellation and the real context-projection code with mocked model calls.
+- A/B reports separate negative wins/ties/losses, positive regressions, errors
+  and skipped coverage. They never set release_ready=true. Multimodal/tool turns,
+  missing evidence and possibly truncated original answers are skipped. Current
+  memories are not used as fabricated point-in-time memories.
+- Fixed an SSE detail-refresh gap: runtime data changes do not increment admin
+  configuration versions. Vote detail/filter now refresh on actual data updates;
+  unfinished notes survive updates, and saving cannot erase newer edits.
+  Direct turn lookup also makes old negative turns accessible beyond 500 rows.
+- Full PG suite: 1,617 tests, OK (12 skipped), 87.310 seconds;
+  .cache/roadmap/phase4-full.log. CI-path Ruff and admin TypeScript/Vite build pass.
+  Isolated Chrome at 1280x800 and 390x844 verified filters, count changes with an
+  unchanged configuration version, draft preservation and no viewport overflow.
+  Both screenshots inspected; temporary frontend fixtures/server removed.
+- No real QQ, model provider or production host was contacted. Emoji mappings
+  intentionally remain empty until a real test-group event confirms the IDs.

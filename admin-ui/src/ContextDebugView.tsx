@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BrainCircuit,
   Check,
@@ -23,6 +23,14 @@ import {
 import type { useControlPlane } from './useControlPlane'
 
 type Plane = ReturnType<typeof useControlPlane>
+
+function ReactionVotes({ votes }: { votes: any }) {
+  return <span className="reaction-votes">
+    <span title="提问者自己的评价">提问者：{votes?.asker === 1 ? '赞同' : votes?.asker === -1 ? '不认可' : '未评价'}</span>
+    <span title="其他群友的赞同票"><ThumbsUp size={14} />{fmtNumber(votes?.others_up)}</span>
+    <span title="其他群友的不认可票"><ThumbsDown size={14} />{fmtNumber(votes?.others_down)}</span>
+  </span>
+}
 
 const SOURCE_LABELS: Record<string, string> = {
   relation_graph: '引用与话题关系',
@@ -78,7 +86,10 @@ function percent(value: unknown): string {
 
 export function ContextDebugView({ plane }: { plane: Plane }) {
   const payload = plane.data.contextDebug ?? {}
-  const items = rows(payload.items)
+  const [negativeOnly, setNegativeOnly] = useState(false)
+  const [negativeItems, setNegativeItems] = useState<any[]>([])
+  const [filterError, setFilterError] = useState('')
+  const items = negativeOnly ? negativeItems : rows(payload.items)
   const historian = payload.historian ?? {}
   const [selectedTurn, setSelectedTurn] = useState<number | null>(null)
   const [detail, setDetail] = useState<any>(null)
@@ -86,6 +97,16 @@ export function ContextDebugView({ plane }: { plane: Plane }) {
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [note, setNote] = useState('')
+  const noteDraft = useRef({ turnId: null as number | null, dirty: false, revision: 0 })
+
+  useEffect(() => {
+    if (!negativeOnly) return
+    const controller = new AbortController()
+    void plane.query('/context-debug?negative_only=true&limit=100', controller.signal)
+      .then((result) => { if (!controller.signal.aborted) { setNegativeItems(rows(result.items)); setFilterError('') } })
+      .catch((reason) => { if (!controller.signal.aborted) setFilterError(String(reason)) })
+    return () => controller.abort()
+  }, [negativeOnly, plane.query, plane.versions['context-debug'], plane.data.contextDebug])
 
   useEffect(() => {
     if (!items.length) {
@@ -103,12 +124,18 @@ export function ContextDebugView({ plane }: { plane: Plane }) {
       return
     }
     const controller = new AbortController()
+    if (noteDraft.current.turnId !== selectedTurn) {
+      noteDraft.current = { turnId: selectedTurn, dirty: false, revision: 0 }
+      setNote('')
+      setDetail(null)
+    }
     setLoadingDetail(true)
     void plane.query(`/context-debug/${selectedTurn}`, controller.signal)
       .then((result) => {
+        if (controller.signal.aborted) return
         setDetail(result.item ?? null)
         setDetailHistorian(result.historian ?? null)
-        setNote(String(result.item?.feedback?.note ?? ''))
+        if (!noteDraft.current.dirty) setNote(String(result.item?.feedback?.note ?? ''))
         setDetailError('')
       })
       .catch((reason) => {
@@ -118,7 +145,7 @@ export function ContextDebugView({ plane }: { plane: Plane }) {
         if (!controller.signal.aborted) setLoadingDetail(false)
       })
     return () => controller.abort()
-  }, [plane.query, plane.versions['context-debug'], selectedTurn])
+  }, [plane.query, plane.versions['context-debug'], plane.data.contextDebug, selectedTurn])
 
   const tokenUsage = detail?.token_usage ?? {}
   const tokenTotal = Number(tokenUsage.total ?? 0)
@@ -132,13 +159,19 @@ export function ContextDebugView({ plane }: { plane: Plane }) {
 
   const setFeedback = async (verdict: 'correct' | 'off_topic') => {
     if (selectedTurn === null) return
-    await plane.mutate(
-      'context-debug',
-      `/context-debug/${selectedTurn}/feedback`,
-      'PUT',
-      { verdict, note },
-      ['contextDebug', 'contextPlans'],
-    )
+    const revision = noteDraft.current.revision
+    try {
+      await plane.mutate(
+        'context-debug',
+        `/context-debug/${selectedTurn}/feedback`,
+        'PUT',
+        { verdict, note },
+        ['contextDebug', 'contextPlans'],
+      )
+      if (noteDraft.current.turnId === selectedTurn && noteDraft.current.revision === revision) noteDraft.current.dirty = false
+    } catch {
+      // The control plane displays the failure; keep the draft for a retry.
+    }
   }
 
   return (
@@ -157,7 +190,13 @@ export function ContextDebugView({ plane }: { plane: Plane }) {
 
       <div className="context-debug-layout">
         <section className="context-turn-list" aria-label="回答列表">
-          <div className="context-pane-heading"><div><h2>最近回答</h2><p>选择一条查看当时的完整上下文决策</p></div></div>
+          <div className="context-pane-heading"><div><h2>最近回答</h2></div>
+            <div className="segment-control" role="group" aria-label="回答评价筛选">
+              <button type="button" aria-pressed={!negativeOnly} className={!negativeOnly ? 'active' : ''} onClick={() => setNegativeOnly(false)}>全部</button>
+              <button type="button" aria-pressed={negativeOnly} className={negativeOnly ? 'active' : ''} onClick={() => setNegativeOnly(true)}>有差评</button>
+            </div>
+          </div>
+          {filterError && <div className="inline-error">{filterError}</div>}
           <div className="context-turn-scroll">
             {items.map((item) => (
               <button
@@ -168,10 +207,11 @@ export function ContextDebugView({ plane }: { plane: Plane }) {
               >
                 <span className="context-turn-top"><strong>{item.turn_handle}</strong><time>{fmtTime(item.created_at)}</time></span>
                 <span className="context-turn-topic">{item.current_topic || '未识别话题'}</span>
+                <ReactionVotes votes={item.votes} />
                 <span className="context-turn-meta"><StatusBadge value={item.feedback?.verdict ?? item.status} label={item.feedback?.verdict === 'correct' ? '答对了' : item.feedback?.verdict === 'off_topic' ? '答非所问' : ROUTE_LABELS[item.route] ?? item.route} /><span>{fmtNumber(item.context_tokens)} Token</span><span>{item.selected_candidates}/{item.candidate_count} 条证据</span></span>
               </button>
             ))}
-            {!items.length && <EmptyState>还没有上下文决策记录</EmptyState>}
+            {!items.length && <EmptyState>{negativeOnly ? '没有差评记录' : '还没有上下文决策记录'}</EmptyState>}
           </div>
         </section>
 
@@ -216,8 +256,9 @@ export function ContextDebugView({ plane }: { plane: Plane }) {
               </Section>
 
               <Section title="标记回答质量" description="反馈会保存版本号并写入审计记录，可用于后续上下文评测集">
+                <ReactionVotes votes={detail.votes} />
                 <div className="context-feedback">
-                  <label><MessageSquareText size={16} /><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="可选：写下正确话题或答错原因" /></label>
+                  <label><MessageSquareText size={16} /><input value={note} onChange={(event) => { noteDraft.current.dirty = true; noteDraft.current.revision++; setNote(event.target.value) }} placeholder="可选：写下正确话题或答错原因" /></label>
                   <button className={detail.feedback?.verdict === 'correct' ? 'feedback-button correct active' : 'feedback-button correct'} type="button" onClick={() => void setFeedback('correct')}><ThumbsUp size={16} />答对了</button>
                   <button className={detail.feedback?.verdict === 'off_topic' ? 'feedback-button wrong active' : 'feedback-button wrong'} type="button" onClick={() => void setFeedback('off_topic')}><ThumbsDown size={16} />答非所问</button>
                 </div>

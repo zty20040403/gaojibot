@@ -562,3 +562,5 @@ dd { margin: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
   .agent-delivery-row { grid-template-columns: minmax(0, 1fr) auto; }
   .agent-delivery-row time { grid-column: 1 / -1; }
 }
+.reaction-votes { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+.reaction-votes > span { display: inline-flex; align-items: center; gap: 4px; }

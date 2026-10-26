@@ -238,6 +238,7 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "turn_journal_events": ("traces", "context-debug", "observability"),
     "turn_context_plans": ("traces", "context-debug"),
     "turn_context_feedback": ("context-debug",),
+    "turn_reaction_votes": ("context-debug",),
     "turn_edges": ("traces", "context-debug"),
     "turn_digests": ("traces", "context-debug"),
     "durable_jobs": ("jobs", "media", "context-debug", "overview"),
@@ -1811,6 +1812,7 @@ def register_admin(
     @router.get("/api/context-debug")
     def context_debug(
         limit: int = Query(default=100, ge=1, le=500),
+        negative_only: bool = Query(default=False),
         authorization: Optional[str] = Header(default=None),
     ) -> dict[str, object]:
         authorize(authorization)
@@ -1825,7 +1827,7 @@ def register_admin(
                 },
             )
         try:
-            plans = services.turn_journal.recent_context_plans(limit=limit)
+            plans = services.turn_journal.recent_context_plans(limit=limit, negative_only=negative_only)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return versioned(
                 "context-debug",
@@ -1855,7 +1857,7 @@ def register_admin(
         authorize(authorization)
         if services.turn_journal is None:
             raise HTTPException(status_code=503, detail="上下文日志不可用")
-        plans = services.turn_journal.recent_context_plans(limit=500)
+        plans = services.turn_journal.recent_context_plans(turn_id=turn_id, limit=1)
         plan = next(
             (item for item in plans if int(item.get("turn_id") or 0) == turn_id),
             None,
@@ -1884,7 +1886,7 @@ def register_admin(
         verdict = feedback.verdict.strip().casefold()
         if verdict not in {"correct", "off_topic"}:
             raise HTTPException(status_code=422, detail="反馈只能是答对了或答非所问")
-        plans = services.turn_journal.recent_context_plans(limit=500)
+        plans = services.turn_journal.recent_context_plans(turn_id=turn_id, limit=1)
         plan = next(
             (item for item in plans if int(item.get("turn_id") or 0) == turn_id),
             None,
@@ -2158,6 +2160,7 @@ def _context_debug_summary(plan: dict[str, Any]) -> dict[str, object]:
             "user": "user_memory" in selected_sources,
         },
         "feedback": plan.get("feedback"),
+        "votes": plan.get("votes", {"asker": None, "others_up": 0, "others_down": 0}),
     }
 
 

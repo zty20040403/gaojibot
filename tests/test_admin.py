@@ -218,11 +218,16 @@ class TurnJournal:
     def __init__(self):
         self.feedback = None
 
-    def recent_context_plans(self, limit=100):
+    def recent_context_plans(self, limit=100, turn_id=None, negative_only=False):
         del limit
+        if turn_id is not None and turn_id != 3:
+            return []
+        if negative_only and self.feedback is None:
+            return []
         return [
             {
                 "turn_id": 3,
+                "votes": {"asker": 1, "others_up": 2, "others_down": 0},
                 "turn_handle": "t#3",
                 "scope_key": "onebot-v11:group:930690526",
                 "current_message_id": 12,
@@ -475,6 +480,11 @@ class AdminTests(unittest.TestCase):
         self.assertNotIn("versions", event)
 
     def test_database_change_feed_maps_only_changed_resources(self) -> None:
+        self.assertEqual(
+            _changed_database_resources({"turn_reaction_votes": (1, 0, 0)},
+                                        {"turn_reaction_votes": (1, 1, 0)}),
+            {"context-debug"},
+        )
         previous = {
             "usage_events": (3, 0, 0),
             "vision_jobs": (4, 2, 0),
@@ -719,6 +729,13 @@ class AdminTests(unittest.TestCase):
                     },
                     json={"verdict": "off_topic", "note": "应该关联上一条"},
                 )
+                negative_feedback = await client.get(
+                    "/bot-admin/api/v1/context-debug?negative_only=true",
+                    headers={"X-Test-Login": "admin"},
+                )
+                self.assertEqual(negative_feedback.status_code, 200)
+                self.assertEqual(negative_feedback.json()["items"][0]["votes"]["others_up"], 2)
+                self.assertEqual(context_detail.json()["item"]["votes"]["asker"], 1)
                 databases = await client.get(
                     "/bot-admin/api/databases",
                     headers={"X-Test-Login": "admin"},

@@ -338,11 +338,15 @@ class Settings:
     sandbox_pids_limit: int = 256
     sandbox_memory_mib: int = 8192
     sandbox_network: str = "isolated"
+    feedback_positive_emoji_ids: tuple[str, ...] = ()
+    feedback_negative_emoji_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "Settings":
         sandbox_max_file_mb = _get_int("AI_SANDBOX_MAX_FILE_MB", 20)
         return cls(
+            feedback_positive_emoji_ids=_get_csv("AI_FEEDBACK_POSITIVE_EMOJI_IDS"),
+            feedback_negative_emoji_ids=_get_csv("AI_FEEDBACK_NEGATIVE_EMOJI_IDS"),
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip(),
             deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip(),
             deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash").strip(),

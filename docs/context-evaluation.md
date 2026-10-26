@@ -58,3 +58,57 @@ python tools/context_eval.py --live --profile qwen-local --limit 5 --embeddings 
 失败案例和一部分通过案例。这个隔离基准不是完整 QQ 工具调用、沙盒或多轮对话的端到端评测。
 
 本轮改动只运行离线评分和回归测试，未花费 API Token 跑完整模型基准。
+
+## 真实回答的表情反馈
+
+`AI_FEEDBACK_POSITIVE_EMOJI_IDS`、`AI_FEEDBACK_NEGATIVE_EMOJI_IDS` 是逗号分隔的
+NapCat emoji ID。两项默认留空，不采集投票。先在自己的测试群核实实际通知中的
+`likes[].emoji_id`，再配置，不能直接把测试里的编号当成生产默认值。
+通知结构参考 [NapCat 事件定义](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/event/notice/OB11MsgEmojiLikeEvent.ts)。
+
+- 只处理启用群里、已经关联到回合的机器人消息。忽略机器人自己、其他人的消息和未知用户通知。
+- 每个回合每人一票；改贴表情更新同一票，撤销当前表情撤票。`likes[].count` 不当作人数。
+- 重复或时间更旧的通知不改变结果；同秒同表情撤销优先，避免延迟重发又恢复票数。
+- 提问者独立显示，其他人的票分别计数。控制台“有差评”包含任一负票或管理员的“答非所问”。
+- 管理员判断不会被群友覆盖。导出时优先用管理员标签，其次提问者，最后群友多数票；平票不生成标签。
+- 采集不调用模型、不回复群消息。SSE 会更新列表和详情，正在填写的评价保留。
+
+## 私密导出与 A/B 回放
+
+先由管理员明确提供 PostgreSQL 连接环境变量 `AI_POSTGRES_DSN` 和
+`AI_POSTGRES_SCHEMA`，工具不会读取 `.env`、启动机器人或执行迁移。
+以下 `GROUP_ID` 换成获准评测的群号：
+
+```sh
+python tools/export_feedback_cases.py --scope onebot-v11:group:GROUP_ID \
+  --limit 100 --history-limit 500 --output feedback-exports/cases.json
+```
+
+导出在单个 PostgreSQL 只读、一致性快照中进行。包括问题、证据编号、此前可见原文、
+原回答、标签、票数、模型和内容哈希。不会读取其他群、隐藏消息或问题之后的消息。
+`has_more` 表示仍有更早回合未导出。这里的 500 条是离线导出上限，不改变线上连续时间线。
+文件权限为 0600，不覆盖已有文件；目录已被 Git 忽略。**正文仍然是私密群聊，不是匿名数据。**
+
+回放前审核文件内容，确认允许发送给选定的两个模型供应商，再执行：
+
+```sh
+python tools/context_eval.py --replay-export feedback-exports/cases.json \
+  --profile CANDIDATE_PROFILE --judge-profile JUDGE_PROFILE \
+  --allow-provider-data --limit 5 --timeout 120 \
+  --output feedback-exports/comparison.json
+```
+
+候选模型通过现有 Ledger、ContextStore 和提示词构造器重建连续原文时间线，
+不能看到原回答、标签或被选中的证据答案。评委看到随机化位置的 A/B 回答与相同历史；
+不会告诉它哪个是新版，也不提供标签。两个调用分别限制为明确选择的 profile，
+不允许悄悄降级到第三个供应商。只有显式回放命令产生 API 消耗。
+
+报告分开统计负样本的 win/tie/loss 和正样本退步数量，同时显示 error、skipped、coverage、
+实际模型和 Token。空回答、超时、非法评判不是平局；未比较案例不会伪装成提升。
+单案例哈希用于发现文件改动，不是签名或防篡改认证。退出码 0 只表示有比较结果且无调用错误，
+不代表质量达标；`release_ready` 始终为 false，需人工抽查。
+
+当前边界：只重放文字上下文，不执行历史工具命令、不发 QQ、不重新下载媒体。
+工具回合、多媒体、证据不在快照内，以及原回答可能被日志长度限制截断的案例会明确跳过。
+不会拿今天的个人记忆或 Historian 章节假装过去的快照。因此这不是完整生产回放，
+真实 QQ 贴表情、真实供应商 A/B 和长期记忆回放的验收仍需分别进行。

@@ -9,6 +9,8 @@ from src.bot_storage import (
 from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
     MessageEvent,
+    NoticeEvent,
+    Bot,
 )
 from .onebot_codec import (
     scope_from_event,
@@ -17,9 +19,20 @@ from .stickers import (
     learn_stickers_from_message,
 )
 from .handler_services import HandlerService
+from .reaction_feedback import record_reaction_feedback
 
 
 class MessageIngest(HandlerService):
+    async def handle_reaction_notice(self, bot: Bot, event: NoticeEvent) -> None:
+        try:
+            await asyncio.to_thread(record_reaction_feedback, event.model_dump(),
+                bot_id=int(bot.self_id), ledger=self.context.message_ledger,
+                journal=self.context.turn_journal, group_enabled=self.services.group_enabled,
+                positive_ids=self.context.settings.feedback_positive_emoji_ids,
+                negative_ids=self.context.settings.feedback_negative_emoji_ids)
+        except (OSError, RuntimeError, ValueError, DatabaseError) as exc:
+            self.context.logger.warning(f"Reaction feedback was not stored: {type(exc).__name__}")
+
     async def handle_canonical_ingest(self, event: MessageEvent) -> None:
         await self.services.ingest_adapter.ingest(event)
 

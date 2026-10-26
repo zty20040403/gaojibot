@@ -444,6 +444,7 @@ for _matcher, _handler in (
     (matchers.task_stop, handle_task_stop),
     (matchers.mention_ai, handle_mention_ai),
     (matchers.canonical_ingest_tracker, handle_canonical_ingest),
+    (matchers.reaction_feedback_tracker, handlers.ingest.handle_reaction_notice),
     (matchers.group_activity_tracker, handle_group_activity),
     (matchers.image_auto_description, handle_image_auto_description),
     (matchers.proactive_chat, handle_proactive_chat),

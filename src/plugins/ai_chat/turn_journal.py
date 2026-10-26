@@ -15,6 +15,7 @@ from typing import Any, Iterator, Literal
 from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
 
 from .conversation_scope import ConversationScope
+from .reaction_feedback import REACTION_VOTES_SQL, ReactionVoteStoreMixin
 
 
 TurnStatus = Literal[
@@ -92,7 +93,7 @@ class ReplayBundle:
     covered_canonical_message_ids: tuple[int, ...]
 
 
-class TurnJournal:
+class TurnJournal(ReactionVoteStoreMixin):
     def __init__(
         self,
         path: DatabaseSource,
@@ -280,7 +281,8 @@ class TurnJournal:
                 ),
             )
 
-    def recent_context_plans(self, *, limit: int = 100) -> list[dict[str, Any]]:
+    def recent_context_plans(self, *, limit: int = 100, turn_id: int | None = None,
+                             negative_only: bool = False) -> list[dict[str, Any]]:
         bounded = min(max(int(limit), 1), 500)
         with self._lock:
             rows = self._connection.execute(
@@ -299,14 +301,20 @@ class TurnJournal:
                 LEFT JOIN turn_context_feedback AS feedback
                   ON feedback.turn_id = plan.turn_id
                 WHERE turn.turn_ordinal >= visibility.min_turn_ordinal
+                  AND (? = 0 OR turn.turn_id = ?)
+                  AND (? = 0 OR feedback.verdict = 'off_topic' OR EXISTS (
+                      SELECT 1 FROM turn_reaction_votes AS rv
+                      WHERE rv.turn_id = turn.turn_id AND rv.vote = -1))
                 ORDER BY plan.created_at DESC, plan.turn_id DESC
                 LIMIT ?
                 """,
-                (bounded,),
+                (int(turn_id is not None), int(turn_id or 0), int(negative_only), bounded),
             ).fetchall()
+        votes = self.reaction_totals([int(row["turn_id"]) for row in rows])
         return [
             {
                 "turn_id": int(row["turn_id"]),
+                "votes": votes.get(int(row["turn_id"]), {"asker": None, "others_up": 0, "others_down": 0}),
                 "turn_handle": f"t#{int(row['turn_ordinal'])}",
                 "scope_key": str(row["scope_key"]),
                 "current_message_id": int(row["current_message_id"]),
@@ -1654,6 +1662,7 @@ class TurnJournal:
                     ON turn_context_feedback(updated_at, turn_id);
                 """
             )
+            cursor.executescript(REACTION_VOTES_SQL)
             existing_context_columns = {
                 str(item[1])
                 for item in cursor.execute(

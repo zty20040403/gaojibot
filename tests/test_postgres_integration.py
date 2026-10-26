@@ -68,6 +68,60 @@ class PostgresIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self._truncate_schema()
 
+    def test_reaction_concurrency_and_readonly_feedback_export(self) -> None:
+        from tools.export_feedback_cases import export_cases
+        from src.context_feedback_evaluation import validate_export
+        ledger, journal = MessageLedger(self.database), TurnJournal(self.database)
+        other_journal = TurnJournal(self.database)
+        self.addCleanup(ledger.close)
+        self.addCleanup(journal.close)
+        self.addCleanup(other_journal.close)
+        scope = ConversationScope("onebot-v11", "group", "100")
+
+        def message(key, user, text, target=scope):
+            return ledger.record_message(target, native_message_id=key, sender_native_user_id=user,
+                sender_display="fixture", body=MessageBody((TextNode(0, text),)), occurred_at=1000)
+
+        past = message("1", "10", "Earlier topic")
+        question = message("2", "10", "What do you think?")
+        turn = journal.start_turn(scope, trigger_canonical_message_id=question.canonical_message_id,
+                                  objective="What do you think?", provider="fixture", model="fixture")
+        answer = message("3", "900", "Original answer")
+        journal.link_send(turn.turn_id, answer.canonical_message_id)
+        journal.record_context_plan(turn.turn_id, {"scope_key": scope.key,
+            "current_message_id": question.canonical_message_id,
+            "focus_message_id": past.canonical_message_id})
+        journal.finish_turn(turn.turn_id, status="succeeded", final_text="Original answer")
+        message("4", "10", "Future answer must not leak")
+        message("other", "11", "Other group secret", ConversationScope("onebot-v11", "group", "200"))
+
+        def vote(index):
+            return (journal if index % 2 else other_journal).set_reaction_vote(scope, turn.turn_id,
+                reactor_principal_id=question.sender_principal_id, message_id=answer.canonical_message_id,
+                emoji_id="77", vote=-1, is_add=True, source_time=1010)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            self.assertEqual(sum(executor.map(vote, range(16))), 1)
+        self.assertEqual(journal.recent_context_plans(negative_only=True)[0]["votes"]["asker"], -1)
+        journal.set_context_feedback(turn.turn_id, verdict="correct", note="admin overrides vote",
+                                     actor="admin", resource_version=1)
+        with psycopg.connect(TEST_DSN, autocommit=True) as connection:
+            result = export_cases(connection, schema=TEST_SCHEMA, scopes=[scope.key])
+            case = validate_export(result)[0]
+            self.assertEqual(case["label"], "positive")
+            self.assertEqual(case["label_source"], "administrator")
+            self.assertEqual([m["id"] for m in case["messages"]], [past.canonical_message_id])
+            self.assertEqual(case["question"]["id"], question.canonical_message_id)
+            self.assertNotIn("Future answer", json.dumps(result))
+            self.assertNotIn("Other group secret", json.dumps(result))
+            self.assertEqual(case["unsupported_reason"], "")
+            empty = export_cases(connection, schema=TEST_SCHEMA, scopes=["onebot-v11:group:200"])
+            self.assertEqual(empty["cases"], [])
+            ledger.hide_history(scope)
+            hidden = export_cases(connection, schema=TEST_SCHEMA, scopes=[scope.key])
+            self.assertEqual(hidden["cases"], [])
+            self.assertEqual(hidden["skipped"][0]["reason"], "question_hidden_or_missing")
+
     def _truncate_schema(self) -> None:
         with psycopg.connect(TEST_DSN) as connection:
             with connection.cursor() as cursor:

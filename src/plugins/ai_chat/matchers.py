@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
-from nonebot import on_command, on_message, on_regex
-from nonebot.adapters.onebot.v11 import MessageEvent
+from nonebot import on_command, on_message, on_notice, on_regex
+from nonebot.adapters.onebot.v11 import MessageEvent, NoticeEvent
 from nonebot.rule import Rule
 
 
@@ -19,6 +19,10 @@ def _mentions_current_bot(event: MessageEvent) -> bool:
 
 def _addressed_to_current_bot(event: MessageEvent) -> bool:
     return event.is_tome() or _mentions_current_bot(event)
+
+
+def _is_reaction_notice(event: NoticeEvent) -> bool:
+    return event.notice_type == "group_msg_emoji_like"
 
 
 ai = on_command("ai", aliases={"ds", "deepseek", "问"}, priority=10, block=True)
@@ -113,6 +117,7 @@ mention_ai = on_message(
     block=True,
 )
 canonical_ingest_tracker = on_message(priority=0, block=False)
+reaction_feedback_tracker = on_notice(rule=Rule(_is_reaction_notice), priority=5, block=False)
 group_activity_tracker = on_message(priority=1, block=False)
 image_auto_description = on_message(priority=70, block=False)
 proactive_chat = on_message(priority=80, block=False)
