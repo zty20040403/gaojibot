@@ -4,22 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import math
-import re
 import time
 from typing import Any
 
 from .fleet_client import FleetControlError
-
-
-def requires_local_model_status(text: str) -> bool:
-    return bool(
-        re.search(r"千问|qwen", text, re.IGNORECASE)
-        and re.search(
-            r"状态|寄了|寄了吗|挂了|挂了吗|在线|能用|可用|连通|连不上|"
-            r"启动|开了|开没|正常|现在|目前|还活|还在|关了",
-            text,
-        )
-    )
 
 
 def _object(value: Any) -> dict[str, Any]:

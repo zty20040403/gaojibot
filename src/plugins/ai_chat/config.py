@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -340,11 +341,17 @@ class Settings:
     sandbox_network: str = "isolated"
     feedback_positive_emoji_ids: tuple[str, ...] = ()
     feedback_negative_emoji_ids: tuple[str, ...] = ()
+    tool_intent_enabled: bool = True
+    tool_intent_timeout_seconds: float = 3.0
 
     @classmethod
     def from_env(cls) -> "Settings":
         sandbox_max_file_mb = _get_int("AI_SANDBOX_MAX_FILE_MB", 20)
+        intent_timeout = _get_float("AI_TOOL_INTENT_TIMEOUT_SECONDS", 3.0)
+        intent_timeout = min(max(intent_timeout, 0.1), 10.0) if math.isfinite(intent_timeout) else 3.0
         return cls(
+            tool_intent_enabled=_get_bool("AI_TOOL_INTENT_ENABLED", True),
+            tool_intent_timeout_seconds=intent_timeout,
             feedback_positive_emoji_ids=_get_csv("AI_FEEDBACK_POSITIVE_EMOJI_IDS"),
             feedback_negative_emoji_ids=_get_csv("AI_FEEDBACK_NEGATIVE_EMOJI_IDS"),
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip(),

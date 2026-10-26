@@ -27,6 +27,7 @@ from src.plugins.ai_chat.ai_tools import (
     MEMORY_ADD_TOOL_NAME,
     MEMORY_LIST_TOOL_NAME,
     MEMORY_REMOVE_TOOL_NAME,
+    MODEL_STATUS_TOOL_NAME,
     QUERY_ALERTS_TOOL_NAME,
     SEND_QQ_FACE_TOOL_NAME,
     SEND_STICKER_TOOL_NAME,
@@ -37,6 +38,7 @@ from src.plugins.ai_chat.adapters import OneBotIngestAdapter
 from src.plugins.ai_chat.context_pipeline import TurnContextPlan
 from src.plugins.ai_chat.media_library import MediaRecord
 from src.plugins.ai_chat.model_catalog import ModelCatalog
+from src.plugins.ai_chat.intent_routing import ToolIntent
 
 
 def _group_event(user_id: int = 321, group_id: int = 789) -> GroupMessageEvent:
@@ -409,8 +411,9 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[image#21.0", str(captured["group_context"]))
         self.assertIn(VIEW_IMAGE_TOOL_NAME, captured["tool_names"])
 
-    async def test_private_image_forces_vision_tool_and_announces_source(self) -> None:
+    async def test_classified_private_image_selects_vision_tool_and_announces_source(self) -> None:
         captured: dict[str, object] = {}
+        classifier = AsyncMock(return_value=ToolIntent(VIEW_IMAGE_TOOL_NAME, "semantic", "cheap"))
 
         async def fake_deepseek(
             user_text,
@@ -429,6 +432,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
         import src.plugins.ai_chat as ai_chat
 
         with (
+            patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
             patch.object(ai_chat.app_context, 'vision_worker', object()),
             patch.object(ai_chat.app_context, 'message_ledger', None),
             patch.object(ai_chat.app_context, 'pin_store', None),
@@ -453,6 +457,8 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             VIEW_IMAGE_TOOL_NAME,
         )
         self.assertIn("当前会话可用图片", captured["tool_context"])
+        self.assertIn(VIEW_IMAGE_TOOL_NAME, classifier.call_args.kwargs["allowed_tools"])
+        self.assertTrue(classifier.call_args.kwargs["media"]["image_attached_now"])
 
     async def test_private_image_is_recorded_for_follow_up_message(self) -> None:
         recent_images = Mock()
@@ -473,8 +479,9 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             ["https://multimedia.nt.qq.com.cn/test.jpg"],
         )
 
-    async def test_private_video_forces_video_tool(self) -> None:
+    async def test_classified_private_video_selects_video_tool(self) -> None:
         captured: dict[str, object] = {}
+        classifier = AsyncMock(return_value=ToolIntent(VIEW_VIDEO_TOOL_NAME, "semantic", "cheap"))
 
         async def fake_deepseek(
             user_text,
@@ -493,6 +500,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
         import src.plugins.ai_chat as ai_chat
 
         with (
+            patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
             patch.object(ai_chat.handlers, 'video_analyzer', object()),
             patch.object(ai_chat.app_context, 'message_ledger', None),
             patch.object(ai_chat.app_context, 'pin_store', None),
@@ -515,6 +523,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
             VIEW_VIDEO_TOOL_NAME,
         )
         self.assertIn("当前会话可用视频", captured["tool_context"])
+        self.assertIn(VIEW_VIDEO_TOOL_NAME, classifier.call_args.kwargs["allowed_tools"])
 
     async def test_private_video_is_recorded_for_follow_up_message(self) -> None:
         recent_videos = Mock()
@@ -564,6 +573,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_alert_ranking_uses_authoritative_alert_tool(self) -> None:
         captured: dict[str, object] = {}
+        classifier = AsyncMock(return_value=ToolIntent(QUERY_ALERTS_TOOL_NAME, "semantic", "cheap"))
         alert_store = Mock()
         alert_store.snapshot.return_value = {
             "timezone": "Asia/Shanghai",
@@ -633,6 +643,7 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
         import src.plugins.ai_chat as ai_chat
 
         with (
+            patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
             patch.object(ai_chat.app_context, 'alert_store', alert_store),
             patch.object(ai_chat.handlers.tools, '_alert_tools_allowed', return_value=True),
             patch.object(ai_chat.app_context, 'message_ledger', None),
@@ -659,6 +670,101 @@ class NaturalToolRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(payload.find("host:h310"), payload.find("host:r2s"))
         alert_store.snapshot.assert_called_once_with(days=7, limit=100)
         alert_store.rank_incidents.assert_called_once_with(days=7, limit=10)
+        self.assertIn(QUERY_ALERTS_TOOL_NAME, classifier.call_args.kwargs["allowed_tools"])
+
+    async def test_classifier_auto_does_not_restore_keyword_forcing(self) -> None:
+        import src.plugins.ai_chat as ai_chat
+
+        captured: list[dict] = []
+
+        async def answer(*args, **kwargs):
+            captured.append(kwargs)
+            return "正常回答"
+
+        classifier = AsyncMock(return_value=ToolIntent(reason="timeout"))
+        with (
+            patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
+            patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=answer),
+            patch.object(ai_chat.app_context, 'vision_worker', object()),
+            patch.object(ai_chat.handlers, 'video_analyzer', object()),
+            patch.object(ai_chat.app_context, 'alert_store', Mock()),
+            patch.object(ai_chat.app_context, 'fleet_client', Mock()),
+            patch.object(ai_chat.handlers.tools, '_alert_tools_allowed', return_value=True),
+            patch.object(ai_chat.handlers.tools, '_fleet_tools_allowed', return_value=True),
+        ):
+            for event, text in ((_private_image_event(), "这个算法你觉得呢，先不要看图"),
+                                (_private_video_event(), "先不分析视频，看看这个算法"),
+                                (_group_event(), "解释告警最多是什么意思"),
+                                (_group_event(), "现在千问呢")):
+                with self.subTest(text=text):
+                    await _ask_ai(AsyncMock(), event, text, available_image_sources=["https://example.test/old.jpg"])
+                    self.assertEqual(captured[-1]["tool_choice"], "auto")
+        self.assertEqual(classifier.await_count, 4)
+
+    async def test_explicit_ocr_bypasses_classifier(self) -> None:
+        import src.plugins.ai_chat as ai_chat
+
+        model = AsyncMock(return_value="已看图")
+        with (
+            patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new_callable=AsyncMock) as classifier,
+            patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=model),
+            patch.object(ai_chat.app_context, 'vision_worker', object()),
+        ):
+            await _ask_ai(AsyncMock(), _private_image_event(), "看看", force_ocr=True,
+                          available_image_sources=["https://example.test/current.jpg"])
+        classifier.assert_not_awaited()
+        self.assertEqual(model.call_args.kwargs["tool_choice"]["function"]["name"], VIEW_IMAGE_TOOL_NAME)
+
+    async def test_classifier_cannot_enable_unavailable_infrastructure_tools(self) -> None:
+        import src.plugins.ai_chat as ai_chat
+
+        classifier = AsyncMock()
+        model = AsyncMock(return_value="正常回答")
+        with (
+            patch('src.plugins.ai_chat.tool_executor.classify_tool_intent', new=classifier),
+            patch('src.plugins.ai_chat.tool_executor.ask_deepseek_with_tools', new=model),
+            patch.object(ai_chat.app_context, 'alert_store', Mock()),
+            patch.object(ai_chat.app_context, 'fleet_client', Mock()),
+            patch.object(ai_chat.handlers.tools, '_alert_tools_allowed', return_value=False),
+            patch.object(ai_chat.handlers.tools, '_fleet_tools_allowed', return_value=False),
+        ):
+            for tool in (QUERY_ALERTS_TOOL_NAME, MODEL_STATUS_TOOL_NAME):
+                classifier.return_value = ToolIntent(tool, "semantic", "cheap")
+                await _ask_ai(AsyncMock(), _group_event(), "现在状态呢", available_image_sources=[])
+                self.assertNotIn(tool, classifier.call_args.kwargs["allowed_tools"])
+                self.assertNotIn(tool, [item["function"]["name"] for item in model.call_args.args[2]])
+                self.assertEqual(model.call_args.kwargs["tool_choice"], "auto")
+
+    def test_classifier_history_and_explicit_reply_are_scoped(self) -> None:
+        import src.plugins.ai_chat as ai_chat
+        from src.plugins.ai_chat.ledger import MessageLedger
+        from src.plugins.ai_chat.onebot_codec import record_onebot_event
+
+        ledger = MessageLedger(":memory:")
+        self.addCleanup(ledger.close)
+
+        def record(event, message_id, text):
+            event.message_id = message_id
+            event.time = message_id
+            event.message = event.original_message = Message(text)
+            record_onebot_event(ledger, event)
+
+        record(_group_event(), 1, "explicit-old-reference")
+        for message_id in range(2, 10):
+            record(_group_event(user_id=322), message_id, f"same-group-{message_id}")
+        record(_group_event(group_id=790), 10, "other-group-private-facts")
+        record(_private_image_event(user_id=322), 11, "other-user-private-facts")
+        record(_group_event(), 654, "current-duplicated-message")
+        event = _group_event()
+        event.original_message = Message([MessageSegment.reply(1), MessageSegment.text("你觉得呢")])
+        with patch.object(ai_chat.app_context, "message_ledger", ledger):
+            context = ai_chat.handlers.tools._tool_intent_context(event)
+        self.assertIn("same-group-9", context)
+        self.assertIn("[explicit reply]", context)
+        self.assertIn("explicit-old-reference", context)
+        self.assertNotIn("other-group-private-facts", context)
+        self.assertNotIn("other-user-private-facts", context)
+        self.assertNotIn("current-duplicated-message", context)
 
     def test_secret_like_content_is_not_eligible_for_memory(self) -> None:
         self.assertTrue(_looks_like_secret("API_KEY=secret-value"))

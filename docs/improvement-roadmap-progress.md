@@ -76,10 +76,12 @@ acceptance are not implied by this roadmap.
 
 ### Phase 5: Intent routing
 
-- [ ] Replace forced keyword routing with a lightweight model classifier.
-- [ ] Classifier unavailability falls back to automatic tool selection.
-- [ ] Update routing documentation and compare real feedback replay results.
-- [ ] Natural-routing regressions and complete PG suite.
+- [x] Replace four forced keyword routes with a lightweight model classifier.
+- [x] Classifier unavailability falls back to automatic tool selection.
+- [x] Update routing documentation, configuration and Trace accounting.
+- [x] Natural-routing regressions and complete PG suite.
+- [ ] Authorized real-provider comparison; Phase 4's replay currently excludes
+      tool/multimodal turns and cannot prove tool-choice quality on its own.
 
 ### Phase 6: Responsibility boundaries
 
@@ -226,3 +228,25 @@ isolated roadmap test database is used for validation.
   Both screenshots inspected; temporary frontend fixtures/server removed.
 - No real QQ, model provider or production host was contacted. Emoji mappings
   intentionally remain empty until a real test-group event confirms the IDs.
+
+### Phase 5 validation
+
+- Removed image/video/alert/model-status keyword forcing. A bounded classification
+  uses only AI_SIMPLE_CHAT_PROFILE, with thinking disabled, at most 128 output
+  tokens and a default three-second budget covering history loading and inference.
+  It cannot fall back to another profile or perform extra empty-output recovery.
+- Missing profile, cached unavailable health, invalid schema, errors and timeout
+  leave tool_choice=auto. Cancellation propagates. Explicit commands and resumed
+  work bypass classification; existing task routing rules remain documented.
+- Only applicable enabled read tools are offered. Per-conversation scope, current
+  message exclusion and explicit replies are tested; this bounded classifier view
+  does not replace the answer model's full chronological context. Permissions and
+  final tool availability are enforced independently of the classifier's answer.
+- Returned usage and decision metadata are added to Trace without polluting the
+  answer transcript or replacing its requested/actual model identity. Error text
+  is not stored, since provider exceptions can contain credentials.
+- Focused routing/config/fleet tests: 58 passed. Full PG suite: 1,629 tests,
+  OK (12 skipped), 90.990 seconds; .cache/roadmap/phase5-full.log. CI-path Ruff
+  and git diff --check pass. This phase does not modify the admin UI.
+- No live model, QQ or production-host calls. Mock classification tests prove
+  routing contracts, not semantic accuracy or latency on the user's local Qwen.

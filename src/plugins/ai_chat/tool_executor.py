@@ -24,7 +24,6 @@ from nonebot.adapters.onebot.v11 import (
     Message,
     MessageEvent,
     MessageSegment,
-    PrivateMessageEvent,
 )
 from nonebot.adapters.onebot.v11.exception import (
     ActionFailed,
@@ -175,7 +174,8 @@ from .ai_tools import OPS_CATALOG_TOOL_NAME, OPS_CALL_TOOL_NAME
 from .ai_tools import SERVICE_CONTROL_TOOL_NAME, HOST_REBOOT_TOOL_NAME, host_operation_call
 from .fleet_case_recall import semantic_runbook_scores
 from .prompt_context import quote_evidence
-from .fleet_tools import fleet_overview, inspect_host, model_status, requires_local_model_status
+from .fleet_tools import fleet_overview, inspect_host, model_status
+from .intent_routing import ToolIntent, classify_tool_intent
 
 
 class ToolExecutor(HandlerService):
@@ -183,52 +183,21 @@ class ToolExecutor(HandlerService):
         mobile = getattr(self.context, "mobile_authorization", None)
         return mobile is not None and mobile.store.account_for_qq(str(user_id)) is not None
 
-    def _private_vision_required(self,
-        event: MessageEvent,
-        user_text: str,
-        available_image_sources: list[str],
-    ) -> bool:
-        if not isinstance(event, PrivateMessageEvent) or not available_image_sources:
-            return False
-        if image_sources(event.original_message, max_images=1):
-            return True
-        return bool(
-            re.search(
-                r"图片|照片|截图|图里|表情|看图|看看|看下|分析|识别|"
-                r"刚才|上面|这(?:个|张|是|啥|什么)|它|怎么(?:样|回事)|你觉得",
-                user_text,
-                flags=re.IGNORECASE,
-            )
-        )
-
-    def _video_analysis_required(self,
-        event: MessageEvent,
-        user_text: str,
-        available_video: VideoReference | None,
-    ) -> bool:
-        if available_video is None:
-            return False
-        if contains_video(event.original_message):
-            return True
-        return bool(
-            re.search(
-                r"视频|录像|片段|看看|看下|分析|评价|锐评|总结|讲了什么|"
-                r"刚才|上面|这(?:个|段|是|啥|什么)|它|怎么(?:样|回事)|你觉得",
-                user_text,
-                flags=re.IGNORECASE,
-            )
-        )
-
-    def _alert_query_required(self, user_text: str) -> bool:
-        return bool(
-            re.search(r"告警|报警|alertmanager|prometheus", user_text, re.IGNORECASE)
-            and re.search(
-                r"谁|最多|常客|当前|现在|最近|今天|本周|历史|数量|统计|"
-                r"哪台|哪个|还有|状态|恢复|故障|寄了|挂了",
-                user_text,
-                re.IGNORECASE,
-            )
-        )
+    def _tool_intent_context(self, event: MessageEvent) -> str:
+        ledger = self.context.message_ledger
+        if ledger is None:
+            return ""
+        scope = scope_from_event(event)
+        recent = ledger.render_recent(scope, max_messages=6, max_chars=1500,
+                                      exclude_native_message_id=event.message_id)
+        quoted = ""
+        reply_id = reply_message_id(event.original_message)
+        if reply_id is not None:
+            canonical_id = ledger.canonical_id_for_native(scope, reply_id)
+            message = ledger.get_in_scope(scope, canonical_id) if canonical_id is not None else None
+            if message is not None:
+                quoted = "\n[explicit reply]\n" + message.prompt_text[:700]
+        return recent + quoted
 
     def _alert_tools_allowed(self, event: MessageEvent) -> bool:
         return bool(
@@ -357,8 +326,6 @@ class ToolExecutor(HandlerService):
         fleet_logs_enabled = bool(
             fleet_tools_enabled and self._fleet_logs_allowed(event)
         )
-        alert_query_required = alert_tools_enabled and self._alert_query_required(user_text)
-        model_status_required = fleet_tools_enabled and requires_local_model_status(user_text)
         sandbox_tools_enabled = (
             isinstance(event, GroupMessageEvent)
             and self.context.settings.is_sandbox_user_allowed(event.user_id)
@@ -420,22 +387,39 @@ class ToolExecutor(HandlerService):
         ):
             available_image_sources = await self.services.commands._resolve_ocr_sources(bot, event)
         available_image_sources = available_image_sources or []
-        private_vision_required = self._private_vision_required(
-            event,
-            user_text,
-            available_image_sources,
-        )
         available_video: VideoReference | None = None
         if self.services.video_analyzer is not None:
             try:
                 available_video = await self._resolve_video_reference(bot, event)
             except (ActionFailed, OSError, RuntimeError, ValueError) as exc:
                 self.context.logger.warning(f"Could not resolve QQ video for this turn: {exc}")
-        video_analysis_required = self._video_analysis_required(
-            event,
-            user_text,
-            available_video,
-        )
+        intent_tools: set[str] = set()
+        if available_image_sources:
+            if self.context.vision_worker is not None:
+                intent_tools.add(VIEW_IMAGE_TOOL_NAME)
+            elif self.context.settings.ocr_enabled:
+                intent_tools.add(READ_IMAGE_TEXT_TOOL_NAME)
+        if available_video is not None:
+            intent_tools.add(VIEW_VIDEO_TOOL_NAME)
+        if alert_tools_enabled:
+            intent_tools.add(QUERY_ALERTS_TOOL_NAME)
+        if fleet_tools_enabled:
+            intent_tools.add(MODEL_STATUS_TOOL_NAME)
+        intent = ToolIntent()
+        if not any((force_search, force_ocr, force_voice_reply, force_voice_transcription,
+                    task_mode, resume_task_id is not None, _approved_call is not None)):
+            intent = await classify_tool_intent(
+                user_text, catalog=self.context.model_catalog,
+                profile_name=self.context.settings.model_simple_chat_profile,
+                allowed_tools=frozenset(intent_tools),
+                media={"image_available": bool(available_image_sources),
+                       "image_attached_now": bool(image_sources(event.original_message, max_images=1)),
+                       "video_available": available_video is not None,
+                       "video_attached_now": contains_video(event.original_message)},
+                local_model=self.context.local_model,
+                load_context=lambda: asyncio.to_thread(self._tool_intent_context, event),
+                trace=turn_trace, enabled=self.context.settings.tool_intent_enabled,
+                timeout_seconds=self.context.settings.tool_intent_timeout_seconds)
         automatic_subagent_route = route_subagent_request(
             user_text,
             has_media=bool(available_image_sources or available_video),
@@ -447,7 +431,7 @@ class ToolExecutor(HandlerService):
             and isinstance(event, GroupMessageEvent)
             and not task_mode
             and not any((force_search, force_ocr, force_voice_reply,
-                         force_voice_transcription, alert_query_required, video_analysis_required, model_status_required))
+                         force_voice_transcription, intent.tool != "auto"))
         )
 
         should_resolve_voice = (
@@ -477,10 +461,7 @@ class ToolExecutor(HandlerService):
                     force_ocr,
                     force_voice_reply,
                     force_voice_transcription,
-                    alert_query_required,
-                    model_status_required,
-                    video_analysis_required,
-                    private_vision_required,
+                    intent.tool != "auto",
                 )
             )
         )
@@ -2271,13 +2252,7 @@ class ToolExecutor(HandlerService):
         tool_choice = "auto"
         if force_search:
             tool_choice = force_tool(WEB_SEARCH_TOOL_NAME)
-        elif alert_query_required:
-            tool_choice = force_tool(QUERY_ALERTS_TOOL_NAME)
-        elif model_status_required:
-            tool_choice = force_tool(MODEL_STATUS_TOOL_NAME)
-        elif video_analysis_required:
-            tool_choice = force_tool(VIEW_VIDEO_TOOL_NAME)
-        elif force_ocr or private_vision_required:
+        elif force_ocr:
             tool_choice = force_tool(
                 VIEW_IMAGE_TOOL_NAME
                 if self.context.vision_worker is not None
@@ -2287,6 +2262,10 @@ class ToolExecutor(HandlerService):
             tool_choice = force_tool(TRANSCRIBE_VOICE_TOOL_NAME)
         elif force_voice_reply:
             tool_choice = force_tool(REPLY_WITH_VOICE_TOOL_NAME)
+        elif intent.tool != "auto" and tool_enabled(intent.tool) and any(
+            item["function"]["name"] == intent.tool for item in tools
+        ):
+            tool_choice = force_tool(intent.tool)
 
         try:
             context_parts: list[str] = [
@@ -2316,17 +2295,17 @@ class ToolExecutor(HandlerService):
                 context_parts.append(
                     "[当前会话可用图片]\n"
                     f"当前消息、引用消息或该用户最近五分钟内共有 "
-                    f"{len(available_image_sources)} 张可读取图片。用户询问图片内容、"
-                    "使用‘这个/它/刚才那张’等指代，或本轮直接附带图片时，必须先调用 "
-                    "view_image，不能只根据文字或旧上下文猜图。未指定句柄时不要编造 "
+                    f"{len(available_image_sources)} 张可读取图片。只有本轮实际询问图片内容时才先调用 "
+                    "view_image；不要因为存在旧图片或出现‘这个/它/你觉得’就识图。"
+                    "结合当前话题与引用判断对象，不猜测未读图片内容。未指定句柄时不要编造 "
                     "msg#，直接省略 message_handle。"
                 )
             if available_video is not None:
                 context_parts.append(
                     "[当前会话可用视频]\n"
                     "当前消息、引用消息或该用户最近五分钟内有一段可读取的 QQ 视频。"
-                    "用户要求查看、总结、评价视频，或使用‘这个/它/刚才那个’等指代时，"
-                    "必须先调用 view_video；未指定句柄时不要编造 msg#，直接省略 "
+                    "只有本轮实际要求查看、总结或评价视频时才先调用 view_video；"
+                    "旧视频的存在和‘这个/它’等词本身不构成识别请求。未指定句柄时不要编造 msg#，直接省略 "
                     "message_handle。"
                 )
             if alert_tools_enabled:

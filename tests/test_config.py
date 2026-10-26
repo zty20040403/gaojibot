@@ -12,6 +12,20 @@ from src.plugins.ai_chat.config import Settings
 
 
 class SettingsGroupFilterTests(unittest.TestCase):
+    def test_intent_classifier_defaults_and_bounded_timeout(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env()
+        self.assertTrue(settings.tool_intent_enabled)
+        self.assertEqual(settings.tool_intent_timeout_seconds, 3.0)
+        for value, expected in (("0", 0.1), ("-1", 0.1), ("60", 10), ("2.5", 2.5),
+                                ("nan", 3), ("inf", 3), ("bad", 3)):
+            with self.subTest(value=value), patch.dict(os.environ, {
+                "AI_TOOL_INTENT_ENABLED": "false", "AI_TOOL_INTENT_TIMEOUT_SECONDS": value,
+            }, clear=True):
+                settings = Settings.from_env()
+                self.assertFalse(settings.tool_intent_enabled)
+                self.assertEqual(settings.tool_intent_timeout_seconds, expected)
+
     def test_sandbox_allowlist_denies_by_default_and_allow_all_is_explicit(self) -> None:
         cases = (
             ({}, False, False),

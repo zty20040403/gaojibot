@@ -17,7 +17,6 @@ from src.plugins.ai_chat.fleet_tools import (
     inspect_host,
     fleet_overview,
     model_status,
-    requires_local_model_status,
     summarize_fleet,
     summarize_resources,
 )
@@ -192,11 +191,6 @@ class FleetProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["workers"]["status"], "unavailable")
         self.assertEqual(result["workers"]["items"], [])
-
-    def test_qwen_status_follow_up_requires_a_fresh_read(self) -> None:
-        self.assertTrue(requires_local_model_status("现在千问呢"))
-        self.assertTrue(requires_local_model_status("看下千问寄了吗"))
-        self.assertFalse(requires_local_model_status("千问模型是谁研发的"))
 
     def test_all_eight_hosts_survive_tool_budget(self) -> None:
         payload = fleet_payload(1000)

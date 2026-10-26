@@ -289,8 +289,14 @@ OPENAI_API_KEY=replace-with-your-openai-key
 AI_MODEL_PROFILES_JSON={"default":"deepseek","profiles":{"deepseek":{"provider":"deepseek","protocol":"openai-chat","base_url":"https://api.deepseek.com","api_key_env":"DEEPSEEK_API_KEY","model":"deepseek-v4-flash","aliases":["ds"],"fallback_profiles":["openai"]},"openai":{"provider":"openai","protocol":"openai-chat","base_url":"https://api.openai.com/v1","api_key_env":"OPENAI_API_KEY","model":"gpt-5-mini","capabilities":{"vision":true},"aliases":["gpt"]}}}
 ```
 
-`AI_SIMPLE_CHAT_PROFILE` 只接管没有显式模型覆盖、媒体输入、强制工具或
-Sub-Agent 委派的普通聊天；复杂任务仍使用会话原本选择的模型。
+`AI_SIMPLE_CHAT_PROFILE` 接管没有显式模型覆盖、媒体输入、强制工具或
+Sub-Agent 委派的普通聊天回复；复杂任务仍使用会话原本选择的模型。
+它也用于首个只读工具的轻量意图分类，不改变会话所选的回复模型。
+分类默认最多等待 3 秒、输出 128 Token，不启用思考，不向其他模型降级。
+未配置、健康状态不可用、超时或输出无效时保留 `tool_choice=auto`，
+让回复模型自行选择工具。分类开关是 `AI_TOOL_INTENT_ENABLED`，
+等待上限由 `AI_TOOL_INTENT_TIMEOUT_SECONDS` 设置（0.1～10 秒）。
+Trace 的 `tool_intent` 记录选择、回退原因和已返回的 Token 用量。
 
 当首选模型超时、断网、限流、欠费或密钥失效时，网关会在同一轮 Agent
 中切到兼容的备用模型，不会重复已经完成的工具操作。连续失败会临时熔断；
@@ -384,9 +390,12 @@ OpenAI/CLIProxy 模型可以按当前用户、当前会话覆盖推理强度：
 /effort default
 ```
 
-自然语言请求不依赖关键词硬编码。`@机器人 看看这张图`、`帮我查一下最新消息`、
-`创建一个 Python 项目并把文件发出来` 等请求会进入同一个 Agent Loop，由当前模型决定
-是否调用相应工具。
+自然语言请求进入 Agent Loop。可用的图片、视频、告警和模型运行状态工具，
+先由轻量分类器结合当前问题、同会话近期片段和明确引用选择是否优先读取；
+不再凭“看看”“它”“你觉得”等词强制识图。该片段仅用于分类，
+不会取代回复模型原有的连续群聊时间线。其他工具由回复模型自行选择。
+显式命令、权限检查及复杂 Sub-Agent 任务入口仍有宿主规则，
+因此并非整个系统完全没有关键词规则；分类结果也不能绕过权限或禁用开关。
 
 ## Sub-Agent 任务模式
 

@@ -448,6 +448,7 @@ async def ask_deepseek_json(
     model: str | None = None,
     profile: ModelProfile | str | None = None,
     trace: DeepSeekTrace | None = None,
+    recover_empty_response: bool = True,
 ) -> dict[str, Any]:
     _last_completion_profile.set(None)
     selected_profile = _resolve_profile(profile, model)
@@ -463,7 +464,8 @@ async def ask_deepseek_json(
     request = _completion_kwargs(messages, selected_profile)
     if selected_profile.capabilities.json_mode:
         request["response_format"] = {"type": "json_object"}
-    response, _ = await _completion_with_optional_stream(
+    completion = _completion_with_optional_stream if recover_empty_response else _completion_once
+    response, _ = await completion(
         None,
         selected_profile,
         trace=trace,
