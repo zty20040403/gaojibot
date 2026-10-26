@@ -55,11 +55,11 @@ acceptance are not implied by this roadmap.
 
 ### Phase 3: Prompt caching and untrusted input
 
-- [ ] Stable system prefix and block-sliding timeline; dynamic facts near query.
-- [ ] Explicit Anthropic cache breakpoints.
-- [ ] Untrusted chat/web/OCR/transcript boundaries outside system messages.
-- [ ] Cache-hit chart and Prometheus measurements.
-- [ ] Stable-prefix and forged-boundary regressions; PG/UI gates.
+- [x] Stable system prefix and block-sliding timeline; dynamic facts near query.
+- [x] Explicit Anthropic cache breakpoints.
+- [x] Untrusted chat/web/OCR/transcript boundaries outside system messages.
+- [x] Cache-hit chart and Prometheus measurements.
+- [x] Stable-prefix and forged-boundary regressions; PG/UI gates.
 - [ ] Record real cache-hit comparison after an authorized deployment.
 
 ### Phase 4: Reaction feedback and replay
@@ -164,3 +164,32 @@ isolated roadmap test database is used for validation.
   pruned without upgrading existing Python 3.12 runtime versions.
 - Local `nix flake check` package/import checks passed on aarch64-darwin.
   Linux builds and hosted CI are not claimed as tested locally.
+
+### Phase 3 validation
+
+- Stable system/tool policy precedes quoted chronological history; minute clock,
+  memory, current identity, OCR and current-turn context follow that prefix.
+  The live suffix moves in blocks of eight without introducing timeline holes.
+- Unchanged history blocks use a process-keyed HMAC boundary. Dynamic material
+  uses fresh random boundaries. This intentionally avoids randomizing the whole
+  history on every request, which would invalidate the desired cache prefix.
+  Markup is escaped; authorization and scope checks remain separate enforcement.
+- Tool receipts stay raw in the audit/replay store and are quoted only on the
+  model wire. Report-correction paging budgets include escaping and delimiters,
+  so a page cannot be credited as completely read after wire truncation.
+  Validation errors that may echo model-controlled text are quoted outside
+  system messages as well.
+- Anthropic cache-read and cache-create inputs are included in total input;
+  only reads count as hits. OpenAI-compatible/DeepSeek cache usage is normalized,
+  merged into child traces, persisted through existing usage records and exposed
+  through gaoji_model_cached_tokens_total. No real cost reduction is claimed.
+- Full PG-enabled suite: 1,602 tests, OK (12 skipped), 82.998 seconds;
+  .cache/roadmap/phase3-full.log. Early failures exposed changed prompt locations
+  and wire-budget compatibility; those were fixed without relaxing size limits.
+- Ruff passed for the same paths checked by CI. Admin TypeScript/Vite build
+  passed. Isolated headless Chrome checks at 1280x720 and 390x844 passed for both
+  chart modes, exact tooltip values and tooltip viewport bounds; screenshots
+  were inspected. Fixed a tooltip clipped by the mobile chart scroll container.
+- Temporary chart fixtures were removed and their Vite process stopped. No
+  real provider, QQ account or production server was contacted. Live one-day
+  cache-hit comparison remains pending an authorized deployment.

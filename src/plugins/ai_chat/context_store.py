@@ -17,6 +17,7 @@ from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connect
 from .conversation_scope import ConversationScope
 from .ledger import CanonicalMessage, MessageLedger
 from .message_ir import body_to_json
+from .prompt_context import HISTORY_BLOCK_LINES
 
 
 CONTEXT_SCHEMA_VERSION = 2
@@ -678,6 +679,12 @@ class ContextStore:
             if used >= token_budget:
                 break
         ordered = sorted(chosen_indexes)
+        # Drop complete blocks, leaving room for several new messages before
+        # the oldest visible line moves again. Never drop the live minimum.
+        aligned = ((ordered[0] + HISTORY_BLOCK_LINES - 1) // HISTORY_BLOCK_LINES) * HISTORY_BLOCK_LINES
+        if len(messages) - aligned >= min(self.raw_tail_min_messages, len(ordered)):
+            ordered = list(range(aligned, len(messages)))
+            used = sum(estimate_tokens(lines[index]) for index in ordered)
         chosen_lines = [lines[index] for index in ordered]
         chosen_ids = [messages[index].canonical_message_id for index in ordered]
         return (

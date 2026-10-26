@@ -276,6 +276,7 @@ class ChatOrchestrator:
                     model=trace.model,
                     input_tokens=trace.input_tokens,
                     output_tokens=trace.output_tokens,
+                    cached_tokens=trace.cached_tokens,
                     turn_id=turn_id,
                 )
             except Exception as exc:

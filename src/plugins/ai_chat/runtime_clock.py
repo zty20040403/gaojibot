@@ -26,7 +26,7 @@ def runtime_clock_prompt(now: datetime | None = None) -> str:
     raw_offset = current.strftime("%z")
     offset = f"{raw_offset[:3]}:{raw_offset[3:]}"
     return (
-        f"当前时间是 {current.strftime('%Y-%m-%d %H:%M:%S')}"
+        f"当前时间是 {current.strftime('%Y-%m-%d %H:%M')}"
         f"（Asia/Shanghai，UTC{offset}，{_WEEKDAYS[current.weekday()]}）。"
         "这是服务器为本次请求动态生成的时间；回答当前日期或时间时以它为准。"
     )

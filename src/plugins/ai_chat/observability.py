@@ -102,6 +102,12 @@ class BotTelemetry:
             ("profile", "direction"),
             registry=self.registry,
         )
+        self.cached_tokens = Counter(
+            "gaoji_model_cached_tokens_total",
+            "Input tokens served from provider prompt caches (subset of input tokens).",
+            ("profile",),
+            registry=self.registry,
+        )
         self.runtime_tasks = Gauge(
             "gaoji_runtime_tasks",
             "Currently active in-process AI tasks.",
@@ -232,11 +238,14 @@ class BotTelemetry:
                 actual_profile=actual_profile,
             ).inc()
 
-    def observe_tokens(self, profile: str, input_tokens: int, output_tokens: int) -> None:
+    def observe_tokens(self, profile: str, input_tokens: int, output_tokens: int, *, cached_tokens: int = 0) -> None:
         if input_tokens > 0:
             self.tokens.labels(profile=profile, direction="input").inc(input_tokens)
         if output_tokens > 0:
             self.tokens.labels(profile=profile, direction="output").inc(output_tokens)
+        cached = min(max(cached_tokens, 0), max(input_tokens, 0))
+        if cached:
+            self.cached_tokens.labels(profile=profile).inc(cached)
 
     @contextmanager
     def delivery(self, platform: str) -> Iterator[None]:
@@ -379,6 +388,8 @@ class BotTelemetry:
             for item in tokens
             if item.get("direction") == "output"
         )
+        cached_tokens = sum(int(sample.value) for sample in samples
+                            if sample.name == "gaoji_model_cached_tokens_total")
         return {
             "generated_at": int(time.time()),
             "window": "process",
@@ -394,6 +405,8 @@ class BotTelemetry:
                 "fallbacks": sum(int(item["value"]) for item in fallbacks),
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                "cached_tokens": cached_tokens,
+                "cache_hit_ratio": cached_tokens / input_tokens if input_tokens else 0.0,
                 "tool_calls": tool_calls,
                 "tool_failures": tool_failures,
                 "deliveries": delivery_attempts,

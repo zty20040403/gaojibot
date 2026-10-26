@@ -1147,7 +1147,9 @@ def _anthropic_request(
 
 def _convert_anthropic_messages(
     messages: list[dict[str, Any]],
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from .prompt_context import GROUP_CONTEXT_PREFIX
+
     system_parts: list[str] = []
     converted: list[dict[str, Any]] = []
     for message in messages:
@@ -1204,8 +1206,16 @@ def _convert_anthropic_messages(
             converted.append({"role": "assistant", "content": blocks})
             continue
 
-        converted.append({"role": role, "content": _content_text(content)})
-    return "\n\n".join(system_parts), converted
+        text = _content_text(content)
+        if role == "user" and not converted and text.startswith(GROUP_CONTEXT_PREFIX):
+            converted.append({"role": role, "content": [
+                {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}},
+            ]})
+        else:
+            converted.append({"role": role, "content": text})
+    system = ([{"type": "text", "text": "\n\n".join(system_parts),
+                "cache_control": {"type": "ephemeral"}}] if system_parts else [])
+    return system, converted
 
 
 def _convert_anthropic_tools(tools: object) -> list[dict[str, Any]]:
@@ -1272,12 +1282,16 @@ def _anthropic_response(payload: dict[str, Any]) -> Any:
             )
     raw_usage = payload.get("usage")
     usage_data = raw_usage if isinstance(raw_usage, dict) else {}
-    input_tokens = _safe_int(usage_data.get("input_tokens"))
+    cached_tokens = _safe_int(usage_data.get("cache_read_input_tokens"))
+    cache_write_tokens = _safe_int(usage_data.get("cache_creation_input_tokens"))
+    input_tokens = _safe_int(usage_data.get("input_tokens")) + cached_tokens + cache_write_tokens
     output_tokens = _safe_int(usage_data.get("output_tokens"))
     usage = SimpleNamespace(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         prompt_tokens=input_tokens,
+        prompt_tokens_details={"cached_tokens": cached_tokens},
+        cache_creation_input_tokens=cache_write_tokens,
         completion_tokens=output_tokens,
         total_tokens=input_tokens + output_tokens,
     )

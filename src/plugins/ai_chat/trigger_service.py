@@ -227,6 +227,7 @@ class TriggerService(HandlerService):
             model=trace.model,
             input_tokens=trace.input_tokens,
             output_tokens=trace.output_tokens,
+            cached_tokens=trace.cached_tokens,
         )
 
     async def _generate_historian(self,

@@ -649,7 +649,7 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
         request = client.post.await_args.kwargs
-        self.assertEqual(request["json"]["system"], "system rule")
+        self.assertEqual(request["json"]["system"], [{"type": "text", "text": "system rule", "cache_control": {"type": "ephemeral"}}])
         self.assertEqual(request["json"]["tools"][0]["input_schema"]["type"], "object")
         self.assertEqual(request["headers"]["x-api-key"], "key")
         self.assertEqual(result.choices[0].message.content, "我先查一下。")

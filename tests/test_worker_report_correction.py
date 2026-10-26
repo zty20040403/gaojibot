@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
+import html
 import json
 import unittest
 from types import SimpleNamespace
@@ -63,8 +64,8 @@ class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
 
         async def model(text, history, tools, execute, **kw):
             self.assertEqual(history, [])
-            self.assertIn("只读报告校验阶段", kw["tool_context"])
-            self.assertIn("仍描述原执行步骤", kw["tool_context"])
+            self.assertIn("只读报告校验阶段", kw["system_context"])
+            self.assertIn("仍描述原执行步骤", kw["system_context"])
             self.assertEqual([t["function"]["name"] for t in tools], ["read_task_evidence_batch", "read_task_evidence"])
             self.assertIn(self.ref, text)
             for name in ("ops_call", "sandbox_exec", "send_file_from_sandbox"):
@@ -132,7 +133,7 @@ class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
             tool_calls = []
             if calls == 2:
                 feedback = [m["content"] for m in kwargs["messages"]
-                            if m["role"] == "system" and "报告尚未通过宿主校验" in m["content"]]
+                            if m["role"] == "user" and 'kind="validation_feedback"' in m["content"]]
                 self.assertEqual(len(feedback), 1)
                 self.assertIn(self.ref, feedback[0])
                 tool_calls = [SimpleNamespace(id="read-missing", function=SimpleNamespace(
@@ -167,7 +168,7 @@ class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_batch_pages_survive_actual_tool_loop_and_transport_limits(self):
         refs = [self.store.record_evidence(self.task.task_id, self.run.run_id, "host_inspect",
-            {"host_id": f"host-{i}"}, {"ok": True, "content": '\\"中\n' * 130})["ref"]
+            {"host_id": f"host-{i}"}, {"ok": True, "content": '\\"中\n<&>' * 80})["ref"]
             for i in range(8)]
         corrected = report(refs[0])
         corrected["findings"] = [{"description": f"host-{i} inspected", "evidence_refs": [ref]}
@@ -182,12 +183,18 @@ class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
 
         async def completion(*args, **kwargs):
             nonlocal requests
+            self.assertLessEqual(sum(len(message["content"]) for message in kwargs["messages"]
+                if message["role"] == "tool"), limits.tool_max_context_chars)
             for message in kwargs["messages"]:
                 if message["role"] != "tool" or message["tool_call_id"] in seen_calls:
                     continue
                 seen_calls.add(message["tool_call_id"])
                 self.assertLessEqual(len(message["content"]), limits.tool_max_result_chars)
-                payload = json.loads(message["content"])
+                opening, _, body = message["content"].partition("\n")
+                body, _, closing = body.rpartition("\n")
+                self.assertTrue(opening.startswith('<untrusted kind="tool_result" id="'))
+                self.assertEqual(closing, '</untrusted id="' + opening.split('id="')[1])
+                payload = json.loads(html.unescape(body))
                 self.assertTrue(payload["ok"])
                 requests = []
                 for page in payload["results"]:
@@ -206,7 +213,7 @@ class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
             "src.plugins.ai_chat.deepseek._completion_with_optional_stream", side_effect=completion):
             result = await self.correct(original)
         self.assertGreater(len(seen_calls), 1)
-        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["status"], "success", result)
         self.assertEqual(result["report_validation"]["status"], "passed")
         checkpoint = self.store.latest_run_checkpoint(self.task.task_id, self.run.run_id, "report_correction")
         self.assertEqual(set(checkpoint["read_refs"]), set(refs))

@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Callable
 from typing import Any
 
 from .control import assert_job_owned
@@ -128,7 +129,8 @@ READ_TASK_EVIDENCE_BATCH = {"type": "function", "function": {
                 "required": ["ref"]}}}, "required": ["requests"]}}}
 
 
-def read_evidence(items: list[dict], arguments: dict, *, max_chars: int = 12000) -> str:
+def read_evidence(items: list[dict], arguments: dict, *, max_chars: int = 12000,
+                  measure: Callable[[str], int] = len) -> str:
     found = next((item for item in items if item["evidence_id"] == arguments.get("ref")), None)
     if found is None:
         return canonical({"ok": False, "error": "Evidence is outside the authorized task/step context"})
@@ -145,16 +147,17 @@ def read_evidence(items: list[dict], arguments: dict, *, max_chars: int = 12000)
     low, high = 0, max(0, min(len(body) - offset, 12000))
     while low < high:
         middle = (low + high + 1) // 2
-        if len(page(middle)) <= max_chars:
+        if measure(page(middle)) <= max_chars:
             low = middle
         else:
             high = middle - 1
-    if len(page(low)) > max_chars or (low == 0 and offset < len(body)):
+    if measure(page(low)) > max_chars or (low == 0 and offset < len(body)):
         return canonical({"ok": False, "error": "Evidence result budget exhausted"})
     return page(low)
 
 
-def read_evidence_batch(items: list[dict], arguments: dict, *, max_chars: int = 12000) -> str:
+def read_evidence_batch(items: list[dict], arguments: dict, *, max_chars: int = 12000,
+                        measure: Callable[[str], int] = len) -> str:
     requests = arguments.get("requests")
     if (not isinstance(requests, list) or not 1 <= len(requests) <= 8
             or set(arguments) != {"requests"}):
@@ -168,8 +171,8 @@ def read_evidence_batch(items: list[dict], arguments: dict, *, max_chars: int = 
         return canonical({"ok": False, "error": "Use one page per reference in each batch"})
     result = {"ok": True, "results": []}
     for index, request in enumerate(requests):
-        remaining = max_chars - len(canonical(result)) - 1
+        remaining = max_chars - measure(canonical(result)) - 1
         per_item = remaining // (len(requests) - index)
-        result["results"].append(json.loads(read_evidence(items, request, max_chars=per_item)))
+        result["results"].append(json.loads(read_evidence(items, request, max_chars=per_item, measure=measure)))
     raw = canonical(result)
-    return raw if len(raw) <= max_chars else canonical({"ok": False, "error": "Evidence result budget exhausted"})
+    return raw if measure(raw) <= max_chars else canonical({"ok": False, "error": "Evidence result budget exhausted"})

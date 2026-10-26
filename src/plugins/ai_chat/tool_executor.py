@@ -174,6 +174,7 @@ from .fleet_client import FleetControlError
 from .ai_tools import OPS_CATALOG_TOOL_NAME, OPS_CALL_TOOL_NAME
 from .ai_tools import SERVICE_CONTROL_TOOL_NAME, HOST_REBOOT_TOOL_NAME, host_operation_call
 from .fleet_case_recall import semantic_runbook_scores
+from .prompt_context import quote_evidence
 from .fleet_tools import fleet_overview, inspect_host, model_status, requires_local_model_status
 
 
@@ -2309,6 +2310,8 @@ class ToolExecutor(HandlerService):
                 "表格；宿主会把完整代码块和表格渲染为清晰图片。\n"
                 "可用反应表：" + face_prompt_table()
             ]
+            stable_context_parts = context_parts
+            context_parts = []
             if available_image_sources:
                 context_parts.append(
                     "[当前会话可用图片]\n"
@@ -2327,7 +2330,7 @@ class ToolExecutor(HandlerService):
                     "message_handle。"
                 )
             if alert_tools_enabled:
-                context_parts.append(
+                stable_context_parts.append(
                     "[权威告警数据]\n"
                     "涉及当前告警、历史次数、排名、常客、恢复情况或哪台服务器故障时，"
                     "必须调用 query_alerts。它读取 PostgreSQL 告警生命周期库；不要用 "
@@ -2335,7 +2338,7 @@ class ToolExecutor(HandlerService):
                     "和口径。"
                 )
             if fleet_tools_enabled:
-                context_parts.append(
+                stable_context_parts.append(
                     "[服务器集群数据]\n"
                     "涉及服务器当前状态、机器是否在线、systemd 服务或节点资源时，"
                     "单台机器用 host_inspect，只填 host_id；全集群用 fleet_overview；"
@@ -2370,9 +2373,9 @@ class ToolExecutor(HandlerService):
                 )
             skill_index = self.context.skill_registry.prompt_index()
             if skill_index:
-                context_parts.append(skill_index)
+                stable_context_parts.append(skill_index)
             if turn_context:
-                context_parts.append(turn_context)
+                context_parts.append(quote_evidence(turn_context, "turn_context"))
             if replay_prefix:
                 context_parts.append(
                     "[host replay status]\n"
@@ -2382,10 +2385,10 @@ class ToolExecutor(HandlerService):
                 )
             if replay_digest_prefix:
                 context_parts.append(
-                    "[older turn digest prefix]\n" + replay_digest_prefix
+                    quote_evidence(replay_digest_prefix, "older_turn_digest")
                 )
             if self.context.turn_journal is not None or self.context.context_store is not None:
-                context_parts.append(
+                stable_context_parts.append(
                     "当前群上下文按时间顺序给出：先读连续的近期原文，再结合当前消息"
                     "判断省略的主语和对象；不要因为某条旧消息曾经 @ 过机器人就擅自把"
                     "它当成当前话题。明确引用的 [quoted context] 优先级最高。"
@@ -2400,7 +2403,7 @@ class ToolExecutor(HandlerService):
                 )
             agent_tool_context = ""
             if sandbox_tools_enabled:
-                agent_tool_context = (
+                stable_context_parts.append(
                     VM_AGENT_TOOL_PROMPT
                     if self.context.settings.sandbox_backend == "vm"
                     else AGENT_TOOL_PROMPT
@@ -2827,7 +2830,7 @@ class ToolExecutor(HandlerService):
                 )
                 supporting = "\n\n".join(
                     part
-                    for part in context_parts
+                    for part in [*stable_context_parts, *context_parts]
                     if not part.startswith("[自动 Sub-Agent 编排]")
                 )
                 return ContextPacket(
@@ -2978,13 +2981,13 @@ class ToolExecutor(HandlerService):
                 own_tasks = [t for t in self.context.subagent_store.recent(limit=20, scope_key=scope_from_event(event).key)
                     if t.requester_user_id == event.user_id and self.context.subagent_store.control(t.task_id)["dispatch"]][:5]
                 if own_tasks:
-                    context_parts.append("[当前用户可续作任务，只有明确续作本任务才选 revise]\n" + json.dumps([
+                    context_parts.append("[当前用户可续作任务，只有明确续作本任务才选 revise]\n" + quote_evidence(json.dumps([
                         {"task_id": t.task_id, "objective": t.objective[:600], "status": t.status,
                          "contract": t.plan.get("contract", {}),
                          "steps": [{"id": r.step_key, "role": r.role, "objective": r.objective[:200]}
                             for r in self.context.subagent_store.runs(t.task_id) if not r.step_key.startswith("acceptance_r")]}
-                        for t in own_tasks], ensure_ascii=False))
-                context_parts.append(
+                        for t in own_tasks], ensure_ascii=False), "previous_tasks"))
+                stable_context_parts.append(
                     "[自动 Sub-Agent 编排]\n"
                     "用户不需要输入 /task。边界明确、只需要一个专业角色处理的子任务，"
                     "调用 delegate_agent，由主 Agent 保留最终回复权。包含多个互相依赖步骤、"
@@ -3019,6 +3022,7 @@ class ToolExecutor(HandlerService):
                         else self.context.settings.tool_simple_max_rounds
                     ),
                     tool_context="\n\n".join(context_parts),
+                    system_context="\n\n".join(stable_context_parts),
                     trace=turn_trace,
                     event_sink=(
                         record_loop_event if journal_turn_id is not None else None

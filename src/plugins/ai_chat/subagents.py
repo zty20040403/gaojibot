@@ -58,6 +58,7 @@ from .deepseek import (
     ask_deepseek_with_tools,
 )
 from .model_catalog import ModelCatalog, ModelProfile
+from .prompt_context import escaped_evidence_size, quote_evidence
 from .tool_policy import tool_enabled
 
 
@@ -2313,7 +2314,7 @@ class SubAgentCoordinator:
                 final_input,
                 [],
                 profile=final_profile,
-                tool_context=(
+                system_context=(
                     "你是 Sub-Agent 主控。检查各步骤是否真正完成原始目标，再给用户一个"
                     "直接、自然的最终答复。明确说明失败和未解决事项；不要暴露内部 JSON，"
                     "不要声称没有证据的工作已经完成。先用短句说明完成了什么、实际改动、"
@@ -2366,7 +2367,7 @@ class SubAgentCoordinator:
         trace = DeepSeekTrace(trace_id=task.trace_id)
         text = await self._supervisor_text(_synthesis_input(task.objective, completed), [],
             profile=self._profile_for("supervisor", selected_profile), trace=trace,
-            tool_context=("生成将交给独立验收人审阅的最终报告正文，不是报告写作计划。"
+            system_context=("生成将交给独立验收人审阅的最终报告正文，不是报告写作计划。"
                 "直接说明实际发现、操作、前后对比和未解决事项，简短自然。"
                 "区分本轮与历史证据，不能把命令退出成功说成业务已验证，不能把未知写成正常。"
                 "只读任务发现告警不等于要求修复。不要暴露内部 JSON 或冗长流水。"
@@ -3074,7 +3075,7 @@ class SubAgentCoordinator:
                             worker_execute_tool,
                             profile=profile,
                             max_tool_rounds=min(self.max_tool_rounds, spec.max_turns),
-                            tool_context=_worker_prompt(spec),
+                            system_context=_worker_prompt(spec),
                             trace=trace,
                             event_sink=record_agent_event,
                             approval_checker=(hooks.approval_checker if hooks else None),
@@ -3224,6 +3225,7 @@ class SubAgentCoordinator:
         read_refs: set[str] = set()
         next_offsets: dict[str, int] = {}
         remaining_chars = min(settings.tool_max_context_chars, 60000)
+        envelope_chars = len(quote_evidence("", "tool_result", stable=True))
         max_rounds = min(8, max(4, len(report_refs(original)) + 1))
 
         async def readonly_tool(name: str, arguments: dict) -> str:
@@ -3233,11 +3235,12 @@ class SubAgentCoordinator:
                     and tool_enabled(name) and tool_enabled("read_task_evidence")):
                 budget = min(settings.tool_max_result_chars, remaining_chars, 24000)
                 reader = read_evidence_batch if name == "read_task_evidence_batch" else read_evidence
-                raw = reader(evidence, arguments, max_chars=budget)
+                raw = reader(evidence, arguments, max_chars=budget - envelope_chars,
+                    measure=escaped_evidence_size)
                 reply = json.loads(raw)
                 pages = reply.get("results", []) if name == "read_task_evidence_batch" else [reply]
                 requests = arguments.get("requests", []) if name == "read_task_evidence_batch" else [arguments]
-                if len(raw) <= budget and reply.get("ok"):
+                if escaped_evidence_size(raw) + envelope_chars <= budget and reply.get("ok"):
                     for request, page in zip(requests, pages):
                         ref = page.get("ref")
                         if (page.get("ok") and page.get("complete") and page.get("content")
@@ -3248,7 +3251,7 @@ class SubAgentCoordinator:
                                 next_offsets[ref] = page["next_offset"]
             else:
                 raw = json.dumps({"ok": False, "error": "Report correction permits only authorized evidence reads"})
-            remaining_chars = max(remaining_chars - len(raw), 0)
+            remaining_chars = max(remaining_chars - escaped_evidence_size(raw) - envelope_chars, 0)
             return raw
 
         check_owned()
@@ -3284,7 +3287,7 @@ class SubAgentCoordinator:
                 with model_scope_for_role(spec.role, profile, self.model_catalog, self.profile_overrides):
                     answer = await ask_deepseek_with_tools(
                         correction_input(original, evidence, errors), [], [READ_TASK_EVIDENCE_BATCH, READ_TASK_EVIDENCE], readonly_tool,
-                        profile=profile, max_tool_rounds=max_rounds, tool_context=REPORT_CORRECTION_PROMPT,
+                        profile=profile, max_tool_rounds=max_rounds, system_context=REPORT_CORRECTION_PROMPT,
                         trace=trace, event_sink=event_sink,
                         transcript_sink=save_correction_transcript,
                         final_feedback=report_feedback,
@@ -4071,6 +4074,7 @@ def _merge_trace(parent: DeepSeekTrace | None, child: DeepSeekTrace) -> None:
     if parent is None:
         return
     parent.input_tokens += child.input_tokens
+    parent.cached_tokens += child.cached_tokens
     parent.output_tokens += child.output_tokens
     parent.total_tokens += child.total_tokens
     parent.model_routes.extend(child.model_routes)
