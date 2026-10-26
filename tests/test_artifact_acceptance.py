@@ -11,6 +11,7 @@ from tests.test_subagent_v2 import decision, profile
 from src.plugins.ai_chat.agent import ContextPacket
 from src.plugins.ai_chat.agent.artifact_acceptance import (
     artifact_delivery_allowed,
+    artifact_draft_allowed,
     artifact_identity,
     artifact_verdicts,
     separate_review_artifacts,
@@ -27,6 +28,7 @@ from src.plugins.ai_chat.subagents import (
     _acceptance_repair_target,
     _apply_completed_repairs,
     _delivery_outcomes,
+    _single_observed_artifact,
     _settled_task_status,
 )
 
@@ -58,6 +60,16 @@ def review_for(file, *, status="passed"):
 
 
 class ArtifactAcceptanceTests(unittest.TestCase):
+    def test_draft_requires_exact_structurally_checked_snapshot(self):
+        file = artifact()
+        check = {**check_for(file), "checks": ["nonempty", "sha256", "format"]}
+        self.assertTrue(artifact_draft_allowed(file, {"checks": [check]}))
+        self.assertTrue(artifact_draft_allowed(file, {"checks": [{**check, "ok": False, "readable": True}]}))
+        for checks in ([], [check, check], [{**check, "ok": False}],
+                       [{**check, "artifact_key": "b" * 64}],
+                       [{**check, "checks": ["nonempty", "sha256"]}]):
+            self.assertFalse(artifact_draft_allowed(file, {"status": "passed", "checks": checks}))
+
     def test_review_references_are_not_new_artifacts_or_acceptance_evidence(self):
         file = artifact()
         original = {"status": "success", "artifacts": [{"handle": file["handle"]}],
@@ -213,6 +225,7 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def outcome(self, task, key="build", *, artifacts=(), dependencies=(), state="success"):
         step = TaskStep(key, "coder", key, "source archive", dependencies)
         run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
+        self.workspaces.capture = AsyncMock()
         result = {"status": state, "summary": key, "artifacts": list(artifacts)}
         self.store.finish_run(run.run_id, "succeeded" if state == "success" else state, result=result)
         return StepOutcome(step, run, result, DeepSeekTrace(), state)
@@ -309,6 +322,74 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.state, "failed")
         self.workspaces.capture.assert_not_awaited()
         self.assertEqual(result.result["artifacts"], [])
+
+    async def test_review_scratch_pdf_is_not_recovered_as_deliverable(self):
+        task = self.submit()
+        file = artifact()
+        step = TaskStep("review", "coder", "Check the PDF", "review", ("build",))
+        run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
+        self.workspaces.capture = AsyncMock()
+
+        async def model(text, history, tools, execute, **kwargs):
+            self.store.record_evidence(task.task_id, run.run_id, "sandbox_exec",
+                {"sandbox_id": "s183bee"}, {"ok": True, "observed_manifest": {
+                    "changed_workspace_paths": [f"tasks/{task.task_id}/steps/review/review.pdf"],
+                }})
+            return json.dumps({"status": "success", "summary": "PDF checked",
+                "artifacts": [], "metadata": {"artifact_reviews": [review_for(file)]}})
+
+        with patch("src.plugins.ai_chat.subagents.ask_deepseek_with_tools", side_effect=model):
+            result = await self.coordinator._run_step_reliably(task, step, run, context=self.packet,
+                upstream={"build": {"artifacts": [file]}}, selected_profile=self.catalog.default,
+                tools_by_name={}, execute_tool=self.execute, hooks=self.hooks, review_only=True)
+        self.assertEqual(result.state, "success")
+        self.assertEqual(result.result["artifacts"], [])
+        self.assertIsNotNone(_single_observed_artifact(
+            self.store.task_evidence(task.task_id, run_ids={run.run_id}), run.run_id, task.objective))
+        self.workspaces.capture.assert_not_awaited()
+
+    async def test_file_workflow_accepts_review_copy_and_confirmed_receipt(self):
+        task = self.submit()
+        payload = decision("workflow")
+        payload["delivery_required"] = True
+        contract = EntryDecision.parse(payload).contract.as_payload()
+        self.store.set_task_state(task.task_id, "running", plan={"contract": contract})
+        task = self.store.get(task.task_id)
+        file = {**artifact(), "name": "report.pdf", "handle": "saaaaaa:/workspace/report.pdf"}
+        source = self.outcome(task, artifacts=[file])
+        source_ref = self.store.record_evidence(task.task_id, source.run.run_id,
+            "sandbox_exec", {"sandbox_id": "saaaaaa"}, {"ok": True, "returncode": 0})
+
+        async def review(text, history, tools, execute, **kwargs):
+            run = next(item for item in self.store.runs(task.task_id) if item.step_key.startswith("acceptance_r"))
+            self.store.record_evidence(task.task_id, run.run_id, "sandbox_exec",
+                {"sandbox_id": "s183bee"}, {"ok": True, "observed_manifest": {
+                    "changed_workspace_paths": [f"tasks/{task.task_id}/steps/{run.step_key}/review.pdf"],
+                }})
+            self.store.append_event(task.task_id, "agent.tool_finished", {
+                "tool_name": "sandbox_exec", "result": json.dumps({"returncode": 0}),
+            }, run_id=run.run_id)
+            return json.dumps({"status": "success", "summary": "PDF verified",
+                "artifacts": [], "metadata": {
+                    "artifact_reviews": [review_for(file)],
+                    "criterion_reviews": [{"criterion_index": 0, "status": "passed",
+                        "reason": "Checked the PDF", "evidence_refs": [source_ref["ref"]]}],
+                }})
+
+        receipt = {"ok": True, "state": "acknowledged", "filename": "report.pdf"}
+        with patch("src.plugins.ai_chat.subagents.ask_deepseek_with_tools", side_effect=review), \
+                patch.object(self.coordinator, "_correct_worker_report", new=AsyncMock(side_effect=
+                    lambda task, run, original, **kwargs: original)), \
+                patch.object(self.coordinator, "_deliver_requested_artifacts", new=AsyncMock(return_value=[receipt])), \
+                patch.object(self.coordinator, "_supervisor_text", new=AsyncMock(side_effect=AssertionError("draft used"))):
+            answer = await self.coordinator._execute_workflow(task, steps=[], runs={}, context=self.packet,
+                selected_profile=self.catalog.default, tools_by_name={}, execute_tool=self.execute,
+                parent_trace=None, progress=None, hooks=self.hooks, initial_completed={"build": source})
+        current = self.store.get(task.task_id)
+        self.assertEqual(current.status, "completed")
+        self.assertEqual(current.result["validation"]["acceptance"]["status"], "passed")
+        self.assertIn("文件交付：1/1 个已确认送达", answer)
+        self.assertEqual(current.result["report_narrative"], "")
 
     async def test_workflow_sends_exact_passed_file_despite_failed_preview_acceptance(self):
         task = self.submit()
@@ -411,6 +492,24 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(sent[0]["name"], sent[1]["name"])
         self.assertEqual({item["key"] for item in self.store.deliveries(task.task_id)},
                          {first["snapshot"], second["snapshot"]})
+
+    async def test_readable_unaccepted_file_is_sent_as_draft_once_not_completed(self):
+        task = self.submit()
+        file = artifact()
+        completed = {"build": self.outcome(task, artifacts=[file])}
+        validation = {"status": "failed", "checks": [{**check_for(file),
+            "checks": ["nonempty", "sha256", "format"]}],
+            "artifacts": [{**review_for(file, status="failed"), "reason": "价格未核实"}]}
+        sent = await self.deliver(task, completed, validation)
+        self.assertTrue(sent[0]["ok"])
+        self.assertTrue(sent[0]["draft"])
+        self.assertEqual(sent[0]["draft_reason"], "价格未核实")
+        self.assertTrue(sent[0]["filename"].startswith("未完成草稿-"))
+        task, completed = self.reopen(task, completed)
+        restored = await self.deliver(task, completed, validation)
+        self.assertTrue(restored[0]["draft"])
+        self.workspaces.deliver.assert_awaited_once()
+        self.assertEqual(_settled_task_status(list(completed.values()), restored, {"status": "passed"}), "partial")
 
     async def test_rejected_snapshot_at_same_path_does_not_hide_passed_snapshot(self):
         for rejected_first in (True, False):

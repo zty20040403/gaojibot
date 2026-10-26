@@ -114,11 +114,17 @@ def outcome_report(validation: Mapping[str, Any], narrative: str = "", deliverie
         return narrative
     rows = matrix.get("criteria", [])
     passed = sum(row.get("status") == "passed" for row in rows)
-    if passed == len(rows) and rows:
+    criteria_passed = bool(rows) and passed == len(rows) and matrix.get("status") == "passed"
+    files_confirmed = not deliveries or all(item.get("ok") is True and not item.get("draft") for item in deliveries)
+    if criteria_passed and validation.get("status") == "passed" and files_confirmed:
         heading = f"已完成并核实 {passed} 项验收。"
+    elif criteria_passed:
+        heading = f"已核实 {passed} 项验收，但任务尚未全部完成。"
     else:
         heading = f"任务尚未全部完成：已核实 {passed}/{len(rows)} 项。"
     lines = [heading]
+    if validation.get("status") == "failed":
+        lines.append("独立复核仍有未通过项，不能把验收条目通过当成整项任务完成。")
     labels = {"passed": "已核实", "failed": "未达标", "unverified": "尚未验证"}
     for row in rows:
         lines.append(f"{labels.get(row['status'], '尚未验证')}：{row['description']}。{row['reason']}")
@@ -133,7 +139,8 @@ def outcome_report(validation: Mapping[str, Any], narrative: str = "", deliverie
                          f"{detail['before']['available_bytes'] / 1024**3:.2f} → "
                          f"{detail['after']['available_bytes'] / 1024**3:.2f} GiB。")
     # A failed gate must not be followed by an unverified model claim of success.
-    if matrix.get("status") == "passed" and narrative.strip():
+    # File delivery is authoritative here; a model-written pre-upload draft is not.
+    if criteria_passed and validation.get("status") == "passed" and not deliveries and narrative.strip():
         lines.append(narrative.strip())
     if deliveries:
         confirmed = sum(item.get("ok") is True for item in deliveries)
@@ -142,6 +149,8 @@ def outcome_report(validation: Mapping[str, Any], narrative: str = "", deliverie
                   "unknown": "上传结果不明确，只核对回执，不重复上传", "rejected": "上传被拒绝或准备失败，已停止自动重试",
                   "validation_failed": "未通过文件验收，未发送", "disabled": "文件发送工具已关闭"}
         for item in deliveries:
+            if item.get("draft"):
+                lines.append(f"{item.get('filename') or '附件'}：未完成草稿，内容仍待核实。{item.get('draft_reason') or ''}")
             if item.get("ok") is not True:
                 lines.append(f"{item.get('filename') or '附件'}：{states.get(item.get('state'), '尚未确认送达')}。")
     return "\n".join(lines)
@@ -336,6 +345,9 @@ def evaluate_acceptance(contract: Mapping[str, Any], evidence: list[dict], revie
                 if all(successful_evidence(item) for item in selected):
                     status, reason = "passed", str(review["reason"])
                     detail = {"level": "evidence_backed_review", "not_a_machine_proof": True}
+                else:
+                    invalid = [item["evidence_id"] for item in selected if not successful_evidence(item)]
+                    reason = "引用的检查未成功或证据不完整：" + ", ".join(invalid)
             else:
                 candidates = selected
                 if check["kind"] == "disk_delta" and any(
@@ -393,3 +405,29 @@ def evaluate_acceptance(contract: Mapping[str, Any], evidence: list[dict], revie
                      "evidence_refs": list(dict.fromkeys(value for key, value in detail.items() if key.endswith("evidence_ref")))})
     status = "passed" if rows and all(row["status"] == "passed" for row in rows) else "failed" if any(row["status"] == "failed" for row in rows) else "unverified"
     return {"version": 2, "status": status, "criteria": rows}
+
+
+def acceptance_feedback(contract: Mapping[str, Any], evidence: list[dict], reviewer: Mapping[str, Any],
+                        *, task_created_at: int) -> str | None:
+    """Let the active reviewer fix unsupported success claims within its existing budget."""
+    matrix = evaluate_acceptance(contract, evidence, reviewer, task_created_at=task_created_at)
+    reviews = reviewer.get("metadata", {}).get("criterion_reviews", [])
+    reviews = reviews if isinstance(reviews, list) else []
+    problems = []
+    for row in matrix["criteria"]:
+        index = row["criterion_index"]
+        if type(index) is not int:
+            continue
+        matches = [item for item in reviews if isinstance(item, dict)
+                   and type(item.get("criterion_index")) is int and item["criterion_index"] == index]
+        if (len(matches) != 1 or matches[0].get("status") not in {"passed", "failed", "unverified"}
+                or matches[0].get("status") == "passed" and row["status"] != "passed"):
+            problems.append(f"acceptance[{index}] {row['description']}：{row['reason']}")
+    if not problems:
+        return None
+    return ("发送前验收报告尚未通过宿主证据校验：\n" + "\n".join(problems)
+            + "\n只补查上述条款，不重做产物、不重试服务器变更、不上传附件。"
+            "失败的复合命令即使已打印部分正确输出，也不能作为通过的证据；"
+            "请在原文件副本上单独运行缺失的只读检查，引用实际成功的新证据。"
+            "已有成功证据可直接读取并纠正引用。无法核实就标 unverified，真实不合格标 failed，"
+            "不能为通过校验编造结论。保留其余文件结论，返回完整验收 JSON。")

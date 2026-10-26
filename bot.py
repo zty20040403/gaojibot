@@ -11,7 +11,8 @@ nonebot.init()
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)
 
-nonebot.load_plugin("src.plugins.ai_chat")
+if nonebot.load_plugin("src.plugins.ai_chat") is None:
+    raise SystemExit("Required ai_chat plugin failed to load; refusing to start an empty bot.")
 
 
 if __name__ == "__main__":

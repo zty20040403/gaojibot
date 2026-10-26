@@ -1,0 +1,62 @@
+# KVM sandbox backend
+
+The bot can use isolated Debian virtual machines for code and file tasks. The
+default sandbox backend remains OCI; production tank explicitly enables VMs:
+
+```nix
+services.gaoji.sandbox = {
+  enable = true;
+  backend = "vm";
+  vmImage = pinnedDebianGenericcloudImage;
+  vmRoot = "/data/services/gaoji/vms";
+};
+```
+
+`vmImage` must be an immutable, checksum-verified QCOW2 image. Keep `vmRoot`
+on persistent storage outside the Nix store. The service user needs access to
+`/dev/kvm`; the NixOS module enables libvirt and supplies QEMU, virsh and
+cloud-localds. On tank, override the default `vmRoot` to the 14 TB data volume;
+the system partition is not suitable for growing per-task disks. Grant the
+bot service write access to that path. Do not enable this backend on a host
+without KVM.
+
+Each task gets a QCOW2 overlay, cloud-init seed, domain definition and owner
+metadata under `vmRoot`. The guest has a `sandbox` user and `/workspace`. The
+manager communicates through QEMU Guest Agent: it does not mount the host
+workspace or pass bot credentials into the guest. Debian packages requested by
+the model are installed inside that guest. The `nix_search` tool is hidden in
+VM mode; OCI mode keeps its existing Nix package workflow.
+
+Stopping a VM runs `sync`, freezes guest filesystems through the guest agent,
+then stops QEMU. This gives a recoverable on-disk state, not an application-level
+graceful shutdown. If sync or freezing fails, the VM is left running and an
+error is returned. On restart, a missing libvirt domain is redefined from the
+saved XML and its disk is reused. A failed or undelivered task must not have its
+VM disk reclaimed.
+
+The pre-cutover disposable test on tank verified creation, command execution, file
+write/read, read-only handoff, ZIP export, filesystem-frozen stop, removal of
+the libvirt domain, redefinition, restart and persisted file readback. The test
+VM and temporary source files were removed. This does **not** verify the bot's
+systemd service, QQ delivery, or production database migration.
+
+The guest uses QEMU user-mode networking and can make outbound connections.
+It is not a network-isolated security boundary. Tank enabled VM mode during
+the cutover after its Podman image loader failed. A post-cutover disposable
+guest was created and destroyed as the bot's Unix user, and executed a command
+inside the guest. The later live task#175 generated and independently validated
+a PDF in tank KVM guests and obtained a QQ group-file receipt; its final task
+status and wording exposed separate defects, subsequently fixed. After the QQ
+transport also moved to tank, isolated real-QQ file-outbox process-loss tests
+passed. Those checks alone did not prove production-service recovery.
+
+The later explicitly authorized task#176 test killed tank's bot main process
+once after a persisted tool result. systemd restarted it in six seconds; after
+the normal 300-second execution lease expired, the same task and producer
+resumed, restarted the original guest and generated a new PDF. Independent
+validation passed, and actual QQ lookups confirmed one attachment and one
+correct final message. QQ and PostgreSQL were not restarted. See
+`tank-cutover.md` for timestamps, receipt IDs and the distinction between this
+safe checkpoint boundary and uncertain non-idempotent operations. Under the
+current service control-group policy, bot failure stops its session-libvirt
+and QEMU children too; recovery reuses guest disks, not guest RAM state.

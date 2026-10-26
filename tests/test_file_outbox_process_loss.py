@@ -67,8 +67,38 @@ def _child(dsn, schema, task_id, root, boundary, pipe):
     asyncio.run(run())
 
 
+class FileOutboxTestDatabaseSafetyTests(unittest.TestCase):
+    def test_rejects_production_database_before_migration(self):
+        with patch.dict(os.environ, TEST_POSTGRES_DSN="test-dsn"), patch("psycopg.connect") as connect:
+            connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = (
+                "qq_bot", False, 0, "")
+            with self.assertRaisesRegex(RuntimeError, "dedicated gaoji_acceptance database"):
+                FileOutboxProcessLossTests.setUpClass()
+
+    def test_rejects_replicated_primary_before_migration(self):
+        with patch.dict(os.environ, TEST_POSTGRES_DSN="test-dsn"), patch("psycopg.connect") as connect:
+            connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = (
+                "gaoji_acceptance_test", False, 1, "ANY 1 (standby)")
+            with self.assertRaisesRegex(RuntimeError, "must not run on a replicated"):
+                FileOutboxProcessLossTests.setUpClass()
+
+
 @unittest.skipUnless(os.getenv("TEST_POSTGRES_DSN"), "Requires an isolated PostgreSQL test database")
 class FileOutboxProcessLossTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        with psycopg.connect(os.environ["TEST_POSTGRES_DSN"]) as connection:
+            name, in_recovery, replicas, synchronous_standbys = connection.execute(
+                "SELECT current_database(), pg_is_in_recovery(), "
+                "(SELECT count(*) FROM pg_stat_replication), "
+                "current_setting('synchronous_standby_names')"
+            ).fetchone()
+        if (name != "gaoji_acceptance" and not name.startswith("gaoji_acceptance_")):
+            raise RuntimeError("Process-loss tests require a dedicated gaoji_acceptance database")
+        if in_recovery or replicas or synchronous_standbys:
+            raise RuntimeError("Process-loss tests must not run on a replicated PostgreSQL instance")
+
     async def test_postgres_offline_wait_keeps_manifest_and_retry_budget_after_reopen(self):
         dsn = os.environ["TEST_POSTGRES_DSN"]
         schema = "test_file_offline_" + uuid.uuid4().hex[:16]

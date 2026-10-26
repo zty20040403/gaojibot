@@ -66,6 +66,8 @@ class SandboxExecutionActivity:
 
 
 class DockerSandboxManager:
+    backend = "oci"
+
     def __init__(
         self,
         *,
@@ -374,6 +376,7 @@ class DockerSandboxManager:
         return {
             "items": containers,
             "active_commands": len(self._active_execs),
+            "backend": self.backend,
         }
 
     async def destroy(self, owner: str, sandbox_id: str) -> None:

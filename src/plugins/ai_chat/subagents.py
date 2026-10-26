@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from pathlib import PurePosixPath
 from typing import Any, Iterator, Literal
 
 from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
@@ -30,11 +31,11 @@ from .ai_tools import ToolDefinition
 from .agent.execution import DECISION_TOOL, ENTRY_PROMPT, EntryDecision, ExecutionEntryError, active_agent_step
 from .agent.evidence import (EVIDENCE_SQL, EvidenceStoreMixin, READ_TASK_EVIDENCE, READ_TASK_EVIDENCE_BATCH,
                              decode_result, evidence_index, read_evidence, read_evidence_batch)
-from .agent.outcomes import (acceptance_blocks_completion, evaluate_acceptance,
+from .agent.outcomes import (acceptance_blocks_completion, acceptance_feedback, evaluate_acceptance,
                              outcome_report, validate_report)
 from .agent.file_outbox import FileOutboxStoreMixin, attempt_file
 from .agent.artifact_acceptance import (
-    ACCEPTANCE_VERSION, artifact_delivery_allowed, artifact_identity, artifact_verdicts,
+    ACCEPTANCE_VERSION, artifact_delivery_allowed, artifact_draft_allowed, artifact_identity, artifact_verdicts,
     separate_review_artifacts,
 )
 from .agent.model_routing import agent_profile_names, choose_agent_profile, scoped_agent_models, model_scope_for_role, validate_model_policy
@@ -354,6 +355,41 @@ class SubAgentStore(AgentSessionStoreMixin, TaskControlStoreMixin, ExternalStore
             run_id=run.run_id,
         )
         return run
+
+    def plan_repair(self, task_id: int, target: str, specs: Sequence[tuple[TaskStep, Sequence[str], str]],
+                    *, reason: str) -> list[RunRecord]:
+        """Persist the entire repair chain before any specialist can start."""
+        if not specs:
+            raise ValueError("A repair plan needs at least one step")
+        timestamp = int(time.time())
+        runs = []
+        with self._transaction() as cursor:
+            lock = "" if self._legacy_sqlite else " FOR UPDATE"
+            row = cursor.execute("SELECT plan_json FROM subagent_tasks WHERE task_id=?" + lock, (task_id,)).fetchone()
+            plan = _json_object(row["plan_json"])
+            adaptive = list(plan.get("adaptive_steps", []))
+            for index, (step, allowed, profile) in enumerate(specs):
+                row = cursor.execute("""INSERT INTO subagent_runs
+                    (task_id, step_key, role, objective, deliverable, dependencies_json, allowed_tools_json,
+                     model_profile, status, attempt, result_json, last_error, created_at, started_at, finished_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '{}', '', ?, NULL, NULL) RETURNING *""",
+                    (task_id, step.key, step.role, step.objective, step.deliverable,
+                     _json_dump(list(step.dependencies)), _json_dump(list(allowed)), profile, timestamp)).fetchone()
+                runs.append(self._run_row(row))
+                adaptive.append({**_step_payload(step), "reason": reason,
+                    "replaces" if index == len(specs) - 1 else "supports": target})
+            plan["adaptive_steps"] = adaptive
+            cursor.execute("UPDATE subagent_tasks SET plan_json=?, status='running', updated_at=?, finished_at=NULL WHERE task_id=?",
+                           (_json_dump(plan), timestamp, task_id))
+            sequence = int(cursor.execute("SELECT COALESCE(MAX(sequence),0) AS n FROM subagent_checkpoints WHERE task_id=?",
+                                          (task_id,)).fetchone()["n"]) + 1
+            cursor.execute("""INSERT INTO subagent_checkpoints (task_id, run_id, sequence, phase, state_json, created_at)
+                VALUES (?, ?, ?, 'adaptive_repair_planned', ?, ?)""", (task_id, runs[-1].run_id, sequence,
+                _json_dump({"failed_step": target, "repair_step": _step_payload(specs[-1][0]),
+                    "repair_run_id": runs[-1].run_id, "chain_run_ids": [r.run_id for r in runs], "reason": reason}), timestamp))
+        for run in runs:
+            self.append_event(task_id, "run.created", {"run_id": run.run_id, "step": run.step_key, "role": run.role}, run_id=run.run_id)
+        return runs
 
     def start_run(self, run_id: int, *, now: int | None = None, continuation: bool = False) -> bool:
         timestamp = int(time.time() if now is None else now)
@@ -1251,7 +1287,8 @@ class SubAgentCoordinator:
 
     def revise(self, task_id: int, *, scope_key: str, requester_user_id: int, instruction: str,
                step_keys: Sequence[str], expected_version: int,
-               file_delivery_required: bool | None = None) -> dict[str, Any]:
+               file_delivery_required: bool | None = None,
+               contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
         task = self.store.get(task_id)
         if task is None or task.scope_key != scope_key or task.requester_user_id != requester_user_id:
             raise ValueError("Cannot revise a task belonging to another user or conversation")
@@ -1270,21 +1307,36 @@ class SubAgentCoordinator:
             raise ValueError("Select existing steps to revise")
         while True:
             expanded = selected | {r.step_key for r in runs
-                if set(r.dependencies) & selected or _repair_target(r.step_key) in selected}
+                if set(r.dependencies) & selected or (_repair_target(r.step_key) or _repair_support_target(r.step_key)) in selected}
             if expanded == selected:
                 break
             selected = expanded
         if expected_version != control["version"]:
             raise ValueError("Task version changed; refresh before revising")
+        if contract is not None:
+            contract = self._revision_contract(task_id, step_keys, contract)
+            if file_delivery_required is not None:
+                contract["delivery_required"] = file_delivery_required
         updated = {**control, "version": expected_version + 1, "revision": control["revision"] + 1}
         updated["dispatch"] = {**control["dispatch"], "deadline": int(time.time()) + self.timeout_seconds + 900}
         retired = {r.step_key for r in runs if r.step_key.startswith("acceptance_r")
-            or _repair_target(r.step_key) in selected}
+            or (_repair_target(r.step_key) or _repair_support_target(r.step_key)) in selected}
         checkpoint = {"revision": updated["revision"], "instruction": instruction, "steps": sorted(selected),
             "previous_result": task.result, "previous_runs": [{"run_id": r.run_id, "result": r.result, "status": r.status} for r in runs]}
         plan = dict(task.plan)
+        checkpoint["previous_contract"] = plan.get("contract", {})
+        if contract is not None:
+            plan["contract"] = contract
+            plan.pop("contract_refresh", None)
+            checkpoint["contract"] = contract
+        else:
+            # Console revisions have no entry-model contract. Refresh it durably
+            # before running workers, never verify new output against old criteria.
+            plan["contract_refresh"] = {
+                "revision": updated["revision"], "instruction": instruction,
+                "step_ids": list(step_keys), "file_delivery_required": file_delivery_required,
+            }
         if file_delivery_required is not None:
-            checkpoint["previous_contract"] = plan.get("contract", {})
             plan["contract"] = {**plan.get("contract", {}), "delivery_required": file_delivery_required}
             checkpoint["file_delivery_required"] = file_delivery_required
         with self.store._transaction() as cursor:
@@ -1338,6 +1390,64 @@ class SubAgentCoordinator:
         if self.dispatcher:
             self.dispatcher.enqueue(task_id)
         return updated
+
+    @staticmethod
+    def _revision_contract(task_id, step_keys, contract):
+        decision = EntryDecision.parse({
+            **dict(contract), "mode": "revise", "task_type": "execution",
+            "reason": "Update the current task contract", "answer": "", "steps": [],
+            "task_id": task_id, "step_ids": list(step_keys),
+        })
+        return decision.contract.as_payload()
+
+    async def _refresh_revision_contract(self, task, selected_profile, parent_trace):
+        pending = task.plan.get("contract_refresh")
+        if not pending:
+            return task
+        control = self.store.control(task.task_id)
+        if pending["revision"] != control["revision"]:
+            raise LeaseLost("Task revision changed before contract refresh")
+        prompt = (ENTRY_PROMPT + "\n只更新当前任务的完整验收合同，mode 必须为 revise，steps 留空。"
+            "不能删除用户未取消的要求，不能把已知失败改成更宽松的验收以便通过。"
+            "最新修订明确替换的字段必须更新；任务作用域和权限不会随合同扩大。"
+            "返回 decide_execution 参数 JSON：\n"
+            + json.dumps(DECISION_TOOL["function"]["parameters"], ensure_ascii=False))
+        request = json.dumps({"task_id": task.task_id, "step_ids": pending["step_ids"],
+            "previous_contract": task.plan.get("contract", {}), "objective": task.objective,
+            "revision": pending}, ensure_ascii=False)
+        for attempt in range(2):
+            trace = DeepSeekTrace()
+            try:
+                raw = await self._supervisor_json(prompt, request,
+                    profile=self._profile_for("supervisor", selected_profile), trace=trace)
+            finally:
+                _merge_trace(parent_trace, trace)
+            try:
+                decision = EntryDecision.parse(raw)
+                if (decision.mode != "revise" or decision.task_id != task.task_id
+                        or set(decision.step_ids) != set(pending["step_ids"])):
+                    raise ValueError("Revision planner changed task or step identity")
+                contract = decision.contract.as_payload()
+                break
+            except ValueError as exc:
+                if attempt:
+                    raise ExecutionEntryError(f"Revision contract invalid: {exc}") from exc
+                prompt += f"\n修正格式错误：{exc}"
+        if pending.get("file_delivery_required") is not None:
+            contract["delivery_required"] = pending["file_delivery_required"]
+        plan = {**task.plan, "contract": contract}
+        plan.pop("contract_refresh")
+        with self.store._transaction() as cursor:
+            cursor.execute("""UPDATE subagent_tasks SET plan_json=? WHERE task_id=?
+                AND plan_json=? AND EXISTS (SELECT 1 FROM subagent_controls
+                    WHERE task_id=? AND revision=? AND version=?)""",
+                (_json_dump(plan), task.task_id, _json_dump(task.plan), task.task_id,
+                 control["revision"], control["version"]))
+            if cursor.rowcount != 1:
+                raise LeaseLost("Task changed during contract refresh")
+        self.store.append_checkpoint(task.task_id, "revision_contract_refreshed",
+            {"revision": control["revision"], "contract": contract})
+        return self.store.get(task.task_id)
 
     @staticmethod
     def manifest() -> list[dict[str, object]]:
@@ -1929,6 +2039,19 @@ class SubAgentCoordinator:
         progress: ProgressCallback | None,
         hooks: AgentExecutionHooks | None,
     ) -> str:
+        task = await self._refresh_revision_contract(task, selected_profile, parent_trace)
+        revisions = self.store.revision_checkpoints(task.task_id)
+        if revisions and task.plan.get("contract"):
+            contract = task.plan["contract"]
+            old_constraints = {value for item in revisions
+                for value in item["state"].get("previous_contract", {}).get("constraints", [])}
+            context = replace(context, objective=contract["objective"], constraints=tuple([
+                value for value in context.constraints if value not in old_constraints
+                and not value.startswith(("交付物：", "验收："))
+            ] + list(contract.get("constraints", [])) + [
+                "交付物：" + "；".join(contract["deliverables"]),
+                "验收：" + "；".join(contract["acceptance"]),
+            ]))
         stored_runs = _workflow_runs(self.store.runs(task.task_id))
         if not stored_runs:
             self.store.append_event(
@@ -2069,7 +2192,7 @@ class SubAgentCoordinator:
         hooks: AgentExecutionHooks | None = None,
     ) -> str:
         completed: dict[str, StepOutcome] = dict(initial_completed or {})
-        _apply_completed_repairs(completed)
+        _apply_completed_repairs(completed, require_artifacts=bool(task.plan.get("contract", {}).get("delivery_required")))
         pending = {step.key: step for step in steps}
         for key in completed:
             pending.pop(key, None)
@@ -2148,10 +2271,9 @@ class SubAgentCoordinator:
                     hooks=hooks, repair_number=repair_sequence)
                 if repaired is not None and repaired.state == "waiting":
                     raise ExternalPending()
-                if attempted and repaired is not None and repaired.usable:
-                    repaired = _repair_with_evidence(target, repaired)
-                    completed[target.step.key] = repaired
-                    completed[repaired.step.key] = repaired
+                if attempted and repaired is not None:
+                    _record_repair(completed, target, repaired,
+                        require_artifacts=bool(task.plan.get("contract", {}).get("delivery_required")))
                     validation = await self._validate_workflow(task, completed, context=context,
                         selected_profile=selected_profile, tools_by_name=tools_by_name,
                         execute_tool=tracked_execute_tool, hooks=hooks, parent_trace=parent_trace, progress=progress,
@@ -2175,21 +2297,32 @@ class SubAgentCoordinator:
         final_profile = self._profile_for("supervisor", selected_profile)
         final_input = _synthesis_input(task.objective, completed) + "\n[宿主实际文件验收与附件交付状态]\n" + json.dumps({"validation": validation, "deliveries": delivery_results}, ensure_ascii=False)
         final_input += "\n上述 deliveries 只表示文件附件，不表示最终文字是否发送。你的回答正文随后由宿主持久消息队列发送；不要声称本文已发出或未发出。附件失败只能说附件失败。"
-        draft = validation.get("report_draft")
-        final_text = str(draft["text"]) if draft else await self._supervisor_text(
-            final_input,
-            [],
-            profile=final_profile,
-            tool_context=(
-                "你是 Sub-Agent 主控。检查各步骤是否真正完成原始目标，再给用户一个"
-                "直接、自然的最终答复。明确说明失败和未解决事项；不要暴露内部 JSON，"
-                "不要声称没有证据的工作已经完成。先用短句说明完成了什么、实际改动、"
-                "未完成事项和下一步；详细流水留在控制台，不加入无关吐槽。"
-                "这是本轮终态通知，不得承诺未登记的自动接续。仅 deliveries 中 state=queued 的附件"
-                "有持久重试；unknown/sending 仅核对回执，其他失败不会自动重做任务。"
-            ),
-            trace=final_trace,
+        contract = task.plan.get("contract", {})
+        file_report = (
+            isinstance(contract, Mapping)
+            and bool(contract.get("delivery_required"))
+            and isinstance(validation.get("task_outcome"), Mapping)
         )
+        draft = validation.get("report_draft")
+        if file_report:
+            final_text = ""
+        elif draft:
+            final_text = str(draft["text"])
+        else:
+            final_text = await self._supervisor_text(
+                final_input,
+                [],
+                profile=final_profile,
+                tool_context=(
+                    "你是 Sub-Agent 主控。检查各步骤是否真正完成原始目标，再给用户一个"
+                    "直接、自然的最终答复。明确说明失败和未解决事项；不要暴露内部 JSON，"
+                    "不要声称没有证据的工作已经完成。先用短句说明完成了什么、实际改动、"
+                    "未完成事项和下一步；详细流水留在控制台，不加入无关吐槽。"
+                    "这是本轮终态通知，不得承诺未登记的自动接续。仅 deliveries 中 state=queued 的附件"
+                    "有持久重试；unknown/sending 仅核对回执，其他失败不会自动重做任务。"
+                ),
+                trace=final_trace,
+            )
         _merge_trace(parent_trace, final_trace)
         report_narrative = final_text
         final_text = outcome_report(validation, report_narrative, delivery_results)
@@ -2259,6 +2392,14 @@ class SubAgentCoordinator:
         if has_artifacts and (not tool_enabled("sandbox_create") or not tool_enabled("sandbox_exec")):
             return {"status": "failed", "reason": "管理员已禁止验收所需的沙盒工具"}
         self.store.set_task_state(task.task_id, "verifying")
+        if (
+            has_artifacts and hooks and hooks.workspaces
+            and getattr(getattr(hooks.workspaces, "manager", None), "backend", "oci") == "vm"
+        ):
+            try:
+                await hooks.workspaces.quiesce_for_validation(task.task_id, completed)
+            except Exception as exc:
+                return {"status": "not_verified", "reason": f"Could not reserve an artifact verifier: {exc}"}
         checks = []
         checked_artifacts: set[str] = set()
         for outcome in _delivery_outcomes(task, completed):
@@ -2280,8 +2421,11 @@ class SubAgentCoordinator:
         if hooks and hooks.operation_receipt:
             await link_operation_receipts(self.store, task, evidence_runs, hooks.operation_receipt)
         source_evidence = self.store.task_evidence(task.task_id, run_ids=evidence_runs)
+        # File delivery happens after acceptance, so a pre-delivery draft can become false
+        # between review and the final QQ upload receipt.
         draft = await self._prepare_report_draft(task, completed, contract, source_evidence,
-            selected_profile=selected_profile, parent_trace=parent_trace) if outcome_v2 and prepare_draft else None
+            selected_profile=selected_profile, parent_trace=parent_trace) if (
+                outcome_v2 and prepare_draft and not contract.get("delivery_required")) else None
         fingerprint = hashlib.sha256(json.dumps({"acceptance_version": ACCEPTANCE_VERSION,
             "report_draft_sha256": draft["sha256"] if draft else None,
             "evidence": evidence_fingerprint(source_evidence),
@@ -2428,16 +2572,13 @@ class SubAgentCoordinator:
                 outcomes.append(outcome)
                 completed[outcome.step.key] = outcome
                 repaired_step = _repair_target(outcome.step.key)
-                if repaired_step and outcome.usable:
-                    outcome = _repair_with_evidence(completed.get(repaired_step), outcome)
-                    completed[outcome.step.key] = outcome
-                    completed[repaired_step] = outcome
+                if repaired_step:
+                    _record_repair(completed, completed.get(repaired_step), outcome,
+                        require_artifacts=bool(task.plan.get("contract", {}).get("delivery_required")))
                 _merge_trace(parent_trace, outcome.trace)
                 if repair is not None:
-                    repair = _repair_with_evidence(outcome, repair)
-                    completed[repair.step.key] = repair
-                    if repair.usable:
-                        completed[outcome.step.key] = repair
+                    _record_repair(completed, outcome, repair,
+                        require_artifacts=bool(task.plan.get("contract", {}).get("delivery_required")))
             self.store.append_checkpoint(
                 task.task_id,
                 "step_completed",
@@ -2538,60 +2679,41 @@ class SubAgentCoordinator:
             )[:1000],
             dependencies=failed.step.dependencies,
         )
-        spec = self.registry.worker(role)
-        profile = self._profile_for(role, selected_profile)
-        run = self.store.create_run(
-            task.task_id,
-            repair_step,
-            allowed_tools=sorted(spec.allowed_tools & tools_by_name.keys()),
-            model_profile=profile.name,
-        )
-        current_plan = dict(self.store.get(task.task_id).plan)  # type: ignore[union-attr]
-        adaptive_steps = list(current_plan.get("adaptive_steps") or [])
-        adaptive_steps.append(
-            {
-                **_step_payload(repair_step),
-                "depends_on": [failed.step.key],
-                "replaces": failed.step.key,
-                "reason": str(decision.get("reason") or "")[:1000],
-            }
-        )
-        current_plan["adaptive_steps"] = adaptive_steps
-        self.store.set_task_state(task.task_id, "running", plan=current_plan)
-        self.store.append_checkpoint(
-            task.task_id,
-            "adaptive_repair_planned",
-            {
-                "failed_step": failed.step.key,
-                "repair_step": _step_payload(repair_step),
-                "repair_run_id": run.run_id,
-                "reason": str(decision.get("reason") or "")[:1000],
-            },
-            run_id=run.run_id,
-        )
+        file_repair = bool(task.plan.get("contract", {}).get("delivery_required")) and _file_producer(failed)
+        chain = [repair_step]
+        if file_repair:
+            rewrite = (
+                "修订原文件并返回实际文件产物句柄，不要只返回调查文字。原步骤：" + failed.step.objective
+                + "\n本次缺陷：" + objective + "\n原交付标准：" + failed.step.deliverable
+                + "\n使用获准的原文件和补查证据；无法核实的内容明确标注，不得编造或冒充已核实。"
+                "尽量保留已完成内容，修订后由宿主独立验收和交付；不要自行重复上传。"
+            )
+            if role != failed.step.role:
+                support = replace(repair_step, key=repair_key + "_sources")
+                chain = [support, replace(repair_step, role=failed.step.role, objective=rewrite[:4000],
+                    deliverable=failed.step.deliverable, dependencies=(*failed.step.dependencies, support.key))]
+            else:
+                chain = [replace(repair_step, objective=rewrite[:4000], deliverable=failed.step.deliverable)]
+        runs = self.store.plan_repair(task.task_id, failed.step.key, [
+            (step, sorted(self.registry.worker(step.role).allowed_tools & tools_by_name.keys()),
+             self._profile_for(step.role, selected_profile).name) for step in chain
+        ], reason=str(decision.get("reason") or "")[:1000])
         await self._notify_progress(
             progress,
-            f"{task.handle} · 主控 Agent：{failed.step.key} 失败，已追加一次受限修复。",
+            f"{task.handle} · 主控 Agent：" + ("先补查资料，再修订原文件并重新验收。" if len(chain) > 1 else "已追加一次受限修复。"),
         )
-        upstream = {
-            dependency: completed[dependency].result
-            for dependency in repair_step.dependencies
-            if dependency in completed
-        }
-        upstream["failed_attempt"] = failed.result
-        repair = await self._run_step_reliably(
-            task,
-            repair_step,
-            run,
-            context=context,
-            upstream=upstream,
-            selected_profile=selected_profile,
-            tools_by_name=tools_by_name,
-            execute_tool=execute_tool,
-            hooks=hooks,
-        )
-        if repair.state == "waiting":
-            return True, repair
+        available = dict(completed)
+        for step, run in zip(chain, runs):
+            if any(not available[key].usable and not available[key].step.optional for key in step.dependencies):
+                repair = self._skip_step(task, step, run, available)
+            else:
+                repair = await self._run_step_reliably(task, step, run, context=context,
+                    upstream={**{key: available[key].result for key in step.dependencies}, "failed_attempt": failed.result},
+                    selected_profile=selected_profile, tools_by_name=tools_by_name, execute_tool=execute_tool, hooks=hooks)
+            if repair.state == "waiting":
+                return True, repair
+            available[step.key] = repair
+            _merge_trace(parent_trace, repair.trace)
         repair.result.setdefault("metadata", {})["replaces_step"] = failed.step.key
         self.store.append_checkpoint(
             task.task_id,
@@ -2604,7 +2726,6 @@ class SubAgentCoordinator:
             },
             run_id=repair.run.run_id,
         )
-        _merge_trace(parent_trace, repair.trace)
         return True, repair
 
     async def _deliver_requested_artifacts(
@@ -2649,15 +2770,23 @@ class SubAgentCoordinator:
                 if parsed is None or identity in seen:
                     continue
                 seen.add(identity)
-                if validation is not None and not artifact_delivery_allowed(raw_artifact, validation):
+                draft = validation is not None and not artifact_delivery_allowed(raw_artifact, validation)
+                if draft and not artifact_draft_allowed(raw_artifact, validation):
                     deliveries.append({"ok": False, "state": "validation_failed", "handle": handle,
                         "filename": raw_artifact.get("name", ""),
-                        "error": "此文件尚未通过独立验收，未发送；不影响其他已通过的文件。"})
+                        "error": "此文件尚未通过完整性或格式检查，不能作为可用草稿发送。"})
                     continue
+                if draft:
+                    reasons = [str(review.get("reason") or "") for review in validation.get("artifacts", [])
+                        if review.get("artifact_key") == identity and review.get("status") != "passed"]
+                    raw_artifact = {**raw_artifact, "draft": True,
+                        "draft_reason": ("；".join(filter(None, reasons)) or "内容尚未全部验收通过，请勿当作最终结论")[:1000]}
                 sandbox_id, path = parsed
                 filename = str(raw_artifact.get("name") or "").strip()
                 if raw_artifact.get("snapshot"):
                     filename = f"kb-{task.task_id}-r{self.store.control(task.task_id)['revision']}-{raw_artifact['snapshot'][:10]}-{filename}"
+                if draft:
+                    filename = "未完成草稿-" + filename
                 if raw_artifact.get("snapshot") and hooks and hooks.workspaces and isinstance(contract, Mapping) and contract.get("version", 1) >= 2:
                     queued = self.store.queue_file(task.task_id, raw_artifact, filename)
                     payload = await attempt_file(self.store, task.task_id, queued,
@@ -2725,6 +2854,8 @@ class SubAgentCoordinator:
                     payload.setdefault("handle", handle)
                     payload.setdefault("filename", filename)
                     payload.setdefault("size", raw_artifact.get("size"))
+                    if draft:
+                        payload.update(draft=True, draft_reason=raw_artifact["draft_reason"])
                     self.store.finish_delivery(task.task_id, delivery_key, "acknowledged" if payload.get("ok") else "unknown", payload)
                 raw_artifact["delivery"] = payload
                 deliveries.append(payload)
@@ -2774,6 +2905,12 @@ class SubAgentCoordinator:
     ) -> StepOutcome:
         profile = self._profile_for(step.role, selected_profile)
         spec = self.registry.worker(step.role)
+        # Restore the original artifact handoff even after a process restart.
+        repair_target = _repair_target(step.key) or _repair_support_target(step.key)
+        if repair_target and "failed_attempt" not in upstream:
+            original = next((r for r in self.store.runs(task.task_id) if r.step_key == repair_target), None)
+            if original is not None:
+                upstream = {**upstream, "failed_attempt": original.result}
         revisions = self.store.revision_checkpoints(task.task_id)
         revision = revisions[-1]["state"] if revisions else None
         if revision:
@@ -2895,12 +3032,35 @@ class SubAgentCoordinator:
         worker_input += f"\n[本步骤工作目录]\n/workspace/tasks/{task.task_id}/steps/{step.key}\n"
         worker_input += "\n[宿主证据索引，必要时用 read_task_evidence 读取]\n" + json.dumps(evidence_index(allowed_evidence()), ensure_ascii=False)
         worker_input += "\n报告中每个 evidence# 必须使用本轮工具返回或当前索引中的完整编号；不要复制上一修订的编号。来源观测时间以证据原文为准，不把收取时间当作采样时间。"
+
+        def review_feedback(answer: str) -> str | None:
+            assert_job_owned()
+            contract = task.plan.get("contract", {})
+            if contract.get("version", 1) < 2:
+                return None
+            previous = self.store.latest_run_checkpoint(task.task_id, run.run_id, "acceptance_feedback")
+            attempts = int((previous or {}).get("attempts", 0))
+            if attempts >= 2:
+                return None
+            try:
+                report = _parse_worker_result(answer)
+            except (ValueError, TypeError):
+                feedback = "发送前验收报告无法解析。请保留真实检查结果，按要求返回完整 JSON。"
+            else:
+                feedback = acceptance_feedback(contract, allowed_evidence(), report,
+                    task_created_at=task.created_at)
+            if feedback:
+                self.store.append_checkpoint(task.task_id, "acceptance_feedback", {
+                    "attempts": attempts + 1, "feedback": feedback,
+                }, run_id=run.run_id)
+            return feedback
+
         try:
             correction_checkpoint = self.store.latest_run_checkpoint(task.task_id, run.run_id, "report_correction")
             async with self.scheduler.slot(task.scope_key, profile.name), asyncio.timeout(min(self.timeout_seconds, spec.timeout_seconds)):
                 self.store.start_run(run.run_id, continuation=run.result.get("status") == "waiting")
-                if session["messages"] and hooks and hooks.workspaces:
-                    await hooks.workspaces.restore_step()
+                # Sandbox tools resume only their addressed workspace. Starting all
+                # retained revisions here exhausts VM quotas before the worker runs.
                 if correction_checkpoint is not None:
                     # The execution pass already ended before this durable checkpoint.
                     # Never reopen server/sandbox command tools just to recover its report.
@@ -2922,9 +3082,25 @@ class SubAgentCoordinator:
                             compensate_tool=(hooks.compensate_tool if hooks else None),
                             transcript_sink=save_transcript,
                             after_tool_round=external.pause if external else None,
+                            final_feedback=review_feedback if review_only else None,
                         )
                     result = _normalize_worker_scope_result(_parse_worker_result(answer))
                     result = separate_cluster_artifacts(result, allowed_evidence())
+                    contract = task.plan.get("contract")
+                    delivery_required = (
+                        bool(contract.get("delivery_required"))
+                        if isinstance(contract, Mapping)
+                        else bool(_DELIVERY_REQUEST_PATTERN.search(task.objective))
+                    )
+                    if delivery_required and not review_only and not result.get("artifacts"):
+                        recovered = _single_observed_artifact(
+                            allowed_evidence(), run.run_id, task.objective,
+                        )
+                        if recovered is not None:
+                            result["artifacts"] = [recovered]
+                            self.store.append_event(task.task_id, "artifact.recovered", {
+                                "run_id": run.run_id, "handle": recovered["handle"],
+                            }, run_id=run.run_id)
             if review_only and correction_checkpoint is None:
                 result = separate_review_artifacts(result, {
                     key: upstream[key] for key in step.dependencies if key in upstream
@@ -3402,6 +3578,7 @@ unresolved 只填写本步骤交付标准中仍未完成的缺口；需要后续
 索引含 previous_evidence 时，读取补查前的观测以保留其他维度的数据；冲突以新观测为准，旧状态不能当成当前状态，旧产物不能当成当前交付物。
 文件分别放在此步骤指定的工作目录。每个步骤有独立容器；通过 import_agent_artifact 导入上游快照，复制到自己的工作目录再修改。
 不要自行发送文件。交付物在 artifacts 返回 s123abc:/workspace/path.ext 格式的真实沙盒句柄，宿主独立验收后发送。
+这个句柄就是 sandbox_id 加冒号和实际文件绝对路径，不需要调用附件上传工具；文件确实生成并可读取时，不得仅因尚未发送或上传而把本步骤标为 partial。
 最终文字同样由宿主在验收后持久投递。say 只报简短进度，不能用它发送完整最终报告或证明最终送达；即使旧计划要求你发送，也只交回待发送正文，把投递交给宿主，不因尚未投递而判本步骤失败。
 工具执行结果是事实来源；工具失败时如实记录。完成后只输出一个 JSON 对象：
 {{
@@ -3450,6 +3627,10 @@ def _repair_planner_prompt(registry: AgentRegistry) -> str:
 也不要为了看起来积极而盲目重试。可用角色：
 {roles}
 
+修复必须保留原步骤的交付职责。文件任务需要新文件，不能把调查文字当作文件修复完成。
+若文件缺陷需要另一种角色先补查资料，可以选择该角色；宿主会持久化“补查 → 原角色修订文件”两步。
+来源不可用时尝试其他可访问的具体来源，不要反复搜索带有猜测价格的查询来证明原猜测。
+
 输出 JSON：
 {{"action":"repair 或 accept_failure","role":"researcher","objective":"可独立验收的修复目标","deliverable":"交付标准","reason":"原因"}}"""
 
@@ -3468,18 +3649,42 @@ def _repair_target(step_key: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _repair_support_target(step_key: str) -> str | None:
+    match = re.fullmatch(r"(.+)__repair_[1-9][0-9]*_sources", step_key)
+    return match.group(1) if match else None
+
+
 def _workflow_runs(runs: Sequence[RunRecord]) -> list[RunRecord]:
     return [run for run in runs if not run.step_key.startswith("acceptance_r")
         and not run.result.get("metadata", {}).get("superseded_by_revision")]
 
 
-def _apply_completed_repairs(completed: dict[str, StepOutcome]) -> None:
+def _file_producer(outcome: StepOutcome) -> bool:
+    return bool(outcome.result.get("artifacts")) or outcome.step.role in {"document", "coder", "media"}
+
+
+def _record_repair(completed: dict[str, StepOutcome], previous: StepOutcome | None,
+                   repair: StepOutcome, *, require_artifacts: bool = False) -> None:
+    target = _repair_target(repair.step.key)
+    combined = _repair_with_evidence(previous, repair)
+    completed[repair.step.key] = combined
+    if not target:
+        return
+    needs_file = require_artifacts and previous is not None and _file_producer(previous)
+    if repair.usable and (not needs_file or repair.result.get("artifacts")):
+        completed[target] = combined
+    elif needs_file and previous is not None:
+        # Keep the actual draft, but never promote its rejected contents to passed.
+        completed[target] = replace(previous, state="partial", result={**previous.result, "status": "partial",
+            "metadata": {**previous.result.get("metadata", {}), "repair_pending": True,
+                "repair_reason": "补救未产出可替换文件，原文件保留为未完成草稿。"}})
+
+
+def _apply_completed_repairs(completed: dict[str, StepOutcome], *, require_artifacts: bool = False) -> None:
     for key, outcome in tuple(completed.items()):
         target = _repair_target(key)
-        if target and outcome.usable:
-            outcome = _repair_with_evidence(completed.get(target), outcome)
-            completed[key] = outcome
-            completed[target] = outcome
+        if target:
+            _record_repair(completed, completed.get(target), outcome, require_artifacts=require_artifacts)
 
 
 def _repair_with_evidence(previous: StepOutcome | None, repair: StepOutcome) -> StepOutcome:
@@ -3671,10 +3876,11 @@ def _delivery_outcomes(
         outcome for outcome in completed.values()
         if outcome.state != "failed" and isinstance(outcome.result.get("artifacts"), list)
         and outcome.result.get("artifacts")
+        and not _repair_support_target(outcome.step.key)
     ]
     repairs = [
         outcome for outcome in with_artifacts
-        if "__repair_" in outcome.step.key
+        if _repair_target(outcome.step.key)
     ]
     if repairs:
         replaced = {_repair_target(outcome.step.key) for outcome in repairs}
@@ -3708,6 +3914,47 @@ def _delivery_outcomes(
     # A publish-only leaf must not make us upload both the draft and its validated successor.
     superseded = set().union(*(ancestors(outcome.step.key) for outcome in with_artifacts))
     return [outcome for outcome in with_artifacts if canonical(outcome.step.key) not in superseded]
+
+
+def _single_observed_artifact(
+    evidence: Sequence[Mapping[str, Any]], run_id: int, objective: str,
+) -> dict[str, str] | None:
+    """Recover an unreported deliverable only when host observations are unambiguous."""
+    deliverable_suffixes = frozenset({
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".csv", ".zip", ".tar", ".gz", ".7z",
+    })
+    expected_suffix = ".pdf" if re.search(r"\bpdf\b", objective, re.I) else None
+    candidates: set[tuple[str, str]] = set()
+    for item in evidence:
+        if item.get("run_id") != run_id or item.get("tool_name") != "sandbox_exec":
+            continue
+        arguments = item.get("arguments")
+        payload = item.get("payload")
+        if not isinstance(arguments, Mapping) or not isinstance(payload, Mapping):
+            continue
+        sandbox_id = str(arguments.get("sandbox_id") or "")
+        if not re.fullmatch(r"s[0-9a-f]{6}", sandbox_id):
+            continue
+        manifest = payload.get("observed_manifest")
+        paths = manifest.get("changed_workspace_paths") if isinstance(manifest, Mapping) else None
+        if not isinstance(paths, list):
+            continue
+        for raw_path in paths:
+            if not isinstance(raw_path, str):
+                continue
+            path = PurePosixPath(raw_path)
+            if path.is_absolute() or ".." in path.parts or path.parts[:1] == ("upstream",):
+                continue
+            if path.suffix.lower() not in deliverable_suffixes:
+                continue
+            if expected_suffix and path.suffix.lower() != expected_suffix:
+                continue
+            candidates.add((sandbox_id, f"/workspace/{path}"))
+    if len(candidates) != 1:
+        return None
+    sandbox_id, path = candidates.pop()
+    return {"handle": f"{sandbox_id}:{path}", "kind": "file", "name": PurePosixPath(path).name}
 
 
 def _is_retryable_worker_exception(exc: BaseException) -> bool:
@@ -3851,7 +4098,7 @@ def _settled_task_status(
     deliveries: Sequence[Mapping[str, Any]],
     validation: Mapping[str, Any],
 ) -> Literal["completed", "partial"]:
-    delivery_failed = any(item.get("ok") is not True for item in deliveries)
+    delivery_failed = any(item.get("ok") is not True or item.get("draft") is True for item in deliveries)
     repaired = {_repair_target(outcome.step.key) for outcome in outcomes if outcome.succeeded}
     unresolved_failure = any(outcome.state in {"failed", "skipped"} and not outcome.step.optional
         and outcome.step.key not in repaired for outcome in outcomes)

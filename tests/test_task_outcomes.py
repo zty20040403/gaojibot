@@ -10,7 +10,7 @@ from tests.test_subagent_v2 import decision
 from src.plugins.ai_chat.agent.evidence import MAX_EVIDENCE_BYTES, read_evidence
 from src.plugins.ai_chat.agent.execution import EntryDecision
 from src.plugins.ai_chat.agent.outcomes import (
-    acceptance_blocks_completion, evaluate_acceptance, normalize_checks,
+    acceptance_blocks_completion, acceptance_feedback, evaluate_acceptance, normalize_checks,
     outcome_report, validate_report,
 )
 from src.plugins.ai_chat.subagents import SubAgentStore, TaskStep
@@ -213,6 +213,27 @@ class TaskEvidenceTests(unittest.TestCase):
         self.assertEqual(evaluate_acceptance(contract(), items, value, task_created_at=1000)["status"], "unverified")
         self.assertEqual(self.evaluate(contract(), ["evidence#invented"])["status"], "unverified")
 
+    def test_failed_compound_check_requires_successful_evidence_not_partial_stdout(self):
+        failed = self.record({"ok": False, "returncode": 1, "stdout": "Pages: 1\nTITLE_OK=yes"},
+                             tool="sandbox_exec")
+        succeeded = self.record({"ok": True, "returncode": 0, "stdout": "Pages: 1"}, tool="sandbox_exec")
+        refs = [failed["ref"], succeeded["ref"]]
+        self.assertEqual(self.evaluate(contract(), refs)["status"], "unverified")
+        feedback = acceptance_feedback(contract(), self.store.task_evidence(self.task.task_id),
+            review(refs), task_created_at=1000)
+        self.assertIn(failed["ref"], feedback)
+        self.assertIn("单独运行缺失的只读检查", feedback)
+        self.assertIsNone(acceptance_feedback(contract(), self.store.task_evidence(self.task.task_id),
+            review([succeeded["ref"]]), task_created_at=1000))
+        self.assertEqual(self.evaluate(contract(), [succeeded["ref"]])["status"], "passed")
+
+    def test_feedback_does_not_pressure_honest_unverified_or_failed_review_to_pass(self):
+        for status in ("failed", "unverified"):
+            value = review([])
+            value["metadata"]["criterion_reviews"][0]["status"] = status
+            self.assertIsNone(acceptance_feedback(contract(), [], value, task_created_at=1000))
+        self.assertIn("acceptance[0]", acceptance_feedback(contract(), [], {}, task_created_at=1000))
+
     def test_reviewer_cannot_cherry_pick_an_old_success_over_a_later_failure(self):
         ref = self.record(observation(1010))
         self.record({"ok": False, "error": "host unreachable"}, at=1020)
@@ -292,6 +313,30 @@ class TaskEvidenceTests(unittest.TestCase):
         text = outcome_report(validation, "所有服务器都修好了")
         self.assertNotIn("所有服务器都修好了", text)
         self.assertIn("尚未验证", text)
+
+    def test_file_report_does_not_repeat_stale_pre_delivery_claim(self):
+        matrix = {"status": "passed", "criteria": [{"kind": "evidence",
+            "description": "单页 PDF", "status": "passed", "reason": "页数已核实"}]}
+        receipt = [{"ok": True, "state": "acknowledged", "filename": "report.pdf"}]
+        stale_draft = "文件还不能发到群里"
+        failed_review = {"status": "failed", "task_outcome": matrix,
+            "unresolved": ["验收沙盒误产生了临时文件"]}
+        text = outcome_report(failed_review, stale_draft, receipt)
+        self.assertIn("任务尚未全部完成", text)
+        self.assertIn("文件交付：1/1 个已确认送达", text)
+        self.assertNotIn("已完成并核实", text)
+        self.assertNotIn(stale_draft, text)
+
+        verified = {"status": "passed", "task_outcome": matrix}
+        text = outcome_report(verified, stale_draft, receipt)
+        self.assertIn("已完成并核实", text)
+        self.assertIn("文件交付：1/1 个已确认送达", text)
+        self.assertNotIn(stale_draft, text)
+
+        pending = [{"ok": False, "state": "queued", "filename": "report.pdf"}]
+        text = outcome_report(verified, stale_draft, pending)
+        self.assertIn("任务尚未全部完成", text)
+        self.assertIn("文件交付：0/1 个已确认送达", text)
 
     def test_timeline_never_confuses_execution_with_delivery(self):
         self.store.set_task_state(self.task.task_id, "completed", plan={"contract": {"delivery_required": True}},

@@ -151,6 +151,23 @@ class PostgresDatabase:
             raise DatabaseError("AI_POSTGRES_DSN is required")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
             raise DatabaseError("AI_POSTGRES_SCHEMA is not a valid identifier")
+        # Pool acquisition timeouts do not bound I/O on an established connection.
+        connection_defaults = {
+            "connect_timeout": "3",
+            "keepalives": "1",
+            "keepalives_idle": "10",
+            "keepalives_interval": "5",
+            "keepalives_count": "3",
+            "tcp_user_timeout": "15000",
+        }
+        try:
+            configured = conninfo_to_dict(self.dsn)
+            self.dsn = make_conninfo(
+                self.dsn,
+                **{key: value for key, value in connection_defaults.items() if key not in configured},
+            )
+        except (psycopg.Error, ValueError):
+            raise DatabaseError("AI_POSTGRES_DSN is not a valid connection string") from None
         self.schema = schema
         self._closed = False
         self._application_name = application_name

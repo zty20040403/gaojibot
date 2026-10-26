@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from typing import Any, Union
 
 ToolDefinition = dict[str, Any]
@@ -1787,6 +1789,7 @@ BROWSER_TOOLS = [
 def available_tools(
     *,
     include_web_search: bool,
+    sandbox_backend: str = "oci",
     include_alert_tools: bool = False,
     include_fleet_tools: bool = False,
     include_fleet_logs: bool = False,
@@ -1841,7 +1844,29 @@ def available_tools(
     if include_memory_tools:
         tools.extend(MEMORY_TOOLS)
     if include_agent_tools:
-        tools.extend(SANDBOX_TOOLS)
+        if sandbox_backend == "vm":
+            vm_tools = deepcopy([tool for tool in SANDBOX_TOOLS if tool["function"]["name"] != NIX_SEARCH_TOOL_NAME])
+            for tool in vm_tools:
+                function = tool["function"]
+                if function["name"] == SANDBOX_CREATE_TOOL_NAME:
+                    function["description"] = (
+                        "创建独立 Debian KVM 虚拟机沙盒，工作目录 /workspace。"
+                        "文件保存在该沙盒的独立磁盘中，直到交付后按任务策略回收。"
+                    )
+                elif function["name"] == SANDBOX_LIST_TOOL_NAME:
+                    function["description"] = "列出当前用户拥有的 KVM 虚拟机沙盒及状态。"
+                elif function["name"] == SANDBOX_EXEC_TOOL_NAME:
+                    function["description"] = (
+                        "在 Debian 虚拟机的 /workspace 中运行 shell 命令。"
+                        "缺少工具时可将 Debian apt 软件包名放进 packages，"
+                        "会在该虚拟机内安装；不确定包名先运行 apt-cache search。"
+                    )
+                    function["parameters"]["properties"]["packages"]["description"] = (
+                        "要在该虚拟机内安装的 Debian apt 软件包名。"
+                    )
+            tools.extend(vm_tools)
+        else:
+            tools.extend(SANDBOX_TOOLS)
     if include_conversation_tools:
         tools.extend(CONVERSATION_TOOLS)
         if not include_source_tools:

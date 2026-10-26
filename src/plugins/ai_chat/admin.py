@@ -1178,6 +1178,7 @@ def register_admin(
             return versioned("sandboxes", {
                 "items": [],
                 "active_commands": 0,
+                "backend": "none",
                 "configured": False,
                 "available": False,
             })
@@ -1187,6 +1188,7 @@ def register_admin(
             return versioned("sandboxes", {
                 "items": [],
                 "active_commands": 0,
+                "backend": getattr(services.sandbox_manager, "backend", "oci"),
                 "configured": True,
                 "available": False,
                 "error": str(exc)[:500],

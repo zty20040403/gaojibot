@@ -46,6 +46,10 @@ and `--token-file <existing-WebUI-token-file-or-webui.json>`.
 
 Set `TEST_POSTGRES_DSN` in the process environment to a dedicated test database
 named `gaoji_acceptance` or `gaoji_acceptance_<suffix>`. Never use the bot database.
+Use a disposable PostgreSQL instance, not merely another database on the
+production HA cluster. The process-loss suite refuses a standby, an instance
+with an active replica, or one configured for synchronous standbys: its repeated
+schema migrations can stall commits while the shared standby catches up.
 The tool creates a random test schema, applies migrations there and drops only
 that schema. It does not create or drop databases. It refuses an existing output
 directory so restarting the command cannot silently replay a previous run.

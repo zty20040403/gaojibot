@@ -84,6 +84,37 @@ class PublicationContextTests(unittest.TestCase):
             "sandbox_host_exec", "operation_approve", "ssh"} & allowed)
 
 
+class VmWorkspaceValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quiesce_and_validate_use_separate_verifier_owner(self):
+        manager = SimpleNamespace(
+            backend="vm",
+            list=AsyncMock(return_value=[{
+                "sandbox_id": "s123abc", "purpose": "task", "status": "Up (VM)",
+            }]),
+            stop_owned=AsyncMock(),
+            create=AsyncMock(return_value={"sandbox_id": "s456abc"}),
+            write_file=AsyncMock(),
+            exec=AsyncMock(return_value=SimpleNamespace(returncode=0, stdout="", stderr="")),
+            destroy=AsyncMock(),
+        )
+        executor = SimpleNamespace(owner="group:1", base_owner="group:1", sandbox_manager=manager)
+        with tempfile.TemporaryDirectory() as directory:
+            workspaces = StepWorkspaces(Path(directory), executor)
+            completed = {"build": SimpleNamespace(step=SimpleNamespace(key="build"))}
+            await workspaces.quiesce_for_validation(7, completed)
+            manager.stop_owned.assert_awaited_once_with("group:1:task#7/build", "s123abc")
+
+            digest = workspaces._persist(7, b"sample image")
+            result = await workspaces.validate(7, {"snapshot": digest, "name": "image.png"})
+            self.assertTrue(result["ok"])
+            manager.create.assert_awaited_once_with("group:1:task#7/verifier", "python")
+            args, kwargs = manager.exec.await_args
+            self.assertEqual(args[0], "group:1:task#7/verifier")
+            self.assertTrue(args[2].startswith("python3 -c"))
+            self.assertEqual(kwargs["packages"], ["python3-pil"])
+            manager.destroy.assert_awaited_once_with("group:1:task#7/verifier", "s456abc")
+
+
 class PublicationWorkflowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -102,7 +133,7 @@ class PublicationWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.tools = {tool["function"]["name"]: tool for tool in definitions}
         self.run = self.store.create_run(self.task.task_id, self.step, allowed_tools=list(self.tools), model_profile="test")
         self.manager = Mock(create=AsyncMock(return_value={"sandbox_id": "s456abc"}), list=AsyncMock(return_value=[]),
-            install_readonly_file=AsyncMock(), read_file=AsyncMock(return_value=b"validated site"))
+            start_owned=AsyncMock(), install_readonly_file=AsyncMock(), read_file=AsyncMock(return_value=b"validated site"))
         self.executor = SimpleNamespace(owner=f"{self.packet.conversation_id}:task#{self.task.task_id}/publish",
             sandbox_manager=self.manager)
         self.workspaces = StepWorkspaces(Path(self.tmp.name), self.executor)

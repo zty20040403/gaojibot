@@ -64,6 +64,7 @@ from .onebot_codec import (
 from .onebot_model_output import OneBotModelOutputResolver
 from .onebot_availability import file_delivery_blocker
 from .sandbox import DockerSandboxManager, SandboxError
+from .vm_sandbox import VmSandboxManager
 from .storage.jobs import DurableJobStore
 from .turn_journal import TurnJournal
 from .video_analysis import DeepVideoAnalysisError, DeepVideoAnalyzer
@@ -117,6 +118,18 @@ AGENT_TOOL_PROMPT = (
     "inspect_shared_content，并完整照抄上下文里的 source#、msg# 或链接；"
     "不要先用普通浏览器重复打开同一个分享。用户明确说仔细看视频、分析画面、"
     "听音轨或逐段总结时，把 mode 设为 deep；普通询问使用 quick。"
+)
+
+VM_AGENT_TOOL_PROMPT = (
+    "你可以使用独立 KVM 虚拟机沙盒处理代码和文件。工作目录是 /workspace；"
+    "每个沙盒有独立磁盘，不挂载宿主机目录，重启后文件仍在。"
+    "先创建沙盒，再实际写文件、执行命令、验收产物，最后用发送文件工具交付。"
+    "客体是 Debian；基础环境有 Python、Git、curl、zip。"
+    "缺少依赖时把 Debian 软件包名放进 sandbox_exec.packages，宿主会在该虚拟机内安装；"
+    "不确定包名可先在沙盒里执行 apt-cache search。"
+    "生成中文 PDF 时安装中文字体和 PDF 工具，并用 pdffonts、pdftotext 验收。"
+    "长任务每个关键阶段用 say 简短汇报；只有发送工具确认成功才能说文件已交付。"
+    "不要尝试访问宿主机或其他用户沙盒；不要在交付前销毁沙盒。"
 )
 
 
@@ -201,7 +214,7 @@ class AgentToolExecutor:
         bot: Bot,
         event: GroupMessageEvent,
         owner: str,
-        sandbox_manager: DockerSandboxManager,
+        sandbox_manager: DockerSandboxManager | VmSandboxManager,
         max_file_bytes: int,
         ledger: MessageLedger | None = None,
         scope: ConversationScope | None = None,

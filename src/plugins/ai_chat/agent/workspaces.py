@@ -65,6 +65,7 @@ class StepWorkspaces:
                 if not match:
                     raise ValueError("Artifact must reference a real sandbox file or directory")
                 sandbox_id, path = match.groups()
+                await self.manager.start_owned(self.executor.owner, sandbox_id)
                 content, directory = await self.manager.export_artifact(
                     self.executor.owner, sandbox_id, path.removeprefix("/workspace/"))
                 if not content:
@@ -98,6 +99,7 @@ class StepWorkspaces:
         if filename in {"", ".", ".."}:
             raise ValueError("Invalid artifact filename")
         target = f"upstream/{item['snapshot']}/{filename}"
+        await self.manager.start_owned(self.executor.owner, sandbox_id)
         await self.manager.install_readonly_file(self.executor.owner, sandbox_id, target, content)
         return json.dumps({"ok": True, "path": f"/workspace/{target}", "sha256": item["snapshot"], "read_only": True})
 
@@ -106,36 +108,64 @@ class StepWorkspaces:
         if not content or hashlib.sha256(content).hexdigest() != artifact["snapshot"]:
             return {"ok": False, "error": "Artifact checksum mismatch or empty file"}
         # Format checks run in a separate container, not in the producing agent's process.
-        sandbox = await self.manager.create(self.executor.owner, "python")
+        vm_backend = getattr(self.manager, "backend", "oci") == "vm"
+        owner = (
+            f"{self.executor.base_owner}:task#{task_id}/verifier"
+            if vm_backend else self.executor.owner
+        )
+        sandbox = await self.manager.create(owner, "python")
         sid = sandbox["sandbox_id"]
         suffix = Path(artifact["name"]).suffix.lower()
         path = "acceptance" + suffix
         try:
-            await self.manager.write_file(self.executor.owner, sid, path, content, allow_large=True)
+            await self.manager.write_file(owner, sid, path, content, allow_large=True)
             commands = {
                 ".pdf": "pdfinfo /workspace/acceptance.pdf && pdffonts /workspace/acceptance.pdf && pdftotext /workspace/acceptance.pdf -",
                 ".zip": "unzip -t /workspace/acceptance.zip",
                 ".docx": "unzip -t /workspace/acceptance.docx", ".xlsx": "unzip -t /workspace/acceptance.xlsx",
                 ".pptx": "unzip -t /workspace/acceptance.pptx",
-                ".png": "python -c 'from PIL import Image; Image.open(\"/workspace/acceptance.png\").verify()'",
+                ".png": f"{'python3' if vm_backend else 'python'} -c 'from PIL import Image; Image.open(\"/workspace/acceptance.png\").verify()'",
             }
             command = commands.get(suffix)
             if not command:
                 return {"ok": True, "checks": ["nonempty", "sha256"], "functional": "requires_review"}
-            check = await self.manager.exec(self.executor.owner, sid, command, 45)
-            ok = check.returncode == 0
+            vm_packages = (
+                ["poppler-utils"] if suffix == ".pdf"
+                else ["python3-pil"] if suffix == ".png"
+                else []
+            ) if vm_backend else []
+            check = await self.manager.exec(
+                owner, sid, command, 45,
+                packages=vm_packages,
+            )
+            readable = check.returncode == 0
+            ok = readable
             if suffix == ".pdf":
-                ok = ok and bool(re.search(r"Pages:\s*[1-9][0-9]*", check.stdout))
+                readable = readable and bool(re.search(r"Pages:\s*[1-9][0-9]*", check.stdout))
                 font_lines = [line for line in check.stdout.splitlines() if re.search(r"\s+(yes|no)\s+(yes|no)\s+(yes|no)\s+\d+\s+\d+\s*$", line)]
-                ok = ok and bool(font_lines) and all(re.search(r"\s+yes\s+(?:yes|no)\s+(?:yes|no)\s+\d+\s+\d+\s*$", line) for line in font_lines)
+                fonts_embedded = bool(font_lines) and all(re.search(r"\s+yes\s+(?:yes|no)\s+(?:yes|no)\s+\d+\s+\d+\s*$", line) for line in font_lines)
                 # A rendered first page catches broken PDFs that text extraction alone misses.
-                rendered = await self.manager.exec(self.executor.owner, sid,
+                rendered = await self.manager.exec(owner, sid,
                     "pdftoppm -f 1 -singlefile -scale-to 1000 -png /workspace/acceptance.pdf /workspace/rendered", 45)
-                ok = ok and rendered.returncode == 0
-            return {"ok": ok, "checks": ["nonempty", "sha256", "format"],
+                readable = readable and rendered.returncode == 0
+                ok = readable and fonts_embedded
+            return {"ok": ok, "readable": readable, "checks": ["nonempty", "sha256", "format"],
                     "details": (check.stdout + check.stderr)[-4000:], "functional": "requires_review"}
         finally:
-            await self.manager.destroy(self.executor.owner, sid)
+            await self.manager.destroy(owner, sid)
+
+    async def quiesce_for_validation(self, task_id: int, completed) -> None:
+        if getattr(self.manager, "backend", "oci") != "vm":
+            return
+        base_owner = str(getattr(self.executor, "base_owner", self.executor.owner))
+        for outcome in completed.values():
+            owner = f"{base_owner}:task#{task_id}/{outcome.step.key}"
+            for sandbox in await self.manager.list(owner):
+                if (
+                    sandbox.get("purpose", "task") == "task"
+                    and str(sandbox.get("status", "")).startswith("Up ")
+                ):
+                    await self.manager.stop_owned(owner, sandbox["sandbox_id"])
 
     async def deliver(self, task_id: int, artifact: dict) -> str:
         assert_job_owned()
@@ -161,11 +191,6 @@ class StepWorkspaces:
                     self.executor.owner,
                     sandbox["sandbox_id"],
                 )
-
-    async def restore_step(self):
-        for sandbox in await self.manager.list(self.executor.owner):
-            if sandbox.get("purpose", "task") == "task":
-                await self.manager.start_owned(self.executor.owner, sandbox["sandbox_id"])
 
     async def finalize_task(
         self,

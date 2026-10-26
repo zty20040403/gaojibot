@@ -34,6 +34,7 @@ from nonebot.exception import (
 )
 from .agent_tools import (
     AGENT_TOOL_PROMPT,
+    VM_AGENT_TOOL_PROMPT,
     AgentToolExecutor,
 )
 from .ai_tools import (
@@ -507,6 +508,7 @@ class ToolExecutor(HandlerService):
                 )
 
         tools = available_tools(
+            sandbox_backend=self.context.settings.sandbox_backend,
             include_web_search=(
                 self.context.settings.search_enabled
                 and (force_search or self.context.settings.search_auto_enabled)
@@ -2398,7 +2400,11 @@ class ToolExecutor(HandlerService):
                 )
             agent_tool_context = ""
             if sandbox_tools_enabled:
-                agent_tool_context = AGENT_TOOL_PROMPT
+                agent_tool_context = (
+                    VM_AGENT_TOOL_PROMPT
+                    if self.context.settings.sandbox_backend == "vm"
+                    else AGENT_TOOL_PROMPT
+                )
                 replied_message_id = reply_message_id(event.original_message)
                 if replied_message_id is not None:
                     canonical_reply_id: int | None = None
@@ -2844,6 +2850,19 @@ class ToolExecutor(HandlerService):
                         packet, selected_profile, role=role, parent_trace=turn_trace)
                 if decision is not None:
                     packet = with_task_contract(packet, decision)
+                if self.context.subagent_coordinator.dispatcher is not None and resume_task_id is None:
+                    task = self.context.subagent_coordinator.submit(
+                        packet=packet,
+                        decision=decision,
+                        dispatch={"event": event.model_dump(mode="json"), "bot_id": bot.self_id,
+                                  "profile": selected_profile.name},
+                    )
+                    return {
+                        "task_id": task.task_id,
+                        "task_handle": task.handle,
+                        "status": "queued",
+                        "message": f"{task.handle} 已进入后台执行，完成后会把结果发回这里。",
+                    }
                 return await self.context.subagent_coordinator.delegate(
                     role=role,
                     scope_key=packet.scope_key,
@@ -2917,7 +2936,7 @@ class ToolExecutor(HandlerService):
                     control = coordinator.store.control(decision.task_id)
                     revised = coordinator.revise(decision.task_id, scope_key=scope_from_event(event).key,
                         requester_user_id=event.user_id, instruction=user_text, step_keys=decision.step_ids,
-                        expected_version=control["version"])
+                        expected_version=control["version"], contract=decision.contract.as_payload())
                     return f"task#{decision.task_id} 已追加第 {revised['revision']} 版修改，沿用原任务和各 Agent 的独立上下文。"
                 required_tool = RUN_SUBAGENTS_TOOL_NAME if decision.mode == "workflow" else DELEGATE_AGENT_TOOL_NAME
                 if not tool_enabled(required_tool):
@@ -2931,6 +2950,8 @@ class ToolExecutor(HandlerService):
                     title = self.context.subagent_coordinator.registry.worker(role).title
                     await execute_tool(SAY_TOOL_NAME, {"text": f"{title} Agent 正在处理：{decision.steps[0]['objective'][:120]}"})
                 result = await run_delegate_goal(role, user_text, decision)
+                if result.get("status") == "queued":
+                    return str(result["message"])
                 return json.dumps(result, ensure_ascii=False)
 
             async def run_resume_goal(task_id: int) -> str:
@@ -2959,6 +2980,7 @@ class ToolExecutor(HandlerService):
                 if own_tasks:
                     context_parts.append("[当前用户可续作任务，只有明确续作本任务才选 revise]\n" + json.dumps([
                         {"task_id": t.task_id, "objective": t.objective[:600], "status": t.status,
+                         "contract": t.plan.get("contract", {}),
                          "steps": [{"id": r.step_key, "role": r.role, "objective": r.objective[:200]}
                             for r in self.context.subagent_store.runs(t.task_id) if not r.step_key.startswith("acceptance_r")]}
                         for t in own_tasks], ensure_ascii=False))

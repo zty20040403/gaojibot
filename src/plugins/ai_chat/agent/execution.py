@@ -21,6 +21,8 @@ ENTRY_PROMPT = """[宿主执行入口 v2]
   需要一个已有的读取/搜索/识图工具时 answer 留空，随后正常调用工具。不要凭空声称执行过。
 - delegate：一个边界明确、需要动手执行的专业任务，恰好一个步骤，不浪费规划调用。
 - revise：用户继续修改宿主列出的已有任务。照抄 task_id 和需要修改的 step_ids，steps 留空，不能重新建同一个项目。
+  必须返回修订后完整的 objective、deliverables、constraints、acceptance、outcome_checks 和 delivery_required。
+  保留用户未修改的要求；被新要求替换的旧标题、格式、数量等必须同步更新，不能留下互相矛盾的验收条款。
 - workflow：多项可验收交付、多个可以独立推进的方向、前后端协作或完整项目。
   不必出现“subagent”“并行”“项目”等词。依据实际工作量，不根据某个关键词决定。
   同一种角色可出现多次，例如 frontend/backend/test 都是 coder，但必须有不同 id 和职责。
@@ -174,6 +176,8 @@ class EntryDecision:
             step_ids = strings("step_ids")
             if type(task_id) is not int or task_id < 1 or not step_ids or steps or not objective or answer:
                 raise ValueError("revise requires an existing task_id and step_ids, not a new plan")
+            if not restoring and (not contract.deliverables or not contract.acceptance):
+                raise ValueError("revise requires the complete updated deliverables and acceptance")
             return cls(mode, task_type, reason, answer, contract, (), task_id, step_ids)
         if mode == "direct":
             if steps or contract.deliverables or contract.acceptance or delivery_required:

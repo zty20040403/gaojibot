@@ -1019,6 +1019,7 @@ export function FleetView({ plane }: { plane: Plane }) {
 export function SandboxesView({ plane }: { plane: Plane }) {
   const payload = plane.data.sandboxes ?? {}
   const sandboxes = rows(payload.items)
+  const vmBackend = payload.backend === 'vm'
   const [pendingSandbox, setPendingSandbox] = useState('')
 
   const runAction = async (sandbox: any, action: 'start' | 'stop' | 'destroy') => {
@@ -1045,7 +1046,7 @@ export function SandboxesView({ plane }: { plane: Plane }) {
         <Metric label="保留沙盒" value={sandboxes.length} />
         <Metric label="运行中" value={sandboxes.filter((item) => item.running).length} />
         <Metric label="活动命令" value={fmtNumber(payload.active_commands)} />
-        <Metric label="Docker" value={<StatusBadge value={payload.available ? 'online' : 'offline'} />} />
+        <Metric label={vmBackend ? 'KVM' : payload.backend === 'none' ? '沙盒后端' : 'Docker'} value={<StatusBadge value={payload.available ? 'online' : 'offline'} />} />
       </div>
       <div className="sandbox-grid">
         {sandboxes.map((sandbox) => {
@@ -1067,8 +1068,8 @@ export function SandboxesView({ plane }: { plane: Plane }) {
                 <div><dt>用途</dt><dd>{sandbox.purpose ?? 'task'}</dd></div>
                 <div><dt>运行环境</dt><dd>{sandbox.runtime ?? '-'}</dd></div>
                 <div><dt>内存</dt><dd>{sandbox.memory_usage ?? '-'}</dd></div>
-                <div><dt>工作区大小</dt><dd>{fmtBytes(sandbox.workspace_size_bytes)}</dd></div>
-                <div><dt>文件数量</dt><dd>{fmtNumber(sandbox.workspace_file_count)}</dd></div>
+                <div><dt>{vmBackend ? '虚拟磁盘占用' : '工作区大小'}</dt><dd>{fmtBytes(vmBackend ? sandbox.disk_allocated_bytes : sandbox.workspace_size_bytes)}</dd></div>
+                {!vmBackend && <div><dt>文件数量</dt><dd>{fmtNumber(sandbox.workspace_file_count)}</dd></div>}
                 <div><dt>状态</dt><dd>{sandbox.status ?? '-'}</dd></div>
               </dl>
               {activities.map((activity) => <div className="command-row" key={activity.activity_id ?? activity.command}><code>{activity.command}</code><span>{fmtDuration(activity.elapsed_seconds)}</span></div>)}
@@ -1171,9 +1172,9 @@ const HELP_SECTIONS = [
       ['任务与投递', '查看当前 Agent、后台持久任务和 QQ 消息投递。Sub-Agent 列表中的“+”表示并行、“→”表示依赖；点分支图标查看方块执行拓扑和实时状态。右侧方形按钮取消任务，旋转箭头重试任务，播放按钮重试失败投递。'],
       ['Trace 与上下文', '用 Trace ID 串起一次回答的模型、工具、Token 和耗时；上下文决策显示“你觉得呢”等追问最终关联了哪条消息及置信度。'],
       ['上下文调试', '左侧选择一次回答，右侧查看当前话题、原始证据、候选评分、Token 分区及群/个人记忆。确认质量后点“答对了”或“答非所问”，备注会连同版本写入审计。'],
-      ['数据库', '查看 h610 主库和备用节点、连接池、延迟及复制状态。出现 offline 或 degraded 时先看节点错误，不要直接清数据。'],
+      ['数据库', '查看当前主库和备用节点、连接池、延迟及复制状态。出现 offline 或 degraded 时先看节点错误，不要直接清数据。'],
       ['服务器集群', '查看 Ops 只读链路、节点观测、操作能力和最近查询。fresh 是新数据，stale 是旧数据加上游错误，unavailable 只表示当前取不到证据，不能据此断定服务器关机。'],
-      ['沙盒', '查看临时容器、正在执行的命令、内存和 Agent 任务。任务完成后沙盒自动销毁，因此这里为空通常是正常状态。'],
+      ['沙盒', '查看隔离环境、正在执行的命令、资源占用和 Agent 任务。任务完成后沙盒按保留期限回收，因此这里为空通常是正常状态。'],
     ],
   },
   {

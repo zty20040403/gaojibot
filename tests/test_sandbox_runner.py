@@ -345,6 +345,35 @@ class RuntimeTransportTests(unittest.TestCase):
             settings = self.settings_type.from_env()
         self.assertIsInstance(manager_from_settings(settings), DockerSandboxManager)
 
+    def test_vm_configuration_preserves_upstream_backend(self):
+        from types import ModuleType
+        from unittest.mock import Mock, patch
+
+        module = ModuleType("src.plugins.ai_chat.vm_sandbox")
+        module.VmSandboxManager = Mock()
+        with patch.dict(os.environ, {"AI_SANDBOX_BACKEND": "vm",
+                                    "AI_SANDBOX_VM_IMAGE": "/test/base.qcow2",
+                                    "AI_SANDBOX_VM_ROOT": "/test/vms"}, clear=True):
+            settings = self.settings_type.from_env()
+        with patch.dict(sys.modules, {module.__name__: module}):
+            manager = manager_from_settings(settings)
+        self.assertIs(manager, module.VmSandboxManager.return_value)
+        self.assertEqual(module.VmSandboxManager.call_args.kwargs["image"], "/test/base.qcow2")
+
+    def test_invalid_or_ambiguous_backend_never_falls_back_to_docker(self):
+        from unittest.mock import patch
+
+        for environment in (
+            {"AI_SANDBOX_BACKEND": "unknown"},
+            {"AI_SANDBOX_BACKEND": "vm"},
+            {"AI_SANDBOX_BACKEND": "vm", "AI_SANDBOX_RUNNER_SOCKET": "/run/test.sock",
+             "AI_SANDBOX_RUNNER_TOKEN": TOKEN},
+        ):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True):
+                settings = self.settings_type.from_env()
+                with self.assertRaises(RuntimeError):
+                    manager_from_settings(settings)
+
     def test_partial_runner_configuration_fails_without_docker_fallback(self):
         from unittest.mock import patch
         for environment in ({"AI_SANDBOX_RUNNER_SOCKET": "/run/gaoji-sandbox/runner.sock"},

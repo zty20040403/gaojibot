@@ -58,6 +58,21 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         return self.coordinator.submit(packet=self.packet, decision=EntryDecision.parse(decision("workflow")),
             dispatch={"bot_id": "123", "event": {"user_id": 2}, "profile": "qwen-local"})
 
+    async def test_delegate_submission_survives_into_resumable_workflow(self):
+        entry = EntryDecision.parse(decision("delegate"))
+        task = self.coordinator.submit(packet=self.packet, decision=entry,
+            dispatch={"bot_id": "123", "event": {"user_id": 2}, "profile": "qwen-local"})
+        self.assertEqual(task.status, "queued")
+        self.assertEqual(self.store.control(task.task_id)["dispatch"]["bot_id"], "123")
+        with patch.object(self.coordinator, "_execute_workflow", new=AsyncMock(return_value="done")) as execute:
+            result = await self.coordinator._resume_task(task, context=self.packet,
+                selected_profile=self.catalog.default, tools=[], execute_tool=AsyncMock(),
+                parent_trace=None, progress=None, hooks=None)
+        self.assertEqual(result, "done")
+        self.assertEqual(len(self.store.runs(task.task_id)), 1)
+        self.assertEqual(self.store.get(task.task_id).plan["contract"], entry.contract.as_payload())
+        execute.assert_awaited_once()
+
     async def test_explicit_task_entry_gets_the_same_acceptance_contract(self):
         with patch.object(self.coordinator, "_supervisor_json", new=AsyncMock(return_value=decision("workflow"))) as planner:
             entry = await self.coordinator.prepare_entry(self.packet, self.catalog.default)
@@ -303,7 +318,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_revision_retires_old_repairs_instead_of_skipping_fresh_work(self):
         task = self.submit()
-        for key in ("baseline", "baseline__repair_1", "acceptance_r1_test", "unrelated"):
+        for key in ("baseline", "baseline__repair_1_sources", "baseline__repair_1", "acceptance_r1_test", "unrelated"):
             run = self.store.create_run(task.task_id, TaskStep(key, "operator", key, "facts"),
                 allowed_tools=[], model_profile="qwen-local")
             self.store.finish_run(run.run_id, "succeeded", result={"status": "success", "summary": key})
@@ -315,8 +330,10 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         retired = {r.step_key: r for r in self.store.runs(task.task_id) if r not in active}
         self.assertEqual(retired["baseline__repair_1"].result["summary"], "baseline__repair_1")
         self.assertEqual(retired["baseline__repair_1"].status, "skipped")
+        self.assertEqual(retired["baseline__repair_1_sources"].status, "skipped")
         self.assertEqual(retired["acceptance_r1_test"].status, "skipped")
-        with patch.object(self.coordinator, "_execute_workflow", new=AsyncMock(return_value="done")) as execute:
+        with patch.object(self.coordinator, "_refresh_revision_contract", new=AsyncMock(return_value=self.store.get(task.task_id))), patch.object(
+                self.coordinator, "_execute_workflow", new=AsyncMock(return_value="done")) as execute:
             await self.coordinator._resume_task(self.store.get(task.task_id), context=self.packet,
                 selected_profile=self.catalog.default, tools=[], execute_tool=AsyncMock(),
                 parent_trace=None, progress=None, hooks=None)
@@ -374,6 +391,59 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         repair.assert_awaited_once()
         self.assertEqual(repair.call_args.kwargs["repair_number"], 3)
 
+    async def test_file_repair_persists_research_then_original_writer(self):
+        task = self.submit()
+        plan = dict(self.store.get(task.task_id).plan)
+        plan["contract"] = {**EntryDecision.parse(decision("workflow")).contract.as_payload(), "delivery_required": True}
+        self.store.set_task_state(task.task_id, "running", plan=plan)
+        task = self.store.get(task.task_id)
+        step = TaskStep("pdf", "document", "写价格比较PDF", "PDF文件")
+        run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="gpt-5.6-luna")
+        original = {"status": "partial", "artifacts": [{"handle": "s123abc:/workspace/old.pdf"}]}
+        self.store.finish_run(run.run_id, "partial", result=original)
+        failed = StepOutcome(step, run, original, DeepSeekTrace(), "partial")
+        calls = []
+
+        async def execute(task, step, run, **kwargs):
+            self.assertEqual(len(self.store.runs(task.task_id)), 3, "Persist both steps before running either")
+            self.assertEqual(kwargs["upstream"]["failed_attempt"], original)
+            calls.append(step.role)
+            result = {"status": "partial", "artifacts": [], "facts": ["价格仍未核实"]}
+            self.store.finish_run(run.run_id, "partial", result=result)
+            return StepOutcome(step, run, result, DeepSeekTrace(), "partial")
+
+        with patch.object(self.coordinator, "_supervisor_json", new=AsyncMock(return_value={
+            "action": "repair", "role": "researcher", "objective": "补查价格", "deliverable": "来源"})), patch.object(
+                self.coordinator, "_run_step_reliably", side_effect=execute):
+            used, repair = await self.coordinator._attempt_adaptive_repair(task, failed, context=self.packet,
+                completed={"pdf": failed}, selected_profile=self.catalog.default, tools_by_name={},
+                execute_tool=AsyncMock(), parent_trace=None, progress=None, hooks=None, repair_number=1)
+        self.assertTrue(used)
+        self.assertEqual(calls, ["researcher", "document"])
+        self.assertEqual(repair.step.dependencies, ("pdf__repair_1_sources",))
+        completed = {"pdf": failed, repair.step.key: repair}
+        _apply_completed_repairs(completed, require_artifacts=True)
+        self.assertEqual(completed["pdf"].result["artifacts"], original["artifacts"])
+        self.assertEqual(len(_delivery_outcomes(task, completed)), 1)
+        self.store.close()
+        self.store = SubAgentStore(Path(self.tmp.name) / "agents.sqlite3")
+        runs = self.store.runs(task.task_id)
+        self.assertEqual(runs[-1].dependencies, ("pdf__repair_1_sources",))
+        restored = {r.step_key: StepOutcome(TaskStep(r.step_key, r.role, r.objective, r.deliverable, r.dependencies),
+            r, r.result, DeepSeekTrace(), "partial") for r in runs}
+        _apply_completed_repairs(restored, require_artifacts=True)
+        self.assertEqual(restored["pdf"].result["artifacts"], original["artifacts"])
+        self.assertEqual(self.store.current_revision_adaptive_repair_count(task.task_id), 1)
+
+    async def test_repair_plan_is_atomic(self):
+        task = self.submit()
+        step = TaskStep("fix", "document", "fix", "PDF")
+        before = len(self.store.runs(task.task_id))
+        with self.assertRaises(Exception):
+            self.store.plan_repair(task.task_id, "pdf", [(step, [], "gpt-5.6-luna"), (None, [], "invalid")], reason="fix")
+        self.assertEqual(len(self.store.runs(task.task_id)), before)
+        self.assertEqual(self.store.current_revision_adaptive_repair_count(task.task_id), 0)
+
     async def test_report_draft_is_persistent_and_invalidated_by_changed_evidence(self):
         task = self.submit()
         self.store.set_task_state(task.task_id, "running", plan={"contract": EntryDecision.parse(decision("workflow")).contract.as_payload()})
@@ -429,6 +499,44 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         model.assert_not_awaited()
         self.assertIn("待验收的精确正文", answer)
         self.assertEqual(self.store.get(task.task_id).result["report_narrative"], "待验收的精确正文")
+
+    async def test_file_report_uses_verified_receipt_instead_of_stale_draft(self):
+        task = self.submit()
+        payload = decision("workflow")
+        payload["delivery_required"] = True
+        contract = EntryDecision.parse(payload).contract.as_payload()
+        self.store.set_task_state(task.task_id, "running", plan={"contract": contract})
+        task = self.store.get(task.task_id)
+        step = TaskStep("inspect", "operator", "inspect", "facts")
+        run = self.store.create_run(task.task_id, step, allowed_tools=[], model_profile="qwen-local")
+        ref = self.store.record_evidence(task.task_id, run.run_id, "host_inspect", {}, {"ok": True, "value": 1})
+        source = StepOutcome(step, run, {"status": "success", "summary": "observed"}, DeepSeekTrace(), "success")
+
+        async def review(task, step, run, **kwargs):
+            self.assertNotIn("report_draft.text", step.objective)
+            return StepOutcome(step, run, {"status": "success", "summary": "checked",
+                "metadata": {"criterion_reviews": [{"criterion_index": 0, "status": "passed",
+                    "reason": "文件内容已核实", "evidence_refs": [ref["ref"]]}]}}, DeepSeekTrace(), "success")
+
+        with patch.object(self.coordinator, "_supervisor_text", new=AsyncMock(side_effect=AssertionError("early draft"))), \
+                patch.object(self.coordinator, "_run_step_reliably", side_effect=review):
+            validation = await self.coordinator._validate_workflow(task, {"inspect": source}, context=self.packet,
+                selected_profile=self.catalog.default, tools_by_name={}, execute_tool=AsyncMock(),
+                hooks=None, parent_trace=None, progress=None, prepare_draft=True)
+        self.assertEqual(validation["status"], "passed")
+        self.assertNotIn("report_draft", validation)
+        receipt = {"ok": True, "state": "acknowledged", "filename": "result.pdf"}
+        with patch.object(self.coordinator, "_validate_workflow", new=AsyncMock(return_value=validation)), \
+                patch.object(self.coordinator, "_deliver_requested_artifacts", new=AsyncMock(return_value=[receipt])), \
+                patch.object(self.coordinator, "_supervisor_text", new=AsyncMock(side_effect=AssertionError("stale narrative"))) as model:
+            answer = await self.coordinator._execute_workflow(task, steps=[], runs={}, context=self.packet,
+                selected_profile=self.catalog.default, tools_by_name={}, execute_tool=AsyncMock(),
+                parent_trace=None, progress=None, initial_completed={"inspect": source})
+        model.assert_not_awaited()
+        self.assertIn("文件交付：1/1 个已确认送达", answer)
+        self.assertNotIn("尚未发送", answer)
+        self.assertEqual(self.store.get(task.task_id).result["report_narrative"], "")
+        self.assertEqual(self.store.get(task.task_id).status, "completed")
 
     async def test_resumed_step_sees_latest_upstream_and_own_previous_snapshot(self):
         task = self.submit()
@@ -853,12 +961,16 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_snapshot_immutable_and_upstream_scope_enforced(self):
         executor = Mock(owner="owner")
+        executor.sandbox_manager.start_owned = AsyncMock()
         executor.sandbox_manager.export_artifact = AsyncMock(return_value=(b"artifact-v1", False))
         executor.sandbox_manager.install_readonly_file = AsyncMock()
         workspaces = StepWorkspaces(Path(self.tmp.name), executor)
         artifact = (await workspaces.capture(1, [{"handle": "s123abc:/workspace/code.zip"}]))[0]
         self.assertEqual(executor.sandbox_manager.export_artifact.await_args.args[2], "code.zip")
         await workspaces.import_artifact(1, {"code": {"artifacts": [artifact]}}, {"step_id": "code", "artifact_index": 0, "sandbox_id": "s456abc"})
+        self.assertEqual([call.args for call in executor.sandbox_manager.start_owned.await_args_list],
+            [("owner", "s123abc"), ("owner", "s456abc")])
+        executor.sandbox_manager.list.assert_not_called()
         self.assertEqual(executor.sandbox_manager.install_readonly_file.await_args.args[2], f"upstream/{artifact['snapshot']}/code.zip")
         with self.assertRaises(ValueError):
             await workspaces.import_artifact(1, {"code": {"artifacts": [artifact]}}, {"step_id": "other", "artifact_index": 0, "sandbox_id": "s456abc"})
@@ -867,6 +979,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_directory_artifact_is_exported_as_zip(self):
         executor = Mock(owner="owner")
+        executor.sandbox_manager.start_owned = AsyncMock()
         executor.sandbox_manager.export_artifact = AsyncMock(return_value=(b"PK-directory", True))
         workspaces = StepWorkspaces(Path(self.tmp.name), executor)
         artifact = (await workspaces.capture(1, [{
@@ -906,6 +1019,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recaptured_snapshot_cancels_old_retention_marker(self):
         executor = Mock(owner="owner")
+        executor.sandbox_manager.start_owned = AsyncMock()
         executor.sandbox_manager.export_artifact = AsyncMock(
             return_value=(b"same-artifact", False)
         )
@@ -927,6 +1041,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_capture_preserves_valid_artifacts_when_another_path_is_bad(self):
         executor = Mock(owner="owner")
+        executor.sandbox_manager.start_owned = AsyncMock()
         executor.sandbox_manager.export_artifact = AsyncMock(side_effect=[
             (b"valid", False), FileNotFoundError("missing"),
         ])
@@ -980,6 +1095,21 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         await workspaces.deliver(1, artifact)
         self.assertEqual(checked, ["acceptance.txt"])
         executor.send_file_content.assert_awaited_once_with(b"test", "result.txt")
+
+    async def test_pdf_readability_is_separate_from_full_font_acceptance(self):
+        executor = Mock(owner="owner")
+        manager = executor.sandbox_manager
+        manager.create = AsyncMock(return_value={"sandbox_id": "s123abc"})
+        manager.destroy = AsyncMock()
+        manager.write_file = AsyncMock()
+        workspaces = StepWorkspaces(Path(self.tmp.name), executor)
+        artifact = {"name": "draft.pdf", "snapshot": workspaces._persist(1, b"pdf")}
+        info = SimpleNamespace(returncode=0, stdout="Pages: 3\nCJK TrueType yes yes yes 9 0\nHelvetica Type1 no no no 2 0", stderr="")
+        for render_code in (0, 1):
+            manager.exec = AsyncMock(side_effect=[info, SimpleNamespace(returncode=render_code)])
+            result = await workspaces.validate(1, artifact)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["readable"], render_code == 0)
 
     async def test_scheduler_cancellation_releases_slot_and_avoids_group_head_of_line(self):
         scheduler = SpecialistScheduler(total=2, per_group=1, per_model=2)

@@ -55,6 +55,7 @@ from .reminders import ReminderStore
 from .sandbox import DockerSandboxManager
 from src.sandbox_runtime.client import SandboxClient
 from src.sandbox_runtime.factory import manager_from_settings
+from .vm_sandbox import VmSandboxManager
 from .self_source import SelfSource
 from .semantic_recall import (
     EmbeddingClient,
@@ -122,7 +123,7 @@ class AppContext:
     recent_images: RecentImageStore
     recent_voices: RecentVoiceStore
     recent_videos: RecentVideoStore
-    sandbox_manager: DockerSandboxManager | SandboxClient
+    sandbox_manager: DockerSandboxManager | SandboxClient | VmSandboxManager
     bridge_router: MirrorRouter
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None

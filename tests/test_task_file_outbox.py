@@ -49,6 +49,18 @@ class TaskFileOutboxTests(unittest.IsolatedAsyncioTestCase):
         await self.attempt()
         self.assertEqual(self.send.await_count, 1)
 
+    async def test_draft_warning_survives_restart_and_delivery(self):
+        self.artifact.update(draft=True, draft_reason="价格未核实")
+        self.queue()
+        self.store.close()
+        self.store = SubAgentStore(self.path)
+        result = await self.attempt(self.store.deliveries(self.task.task_id)[0])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["draft"])
+        self.assertEqual(result["draft_reason"], "价格未核实")
+        await self.attempt()
+        self.send.assert_awaited_once()
+
     async def test_crash_after_upload_started_requires_receipt_reconciliation_not_resend(self):
         self.send.side_effect = asyncio.CancelledError
         with self.assertRaises(asyncio.CancelledError):

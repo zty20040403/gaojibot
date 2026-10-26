@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import nonebot
 import psycopg
+from psycopg.conninfo import conninfo_to_dict
 
 os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 nonebot.init()
@@ -27,6 +28,30 @@ from src.plugins.ai_chat.semantic_recall import SemanticDocument, _document_key
 
 
 class PostgresCompatibilityTests(unittest.TestCase):
+    def test_pool_bounds_broken_network_waits_and_preserves_dsn_overrides(self) -> None:
+        with patch("src.bot_storage.database.ConnectionPool") as pool:
+            database = PostgresDatabase(
+                "postgresql://bot@example.test,backup.test/db?target_session_attrs=read-write"
+            )
+            options = conninfo_to_dict(pool.call_args.kwargs["conninfo"])
+            self.assertEqual(options["host"], "example.test,backup.test")
+            self.assertEqual(options["target_session_attrs"], "read-write")
+            self.assertEqual(options["connect_timeout"], "3")
+            self.assertEqual(options["keepalives_idle"], "10")
+            self.assertEqual(options["keepalives_interval"], "5")
+            self.assertEqual(options["keepalives_count"], "3")
+            self.assertEqual(options["tcp_user_timeout"], "15000")
+            database.close()
+
+            database = PostgresDatabase(
+                "host=example.test dbname=db connect_timeout=8 tcp_user_timeout=40000 keepalives_idle=20"
+            )
+            options = conninfo_to_dict(pool.call_args.kwargs["conninfo"])
+            self.assertEqual(options["connect_timeout"], "8")
+            self.assertEqual(options["tcp_user_timeout"], "40000")
+            self.assertEqual(options["keepalives_idle"], "20")
+            database.close()
+
     def test_pool_rejects_a_connection_demoted_to_read_only(self) -> None:
         class FakeConnection:
             autocommit = False
