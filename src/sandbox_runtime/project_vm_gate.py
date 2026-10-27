@@ -263,6 +263,23 @@ class ProjectGuestGate:
             yield
             self.workspace.verify()
 
+    def disk_operation(self, action, epoch):
+        """Disk maintenance stays closed, including retries after unmount."""
+        self._epoch(epoch)
+        if action not in {"trim", "unmount"}:
+            raise GuestDiskError("Unsupported project disk maintenance")
+        with self._lock("control"), self._lock("io"), self._lock("disk"):
+            state = self._state()
+            if state["mode"] != "quiesced" or not 0 < state["epoch"] <= epoch:
+                raise GuestDiskError("Disk maintenance requires completed writer quiescence")
+            self.commands.require_cgroups()
+            if not self.commands.empty() or self.commands.sandbox_processes():
+                raise GuestDiskError("Guest writers prevent disk maintenance")
+            # unmount performs its own absent-mount check; verify() would reject
+            # an already successful operation after its acknowledgement was lost.
+            receipt = getattr(self.workspace, action)()
+            return {**receipt, "epoch": epoch, "mode": "quiesced"}
+
 
 def main():
     if os.geteuid() != 0:
@@ -277,6 +294,8 @@ def main():
     action = request.get("action")
     if action in {"activate", "quiesce"} and set(request) == {"action", "epoch"}:
         print(json.dumps(getattr(gate, action)(request["epoch"]), sort_keys=True))
+    elif action in {"trim", "unmount"} and set(request) == {"action", "epoch"}:
+        print(json.dumps(gate.disk_operation(action, request["epoch"]), sort_keys=True))
     elif action == "run" and set(request) == {"action", "epoch", "argv", "timeout", "tasks"}:
         sys.exit(gate.run(request["epoch"], request["argv"], request["timeout"], request["tasks"]))
     else:

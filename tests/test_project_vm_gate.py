@@ -177,6 +177,48 @@ class GateTests(unittest.TestCase):
             child.communicate("release\n", timeout=5)
         self.assertEqual(self.gate.quiesce(3)["mode"], "quiesced")
 
+    def test_disk_maintenance_requires_quiescence_and_empty_guest(self):
+        for action in ("trim", "unmount"):
+            with self.assertRaises(GuestDiskError):
+                self.gate.disk_operation(action, 2)
+        self.gate.activate(2)
+        with self.assertRaises(GuestDiskError):
+            self.gate.disk_operation("unmount", 3)
+        self.gate.quiesce(3)
+        for attribute in ("empty", "sandbox_processes"):
+            self.commands.empty.return_value = attribute != "empty"
+            self.commands.sandbox_processes.return_value = attribute == "sandbox_processes"
+            with self.assertRaisesRegex(GuestDiskError, "writers"):
+                self.gate.disk_operation("unmount", 4)
+        self.workspace.unmount.assert_not_called()
+        self.workspace.trim.assert_not_called()
+
+    def test_unmount_replay_does_not_require_a_mounted_workspace(self):
+        self.gate.quiesce(3)
+        self.workspace.verify.side_effect = GuestDiskError("already unmounted")
+        self.workspace.unmount.return_value = {"mounted": False, "verified": True}
+        expected = {"mounted": False, "verified": True, "epoch": 4, "mode": "quiesced"}
+        self.assertEqual(self.gate.disk_operation("unmount", 4), expected)
+        self.assertEqual(self.reopen().disk_operation("unmount", 4), expected)
+        self.workspace.verify.assert_not_called()
+        self.workspace.verify.side_effect = None
+        self.gate.activate(5)
+        self.gate.quiesce(6)
+        with self.assertRaises(GuestDiskError):
+            self.gate.disk_operation("unmount", 4)
+        self.assertEqual(self.workspace.unmount.call_count, 2)
+
+    def test_disk_maintenance_validates_action_epoch_and_propagates_failure(self):
+        self.gate.quiesce(3)
+        for action, epoch in (("format", 4), ("unmount", True), ("trim", 2), ("trim", 2**53)):
+            with self.subTest(action=action, epoch=epoch), self.assertRaises(GuestDiskError):
+                self.gate.disk_operation(action, epoch)
+        self.workspace.trim.side_effect = GuestDiskError("trim failed")
+        with self.assertRaisesRegex(GuestDiskError, "trim failed"):
+            self.gate.disk_operation("trim", 4)
+        self.assertEqual(self.gate._state()["mode"], "quiesced")
+        self.workspace.unmount.assert_not_called()
+
 
 class CommandContractTests(unittest.TestCase):
     def test_command_keeps_literal_shell_dollars_and_bounds_whole_cgroup(self):

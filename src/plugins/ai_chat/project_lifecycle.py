@@ -75,9 +75,26 @@ def transition_plan(project, action, baseline, *, rebuild=None):
             ]
         else:
             steps += ["remove_workspace", "unmount_volume", "delete_volume"]
+    if project["backend"] == "vm":
+        # Guest file and trim operations require a running, closed-to-users VM.
+        if action == "wake":
+            steps = (["create_volume"] if fresh else []) + ["reserve_workspace", "boot_workspace"]
+            if fresh and baseline is not None:
+                steps += ["restore_version"]
+            if rebuild and (source == "hibernated" or fresh):
+                steps += ["rebuild_dependencies"]
+        elif action == "stop":
+            steps = ["reserve_workspace", "quiesce_workspace", "snapshot_workspace", "stop_workspace"]
+        else:
+            steps = ["reserve_workspace", "boot_workspace", "snapshot_workspace"]
+            if action == "hibernate":
+                steps += ["prune_rebuildable", "trim_volume"]
+            steps += ["unmount_volume", "remove_workspace"]
+            if action == "archive":
+                steps += ["delete_volume"]
     steps += ["release_workspace", "verify_" + TARGETS[action]]
     return generation, {
-        "protocol": 2,
+        "protocol": 3 if project["backend"] == "vm" else 2,
         "reservation": uuid.uuid4().hex,
         "steps": steps,
         "backend": project["backend"],

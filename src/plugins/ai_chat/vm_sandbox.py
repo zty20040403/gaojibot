@@ -217,7 +217,10 @@ class VmSandboxManager:
         from src.sandbox_runtime.project_vm_io import host_lock
 
         self._directory(sandbox_id)
-        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+        lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
+        if timeout == 0 and lock.locked():
+            raise SandboxError("Project workspace has an active command or file transfer")
+        async with lock:
             self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
             info = self.root.lstat()
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()

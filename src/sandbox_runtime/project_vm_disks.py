@@ -704,5 +704,6 @@ class VmProjectDisks(ProjectVolumeJournal):
                 raise ProjectVolumeError("VM boot consumer is not verified")
             self._check_guest_receipt(binding, receipt)
             record["guest_initialized"] = True
+            record["guest_unmounted"] = None
             record["workspace"]["stage"] = "ready"
             return self._finish(directory, record)

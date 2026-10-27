@@ -2324,3 +2324,50 @@ implementation evidence, not a claim that the production App has these features.
   remain substantive work. M3-M7 are also pending. The supplied plan is unchanged;
   no production SSH, nix-config change, rebuild, live QQ/model call or App release
   is included in this checkpoint.
+
+### M2 ordered VM shutdown and retirement
+
+- VM lifecycle plans now use protocol 3, with guest snapshot/prune/trim/unmount
+  before shutdown. Stopped and hibernated guests are booted with admission closed
+  when guest operations are needed. OCI protocol-2 ordering is unchanged. Wake
+  restores the retained baseline before dependency reconstruction and release.
+- Added a private, fenced maintenance journal for quiesce, trim, unmount, stop
+  and VM retirement. Graceful shutdown is reconciled against the original
+  domain, not its command exit code. A crash after journalling but before sending
+  shutdown can retry that request while the same domain remains running and its
+  guest gate is closed. Already-stopped guests are not shut down again; timeouts
+  never force-destroy or remove disks.
+- Retirement requires acknowledged unmount, verified domain absence, and exact
+  file/directory/socket identities. Cleanup only unlinks frozen boot artifacts
+  with no other VM consumers, fsyncing progress. Unknown/replaced files fail
+  closed. Partial deletion and lost completion replies resume from the journal.
+  The independent project data disk and initialization seal survive retirement;
+  a subsequent boot receives a new VM identity without reformatting that disk.
+- Guest disk operations share the closed execution gate and exclusive IO/disk
+  locks, and verify empty command cgroups/no sandbox processes. Unmount retries
+  work after the mount is already absent. Boot clears previous unmount evidence.
+  Nonblocking host maintenance also rejects an already-held in-process IO lock
+  instead of waiting indefinitely. Boot-file checks reject FIFOs without blocking.
+- Focused VM regression: 142 tests passed in 4.049 seconds, ResourceWarning as
+  errors (.cache/roadmap/m2-vm-maintenance-focused.log). Real private journals,
+  filesystem/socket identities, preserved data, interrupted shutdown/undefine/
+  deletion and guest receipt parsing are exercised. OS mounts, systemd/cgroups
+  and libvirt remain explicit fixtures, not native VM acceptance.
+- Initial focused runs exposed two test-harness errors: the new test imported
+  plugin code before initializing NoneBot, and macOS's long temporary path
+  exceeded the Unix socket address limit. The fixture now initializes explicitly
+  and uses a short private temporary directory; no assertions were relaxed.
+- Ruff, compileall and whitespace checks passed. Nix package/import checks
+  passed on aarch64-darwin (.cache/roadmap/m2-vm-maintenance-nix.log); incompatible
+  systems were omitted, not tested. Byte comparisons confirm the packaged
+  maintenance adapter, guest gate and VM manager match the checked source.
+- Full isolated PostgreSQL regression: 2559 tests, OK (12 skipped), 432.914
+  seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-vm-maintenance-full.log). No product code changed after this
+  run. Temporary fixture files/sockets were cleaned automatically; only ignored
+  diagnostic logs remain.
+- M2 remains incomplete and production-disabled: dependency reconstruction,
+  assembled VM lifecycle execution, native reboot/hibernate/power-loss and
+  maximum-size file-transfer acceptance, plus desktop soft quotas, remain.
+  M3-M7 are pending. No production connection, nix-config edit, rebuild or App
+  publication is included; the user-authored plan is unchanged and excluded.

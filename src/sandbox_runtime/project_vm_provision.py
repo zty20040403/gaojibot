@@ -35,7 +35,7 @@ class VmProjectProvisioner:
 
     @classmethod
     def _file(cls, path, *, private=True, digest=True):
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             info = os.fstat(fd)
             if (not stat.S_ISREG(info.st_mode) or (private and info.st_nlink != 1)

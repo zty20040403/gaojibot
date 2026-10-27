@@ -49,9 +49,10 @@ class ProvisionHost(DiskFixture):
         return ""
 
 
-class ProvisionTests(unittest.IsolatedAsyncioTestCase):
+class VmProvisionFixture:
     async def asyncSetUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="gaoji-vm-provision-")
+        # Keep libvirt's Unix socket path below macOS/Linux sockaddr_un limits.
+        temporary = tempfile.TemporaryDirectory(prefix="gaoji-vm-", dir="/tmp")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.host = ProvisionHost()
@@ -146,6 +147,8 @@ class ProvisionTests(unittest.IsolatedAsyncioTestCase):
         self.provisioner = VmProjectProvisioner(self.manager, self.store, host=self.host)
         self.manager.project_mounts = VmProjectMounts(self.manager, self.store)
 
+
+class ProvisionTests(VmProvisionFixture, unittest.IsolatedAsyncioTestCase):
     async def test_complete_boot_keeps_data_separate_and_replay_does_not_recreate(self):
         result = await self.boot()
         self.assertEqual(result["state"], "running")

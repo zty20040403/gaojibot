@@ -543,9 +543,60 @@ inferred from the fast in-process test transport.
 `tests/test_project_vm_files.py` covers actual files, hashes, journals, chunk
 retries, executable modes, empty files, path/link rejection and a deterministic
 bundle imported by a fresh isolated Python process. Guest mounts, cgroups and
-libvirt are fixtures. The VM-specific lifecycle plan, guest dependency rebuild
-adapter, native crash/reboot/hibernate acceptance and product registration are
-still pending; this private transport alone does not enable project VMs.
+libvirt are fixtures. The guest dependency rebuild adapter, full lifecycle
+composition, native crash/reboot/hibernate acceptance and product registration
+are still pending; this private transport alone does not enable project VMs.
+
+## VM shutdown and retirement
+
+VM lifecycle plans use protocol 3; OCI plans retain protocol 2. A guest cannot
+snapshot or trim its disk after it has shut down. The VM sequence therefore
+boots the reserved guest when necessary and finishes guest operations first:
+
+```text
+stop:      reserve -> quiesce -> snapshot -> shutdown -> release -> verify
+hibernate: reserve -> boot closed -> snapshot -> prune -> trim -> unmount
+             -> shutdown / undefine / remove system files -> release -> verify
+archive:   reserve -> boot closed -> snapshot -> unmount -> retire VM
+             -> delete project disk -> release -> verify
+wake:      [create disk] -> reserve -> boot closed -> [restore] -> [rebuild]
+             -> release / activate -> verify
+```
+
+`VmProjectMaintenance` journals quiesce, trim, unmount, stop and VM retirement
+against the current reservation, generation and effect fence. It does not
+delete the project data disk. Snapshot publication and active-task/delivery
+protection remain the responsibility of the durable lifecycle executor.
+
+Disk maintenance uses the root-owned guest execution gate. It requires closed
+admission, exclusive guest IO and disk locks, an empty command cgroup and no
+sandbox-UID processes. Trim acknowledges the verified mount and usage; unmount
+acknowledges the expected filesystem and absent mount. Repeating unmount after
+a lost QGA reply does not require the disk to still be mounted. Boot invalidates
+previous unmount evidence before another retirement can use it.
+
+Graceful shutdown is requested only after the guest gate closes. The host
+observes the original immutable libvirt domain before recording `stopped`.
+If the journal survives but the shutdown request was never sent, a retry may
+repeat the idempotent request after rechecking that same running domain and
+guest gate. An already stopped VM does not receive another shutdown request.
+Timeouts never force-destroy the guest, delete disks or release its reservation.
+
+Retirement additionally requires a verified unmount. Undefine must be observed
+before system-file cleanup starts. The cleanup allowlist is the frozen boot
+artifacts and recorded agent socket, not a recursive directory deletion. File,
+directory and socket identities, immutable-file hashes, and other VM consumers
+are checked before unlinking. Progress and each deletion are fsynced; retries
+allow only files already absent in the recorded deletion phase. Replaced files,
+unexpected contents or a reappeared domain fail closed. The independent data
+disk and its first-initialization seal survive retirement and subsequent boot.
+
+`tests/test_project_vm_maintenance.py` covers private journals, real file/socket
+identities and interrupted effects, including shutdown intent without delivery,
+lost QGA replies, partial deletion and reboot with the same data. Guest disk
+receipts also run through `ProjectGuestWorkspace` and `ProjectGuestGate` rather
+than only hand-built JSON. OS mount, cgroup and libvirt effects are still fixtures;
+native lifecycle acceptance and the assembled VM executor are not claimed.
 
 ## Evidence and remaining gates
 
