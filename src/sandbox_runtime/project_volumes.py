@@ -694,37 +694,6 @@ class ProjectVolumes(ProjectVolumeJournal):
             "maintenance_active": bool(record.get("maintenance")),
         }
 
-    def reserve(self, owner, project_id, *, generation, fence, action, reservation):
-        """Cross-step exclusion; only the allocation-locked driver may call this."""
-        digest = self._reservation_hash(reservation)
-        if action not in {"reserve", "release"}:
-            raise ProjectVolumeError("Unsupported project reservation operation")
-        with self._locked(owner, project_id) as (directory, record):
-            self._generation(record, generation)
-            if record is None or (record.get("deleted") and action == "reserve"):
-                raise ProjectVolumeError("Project volume does not exist")
-            operation = "workspace_" + action
-            arguments = {"reservation_hash": digest}
-            held = record.get("maintenance")
-            if held is not None and held != digest:
-                raise ProjectVolumeError("Another lifecycle operation owns the project")
-            replay = fence == record["fence"] and record["intent"] == {
-                "operation": operation,
-                "arguments": arguments,
-            }
-            if not replay and (
-                (action == "reserve" and held) or (action == "release" and held is None)
-            ):
-                raise ProjectVolumeError("Reservation ownership cannot be inferred")
-            # Publish ownership and the effect fence in one durable write.
-            if not replay:
-                if record["pending"]:
-                    raise ProjectVolumeError("Reconcile the pending operation first")
-                record["maintenance"] = digest if action == "reserve" else None
-            if self._begin(directory, record, operation, fence, arguments):
-                return self._finish(directory, record)
-            return self._status(directory, record)
-
     def begin_workspace(
         self, owner, project_id, *, generation, fence, action, image, reservation=None
     ):

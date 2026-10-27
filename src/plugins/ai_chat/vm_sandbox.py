@@ -12,6 +12,7 @@ import secrets
 import shlex
 import shutil
 import time
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Callable
 from xml.etree import ElementTree
@@ -188,6 +189,7 @@ class VmSandboxManager:
         self._create_lock = asyncio.Lock()
         self._active_execs: dict[str, SandboxExecutionActivity] = {}
         self._last_execs: dict[str, SandboxExecutionActivity] = {}
+        self.project_mounts = None
 
     @staticmethod
     def _owner_hash(owner: str) -> str:
@@ -305,9 +307,19 @@ class VmSandboxManager:
                 await asyncio.sleep(3)
         raise SandboxError("VM 启动超时，客体代理未就绪。")
 
-    def _domain_xml(self, sandbox_id: str, directory: Path, *, project_disk=None) -> str:
+    def _domain_xml(self, sandbox_id: str, directory: Path, *, project_disk=None,
+                    project_domain_uuid=None) -> str:
         domain = ElementTree.Element("domain", {"type": "kvm"})
         ElementTree.SubElement(domain, "name").text = self._name(sandbox_id)
+        if project_disk is not None:
+            try:
+                if str(uuid.UUID(project_domain_uuid)) != project_domain_uuid:
+                    raise ValueError()
+            except (TypeError, AttributeError, ValueError):
+                raise SandboxError("Project VM requires its journalled domain UUID") from None
+            ElementTree.SubElement(domain, "uuid").text = project_domain_uuid
+        elif project_domain_uuid is not None:
+            raise SandboxError("Project domain identity requires a claimed project disk")
         ElementTree.SubElement(domain, "memory", {"unit": "MiB"}).text = str(self.memory_mib)
         ElementTree.SubElement(domain, "vcpu").text = str(self.vcpus)
         os_node = ElementTree.SubElement(domain, "os")
@@ -493,7 +505,9 @@ class VmSandboxManager:
         if not await self._running(sandbox_id):
             raise SandboxError("VM 沙盒没有运行。")
         if metadata.get("purpose") == "project":
-            await self._verify_project_mount(sandbox_id, metadata)
+            if self.project_mounts is None:
+                raise SandboxError("项目 VM 生命周期适配器尚未启用。")
+            await self.project_mounts.authorize(owner, sandbox_id, metadata)
         return metadata
 
     async def _verify_project_mount(self, sandbox_id, metadata):
@@ -511,6 +525,7 @@ class VmSandboxManager:
             keys = ("project_id", "generation", "filesystem_uuid", "quota_bytes", "serial")
             if (not isinstance(observed, dict) or any(type(observed.get(key)) is not type(config[key]) or observed[key] != config[key] for key in keys)
                     or observed.get("verified") is not True or observed.get("mounted") is not True
+                    or observed.get("initialization_sealed") is not True
                     or type(observed.get("used_bytes")) is not int or not 0 <= observed["used_bytes"] <= config["quota_bytes"]):
                 raise ValueError("Guest observation belongs to another project")
         except (KeyError, TypeError, ValueError):
@@ -618,6 +633,15 @@ class VmSandboxManager:
         self, owner: str, sandbox_id: str, path: str, content: bytes, *,
         allow_large: bool, readonly: bool,
     ) -> int:
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+            return await self._write_content_locked(
+                owner, sandbox_id, path, content, allow_large=allow_large, readonly=readonly,
+            )
+
+    async def _write_content_locked(
+        self, owner: str, sandbox_id: str, path: str, content: bytes, *,
+        allow_large: bool, readonly: bool,
+    ) -> int:
         await self._owned_running(owner, sandbox_id)
         limit = self.max_file_bytes or None
         if not allow_large:
@@ -704,9 +728,10 @@ class VmSandboxManager:
     async def read_file(
         self, owner: str, sandbox_id: str, path: str, max_bytes: int | None = 64 * 1024,
     ) -> bytes:
-        await self._owned_running(owner, sandbox_id)
-        target = self._workspace_path(path)
-        return await self._read_guest_file(sandbox_id, target, max_bytes)
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+            await self._owned_running(owner, sandbox_id)
+            target = self._workspace_path(path)
+            return await self._read_guest_file(sandbox_id, target, max_bytes)
 
     async def install_readonly_file(self, owner: str, sandbox_id: str, path: str, content: bytes) -> None:
         target = self._workspace_path(path)
@@ -716,6 +741,10 @@ class VmSandboxManager:
                                   allow_large=True, readonly=True)
 
     async def export_artifact(self, owner: str, sandbox_id: str, path: str) -> tuple[bytes, bool]:
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+            return await self._export_artifact_locked(owner, sandbox_id, path)
+
+    async def _export_artifact_locked(self, owner: str, sandbox_id: str, path: str) -> tuple[bytes, bool]:
         await self._owned_running(owner, sandbox_id)
         target = self._workspace_path(path)
         code, out, _ = await self._guest_exec(
@@ -727,7 +756,7 @@ class VmSandboxManager:
         if code:
             raise SandboxError("产物不存在、不可读取或为符号链接。")
         if out == b"file":
-            return await self.read_file(owner, sandbox_id, path, max_bytes=None), False
+            return await self._read_guest_file(sandbox_id, target, max_bytes=None), False
         if out != b"directory":
             raise SandboxError("不支持的产物类型。")
         archive = "/root/gaoji-export-" + secrets.token_hex(12) + ".zip"

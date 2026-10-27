@@ -19,22 +19,26 @@ from src.sandbox_runtime.docker import SandboxError
 from src.sandbox_runtime.project_vm_guest import HELPER_PATH
 from tests.test_project_vm_guest import binding
 
+DOMAIN_UUID = "22222222-2222-4222-8222-222222222222"
 
 class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
     def test_project_domain_separates_data_disk_with_discard_and_identity(self):
         manager = VmSandboxManager(image="/base.qcow2", root="/vm")
         with patch("shutil.which", return_value="/test/qemu"):
-            xml = manager._domain_xml("s123456", Path("/vm/s123456"), project_disk=binding())
+            xml = manager._domain_xml("s123456", Path("/vm/s123456"), project_disk=binding(), project_domain_uuid=DOMAIN_UUID)
         root = ElementTree.fromstring(xml)
         disks = root.findall("./devices/disk")
         self.assertEqual(len(disks), 3)
+        self.assertEqual(root.findtext("uuid"), DOMAIN_UUID)
         data = next(item for item in disks if item.find("target").get("dev") == "vdb")
         self.assertEqual(data.find("driver").get("discard"), "unmap")
         self.assertEqual(data.find("source").get("file"), str(binding().path))
         self.assertEqual(data.findtext("serial"), binding().guest_config()["serial"])
         self.assertEqual(root.find("./metadata/{urn:gaoji:project:1}workspace").get("generation"), "2")
         with patch("shutil.which", return_value="/test/qemu"), self.assertRaises(SandboxError):
-            manager._domain_xml("s654321", Path("/vm/s654321"), project_disk=binding())
+            manager._domain_xml("s654321", Path("/vm/s654321"), project_disk=binding(), project_domain_uuid=DOMAIN_UUID)
+        with patch("shutil.which", return_value="/test/qemu"), self.assertRaises(SandboxError):
+            manager._domain_xml("s123456", Path("/vm/s123456"), project_disk=binding())
 
     def test_project_cloud_init_mounts_with_readonly_root_owned_helper(self):
         config = json.loads(VmSandboxManager._cloud_config(project_disk=binding(), initialize_project=True).split("\n", 1)[1])
@@ -55,10 +59,9 @@ class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         manager._metadata = AsyncMock(return_value={"purpose": "project", "project": config})
         manager._running = AsyncMock(return_value=True)
         manager._guest_exec = AsyncMock(return_value=(1, b"", b"not mounted"))
-        with self.assertRaisesRegex(SandboxError, "项目盘"):
+        with self.assertRaisesRegex(SandboxError, "适配器"):
             await manager.exec("scope", "s123456", "echo should-not-run")
-        self.assertEqual(manager._guest_exec.await_count, 1)
-        self.assertIn(HELPER_PATH, manager._guest_exec.await_args.args[2])
+        self.assertEqual(manager._guest_exec.await_count, 0)
         self.assertEqual(manager._active_execs, {})
 
     async def test_project_guard_checks_identity_and_rejects_false_success(self):
@@ -66,11 +69,11 @@ class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         config = binding().guest_config()
         config.pop("initialize")
         metadata = {"purpose": "project", "project": config}
-        observed = {**config, "verified": True, "mounted": True, "used_bytes": 1234}
+        observed = {**config, "verified": True, "mounted": True, "used_bytes": 1234, "initialization_sealed": True}
         manager._guest_exec = AsyncMock(return_value=(0, json.dumps(observed).encode(), b""))
         self.assertEqual(await manager._verify_project_mount("s123456", metadata), observed)
         for change in ({"project_id": 10}, {"generation": 1}, {"generation": True}, {"mounted": False},
-                       {"filesystem_uuid": "wrong"}, {"used_bytes": -1}, {"verified": 1}):
+                       {"filesystem_uuid": "wrong"}, {"used_bytes": -1}, {"verified": 1}, {"initialization_sealed": False}):
             manager._guest_exec.return_value = (0, json.dumps({**observed, **change}).encode(), b"")
             with self.subTest(change=change), self.assertRaises(SandboxError):
                 await manager._verify_project_mount("s123456", metadata)

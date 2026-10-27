@@ -210,6 +210,7 @@ class VmProjectDisks(ProjectVolumeJournal):
             "quota_bytes": record["quota_bytes"],
             "sandbox_id": record.get("sandbox_id"),
             "maintenance_active": bool(record.get("maintenance")),
+            "guest_initialized": record.get("guest_initialized") is True,
         }
         if record.get("deleted"):
             if (
@@ -277,6 +278,10 @@ class VmProjectDisks(ProjectVolumeJournal):
                     "intent": None,
                     "initialized": False,
                     "sandbox_id": None,
+                    "guest_initialized": False,
+                    "bootstrap_domain_uuid": None,
+                    "bootstrap_sandbox_id": None,
+                    "guest_domain_uuid": None,
                 }
             if record.get("deleted") or (
                 record["intent"] and record["intent"]["operation"] != "create"
@@ -325,7 +330,7 @@ class VmProjectDisks(ProjectVolumeJournal):
             record["initialized"] = True
             return self._finish(directory, record)
 
-    def claim(self, owner, project_id, sandbox_id, *, fence, generation=1):
+    def claim(self, owner, project_id, sandbox_id, *, fence, generation=1, reservation=None):
         if not isinstance(sandbox_id, str) or not SANDBOX_ID_PATTERN.fullmatch(
             sandbox_id
         ):
@@ -334,7 +339,7 @@ class VmProjectDisks(ProjectVolumeJournal):
             if record is None or record.get("deleted"):
                 raise ProjectVolumeError("Project disk does not exist")
             self._generation(record, generation)
-            self._require_reservation(record, None)
+            self._require_reservation(record, reservation)
             if record.get("sandbox_id") not in (None, sandbox_id):
                 raise ProjectVolumeError("Project disk already claimed by another VM")
             path, _ = self._inspect(directory, record, shared=True)
@@ -359,7 +364,7 @@ class VmProjectDisks(ProjectVolumeJournal):
                 record["quota_bytes"],
             )
 
-    def release(self, owner, project_id, sandbox_id, *, fence, generation=1):
+    def release(self, owner, project_id, sandbox_id, *, fence, generation=1, reservation=None):
         if not isinstance(sandbox_id, str) or not SANDBOX_ID_PATTERN.fullmatch(
             sandbox_id
         ):
@@ -368,7 +373,7 @@ class VmProjectDisks(ProjectVolumeJournal):
             if record is None or record.get("deleted"):
                 raise ProjectVolumeError("Project disk does not exist")
             self._generation(record, generation)
-            self._require_reservation(record, None)
+            self._require_reservation(record, reservation)
             if record.get("sandbox_id") != sandbox_id and not (
                 record.get("sandbox_id") is None
                 and record["fence"] == fence
@@ -386,15 +391,16 @@ class VmProjectDisks(ProjectVolumeJournal):
             ):
                 return self._status(directory, record)
             record["sandbox_id"] = None
+            record["guest_domain_uuid"] = None
             return self._finish(directory, record)
 
-    def grow(self, owner, project_id, *, quota_bytes, fence, generation=1):
+    def grow(self, owner, project_id, *, quota_bytes, fence, generation=1, reservation=None):
         quota_bytes = self._quota(quota_bytes)
         with self._locked(owner, project_id) as (directory, record):
             if record is None or record.get("deleted"):
                 raise ProjectVolumeError("Project disk does not exist")
             self._generation(record, generation)
-            self._require_reservation(record, None)
+            self._require_reservation(record, reservation)
             if quota_bytes < record["quota_bytes"]:
                 raise ProjectVolumeError(
                     "VM disk shrinking requires a separate offline filesystem migration"
@@ -425,12 +431,12 @@ class VmProjectDisks(ProjectVolumeJournal):
             record["quota_bytes"] = quota_bytes
             return self._finish(directory, record)
 
-    def delete(self, owner, project_id, *, fence, generation=1):
+    def delete(self, owner, project_id, *, fence, generation=1, reservation=None):
         with self._locked(owner, project_id) as (directory, record):
             if record is None:
                 raise ProjectVolumeError("Project disk does not exist")
             self._generation(record, generation)
-            self._require_reservation(record, None)
+            self._require_reservation(record, reservation)
             if record.get("deleted"):
                 if self._begin(directory, record, "delete", fence, {}):
                     return self._finish(directory, record)
@@ -451,3 +457,108 @@ class VmProjectDisks(ProjectVolumeJournal):
             path.unlink(missing_ok=True)
             record["deleted"] = True
             return self._finish(directory, record)
+
+    @staticmethod
+    def _domain_uuid(value):
+        try:
+            if not isinstance(value, str) or str(uuid.UUID(value)) != value:
+                raise ValueError()
+        except ValueError:
+            raise ProjectVolumeError("Invalid project domain UUID") from None
+        return value
+
+    def _guest_binding(self, directory, record, sandbox_id, *, allow_pending=False):
+        if (record is None or record.get("deleted") or (record["pending"] and not allow_pending)
+                or not sandbox_id or record.get("sandbox_id") != sandbox_id):
+            raise ProjectVolumeError("Project disk has no settled claim for this VM")
+        self._status(directory, record)
+        return VmProjectDiskBinding(
+            record["project_id"], record["generation"], sandbox_id,
+            self._path(directory, record), record["fs_uuid"], record["quota_bytes"],
+        )
+
+    def prepare_guest(self, owner, project_id, sandbox_id, domain_uuid, *,
+                      generation, fence, reservation):
+        """Issue first-format permission to one immutable VM identity only.
+
+        Replacing an unacknowledged system disk never issues another permission.
+        The replacement may recover an already formatted filesystem, but a blank
+        or damaged disk needs explicit recovery instead of silent data loss.
+        """
+        domain_uuid = self._domain_uuid(domain_uuid)
+        self._reservation_hash(reservation)
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            self._require_reservation(record, reservation)
+            intent = {"operation": "guest_prepare", "arguments": {
+                "sandbox_id": sandbox_id, "domain_uuid": domain_uuid,
+            }}
+            replay = bool(record and record["intent"] == intent and record["fence"] == fence)
+            binding = self._guest_binding(directory, record, sandbox_id, allow_pending=replay)
+            existing = record.get("guest_domain_uuid")
+            if existing not in (None, domain_uuid):
+                raise ProjectVolumeError("Release the old VM claim before replacing its identity")
+            if not existing and self.host.consumers(binding.path):
+                raise ProjectVolumeError("Cannot adopt a VM defined before its initialization journal")
+            if self._begin(directory, record, "guest_prepare", fence, intent["arguments"]):
+                record["guest_domain_uuid"] = domain_uuid
+                # Store the grant before returning cloud-init configuration.
+                if not record.get("bootstrap_domain_uuid") and not record.get("guest_initialized"):
+                    record["bootstrap_domain_uuid"] = domain_uuid
+                    record["bootstrap_sandbox_id"] = sandbox_id
+                self._finish(directory, record)
+            return {
+                "binding": binding,
+                "domain_uuid": domain_uuid,
+                "initialize": record.get("guest_initialized") is not True
+                and record.get("bootstrap_domain_uuid") == domain_uuid
+                and record.get("bootstrap_sandbox_id") == sandbox_id,
+            }
+
+    def guest_binding(self, owner, project_id, sandbox_id, domain_uuid, *,
+                      generation, reservation=None, require_initialized=True,
+                      acknowledge_fence=None):
+        """Revalidate the host claim immediately before each guest operation."""
+        self._domain_uuid(domain_uuid)
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            self._require_reservation(record, reservation)
+            retry = (record is not None and type(acknowledge_fence) is int
+                     and acknowledge_fence == record["fence"]
+                     and record["intent"] == {"operation": "guest_acknowledge", "arguments": {
+                         "sandbox_id": sandbox_id, "domain_uuid": domain_uuid,
+                     }})
+            binding = self._guest_binding(directory, record, sandbox_id, allow_pending=retry)
+            if record.get("guest_domain_uuid") != domain_uuid:
+                raise ProjectVolumeError("VM identity differs from its project claim")
+            if require_initialized and record.get("guest_initialized") is not True:
+                raise ProjectVolumeError("Project guest initialization is not acknowledged")
+            return binding
+
+    def acknowledge_guest(self, owner, project_id, sandbox_id, domain_uuid, receipt, *,
+                          generation, fence, reservation):
+        """Persist a verified and sealed guest mount, not merely a boot command."""
+        self._domain_uuid(domain_uuid)
+        self._reservation_hash(reservation)
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            self._require_reservation(record, reservation)
+            intent = {"operation": "guest_acknowledge", "arguments": {
+                "sandbox_id": sandbox_id, "domain_uuid": domain_uuid,
+            }}
+            replay = bool(record and record["intent"] == intent and record["fence"] == fence)
+            binding = self._guest_binding(directory, record, sandbox_id, allow_pending=replay)
+            if record.get("guest_domain_uuid") != domain_uuid or self.host.consumers(binding.path) != {"gaoji-vm-" + sandbox_id}:
+                raise ProjectVolumeError("Cannot acknowledge an absent or different project VM")
+            expected = binding.guest_config()
+            expected.pop("initialize")
+            if (not isinstance(receipt, dict)
+                    or any(type(receipt.get(key)) is not type(value) or receipt[key] != value for key, value in expected.items())
+                    or any(receipt.get(key) is not True for key in ("mounted", "verified", "initialization_sealed"))
+                    or type(receipt.get("used_bytes")) is not int
+                    or not 0 <= receipt["used_bytes"] <= binding.quota_bytes):
+                raise ProjectVolumeError("Guest mount receipt does not prove sealed initialization")
+            if self._begin(directory, record, "guest_acknowledge", fence, intent["arguments"]):
+                record["guest_initialized"] = True
+                return self._finish(directory, record)
+            return self._status(directory, record)

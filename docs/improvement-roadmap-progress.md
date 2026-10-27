@@ -2161,3 +2161,53 @@ implementation evidence, not a claim that the production App has these features.
 - M2 remains incomplete and disabled in production. No server SSH, rebuild,
   nix-config change, live QQ/model call or App publication occurred. The supplied
   plan remains unchanged and excluded from the checkpoint.
+
+### M2 VM initialization acknowledgement and IO admission
+
+- Shared the existing durable maintenance reservation journal between the OCI
+  and VM disk backends without changing the OCI protocol. VM claim/release,
+  offline growth and deletion now require the owning reservation when one exists.
+  A restarted process cannot infer that a reserved workspace is available.
+- Added a first-format grant bound to both the sandbox ID and immutable libvirt
+  domain UUID. The grant is persisted before cloud-init configuration is returned.
+  Repeating the original preparation reconciles its journal. Replacing a system
+  disk never receives a second grant, even if the first guest reply was lost:
+  it may mount the existing expected filesystem, but a blank or damaged disk
+  requires explicit recovery, not automatic formatting. Completed initialization
+  is persisted separately from qcow2 image creation and survives claim release.
+- Guest mount replies now prove that initialization permission was atomically
+  consumed. The private host mount bridge compares both live and persistent
+  libvirt definitions, immutable identity, data/system disk separation, discard,
+  resource limits, isolated networking and the owned guest-agent channel. Failed
+  inventory is never treated as an absent VM. Host acknowledgement checks the
+  current disk consumer and the fresh, sealed mount receipt; interruption before
+  or after either journal write can be reconciled using the same fence.
+- Project admission now needs an explicitly composed host adapter, a settled
+  disk claim, completed initialization and no maintenance reservation. It checks
+  the guest mount and then revalidates the host claim. Command execution, imports,
+  reads and exports share the same in-process VM IO lock; exporting a file does
+  not recursively enter that lock. Generic temporary task/shell workflows remain
+  available. No production registration or project factory was added here.
+- Focused regression: 129 checks passed in 1.910 seconds
+  (.cache/roadmap/m2-vm-bootstrap-focused.log), including lost preparation/mount/
+  acknowledgement replies, replacement domains, invalid receipts, stale fences,
+  reservation races, busy transfers and non-deadlocking exports. Libvirt and guest
+  observations in these tests are fixtures, not native Linux VM acceptance.
+- Remaining VM integration is substantive: journalled system-overlay provisioning,
+  cross-process operation/IO leases, guest process-group quiescence (including
+  detached writers), snapshot/restore/prune/dependency adapters, a VM-specific
+  lifecycle plan and native boot/hibernate/reboot acceptance. In particular,
+  a stopped VM cannot service guest trim/file operations; the OCI step ordering
+  must not be reused blindly. Native provisioning must also verify that the
+  cloud image's default user does not conflict with the required sandbox
+  UID/GID 1000; the current shared template still declares both `default` and
+  `sandbox`. M2 is not complete or enabled by this checkpoint.
+- The user-supplied plan is unchanged. No production SSH, nix-config update,
+  rebuild, live model/QQ request or App publication is part of this work.
+- Final full isolated PostgreSQL regression: 2476 tests, OK (12 skipped),
+  428.931 seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-vm-bootstrap-full.log). CI-path Ruff, compileall and whitespace
+  checks passed. Nix package/import checks passed on aarch64-darwin
+  (.cache/roadmap/m2-vm-bootstrap-nix.log); incompatible platforms were omitted,
+  not tested. No product code changed after this run. Fixture-owned temporary
+  files were cleaned automatically; only small ignored diagnostics remain.

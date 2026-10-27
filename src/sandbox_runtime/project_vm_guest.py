@@ -385,6 +385,8 @@ def main():
         result = getattr(ProjectGuestWorkspace(config), args.action)()
         if args.action == "mount" and config["initialize"]:
             seal_initialization(config)
+            config["initialize"] = False
+        result["initialization_sealed"] = config["initialize"] is False
         print(json.dumps(result, sort_keys=True))
 
 
