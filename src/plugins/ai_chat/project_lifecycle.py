@@ -43,7 +43,9 @@ def transition_plan(project, action, baseline):
     if action == "wake":
         fresh = generation == 0 or source == "archived"
         generation += int(fresh)
-        steps = (["create_volume"] if fresh else []) + ["mount_volume"]
+        steps = (["create_volume"] if fresh else []) + ["reserve_workspace"]
+        if fresh or source == "hibernated":
+            steps += ["mount_volume"]
         if fresh and baseline is not None:
             steps += ["restore_version"]
         steps += ["start_workspace"]
@@ -51,7 +53,11 @@ def transition_plan(project, action, baseline):
             steps += ["rebuild_dependencies"]
     else:
         # Quiesce must stop writers before exporting a consistent snapshot.
-        steps = ["quiesce_workspace", "snapshot_workspace"]
+        steps = [
+            "reserve_workspace",
+            "mount_volume" if action == "archive" else "quiesce_workspace",
+            "snapshot_workspace",
+        ]
         if action == "stop":
             steps += ["stop_workspace"]
         elif action == "hibernate":
@@ -63,8 +69,10 @@ def transition_plan(project, action, baseline):
             ]
         else:
             steps += ["remove_workspace", "unmount_volume", "delete_volume"]
-    steps += ["verify_" + TARGETS[action]]
+    steps += ["release_workspace", "verify_" + TARGETS[action]]
     return generation, {
+        "protocol": 2,
+        "reservation": uuid.uuid4().hex,
         "steps": steps,
         "backend": project["backend"],
         "quota_bytes": project["quota_bytes"],
@@ -76,6 +84,14 @@ def transition_plan(project, action, baseline):
 class ProjectLifecycle:
     def __init__(self, projects, jobs):
         self.projects, self.jobs = projects, jobs
+
+    @staticmethod
+    def _public_run(run):
+        result = dict(run)
+        result["plan"] = {
+            key: value for key, value in result["plan"].items() if key != "reservation"
+        }
+        return result
 
     @staticmethod
     def _idle(cursor, project):
@@ -139,7 +155,7 @@ class ProjectLifecycle:
                     or previous["actor_principal_id"] != access.principal_id
                 ):
                     raise ProjectConflict("Lifecycle request identity was reused")
-                return dict(previous)
+                return self._public_run(previous)
             project = self.projects._get(
                 cursor, access, project_id, edit=True, expected=expected_version
             )
@@ -193,7 +209,24 @@ class ProjectLifecycle:
                 {"job_id": job.job_id, "action": action, "generation": generation},
                 now,
             )
-            return dict(row)
+            return self._public_run(row)
+
+    def context(self, job, *, access=None, now=None):
+        """Private worker context; never expose its reservation in tools or HTTP."""
+        with self.projects._transaction() as cursor:
+            project, run = self._owned(cursor, job, now)
+            if access is not None:
+                if access.principal_id != run["actor_principal_id"]:
+                    raise PermissionError("Lifecycle actor changed")
+                self.projects._get(
+                    cursor,
+                    access,
+                    project["project_id"],
+                    edit=True,
+                    lifecycle_job=job,
+                    now=now,
+                )
+            return project, run
 
     def _owned(self, cursor, job, now):
         project = cursor.execute(
@@ -245,6 +278,7 @@ class ProjectLifecycle:
                     "quota_bytes": plan["quota_bytes"],
                     "rebuild_command": plan["rebuild_command"],
                     "baseline": plan["baseline"],
+                    "reservation": plan.get("reservation"),
                 }
                 row = cursor.execute(
                     """INSERT INTO project_lifecycle_steps(job_id,step_index,project_id,fence,request_id,
@@ -441,4 +475,4 @@ class ProjectLifecycle:
                 "SELECT * FROM project_lifecycle_runs WHERE project_id=? ORDER BY job_id DESC LIMIT 100",
                 (project_id,),
             ).fetchall()
-            return [dict(row) for row in runs]
+            return [self._public_run(row) for row in runs]

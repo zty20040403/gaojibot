@@ -233,6 +233,23 @@ class ProjectVolumes:
         if record is not None and record.get("generation", 1) != generation:
             raise ProjectVolumeError("Workspace generation was superseded")
 
+    @staticmethod
+    def _reservation_hash(reservation):
+        if not isinstance(reservation, str) or not re.fullmatch(
+            r"[a-f0-9]{32}", reservation
+        ):
+            raise ProjectVolumeError("Invalid project maintenance reservation")
+        return hashlib.sha256(reservation.encode()).hexdigest()
+
+    @classmethod
+    def _require_reservation(cls, record, reservation):
+        expected = record.get("maintenance") if record else None
+        supplied = (
+            cls._reservation_hash(reservation) if reservation is not None else None
+        )
+        if expected != supplied:
+            raise ProjectVolumeError("Project is reserved by a lifecycle operation")
+
     @contextmanager
     def _locked(self, owner, project_id):
         if (
@@ -402,6 +419,7 @@ class ProjectVolumes:
                 "generation": record.get("generation", 1),
                 "fence": record["fence"],
                 "deleted": True,
+                "maintenance_active": bool(record.get("maintenance")),
             }
         image, target, info, device, mount = self._observed(directory, record)
         if not record["pending"] and info.st_size != record["quota_bytes"]:
@@ -416,6 +434,7 @@ class ProjectVolumes:
             "mounted": mount is not None,
             "attached": device is not None,
             "pending": record["pending"],
+            "maintenance_active": bool(record.get("maintenance")),
             "pending_operation": record["intent"]["operation"]
             if record["pending"]
             else None,
@@ -442,6 +461,7 @@ class ProjectVolumes:
             raise ProjectVolumeError("Invalid project operation fence")
         with self._locked(owner, project_id) as (directory, record):
             previous_fence = record["fence"] if record else 0
+            self._require_reservation(record, None)
             replacing = record is not None and record.get("deleted", False)
             if replacing:
                 if (
@@ -546,7 +566,15 @@ class ProjectVolumes:
             raise ProjectVolumeError("Project has an active filesystem consumer")
 
     def mutate(
-        self, owner, project_id, operation, *, fence, quota_bytes=None, generation=1
+        self,
+        owner,
+        project_id,
+        operation,
+        *,
+        fence,
+        quota_bytes=None,
+        generation=1,
+        reservation=None,
     ):
         if operation not in {"mount", "unmount", "resize", "fsck", "trim", "delete"}:
             raise ProjectVolumeError("Unsupported project-volume operation")
@@ -559,6 +587,7 @@ class ProjectVolumes:
             if record is None:
                 raise ProjectVolumeError("Project volume does not exist")
             self._generation(record, generation)
+            self._require_reservation(record, reservation)
             if record.get("deleted"):
                 if operation == "delete" and fence == record["fence"]:
                     return self._status(directory, record)
@@ -684,6 +713,7 @@ class ProjectVolumes:
         """Trusted local Docker driver only; never expose this path in RPC responses."""
         with self._locked(owner, project_id) as (directory, record):
             self._generation(record, generation)
+            self._require_reservation(record, None)
             if record is None or record.get("deleted") or record["pending"]:
                 raise ProjectVolumeError("Project volume is not ready for a writer")
             _, target, _, _, mount = self._observed(directory, record)
@@ -692,7 +722,14 @@ class ProjectVolumes:
             return target
 
     def workspace(
-        self, owner, project_id, *, generation, allow_pending=False, maintenance=False
+        self,
+        owner,
+        project_id,
+        *,
+        generation,
+        allow_pending=False,
+        maintenance=False,
+        reservation=None,
     ):
         """Private local driver data. Never send this binding over the RPC socket."""
         with self._locked(owner, project_id) as (directory, record):
@@ -701,6 +738,8 @@ class ProjectVolumes:
                 raise ProjectVolumeError("Project workspace is unavailable")
             if record["pending"] and not allow_pending:
                 raise ProjectVolumeError("Project workspace is undergoing maintenance")
+            if not maintenance:
+                self._require_reservation(record, reservation)
             return self._workspace_binding(directory, record, maintenance=maintenance)
 
     def _workspace_binding(self, directory, record, *, maintenance=False):
@@ -729,9 +768,43 @@ class ProjectVolumes:
             "mounted": mount is not None,
             "mount_matches": matches,
             "boot_id": boot_id,
+            "maintenance_active": bool(record.get("maintenance")),
         }
 
-    def begin_workspace(self, owner, project_id, *, generation, fence, action, image):
+    def reserve(self, owner, project_id, *, generation, fence, action, reservation):
+        """Cross-step exclusion; only the allocation-locked driver may call this."""
+        digest = self._reservation_hash(reservation)
+        if action not in {"reserve", "release"}:
+            raise ProjectVolumeError("Unsupported project reservation operation")
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            if record is None or (record.get("deleted") and action == "reserve"):
+                raise ProjectVolumeError("Project volume does not exist")
+            operation = "workspace_" + action
+            arguments = {"reservation_hash": digest}
+            held = record.get("maintenance")
+            if held is not None and held != digest:
+                raise ProjectVolumeError("Another lifecycle operation owns the project")
+            replay = fence == record["fence"] and record["intent"] == {
+                "operation": operation,
+                "arguments": arguments,
+            }
+            if not replay and (
+                (action == "reserve" and held) or (action == "release" and held is None)
+            ):
+                raise ProjectVolumeError("Reservation ownership cannot be inferred")
+            # Publish ownership and the effect fence in one durable write.
+            if not replay:
+                if record["pending"]:
+                    raise ProjectVolumeError("Reconcile the pending operation first")
+                record["maintenance"] = digest if action == "reserve" else None
+            if self._begin(directory, record, operation, fence, arguments):
+                return self._finish(directory, record)
+            return self._status(directory, record)
+
+    def begin_workspace(
+        self, owner, project_id, *, generation, fence, action, image, reservation=None
+    ):
         if type(fence) is not int or not 1 <= fence < 2**53:
             raise ProjectVolumeError("Invalid project operation fence")
         if action not in {"start", "stop", "remove"}:
@@ -745,6 +818,7 @@ class ProjectVolumes:
             self._generation(record, generation)
             if record is None or record.get("deleted"):
                 raise ProjectVolumeError("Project volume does not exist")
+            self._require_reservation(record, reservation)
             binding = self._workspace_binding(directory, record, maintenance=True)
             workspace = record.get("workspace")
             recoverable = (
@@ -787,7 +861,9 @@ class ProjectVolumes:
             )
             return self._workspace_binding(directory, record, maintenance=True)
 
-    def recover_workspace(self, owner, project_id, *, generation, fence):
+    def recover_workspace(
+        self, owner, project_id, *, generation, fence, reservation=None
+    ):
         """Rematerialize a stopped, removed binding after a verified host reboot.
 
         Docker removal is checked by the driver and independently by _idle.
@@ -797,6 +873,7 @@ class ProjectVolumes:
             raise ProjectVolumeError("Invalid workspace recovery fence")
         with self._locked(owner, project_id) as (directory, record):
             self._generation(record, generation)
+            self._require_reservation(record, reservation)
             if (
                 record is None
                 or record.get("deleted")
@@ -839,7 +916,9 @@ class ProjectVolumes:
             self._save(directory, record)
             return self._workspace_binding(directory, record)
 
-    def finish_workspace(self, owner, project_id, *, generation, fence, action):
+    def finish_workspace(
+        self, owner, project_id, *, generation, fence, action, reservation=None
+    ):
         if (
             action not in {"start", "stop", "remove"}
             or type(fence) is not int
@@ -848,6 +927,7 @@ class ProjectVolumes:
             raise ProjectVolumeError("Invalid workspace completion")
         with self._locked(owner, project_id) as (directory, record):
             self._generation(record, generation)
+            self._require_reservation(record, reservation)
             if record is None or record.get("deleted") or record["fence"] != fence:
                 raise ProjectVolumeError("Workspace operation was superseded")
             if record["intent"]["operation"] != "workspace_" + action:

@@ -1768,3 +1768,53 @@ implementation evidence, not a claim that the production App has these features.
   reconstruction, idle scheduling, retention/accounting and compensation. This
   checkpoint does not complete M2, merge main or deploy to a server. The approved
   plan remains unchanged and unstaged.
+
+### M2 reserved lifecycle execution checkpoint
+
+- Added a private OCI lifecycle executor over the existing durable queue and
+  authenticated Unix helper. Fresh wake now drives create, reserve, mount,
+  container start, release and final observation. Queue and project completion
+  commit atomically. Registration remains explicit and disabled in startup.
+- Protocol-2 plans contain a private reservation; public request/journal results
+  redact it and the helper persists only its hash. Allocation and I/O locks
+  protect reservation publication. Unrelated commands, file transfers, starts
+  and volume mutations cannot interleave subsequent maintenance steps, even
+  after runner restart. Existing active transfers prevent reservation entry.
+- Interrupted effects reuse their physical fence, while lease takeover rotates
+  transport receipts. Cancellation preserves the journal and reservation, not
+  a falsely completed task. Deletion holds its reservation in the tombstone
+  until owned release; a new generation cannot replace it early. Wrong tokens,
+  generations, stale fences and malformed requests are rejected.
+- Host-resolved access is required before every step and checked again after
+  effects. Missing/revoked membership or mismatched scope cannot continue or
+  acknowledge. The generic queue recognizes same-generation domain settlement
+  without a false lost-lease warning or heartbeat cancellation.
+- Corrected two transition-plan edges: stopped workspaces wake through their
+  existing binding rather than remounting a still-referenced volume; archive
+  from hibernation mounts for snapshot export rather than stopping a nonexistent
+  container. These fixes do not enable the missing retained-file adapter.
+- Whole-plan preflight refuses missing snapshot/restore/prune/rebuild adapters
+  before touching a container. Only core OCI wake dispatch is currently complete;
+  stop/hibernate/archive and version restore are NOT enabled end to end. VM,
+  malformed and old protocol-1 plans fail closed, without automatic plan rewrite
+  or unlocking. Recovery UI/compensation remain future integration work.
+- Focused regression: 100 tests, OK in 15.779 seconds
+  (.cache/roadmap/m2-executor-focused.log). Actual PostgreSQL schemas, private
+  journals and Unix RPC use explicit fake Docker/kernel observations. Coverage
+  includes lost start acknowledgement without duplicate containers, cancellation
+  and takeover, access revocation, reservation write/I/O races, tombstone release,
+  failed final verification and same-generation queue settlement. This is not
+  new native Linux acceptance; earlier reboot evidence predates this executor.
+- Full isolated PostgreSQL regression: 2283 tests, OK (12 skipped), 383.501
+  seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-executor-full.log). No product changes followed that run.
+- CI-path Ruff, compileall and whitespace checks passed. `nix flake check
+  --no-update-lock-file` passed aarch64-darwin package/import checks
+  (.cache/roadmap/m2-executor-nix.log); incompatible platforms were omitted.
+  No frontend build was needed. Temporary test workspaces and schemas are
+  automatically removed; small ignored diagnostics remain.
+- M2 still needs retained-file execution, rebuild/lockfile policy, VM integration,
+  Desktop soft quotas, idle scheduling, accounting/retention, complete admission
+  and compensation, followed by native end-to-end acceptance. M2-M7 remain
+  incomplete. No production SSH, QQ/model request, server configuration, App
+  change, main merge or deployment occurred. The approved plan is unchanged.

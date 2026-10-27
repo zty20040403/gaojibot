@@ -21,7 +21,8 @@ MUTATIONS = frozenset({"create", "ensure_default", "destroy", "exec", "write_fil
                       "install_readonly_file", "start_owned", "stop_owned", "reclaim_stopped",
                       "project_volume_create", "project_volume_mount", "project_volume_unmount",
                       "project_volume_resize", "project_volume_fsck", "project_volume_trim", "project_volume_delete",
-                      "project_workspace_start", "project_workspace_stop", "project_workspace_remove"})
+                      "project_workspace_start", "project_workspace_stop", "project_workspace_remove",
+                      "project_workspace_reserve", "project_workspace_release"})
 FIELDS = {
     "health": (set(), set()), "admin_snapshot": (set(), set()),
     "cancel": ({"request_id"}, set()),
@@ -40,16 +41,18 @@ FIELDS = {
     "export_artifact": ({"owner", "sandbox_id", "path"}, set()),
     "project_volume_status": ({"owner", "project_id"}, {"generation"}),
     "project_volume_create": ({"owner", "project_id", "quota_bytes", "fence"}, {"generation"}),
-    "project_volume_mount": ({"owner", "project_id", "fence"}, {"generation"}),
-    "project_volume_unmount": ({"owner", "project_id", "fence"}, {"generation"}),
-    "project_volume_resize": ({"owner", "project_id", "quota_bytes", "fence"}, {"generation"}),
-    "project_volume_fsck": ({"owner", "project_id", "fence"}, {"generation"}),
-    "project_volume_trim": ({"owner", "project_id", "fence"}, {"generation"}),
-    "project_volume_delete": ({"owner", "project_id", "fence"}, {"generation"}),
+    "project_volume_mount": ({"owner", "project_id", "fence"}, {"generation", "reservation"}),
+    "project_volume_unmount": ({"owner", "project_id", "fence"}, {"generation", "reservation"}),
+    "project_volume_resize": ({"owner", "project_id", "quota_bytes", "fence"}, {"generation", "reservation"}),
+    "project_volume_fsck": ({"owner", "project_id", "fence"}, {"generation", "reservation"}),
+    "project_volume_trim": ({"owner", "project_id", "fence"}, {"generation", "reservation"}),
+    "project_volume_delete": ({"owner", "project_id", "fence"}, {"generation", "reservation"}),
     "project_workspace_status": ({"owner", "project_id", "generation"}, set()),
-    "project_workspace_start": ({"owner", "project_id", "generation", "fence"}, set()),
-    "project_workspace_stop": ({"owner", "project_id", "generation", "fence"}, set()),
-    "project_workspace_remove": ({"owner", "project_id", "generation", "fence"}, set()),
+    "project_workspace_start": ({"owner", "project_id", "generation", "fence"}, {"reservation"}),
+    "project_workspace_stop": ({"owner", "project_id", "generation", "fence"}, {"reservation"}),
+    "project_workspace_remove": ({"owner", "project_id", "generation", "fence"}, {"reservation"}),
+    "project_workspace_reserve": ({"owner", "project_id", "generation", "fence", "reservation"}, set()),
+    "project_workspace_release": ({"owner", "project_id", "generation", "fence", "reservation"}, set()),
 }
 UPLOADS = {"write_file", "install_readonly_file"}
 
@@ -136,6 +139,8 @@ def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
     for field in ("project_id", "fence", "generation"):
         if field in args and (type(args[field]) is not int or not 1 <= args[field] < 2**53):
             raise ProtocolError("项目编号或操作代次无效。")
+    if "reservation" in args and (not isinstance(args["reservation"], str) or not ID_PATTERN.fullmatch(args["reservation"])):
+        raise ProtocolError("项目维护凭据无效。")
     if "quota_bytes" in args and (type(args["quota_bytes"]) is not int
             or not MIN_QUOTA <= args["quota_bytes"] <= MAX_QUOTA or args["quota_bytes"] % MIB):
         raise ProtocolError("项目卷配额必须为 64 MiB 至 100 GiB，按 MiB 对齐。")

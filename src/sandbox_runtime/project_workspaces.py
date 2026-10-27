@@ -205,10 +205,28 @@ class ProjectWorkspaces:
                 "Project workspace would exceed the running sandbox limit"
             )
 
-    async def operate(self, action, owner, project_id, *, generation, fence):
-        if action not in {"start", "stop", "remove"}:
+    async def operate(
+        self, action, owner, project_id, *, generation, fence, reservation=None
+    ):
+        if action not in {"start", "stop", "remove", "reserve", "release"}:
             raise SandboxError("Unsupported project workspace operation")
         async with self.manager._allocation_lock:
+            # A deleted volume can still retain a reservation until its owning
+            # archive job acknowledges all physical effects.
+            if action == "release":
+                volume = await self._volume(
+                    self.volumes.status, owner, project_id, generation=generation
+                )
+                if volume.get("deleted"):
+                    return await self._volume(
+                        self.volumes.reserve,
+                        owner,
+                        project_id,
+                        generation=generation,
+                        fence=fence,
+                        action=action,
+                        reservation=reservation,
+                    )
             binding = await self._volume(
                 self.volumes.workspace,
                 owner,
@@ -246,6 +264,23 @@ class ProjectWorkspaces:
                     raise SandboxError(
                         "Project workspace has an active command or file transfer"
                     )
+            if action in {"reserve", "release"}:
+
+                async def change_reservation():
+                    return await self._volume(
+                        self.volumes.reserve,
+                        owner,
+                        project_id,
+                        generation=generation,
+                        fence=fence,
+                        action=action,
+                        reservation=reservation,
+                    )
+
+                if binding["workspace"]:
+                    async with self.manager._exec_locks[sandbox_id]:
+                        return await change_reservation()
+                return await change_reservation()
             binding = await self._volume(
                 self.volumes.begin_workspace,
                 owner,
@@ -254,6 +289,7 @@ class ProjectWorkspaces:
                 fence=fence,
                 action=action,
                 image=self.manager.image,
+                reservation=reservation,
             )
             sandbox_id = (binding["workspace"] or {}).get("sandbox_id")
             if sandbox_id is None:
@@ -264,6 +300,7 @@ class ProjectWorkspaces:
                     generation=generation,
                     fence=fence,
                     action=action,
+                    reservation=reservation,
                 )
                 return await self.status(owner, project_id, generation=generation)
             async with self.manager._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
@@ -298,6 +335,7 @@ class ProjectWorkspaces:
                                 project_id,
                                 generation=generation,
                                 fence=fence,
+                                reservation=reservation,
                             )
                             current = await self._observe(owner, binding)
                         if current is None:
@@ -335,6 +373,7 @@ class ProjectWorkspaces:
                     generation=generation,
                     fence=fence,
                     action=action,
+                    reservation=reservation,
                 )
                 return await self.status(owner, project_id, generation=generation)
 
@@ -379,6 +418,7 @@ class ProjectWorkspaces:
             "verified": not binding["pending"]
             and state not in {"missing", "needs_recovery"},
             "mounted": binding["mounted"],
+            "maintenance_active": binding["maintenance_active"],
         }
 
     async def for_sandbox(self, owner, sandbox_id):

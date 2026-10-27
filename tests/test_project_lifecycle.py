@@ -105,6 +105,13 @@ class ProjectLifecycleTests(unittest.TestCase):
             self.lifecycle.acknowledge(job, step, self.evidence(step), now=now)
         return self.lifecycle.finish(job, now=now)
 
+    def advance_to(self, job, operation):
+        while step := self.lifecycle.next_step(job, now=self.now):
+            if step["operation"] == operation:
+                return step
+            self.lifecycle.acknowledge(job, step, self.evidence(step), now=self.now)
+        self.fail(f"Missing planned operation: {operation}")
+
     def test_queue_and_project_lock_are_atomic_and_same_request_replays(self):
         run = self.request()
         self.assertEqual(self.request()["job_id"], run["job_id"])
@@ -243,9 +250,7 @@ class ProjectLifecycleTests(unittest.TestCase):
         self.complete(self.claim())
         self.request("stop", "stop")
         job = self.claim()
-        step = self.lifecycle.next_step(job, now=self.now)
-        self.lifecycle.acknowledge(job, step, self.evidence(step), now=self.now)
-        self.lifecycle.next_step(job, now=self.now)
+        self.advance_to(job, "snapshot_workspace")
         version = self.project()["version"]
         with patch(
             "src.plugins.ai_chat.projects.time.time",
@@ -335,10 +340,12 @@ class ProjectLifecycleTests(unittest.TestCase):
             run["plan"]["steps"],
             [
                 "create_volume",
+                "reserve_workspace",
                 "mount_volume",
                 "restore_version",
                 "start_workspace",
                 "rebuild_dependencies",
+                "release_workspace",
                 "verify_active",
             ],
         )
@@ -351,11 +358,12 @@ class ProjectLifecycleTests(unittest.TestCase):
         self.complete(self.claim())
         self.request("stop", "stop")
         job = self.claim()
-        first = self.lifecycle.next_step(job, now=self.now)
-        self.lifecycle.acknowledge(job, first, self.evidence(first), now=self.now)
-        snapshot = self.lifecycle.next_step(job, now=self.now)
-        bad = self.evidence(first)
-        bad["fence"] = snapshot["fence"]
+        snapshot = self.advance_to(job, "snapshot_workspace")
+        bad = {
+            key: snapshot["arguments"][key]
+            for key in ("project_id", "generation", "fence")
+        }
+        bad.update(verified=True, observation="Fixture only")
         bad["snapshot"] = {"version_no": 1, "manifest_sha256": "a" * 64}
         with self.assertRaises(ProjectConflict):
             self.lifecycle.acknowledge(job, snapshot, bad, now=self.now)

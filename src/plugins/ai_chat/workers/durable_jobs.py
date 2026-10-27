@@ -241,9 +241,13 @@ class DurableJobWorker:
                 lease_generation=job.lease_generation,
             )
             if not changed:
-                self.logger.warning(
-                    f"Durable job {job.handle} finished after losing its lease."
-                )
+                current = await asyncio.to_thread(self.store.get, job.job_id)
+                if not (current is not None and current.status == "succeeded"
+                        and current.lease_generation == job.lease_generation
+                        and current.result == safe_result):
+                    self.logger.warning(
+                        f"Durable job {job.handle} finished after losing its lease."
+                    )
         finally:
             self._running.pop(job.job_id, None)
             heartbeat.cancel()
@@ -295,6 +299,15 @@ class DurableJobWorker:
                 )
                 renewed = False
             if not renewed:
+                # Some handlers atomically settle the queue alongside their
+                # domain state. That commit is not a lost lease.
+                try:
+                    current = await asyncio.to_thread(self.store.get, job.job_id)
+                    if (current is not None and current.status == "succeeded"
+                            and current.lease_generation == job.lease_generation):
+                        return
+                except Exception:
+                    pass
                 if not handler_task.done():
                     handler_task.cancel()
                 return

@@ -9,9 +9,10 @@ import asyncio
 import copy
 import json
 from pathlib import Path
+import threading
 import tempfile
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from src.local_runtime.files import read_json
 from src.sandbox_runtime.client import SandboxClient
@@ -543,6 +544,171 @@ class ProjectWorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.volumes.status("scope", 2)["fence"], 2)
         with self.assertRaises(SandboxError):
             await self.driver.create("scope", purpose="project")
+
+    async def test_reservation_blocks_unrelated_writers_across_runner_restart(self):
+        sandbox_id = (await self.operate("start", 3))["sandbox_id"]
+        token = "a" * 32
+        reserved = await self.client.project_workspace(
+            "reserve", "scope", 1, generation=1, fence=4, reservation=token
+        )
+        self.assertTrue(reserved["maintenance_active"])
+        self.assertNotIn(token, json.dumps(reserved))
+        self.assertNotIn(self.journal()["maintenance"], json.dumps(reserved))
+        await self.stop_runner()
+        await self.start_runner()
+        for action in ("start", "stop", "release"):
+            with self.assertRaises(SandboxError):
+                await self.client.project_workspace(
+                    action,
+                    "scope",
+                    1,
+                    generation=1,
+                    fence=5,
+                    reservation="b" * 32,
+                )
+        with self.assertRaises(SandboxError):
+            await self.operate("stop", 5)
+        with self.assertRaises(SandboxError):
+            await self.driver.write_file("scope", sandbox_id, "report.txt", b"race")
+        with self.assertRaises(SandboxError):
+            self.volumes.binding("scope", 1)
+        with self.assertRaises(SandboxError):
+            await self.client.project_volume("trim", "scope", 1, fence=5)
+        self.assertEqual(self.journal()["fence"], 4)
+        await self.client.project_workspace(
+            "stop", "scope", 1, generation=1, fence=5, reservation=token
+        )
+        with self.assertRaises(SandboxError):
+            await self.operate("start", 6)
+        await self.client.project_workspace(
+            "release", "scope", 1, generation=1, fence=6, reservation=token
+        )
+        self.assertFalse(self.journal()["maintenance"])
+        self.assertEqual((await self.operate("start", 7))["sandbox_id"], sandbox_id)
+
+    async def test_deleted_volume_keeps_reservation_until_owned_release(self):
+        token = "a" * 32
+        await self.client.project_workspace(
+            "reserve", "scope", 1, generation=1, fence=3, reservation=token
+        )
+        for fence, action in enumerate(("unmount", "delete"), 4):
+            await self.client.project_volume(
+                action, "scope", 1, fence=fence, reservation=token
+            )
+        with self.assertRaises(SandboxError):
+            self.volumes.create("scope", 1, generation=2, fence=6, quota_bytes=64 * MIB)
+        for generation, fence in ((2, 6), (1, 4)):
+            with self.assertRaises(SandboxError):
+                await self.client.project_workspace(
+                    "release",
+                    "scope",
+                    1,
+                    generation=generation,
+                    fence=fence,
+                    reservation=token,
+                )
+        for _ in range(2):
+            result = await self.client.project_workspace(
+                "release", "scope", 1, generation=1, fence=6, reservation=token
+            )
+            self.assertFalse(result["maintenance_active"])
+            self.assertTrue(result["deleted"])
+        self.volumes.create("scope", 1, generation=2, fence=7, quota_bytes=64 * MIB)
+        with self.assertRaises(SandboxError):
+            await self.client.project_workspace(
+                "release", "scope", 1, generation=1, fence=8, reservation=token
+            )
+
+    async def test_reservation_crash_replays_persisted_fence(self):
+        token = "a" * 32
+        for action, fence in (("reserve", 3), ("release", 4)):
+            with patch.object(
+                self.volumes, "_finish", side_effect=RuntimeError("lost completion")
+            ):
+                with self.assertRaises(SandboxError):
+                    await self.client.project_workspace(
+                        action, "scope", 1, generation=1, fence=fence, reservation=token
+                    )
+            self.assertTrue(self.journal()["pending"])
+            await self.stop_runner()
+            await self.start_runner()
+            result = await self.client.project_workspace(
+                action, "scope", 1, generation=1, fence=fence, reservation=token
+            )
+            self.assertFalse(result["pending"])
+            self.assertEqual(result["maintenance_active"], action == "reserve")
+
+    async def test_reservation_holds_io_lock_until_journal_is_durable(self):
+        sandbox_id = (await self.operate("start", 3))["sandbox_id"]
+        entered, release = asyncio.Event(), threading.Event()
+        loop = asyncio.get_running_loop()
+        original = self.volumes.reserve
+
+        def delayed(*args, **kwargs):
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(3):
+                raise TimeoutError("test journal release")
+            return original(*args, **kwargs)
+
+        with patch.object(self.volumes, "reserve", side_effect=delayed):
+            reserver = asyncio.create_task(
+                self.client.project_workspace(
+                    "reserve", "scope", 1, generation=1, fence=4, reservation="a" * 32
+                )
+            )
+            writer = None
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                writer = asyncio.create_task(
+                    self.driver.write_file("scope", sandbox_id, "late.txt", b"race")
+                )
+                await asyncio.sleep(0)
+                self.assertFalse(writer.done())
+            finally:
+                release.set()
+                await reserver
+                if writer is not None:
+                    with self.assertRaises(SandboxError):
+                        await writer
+        self.assertFalse(any("tee" in command for command in self.docker.commands))
+
+    async def test_reservation_refuses_an_active_file_transfer(self):
+        sandbox_id = (await self.operate("start", 3))["sandbox_id"]
+        self.docker.tee_entered, self.docker.tee_release = (
+            asyncio.Event(),
+            asyncio.Event(),
+        )
+        writer = asyncio.create_task(
+            self.driver.write_file("scope", sandbox_id, "file", b"busy")
+        )
+        try:
+            await asyncio.wait_for(self.docker.tee_entered.wait(), 3)
+            with self.assertRaises(SandboxError):
+                await self.client.project_workspace(
+                    "reserve", "scope", 1, generation=1, fence=4, reservation="a" * 32
+                )
+            self.assertFalse(self.journal().get("maintenance"))
+        finally:
+            self.docker.tee_release.set()
+            await writer
+
+    async def test_reservation_protocol_requires_a_private_canonical_token(self):
+        args = {"owner": "scope", "project_id": 1, "generation": 1, "fence": 3}
+        for action in ("reserve", "release"):
+            method = "project_workspace_" + action
+            validate_request(
+                request(method, {**args, "reservation": "a" * 32}), file_limit=MIB
+            )
+            for changes in (
+                {},
+                {"reservation": "wrong"},
+                {"reservation": True},
+                {"reservation": "a" * 32, "command": "sh"},
+            ):
+                with self.assertRaises(SandboxError):
+                    validate_request(
+                        request(method, {**args, **changes}), file_limit=MIB
+                    )
 
     async def test_readonly_import_helper_uses_project_mount_and_identity_guard(self):
         sandbox_id = (await self.operate("start", 3))["sandbox_id"]

@@ -144,6 +144,60 @@ class DurableJobStoreTests(unittest.TestCase):
 
 
 class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_atomic_domain_completion_is_not_lost_lease_or_cancellation(self):
+        store = DurableJobStore(postgres_for_test(self))
+        self.addCleanup(store.close)
+        store.lease_seconds = 3
+        logger = RecordingLogger()
+        worker = DurableJobWorker(store, logger=logger)
+        renewed, release = asyncio.Event(), asyncio.Event()
+        loop = asyncio.get_running_loop()
+        renew = store.renew_lease
+
+        def observe_renewal(*args, **kwargs):
+            result = renew(*args, **kwargs)
+            loop.call_soon_threadsafe(renewed.set)
+            return result
+
+        async def handler(job):
+            self.assertTrue(store.mark_succeeded(
+                job.job_id, job.lease_owner, lease_generation=job.lease_generation,
+                result={"published": True},
+            ))
+            await release.wait()
+            return {"published": True}
+
+        worker.register("atomic", handler)
+        job, _ = store.enqueue(kind="atomic", idempotency_key="atomic")
+        with patch.object(store, "renew_lease", side_effect=observe_renewal):
+            running = asyncio.create_task(worker.run_once())
+            try:
+                await asyncio.wait_for(renewed.wait(), 3)
+                await asyncio.sleep(0.03)
+                self.assertFalse(running.done())
+            finally:
+                release.set()
+                await running
+        self.assertEqual(store.get(job.job_id).status, "succeeded")
+        self.assertEqual(logger.warnings, [])
+
+    async def test_different_completion_result_is_not_treated_as_own_settlement(self):
+        store = DurableJobStore(postgres_for_test(self))
+        self.addCleanup(store.close)
+        logger = RecordingLogger()
+        worker = DurableJobWorker(store, logger=logger)
+
+        def handler(job):
+            store.mark_succeeded(job.job_id, job.lease_owner,
+                lease_generation=job.lease_generation, result={"actual": True})
+            return {"claimed": True}
+
+        worker.register("atomic", handler)
+        job, _ = store.enqueue(kind="atomic", idempotency_key="mismatch")
+        await worker.run_once()
+        self.assertEqual(store.get(job.job_id).result, {"actual": True})
+        self.assertTrue(any("losing its lease" in line for line in logger.warnings))
+
     async def wait_for_status(self, store, job_id, status):
         async def wait():
             while store.get(job_id).status != status:

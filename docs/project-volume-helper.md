@@ -46,8 +46,8 @@ request ID for transport retries; these are two different identities:
 
 The application persists and allocates a fence before dispatch in
 `project_lifecycle_steps`. A job's attempt number is NOT an adequate
-project-wide fence. The lifecycle journal now owns that allocator; its physical
-backend adapters and worker registration remain unimplemented/default-disabled.
+project-wide fence. The lifecycle journal owns that allocator. The private OCI
+executor below consumes these steps; production registration stays disabled.
 
 Native utilities run in a worker thread. Cancellation waits for the bounded
 utility to finish before releasing the runner lock. It is not rollback and does
@@ -210,13 +210,13 @@ Migration 0044 and `project_lifecycle.py` add a private control-plane checkpoint
   writes the event in one transaction. Failure leaves the lock and journal
   intact; no timeout handler automatically deletes a workspace.
 
-This is **not a physical executor**. `verified` evidence is accepted only from
-trusted future adapters, never a model, tool input or HTTP request. The tests
-use explicitly labelled fixture observations. Native observations, command
-quiescence and atomic coordination of task attachment/container start with
-maintenance are mandatory before enabling a worker. The journal does not yet
-prove those operations succeed on a real host. Generic queue retries alone
-must not be mistaken for a complete compensator.
+The journal itself does not execute physical operations. `verified` evidence is
+accepted only from trusted host adapters, never a model, tool input or HTTP
+request. The private OCI executor below verifies helper observations; journal
+unit tests still use explicitly labelled fixture observations. End-to-end native
+acceptance and atomic coordination of task attachment with maintenance are
+mandatory before enabling a production worker. Generic queue retries alone must
+not be mistaken for a complete compensator.
 
 Remaining lifecycle integration includes physical adapters, automatic idle
 scheduling, rebuild/lockfile rules, retention sampling, trash/purge, and recovery
@@ -224,6 +224,55 @@ UI. In particular, hibernated snapshots need a read-only export path without
 starting an application writer. Do not register `project.lifecycle` as a worker
 kind until these adapters honor every persisted step and independently verify
 the resulting state.
+
+## Reserved OCI lifecycle executor
+
+`project_executor.py` explicitly composes a `ProjectLifecycleExecutor` with a
+host-resolved access callback and an OCI backend over the authenticated Unix
+client. Nothing is registered by importing it. The installed runner and ordinary
+Bot startup still do not enable this project executor.
+
+- New frozen plans use protocol 2 and a random private maintenance reservation.
+  Public requests and journal views strip that credential. The helper stores
+  only its hash and exposes only `maintenance_active`, never the credential.
+- `project_workspace_reserve` and `release` use the same generation/fence rules
+  as other effects. Reservation changes acquire the allocation and I/O locks
+  before publishing the private journal. New commands/transfers and unrelated
+  starts/stops/volume maintenance are then refused across all subsequent steps,
+  including after runner restart. Existing active file transfers block entry.
+- Reservation does not stop background writers. The following quiesce step
+  stops and verifies the owned container before snapshot work. For archive from
+  hibernation, no container exists: mount the retained volume for the snapshot,
+  then unmount/delete. Never start an application just to export its files.
+- Only the owning reservation may continue or release maintenance. Release is
+  replayable; deletion retains the reservation in the tombstone until its owner
+  releases it. A fresh generation cannot be created while it remains held.
+  Expiration alone never clears ownership or permits data deletion.
+- Before each step and after a potentially long effect, the executor checks
+  the current host-resolved actor, live membership, scope/editor rights, durable
+  lease, generation and project task/delivery guards. A missing identity is an
+  error, not an anonymous privileged continuation.
+- Lost acknowledgements preserve the effect fence while lease takeover obtains
+  a fresh transport receipt. Already performed effects are reconciled. Final
+  verification uses uncached helper observations of actual container/mount/
+  quota state and reservation release; exit status alone cannot complete a job.
+- Domain completion atomically settles the queue. The generic worker recognizes
+  same-generation settlement rather than cancelling a just-completed handler or
+  reporting a false lost lease. Different results/generations remain errors.
+
+**Available now:** private OCI create/reserve/mount/start/release/verify dispatch,
+including durable takeover. Stop/remove/trim/unmount/delete primitives are wired,
+but a whole plan is preflighted before its first mutation. Snapshot, restore,
+dependency pruning and reconstruction require a retained-file adapter that is
+not yet implemented. Accordingly stop/hibernate/archive and version restoration
+are rejected before touching containers when that adapter is absent. VM plans,
+old protocol-1 plans and malformed reservations also fail preflight; old pending
+plans must be explicitly reconciled, not silently rewritten or unlocked.
+
+The 100-test focused checkpoint uses real PostgreSQL and Unix sockets with
+explicit Docker/kernel fixtures. It proves control-plane composition and race
+handling, not native filesystem semantics or completed M2 acceptance. Previous
+native reboot evidence covers the helper before this reservation addition.
 
 ## Evidence and remaining gates
 
@@ -241,18 +290,19 @@ mounted quota or native server installation.
 
 Before enabling this helper, M2 still needs:
 
-- Native Ubuntu/NixOS product-helper checks, including actual loop metadata,
-  simultaneous writers, reboot and power-loss reconciliation.
+- Native Ubuntu/NixOS acceptance of the reserved executor and complete lifecycle,
+  including interruption during file operations and power-loss reconciliation.
+  Earlier native checks already cover basic quota, mounts and reboot recovery.
 - A host mount-namespace design that makes the mount visible to Docker without
   weakening the existing runner sandbox; systemd `PrivateTmp`/`ProtectSystem`
   must not accidentally make a successful mount private to the helper.
-- Product-container binding/start and maintenance now have journal/Unix RPC
-  regression coverage, including cancellation, lost acknowledgements, file
-  transfers, quota admission and identity mismatch. Real Linux acceptance of
-  these operations, including reboot and delayed Docker completion, remains.
-- PostgreSQL lifecycle jobs/fences, active-task/delivery protection, snapshots,
-  and incarnation journaling now have local PostgreSQL/Unix RPC coverage.
-  Their concrete backend execution, cross-process admission coordination,
+- Product-container binding/start and maintenance have journal/Unix RPC coverage
+  for cancellation, lost acknowledgements, transfers, quota and identity checks.
+  The base binding/reboot path has native evidence; the new cross-step
+  reservation and delayed-execution composition still require native acceptance.
+- PostgreSQL lifecycle jobs/fences, active-task/delivery protection, snapshot
+  publication, generation journals and reserved OCI dispatch have local
+  PostgreSQL/Unix RPC coverage. Retained-file execution, complete task admission,
   rebuildable-data cleanup, compensation and version retention still need
   integration and native acceptance. Do not clear a tombstone or reset a fence
   to work around a failed restore.
