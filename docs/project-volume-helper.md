@@ -688,6 +688,47 @@ composition evidence, not native KVM or production acceptance.
 
 ## Evidence and remaining gates
 
+### VM accounting and idle scheduling
+
+The private `VmProjectBackend` now implements `sample_usage` and
+`maintenance_ready` for the existing `ProjectUsageSampler` and
+`ProjectMaintenance`. Host registration and live membership resolution remain
+explicit and default-disabled. This does not enable automatic deletion.
+
+Running guests report actual filesystem capacity, with optional locked-recipe
+rebuildable-data accounting. Sampling uses the same admission/IO locks and disk
+identity checks as execution. Busy writers or an incomplete directory scan
+leave rebuildable bytes unknown, not zero. A missing recipe retains dependencies.
+The guest helper remains stdlib-only and never executes the rebuild command to
+measure usage.
+
+Stopped and hibernated VMs are not booted or mounted merely for accounting.
+The host reads exactly the first 2 KiB through `qemu-img dd`, without force-share,
+then validates the ext4 superblock's UUID, quota geometry, clean/recovery state,
+features and CRC32C. QEMU locking and unchanged file/domain/journal identity are
+required before and after the read. Dirty, unsupported or unverifiable storage
+produces an unknown sample; it is never repaired automatically. Host qcow2
+allocation remains a separate number from filesystem usage. Offline rebuildable
+usage remains unknown until a guest scan; this estimate never authorizes cleanup.
+
+Sampling failures preserve last-known usage but block new quota admission.
+Confirmed archived data disks report zero workspace bytes; retained version
+blobs remain separately charged. Idle scheduling uses current VM observations,
+rechecks live ownership, and lets the PostgreSQL transaction reject active tasks,
+failed work and unacknowledged deliveries before queueing a durable transition.
+Sampling and automatic snapshots do not reset real user activity.
+
+`tests/test_project_vm_accounting.py` exercises the composed PostgreSQL sampler
+and scheduler across active, stopped, hibernated and archived states, plus
+changed VM/disk identities, missing receipts, revoked access, live writers and
+undelivered task outputs. `tools/verify_project_vm_usage.py` compares actual
+qcow2/ext4 reads with `dumpe2fs`, checks populated files and reserved blocks,
+rejects dirty filesystems, and proves source-image bytes are unchanged. It runs
+only in a disposable local container without capabilities or active networking;
+it is not a native KVM or crash-recovery acceptance test.
+
+### Remaining acceptance
+
 `tests/test_project_volumes.py` uses actual private files and Unix RPC but an
 explicit fake host adapter. It covers owner/instance isolation, concurrent
 create, stale/changed fences, identity replacement, crash points, cancellation,

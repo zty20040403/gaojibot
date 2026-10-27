@@ -73,6 +73,12 @@ class QcowProjectHost:
     def grow(self, path, quota):
         self.run("qemu-img", "resize", "-f", "qcow2", str(path), str(quota))
 
+    def used_bytes(self, path, *, filesystem_uuid, quota_bytes):
+        from .project_vm_usage import qcow_used_bytes
+        return qcow_used_bytes(
+            path, filesystem_uuid=filesystem_uuid, quota_bytes=quota_bytes, run=self.run
+        )
+
     def consumers(self, path):
         prefix = ("virsh", "-c", "qemu:///session")
         identifiers = self.run(*prefix, "list", "--all", "--uuid").split()
@@ -262,6 +268,29 @@ class VmProjectDisks(ProjectVolumeJournal):
             if not record.get("workspace") and record.get("sandbox_id"):
                 raise ProjectVolumeError("Unjournalled project VM claim")
             return {"status": status, "boot": boot, "retired": bool(boot and not record.get("workspace"))}
+
+    def offline_usage(self, owner, project_id, *, generation, fence):
+        """Runtime must hold VM locks and verify stopped/absent state around this."""
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            if (record is None or record["pending"] or record.get("maintenance")
+                    or record["fence"] != fence or not record.get("guest_initialized")):
+                raise ProjectVolumeError("Project accounting requires settled initialized storage")
+            if record.get("deleted"):
+                self._status(directory, record)
+                return {"used_bytes": 0, "rebuildable_bytes": 0, "warning": ""}
+            path, before = self._inspect(directory, record)
+            initial = self._status(directory, record)
+            used = self.host.used_bytes(path, filesystem_uuid=record["fs_uuid"],
+                                        quota_bytes=record["quota_bytes"])
+            _, after = self._inspect(directory, record)
+            attributes = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if (any(getattr(before, key) != getattr(after, key) for key in attributes)
+                    or self._status(directory, record) != initial
+                    or type(used) is not int or not 0 <= used <= record["quota_bytes"]):
+                raise ProjectVolumeError("Project disk changed during offline accounting")
+            return {"used_bytes": used, "rebuildable_bytes": None,
+                    "warning": "Offline workspace; rebuildable usage is not scanned"}
 
     def create(self, owner, project_id, *, quota_bytes, fence, generation=1):
         quota_bytes = self._quota(quota_bytes)

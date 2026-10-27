@@ -168,13 +168,19 @@ def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--dependency-worker" and sys.argv[2].isdecimal():
         ProjectGuestFiles(ProjectGuestGate(load_config())).dependencies.worker(int(sys.argv[2]))
         return
-    if len(sys.argv) != 1:
+    usage = sys.argv[1:] == ["--usage"]
+    if len(sys.argv) != 1 and not usage:
         raise ProjectVolumeError("Unsupported project helper arguments")
     data = sys.stdin.buffer.read(REQUEST_BYTES + 1)
     if len(data) > REQUEST_BYTES:
         raise ProjectVolumeError("Guest file request exceeds its limit")
     request = json.loads(data)
-    result = ProjectGuestFiles(ProjectGuestGate(load_config())).operate(request)
+    gate = ProjectGuestGate(load_config())
+    if usage:
+        from .project_vm_usage_guest import measure
+        result = measure(gate, request)
+    else:
+        result = ProjectGuestFiles(gate).operate(request)
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
 
 

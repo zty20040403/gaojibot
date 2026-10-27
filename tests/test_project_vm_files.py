@@ -243,6 +243,7 @@ class GuestFileTests(unittest.TestCase):
         target.write_bytes(package)
         script = ("import sys; sys.path.insert(0,sys.argv[1]); "
                   "from src.sandbox_runtime.project_vm_file_guest import ProjectGuestFiles; "
+                  "from src.sandbox_runtime.project_vm_usage_guest import measure; "
                   "assert 'nonebot' not in sys.modules; assert 'src.sandbox_runtime.docker' not in sys.modules; "
                   "assert 'src.sandbox_runtime.project_volumes' not in sys.modules")
         subprocess.run([sys.executable, "-I", "-c", script, str(target)], check=True, cwd=self.root,

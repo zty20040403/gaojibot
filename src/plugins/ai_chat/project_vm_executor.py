@@ -1,6 +1,7 @@
 """Protocol-3 VM lifecycle adapter. Host composition remains explicit."""
 
 import re
+import time
 
 from .project_executor import DockerProjectBackend, ProjectBackendUnavailable
 from .projects import ProjectConflict
@@ -24,6 +25,85 @@ class VmProjectBackend:
 
     def __init__(self, runtime, *, files):
         self.runtime, self.files = runtime, files
+
+    @staticmethod
+    def _settled(project, observed):
+        target = project["status"]
+        if target in {"hibernated", "archived"}:
+            attached = (
+                observed.get("retired") is True
+                and not observed.get("attached")
+                and not observed.get("sandbox_id")
+            )
+        else:
+            attached = (
+                observed.get("attached") is True
+                and observed.get("sandbox_id") == project["sandbox_id"]
+            )
+        return (
+            observed.get("verified") is True
+            and observed.get("project_id") == project["project_id"]
+            and observed.get("generation") == project["workspace_generation"]
+            and observed.get("fence") == project["lifecycle_fence"] - 1
+            and observed.get("quota_bytes") == project["quota_bytes"]
+            and not observed.get("pending")
+            and not observed.get("maintenance_active")
+            and observed.get("deleted") is (target == "archived")
+            and observed.get("state")
+            == {
+                "active": "running",
+                "stopped": "stopped",
+                "hibernated": "absent",
+                "archived": "absent",
+            }.get(target)
+            and attached
+        )
+
+    async def sample_usage(self, project):
+        if project["lifecycle_job_id"] is not None:
+            raise ProjectConflict("Project usage waits for lifecycle completion")
+        if project["workspace_generation"] == 0:
+            if project["status"] != "stopped" or project["sandbox_id"]:
+                raise ProjectConflict(
+                    "Uninitialized VM project has unexpected runtime state"
+                )
+            return {
+                "project_id": project["project_id"],
+                "generation": 0,
+                "fence": 0,
+                "quota_bytes": project["quota_bytes"],
+                "quota_mode": "hard",
+                "used_bytes": 0,
+                "rebuildable_bytes": 0,
+                "complete": True,
+                "sampled_at": int(time.time()),
+            }
+        observed = await self.runtime.sample_usage(
+            project["scope_key"],
+            project["project_id"],
+            generation=project["workspace_generation"],
+            rebuild_command=project["rebuild_command"],
+        )
+        if not self._settled(project, observed):
+            raise ProjectConflict(
+                "VM accounting does not match the committed lifecycle"
+            )
+        return observed
+
+    async def maintenance_ready(self, project):
+        if (
+            project["lifecycle_job_id"] is not None
+            or project["locked_task_id"] is not None
+        ):
+            return False
+        if project["workspace_generation"] == 0:
+            return project["status"] == "stopped" and not project["sandbox_id"]
+        observed = await self.runtime.inspect(
+            project["scope_key"],
+            project["project_id"],
+            generation=project["workspace_generation"],
+        )
+        return self._settled(project, observed) and observed.get("busy") is False
 
     def preflight(self, plan):
         steps = plan.get("steps")

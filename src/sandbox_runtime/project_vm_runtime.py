@@ -1,9 +1,11 @@
 """Private VM lifecycle composition, not a public RPC or production registration."""
 
 import json
+import time
 
 from .errors import SandboxError
 from .project_vm_gate import HELPER_PATH
+from .project_vm_file_guest import HELPER_PATH as FILES_PATH
 from .project_vm_io import _journal
 from .project_vm_maintenance import VmProjectMaintenance
 from .project_vm_mounts import VmProjectMounts
@@ -41,7 +43,7 @@ class VmProjectRuntime:
         raise SandboxError("Unknown project VM operation")
 
     @staticmethod
-    def _guest_receipt(output, binding, epoch):
+    def _guest_receipt(output, binding, epoch, *, usage=False):
         try:
             if len(output) > 8192:
                 raise ValueError()
@@ -59,7 +61,11 @@ class VmProjectRuntime:
             expected.update(epoch=epoch, mode="active", mounted=True, verified=True)
             if (
                 not isinstance(receipt, dict)
-                or set(receipt) != {*expected, "busy", "used_bytes"}
+                or set(receipt)
+                != (
+                    {*expected, "busy", "used_bytes"}
+                    | ({"rebuildable_bytes", "warning"} if usage else set())
+                )
                 or any(
                     type(receipt.get(k)) is not type(v) or receipt[k] != v
                     for k, v in expected.items()
@@ -69,6 +75,21 @@ class VmProjectRuntime:
                 or not 0 <= receipt["used_bytes"] <= binding.quota_bytes
             ):
                 raise ValueError()
+            if usage:
+                rebuildable = receipt["rebuildable_bytes"]
+                if (
+                    (
+                        rebuildable is not None
+                        and (
+                            type(rebuildable) is not int
+                            or not 0 <= rebuildable <= receipt["used_bytes"]
+                        )
+                    )
+                    or not isinstance(receipt["warning"], str)
+                    or len(receipt["warning"]) > 256
+                    or (receipt["busy"] and rebuildable is not None)
+                ):
+                    raise ValueError()
             return receipt
         except (ValueError, TypeError):
             raise SandboxError(
@@ -76,6 +97,17 @@ class VmProjectRuntime:
             ) from None
 
     async def inspect(self, owner, project_id, *, generation):
+        return await self._inspect(owner, project_id, generation=generation)
+
+    async def sample_usage(self, owner, project_id, *, generation, rebuild_command):
+        if not isinstance(rebuild_command, str) or len(rebuild_command) > 4000:
+            raise SandboxError("Invalid project accounting rebuild recipe")
+        return await self._inspect(
+            owner, project_id, generation=generation, rebuild_command=rebuild_command
+        )
+
+    async def _inspect(self, owner, project_id, *, generation, rebuild_command=None):
+        usage = rebuild_command is not None
         # The same locks as provisioning/retirement protect the external read.
         await _journal(self.disks.status, owner, project_id, generation=generation)
         self.disks._private_directory(self.manager.root.absolute())
@@ -85,6 +117,10 @@ class VmProjectRuntime:
             )
             boot, status = observed["boot"], observed["status"]
             if boot is None:
+                if usage:
+                    raise SandboxError(
+                        "Project filesystem initialization has not been verified"
+                    )
                 if status["deleted"]:
                     raise SandboxError("Deleted project has no verified VM retirement")
                 return {
@@ -98,7 +134,7 @@ class VmProjectRuntime:
             binding = boot["binding"]
             async with manager.io_lock(binding.sandbox_id, timeout=0):
                 state = await self.provisioner._observe(manager, boot)
-                guest = {}
+                guest, accounting = {}, {}
                 if observed["retired"]:
                     directory = manager._directory(binding.sandbox_id)
                     if (
@@ -120,21 +156,63 @@ class VmProjectRuntime:
                         )
                     await _journal(self.provisioner._verify_files, manager, boot)
                     if state == "running":
+                        request = {"action": "inspect", "epoch": status["fence"]}
+                        arguments = [HELPER_PATH]
+                        if usage:
+                            arguments = ["-I", FILES_PATH, "--usage"]
+                            request = {
+                                "identity": {
+                                    k: binding.guest_config()[k]
+                                    for k in (
+                                        "project_id",
+                                        "generation",
+                                        "filesystem_uuid",
+                                        "serial",
+                                    )
+                                },
+                                "epoch": status["fence"],
+                                "rebuild_command": rebuild_command,
+                            }
                         code, output, _ = await manager._guest_exec_raw(
                             binding.sandbox_id,
                             "/usr/bin/python3",
-                            [HELPER_PATH],
-                            timeout=45,
-                            input_bytes=json.dumps(
-                                {"action": "inspect", "epoch": status["fence"]}
-                            ).encode(),
+                            arguments,
+                            timeout=15 if usage else 45,
+                            input_bytes=json.dumps(request).encode(),
                         )
                         if code:
                             raise SandboxError("Guest project inspection failed")
-                        guest = self._guest_receipt(output, binding, status["fence"])
+                        guest = self._guest_receipt(
+                            output, binding, status["fence"], usage=usage
+                        )
                     if await self.provisioner._observe(manager, boot) != state:
                         raise SandboxError("Project VM changed during inspection")
                     state = "running" if state == "running" else "stopped"
+                if usage:
+                    if state == "running":
+                        accounting = {
+                            k: guest[k]
+                            for k in ("used_bytes", "rebuildable_bytes", "warning")
+                        }
+                    else:
+                        accounting = await _journal(
+                            self.disks.offline_usage,
+                            owner,
+                            project_id,
+                            generation=generation,
+                            fence=status["fence"],
+                        )
+                    actual = await self.provisioner._observe(manager, boot)
+                    if (
+                        actual
+                        != {
+                            "absent": None,
+                            "stopped": "shut off",
+                            "running": "running",
+                        }[state]
+                    ):
+                        raise SandboxError("Project VM changed during accounting")
+                    accounting.update(complete=True, sampled_at=int(time.time()))
                 final = await _journal(
                     self.disks.inspection_record,
                     owner,
@@ -158,5 +236,6 @@ class VmProjectRuntime:
                     "state": state,
                     "retired": observed["retired"],
                     "busy": guest.get("busy", False),
+                    **accounting,
                     **({"guest": guest} if guest else {}),
                 }

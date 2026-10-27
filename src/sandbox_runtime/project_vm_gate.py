@@ -189,8 +189,9 @@ class ProjectGuestGate:
     def _receipt(self, state):
         return {**state, "verified": True}
 
-    def inspect(self, epoch):
-        """Observe admission and the mounted disk without changing either."""
+    @contextmanager
+    def observation(self, epoch):
+        """Keep admission stable while a trusted read observes the project."""
         self._epoch(epoch)
         with self._lock("control"), self._lock("io", timeout=0):
             state = self._state()
@@ -198,9 +199,14 @@ class ProjectGuestGate:
                 raise GuestDiskError("Project admission is not active at the host epoch")
             mounted = self.workspace.verify()
             self.commands.require_cgroups()
-            return {**self._receipt(state), "mounted": True,
+            yield {**self._receipt(state), "mounted": True,
                     "used_bytes": mounted["used_bytes"], "quota_bytes": self.config["quota_bytes"],
                     "busy": not self.commands.empty() or self.commands.sandbox_processes()}
+
+    def inspect(self, epoch):
+        """Observe admission and the mounted disk without changing either."""
+        with self.observation(epoch) as receipt:
+            return receipt
 
     def activate(self, epoch):
         self._epoch(epoch)

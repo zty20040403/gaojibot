@@ -36,14 +36,16 @@ from src.sandbox_runtime.project_vm_file_guest import (
 from src.sandbox_runtime.project_vm_files import VmProjectFiles
 from src.sandbox_runtime.project_vm_gate import GuestDiskError
 from src.sandbox_runtime.project_vm_runtime import VmProjectRuntime
+from src.sandbox_runtime.project_vm_usage_guest import measure
 from src.sandbox_runtime.project_volumes import MIB
 
 
-class VmExecutorTests(provision.VmProvisionFixture, unittest.IsolatedAsyncioTestCase):
+class VmExecutorFixture(provision.VmProvisionFixture):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.host.calls.clear()
         db = postgres_for_test(self)
+        self.db = db
         self.projects = ProjectStore(db, self.root / "blobs")
         self.jobs = DurableJobStore(db, lease_seconds=60)
         ledger = MessageLedger(db)
@@ -125,6 +127,7 @@ class VmExecutorTests(provision.VmProvisionFixture, unittest.IsolatedAsyncioTest
         )
         f.workspace.mkdir(exist_ok=True)
         f.mounted = False
+        f.used_bytes = MIB
 
         def verify():
             if not f.mounted:
@@ -134,7 +137,7 @@ class VmExecutorTests(provision.VmProvisionFixture, unittest.IsolatedAsyncioTest
                 "mounted": True,
                 "verified": True,
                 "initialization_sealed": True,
-                "used_bytes": MIB,
+                "used_bytes": f.used_bytes,
             }
 
         def unmount():
@@ -170,7 +173,10 @@ class VmExecutorTests(provision.VmProvisionFixture, unittest.IsolatedAsyncioTest
             (self.manager._directory(sid) / "metadata.json").read_text()
         )
         f = self.guest_fixture(sid, metadata)
-        if args[-1] == FILES_PATH:
+        if args[-2:] == [FILES_PATH, "--usage"]:
+            request = json.loads(kwargs["input_bytes"])
+            reply = await asyncio.to_thread(measure, f.gate, request, workspace=f.workspace)
+        elif args[-1] == FILES_PATH:
             request = json.loads(kwargs["input_bytes"])
             reply = await asyncio.to_thread(f.files.operate, request)
             if request["action"] == "dependency_run" and f.runtime.state == "running":
@@ -222,6 +228,7 @@ class VmExecutorTests(provision.VmProvisionFixture, unittest.IsolatedAsyncioTest
             self.scope.key, self.pid, generation=self.project()["workspace_generation"]
         )
 
+class VmExecutorTests(VmExecutorFixture, unittest.IsolatedAsyncioTestCase):
     async def test_full_stop_hibernate_archive_restore_and_dependency_lifecycle(self):
         f = await self.dependency_project()
         first = self.project()["sandbox_id"]

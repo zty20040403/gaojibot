@@ -2452,3 +2452,48 @@ implementation evidence, not a claim that the production App has these features.
   remaining product task integration are still required. M3-M7 are pending.
   No production connection, shared nix-config edit, rebuild or release occurred.
   The user-authored plan is unchanged and excluded; fixture cleanup is automatic.
+
+### M2 VM usage and maintenance scheduler integration
+
+- Added private VM usage sampling and maintenance readiness to the existing
+  PostgreSQL sampler/scheduler. Running guests read filesystem usage and perform
+  bounded locked-recipe rebuildable-data scans under guest admission/IO locks.
+  Active writers and failed scans leave rebuildable bytes unknown, not zero.
+- Stopped/hibernated disks are measured without booting or mounting them. A
+  bounded QEMU read obtains the ext4 superblock; clean state, checksum, UUID,
+  block geometry, image identity, domain state and journal fence must agree.
+  No force-share or repair is used. qcow2 host allocation is not confused with
+  filesystem usage. Deleted archived workspaces require verified retirement;
+  their retained version blobs remain separately charged.
+- Sampling failures keep last-known bytes but reject fresh quota admission.
+  Idle scheduling rechecks ownership and actual guest writers, then uses the
+  existing transactional task/delivery guards and durable lifecycle jobs.
+  Sampling and automatic transitions do not reset real user activity.
+- Added real PostgreSQL integration across active/stopped/hibernated/archived
+  states, including restart-safe scheduling, failed measurement, changing
+  disks/domains, revoked identity, stale epochs, busy writers and unconfirmed
+  file delivery. Native VM/libvirt/mount effects remain explicit fixtures.
+- Initial focused runs exposed fixture-only API/exception mistakes; corrected
+  the DB source/transaction and expected exception types, without weakening
+  tested invariants. The corrected focused run passed 14 tests in 7.973 seconds.
+- Actual utility validation in a disposable local Linux container used 64 MiB
+  ext4 images with 1 KiB/4 KiB blocks and 0%/5% reserved space. Empty and populated
+  usage matched dumpe2fs; image hashes and retained content stayed unchanged;
+  dirty images were rejected. An initial QEMU 7.2 skip/count read returned zero
+  bytes, so the product now reads a fixed 2 KiB prefix instead. Evidence:
+  `.cache/roadmap/m2-vm-usage-image.log`. No mounts, capabilities, Docker socket
+  or active network were available during verification. Temporary images and
+  the fixture container, including installed utility packages, were removed.
+- Final relevant regression: 440 project tests, OK in 93.095 seconds, with
+  ResourceWarning promoted to errors
+  (`.cache/roadmap/m2-vm-usage-regression.log`). Whole-CI Ruff, compileall and
+  whitespace checks passed; no unrelated full repository test run was needed.
+- Nix package/import checks passed on aarch64-darwin
+  (`.cache/roadmap/m2-vm-usage-nix.log`); other architectures were omitted, not
+  tested. Byte comparisons verify the packaged host/guest accounting modules
+  and VM backend match the tested sources.
+- M2 remains incomplete and production-disabled: native full lifecycle,
+  interruption/power-loss and large-transfer acceptance, desktop soft quotas
+  and remaining task/product integration are still required. M3-M7 are pending.
+  No production SSH, shared nix-config edit, rebuild or App release occurred.
+  The user-authored plan remains unchanged and excluded from this checkpoint.

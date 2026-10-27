@@ -6,7 +6,7 @@ import time
 
 from .project_files import ProjectFiles
 from .project_rebuild import BROWSER, GENERIC, classify
-from .project_volumes import ProjectVolumeError
+from .project_volume_journal import ProjectVolumeError
 
 
 def rebuildable_bytes(root, command, *, deadline, max_nodes=1000000):

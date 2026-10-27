@@ -11,6 +11,7 @@ MODULES = (
     "src/sandbox_runtime/project_vm_guest.py", "src/sandbox_runtime/project_vm_gate.py",
     "src/sandbox_runtime/project_vm_file_guest.py",
     "src/sandbox_runtime/project_vm_dependency_guest.py",
+    "src/sandbox_runtime/project_usage.py", "src/sandbox_runtime/project_vm_usage_guest.py",
 )
 
 
