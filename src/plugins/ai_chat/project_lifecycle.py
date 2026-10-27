@@ -11,7 +11,7 @@ import re
 import time
 import uuid
 
-from .projects import ProjectConflict, require_project_lease
+from .projects import ProjectConflict, require_project_lease, require_project_io_idle
 from .project_policy import ProjectPolicy
 
 
@@ -119,6 +119,7 @@ class ProjectLifecycle:
 
     @staticmethod
     def _idle(cursor, project):
+        require_project_io_idle(cursor, project["project_id"])
         if project["locked_task_id"] is not None:
             raise ProjectConflict("Project has an attached task")
         # A failed task is not proof its files are disposable. The task adapter

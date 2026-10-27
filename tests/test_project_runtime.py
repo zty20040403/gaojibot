@@ -94,6 +94,8 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(KIND, self.worker.registered_kinds)
         await asyncio.gather(self.runtime.start(), self.runtime.start())
         self.assertTrue(self.runtime.ready)
+        self.assertIs(self.runtime.io.projects, self.runtime.store)
+        self.assertIs(self.runtime.io.usage, self.runtime.usage)
         self.assertIn(KIND, self.worker.registered_kinds)
         self.assertEqual(self.worker._timeouts[KIND], 3600)
         self.assertEqual(
@@ -121,6 +123,7 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.start()
         self.assertEqual(self.project()["bot_native_user_id"], "301")
         await self.runtime.close()
+        self.assertIsNone(self.runtime.io)
         self.app.job_worker = DurableJobWorker(
             self.jobs, logger=self.logger, worker_id="replacement"
         )

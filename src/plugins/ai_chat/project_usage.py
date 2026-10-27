@@ -69,6 +69,13 @@ class ProjectUsageStore:
                         project_id,
                     ),
                 )
+                # Keep completed writes reserved until measured bytes replace
+                # their estimate in the same scope-locked transaction.
+                cursor.execute(
+                    """UPDATE project_io SET usage_accounted=TRUE WHERE project_id=?
+                    AND state='completed' AND mutating AND NOT usage_accounted""",
+                    (project_id,),
+                )
             else:
                 sample = {}
                 if not error:
@@ -180,40 +187,49 @@ class ProjectUsageStore:
         if type(expected_bytes) is not int or expected_bytes < 0:
             raise ValueError("Invalid project write size")
         now = int(time.time()) if now is None else now
-        code = None
         with self.projects._transaction() as cursor:
             self.projects._scope_lock(cursor, access)
             project = self.projects._get(cursor, access, project_id, edit=True)
-            row = cursor.execute(
-                "SELECT * FROM project_usage WHERE project_id=?", (project_id,)
-            ).fetchone()
-            if not self._fresh(project, row, now):
-                code = "project_usage_unknown"
-            else:
-                code = quota_rejection(
-                    project["used_bytes"],
-                    project["quota_bytes"],
-                    expected_bytes=expected_bytes,
-                    installing_dependencies=installing_dependencies,
-                )
-            if code is None:
-                peers = cursor.execute(
-                    """SELECT p.*,u.complete,u.generation,u.fence,u.sample FROM projects p
-                    LEFT JOIN project_usage u USING(project_id) WHERE p.scope_key=? AND p.status<>'purged'""",
-                    (access.scope.key,),
-                ).fetchall()
-                if any(not self._fresh(peer, peer, now) for peer in peers):
-                    code = "project_scope_usage_unknown"
-            if (
-                code is None
-                and self.projects._scope_bytes(cursor, access.scope.key)
-                + expected_bytes
-                >= cursor.execute(
-                    "SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?",
-                    (access.scope.key,),
-                ).fetchone()[0]
-            ):
-                code = "project_scope_quota_full"
+            self._require(
+                cursor, access, project, expected_bytes=expected_bytes,
+                installing_dependencies=installing_dependencies, now=now,
+            )
+
+    def _require(
+        self, cursor, access, project, *, expected_bytes=0,
+        installing_dependencies=False, scope_reservation=None, now,
+    ):
+        """Admission and a subsequent I/O reservation share one scope transaction."""
+        row = cursor.execute(
+            "SELECT * FROM project_usage WHERE project_id=?", (project["project_id"],)
+        ).fetchone()
+        if not self._fresh(project, row, now):
+            code = "project_usage_unknown"
+        else:
+            code = quota_rejection(
+                project["used_bytes"], project["quota_bytes"],
+                expected_bytes=expected_bytes,
+                installing_dependencies=installing_dependencies,
+            )
+        if code is None:
+            peers = cursor.execute(
+                """SELECT p.*,u.complete,u.generation,u.fence,u.sample FROM projects p
+                LEFT JOIN project_usage u USING(project_id) WHERE p.scope_key=? AND p.status<>'purged'""",
+                (access.scope.key,),
+            ).fetchall()
+            if any(not self._fresh(peer, peer, now) for peer in peers):
+                code = "project_scope_usage_unknown"
+        reserved = self.projects._scope_reserved_bytes(cursor, access.scope.key)
+        if (
+            code is None
+            and self.projects._scope_bytes(cursor, access.scope.key) + reserved
+            + (expected_bytes if scope_reservation is None else scope_reservation)
+            >= cursor.execute(
+                "SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?",
+                (access.scope.key,),
+            ).fetchone()[0]
+        ):
+            code = "project_scope_quota_full"
         if code:
             if self.telemetry is not None:
                 self.telemetry.project_quota_rejections.inc()

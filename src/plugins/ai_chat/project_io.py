@@ -1,0 +1,323 @@
+"""Durable, host-only admission for existing project sandbox tools.
+
+This store never runs commands. A runtime adapter must persist dispatch intent,
+call the existing sandbox executor, and provide observed quiescence before
+releasing a reservation. There is deliberately no time-based lock expiry.
+"""
+
+from dataclasses import dataclass
+import json
+import re
+import time
+import uuid
+
+from .projects import ProjectConflict, require_project_io_idle
+
+
+READ_TOOLS = frozenset(
+    {"sandbox_read_file", "send_file_from_sandbox", "send_image_from_sandbox"}
+)
+WRITE_TOOLS = frozenset({"sandbox_exec", "sandbox_write_file"})
+ACTIVE_STATES = frozenset({"reserved", "dispatched", "needs_attention"})
+
+
+@dataclass(frozen=True)
+class ProjectIOGrant:
+    operation_id: int
+    project_id: int
+    token: str
+
+
+class ProjectIOStore:
+    def __init__(self, projects, usage):
+        if usage.projects is not projects:
+            raise ValueError("Project accounting must use the same transaction owner")
+        self.projects, self.usage = projects, usage
+
+    @staticmethod
+    def _grant(row):
+        return ProjectIOGrant(row["operation_id"], row["project_id"], row["token"])
+
+    def admit(
+        self,
+        access,
+        project_id,
+        tool_name,
+        *,
+        request_key,
+        arguments_sha256,
+        expected_version,
+        expected_bytes=0,
+        installing_dependencies=False,
+        now=None,
+    ):
+        if (
+            not isinstance(tool_name, str)
+            or tool_name not in READ_TOOLS | WRITE_TOOLS
+            or any(
+                not isinstance(v, str) or not re.fullmatch(r"[a-f0-9]{64}", v)
+                for v in (request_key, arguments_sha256)
+            )
+            or type(expected_bytes) is not int
+            or expected_bytes < 0
+            or type(expected_version) is not int
+            or expected_version <= 0
+            or type(installing_dependencies) is not bool
+            or (tool_name in READ_TOOLS and (expected_bytes or installing_dependencies))
+            or (tool_name != "sandbox_exec" and installing_dependencies)
+        ):
+            raise ValueError("Invalid project tool admission")
+        now = int(time.time()) if now is None else now
+        mutating = tool_name in WRITE_TOOLS
+        with self.projects._transaction() as cursor:
+            self.projects._scope_lock(cursor, access)
+            project = self.projects._get(cursor, access, project_id)
+            if (
+                not project["bot_native_user_id"]
+                or project["bot_native_user_id"] != access.scope.bot_native_user_id
+            ):
+                raise PermissionError("Project requires an account binding")
+            prior = cursor.execute(
+                "SELECT * FROM project_io WHERE project_id=? AND request_key=?",
+                (project_id, request_key),
+            ).fetchone()
+            if prior:
+                if (
+                    prior["actor_principal_id"] != access.principal_id
+                    or prior["tool_name"] != tool_name
+                    or prior["arguments_sha256"] != arguments_sha256
+                ):
+                    raise ProjectConflict("Project operation identity was reused")
+                return self._grant(prior)
+            if mutating:
+                self.projects._editor(cursor, access, project)
+            require_project_io_idle(cursor, project_id)
+            focus = self.projects._current(cursor, access, now)
+            if focus is None or focus["project_id"] != project_id:
+                raise ProjectConflict("Current project changed or expired")
+            if (
+                project["version"] != expected_version
+                or project["status"] != "active"
+                or not project["sandbox_id"]
+                or project["workspace_generation"] <= 0
+                or project["lifecycle_job_id"] is not None
+                or project["locked_task_id"] is not None
+            ):
+                raise ProjectConflict("Project workspace is not ready for tools")
+            # Shell commands have unknown write size. Reserve all remaining
+            # project capacity at the scope level, not a made-up byte estimate.
+            reserved = (
+                max(0, project["quota_bytes"] - project["used_bytes"])
+                if tool_name == "sandbox_exec"
+                else expected_bytes
+            )
+            if mutating:
+                self.usage._require(
+                    cursor,
+                    access,
+                    project,
+                    expected_bytes=expected_bytes,
+                    installing_dependencies=installing_dependencies,
+                    scope_reservation=reserved,
+                    now=now,
+                )
+            row = cursor.execute(
+                """INSERT INTO project_io(project_id,actor_principal_id,request_key,token,
+                tool_name,arguments_sha256,sandbox_id,generation,fence,mutating,reserved_bytes,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+                (
+                    project_id,
+                    access.principal_id,
+                    request_key,
+                    uuid.uuid4().hex,
+                    tool_name,
+                    arguments_sha256,
+                    project["sandbox_id"],
+                    project["workspace_generation"],
+                    project["lifecycle_fence"],
+                    mutating,
+                    reserved,
+                    now,
+                    now,
+                ),
+            ).fetchone()
+            self.projects._touch_focus(cursor, access, project_id, now)
+            cursor.execute(
+                "UPDATE projects SET last_active_at=? WHERE project_id=?",
+                (now, project_id),
+            )
+            self.projects._event(
+                cursor,
+                project_id,
+                access,
+                "tool_reserved",
+                {"operation_id": row["operation_id"], "tool": tool_name},
+                now,
+            )
+            return self._grant(row)
+
+    def _owned(self, cursor, grant):
+        if not isinstance(grant, ProjectIOGrant):
+            raise PermissionError("A host-owned project operation grant is required")
+        scope = cursor.execute(
+            "SELECT scope_key FROM projects WHERE project_id=?", (grant.project_id,)
+        ).fetchone()
+        if scope is None:
+            raise PermissionError("Project operation grant does not match")
+        # State changes and usage invalidation are atomic with peer admission:
+        # scope first, then project, then operation.
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(?,0))",
+            ("project-scope:" + scope["scope_key"],),
+        )
+        project = cursor.execute(
+            "SELECT * FROM projects WHERE project_id=? FOR UPDATE", (grant.project_id,)
+        ).fetchone()
+        row = cursor.execute(
+            "SELECT * FROM project_io WHERE operation_id=? AND project_id=? FOR UPDATE",
+            (grant.operation_id, grant.project_id),
+        ).fetchone()
+        if project is None or row is None or row["token"] != grant.token:
+            raise PermissionError("Project operation grant does not match")
+        return dict(project), dict(row)
+
+    def dispatch(self, access, grant, *, now=None):
+        """Return the frozen physical target exactly once, before starting I/O."""
+        now = int(time.time()) if now is None else now
+        with self.projects._transaction() as cursor:
+            self.projects._scope_lock(cursor, access)
+            project = self.projects._get(cursor, access, grant.project_id)
+            if (
+                not project["bot_native_user_id"]
+                or project["bot_native_user_id"] != access.scope.bot_native_user_id
+            ):
+                raise PermissionError("Project account binding changed")
+            _, row = self._owned(cursor, grant)
+            if row["actor_principal_id"] != access.principal_id:
+                raise PermissionError("Project operation belongs to another actor")
+            if row["mutating"]:
+                self.projects._editor(cursor, access, project)
+            if (
+                row["state"] != "reserved"
+                or project["status"] != "active"
+                or project["lifecycle_job_id"] is not None
+                or project["locked_task_id"] is not None
+                or project["sandbox_id"] != row["sandbox_id"]
+                or project["workspace_generation"] != row["generation"]
+                or project["lifecycle_fence"] != row["fence"]
+            ):
+                raise ProjectConflict(
+                    "Project operation cannot be dispatched again or to a changed workspace"
+                )
+            cursor.execute(
+                "UPDATE project_io SET state='dispatched',updated_at=? WHERE operation_id=?",
+                (now, grant.operation_id),
+            )
+            return {
+                "owner": project["scope_key"],
+                "sandbox_id": row["sandbox_id"],
+                "project_id": grant.project_id,
+                "generation": row["generation"],
+                "fence": row["fence"],
+            }
+
+    def uncertain(self, grant, *, now=None):
+        now = int(time.time()) if now is None else now
+        with self.projects._transaction() as cursor:
+            _, row = self._owned(cursor, grant)
+            if row["state"] not in {"dispatched", "needs_attention"}:
+                raise ProjectConflict(
+                    "Only dispatched operations have uncertain effects"
+                )
+            cursor.execute(
+                "UPDATE project_io SET state='needs_attention',updated_at=? WHERE operation_id=?",
+                (now, grant.operation_id),
+            )
+
+    def abort(self, grant, *, now=None):
+        """Safe only before dispatch intent; never cancels an already running command."""
+        now = int(time.time()) if now is None else now
+        with self.projects._transaction() as cursor:
+            _, row = self._owned(cursor, grant)
+            if row["state"] not in {"reserved", "aborted"}:
+                raise ProjectConflict(
+                    "Dispatched effects need reconciliation, not automatic unlock"
+                )
+            cursor.execute(
+                "UPDATE project_io SET state='aborted',updated_at=? WHERE operation_id=?",
+                (now, grant.operation_id),
+            )
+
+    def complete(self, grant, result, evidence, *, now=None):
+        """Only the runtime adapter may supply an actual, quiescent helper receipt."""
+        if (
+            not isinstance(result, dict)
+            or len(json.dumps(result).encode()) > 512 * 1024
+        ):
+            raise ValueError("Project tool receipt exceeds its limit")
+        now = int(time.time()) if now is None else now
+        with self.projects._transaction() as cursor:
+            project, row = self._owned(cursor, grant)
+            expected = {
+                "sandbox_id": row["sandbox_id"],
+                "project_id": grant.project_id,
+                "generation": row["generation"],
+                "fence": row["fence"],
+                "pending": False,
+                "quiescent": True,
+            }
+            if (
+                not isinstance(evidence, dict)
+                or evidence != expected
+                or any(type(evidence[k]) is not type(v) for k, v in expected.items())
+            ):
+                raise ProjectConflict(
+                    "Project completion lacks matching quiescent evidence"
+                )
+            if row["state"] == "completed":
+                if row["result"] != result or row["evidence"] != evidence:
+                    raise ProjectConflict("Project receipt changed on replay")
+                return
+            if (
+                row["state"] not in {"dispatched", "needs_attention"}
+                or project["sandbox_id"] != row["sandbox_id"]
+                or project["workspace_generation"] != row["generation"]
+                or project["lifecycle_fence"] != row["fence"]
+            ):
+                raise ProjectConflict(
+                    "Cannot settle an undispatched or replaced workspace"
+                )
+            cursor.execute(
+                """UPDATE project_io SET state='completed',result=?::jsonb,evidence=?::jsonb,updated_at=?
+                           WHERE operation_id=?""",
+                (json.dumps(result), json.dumps(evidence), now, grant.operation_id),
+            )
+            cursor.execute(
+                "UPDATE projects SET last_active_at=?,updated_at=?,version=version+? WHERE project_id=?",
+                (now, now, int(row["mutating"]), grant.project_id),
+            )
+            if row["mutating"]:
+                cursor.execute(
+                    "UPDATE project_usage SET complete=FALSE,error='tool_write_requires_sample' WHERE project_id=?",
+                    (grant.project_id,),
+                )
+
+    def receipt(self, access, grant):
+        with self.projects._transaction() as cursor:
+            self.projects._scope_lock(cursor, access)
+            project = self.projects._get(cursor, access, grant.project_id)
+            if (
+                not project["bot_native_user_id"]
+                or project["bot_native_user_id"] != access.scope.bot_native_user_id
+            ):
+                raise PermissionError("Project account binding changed")
+            _, row = self._owned(cursor, grant)
+            if row["actor_principal_id"] != access.principal_id:
+                raise PermissionError("Project operation belongs to another actor")
+            return {
+                "operation_id": row["operation_id"],
+                "state": row["state"],
+                "tool": row["tool_name"],
+                "result": row["result"],
+                "updated_at": row["updated_at"],
+            }

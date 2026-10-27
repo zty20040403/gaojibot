@@ -856,6 +856,34 @@ membership is checked before/after reading and concurrent focus/revision
 changes discard the stale result; unavailable membership reports unavailable
 context without revealing project data.
 
+### Durable project tool admission
+
+`ProjectRuntime.io` composes `ProjectIOStore` over the same project/usage store.
+Migration `0049_project_io` records the actor, argument digest, physical
+workspace identity and a private host grant before any dispatch. Only one
+operation may be active per project, enforced in PostgreSQL. Lifecycle changes
+and snapshots refuse an active or unconfirmed operation. A restart or elapsed
+timeout never counts as proof that a command stopped.
+
+Admission requires current focus, account binding and membership, plus editor
+rights and fresh usage for writes. Shell execution reserves remaining project
+capacity; file writes reserve their expected bytes. Scope locking serializes
+admission, cancellation and completion across projects so two workers cannot
+spend the same capacity. Snapshot staging/publication and quota reductions use
+the same reservations. Completing a write invalidates usage and retains its
+capacity estimate until a successful measurement atomically replaces it;
+measurement failure does not falsely release that space.
+
+Dispatch is once-only. Pre-dispatch reservations can be aborted, but dispatched
+effects require matching quiescent backend evidence to settle. Exact completion
+replay is harmless and cannot unlock a newer operation. Migration downgrade
+refuses to discard even completed/aborted operation receipts.
+
+This is a host-only store, not an execution adapter: ordinary sandbox tools do
+not use it yet, and physical receipt/recovery integration remains pending. The
+PostgreSQL tests supply explicit fixture observations; they do not prove real
+command cancellation, helper restart recovery or QQ file delivery.
+
 This is not the complete M3 interface. Snapshot/restore/delete/preview tools,
 automatic project routing of existing sandbox/browser tools, live workspace
 notes, Sub-Agent baselines and accepted-version publication, shared

@@ -16,6 +16,7 @@ from .observability import telemetry
 from .project_executor import DockerProjectBackend, ProjectLifecycleExecutor, _store
 from .project_file_executor import ProjectFileExecutor
 from .project_lifecycle import KIND, ProjectLifecycle
+from .project_io import ProjectIOStore
 from .project_maintenance import ProjectMaintenance
 from .project_policy import DAY, ProjectPolicy
 from .project_usage import ProjectUsageSampler, ProjectUsageStore
@@ -81,6 +82,7 @@ class ProjectRuntime:
                 "Projects require available database, ledger, jobs and Outbox stores"
             )
         self.store = None
+        self.io = None
         self.backends = {}
         self.ready = False
         self.closed = False
@@ -226,6 +228,7 @@ class ProjectRuntime:
                 self.usage = ProjectUsageStore(
                     self.store, self.app.delivery_store, telemetry=telemetry
                 )
+                self.io = ProjectIOStore(self.store, self.usage)
                 self.executor = ProjectLifecycleExecutor(
                     self.lifecycle,
                     self.backends,
@@ -281,6 +284,7 @@ class ProjectRuntime:
     async def close(self):
         self.ready, self.closed = False, True
         self._stop.set()
+        self.io = None
         if self.store is not None:
             await _store(self.store.close)
             self.store = None

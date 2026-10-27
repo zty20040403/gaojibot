@@ -37,6 +37,14 @@ class ProjectQuotaExceeded(ValueError):
     pass
 
 
+def require_project_io_idle(cursor, project_id):
+    if cursor.execute(
+        """SELECT 1 FROM project_io WHERE project_id=?
+        AND state IN ('reserved','dispatched','needs_attention')""", (project_id,),
+    ).fetchone() is not None:
+        raise ProjectConflict("Project has an active or unconfirmed tool operation")
+
+
 def require_project_lease(cursor, project, job, now=None):
     """Host-only continuation guard; a job ID alone is never an authorization."""
     now = int(time.time()) if now is None else now
@@ -172,13 +180,9 @@ class ProjectStore:
             raise PermissionError("Private projects are owner-only")
         if owner and not (is_owner or access.admin):
             raise PermissionError("Project owner permission required")
-        if edit and not (is_owner or access.admin):
-            member = cursor.execute(
-                "SELECT role FROM project_members WHERE project_id=? AND principal_id=?",
-                (project_id, access.principal_id),
-            ).fetchone()
-            if member is None or member["role"] != "editor":
-                raise PermissionError("Project editor permission required")
+        if edit:
+            ProjectStore._editor(cursor, access, row)
+            require_project_io_idle(cursor, project_id)
         if expected is not None and row["version"] != expected:
             raise ProjectConflict("Project changed; reload its current version")
         if edit and row["locked_task_id"] is not None:
@@ -186,6 +190,17 @@ class ProjectStore:
         if edit and (row["lifecycle_job_id"] is not None or lifecycle_job is not None):
             require_project_lease(cursor, row, lifecycle_job, now)
         return dict(row)
+
+    @staticmethod
+    def _editor(cursor, access, project):
+        if project["creator_principal_id"] == access.principal_id or access.admin:
+            return
+        member = cursor.execute(
+            "SELECT role FROM project_members WHERE project_id=? AND principal_id=?",
+            (project["project_id"], access.principal_id),
+        ).fetchone()
+        if member is None or member["role"] != "editor":
+            raise PermissionError("Project editor permission required")
 
     @staticmethod
     def _event(cursor, project_id, access, kind, payload, now):
@@ -546,6 +561,16 @@ class ProjectStore:
             ).fetchone()[0]
         )
 
+    @staticmethod
+    def _scope_reserved_bytes(cursor, scope_key):
+        return int(cursor.execute(
+            """SELECT coalesce(sum(i.reserved_bytes),0) FROM project_io i
+            JOIN projects p USING(project_id) WHERE p.scope_key=?
+            AND (i.state IN ('reserved','dispatched','needs_attention')
+            OR (i.state='completed' AND i.mutating AND NOT i.usage_accounted))""",
+            (scope_key,),
+        ).fetchone()[0])
+
     def snapshot(
         self,
         access,
@@ -747,7 +772,10 @@ class ProjectStore:
                 "SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?",
                 (access.scope.key,),
             ).fetchone()[0]
-            if self._scope_bytes(cursor, access.scope.key) > limit:
+            if (
+                self._scope_bytes(cursor, access.scope.key)
+                + self._scope_reserved_bytes(cursor, access.scope.key) > limit
+            ):
                 raise ProjectQuotaExceeded(
                     "Conversation retained data exceeds its quota"
                 )
@@ -843,7 +871,10 @@ class ProjectStore:
                 "SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?",
                 (access.scope.key,),
             ).fetchone()[0]
-            if self._scope_bytes(cursor, access.scope.key) > limit:
+            if (
+                self._scope_bytes(cursor, access.scope.key)
+                + self._scope_reserved_bytes(cursor, access.scope.key) > limit
+            ):
                 raise ProjectQuotaExceeded(
                     "Staged snapshot exceeds conversation capacity"
                 )
@@ -1033,8 +1064,11 @@ class ProjectStore:
             ).fetchone()
             if limits is None or limits["version"] != expected_version:
                 raise ProjectConflict("Conversation quota changed")
-            if self._scope_bytes(cursor, access.scope.key) > quota_bytes:
-                raise ProjectQuotaExceeded("Quota is below retained conversation data")
+            if (
+                self._scope_bytes(cursor, access.scope.key)
+                + self._scope_reserved_bytes(cursor, access.scope.key) > quota_bytes
+            ):
+                raise ProjectQuotaExceeded("Quota is below retained or reserved conversation data")
             cursor.execute(
                 """UPDATE project_scope_limits SET quota_bytes=?,max_projects=?,version=version+1
                 WHERE scope_key=?""",

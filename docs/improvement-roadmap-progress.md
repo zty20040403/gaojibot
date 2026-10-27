@@ -2667,3 +2667,31 @@ implementation evidence, not a claim that the production App has these features.
   cross-platform ownership still need integration. M2 native acceptance and
   M4-M7 remain open. No shared nix-config change, server connection, deployment,
   App release or alteration to the user-authored plan occurred.
+
+### M3 durable project I/O admission
+
+- Added `0049_project_io` and runtime composition of a host-only admission
+  store. Actor/account/focus/editor checks, immutable request identity and a
+  partial unique index prevent overlapping project operations. Active and
+  uncertain operations block lifecycle maintenance, snapshots and metadata
+  edits. Revocation remains possible while work is reserved.
+- Dispatch is once-only; restart does not clear a lock. Only observed matching
+  quiescence may settle dispatched effects. Replaying an old result cannot
+  unlock newer work. Nonempty operation history blocks destructive downgrade.
+- Scope transactions account for peer reservations. Review caught a completion
+  race with peer admission; completion now holds the same scope lock through
+  state changes and usage invalidation. Snapshot staging/publication and quota
+  reductions also count reservations. Completed writes retain their estimate
+  until successful remeasurement, so a failed sample cannot release capacity.
+- Focused PostgreSQL/runtime regression: 104 tests passed in 26.775 seconds,
+  ResourceWarnings treated as errors (`.cache/roadmap/m3-project-io-verified.log`).
+  Covers concurrent lifecycle/admission, peer capacity, reopened stores,
+  revoked access, mismatched evidence and migration round-trip/refusal.
+- Whole-CI Ruff, compileall and whitespace checks passed. Nix package/import
+  checks passed on aarch64-darwin (`.cache/roadmap/m3-project-io-nix.log`);
+  incompatible architectures were omitted, not verified.
+- This is not ordinary chat tool routing or physical recovery acceptance.
+  Backend receipt/reconciliation and registry execution adapters remain next,
+  followed by the other M3 interfaces. Projects stay default-disabled; M2
+  native acceptance and M4-M7 remain incomplete. No production, shared
+  nix-config, live QQ/model, App release or user-plan changes.
