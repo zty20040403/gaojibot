@@ -16,6 +16,7 @@ import time
 from typing import Iterable
 
 from src.bot_storage import DatabaseSource, open_store_connection
+from src.project_content import manifest_bytes
 from .conversation_scope import ConversationScope
 from .project_blobs import (
     GC_GRACE_SECONDS,
@@ -61,6 +62,16 @@ class ProjectAccess:
     principal_id: int
     member: bool = False
     admin: bool = False
+
+
+@dataclass(frozen=True)
+class StagedProjectFile:
+    """Private lifecycle reference; never accepted from an HTTP/model request."""
+
+    path: str
+    sha256: str
+    size: int
+    mode: int
 
 
 def validate_project_access(cursor, access: ProjectAccess):
@@ -424,7 +435,9 @@ class ProjectStore:
             cursor.execute(
                 """SELECT COALESCE((SELECT sum(used_bytes) FROM projects WHERE scope_key=?),0)
             + COALESCE((SELECT sum(b.byte_size) FROM project_blobs b JOIN
-            (SELECT DISTINCT r.project_id,r.sha256 FROM project_version_blobs r JOIN projects p USING(project_id)
+            (SELECT DISTINCT r.project_id,r.sha256 FROM
+                (SELECT project_id,sha256 FROM project_version_blobs UNION
+                 SELECT project_id,sha256 FROM project_snapshot_staging) r JOIN projects p USING(project_id)
              WHERE p.scope_key=?) refs USING(sha256)),0)""",
                 (scope_key, scope_key),
             ).fetchone()[0]
@@ -443,6 +456,7 @@ class ProjectStore:
         now=None,
         force_version=False,
         lifecycle_job=None,
+        staged_manifest_sha256=None,
     ):
         supplied_now = now
         now = int(time.time()) if now is None else now
@@ -496,7 +510,34 @@ class ProjectStore:
                 if item.mode not in (0o644, 0o755) or folded in names:
                     raise ValueError("Duplicate path or unsafe file mode")
                 names.add(folded)
-                blob = self.blobs.put(item.content)
+                if isinstance(item, StagedProjectFile):
+                    if lifecycle_job is None or not staged_manifest_sha256:
+                        raise PermissionError(
+                            "Staged snapshots require a leased lifecycle"
+                        )
+                    staged = cursor.execute(
+                        """SELECT s.*,b.storage_path FROM project_snapshot_staging s JOIN project_blobs b USING(sha256)
+                        WHERE s.job_id=? AND s.project_id=? AND s.path=? AND s.manifest_sha256=?""",
+                        (
+                            lifecycle_job.job_id,
+                            project_id,
+                            name,
+                            staged_manifest_sha256,
+                        ),
+                    ).fetchone()
+                    if staged is None or (
+                        staged["sha256"],
+                        staged["byte_size"],
+                        staged["mode"],
+                    ) != (item.sha256, item.size, item.mode):
+                        raise ProjectConflict(
+                            "Staged file belongs to another snapshot or is incomplete"
+                        )
+                    blob = self.blobs.reference(staged["sha256"], staged["byte_size"])
+                    if blob.storage_path != staged["storage_path"]:
+                        raise ProjectConflict("Staged object location changed")
+                else:
+                    blob = self.blobs.put(item.content)
                 total += blob.byte_size
                 if total > row["quota_bytes"]:
                     raise ProjectQuotaExceeded("Retained files exceed project quota")
@@ -521,6 +562,13 @@ class ProjectStore:
                 {"format": 1, "files": manifest}, sort_keys=True, separators=(",", ":")
             ).encode()
             blob = self.blobs.put(encoded)
+            if (
+                staged_manifest_sha256 is not None
+                and blob.sha256 != staged_manifest_sha256
+            ):
+                raise ProjectConflict(
+                    "Published snapshot differs from its observed manifest"
+                )
             self._register_blob(cursor, blob, now)
             digests.add(blob.sha256)
             previous = cursor.execute(
@@ -557,6 +605,10 @@ class ProjectStore:
                 self._touch_focus(cursor, access, project_id, now)
                 if lifecycle_job is not None:
                     require_project_lease(cursor, row, lifecycle_job, supplied_now)
+                    cursor.execute(
+                        "DELETE FROM project_snapshot_staging WHERE job_id=?",
+                        (lifecycle_job.job_id,),
+                    )
                 return dict(previous)
             version = 1 if previous is None else previous["version_no"] + 1
             record = cursor.execute(
@@ -608,7 +660,104 @@ class ProjectStore:
             )
             if lifecycle_job is not None:
                 require_project_lease(cursor, row, lifecycle_job, supplied_now)
+                cursor.execute(
+                    "DELETE FROM project_snapshot_staging WHERE job_id=?",
+                    (lifecycle_job.job_id,),
+                )
             return dict(record)
+
+    def stage_snapshot_file(
+        self, access, project_id, job, item, content, *, manifest_sha256
+    ):
+        """Stream one immutable object without holding the job row/heartbeat lock.
+
+        The final transaction rechecks the lease. Unpublished objects remain
+        private and are protected from GC by the staging reference.
+        """
+        manifest_bytes({"format": 1, "files": [item]}, quota_bytes=256 * 1024 * 1024)
+        if len(manifest_sha256) != 64 or any(
+            c not in "0123456789abcdef" for c in manifest_sha256
+        ):
+            raise ValueError("Invalid staged manifest digest")
+        with self._transaction() as cursor:
+            self._scope_lock(cursor, access)
+            self._get(cursor, access, project_id, edit=True, lifecycle_job=job)
+            self._pending_snapshot(cursor, project_id, job)
+        with self._transaction() as cursor:
+            self._scope_lock(cursor, access)
+            self._blob_lock(cursor)
+            previous = cursor.execute(
+                "SELECT * FROM project_snapshot_staging WHERE job_id=? AND path=?",
+                (job.job_id, item["path"]),
+            ).fetchone()
+            if previous is not None:
+                if (
+                    previous["project_id"],
+                    previous["manifest_sha256"],
+                    previous["sha256"],
+                    previous["byte_size"],
+                    previous["mode"],
+                ) != (
+                    project_id,
+                    manifest_sha256,
+                    item["sha256"],
+                    item["size"],
+                    item["mode"],
+                ):
+                    raise ProjectConflict("Staged snapshot identity changed")
+                self.blobs.verify(item["sha256"], item["size"])
+                blob = None
+            else:
+                blob = self.blobs.put(content)
+                if (blob.sha256, blob.byte_size) != (item["sha256"], item["size"]):
+                    raise ProjectConflict("Transferred project file checksum failed")
+            # Only now lock the project and job rows, so streaming cannot starve
+            # lease renewal. Scope + blob locks preserve publication/GC ordering.
+            row = self._get(cursor, access, project_id, edit=True, lifecycle_job=job)
+            self._pending_snapshot(cursor, project_id, job)
+            if blob is not None:
+                self._register_blob(cursor, blob, int(time.time()))
+                cursor.execute(
+                    """INSERT INTO project_snapshot_staging
+                    (job_id,path,project_id,sha256,manifest_sha256,byte_size,mode,created_at)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        job.job_id,
+                        item["path"],
+                        project_id,
+                        blob.sha256,
+                        manifest_sha256,
+                        item["size"],
+                        item["mode"],
+                        int(time.time()),
+                    ),
+                )
+            limit = cursor.execute(
+                "SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?",
+                (access.scope.key,),
+            ).fetchone()[0]
+            if self._scope_bytes(cursor, access.scope.key) > limit:
+                raise ProjectQuotaExceeded(
+                    "Staged snapshot exceeds conversation capacity"
+                )
+            require_project_lease(cursor, row, job)
+        return StagedProjectFile(
+            item["path"], item["sha256"], item["size"], item["mode"]
+        )
+
+    @staticmethod
+    def _pending_snapshot(cursor, project_id, job):
+        if (
+            cursor.execute(
+                """SELECT 1 FROM project_lifecycle_runs r JOIN project_lifecycle_steps s
+            ON s.job_id=r.job_id AND s.step_index=r.next_step WHERE r.job_id=? AND r.project_id=?
+            AND r.status='running' AND s.status='pending' AND s.operation='snapshot_workspace'
+            AND s.dispatch_lease=?""",
+                (job.job_id, project_id, job.lease_generation),
+            ).fetchone()
+            is None
+        ):
+            raise ProjectConflict("No leased snapshot transfer is pending")
 
     def versions(self, access, project_id):
         with self._transaction() as cursor:
@@ -800,10 +949,16 @@ class ProjectStore:
         deleted = []
         with self._transaction() as cursor:
             self._blob_lock(cursor)
+            cursor.execute(
+                """DELETE FROM project_snapshot_staging s USING durable_jobs j
+                WHERE s.job_id=j.job_id AND j.status IN ('failed','cancelled','succeeded') AND j.updated_at<=?""",
+                (now - GC_GRACE_SECONDS,),
+            )
             rows = cursor.execute(
                 """SELECT sha256 FROM project_blobs b WHERE unreferenced_since<=?
                 AND NOT EXISTS(SELECT 1 FROM project_version_blobs r WHERE r.sha256=b.sha256)
                 AND NOT EXISTS(SELECT 1 FROM project_versions v WHERE v.manifest_sha256=b.sha256)
+                AND NOT EXISTS(SELECT 1 FROM project_snapshot_staging s WHERE s.sha256=b.sha256)
                 ORDER BY unreferenced_since LIMIT ? FOR UPDATE""",
                 (now - GC_GRACE_SECONDS, min(max(limit, 1), 1000)),
             ).fetchall()

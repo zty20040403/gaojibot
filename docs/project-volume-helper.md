@@ -2,7 +2,7 @@
 
 M2 work in progress. This is a private helper primitive, not a public project
 feature. `serve()` does not construct `ProjectVolumes`, so an ordinary installed
-runner continues to reject every `project_volume_*` and `project_workspace_*`
+runner continues to reject every `project_volume_*`, `project_workspace_*` and `project_files_*`
 request. Desktop isolation,
 existing task/shell sandboxes and production configuration are unchanged.
 
@@ -172,7 +172,7 @@ and final removal of owned containers, loops, mounts and cache volume.
 Use `tools/verify_project_native_vm.py --product-helper` with the existing
 Ubuntu/NixOS fixture assets. The ISO needs `python-worker.tar` (a local exported
 `python:3.12-slim`) and `workspace.tar` containing `src/__init__.py`,
-`src/storage_admission.py`, `src/local_runtime/`, `src/sandbox_runtime/`,
+`src/storage_admission.py`, `src/project_content.py`, `src/local_runtime/`, `src/sandbox_runtime/`,
 `verify_project_workspace_native.py` and `project-worker/` from
 `tools/fixtures/project-worker/`. Exclude bytecode caches. The tar preserves
 module filenames and permissions even with ISO9660 readers. The fixture image
@@ -220,8 +220,9 @@ not be mistaken for a complete compensator.
 
 Remaining lifecycle integration includes physical adapters, automatic idle
 scheduling, rebuild/lockfile rules, retention sampling, trash/purge, and recovery
-UI. In particular, hibernated snapshots need a read-only export path without
-starting an application writer. Do not register `project.lifecycle` as a worker
+UI. Hibernated snapshots now have a private offline export path without
+starting an application writer; dependency pruning/rebuild remains unavailable.
+Do not register `project.lifecycle` as a worker
 kind until these adapters honor every persisted step and independently verify
 the resulting state.
 
@@ -262,10 +263,11 @@ Bot startup still do not enable this project executor.
 
 **Available now:** private OCI create/reserve/mount/start/release/verify dispatch,
 including durable takeover. Stop/remove/trim/unmount/delete primitives are wired,
-but a whole plan is preflighted before its first mutation. Snapshot, restore,
-dependency pruning and reconstruction require a retained-file adapter that is
-not yet implemented. Accordingly stop/hibernate/archive and version restoration
-are rejected before touching containers when that adapter is absent. VM plans,
+but a whole plan is preflighted before its first mutation. The explicit file
+adapter below enables stopped-workspace snapshots and retained-version restore.
+Without it, plans needing files are refused before touching containers.
+Dependency pruning and reconstruction remain unavailable, so hibernate and
+archive plans needing those steps still fail preflight. VM plans,
 old protocol-1 plans and malformed reservations also fail preflight; old pending
 plans must be explicitly reconciled, not silently rewritten or unlocked.
 
@@ -273,6 +275,48 @@ The 100-test focused checkpoint uses real PostgreSQL and Unix sockets with
 explicit Docker/kernel fixtures. It proves control-plane composition and race
 handling, not native filesystem semantics or completed M2 acceptance. Previous
 native reboot evidence covers the helper before this reservation addition.
+
+## Offline retained-file checkpoint
+
+`DockerProjectFiles` is an explicitly supplied adapter, not a registered tool or
+startup handler. It implements only `snapshot_workspace` and `restore_version`.
+The private `project_files_*` RPCs require the current owner, generation, fence
+and maintenance reservation; they accept file indexes, never host paths.
+
+- Snapshot requires a stopped, identity-verified container or no container at
+  all. The helper enumerates the mounted tree with descriptor-relative access,
+  rejects symlinks, hard links, special files and nested filesystems, and records
+  hashes plus file identities. It ignores only an empty root `lost+found`.
+- Manifests are canonical and paginated (128 entries); binary payloads are at
+  most 1 MiB and obey the smaller configured transfer limit. Limits remain
+  256 MiB per file, 20,000 files and the project quota. No archive extraction,
+  writable container or temporary full-tree copy is used for export.
+- Migration 0045 records private staged snapshot references. Bytes stream to
+  immutable objects without holding the queue job row, allowing heartbeat
+  renewal. Each completed file is checksum-verified and rechecks the lease
+  before its reference commits. Staging counts toward scope quota and protects
+  objects from GC. Takeover verifies and reuses completed objects.
+- Before version publication the helper freshly checks the complete source
+  tree; the store rechecks access, lease, manifest and staged object metadata.
+  Publishing the version and removing its staging rows is one transaction.
+- Restore accepts only an empty, never-started volume and a pinned manifest.
+  Chunks append or replay identical bytes, never silently overwrite different
+  bytes. A restart resumes the same generation/fence and verifies every final
+  file hash. Missing/extra files prevent completion; unrelated files are kept.
+- `restore_finish` records the complete-tree check, then `restore_check` repeats
+  the observation as an uncached read before container startup. A replayed
+  mutation receipt alone is not proof the tree still matches. Empty files and
+  executable modes are preserved; arbitrary ownership/special modes are not.
+- Partial restores remain reserved and unstarted. The private upload contains
+  only the bounded manifest, removed on completion. Unexpected linked upload
+  files are refused before truncation. Failure does not delete source files,
+  discard reservations or pretend a version was published.
+
+This checkpoint retains all ordinary files; it does not yet classify rebuildable
+dependencies or handle their symlinks. Such a tree currently blocks the snapshot
+rather than losing files. The local file/RPC/PostgreSQL tests use simulated
+mounts and Docker; they are not native Linux acceptance. No project tools, UI or
+production worker are enabled by these changes.
 
 ## Evidence and remaining gates
 
@@ -302,8 +346,9 @@ Before enabling this helper, M2 still needs:
   reservation and delayed-execution composition still require native acceptance.
 - PostgreSQL lifecycle jobs/fences, active-task/delivery protection, snapshot
   publication, generation journals and reserved OCI dispatch have local
-  PostgreSQL/Unix RPC coverage. Retained-file execution, complete task admission,
-  rebuildable-data cleanup, compensation and version retention still need
+  PostgreSQL/Unix RPC coverage. Offline retained-file snapshot/restore now has
+  local coverage too. Complete task admission, rebuildable-data cleanup,
+  compensation and version retention still need
   integration and native acceptance. Do not clear a tombstone or reset a fence
   to work around a failed restore.
 - Desktop soft-quota monitoring and cancellation, plus VM project-disk/discard

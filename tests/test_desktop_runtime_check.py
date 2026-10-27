@@ -3,10 +3,40 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
 from src.local_runtime.runtime_check import ROOT_FILES, verify_sources
+
+
+class ControllerImportsTests(unittest.TestCase):
+    def test_controller_recipe_includes_transitive_stdlib_modules(self):
+        source = Path(__file__).resolve().parents[1]
+        recipe = (source / "packaging/server/Desktop.Dockerfile").read_text()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for line in recipe.splitlines():
+                if not line.startswith("COPY src/"):
+                    continue
+                _, *inputs, destination = shlex.split(line)
+                target = root / destination
+                for item in inputs:
+                    path = source / item
+                    if path.is_dir():
+                        shutil.copytree(path, target, ignore=shutil.ignore_patterns("__pycache__"))
+                    else:
+                        target.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(path, target / path.name)
+            result = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c",
+                 "import sys; sys.path.insert(0, '.'); import src.local_runtime.desktop; import src.sandbox_runtime.server"],
+                cwd=root, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class RuntimeManifestTests(unittest.TestCase):

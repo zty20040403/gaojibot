@@ -190,6 +190,18 @@ class SandboxRunner:
                         "max_file_bytes": self.manager.max_file_bytes, "active_operations": len(self.inflight)}
                 data['project_volumes_enabled'] = self.project_volumes is not None
                 data['project_workspaces_enabled'] = self.manager.project_workspaces is not None
+            elif method.startswith('project_files_'):
+                if self.manager.project_workspaces is None:
+                    raise ProtocolError("此沙盒通道尚未配置项目文件维护。")
+                parameters = dict(args)
+                if method in {'project_files_restore_manifest', 'project_files_restore_file'}:
+                    parameters['payload'] = payload
+                if method == 'project_files_read':
+                    parameters['max_bytes'] = min(parameters.get('max_bytes', 1024 * 1024), self.manager.max_file_bytes)
+                if self.capacity_check is not None and method in {'project_files_snapshot', 'project_files_restore_begin',
+                                                                 'project_files_restore_manifest', 'project_files_restore_file'}:
+                    self.capacity_check(max(len(payload), 64 * 1024 * 1024))
+                data, output = await self.manager.project_workspaces.files(method.removeprefix('project_files_'), **parameters)
             elif method.startswith('project_workspace_'):
                 if self.manager.project_workspaces is None:
                     raise ProtocolError("此沙盒通道尚未配置项目工作区。")

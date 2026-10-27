@@ -1818,3 +1818,58 @@ implementation evidence, not a claim that the production App has these features.
   and compensation, followed by native end-to-end acceptance. M2-M7 remain
   incomplete. No production SSH, QQ/model request, server configuration, App
   change, main merge or deployment occurred. The approved plan is unchanged.
+
+### M2 offline retained-file checkpoint
+
+- Added an explicit `DockerProjectFiles` adapter for reserved offline snapshots
+  and retained-version restore. Stop can now publish a real version before
+  completing; a first wake with a baseline restores and checks it before Docker
+  starts. The adapter remains opt-in and absent from ordinary startup.
+- The authenticated Unix protocol carries bounded binary chunks (at most
+  1 MiB), canonical manifest pages and generation/fence/reservation identity.
+  The helper never accepts a host path or starts an application to export files.
+  Descriptor-relative traversal rejects links, special files, nested mounts,
+  unsafe modes and changed identities; limits remain 256 MiB/file and 20,000
+  files within quota. Only empty root filesystem recovery directories are ignored.
+- Migration 0045 persists job-owned staged references, charged to scope quota
+  and protected from GC. Streaming does not hold the durable job row, so queue
+  renewal is independent of a slow file. Lease/access are checked before and
+  after each transfer; takeover verifies and reuses completed staged objects.
+  Source-tree recheck precedes atomic manifest publication and stage removal.
+  Missing/private-mutable objects cannot be published as valid references.
+- Restore writes only into an empty, never-started reserved volume. Identical
+  chunk retries are idempotent, different overlaps or out-of-order writes fail.
+  Full file hashes, executable modes, empty files and the complete tree are
+  verified. A separate uncached `restore_check` prevents a cached completion
+  receipt from disguising changed bytes. Failed restores preserve the partial
+  volume and reservation, without claiming success or deleting unrelated files.
+- Shared canonical path/manifest validation lives outside the NoneBot plugin.
+  The Desktop controller recipe includes that module; an isolated stdlib-only
+  import test checks the actual recipe's copied Python sources, not the checkout.
+- Focused file/lifecycle/store regression: 75 tests, OK in 19.526 seconds
+  (.cache/roadmap/m2-files-focused.log), including real local PostgreSQL and Unix
+  RPC with simulated Docker/kernel observations. The additional controller
+  recipe/import suite passed 4 tests in 0.429 seconds. There are no real model,
+  QQ, native mounts or production credentials in these fixtures.
+- The first full run exposed two stale fixed test schemas (0044 instead of the
+  required 0045), while per-test temporary schemas were already migrated. Only
+  the two local PostgreSQL test databases on port 25432 were upgraded. The 14
+  affected integration/runtime tests then passed in 1.288 seconds. Initial
+  diagnostics remain in .cache/roadmap/m2-files-full-initial.log; no revision
+  guard was bypassed and no production database was contacted.
+- Final full isolated PostgreSQL regression: 2305 tests, OK (12 skipped),
+  389.474 seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-files-full.log). No product changes followed that run.
+- CI-path Ruff, compileall and whitespace checks passed. `nix flake check
+  --no-update-lock-file` passed aarch64-darwin package/import checks
+  (.cache/roadmap/m2-files-nix.log); other platforms were omitted. No frontend
+  changed. Temporary file fixtures are automatically removed; only small local
+  ignored diagnostics remain. No server SSH, deployment, QQ/model call, App
+  release, nix-config change or main merge occurred.
+- Remaining M2 gates: lockfile/rebuild classification (including dependency
+  symlinks), prune/rebuild execution, automatic idle/retention/usage policies,
+  VM project disks, Desktop soft quotas, complete task admission/compensation
+  and native end-to-end acceptance. The current snapshot deliberately retains
+  all supported regular files and fails closed on unsupported entries. Hibernate
+  and archive plans needing missing adapters are rejected before mutation.
+  M2-M7 remain incomplete; the approved plan is unchanged and unstaged.

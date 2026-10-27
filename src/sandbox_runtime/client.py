@@ -108,6 +108,13 @@ class SandboxClient:
     async def ensure_default(self, owner, runtime="debian"):
         return (await self.request("ensure_default", {"owner": owner, "runtime": runtime}))[0]
 
+    async def project_files(self, operation, owner, project_id, *, generation, fence,
+                            reservation, request_id=None, payload=b"", **parameters):
+        return await self.request("project_files_" + operation,
+            {"owner": owner, "project_id": project_id, "generation": generation,
+             "fence": fence, "reservation": reservation, **parameters},
+            payload, request_id=request_id)
+
     async def list(self, owner):
         return (await self.request("list", {"owner": owner}))[0]
 

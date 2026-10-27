@@ -387,6 +387,44 @@ class ProjectWorkspaces:
                 f"Project {action} did not confirm success; reconcile the existing operation"
             )
 
+    async def files(
+        self, action, owner, project_id, *, generation, fence, reservation, **kwargs
+    ):
+        from .project_files import ProjectFiles
+
+        async with self.manager._allocation_lock:
+            binding = await self._volume(
+                self.volumes.workspace,
+                owner,
+                project_id,
+                generation=generation,
+                allow_pending=True,
+                maintenance=True,
+            )
+            current = await self._observe(owner, binding)
+            if current and current["State"]["Running"]:
+                raise SandboxError("Stop project writers before file maintenance")
+            if binding["workspace"]:
+                sandbox_id = binding["workspace"]["sandbox_id"]
+                self.manager._ensure_idle(sandbox_id)
+                if self.manager._exec_locks.setdefault(
+                    sandbox_id, asyncio.Lock()
+                ).locked():
+                    raise SandboxError("Project has an active command or file transfer")
+            try:
+                return await self._volume(
+                    ProjectFiles(self.volumes).operate,
+                    action,
+                    owner,
+                    project_id,
+                    generation=generation,
+                    fence=fence,
+                    reservation=reservation,
+                    **kwargs,
+                )
+            except ValueError:
+                raise SandboxError("Project file manifest or path is invalid") from None
+
     async def status(self, owner, project_id, *, generation):
         binding = await self._volume(
             self.volumes.workspace,

@@ -1,4 +1,4 @@
 from __future__ import annotations
 
 
-HEAD_REVISION = "0044_project_lifecycle"
+HEAD_REVISION = "0045_project_file_staging"

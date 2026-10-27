@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /opt/gaoji
 COPY src/local_runtime ./src/local_runtime
 COPY src/sandbox_runtime ./src/sandbox_runtime
-COPY src/storage_admission.py src/llm_options.py ./src/
+COPY src/storage_admission.py src/llm_options.py src/project_content.py ./src/
 COPY images.lock.json manifest.json ./
 COPY sandbox ./sandbox
 RUN python3 -c "import src.local_runtime.desktop"

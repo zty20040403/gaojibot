@@ -10,6 +10,7 @@ import struct
 
 from .docker import NIX_ATTRIBUTE_PATTERN, RUNTIME_IMAGES, SANDBOX_ID_PATTERN, SandboxError
 from .project_volumes import MIN_QUOTA, MAX_QUOTA, MIB
+from src.project_content import CHUNK_BYTES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_VERSION_FILES
 
 
 VERSION = 1
@@ -54,7 +55,23 @@ FIELDS = {
     "project_workspace_reserve": ({"owner", "project_id", "generation", "fence", "reservation"}, set()),
     "project_workspace_release": ({"owner", "project_id", "generation", "fence", "reservation"}, set()),
 }
-UPLOADS = {"write_file", "install_readonly_file"}
+PROJECT_FILE_FIELDS = {"owner", "project_id", "generation", "fence", "reservation"}
+for _action, _fields, _optional in (
+    ("snapshot", set(), set()),
+    ("page", {"manifest_sha256", "index"}, set()),
+    ("read", {"manifest_sha256", "index", "offset"}, {"max_bytes"}),
+    ("check", {"manifest_sha256"}, set()),
+    ("restore_begin", {"manifest_sha256", "manifest_size"}, set()),
+    ("restore_manifest", {"manifest_sha256", "offset"}, set()),
+    ("restore_file", {"manifest_sha256", "index", "offset"}, set()),
+    ("restore_finish", {"manifest_sha256"}, set()),
+    ("restore_check", {"manifest_sha256"}, set()),
+):
+    FIELDS["project_files_" + _action] = (PROJECT_FILE_FIELDS | _fields, _optional)
+MUTATIONS |= frozenset("project_files_" + action for action in (
+    "snapshot", "restore_begin", "restore_manifest", "restore_file", "restore_finish"
+))
+UPLOADS = {"write_file", "install_readonly_file", "project_files_restore_manifest", "project_files_restore_file"}
 
 
 class ProtocolError(SandboxError):
@@ -141,6 +158,16 @@ def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
             raise ProtocolError("项目编号或操作代次无效。")
     if "reservation" in args and (not isinstance(args["reservation"], str) or not ID_PATTERN.fullmatch(args["reservation"])):
         raise ProtocolError("项目维护凭据无效。")
+    if method.startswith("project_files_"):
+        if size > CHUNK_BYTES:
+            raise ProtocolError("项目文件分块超过传输上限。")
+        for field, lower, upper in (("index", 0, MAX_VERSION_FILES), ("offset", 0, MAX_FILE_BYTES),
+                                    ("manifest_size", 1, MAX_MANIFEST_BYTES), ("max_bytes", 1, min(CHUNK_BYTES, file_limit))):
+            if field in args and (type(args[field]) is not int or not lower <= args[field] <= upper):
+                raise ProtocolError("项目文件分块参数无效。")
+        if "manifest_sha256" in args and (not isinstance(args["manifest_sha256"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", args["manifest_sha256"])):
+            raise ProtocolError("项目清单校验值无效。")
     if "quota_bytes" in args and (type(args["quota_bytes"]) is not int
             or not MIN_QUOTA <= args["quota_bytes"] <= MAX_QUOTA or args["quota_bytes"] % MIB):
         raise ProtocolError("项目卷配额必须为 64 MiB 至 100 GiB，按 MiB 对齐。")

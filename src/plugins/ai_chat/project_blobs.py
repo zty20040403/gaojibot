@@ -6,38 +6,18 @@ from dataclasses import dataclass
 import hashlib
 import io
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import stat
 import tempfile
 from typing import BinaryIO
-import unicodedata
+from src.project_content import (
+    MAX_FILE_BYTES as MAX_FILE_BYTES,
+    MAX_VERSION_FILES as MAX_VERSION_FILES,
+    project_path as project_path,
+)
 
-MAX_FILE_BYTES = 256 * 1024 * 1024
-MAX_VERSION_FILES = 20000
 GC_GRACE_SECONDS = 24 * 3600
-
-
-def project_path(value: str) -> str:
-    value = unicodedata.normalize("NFC", value)
-    parts = value.split("/")
-    if (
-        not value
-        or len(value.encode()) > 1024
-        or len(parts) > 64
-        or "\\" in value
-        or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
-        or any(
-            part in {"", ".", ".."}
-            or ":" in part
-            or len(part.encode()) > 255
-            or part.endswith((" ", "."))
-            or re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part)
-            for part in parts
-        )
-    ):
-        raise ValueError("Invalid project-relative path")
-    return str(PurePosixPath(value))
 
 
 @dataclass(frozen=True)
@@ -132,6 +112,24 @@ class ProjectBlobStore:
     def verify(self, sha: str, expected_size: int):
         if len(self.read(sha)) != expected_size:
             raise ValueError("Stored project object size changed")
+
+    def reference(self, sha: str, expected_size: int) -> Blob:
+        """Check a previously verified, private immutable object without rehashing.
+
+        Used only under the blob lock when publishing staged lifecycle files;
+        initial transfer and resumed staging still verify complete checksums.
+        """
+        path = self.path(sha)
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o400
+            or info.st_size != expected_size
+        ):
+            raise ValueError("Stored project reference is missing or mutable")
+        return Blob(sha, expected_size, str(path.relative_to(self.root)))
 
     def remove(self, sha: str):
         path = self.path(sha)

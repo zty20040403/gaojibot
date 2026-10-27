@@ -2,7 +2,8 @@
 
 Milestone M1, local implementation. This document describes persistence, not an
 enabled workspace product. The approved M0-M7 plan remains a separate input.
-Migration head is `0043_project_workspace`, following `0042_mcp_continuations`.
+The base schema is `0043_project_workspace`; the current M2 head is
+`0045_project_file_staging`, following `0044_project_lifecycle`.
 
 ## Boundaries
 
@@ -60,7 +61,8 @@ during bounded file copies. It is not a high-throughput distributed object store
 Group defaults are five projects and 5 GiB per scope; private defaults are three
 projects and 2 GiB. A project defaults to 2 GiB. The limits are not reservations.
 Scope usage includes sampled workspace usage plus each project's distinct blob
-references, including manifests. Two projects sharing a blob are charged twice
+references, including manifests and pending snapshot files. Staging and retained
+versions referencing the same project/blob are counted once. Two projects sharing a blob are charged twice
 at scope level, while the object is physically stored once. M2 still needs to
 wire workspace sampling, physical instance admission and hard quota volumes.
 The `soft` database default must not be presented as an implemented quota monitor.
@@ -97,6 +99,25 @@ M2 is responsible for selecting old versions according to the retention policy.
 Version source task/turn IDs must belong to the same conversation. M3 must add
 the accepted-artifact and task/project binding checks before its pipeline can
 publish a task result; a same-scope ID by itself is not acceptance evidence.
+
+### Leased offline snapshots
+
+Migration 0045 adds `project_snapshot_staging`, keyed by job and canonical path,
+with project, manifest digest, blob digest, size and mode. It is private host
+state, not a tool/HTTP write interface. A matching pending snapshot step, live
+membership and current job lease are required before and after streaming.
+
+Streaming holds scope/blob locks but not the queue job row; heartbeats continue.
+Completed objects survive lease takeover and are verified before reuse. A final
+uncached helper tree check precedes publication. The store then verifies private
+object metadata and the full manifest identity, atomically publishes the version
+and removes that job's staging references. No bulk rehash runs while the job row
+is locked. A missing object or lost lease aborts publication.
+
+GC protects all staged objects. Staging for terminal jobs becomes collectible
+only after the 24-hour grace period; active jobs are not expired just because a
+file was staged yesterday. Downgrade refuses remaining staging data. This is
+local lifecycle plumbing, not a complete automatic retention/cleanup worker.
 
 ## Routines
 
