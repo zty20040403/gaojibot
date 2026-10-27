@@ -7,6 +7,7 @@ from .executor import HANDLERS as EXECUTOR_HANDLERS
 from .fleet import HANDLERS as FLEET_HANDLERS
 from .media import HANDLERS as MEDIA_HANDLERS
 from .memory import HANDLERS as MEMORY_HANDLERS
+from .mcp import handlers as mcp_handlers
 from .registry import ToolRegistry
 from .reminders import HANDLERS as REMINDER_HANDLERS
 from .routines import HANDLERS as ROUTINE_HANDLERS
@@ -34,7 +35,13 @@ domain_registry = ToolRegistry(
 
 
 def available_tools(context: ToolContext) -> list[ToolDefinition]:
-    return domain_registry.definitions(context)
+    return registry_for(context).definitions(context)
 
 
-__all__ = ["ToolDefinition", "available_tools", "domain_registry"]
+def registry_for(context: ToolContext) -> ToolRegistry:
+    """Freeze the advertised catalog for one turn, never a process-global MCP cache."""
+    extra = mcp_handlers(context)
+    return ToolRegistry((*domain_registry.handlers, *extra)) if extra else domain_registry
+
+
+__all__ = ["ToolDefinition", "available_tools", "domain_registry", "registry_for"]

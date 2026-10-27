@@ -45,6 +45,27 @@ class ModelBudgetTests(unittest.IsolatedAsyncioTestCase):
         )
         self.gateway = LLMGateway({"openai-chat": self.provider})
 
+    async def test_durable_reservation_precedes_provider_and_denial_does_not_fallback(self):
+        reserve = AsyncMock(side_effect=ModelBudgetExceeded("durable cap"))
+        budget = ModelCallBudget(10000, reserve_request=reserve)
+        with model_budget_scope(budget), self.assertRaises(ModelBudgetExceeded):
+            await self.gateway.create_completion(self.profile, messages=[])
+        reserve.assert_awaited_once()
+        self.provider.create_completion.assert_not_awaited()
+        self.assertGreater(reserve.await_args.args[0].reserved, 0)
+
+    async def test_every_physical_attempt_has_a_durable_reservation(self):
+        reserve = AsyncMock()
+        self.provider.create_completion.side_effect = [
+            LLMProviderError("test", 400, "tool_choice_not_supported"), completion(),
+        ]
+        budget = ModelCallBudget(20000, reserve_request=reserve)
+        with model_budget_scope(budget):
+            await self.gateway.create_completion(self.profile, messages=[], tools=[{"type": "function"}],
+                tool_choice={"type": "function", "function": {"name": "reply"}})
+        self.assertEqual(reserve.await_count, self.provider.create_completion.await_count)
+        self.assertEqual(reserve.await_count, 2)
+
     async def test_lease_guard_runs_before_request_reservation_or_provider_call(self):
         from src.plugins.ai_chat.agent.control import LeaseLost
 

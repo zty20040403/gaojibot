@@ -76,6 +76,9 @@ def assemble_handlers(context: AppContext) -> HandlerServices:
     from .qq_action_authorization import register_qq_executors
 
     register_qq_executors(handlers)
+    from .mcp_bridge.runtime import install_mcp
+
+    install_mcp(handlers)
     return handlers
 
 

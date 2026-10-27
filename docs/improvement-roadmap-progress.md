@@ -150,9 +150,16 @@ acceptance are not implied by this roadmap.
       feedback, UI and independent OTP votes are implemented. Full PG regression,
       admin build and responsive UI checks pass. Real QQ collaboration and
       two-phone review remain pending acceptance; no production deployment.
-- [ ] 9.6 Official-SDK MCP client through the registry, conservative permissions,
+- [x] 9.6 Official-SDK MCP client through the registry, conservative permissions,
       and read-only MCP server with group-scoped tokens.
-- [ ] Per-feature focused/full PG tests, UI builds and recorded live gates.
+      SDK transports, scoped registry, runtime endpoint/reaper and versioned admin
+      API and console are connected locally with focused regression coverage.
+      Operator guide and local Docker/TLS acceptance are complete. Approval-bound
+      continuation storage and original-account Outbox guards are implemented;
+      main Agent/runtime recovery wiring and final PG/UI gates now pass locally.
+      MCP stays disabled by default; actual QQ approval/delivery and production
+      reverse-proxy acceptance remain pending. Not deployed.
+- [x] Per-feature focused/full PG tests, UI builds and recorded live gates.
 
 ## Local validation record
 
@@ -1127,3 +1134,293 @@ sampling is once per second; the benchmark uses 5 ms to expose short blocking ca
   delivery and production upgrade acceptance remain explicit live gates.
   The newer plan is still unmodified/untracked. No push, rebuild, server access
   or real model call occurred.
+
+### Phase 9.6 protocol and storage foundation (in progress)
+
+- Phase 9.5 was committed locally as a65741b after its final full regression.
+- Added the official mcp 2.3.0 SDK, using its current Client/MCPServer API rather
+  than copying older FastMCP examples. uv.lock and the generated requirements
+  export preserve existing dependency versions and add the SDK dependencies.
+- Added migration 0040 for versioned server registrations, pinned tool catalogs
+  and revocable group read tokens. New servers/tools start disabled. Remote
+  annotations cannot grant permissions. Changed definitions, endpoints, scope
+  grants or reappearing tools lose previous safe/enable settings. CAS prevents
+  a delayed catalog fetch or old UI write from replacing newer configuration.
+- Registration accepts only HTTP endpoints without inline credentials, or named
+  operator-defined stdio profiles. Secrets are references to dedicated environment
+  names, not database/UI values. Remote JSON Schema references and resolution-base
+  changes are rejected. Transport-side SSRF/stdio isolation remains unfinished;
+  no outbound MCP client or host launcher has been enabled.
+- Group tokens contain 256 random bits; only hashes persist. Tokens bind one QQ
+  group, bot account and issuing administrator version, expire within 30 days,
+  support revocation and share a 60-request/minute limit across processes. Token
+  values are returned once, excluded from list projections and not yet exposed
+  by an admin route. Issuance must avoid putting that one-time value in audit logs.
+- Implemented an unmounted official-SDK stateless HTTP endpoint with only
+  context_search/ledger_search. Tokens, never model arguments, choose the group.
+  Reads respect ledger visibility and validate chapter evidence. Raw OneBot data,
+  attachment URLs and sender QQ IDs are excluded; text is redacted and quoted as
+  untrusted evidence. Personal memory is not exposed. Revocation is rechecked
+  after reads; host/origin checks, concurrency and body limits apply.
+- First focused run found a missing NoneBot test initializer. The next run
+  exposed SDK lifecycle ownership and unstructured dict responses; fixed both
+  without bypassing the SDK. Verified 20 tests in 3.798 seconds, OK;
+  .cache/roadmap/phase9-6-mcp-boundaries-final.log. Includes real SDK protocol calls
+  over in-memory ASGI, concurrent group clients, guessed message IDs, forged
+  scope, cleared history, malformed inputs, account changes, revoke-during-read,
+  secret-safe errors, rate limits and concurrent administrator updates.
+- Ruff over all CI paths and diff checks pass. This is not phase completion:
+  client transport fencing, registry integration, approved call execution,
+  lifecycle mounting, console/SSE/API wiring, help and full PG/UI regression
+  remain. No phase commit yet; newer M0-M7 work and all live services untouched.
+- Lockfile/requirements export drift check passes. Both disposable base databases
+  are now at 0040_mcp_boundaries with zero leftover owned test schemas.
+
+### Phase 9.6 client transport and durable call foundation (in progress)
+
+- Added HTTP transport with exact endpoint matching, validated numeric DNS
+  pinning, original TLS SNI/Host, no ambient proxy, no redirects and bounded
+  request/response/session bytes. Private addresses require an exact operator
+  allowlist entry; link-local/metadata addresses remain prohibited. Credentials
+  resolve only through dedicated operator references and are redacted from
+  projected results, including JSON-escaped echoes. Compressed responses are
+  rejected before HTTP decoding to avoid expansion outside the byte limits.
+- SDK discovery is bounded by pages, tool count and total definition bytes.
+  Every call rechecks the frozen tool fingerprint. The public one-round SDK
+  session API avoids automatic schema-change retries or sampling/input rounds;
+  remote output-schema regexes are not executed on the bot event loop. Text and
+  structured results are quoted as untrusted evidence. Binary/resource results
+  are not automatically fetched or imported.
+- Added operator-only stdio profiles using immutable, preloaded OCI images.
+  The launcher fixes an unprivileged user, no network, no host mounts, read-only
+  root, bounded tmpfs/CPU/memory/PIDs and no Docker log accumulation. Image-declared
+  volumes are rejected. A bounded framing adapter uses official SDK parsing and
+  Client dispatch; it avoids the SDK stdio reader's unbounded unterminated-line
+  buffer. Cleanup checks installation ownership and expiry; no other containers
+  are eligible. Real Docker isolation/expiry acceptance is still pending: tests
+  use real SDK subprocesses but replace the Docker launcher.
+- Added migration 0041 and an actor/group/bot-bound invocation ledger. Concurrent
+  claimers have one winner; identical invocation IDs reuse saved results and
+  cannot change arguments. Recovery can reclaim a pre-dispatch connection, but
+  a dispatched call without a result becomes needs_attention and is never
+  automatically replayed. Results distinguish dispatch started from confirmed
+  success. Expired calls cannot keep accumulating active execution slots.
+- Added a host service that checks current membership before execution and
+  disclosure. Unreviewed tools require the existing two-independent-admin OTP
+  flow, bound to the exact invocation/configuration/arguments hash. Remote calls
+  recheck configuration and approval immediately before the persisted dispatch
+  boundary. Safe tools still receive receipts and duplicate prevention.
+- Approval execution now also rejects an expired worker lease, including existing
+  server-task approvals. Initial tests exposed AnyIO exception wrapping, cached
+  HTTP response streams bypassing byte accounting, escaped credential echoes and
+  memory streams left open during cancellation; each was fixed and covered.
+- Focused MCP and existing account/quorum/server-task/collaboration regression:
+  133 tests, OK, 27.161 seconds, with ResourceWarning promoted to errors and no
+  leftover stream warnings. Log: .cache/roadmap/phase9-6-client-security-final.log.
+  Includes real SDK HTTP and stdio calls, in-memory ASGI, local PG concurrency,
+  host denial, definition changes, partial authorization, cancellation, lease
+  expiry, crash recovery and no replay after an ambiguous remote result.
+- Ruff across all CI paths, diff whitespace checks and requirements export drift
+  pass. Existing dependency versions are unchanged. Both disposable base databases
+  were upgraded to 0041_mcp_calls. No test contacts a real model or QQ account.
+- This is still not Phase 9.6 completion: dynamic registry policy, durable Agent
+  continuation after approvals, runtime/config/Nix integration, periodic reaping,
+  admin API/SSE/UI/help and the final full PG/UI gates remain. No phase commit,
+  push, SSH, rebuild or live deployment. The newer M0-M7 plan is unchanged and
+  has not started.
+
+### Phase 9.6 registry, lifecycle and administrator API (in progress)
+
+- Registered external tools through a per-turn ToolRegistry snapshot, never a
+  global mutable catalog. A single bounded SQL join selects enabled tools for
+  the current group. Private chats, routine runs and specialist workers do not
+  silently inherit them. The host rechecks current group/bot/user membership,
+  the advertised endpoint/schema/trust version and the exact approval at dispatch.
+- Replaying the same operation in the same incoming message uses its durable
+  receipt even when a provider changes tool-call IDs. A new incoming message has
+  a new identity. Unreviewed calls still require the dedicated two-admin flow;
+  user text and remote annotations cannot approve them. Trace distinguishes
+  waiting from confirmed success and unknown remote outcomes.
+- Remote input-schema regexes are not executed by the event-loop validator;
+  shape/type checks still run. Unrepresentable numeric hints fail softly rather
+  than crashing validation. Remote servers remain responsible for their full
+  input-schema semantics.
+- Added opt-in AI_MCP_ENABLED / AI_MCP_CONFIG_FILE runtime assembly. The bounded
+  operator JSON file lists exact private endpoint exceptions, preloaded stdio
+  profiles, explicit Docker binary/socket and a stable installation owner.
+  Only GAOJI_MCP_SECRET_* credentials enter the HTTP client. No new provider,
+  model, QQ connection or process is contacted merely by loading defaults.
+- Mounted the configured read-only /mcp endpoint independently of the admin
+  pages. One supervised task owns both entry and exit of the official SDK's
+  AnyIO session manager. Startup awaits readiness; stopped/unready endpoints
+  return 503. Another supervised task recovers calls and reaps expired owned
+  containers. Fresh OneBot membership checks fail closed.
+- Added session/CSRF/admin-protected server registration, catalog discovery,
+  per-tool trust/enable settings, group-token creation/revocation and paginated
+  invocation receipts. Mutations require If-Match plus entity versions and write
+  audit records; MCP tables invalidate the SSE resource. Call lists default to
+  five rows. One-time tokens are excluded from MutationResult, audit and listing
+  responses; the issue response has Cache-Control: no-store.
+- Registry/tool regressions: 72 tests, OK, 8.031 seconds
+  (.cache/roadmap/phase9-6-registry.log). Runtime/config tests: 45 tests, OK,
+  3.081 seconds (.cache/roadmap/phase9-6-runtime.log). The initial runtime run
+  omitted AI_POSTGRES_SCHEMA=qq_bot_test; it failed against a nonexistent test
+  schema. Correcting the invocation, without changing the safeguard, passed.
+- Admin/account/wiki regressions: 29 tests, OK, 21.481 seconds
+  (.cache/roadmap/phase9-6-admin.log). Combined SDK/transports/registry/runtime/
+  admin/existing-tool regression: 164 tests, OK, 21.919 seconds
+  (.cache/roadmap/phase9-6-integration-focused.log). These use isolated local
+  PostgreSQL and simulated QQ/provider boundaries, not production acceptance.
+- Still unfinished: console UI/help, approval-result continuation into a durable
+  Agent task and original-conversation Outbox, deployment/Nix documentation,
+  final full PG/admin build and live Docker isolation/TLS/QQ acceptance gates.
+  No Phase 9.6 commit yet. No push, SSH, rebuild or live deployment. The newer
+  M0-M7 plan remains unchanged, untracked and not started.
+
+### Phase 9.6 console, operator guide and local isolation acceptance (in progress)
+
+- Added the MCP console view with external server registration, catalog refresh,
+  per-tool enable/approval policy, group-only token issue/revoke and invocation
+  receipts. It uses the existing admin API, resource versions, audit and SSE
+  resource invalidation. Tokens stay in component memory only and are hidden on
+  navigation/revoke; results are rendered as text, never HTML.
+- Editors are keyed by server/tool identity, not live revisions. Incoming updates
+  preserve drafts and focused selects. Stale entity versions block saving until
+  explicitly reloaded. Calls, tokens and tools use five-row pages; calls show
+  precise Shanghai timestamps and distinguish unknown outcomes from success.
+- Added reproducible tools/verify_mcp_ui.py against the actual production bundle
+  and intercepted fake APIs. At 1280x900 and 390x844 it verifies create/edit,
+  catalog discovery, policy writes, CAS, SSE draft/focus retention, pagination,
+  one-time token handling/revocation, inert result text, disabled state and no
+  horizontal overflow. Screenshots were inspected after scrolling to the top.
+  Log: .cache/roadmap/phase9-6-ui.log. The final UI build is recorded below.
+- Added .env.example defaults and docs/mcp-bridge.md with operator JSON, existing
+  Nix module environment wiring, credentials, exact private endpoint exceptions,
+  immutable isolated stdio profiles, reader proxy configuration and console steps.
+  No Nix module defaults, shared nix-config, runtime secrets or servers changed.
+  The guide explicitly marks pending continuation/delivery work, not production
+  readiness; README links to it as development documentation.
+- tools/verify_mcp_isolation.py ran against the already-installed local Python
+  image, without builds/pulls or host mounts. Actual Docker inspect and in-container
+  checks verify UID 65534, read-only root, no external route, tmpfs noexec, no host
+  secret inheritance, CPU/memory/PID/FD settings and no persistent logs. Actual
+  expiry cleanup removes only expired matching-owner containers and preserves
+  live/foreign fixtures; every created fixture was removed in cleanup.
+  Log: .cache/roadmap/phase9-6-isolation.log. The first smoke assertion incorrectly
+  searched escaped projected JSON and assumed Linux exposes only lo in sysfs;
+  the check now decodes the data and verifies the actual route table plus Docker
+  network configuration. No security controls were relaxed.
+- Added loopback-only real TLS tests with temporary certificates and the official
+  MCP server/client: numeric pinning retains verified hostname/SNI and original
+  Host, ignores ambient proxy variables, and rejects untrusted certificates or
+  wrong hostnames before HTTP/tool execution. No real upstream was contacted.
+  The initial test fixture needed an explicit dict[str, str] SDK output type.
+- The registry edge-case follow-up passed 34 tests in 2.415 seconds
+  (.cache/roadmap/phase9-6-registry-final.log). Final targeted test/build results
+  for this chunk: 121 tests, OK, 21.031 seconds, ResourceWarning promoted to
+  errors (.cache/roadmap/phase9-6-console-focused.log); admin TypeScript/Vite
+  build passed (.cache/roadmap/phase9-6-console-build.log). Ruff across all CI
+  paths and git diff whitespace checks pass. The full Phase 9.6 gate has not run.
+- Still required before the Phase 9.6 local commit: durable Agent continuation
+  after approval, original-conversation Outbox delivery, integrated recovery
+  tests and full isolated PostgreSQL/admin build. Actual QQ quorum/group delivery
+  and production reverse proxy acceptance remain separate live checks. No push,
+  SSH, rebuild, real model or QQ request. New plan M0-M7 has not started.
+
+### Phase 9.6 durable continuation storage and Outbox guards (in progress)
+
+- Added migration 0042 with immutable approval-bound conversation checkpoints,
+  continuation jobs and effect receipts. The checkpoint preserves previous tool
+  results, binds the exact next MCP operation and explicitly marks remaining
+  unexecuted calls in the same batch. Orphan/duplicate tool results, new system
+  messages, changed arguments, excessive sizes and nonfinite values are rejected.
+- Terminal remote receipts atomically create one continuation job and replace
+  only the pending result slot. The original group, actor, bot, question, profile
+  and message identity cannot be overwritten by retries. Changed checkpoint
+  hashes fail closed. Remote unknown outcomes are not interpreted as success.
+- Continuation transcript writes are append-only and revision-checked. Model
+  reservations survive restarts; tool effects have durable input identities and
+  receipts. A completed effect is reused after a crash before transcript save;
+  an uncertain non-idempotent effect cannot be automatically executed again.
+  Pure/idempotent work can be retried by the next valid lease holder.
+- A focused test exposed that durable-job attempts can be decremented during
+  recovery/deferral. Added a monotonic lease_generation, independent of retry
+  counts, and carried it through worker heartbeat, settlement and deferral.
+  Even a restarted claim with the same worker name cannot revive an old owner.
+  Legacy direct store calls retain their existing optional API; the worker
+  always supplies the generation and rejects expired leases.
+- Result persistence and Outbox enqueue share one transaction and a stable key.
+  OneBot delivery selects the original bot, rechecks original group membership,
+  waits if that bot/runtime is unavailable, and parks a missing native QQ receipt
+  as ambiguous rather than claiming delivery or blindly sending twice.
+- Validation: the new checkpoint/storage suite passed 22 tests in 4.650 seconds.
+  The first related suite passed 128 tests in 27.978 seconds. After extending
+  generation fencing to the shared worker, the final focused MCP/job/Outbox/
+  routine regression passed 171 tests in 36.917 seconds with ResourceWarning
+  treated as errors (.cache/roadmap/phase9-6-continuations-final.log). These are
+  real isolated local PostgreSQL transactions with fake QQ/model boundaries.
+- Still unfinished: capturing checkpoints from the live main Agent before
+  proposing approval; registering and running the durable continuation handler;
+  reconnecting saved transcripts/reply state and model budgets; failure notice
+  reconciliation; integrated runtime recovery tests and the full Phase 9.6 gate.
+  The new storage is not yet wired into McpRuntime, so this is not an end-to-end
+  approval continuation release. No phase commit, push or deployment. The newer
+  M0-M7 plan remains unmodified, untracked and not started.
+
+### Phase 9.6 main Agent continuation integration (in progress)
+
+- Main group turns now persist an immutable checkpoint before proposing an MCP
+  approval and return a waiting notice. The ordinary Agent loop accepts saved
+  transcripts, reuses pending tool calls before asking the model again, and saves
+  each completed result/final answer through an awaited checkpoint hook.
+- McpRuntime registers a durable continuation dispatcher and maintenance for
+  terminal call receipts and failed/cancelled jobs. Reply state, original event
+  identity and host context survive takeover. A second approval pauses the same
+  job; it cannot reset the one-hour deadline, eight physical model requests,
+  262144 conservative token reservations or 32 host-effect limit.
+- Shared model budgets gained an optional asynchronous physical-request
+  reservation hook. It runs before provider dispatch, including compatibility
+  retries and fallback attempts. Durable reservations are never refunded based
+  on missing usage after a crash.
+- Host effects store their exact pending tool-call identity plus prepared reply
+  state. Unknown mutations stop before another model/tool request; receipt-write
+  failures also stop. Nested Sub-Agent execution retains its own receipt path,
+  while the parent delegation remains conservatively non-repeatable without a
+  saved receipt. Unverifiable membership yields rather than becoming an ordinary
+  model error. Model-profile changes stop automatic continuation.
+- Targeted verification: 81 existing/extended tests passed in 10.999 seconds
+  (.cache/roadmap/phase9-6-continuation-wiring-first.log). The new runtime/normal
+  pipeline/real Agent-loop suite passed 18 tests in 3.739 seconds after correcting
+  its profile-identity fixture (.cache/roadmap/phase9-6-continuation-runtime-second.log).
+  Includes actual isolated PostgreSQL approval quorum, simulated remote execution,
+  restart, original Outbox identity, missing receipts, final checkpoint recovery,
+  deferred batch calls and preserved model budget. No live QQ or model calls.
+- Full isolated regression and final admin build are pending for this phase.
+  No commit/push/deployment yet. The newer M0-M7 plan is still untouched.
+
+### Phase 9.6 final local acceptance
+
+- The first full run found two tool-catalog regressions: MCP handlers accessed
+  runtime dependencies even when the caller's capabilities excluded MCP. Added
+  an early scope/capability return, preserving the existing browser/Sub-Agent
+  fixtures and assertions. First run: 2164 tests, two errors, 12 skipped,
+  357.862 seconds (.cache/roadmap/phase9-6-first-full.log).
+- Review also separated previous-turn transcript history from this turn's tool
+  call fingerprints. Old conversation calls no longer consume the resumed
+  turn's repeat budget; pending deferred calls remain distinguishable from
+  already completed effects. The history boundary is immutable across a second
+  approval and is validated before the checkpoint is saved.
+- Focused runtime/MCP/browser/Sub-Agent/loop regression: 94 tests, OK,
+  14.272 seconds (.cache/roadmap/phase9-6-post-review-focused.log).
+- Final full isolated PostgreSQL suite: 2167 tests, OK (12 skipped),
+  350.802 seconds, ResourceWarning promoted to errors
+  (.cache/roadmap/phase9-6-final-full.log). Both disposable database schemas are
+  at Alembic 0042. No production database or provider was used.
+- Final TypeScript/Vite admin build passed
+  (.cache/roadmap/phase9-6-final-admin-build.log). Ruff across all CI paths,
+  compileall and git diff whitespace checks pass. Earlier real local OCI/TLS
+  and responsive UI checks remain recorded above.
+- Phase 9.6 is ready for its local commit. This completes the earlier roadmap's
+  local implementation, not the still-pending real QQ/provider/live-network
+  acceptance gates. Nothing pushed, rebuilt or deployed; no SSH connection.
+  The newer plan document is unchanged and excluded from this phase's commit.

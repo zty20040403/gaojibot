@@ -39,9 +39,20 @@ from .reminders import (
 )
 from .handler_services import HandlerService
 from .group_wiki import NEWCOMER_DELIVERY_PREFIX, WikiSuperseded
+from .mcp_bridge.continuations import DELIVERY_PREFIX as MCP_DELIVERY_PREFIX
+from .mcp_bridge.store import McpDenied
 
 
 class OneBotDelivery(HandlerService):
+    async def _mcp_delivery_identity(self, delivery: Delivery):
+        runtime = getattr(self.context, "mcp_runtime", None)
+        if runtime is None or not hasattr(runtime.store, "delivery_identity"):
+            raise BridgeRetryableError("MCP 已停用，暂停续跑结果投递")
+        try:
+            return await self.context.db_call(runtime.store.delivery_identity, delivery)
+        except McpDenied as exc:
+            raise BridgePermanentError("MCP 续跑投递范围不匹配") from exc
+
     async def _deliver_reminder(self, bot: Bot, reminder: Reminder) -> None:
         text = f"提醒：{reminder.message}"
         if reminder.conversation_kind == "group":
@@ -118,6 +129,13 @@ class OneBotDelivery(HandlerService):
 
     async def _deliver_onebot_outbox(self, bot: Bot, delivery: Delivery) -> None:
         is_wiki_brief = delivery.idempotency_key.startswith(NEWCOMER_DELIVERY_PREFIX)
+        is_mcp_reply = delivery.idempotency_key.startswith(MCP_DELIVERY_PREFIX)
+        if is_mcp_reply:
+            identity = await self._mcp_delivery_identity(delivery)
+            if str(bot.self_id) != identity["bot_id"]:
+                raise BridgePermanentError("MCP 续跑必须使用原机器人账号投递")
+            if not await self.context.mcp_runtime.scope_allowed(**identity):
+                raise BridgeRetryableError("无法核实 MCP 原群成员身份，暂不发送结果")
         if is_wiki_brief:
             wiki = getattr(self.services, "wiki", None)
             if wiki is None:
@@ -148,8 +166,8 @@ class OneBotDelivery(HandlerService):
                     message=message,
                 )
         native_message_id = self.services.replies._sent_message_id(response)
-        if is_wiki_brief and not native_message_id:
-            raise BridgeOutcomeUnknown("新人简报没有取得 QQ 消息回执，暂停自动重发")
+        if (is_wiki_brief or is_mcp_reply) and not native_message_id:
+            raise BridgeOutcomeUnknown("消息没有取得 QQ 回执，暂停自动重发")
         if self.context.delivery_store is not None:
             self.context.delivery_store.mark_committed(
                 delivery.delivery_id,
@@ -235,6 +253,13 @@ class OneBotDelivery(HandlerService):
                             if run is None or run.spec.scope_key != delivery.target_scope.key:
                                 raise BridgePermanentError("例行任务投递范围不匹配")
                             selected_bot = next((bot for bot in bots if str(bot.self_id) == run.spec.bot_id), None)
+                        elif delivery.idempotency_key.startswith(MCP_DELIVERY_PREFIX):
+                            try:
+                                identity = await self._mcp_delivery_identity(delivery)
+                            except BridgeRetryableError as exc:
+                                self.context.delivery_store.defer_unsent(delivery, str(exc))
+                                continue
+                            selected_bot = next((bot for bot in bots if str(bot.self_id) == identity["bot_id"]), None)
                         elif delivery.idempotency_key.startswith(NEWCOMER_DELIVERY_PREFIX):
                             wiki_store = getattr(self.context, "group_wiki_store", None)
                             if wiki_store is None:

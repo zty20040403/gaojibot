@@ -13,6 +13,7 @@ from .admin_api import (
     events,
     fleet,
     media,
+    mcp,
     models,
     observability,
     overview,
@@ -57,6 +58,7 @@ _PAGE_ROUTERS = (
     events,
     fleet,
     wiki,
+    mcp,
 )
 
 

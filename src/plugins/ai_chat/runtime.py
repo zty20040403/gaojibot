@@ -5,7 +5,11 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from .mcp_bridge.runtime import McpRuntime
+    from .mcp_bridge.service import McpService
 
 from src.bot_storage import DatabaseCalls, DatabaseError, PostgresDatabase
 from src.bot_storage.schema import HEAD_REVISION
@@ -136,6 +140,8 @@ class AppContext:
     reminder_store: ReminderStore | None = None
     routine_store: RoutineStore | None = None
     group_wiki_store: GroupWikiStore | None = None
+    mcp_runtime: McpRuntime | None = field(default=None, repr=False)
+    mcp_service: McpService | None = field(default=None, repr=False)
     delivery_store: DeliveryStore | None = None
     job_store: DurableJobStore | None = None
     job_worker: DurableJobWorker | None = None
@@ -207,6 +213,7 @@ class AppContext:
             ("reminder store", self.reminder_store),
             ("routine store", self.routine_store),
             ("group wiki store", self.group_wiki_store),
+            ("MCP store", self.mcp_service.store if self.mcp_service else None),
             ("delivery store", self.delivery_store),
             ("durable job store", self.job_store),
             ("Sub-Agent task store", self.subagent_store),

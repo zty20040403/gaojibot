@@ -31,6 +31,40 @@ class RecordingLogger:
 
 
 class DurableJobStoreTests(unittest.TestCase):
+    def test_generation_fences_same_owner_after_recovery_or_deferral(self) -> None:
+        store = DurableJobStore(postgres_for_test(self), lease_seconds=10)
+        self.addCleanup(store.close)
+        for index, deferred in enumerate((False, True)):
+            store.enqueue(kind="test", idempotency_key=f"recover-{index}",
+                          resume_on_lease_loss=True, now=100)
+            original = store.claim_due("same-worker", now=100)[0]
+            if deferred:
+                self.assertTrue(store.defer(original, delay_seconds=0, now=101))
+                now = 101
+            else:
+                now = 110
+            resumed = store.claim_due("same-worker", now=now)[0]
+            self.assertEqual(original.attempts, resumed.attempts)
+            self.assertGreater(resumed.lease_generation, original.lease_generation)
+            self.assertFalse(store.renew_lease(original.job_id, original.lease_owner,
+                lease_generation=original.lease_generation, now=now))
+            self.assertFalse(store.mark_succeeded(original.job_id, original.lease_owner,
+                lease_generation=original.lease_generation, now=now))
+            self.assertFalse(store.mark_failed(original.job_id, original.lease_owner, "stale",
+                lease_generation=original.lease_generation, now=now))
+            self.assertFalse(store.defer(original, now=now))
+            self.assertTrue(store.mark_succeeded(resumed.job_id, resumed.lease_owner,
+                lease_generation=resumed.lease_generation, now=now))
+
+    def test_fenced_expired_lease_cannot_be_revived_or_settled(self) -> None:
+        store = DurableJobStore(postgres_for_test(self), lease_seconds=10)
+        self.addCleanup(store.close)
+        store.enqueue(kind="test", idempotency_key="expired", now=100)
+        job = store.claim_due("worker", now=100)[0]
+        self.assertFalse(store.renew_lease(job.job_id, job.lease_owner, lease_generation=job.lease_generation, now=110))
+        self.assertFalse(store.mark_succeeded(job.job_id, job.lease_owner, lease_generation=job.lease_generation, now=110))
+        self.assertFalse(store.mark_failed(job.job_id, job.lease_owner, "expired", lease_generation=job.lease_generation, now=110))
+
     def test_idempotent_enqueue_claim_and_restart_recovery(self) -> None:
         store = DurableJobStore(postgres_for_test(self), lease_seconds=10)
         started_at = int(time.time())

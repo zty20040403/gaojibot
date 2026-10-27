@@ -343,11 +343,20 @@ def _policy_registry() -> dict[str, ToolPolicy]:
 
 TOOL_POLICIES = _policy_registry()
 DEFAULT_TOOL_POLICY = ToolPolicy()
+MCP_TOOL_POLICY = ToolPolicy(
+    risk="high", idempotency="non-idempotent",
+    side_effects=("execute:external", "write:external"),
+    timeout_seconds=150.0, approval="task", max_identical_calls=1,
+)
 _TOOL_OVERRIDE_LOCK = threading.RLock()
 _TOOL_ENABLED_OVERRIDES: dict[str, bool] = {}
 
 
 def policy_for_tool(name: str) -> ToolPolicy:
+    if name.startswith("mcp__"):
+        # Only the MCP host's reviewed configuration can waive approval. Remote
+        # readOnly/idempotent annotations never weaken loop or retry safeguards.
+        return MCP_TOOL_POLICY
     return TOOL_POLICIES.get(name, DEFAULT_TOOL_POLICY)
 
 
@@ -429,6 +438,8 @@ def approval_from_user_text(
     arguments: dict[str, Any],
 ) -> ToolApproval:
     policy = policy_for_tool(tool_name)
+    if tool_name.startswith("mcp__"):
+        return ToolApproval(True, source="mcp-host", reason="外部工具由 MCP 宿主核对独立审批，聊天文字不能批准。")
     if policy.approval == "task":
         return ToolApproval(True, source="fleet-task", reason="实际服务器写操作由 Fleet 验证本任务统一授权。")
     if policy.approval == "never":
@@ -510,7 +521,8 @@ class ToolCatalog:
         if not isinstance(schema, dict):
             return ToolValidation(False, ("工具参数 schema 缺失。",))
         errors: list[str] = []
-        _validate_value(arguments, schema, "$", errors, depth=0)
+        _validate_value(arguments, schema, "$", errors, depth=0,
+                        allow_patterns=not name.startswith("mcp__"))
         return ToolValidation(not errors, tuple(errors[:8]))
 
     @property
@@ -525,6 +537,7 @@ def _validate_value(
     errors: list[str],
     *,
     depth: int,
+    allow_patterns: bool = True,
 ) -> None:
     if depth > 12:
         errors.append(f"{path} 嵌套过深。")
@@ -573,6 +586,7 @@ def _validate_value(
                     f"{path}.{key}",
                     errors,
                     depth=depth + 1,
+                    allow_patterns=allow_patterns,
                 )
         return
 
@@ -592,6 +606,7 @@ def _validate_value(
                     f"{path}[{index}]",
                     errors,
                     depth=depth + 1,
+                    allow_patterns=allow_patterns,
                 )
         return
 
@@ -603,7 +618,9 @@ def _validate_value(
         if maximum_length is not None and len(value) > maximum_length:
             errors.append(f"{path} 最多允许 {int(maximum_length)} 个字符。")
         pattern = schema.get("pattern")
-        if isinstance(pattern, str):
+        # Remote schemas are useful to the model but are not trusted code. A
+        # backtracking regex must not run on the Bot's event-loop thread.
+        if allow_patterns and isinstance(pattern, str):
             try:
                 matched = re.search(pattern, value) is not None
             except re.error:
@@ -647,7 +664,11 @@ def _is_number(value: Any) -> bool:
 def _safe_number(value: Any) -> float | None:
     if not _is_number(value):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if -float("inf") < number < float("inf") else None
 
 
 def _type_name(value: Any) -> str:

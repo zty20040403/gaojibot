@@ -15,6 +15,7 @@ from .model_budget import ModelBudgetExceeded
 
 if TYPE_CHECKING:
     from .routine_worker import RoutineExecution
+    from .mcp_bridge.continuation_runtime import McpContinuationExecution
 from .application import ChatFailure
 from src.bot_storage import (
     DatabaseError,
@@ -113,9 +114,10 @@ from .handler_services import HandlerService
 from .handler_constants import (TURN_PROMPT_VERSION)
 from .prompt_context import quote_evidence
 from .intent_routing import ToolIntent, classify_tool_intent
-from .tools import available_tools, domain_registry
+from .tools import registry_for
 from .tools.state import SubAgentActions, ToolContext, TurnState
 from .tools.media import resolve_video_reference
+from .mcp_bridge.continuation_runtime import McpApprovalPending, McpChatCheckpoint
 
 
 class ToolExecutor(HandlerService):
@@ -200,6 +202,7 @@ class ToolExecutor(HandlerService):
         resume_task_id: int | None = None,
         _approved_call: dict[str, Any] | None = None,
         routine_execution: RoutineExecution | None = None,
+        _mcp_execution: McpContinuationExecution | None = None,
     ) -> Message | str:
         if _approved_call is not None:
             assert_approved("tool", _approved_call)
@@ -287,7 +290,7 @@ class ToolExecutor(HandlerService):
             available_image_sources = await self.services.commands._resolve_ocr_sources(bot, event)
         available_image_sources = available_image_sources or []
         available_video: VideoReference | None = None
-        if self.services.video_analyzer is not None:
+        if self.services.video_analyzer is not None and _mcp_execution is None:
             try:
                 available_video = await resolve_video_reference(self.services, bot, event)
             except (ActionFailed, OSError, RuntimeError, ValueError) as exc:
@@ -306,7 +309,7 @@ class ToolExecutor(HandlerService):
             intent_tools.add(MODEL_STATUS_TOOL_NAME)
         intent = ToolIntent()
         if not any((force_search, force_ocr, force_voice_reply, force_voice_transcription,
-                    task_mode, resume_task_id is not None, _approved_call is not None)):
+                    task_mode, resume_task_id is not None, _approved_call is not None, _mcp_execution is not None)):
             intent = await classify_tool_intent(
                 user_text,
                 catalog=self.context.model_catalog,
@@ -334,6 +337,7 @@ class ToolExecutor(HandlerService):
         )
         semantic_entry_enabled = bool(
             _approved_call is None
+            and _mcp_execution is None
             and self.context.subagent_coordinator is not None
             and self.context.settings.subagent_entry_enabled
             and isinstance(event, GroupMessageEvent)
@@ -435,6 +439,8 @@ class ToolExecutor(HandlerService):
             tool_capabilities.add("reminders")
         if self.context.routine_store is not None:
             tool_capabilities.add("routines")
+        if getattr(self.context, "mcp_service", None) is not None:
+            tool_capabilities.add("mcp")
         if self.context.settings.voice_enabled:
             tool_capabilities.add("voice")
             if available_voice_message_id is not None:
@@ -450,7 +456,14 @@ class ToolExecutor(HandlerService):
             voice_message_id=available_voice_message_id,
             subagent_task_started=resume_task_id is not None,
         )
-        tools = await self.context.db_call(available_tools, turn.context)
+        if (getattr(self.context, "mcp_runtime", None) is not None and isinstance(event, GroupMessageEvent)
+                and routine_execution is None and active_agent_step.get() is None):
+            turn.mcp_checkpoint = McpChatCheckpoint(self.context, turn, selected_profile, execution=_mcp_execution)
+        if _mcp_execution is not None:
+            _mcp_execution.turn = turn
+            turn.restore_reply_checkpoint(_mcp_execution.state["reply"])
+        tool_registry = await self.context.db_call(registry_for, turn.context)
+        tools = await self.context.db_call(tool_registry.definitions, turn.context)
         current_tool_catalog_version = tool_catalog_fingerprint(tools)
         if self.context.turn_journal is not None and journal_turn_id is not None:
             try:
@@ -597,7 +610,7 @@ class ToolExecutor(HandlerService):
             }:
                 return json.dumps({"ok": False, "error": "此操作需要绑定专业子任务。单一任务调用 delegate_agent；多项交付调用 run_subagents。不要在主控直接执行或声称已完成。"}, ensure_ascii=False)
 
-            result = await domain_registry.execute(turn, name, arguments)
+            result = await tool_registry.execute(turn, name, arguments)
             if result is not None:
                 return result
             return json.dumps(
@@ -620,6 +633,8 @@ class ToolExecutor(HandlerService):
                 return await _execute_tool_impl(name, arguments)
 
         async def execute_tool(name: str, arguments: dict[str, object]) -> str:
+            if _mcp_execution is not None:
+                return await _mcp_execution.tool(name, arguments, lambda: call_tool(name, arguments))
             if routine_execution is None:
                 return await call_tool(name, arguments)
 
@@ -634,12 +649,18 @@ class ToolExecutor(HandlerService):
         async def handoff_tool(name, arguments, fingerprint):
             await guard_collaboration()
             action = lambda: agent_executor.handoff_tool(name, arguments, fingerprint)
+            if _mcp_execution is not None:
+                return await _mcp_execution.tool(name, arguments, action)
             if routine_execution is None:
                 return await action()
             return await routine_execution.tool(name, arguments, action)
 
         async def compensate_tool(name, arguments, reason):
             await guard_collaboration()
+            if _mcp_execution is not None:
+                # Unknown external outcomes are handled by persisted receipts,
+                # not an unjournalled second mutation during cancellation.
+                return None
             if routine_execution is not None:
                 await routine_execution.guard()
             return await agent_executor.compensate_tool(name, arguments, reason)
@@ -1507,6 +1528,9 @@ class ToolExecutor(HandlerService):
                     "task#编号时调用 resume_subagent。"
                 )
 
+            if turn.mcp_checkpoint is not None:
+                turn.mcp_checkpoint.system_context = ("\n\n".join(stable_context_parts) if _mcp_execution is None
+                    else _mcp_execution.state["checkpoint"]["system_context"])
             if resume_task_id is not None:
                 answer = await run_resume_goal(resume_task_id)
             elif task_mode:
@@ -1540,7 +1564,8 @@ class ToolExecutor(HandlerService):
                         else self.context.settings.tool_simple_max_rounds
                     ),
                     tool_context="\n\n".join(context_parts),
-                    system_context="\n\n".join(stable_context_parts),
+                    system_context=(turn.mcp_checkpoint.system_context if turn.mcp_checkpoint is not None
+                                    else "\n\n".join(stable_context_parts)),
                     trace=turn_trace,
                     event_sink=(
                         record_loop_event if journal_turn_id is not None else None
@@ -1574,7 +1599,18 @@ class ToolExecutor(HandlerService):
                     ),
                     entry_profile=entry_profile,
                     entry_allowed_profiles=entry_allowed_profiles,
+                    transcript_sink=turn.mcp_checkpoint.capture if turn.mcp_checkpoint is not None else None,
+                    checkpoint_sink=_mcp_execution.checkpoint if _mcp_execution is not None else None,
+                    resume_messages=_mcp_execution.state["messages"] if _mcp_execution is not None else None,
+                    resume_history_length=_mcp_execution.state["checkpoint"]["history_length"] if _mcp_execution is not None else 0,
                 )
+        except McpApprovalPending as exc:
+            if _mcp_execution is not None:
+                raise
+            answer = exc.message
+            # Prepared media belongs to the saved final reply, not this waiting notice.
+            turn.voice_reply_segment = turn.visual_reply_segment = None
+            turn.voice_reply_text = ""
         except ModelBudgetExceeded:
             raise
         except ChatFailure:
@@ -1629,14 +1665,13 @@ class ToolExecutor(HandlerService):
         if turn.used_voice_texts:
             memory_user_text += "\n\n[语音转文字]\n" + "\n\n".join(turn.used_voice_texts)
         memory_answer = answer or "[工具动作：发送了一个表情]"
-        (
+        if _mcp_execution is None:
             await self.context.db_call(
                 self.context.memory.append_turn,
                 conversation_id,
                 memory_user_text,
                 memory_answer,
             )
-        )
         if isinstance(event, GroupMessageEvent) and self.context.message_ledger is None:
             (
                 await self.context.db_call(

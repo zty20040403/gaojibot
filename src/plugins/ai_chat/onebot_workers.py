@@ -17,6 +17,9 @@ async def start_background_tasks(
     handlers: HandlerServices,
     alert_notifier: AlertNotificationService,
 ) -> None:
+    mcp_runtime = getattr(context, "mcp_runtime", None)
+    if mcp_runtime is not None:
+        await mcp_runtime.start()
     if context.turn_journal is not None:
         await asyncio.to_thread(context.turn_journal.recover_interrupted)
         if (

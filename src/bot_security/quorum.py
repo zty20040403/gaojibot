@@ -6,7 +6,7 @@ class ApprovalQuorum:
     def required_quorum(kind: str, requested: int = 1) -> int:
         if type(requested) is not int or requested not in {1, 2}:
             raise ValueError("Invalid approval quorum")
-        return max(requested, 2 if kind in {"server_task", "fleet"} else 1)
+        return max(requested, 2 if kind in {"server_task", "fleet", "mcp_tool"} else 1)
 
     @staticmethod
     def _vote_payload(parent):
@@ -60,7 +60,7 @@ class ApprovalQuorum:
 
         with self.transaction() as db:
             row = db.execute("SELECT * FROM admin_approvals WHERE approval_id=? AND execution_owner=? AND status='executing'", (approval_id, owner)).fetchone()
-            if not row or not self._quorum_valid(db, dict(row)):
+            if not row or row["lease_until"] <= self.clock() or not self._quorum_valid(db, dict(row)):
                 raise SecurityError("审批或复核管理员权限已变化，未继续执行", 409)
 
     def _settle_vote(self, db, request):

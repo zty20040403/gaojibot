@@ -24,6 +24,9 @@ def register_http_surfaces(
     version: str,
     logger: BootstrapLogger,
 ) -> None:
+    mcp_runtime = getattr(context, "mcp_runtime", None)
+    if mcp_runtime is not None and mcp_runtime.endpoint is not None:
+        app.mount(mcp_runtime.config.read_path, mcp_runtime.http, name="mcp-group-reader")
     if settings.observability_enabled:
         try:
             register_metrics_endpoint(
@@ -82,6 +85,7 @@ def register_http_surfaces(
                 user_profiles=context.user_profiles,
                 message_ledger=context.message_ledger,
                 group_wiki_store=context.group_wiki_store,
+                mcp_runtime=mcp_runtime,
                 settings=context.settings,
                 sandbox_manager=context.sandbox_manager,
                 sticker_inventory=sticker_inventory,

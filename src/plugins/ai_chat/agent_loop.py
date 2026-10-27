@@ -8,6 +8,7 @@ import logging
 import re
 import socket
 import time
+from copy import deepcopy
 from contextvars import ContextVar
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
@@ -29,6 +30,7 @@ from .llm_gateway import (
     completion_profile_scope,
 )
 from .model_catalog import ModelCatalog, ModelProfile
+from .model_budget import ModelBudgetExceeded
 from .observability import current_trace_id, telemetry
 from .runtime_clock import runtime_clock_prompt
 from .prompt_context import quote_evidence, quote_group_context
@@ -46,6 +48,7 @@ FeedbackProvider = Callable[[], Awaitable[list[str]]]
 FinalTextSink = Callable[[str], Awaitable[None]]
 EntryHandler = Callable[["EntryDecision"], Awaitable[Optional[str]]]
 TranscriptSink = Callable[[list[ChatMessage]], None]
+CheckpointSink = Callable[[list[ChatMessage]], Awaitable[None]]
 LoopEventKind = Literal[
     "model_note",
     "tool_started",
@@ -539,16 +542,30 @@ async def ask_deepseek_with_tools(
     after_tool_round: Callable[[], None] | None = None,
     final_feedback: Callable[[str], str | None] | None = None,
     system_context: str = "",
+    resume_messages: list[ChatMessage] | None = None,
+    resume_history_length: int = 0,
+    checkpoint_sink: CheckpointSink | None = None,
 ) -> str:
+    async def publish_transcript(items):
+        if transcript_sink is None and checkpoint_sink is None:
+            return
+        snapshot = deepcopy([item for item in items if item.get("role") != "system"])
+        if transcript_sink is not None:
+            transcript_sink(snapshot)
+        if checkpoint_sink is not None:
+            await checkpoint_sink(snapshot)
+
     _last_completion_profile.set(None)
     selected_profile = _resolve_profile(profile, model)
+    if resume_messages is not None and (entry_handler is not None or not selected_profile.capabilities.tools):
+        raise DeepSeekConfigError("A saved tool continuation requires a tool-capable model without entry replanning")
     if final_feedback is not None and (final_text_sink is not None or entry_handler is not None
             or not tools or not selected_profile.capabilities.tools
             or max_tool_rounds is None or max_tool_rounds < 1):
         raise DeepSeekConfigError("Host final feedback requires a bounded non-streaming tool loop without entry dispatch")
     if entry_handler is not None and not (entry_profile or selected_profile).capabilities.tools:
         raise DeepSeekConfigError("The execution entry requires a tool-capable model")
-    if entry_handler is None and (not tools or not selected_profile.capabilities.tools):
+    if resume_messages is None and entry_handler is None and (not tools or not selected_profile.capabilities.tools):
         answer = await ask_deepseek(
             user_text,
             history,
@@ -563,8 +580,7 @@ async def ask_deepseek_with_tools(
             final_text_sink=final_text_sink,
             final_stream_state=final_stream_state,
         )
-        if transcript_sink is not None:
-            transcript_sink([*history, {"role": "user", "content": user_text}, {"role": "assistant", "content": answer}])
+        await publish_transcript([*history, {"role": "user", "content": user_text}, {"role": "assistant", "content": answer}])
         return answer
 
     messages = _build_messages(
@@ -577,6 +593,18 @@ async def ask_deepseek_with_tools(
         system_context=system_context,
         replay_prefix=replay_prefix,
     )
+    recovered_calls = []
+    if resume_messages is not None:
+        from .mcp_bridge.checkpoint import validate_transcript
+        if type(resume_history_length) is not int or not 0 <= resume_history_length <= len(resume_messages):
+            raise DeepSeekConfigError("Invalid saved current-turn boundary")
+        pending = validate_transcript(resume_messages)
+        messages = [messages[0], *deepcopy(resume_messages)]
+        if not pending and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
+            return str(messages[-1].get("content") or "")
+        for identifier, (name, arguments) in pending.items():
+            recovered_calls.append(SimpleNamespace(id=identifier, type="function",
+                function=SimpleNamespace(name=name, arguments=json.dumps(arguments, ensure_ascii=False))))
     if trace is not None:
         _configure_trace(trace, selected_profile)
         trace.messages.append({"role": "user", "content": user_text})
@@ -662,22 +690,49 @@ async def ask_deepseek_with_tools(
     stop_reason = "工具调用轮次已达到系统上限。"
     fingerprint_history: list[str] = []
     fingerprint_counts: dict[str, int] = {}
+    if resume_messages is not None:
+        # Completed calls are evidence, not permission to repeat side effects
+        # under a newly invented provider call ID after a restart.
+        completed = set()
+        for item in resume_messages[resume_history_length:]:
+            if item.get("role") != "tool":
+                continue
+            try:
+                receipt = json.loads(item["content"])
+            except (ValueError, TypeError):
+                receipt = None
+            if isinstance(receipt, dict) and receipt.get("code") == "deferred_batch_not_executed":
+                continue
+            completed.add(item.get("tool_call_id"))
+        for item in resume_messages[resume_history_length:]:
+            for call in item.get("tool_calls", []):
+                if call["id"] in completed:
+                    key = _tool_call_fingerprint(call["function"]["name"], json.loads(call["function"]["arguments"]))
+                    fingerprint_history.append(key)
+                    fingerprint_counts[key] = fingerprint_counts.get(key, 0) + 1
+                    total_tool_calls += 1
 
     while max_tool_rounds is None or tool_round < max_tool_rounds:
         tool_round += 1
-        await _append_pending_feedback(messages, trace, feedback_provider)
-        response, emitted = await _completion_with_optional_stream(
-            final_text_sink,
-            selected_profile,
-            trace=trace,
-            **_completion_kwargs(messages, selected_profile),
-            tools=tools,
-            tool_choice=next_tool_choice,
-        )
-        if trace is not None:
-            _configure_trace(trace, _actual_profile(selected_profile))
-            trace.add_usage(response)
-        message = response.choices[0].message
+        recovering = bool(recovered_calls)
+        if recovering:
+            message, emitted = SimpleNamespace(content="", tool_calls=recovered_calls), ""
+            recovered_calls = []
+        else:
+            await _append_pending_feedback(messages, trace, feedback_provider)
+            await publish_transcript(messages)
+            response, emitted = await _completion_with_optional_stream(
+                final_text_sink,
+                selected_profile,
+                trace=trace,
+                **_completion_kwargs(messages, selected_profile),
+                tools=tools,
+                tool_choice=next_tool_choice,
+            )
+            if trace is not None:
+                _configure_trace(trace, _actual_profile(selected_profile))
+                trace.add_usage(response)
+            message = response.choices[0].message
         tool_calls = list(getattr(message, "tool_calls", None) or [])
         if not tool_calls:
             content = (message.content or "").strip()
@@ -691,8 +746,7 @@ async def ask_deepseek_with_tools(
                 }])
                 if trace is not None:
                     trace.messages.append(candidate)
-                if transcript_sink is not None:
-                    transcript_sink([item for item in messages if item.get("role") != "system"])
+                await publish_transcript(messages)
                 next_tool_choice = "auto"
                 continue
             raced_feedback = (
@@ -713,18 +767,17 @@ async def ask_deepseek_with_tools(
                 continue
             if trace is not None:
                 trace.messages.append(_assistant_final_message(message))
-            if transcript_sink is not None:
-                transcript_sink([item for item in [*messages, _assistant_final_message(message)] if item.get("role") != "system"])
+            await publish_transcript([*messages, _assistant_final_message(message)])
             if final_stream_state is not None:
                 final_stream_state.sent_prefix = emitted
                 final_stream_state.streamed_calls += int(bool(emitted))
             return content
 
-        assistant_message = _assistant_tool_message(message)
-        messages.append(assistant_message)
-        if transcript_sink is not None:
-            transcript_sink([item for item in messages if item.get("role") != "system"])
-        if trace is not None:
+        assistant_message = {"content": ""} if recovering else _assistant_tool_message(message)
+        if not recovering:
+            messages.append(assistant_message)
+        await publish_transcript(messages)
+        if trace is not None and not recovering:
             trace.messages.append(dict(assistant_message))
         model_note = str(assistant_message.get("content") or "").strip()
         if model_note:
@@ -816,6 +869,7 @@ async def ask_deepseek_with_tools(
                 messages.append(tool_message)
                 if trace is not None:
                     trace.messages.append(dict(tool_message))
+                await publish_transcript(messages)
                 continue
             fingerprint_history.append(fingerprint)
             fingerprint_counts[fingerprint] = (
@@ -940,6 +994,8 @@ async def ask_deepseek_with_tools(
                         ),
                     )
                 raise
+            except ModelBudgetExceeded:
+                raise
             except Exception:
                 tool_result = json.dumps(
                     {"ok": False, "error": "工具执行时发生内部错误。"},
@@ -979,8 +1035,7 @@ async def ask_deepseek_with_tools(
                     **event_fields,
                 ),
             )
-            if transcript_sink is not None:
-                transcript_sink([item for item in messages if item.get("role") != "system"])
+            await publish_transcript(messages)
             if tool_context_chars >= settings.tool_max_context_chars:
                 budget_exhausted = True
 
@@ -1023,8 +1078,7 @@ async def ask_deepseek_with_tools(
             messages.append(tool_message)
             if trace is not None:
                 trace.messages.append(dict(tool_message))
-        if transcript_sink is not None:
-            transcript_sink([item for item in messages if item.get("role") != "system"])
+        await publish_transcript(messages)
         if after_tool_round is not None:
             after_tool_round()
         if budget_exhausted:
@@ -1055,8 +1109,7 @@ async def ask_deepseek_with_tools(
         trace.add_usage(response)
     content = response.choices[0].message.content
     if content:
-        if transcript_sink is not None:
-            transcript_sink([item for item in [*messages, _assistant_final_message(response.choices[0].message)] if item.get("role") != "system"])
+        await publish_transcript([*messages, _assistant_final_message(response.choices[0].message)])
         if trace is not None:
             trace.messages.append(
                 _assistant_final_message(response.choices[0].message)
@@ -1451,6 +1504,16 @@ def _feedback_message(notes: list[str]) -> ChatMessage:
 
 
 def _tool_completion_state(tool_name: str, result: str) -> str:
+    if tool_name.startswith("mcp__"):
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            if payload.get("status") in {"awaiting_approval", "waiting", "ready", "connecting", "dispatched"}:
+                return "waiting"
+            if payload.get("needs_attention") is True:
+                return "outcome-unknown"
     if not _tool_result_succeeded(result):
         return "failed"
     if any(

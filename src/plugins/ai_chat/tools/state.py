@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from ..handler_services import HandlerServices
     from ..runtime import AppContext
     from ..web_search import SearchResult
+    from ..mcp_bridge.continuation_runtime import McpChatCheckpoint
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class TurnState:
     subagent_task_started: bool = False
     subagent_delegations: int = 0
     subagent_actions: SubAgentActions | None = None
+    mcp_checkpoint: McpChatCheckpoint | None = None
 
     @property
     def agent_executor(self) -> AgentToolExecutor | None:

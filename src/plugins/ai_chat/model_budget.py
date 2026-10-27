@@ -120,8 +120,10 @@ class ModelCallBudget:
         *,
         max_requests: int = 16,
         before_request: Callable[[], Awaitable[None]] | None = None,
+        reserve_request: Callable[[CallReservation], Awaitable[None]] | None = None,
     ):
         self.before_request = before_request
+        self.reserve_request = reserve_request
         if (
             type(max_tokens) is not int
             or max_tokens < 1

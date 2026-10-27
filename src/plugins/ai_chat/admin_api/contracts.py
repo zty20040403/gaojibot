@@ -46,6 +46,7 @@ class AdminServices:
     user_profiles: Any = None
     message_ledger: Any = None
     group_wiki_store: Any = None
+    mcp_runtime: Any = None
     settings: Any = None
     sandbox_manager: Any = None
     sticker_inventory: Any = None

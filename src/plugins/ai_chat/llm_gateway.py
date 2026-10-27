@@ -824,6 +824,8 @@ class LLMGateway:
             await budget.before_request()
         request, reservation = budget.prepare(profile, kwargs)
         try:
+            if budget.reserve_request is not None:
+                await budget.reserve_request(reservation)
             response = await provider.create_completion(profile, **request)
             if request.get("stream"):
                 return BudgetedStream(response, reservation)

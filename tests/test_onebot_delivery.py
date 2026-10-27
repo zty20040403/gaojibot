@@ -134,6 +134,64 @@ class OneBotDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get(record.delivery_id).status, "pending")
         self.bot.send_group_msg.assert_not_awaited()
 
+    def mcp_runtime(self):
+        self.context.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.context.db_call.close)
+        runtime = SimpleNamespace(store=Mock(), scope_allowed=AsyncMock(return_value=True))
+        runtime.store.delivery_identity.return_value = {"scope_key": self.scope.key, "bot_id": "123", "user_id": "789"}
+        self.context.mcp_runtime = runtime
+        return runtime
+
+    async def test_mcp_final_uses_original_bot_and_fresh_scope_check(self):
+        runtime = self.mcp_runtime()
+        record = self.enqueue("mcp-final:call-1")
+        other = Mock(spec=Bot, self_id="456", call_api=AsyncMock(), send_group_msg=AsyncMock())
+        await self.cycle({"456": other, "123": self.bot})
+        self.assertEqual(self.store.get(record.delivery_id).status, "committed")
+        runtime.scope_allowed.assert_awaited_once_with(scope_key=self.scope.key, bot_id="123", user_id="789")
+        self.bot.send_group_msg.assert_awaited_once()
+        other.send_group_msg.assert_not_awaited()
+
+    async def test_mcp_final_waits_for_original_bot_and_runtime(self):
+        self.mcp_runtime()
+        record = self.enqueue("mcp-final:call-1")
+        other = Mock(spec=Bot, self_id="456", call_api=AsyncMock(), send_group_msg=AsyncMock())
+        await self.cycle({"456": other})
+        self.assertEqual(self.store.get(record.delivery_id).status, "pending")
+        other.call_api.assert_not_awaited()
+        other.send_group_msg.assert_not_awaited()
+        self.context.mcp_runtime = None
+        second = self.enqueue("mcp-final:call-2")
+        await self.cycle()
+        self.assertEqual(self.store.get(second.delivery_id).status, "pending")
+        self.bot.send_group_msg.assert_not_awaited()
+
+    async def test_mcp_final_scope_revocation_prevents_delivery(self):
+        runtime = self.mcp_runtime()
+        runtime.scope_allowed.return_value = False
+        record = self.enqueue("mcp-final:call-1")
+        await self.cycle()
+        self.assertNotEqual(self.store.get(record.delivery_id).status, "committed")
+        self.bot.send_group_msg.assert_not_awaited()
+
+    async def test_mcp_final_without_native_receipt_is_ambiguous_not_sent(self):
+        self.mcp_runtime()
+        self.services.replies._sent_message_id = lambda _: None
+        record = self.enqueue("mcp-final:call-1")
+        await self.cycle()
+        self.assertEqual(self.store.get(record.delivery_id).status, "ambiguous")
+        await self.cycle()
+        self.bot.send_group_msg.assert_awaited_once()
+
+    async def test_mcp_final_cannot_send_directly_from_wrong_bot(self):
+        from src.plugins.ai_chat.bridges import BridgePermanentError
+        self.mcp_runtime()
+        record = self.enqueue("mcp-final:call-1")
+        other = Mock(spec=Bot, self_id="456", send_group_msg=AsyncMock())
+        with self.assertRaises(BridgePermanentError):
+            await self.delivery._deliver_onebot_outbox(other, record)
+        other.send_group_msg.assert_not_awaited()
+
     async def test_account_status_is_rechecked_after_next_due_time(self):
         record = self.enqueue()
         self.bot.call_api.return_value = {"online": False}

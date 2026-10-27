@@ -164,6 +164,7 @@ class DurableJobWorker:
                 self.worker_id,
                 f"no handler registered for {job.kind}",
                 retryable=False,
+                lease_generation=job.lease_generation,
             )
             self.logger.error(f"Durable job {job.handle} has no handler: {job.kind}")
             return
@@ -194,6 +195,7 @@ class DurableJobWorker:
                 self.worker_id,
                 f"job exceeded {self._timeouts[job.kind]:g} seconds",
                 retryable=False,
+                lease_generation=job.lease_generation,
             )
             if changed:
                 self.logger.warning(f"Durable job {job.handle} timed out.")
@@ -225,6 +227,7 @@ class DurableJobWorker:
                 str(exc),
                 retryable=retryable,
                 retry_delay_seconds=min(10 * (2 ** max(job.attempts - 1, 0)), 300),
+                lease_generation=job.lease_generation,
             )
             if changed:
                 self.logger.warning(
@@ -235,6 +238,7 @@ class DurableJobWorker:
             changed = await asyncio.to_thread(
                 self.store.mark_succeeded, job.job_id, self.worker_id,
                 result=safe_result,
+                lease_generation=job.lease_generation,
             )
             if not changed:
                 self.logger.warning(
@@ -282,6 +286,7 @@ class DurableJobWorker:
             try:
                 renewed = await asyncio.to_thread(
                     self.store.renew_lease, job.job_id, self.worker_id,
+                    lease_generation=job.lease_generation,
                 )
             except Exception as exc:
                 self.logger.warning(

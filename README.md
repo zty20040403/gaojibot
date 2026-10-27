@@ -760,6 +760,7 @@ git status -sb
 
 - [从零搭建教程](docs/from-zero.html)
 - [生产运维与配置](docs/operations-v3.md)
+- [MCP 接入与运维（开发中）](docs/mcp-bridge.md)
 - [PostgreSQL 迁移](docs/postgresql-migration.md)
 - [系统架构](docs/architecture.md)
 - [架构决策记录 ADR](docs/adr/README.md)

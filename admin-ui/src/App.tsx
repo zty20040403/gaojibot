@@ -14,6 +14,7 @@ import {
   ListChecks,
   Menu,
   PanelLeftClose,
+  Plug,
   RefreshCw,
   ScanSearch,
   ServerCog,
@@ -25,6 +26,7 @@ import { LoginGate, MemberStatus, AccountsView, ApprovalNotice } from './Account
 import { StatusBadge } from './components'
 import { ContextDebugView } from './ContextDebugView'
 import { WikiView } from './WikiView'
+import { McpView } from './McpView'
 import { DETAIL_META, DetailView, type DetailViewId } from './detailViews'
 import { useControlPlane } from './useControlPlane'
 import {
@@ -50,7 +52,7 @@ const runtime = window.__GAOJI_ADMIN__ ?? {
   requiresLogin: true,
 }
 
-type ViewId = 'accounts' | 'overview' | 'observability' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'context-debug' | 'wiki' | 'databases' | 'fleet' | 'sandboxes' | 'media' | 'audit' | 'help'
+type ViewId = 'accounts' | 'overview' | 'observability' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'context-debug' | 'wiki' | 'mcp' | 'databases' | 'fleet' | 'sandboxes' | 'media' | 'audit' | 'help'
 
 const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group: string; icon: ComponentType<{ size?: number }> }> = [
   { id: 'accounts', label: '账户与任务授权', description: '账户权限、服务器任务授权与操作记录', group: '配置', icon: Users },
@@ -65,6 +67,7 @@ const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group:
   { id: 'wiki', label: '群百科', description: '群知识、来源证据与新人简报', group: '资源', icon: BookOpen },
   { id: 'groups', label: '模型与群友', description: '配置群开关、统一模型和个人模型', group: '配置', icon: Users },
   { id: 'tools', label: '工具权限', description: '控制 Agent 可见工具与执行策略', group: '配置', icon: Wrench },
+  { id: 'mcp', label: 'MCP 接入', description: '外部工具、群只读凭证与调用回执', group: '配置', icon: Plug },
   { id: 'databases', label: '数据库', description: '主备节点、连接池与复制状态', group: '基础设施', icon: Database },
   { id: 'fleet', label: '服务器集群', description: 'Ops 只读状态、能力与观测证据', group: '基础设施', icon: ServerCog },
   { id: 'audit', label: '审计记录', description: '查询所有控制面修改及资源版本', group: '基础设施', icon: FileClock },
@@ -182,6 +185,7 @@ export function App() {
               {active === 'traces' && <TracesView plane={plane} onOpenDetail={openDetail} />}
               {active === 'context-debug' && <ContextDebugView plane={plane} />}
               {active === 'wiki' && <WikiView plane={plane} />}
+              {active === 'mcp' && <McpView plane={plane} />}
               {active === 'databases' && <DatabasesView plane={plane} />}
               {active === 'fleet' && <FleetView plane={plane} />}
               {active === 'sandboxes' && <SandboxesView plane={plane} />}

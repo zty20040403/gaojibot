@@ -38,6 +38,7 @@ class DurableJob:
     created_at: int
     updated_at: int
     finished_at: int | None
+    lease_generation: int = 0
 
     @property
     def handle(self) -> str:
@@ -201,6 +202,7 @@ class DurableJobStore:
                     """
                     UPDATE durable_jobs
                     SET status = 'running', attempts = attempts + 1,
+                        lease_generation = lease_generation + 1,
                         lease_owner = ?, lease_until = ?, updated_at = ?,
                         last_error = ''
                     WHERE job_id = ? AND status = 'pending'
@@ -229,6 +231,7 @@ class DurableJobStore:
         *,
         result: Mapping[str, Any] | None = None,
         now: int | None = None,
+        lease_generation: int | None = None,
     ) -> bool:
         timestamp = int(time.time() if now is None else now)
         encoded_result = json.dumps(
@@ -242,8 +245,10 @@ class DurableJobStore:
                     lease_until = NULL, last_error = '', updated_at = ?,
                     finished_at = ?
                 WHERE job_id = ? AND status = 'running' AND lease_owner = ?
+                  AND (CAST(? AS bigint) IS NULL OR (lease_generation=? AND lease_until>?))
                 """,
-                (encoded_result, timestamp, timestamp, int(job_id), str(owner)),
+                (encoded_result, timestamp, timestamp, int(job_id), str(owner),
+                 lease_generation, lease_generation, timestamp),
             )
             return cursor.rowcount == 1
 
@@ -253,9 +258,10 @@ class DurableJobStore:
         with self._transaction() as cursor:
             cursor.execute("""UPDATE durable_jobs SET status='pending', attempts=attempts-1,
                 next_attempt_at=?, lease_owner='', lease_until=NULL, last_error=?, updated_at=?
-                WHERE job_id=? AND status='running' AND lease_owner=? AND attempts=? AND lease_until>?""",
+                WHERE job_id=? AND status='running' AND lease_owner=? AND attempts=? AND lease_until>?
+                AND lease_generation=?""",
                 (timestamp + max(delay_seconds, 0), reason[:2000], timestamp,
-                 job.job_id, job.lease_owner, job.attempts, timestamp))
+                 job.job_id, job.lease_owner, job.attempts, timestamp, job.lease_generation))
             return cursor.rowcount == 1
 
     def renew_lease(
@@ -264,6 +270,7 @@ class DurableJobStore:
         owner: str,
         *,
         now: int | None = None,
+        lease_generation: int | None = None,
     ) -> bool:
         timestamp = int(time.time() if now is None else now)
         with self._transaction() as cursor:
@@ -272,12 +279,16 @@ class DurableJobStore:
                 UPDATE durable_jobs
                 SET lease_until = ?, updated_at = ?
                 WHERE job_id = ? AND status = 'running' AND lease_owner = ?
+                  AND (CAST(? AS bigint) IS NULL OR (lease_generation=? AND lease_until>?))
                 """,
                 (
                     timestamp + self.lease_seconds,
                     timestamp,
                     int(job_id),
                     str(owner),
+                    lease_generation,
+                    lease_generation,
+                    timestamp,
                 ),
             )
             return cursor.rowcount == 1
@@ -291,6 +302,7 @@ class DurableJobStore:
         retryable: bool = True,
         retry_delay_seconds: int = 10,
         now: int | None = None,
+        lease_generation: int | None = None,
     ) -> bool:
         timestamp = int(time.time() if now is None else now)
         with self._transaction() as cursor:
@@ -298,8 +310,10 @@ class DurableJobStore:
                 """
                 SELECT attempts, max_attempts FROM durable_jobs
                 WHERE job_id = ? AND status = 'running' AND lease_owner = ?
+                  AND (CAST(? AS bigint) IS NULL OR (lease_generation=? AND lease_until>?))
+                FOR UPDATE
                 """,
-                (int(job_id), str(owner)),
+                (int(job_id), str(owner), lease_generation, lease_generation, timestamp),
             ).fetchone()
             if row is None:
                 return False
@@ -458,6 +472,7 @@ class DurableJobStore:
             finished_at=(
                 int(row["finished_at"]) if row["finished_at"] is not None else None
             ),
+            lease_generation=int(row["lease_generation"]),
         )
 
     @staticmethod
