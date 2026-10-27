@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Awaitable, Callable
 
+from .errors import SandboxError as SandboxError
+
 
 SANDBOX_ID_PATTERN = re.compile(r"^s[0-9a-f]{6}$")
 NIX_ATTRIBUTE_PATTERN = re.compile(
@@ -25,10 +27,6 @@ RUNTIME_IMAGES = {
     "node": "node:22-slim",
     "debian": "debian:bookworm-slim",
 }
-
-
-class SandboxError(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)

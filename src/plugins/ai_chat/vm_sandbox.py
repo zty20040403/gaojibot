@@ -133,6 +133,8 @@ class VmSandboxManager:
         }
         if project_disk is not None:
             from src.sandbox_runtime import project_vm_gate, project_vm_guest
+            from src.sandbox_runtime.project_vm_file_bundle import build_bundle
+            from src.sandbox_runtime.project_vm_file_guest import HELPER_PATH as FILE_HELPER_PATH
 
             project = project_disk.guest_config(initialize=initialize_project)
             config["users"] = [{"name": "sandbox", "uid": 1000, "shell": "/bin/bash",
@@ -145,6 +147,8 @@ class VmSandboxManager:
                  "content": Path(project_vm_guest.__file__).read_text(encoding="utf-8")},
                 {"path": project_vm_gate.HELPER_PATH, "permissions": "0755", "owner": "root:root",
                  "content": Path(project_vm_gate.__file__).read_text(encoding="utf-8")},
+                {"path": FILE_HELPER_PATH, "permissions": "0700", "owner": "root:root",
+                 "encoding": "b64", "content": base64.b64encode(build_bundle()).decode("ascii")},
                 {"path": "/etc/systemd/system/gaoji-project-workspace.service", "permissions": "0644", "owner": "root:root",
                  "content": "[Unit]\nDescription=Gaoji project workspace\nAfter=local-fs.target\n"
                             "[Service]\nType=oneshot\nRemainAfterExit=yes\nTimeoutStartSec=300\n"

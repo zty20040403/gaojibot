@@ -8,7 +8,7 @@ import re
 import stat
 
 from src.local_runtime.files import file_lock, read_json, write_json
-from .docker import SandboxError
+from .errors import SandboxError
 
 MIB = 1024**2
 MIN_QUOTA = 64 * MIB

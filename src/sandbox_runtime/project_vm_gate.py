@@ -246,6 +246,23 @@ class ProjectGuestGate:
             self.workspace.verify()
             return self.commands.run(argv, timeout, tasks)
 
+    @contextmanager
+    def maintenance(self, epoch):
+        """Serialize trusted file operations without reopening user execution."""
+        self._epoch(epoch)
+        with self._lock("control"), self._lock("io"):
+            state = self._state()
+            if state["mode"] != "quiesced" or not 0 < state["epoch"] <= epoch:
+                raise GuestDiskError("File maintenance requires completed writer quiescence")
+            self.commands.require_cgroups()
+            if not self.commands.empty() or self.commands.sandbox_processes():
+                raise GuestDiskError("Guest writers prevent file maintenance")
+            self.workspace.verify()
+            # The file journal owns operation fences inside this reservation.
+            # Do not supersede a pending transfer before it validates the call.
+            yield
+            self.workspace.verify()
+
 
 def main():
     if os.geteuid() != 0:

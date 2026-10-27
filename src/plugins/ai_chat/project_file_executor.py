@@ -38,7 +38,7 @@ class _RemoteFile:
         return data
 
 
-class DockerProjectFiles:
+class ProjectFileExecutor:
     operations = frozenset(
         {
             "snapshot_workspace",
@@ -51,6 +51,13 @@ class DockerProjectFiles:
     def __init__(self, lifecycle, client, *, resolve_access):
         self.lifecycle, self.client = lifecycle, client
         self.projects, self.resolve_access = lifecycle.projects, resolve_access
+
+    @staticmethod
+    def _evidence(step, observed, **extra):
+        return {
+            **DockerProjectBackend._evidence(step, observed, **extra),
+            "observation": "Private file helper verified the reserved project tree and manifest",
+        }
 
     async def _context(self, job):
         project, run = await _store(self.lifecycle.context, job)
@@ -158,7 +165,7 @@ class DockerProjectFiles:
                     or checked["exit_code"] != 0
                 ):
                     raise ProjectConflict("Dependency completion was not verified")
-                return DockerProjectBackend._evidence(
+                return self._evidence(
                     step,
                     checked,
                     rebuilt_version=baseline,
@@ -264,7 +271,7 @@ class DockerProjectFiles:
             staged_manifest_sha256=digest,
             rebuild=document.get("rebuild"),
         )
-        return DockerProjectBackend._evidence(
+        return self._evidence(
             step,
             checked,
             snapshot={key: version[key] for key in ("version_no", "manifest_sha256")},
@@ -287,7 +294,7 @@ class DockerProjectFiles:
             or type(observed.get("pruned_roots")) is not int
         ):
             raise ProjectConflict("Rebuildable cleanup was not verified")
-        return DockerProjectBackend._evidence(
+        return self._evidence(
             step, observed, snapshot=snapshot, pruned_roots=observed["pruned_roots"]
         )
 
@@ -347,4 +354,4 @@ class DockerProjectFiles:
         )
         if observed.get("pending") is not False:
             raise ProjectConflict("Restored tree was not verified")
-        return DockerProjectBackend._evidence(step, observed, restored_version=baseline)
+        return self._evidence(step, observed, restored_version=baseline)

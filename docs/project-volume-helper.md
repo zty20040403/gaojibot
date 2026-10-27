@@ -481,7 +481,7 @@ The private lifecycle sequence is:
 
 ```text
 reserve host workspace -> quiesce guest at current reservation fence
-  -> retained-file maintenance / snapshot (adapter still pending)
+  -> reserved guest file snapshot / restore / prune
   -> activate guest at next release fence -> release host reservation
 ```
 
@@ -503,7 +503,49 @@ cgroup actions are fixtures. Native detached-process termination, guest reboot,
 QGA disconnect and end-to-end lifecycle acceptance are still required. QGA file
 RPCs stage uploads outside `/workspace`; a leaked guest file descriptor must
 not be worked around with forced/lazy unmount. This checkpoint does not expose
-the private VM project adapter in production or complete VM version IO.
+the private VM project adapter in production or complete its lifecycle wiring.
+
+## VM retained-file transfer
+
+`VmProjectFiles` supplies the private `project_files` transport consumed by
+`ProjectFileExecutor`. It retains the OCI manifest, hashing, CAS staging and
+restoration contract; the filesystem engine runs inside the VM instead of
+mounting untrusted guest storage on the host. No request selects a guest or
+host root. The only workspace is the verified project data disk at `/workspace`.
+
+Project cloud-init installs a deterministic, root-only `project_files.pyz` with
+an explicit stdlib-only module list. It includes the shared retained-file engine
+and validation code, not the Bot, host Docker/libvirt drivers or credentials.
+The host invokes it with isolated Python (`-I`). Normal temporary VMs are
+unchanged. Existing frozen project seed images are not rewritten in place.
+
+Every call holds the same host IO lock and the guest execution gate's control
+and IO locks. The guest must already be quiesced, with no user processes or
+populated execution cgroup, and its mount identity must still match. The file
+journal owns successive operation fences inside a reservation; failed file
+validation does not advance the execution epoch and strand an earlier pending
+restore. All state remains private to the guest administrator.
+
+The host journals snapshot/restore/prune intent before QGA delivery. A missing
+reply leaves maintenance reserved. Guest-side retries use fsynced manifests,
+file identities, exact offsets and prefix-byte comparisons. Restore completion
+requires a fresh scan of the complete retained tree. Host acknowledgement is
+bound to the same project, generation, domain, fence and manifest. Source
+snapshot identity is checked before pruning frozen rebuildable roots.
+
+The QGA transport caps binary chunks at 48 KiB because its input is nested
+base64 inside a `virsh` command argument. Larger files use successive chunks,
+not larger command-line arguments. Manifests are paginated; transfer has no
+automatic overwrite or fallback to the guest system disk. Throughput and
+maximum-size deadline acceptance on native guests remain open gates, not
+inferred from the fast in-process test transport.
+
+`tests/test_project_vm_files.py` covers actual files, hashes, journals, chunk
+retries, executable modes, empty files, path/link rejection and a deterministic
+bundle imported by a fresh isolated Python process. Guest mounts, cgroups and
+libvirt are fixtures. The VM-specific lifecycle plan, guest dependency rebuild
+adapter, native crash/reboot/hibernate acceptance and product registration are
+still pending; this private transport alone does not enable project VMs.
 
 ## Evidence and remaining gates
 

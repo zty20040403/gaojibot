@@ -22,7 +22,7 @@ from src.project_content import (
     manifest_digest,
     project_path,
 )
-from .project_volumes import ProjectVolumeError
+from .project_volume_journal import ProjectVolumeError
 from .project_rebuild import BROWSER, GENERIC, classify, prune
 
 

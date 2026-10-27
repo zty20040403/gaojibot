@@ -10,7 +10,7 @@ import tomllib
 
 from src.local_runtime.files import read_json, write_json
 from src.project_content import manifest_digest, project_path, rebuild_spec
-from .project_volumes import ProjectVolumeError
+from .project_volume_journal import ProjectVolumeError
 
 CONTROL = ".gaoji/rebuildable"
 GENERIC = frozenset({"__pycache__", ".cache", ".npm", ".pnpm-store"})

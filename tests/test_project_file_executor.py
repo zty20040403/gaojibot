@@ -15,7 +15,7 @@ nonebot.init()
 from src.bot_storage import open_store_connection
 from src.project_content import CHUNK_BYTES
 from src.plugins.ai_chat.project_blobs import ProjectFile
-from src.plugins.ai_chat.project_file_executor import DockerProjectFiles
+from src.plugins.ai_chat.project_file_executor import ProjectFileExecutor
 from src.plugins.ai_chat.project_executor import ProjectBackendUnavailable
 from src.plugins.ai_chat.projects import ProjectQuotaExceeded
 from src.sandbox_runtime.docker import SandboxError
@@ -29,7 +29,7 @@ class ProjectFileExecutorTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await fixture.ProjectExecutorTests.asyncSetUp(self)
-        self.backend.files = DockerProjectFiles(
+        self.backend.files = ProjectFileExecutor(
             self.lifecycle,
             self.client,
             resolve_access=lambda project, actor: self.access,

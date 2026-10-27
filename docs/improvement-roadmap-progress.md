@@ -2286,3 +2286,41 @@ implementation evidence, not a claim that the production App has these features.
   snapshot/restore/prune and dependency reconstruction, the VM-specific durable
   lifecycle and desktop soft-quota integration. The input plan is unchanged.
   No server connection, nix-config edit, rebuild or App release is included.
+
+### M2 guest retained-file snapshot, restore and cleanup
+
+- Added a private VM file transport with host intent journalling, current
+  reservation/domain checks and guest-side maintenance exclusion. A lost QGA
+  reply preserves pending state; an incomplete restore cannot release the host
+  reservation. Completed replies are checked against the original project,
+  generation, effect fence and manifest before acknowledging the operation.
+- Reused the existing retained-file engine and CAS executor instead of creating
+  a second snapshot format. Scans, manifest pagination, binary chunk checks,
+  partial-prefix retries, whole-tree restore verification and locked-recipe
+  cleanup execute inside the guest. No untrusted VM filesystem is host-mounted.
+  The file executor now has a backend-neutral name and evidence description.
+- Project cloud-init installs a deterministic stdlib-only helper archive with
+  an explicit source allowlist, root-only permissions and isolated Python
+  invocation. No Bot configuration, secrets, Docker or host volume driver is
+  included. Binary RPC chunks are bounded to 48 KiB to fit nested QGA/base64
+  command arguments. Temporary task/shell VMs remain unchanged.
+- Focused checks: 123 passed in 14.298 seconds with ResourceWarning promoted to
+  errors (.cache/roadmap/m2-vm-files-focused.log). These exercise real private
+  files and journals, lost acknowledgements, incomplete restore, wrong identity,
+  changed prefixes, symbolic/hard links, FIFOs, retained source preservation and
+  isolated archive imports. Guest mount, systemd/cgroup and libvirt actions are
+  explicit fixtures, not native Linux VM acceptance.
+- Full isolated PostgreSQL regression: 2533 tests, OK (12 skipped), 431.144
+  seconds with ResourceWarning as errors (.cache/roadmap/m2-vm-files-full.log).
+  Whole-CI-path Ruff, compileall and whitespace checks passed. Nix package/import
+  checks passed on aarch64-darwin (.cache/roadmap/m2-vm-files-nix.log);
+  incompatible platforms were omitted, not tested. Byte comparisons verified
+  that the packaged VM file client, guest engine and bundle builder match the
+  checked sources. No product code changed after this run. Temporary fixture
+  files were cleaned automatically; only small ignored diagnostic logs remain.
+- M2 is not complete or enabled:
+  VM lifecycle composition, dependency reconstruction, native reboot/hibernate
+  and maximum-size transport deadline acceptance, plus desktop soft quotas,
+  remain substantive work. M3-M7 are also pending. The supplied plan is unchanged;
+  no production SSH, nix-config change, rebuild, live QQ/model call or App release
+  is included in this checkpoint.
