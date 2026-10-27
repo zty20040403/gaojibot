@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import hashlib
 import re
-import sqlite3
 from typing import (
     Any,
     Awaitable,
@@ -456,7 +455,7 @@ class ToolExecutor(HandlerService):
                         tool_catalog_version=current_tool_catalog_version,
                     )
                 )
-            except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+            except (OSError, RuntimeError, DatabaseError) as exc:
                 self.context.logger.warning(
                     f"Could not update the turn environment: {exc}"
                 )
@@ -503,7 +502,7 @@ class ToolExecutor(HandlerService):
                     user_text,
                     journal_turn_id,
                 )
-        except (OSError, RuntimeError, ValueError, sqlite3.Error, DatabaseError) as exc:
+        except (OSError, RuntimeError, ValueError, DatabaseError) as exc:
             self.context.logger.warning(
                 f"Group reference resolution failed softly: {exc}"
             )
@@ -564,7 +563,7 @@ class ToolExecutor(HandlerService):
                         created_at=event.time,
                     )
                 )
-            except (OSError, RuntimeError, ValueError, sqlite3.Error, DatabaseError):
+            except (OSError, RuntimeError, ValueError, DatabaseError):
                 pass
         if (
             self.context.settings.evidence_guard_enabled
@@ -791,7 +790,6 @@ class ToolExecutor(HandlerService):
                             ActionFailed,
                             OSError,
                             ValueError,
-                            sqlite3.Error,
                             DatabaseError,
                         ) as exc:
                             self.context.logger.warning(
@@ -896,7 +894,6 @@ class ToolExecutor(HandlerService):
                         OSError,
                         RuntimeError,
                         ValueError,
-                        sqlite3.Error,
                         DatabaseError,
                     ) as exc:
                         self.context.logger.warning(
@@ -1204,7 +1201,6 @@ class ToolExecutor(HandlerService):
                     OSError,
                     RuntimeError,
                     ValueError,
-                    sqlite3.Error,
                     DatabaseError,
                 ) as exc:
                     self.context.logger.warning(

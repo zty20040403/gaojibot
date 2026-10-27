@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -14,7 +16,7 @@ from src.plugins.ai_chat.quota import UsageStore
 class UsageStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = UsageStore(
-            ":memory:",
+            postgres_for_test(self),
             daily_call_limit=2,
             daily_input_token_limit=100,
             daily_output_token_limit=50,

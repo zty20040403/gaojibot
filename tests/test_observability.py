@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import asyncio
 import time
 import unittest
@@ -10,7 +9,6 @@ import httpx
 import nonebot
 from fastapi import FastAPI
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 nonebot.init()
 
 from src.plugins.ai_chat.agent_loop import AgentTrace

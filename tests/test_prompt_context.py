@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -85,7 +87,7 @@ class PromptContextTests(unittest.TestCase):
                 self.assertEqual(item["content"].count("</untrusted "), 1)
 
     def test_window_moves_in_blocks_and_keeps_chronological_suffix(self):
-        store = ContextStore(":memory:")
+        store = ContextStore(postgres_for_test(self))
         self.addCleanup(store.close)
         line = "x" * 100
         messages = [SimpleNamespace(canonical_message_id=index + 1) for index in range(31)]

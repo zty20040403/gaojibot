@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import json
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -189,13 +189,19 @@ class ArtifactAcceptanceTests(unittest.TestCase):
 
 class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.path = Path(self.tmp.name) / "agents.sqlite3"
         self.catalog = ModelCatalog(
-            {name: profile(name) for name in ("qwen-local", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")},
+            {
+                name: profile(name)
+                for name in (
+                    "qwen-local",
+                    "gpt-5.6-luna",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-sol",
+                )
+            },
             default_profile="qwen-local",
         )
-        self.store = SubAgentStore(self.path)
+        self.store = SubAgentStore(postgres_for_test(self))
         self.coordinator = SubAgentCoordinator(self.store, self.catalog, logger=Mock())
         self.packet = ContextPacket("group:1", "group:1:user:2", 2, 3, "Build and send the source archive")
         self.workspaces = SimpleNamespace(
@@ -210,7 +216,6 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     def submit(self):
         payload = decision("workflow")
@@ -232,7 +237,7 @@ class ArtifactAcceptanceRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     def reopen(self, task, completed):
         self.store.close()
-        self.store = SubAgentStore(self.path)
+        self.store = SubAgentStore(postgres_for_test(self))
         self.coordinator = SubAgentCoordinator(self.store, self.catalog, logger=Mock())
         runs = {run.run_id: run for run in self.store.runs(task.task_id)}
         restored = {

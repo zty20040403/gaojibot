@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import json
 import unittest
@@ -57,9 +59,9 @@ ROUTES = json.dumps(
 class BridgeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.router = MirrorRouter.from_json(ROUTES)
-        self.ledger = MessageLedger(":memory:")
-        self.deliveries = DeliveryStore(":memory:")
-        self.state = MirrorStateStore(":memory:")
+        self.ledger = MessageLedger(postgres_for_test(self))
+        self.deliveries = DeliveryStore(postgres_for_test(self))
+        self.state = MirrorStateStore(postgres_for_test(self))
         self.manager = BridgeManager(
             self.router,
             self.ledger,

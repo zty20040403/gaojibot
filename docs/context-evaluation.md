@@ -40,7 +40,10 @@ python tools/context_eval.py --live --profile qwen-local --limit 5 --embeddings 
 
 使用生产的 Ledger/ContextStore 构造连续时间线，并通过现有模型网关生成回答。
 模型看不到 `expected_focus`、`required`、`forbidden` 等答案标签。
-运行数据保存在临时目录与内存数据库中，不写入线上聊天记录，不发送 QQ 消息。
+`--live` 和 `--replay-export` 需要 `TEST_POSTGRES_DSN` 指向独立本地 PostgreSQL 测试库，
+要求与单元测试相同，见 README 的开发部分。每次运行创建自己的临时 schema，
+案例之间清空样本，结束后删除该 schema。不写入线上聊天记录，不发送 QQ 消息。
+仅使用 `--predictions` 评分已有结果时不需要数据库。
 默认最多 5 个场景。完整批次可以把 limit 增大到场景总数。
 
 ## 如何读报告

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sqlite3
 import threading
 import time
 import zlib
@@ -12,10 +11,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterator, Literal
 
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor, StoreRow
 
 from .conversation_scope import ConversationScope
-from .reaction_feedback import REACTION_VOTES_SQL, ReactionVoteStoreMixin
+from .reaction_feedback import ReactionVoteStoreMixin
 
 
 TurnStatus = Literal[
@@ -37,7 +36,6 @@ ToolState = Literal[
     "compensated",
     "handed-off",
 ]
-TURN_SCHEMA_VERSION = 5
 SEND_LOOP_SEQUENCE_BASE = 1_000_000
 
 
@@ -103,16 +101,12 @@ class TurnJournal(ReactionVoteStoreMixin):
         archive_max_bytes: int = 512 * 1024,
         event_max_chars: int = 12000,
     ) -> None:
-        self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
         self.archive_ttl_seconds = max(int(archive_ttl_days), 0) * 86400
         self.archive_max_per_scope = max(int(archive_max_per_scope), 0)
         self.archive_max_bytes = max(int(archive_max_bytes), 4096)
         self.event_max_chars = max(int(event_max_chars), 1000)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            self._configure()
-            self._migrate()
         self.recovered_unknown_effects = 0
         self.recovered_crashed_turns = 0
 
@@ -140,11 +134,10 @@ class TurnJournal(ReactionVoteStoreMixin):
     ) -> TurnRecord:
         now = int(started_at or time.time())
         with self._transaction() as cursor:
-            if not self._legacy_sqlite:
-                cursor.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext(?))",
-                    (f"turn:{scope.key}",),
-                )
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                (f"turn:{scope.key}",),
+            )
             self._ensure_visibility(cursor, scope.key)
             row = cursor.execute(
                 """
@@ -1036,10 +1029,11 @@ class TurnJournal(ReactionVoteStoreMixin):
                 return False
             cursor.execute(
                 """
-                INSERT OR IGNORE INTO turn_edges (
+                INSERT INTO turn_edges (
                     from_turn_id, to_turn_id, kind,
                     created_by_principal_id, created_at
                 ) VALUES (?, ?, 'fork-from', ?, ?)
+                ON CONFLICT DO NOTHING
                 """,
                 (
                     int(from_turn_id),
@@ -1294,8 +1288,8 @@ class TurnJournal(ReactionVoteStoreMixin):
 
     def _store_archive(
         self,
-        cursor: sqlite3.Cursor,
-        turn_row: sqlite3.Row,
+        cursor: StoreCursor,
+        turn_row: StoreRow,
         trace_payload: dict[str, Any],
         now: int,
     ) -> None:
@@ -1337,8 +1331,8 @@ class TurnJournal(ReactionVoteStoreMixin):
 
     def _upsert_digest(
         self,
-        cursor: sqlite3.Cursor,
-        turn_row: sqlite3.Row,
+        cursor: StoreCursor,
+        turn_row: StoreRow,
         now: int,
     ) -> None:
         events = cursor.execute(
@@ -1497,7 +1491,7 @@ class TurnJournal(ReactionVoteStoreMixin):
 
     def _cleanup_archives(
         self,
-        cursor: sqlite3.Cursor,
+        cursor: StoreCursor,
         scope_key: str,
         now: int,
     ) -> None:
@@ -1511,213 +1505,18 @@ class TurnJournal(ReactionVoteStoreMixin):
                 JOIN agent_turns AS t ON t.turn_id = a.turn_id
                 WHERE t.scope_key = ?
                 ORDER BY a.created_at DESC, a.turn_id DESC
-                LIMIT -1 OFFSET ?
+                OFFSET ?
             )
             """,
             (scope_key, self.archive_max_per_scope),
         )
 
-    def _configure(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA foreign_keys = ON")
-            self._connection.execute("PRAGMA busy_timeout = 10000")
-            if self.path is not None:
-                self._connection.execute("PRAGMA journal_mode = WAL")
-            self._connection.execute("PRAGMA synchronous = NORMAL")
-
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS turn_journal_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS agent_turns (
-                    turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope_key TEXT NOT NULL,
-                    turn_ordinal INTEGER NOT NULL,
-                    trigger_canonical_message_id INTEGER,
-                    status TEXT NOT NULL CHECK(status IN (
-                        'running', 'succeeded', 'silence', 'aborted', 'crashed'
-                    )),
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    profile TEXT NOT NULL,
-                    objective TEXT NOT NULL,
-                    final_text TEXT NOT NULL DEFAULT '',
-                    started_at INTEGER NOT NULL,
-                    finished_at INTEGER,
-                    tool_call_count INTEGER NOT NULL DEFAULT 0,
-                    input_tokens INTEGER NOT NULL DEFAULT 0,
-                    output_tokens INTEGER NOT NULL DEFAULT 0,
-                    total_tokens INTEGER NOT NULL DEFAULT 0,
-                    prompt_version TEXT NOT NULL DEFAULT '',
-                    tool_catalog_version TEXT NOT NULL DEFAULT '',
-                    UNIQUE(scope_key, turn_ordinal)
-                );
-
-                CREATE TABLE IF NOT EXISTS turn_journal_events (
-                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    turn_id INTEGER NOT NULL REFERENCES agent_turns(turn_id) ON DELETE CASCADE,
-                    loop_sequence INTEGER NOT NULL,
-                    node_id TEXT NOT NULL,
-                    event_kind TEXT NOT NULL CHECK(event_kind IN ('tool', 'model_note')),
-                    state TEXT NOT NULL,
-                    tool_name TEXT NOT NULL DEFAULT '',
-                    input_json TEXT NOT NULL DEFAULT '',
-                    result_json TEXT NOT NULL DEFAULT '',
-                    detail TEXT NOT NULL DEFAULT '',
-                    effect_labels_json TEXT NOT NULL DEFAULT '[]',
-                    occurred_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS turn_edges (
-                    edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    from_turn_id INTEGER NOT NULL REFERENCES agent_turns(turn_id),
-                    to_turn_id INTEGER NOT NULL REFERENCES agent_turns(turn_id),
-                    kind TEXT NOT NULL CHECK(kind IN ('fork-from')),
-                    created_by_principal_id INTEGER,
-                    created_at INTEGER NOT NULL,
-                    UNIQUE(from_turn_id, to_turn_id, kind)
-                );
-
-                CREATE TABLE IF NOT EXISTS turn_send_links (
-                    canonical_message_id INTEGER PRIMARY KEY,
-                    turn_id INTEGER NOT NULL REFERENCES agent_turns(turn_id),
-                    node_id TEXT NOT NULL,
-                    chunk_index INTEGER NOT NULL DEFAULT 0,
-                    created_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS turn_archives (
-                    turn_id INTEGER PRIMARY KEY REFERENCES agent_turns(turn_id) ON DELETE CASCADE,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    payload BLOB NOT NULL,
-                    byte_count INTEGER NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    expires_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS turn_visibility (
-                    scope_key TEXT PRIMARY KEY,
-                    min_turn_ordinal INTEGER NOT NULL DEFAULT 1,
-                    cleared_at INTEGER
-                );
-
-                CREATE TABLE IF NOT EXISTS turn_digests (
-                    turn_id INTEGER PRIMARY KEY REFERENCES agent_turns(turn_id) ON DELETE CASCADE,
-                    skeleton TEXT NOT NULL,
-                    approach TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS turn_context_plans (
-                    turn_id INTEGER PRIMARY KEY REFERENCES agent_turns(turn_id) ON DELETE CASCADE,
-                    scope_key TEXT NOT NULL,
-                    current_message_id INTEGER NOT NULL,
-                    current_principal_id INTEGER,
-                    focus_message_id INTEGER,
-                    confidence REAL NOT NULL DEFAULT 0,
-                    reason_codes_json TEXT NOT NULL DEFAULT '[]',
-                    related_message_ids_json TEXT NOT NULL DEFAULT '[]',
-                    candidates_json TEXT NOT NULL DEFAULT '[]',
-                    recall_route_json TEXT NOT NULL DEFAULT '{}',
-                    adaptive_budget_json TEXT NOT NULL DEFAULT '{}',
-                    evidence_guard_json TEXT NOT NULL DEFAULT '{}',
-                    topic_id INTEGER,
-                    topic_message_ids_json TEXT NOT NULL DEFAULT '[]',
-                    topic_query TEXT NOT NULL DEFAULT '',
-                    recall_candidates_json TEXT NOT NULL DEFAULT '[]',
-                    resolver_version TEXT NOT NULL,
-                    context_hash TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS turn_context_feedback (
-                    turn_id INTEGER PRIMARY KEY REFERENCES agent_turns(turn_id) ON DELETE CASCADE,
-                    verdict TEXT NOT NULL CHECK(verdict IN ('correct', 'off_topic')),
-                    note TEXT NOT NULL DEFAULT '',
-                    resource_version INTEGER NOT NULL,
-                    actor TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_agent_turns_scope_time
-                    ON agent_turns(scope_key, started_at, turn_ordinal);
-                CREATE INDEX IF NOT EXISTS idx_turn_events_turn
-                    ON turn_journal_events(turn_id, event_id);
-                CREATE INDEX IF NOT EXISTS idx_turn_edges_from
-                    ON turn_edges(from_turn_id, kind);
-                CREATE INDEX IF NOT EXISTS idx_turn_send_links_turn
-                    ON turn_send_links(turn_id, chunk_index);
-                CREATE INDEX IF NOT EXISTS idx_turn_archives_expiry
-                    ON turn_archives(expires_at);
-                CREATE INDEX IF NOT EXISTS idx_turn_context_plans_scope_time
-                    ON turn_context_plans(scope_key, created_at, turn_id);
-                CREATE INDEX IF NOT EXISTS idx_turn_context_feedback_updated
-                    ON turn_context_feedback(updated_at, turn_id);
-                """
-            )
-            cursor.executescript(REACTION_VOTES_SQL)
-            existing_context_columns = {
-                str(item[1])
-                for item in cursor.execute(
-                    "PRAGMA table_info(turn_context_plans)"
-                ).fetchall()
-            }
-            json_object_columns = (
-                "recall_route_json",
-                "adaptive_budget_json",
-                "evidence_guard_json",
-            )
-            for column in json_object_columns:
-                if column not in existing_context_columns:
-                    cursor.execute(
-                        f"ALTER TABLE turn_context_plans ADD COLUMN {column} "
-                        "TEXT NOT NULL DEFAULT '{}'"
-                    )
-            for column in ("topic_message_ids_json", "recall_candidates_json"):
-                if column not in existing_context_columns:
-                    cursor.execute(
-                        f"ALTER TABLE turn_context_plans ADD COLUMN {column} "
-                        "TEXT NOT NULL DEFAULT '[]'"
-                    )
-            if "topic_id" not in existing_context_columns:
-                cursor.execute(
-                    "ALTER TABLE turn_context_plans ADD COLUMN topic_id INTEGER"
-                )
-            if "topic_query" not in existing_context_columns:
-                cursor.execute(
-                    "ALTER TABLE turn_context_plans ADD COLUMN topic_query "
-                    "TEXT NOT NULL DEFAULT ''"
-                )
-            row = cursor.execute(
-                """
-                SELECT value FROM turn_journal_meta
-                WHERE key = 'schema_version'
-                """
-            ).fetchone()
-            if row is not None and int(row[0]) > TURN_SCHEMA_VERSION:
-                raise RuntimeError("turn journal schema is newer than this bot")
-            cursor.execute(
-                """
-                INSERT INTO turn_journal_meta(key, value)
-                VALUES ('schema_version', ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                """,
-                (str(TURN_SCHEMA_VERSION),),
-            )
-
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()
@@ -1728,27 +1527,28 @@ class TurnJournal(ReactionVoteStoreMixin):
                 cursor.close()
 
     @staticmethod
-    def _ensure_visibility(cursor: sqlite3.Cursor, scope_key: str) -> None:
+    def _ensure_visibility(cursor: StoreCursor, scope_key: str) -> None:
         cursor.execute(
             """
-            INSERT OR IGNORE INTO turn_visibility(scope_key, min_turn_ordinal)
+            INSERT INTO turn_visibility(scope_key, min_turn_ordinal)
             VALUES (?, 1)
+            ON CONFLICT (scope_key) DO NOTHING
             """,
             (scope_key,),
         )
 
     @staticmethod
     def _turn_row(
-        cursor: sqlite3.Cursor,
+        cursor: StoreCursor,
         turn_id: int,
-    ) -> sqlite3.Row | None:
+    ) -> StoreRow | None:
         return cursor.execute(
             "SELECT * FROM agent_turns WHERE turn_id = ?",
             (int(turn_id),),
         ).fetchone()
 
     @staticmethod
-    def _row_to_turn(row: sqlite3.Row) -> TurnRecord:
+    def _row_to_turn(row: StoreRow) -> TurnRecord:
         return TurnRecord(
             turn_id=int(row["turn_id"]),
             scope_key=str(row["scope_key"]),
@@ -1766,9 +1566,7 @@ class TurnJournal(ReactionVoteStoreMixin):
             final_text=str(row["final_text"]),
             started_at=int(row["started_at"]),
             finished_at=(
-                int(row["finished_at"])
-                if row["finished_at"] is not None
-                else None
+                int(row["finished_at"]) if row["finished_at"] is not None else None
             ),
             tool_call_count=int(row["tool_call_count"]),
             input_tokens=int(row["input_tokens"]),
@@ -1779,7 +1577,7 @@ class TurnJournal(ReactionVoteStoreMixin):
         )
 
     @staticmethod
-    def _row_to_event(row: sqlite3.Row) -> TurnEventRecord:
+    def _row_to_event(row: StoreRow) -> TurnEventRecord:
         try:
             raw_labels = json.loads(str(row["effect_labels_json"]))
         except json.JSONDecodeError:

@@ -182,11 +182,20 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gateway.health_snapshot()[DEEPSEEK.name]["status"], "open")
 
         app = FastAPI()
-        register_admin(app, AdminServices(
-            version="test", started_at=1, local_model=self.local, llm_gateway=gateway,
-        ), token="")
+        register_admin(
+            app,
+            AdminServices(
+                version="test",
+                started_at=1,
+                local_model=self.local,
+                llm_gateway=gateway,
+            ),
+            test_case=self,
+            token="",
+        )
         async with ApprovedClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test",
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
         ) as client:
             status = (await client.get("/bot-admin/api/v1/local-model", headers={"X-Test-Login": "admin"})).json()
         self.assertFalse(status["circuit_breaker_enabled"])
@@ -245,8 +254,21 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admin_control_auth_version_schema_and_audit(self):
         app = FastAPI()
-        register_admin(app, AdminServices(version="test", started_at=123, local_model=self.local, llm_gateway=self.gateway, settings=SimpleNamespace(model_simple_chat_profile=QWEN.name)), token="admin-secret")
-        async with ApprovedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        register_admin(
+            app,
+            AdminServices(
+                version="test",
+                started_at=123,
+                local_model=self.local,
+                llm_gateway=self.gateway,
+                settings=SimpleNamespace(model_simple_chat_profile=QWEN.name),
+            ),
+            test_case=self,
+            token="admin-secret",
+        )
+        async with ApprovedClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             url = "/bot-admin/api/v1/local-model"
             headers = {"X-Test-Login": "admin"}
             self.assertEqual((await client.get(url)).status_code, 401)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
@@ -32,7 +34,7 @@ def report(ref="evidence#old"):
 
 class ReportCorrectionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.store = SubAgentStore(":memory:")
+        self.store = SubAgentStore(postgres_for_test(self))
         self.profile = profile()
         self.coordinator = SubAgentCoordinator(self.store,
             ModelCatalog({"test": self.profile}, default_profile="test"), logger=Mock())

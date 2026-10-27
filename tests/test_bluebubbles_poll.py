@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import json
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -48,12 +48,9 @@ def message(index, *, timestamp=None, chat="chat-guid", text="hello", own=False)
 
 class BlueBubblesPollTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.ledger = MessageLedger(str(Path(self.directory.name) / "ledger.sqlite3"))
-        self.deliveries = DeliveryStore(str(Path(self.directory.name) / "outbox.sqlite3"))
-        self.state_path = str(Path(self.directory.name) / "bridge.sqlite3")
-        self.state = MirrorStateStore(self.state_path)
+        self.ledger = MessageLedger(postgres_for_test(self))
+        self.deliveries = DeliveryStore(postgres_for_test(self))
+        self.state = MirrorStateStore(postgres_for_test(self))
         self.addCleanup(self.ledger.close)
         self.addCleanup(self.deliveries.close)
         self.addCleanup(lambda: self.state.close())
@@ -121,9 +118,15 @@ class BlueBubblesPollTests(unittest.IsolatedAsyncioTestCase):
             await self.tick(START + 5000)
         self.assertEqual((self.cursor()["offset"], self.cursor()["total"]), (200, 450))
         self.state.close()
-        self.state = MirrorStateStore(self.state_path)
-        self.manager = BridgeManager(routes(), self.ledger, self.deliveries, self.state,
-            imessage=self.client, imessage_poll_enabled=True)
+        self.state = MirrorStateStore(postgres_for_test(self))
+        self.manager = BridgeManager(
+            routes(),
+            self.ledger,
+            self.deliveries,
+            self.state,
+            imessage=self.client,
+            imessage_poll_enabled=True,
+        )
         self.failure = None
         self.assertEqual(await self.tick(START + 15000), 250)
         self.assertEqual(self.cursor()["start"], START + 3000)

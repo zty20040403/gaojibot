@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
@@ -10,13 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Iterator, Literal
 
-from src.bot_storage import (
-    DatabaseSource,
-    PostgresDatabase,
-    StoreCursor,
-    StoreRow,
-    open_store_connection,
-)
+from src.bot_storage import DatabaseSource, StoreCursor, StoreRow, open_store_connection
 
 from .conversation_scope import ConversationScope
 from .message_ir import (
@@ -31,7 +24,6 @@ from .message_ir import (
 
 Direction = Literal["inbound", "outbound", "system"]
 MessageKind = Literal["chat", "command", "system"]
-SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -66,12 +58,8 @@ class CanonicalMessage:
 
 class MessageLedger:
     def __init__(self, path: DatabaseSource) -> None:
-        self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            self._configure()
-            self._migrate()
 
     def close(self) -> None:
         with self._lock:
@@ -146,11 +134,10 @@ class MessageLedger:
         )
 
         with self._transaction() as cursor:
-            if not self._legacy_sqlite:
-                cursor.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext(?))",
-                    (f"ledger:{scope.key}",),
-                )
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                (f"ledger:{scope.key}",),
+            )
             conversation_id = self._ensure_conversation(cursor, scope)
             identity_platform = (identity_platform or scope.platform).strip()
             identity_id: int | None = None
@@ -801,133 +788,12 @@ class MessageLedger:
             )
             return count
 
-    def _configure(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA foreign_keys = ON")
-            self._connection.execute("PRAGMA busy_timeout = 10000")
-            if self.path is not None:
-                self._connection.execute("PRAGMA journal_mode = WAL")
-            self._connection.execute("PRAGMA synchronous = NORMAL")
-
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS ledger_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS conversations (
-                    conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope_key TEXT NOT NULL UNIQUE,
-                    platform TEXT NOT NULL,
-                    kind TEXT NOT NULL CHECK(kind IN ('group', 'private')),
-                    native_conversation_id TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS principals (
-                    principal_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    display_name TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS principal_identities (
-                    identity_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    principal_id INTEGER NOT NULL REFERENCES principals(principal_id),
-                    platform TEXT NOT NULL,
-                    native_user_id TEXT NOT NULL,
-                    display_name TEXT NOT NULL,
-                    last_seen_at INTEGER NOT NULL,
-                    UNIQUE(platform, native_user_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS messages (
-                    canonical_message_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    conversation_id INTEGER NOT NULL REFERENCES conversations(conversation_id),
-                    native_message_id TEXT,
-                    sender_identity_id INTEGER REFERENCES principal_identities(identity_id),
-                    sender_principal_id INTEGER REFERENCES principals(principal_id),
-                    sender_native_user_id TEXT NOT NULL,
-                    sender_display TEXT NOT NULL,
-                    direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound', 'system')),
-                    message_kind TEXT NOT NULL DEFAULT 'chat' CHECK(message_kind IN ('chat', 'command', 'system')),
-                    body_json TEXT NOT NULL,
-                    rendered_text TEXT NOT NULL,
-                    occurred_at INTEGER NOT NULL,
-                    reply_to_native_message_id TEXT,
-                    reply_to_canonical_message_id INTEGER REFERENCES messages(canonical_message_id),
-                    raw_event_json TEXT NOT NULL DEFAULT '{}',
-                    UNIQUE(conversation_id, native_message_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS conversation_visibility (
-                    conversation_id INTEGER PRIMARY KEY REFERENCES conversations(conversation_id),
-                    min_canonical_message_id INTEGER NOT NULL DEFAULT 1,
-                    cleared_at INTEGER
-                );
-
-                CREATE TABLE IF NOT EXISTS embeddings (
-                    embedding_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope_key TEXT NOT NULL,
-                    source_type TEXT NOT NULL,
-                    source_id TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    dimensions INTEGER NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    vector BLOB NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at INTEGER NOT NULL,
-                    UNIQUE(scope_key, source_type, source_id, model, content_hash)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_messages_conversation_time
-                    ON messages(conversation_id, occurred_at, canonical_message_id);
-                CREATE INDEX IF NOT EXISTS idx_messages_reply_native
-                    ON messages(conversation_id, reply_to_native_message_id);
-                CREATE INDEX IF NOT EXISTS idx_messages_sender
-                    ON messages(conversation_id, sender_principal_id);
-                CREATE INDEX IF NOT EXISTS idx_embeddings_scope_source
-                    ON embeddings(scope_key, source_type, source_id);
-                """
-            )
-            columns = {
-                str(row[1])
-                for row in cursor.execute("PRAGMA table_info(messages)").fetchall()
-            }
-            if "message_kind" not in columns:
-                try:
-                    cursor.execute(
-                        "ALTER TABLE messages ADD COLUMN message_kind TEXT NOT NULL DEFAULT 'chat'"
-                    )
-                except sqlite3.OperationalError as exc:
-                    # executescript may release SQLite's transaction between
-                    # CREATE checks. Two bot workers can therefore race this
-                    # additive migration; the second worker is already done.
-                    if "duplicate column name" not in str(exc).lower():
-                        raise
-            row = cursor.execute(
-                "SELECT value FROM ledger_meta WHERE key = 'schema_version'"
-            ).fetchone()
-            if row is not None and int(row[0]) > SCHEMA_VERSION:
-                raise RuntimeError("message ledger schema is newer than this bot")
-            cursor.execute(
-                """
-                INSERT INTO ledger_meta(key, value) VALUES ('schema_version', ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                """,
-                (str(SCHEMA_VERSION),),
-            )
-
     @contextmanager
     def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()
@@ -985,11 +851,10 @@ class MessageLedger:
         seen_at: int,
     ) -> tuple[int, int]:
         display = display.strip()
-        if not self._legacy_sqlite:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(hashtext(?))",
-                (f"identity:{platform}:{native_user_id}",),
-            )
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(?))",
+            (f"identity:{platform}:{native_user_id}",),
+        )
         row = cursor.execute(
             """
             SELECT identity_id, principal_id
@@ -1093,7 +958,7 @@ class MessageLedger:
     def _message_row(
         cursor: StoreCursor,
         canonical_message_id: int,
-    ) -> StoreRow | sqlite3.Row | None:
+    ) -> StoreRow | None:
         return cursor.execute(
             """
             SELECT m.*, c.scope_key
@@ -1106,7 +971,7 @@ class MessageLedger:
         ).fetchone()
 
     @staticmethod
-    def _row_to_message(row: StoreRow | sqlite3.Row) -> CanonicalMessage:
+    def _row_to_message(row: StoreRow) -> CanonicalMessage:
         canonical_message_id = int(row["canonical_message_id"])
         body = body_from_json(str(row["body_json"]))
         return CanonicalMessage(

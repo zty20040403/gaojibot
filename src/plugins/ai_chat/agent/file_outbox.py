@@ -55,8 +55,11 @@ class FileOutboxStoreMixin:
         assert_job_owned()
         now = int(time.time())
         with self._transaction() as cursor:
-            lock = "" if self._legacy_sqlite else " FOR UPDATE"
-            control = cursor.execute("SELECT revision FROM subagent_controls WHERE task_id=?" + lock, (task_id,)).fetchone()
+            lock = " FOR UPDATE"
+            control = cursor.execute(
+                "SELECT revision FROM subagent_controls WHERE task_id=?" + lock,
+                (task_id,),
+            ).fetchone()
             current_revision = int(control["revision"]) if control else 1
             task = cursor.execute("SELECT cancel_requested FROM subagent_tasks WHERE task_id=?", (task_id,)).fetchone()
             if current_revision != delivery["revision"] or task is None or task["cancel_requested"]:
@@ -95,8 +98,11 @@ class FileOutboxStoreMixin:
         assert_job_owned()
         now = int(time.time())
         with self._transaction() as cursor:
-            lock = "" if self._legacy_sqlite else " FOR UPDATE"
-            control = cursor.execute("SELECT revision FROM subagent_controls WHERE task_id=?" + lock, (task_id,)).fetchone()
+            lock = " FOR UPDATE"
+            control = cursor.execute(
+                "SELECT revision FROM subagent_controls WHERE task_id=?" + lock,
+                (task_id,),
+            ).fetchone()
             task = cursor.execute("SELECT cancel_requested FROM subagent_tasks WHERE task_id=?", (task_id,)).fetchone()
             row = cursor.execute("""SELECT state, payload_json FROM subagent_deliveries
                 WHERE task_id=? AND revision=? AND delivery_key=?""" + lock,
@@ -132,10 +138,13 @@ class FileOutboxStoreMixin:
             "ok": state == "acknowledged", "state": state,
             "next_attempt_at": now + min(15 * 2 ** claimed["attempts"], 300) if state == "queued" else 0}
         with self._transaction() as cursor:
-            lock = "" if self._legacy_sqlite else " FOR UPDATE"
-            row = cursor.execute("""SELECT state, payload_json FROM subagent_deliveries
-                WHERE task_id=? AND revision=? AND delivery_key=?""" + lock,
-                (task_id, delivery["revision"], delivery["key"])).fetchone()
+            lock = " FOR UPDATE"
+            row = cursor.execute(
+                """SELECT state, payload_json FROM subagent_deliveries
+                WHERE task_id=? AND revision=? AND delivery_key=?"""
+                + lock,
+                (task_id, delivery["revision"], delivery["key"]),
+            ).fetchone()
             if row is None:
                 raise ValueError("File delivery manifest disappeared")
             current = json.loads(row["payload_json"])

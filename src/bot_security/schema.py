@@ -1,4 +1,4 @@
-"""Portable DDL; PostgreSQL installs this through Alembic, SQLite is for tests."""
+"""Canonical security DDL installed in PostgreSQL through Alembic."""
 
 STATEMENTS = (
     """CREATE TABLE admin_security_lock (lock_id INTEGER PRIMARY KEY, revision BIGINT NOT NULL)""",

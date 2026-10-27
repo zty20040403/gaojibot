@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import json
 import os
 import tempfile
@@ -10,7 +12,6 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 os.environ.setdefault("AI_SUBAGENTS_ENABLED", "false")
 nonebot.init()
 
@@ -123,7 +124,7 @@ class PublicationWorkflowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.store = SubAgentStore(Path(self.tmp.name) / "agents.sqlite3")
+        self.store = SubAgentStore(postgres_for_test(self))
         self.addCleanup(self.store.close)
         self.profile = ModelProfile(name="test", model="test", provider="test", protocol="openai-chat",
             base_url="http://127.0.0.1", api_key_required=False)

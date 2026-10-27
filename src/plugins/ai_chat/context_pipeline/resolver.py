@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import sqlite3
 from datetime import datetime
 
 from src.bot_storage import DatabaseError
@@ -116,7 +115,7 @@ class ReferenceResolver:
                         in {edge.source_message_id, edge.target_message_id}
                     ),
                 )
-            except (OSError, RuntimeError, sqlite3.Error, DatabaseError):
+            except (OSError, RuntimeError, DatabaseError):
                 pass
         explicit_target = (
             ledger.get_in_scope(scope, current.reply_to_canonical_message_id)

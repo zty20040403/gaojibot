@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -740,7 +742,7 @@ class NaturalToolRoutingTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTest
         from src.plugins.ai_chat.ledger import MessageLedger
         from src.plugins.ai_chat.onebot_codec import record_onebot_event
 
-        ledger = MessageLedger(":memory:")
+        ledger = MessageLedger(postgres_for_test(self))
         self.addCleanup(ledger.close)
 
         def record(event, message_id, text):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import json
 import unittest
 from types import SimpleNamespace
@@ -41,8 +43,8 @@ def event(
 
 class ContextToolHandlerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.ledger = MessageLedger(":memory:")
-        self.pins = PinStore(":memory:")
+        self.ledger = MessageLedger(postgres_for_test(self))
+        self.pins = PinStore(postgres_for_test(self))
         self.addCleanup(self.ledger.close)
         self.addCleanup(self.pins.close)
         self.event = event()

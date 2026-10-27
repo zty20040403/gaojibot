@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import json
-import sqlite3
 import threading
 import time
 from collections import deque
@@ -10,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Mapping
 
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
 
 from ..conversation_scope import ConversationScope
 from ..ledger import CanonicalMessage
@@ -45,12 +44,8 @@ class TopicGraphStore:
     """Durable, scope-local evidence for why two messages share a topic."""
 
     def __init__(self, source: DatabaseSource) -> None:
-        self._legacy_sqlite = not isinstance(source, PostgresDatabase)
         self.path, self._connection = open_store_connection(source)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            self._configure()
-            self._migrate()
 
     def close(self) -> None:
         with self._lock:
@@ -124,42 +119,12 @@ class TopicGraphStore:
             ],
         )
 
-    def _configure(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA busy_timeout = 10000")
-            if self.path is not None:
-                self._connection.execute("PRAGMA journal_mode = WAL")
-            self._connection.execute("PRAGMA synchronous = NORMAL")
-
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS message_topic_edges (
-                    edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope_key TEXT NOT NULL,
-                    source_message_id INTEGER NOT NULL,
-                    target_message_id INTEGER NOT NULL,
-                    relation TEXT NOT NULL,
-                    weight REAL NOT NULL,
-                    evidence_json TEXT NOT NULL DEFAULT '{}',
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    UNIQUE(scope_key, source_message_id, target_message_id, relation)
-                );
-                CREATE INDEX IF NOT EXISTS idx_topic_edges_source
-                    ON message_topic_edges(scope_key, source_message_id, weight);
-                CREATE INDEX IF NOT EXISTS idx_topic_edges_target
-                    ON message_topic_edges(scope_key, target_message_id, weight);
-                """
-            )
-
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import json
 import tempfile
@@ -528,6 +530,7 @@ class AdminTests(unittest.TestCase):
                     settings=settings,
                     alert_preferences=preferences,
                 ),
+                test_case=self,
                 token="secret",
             )
 
@@ -565,8 +568,8 @@ class AdminTests(unittest.TestCase):
         )
 
     def test_dashboard_api_requires_account_and_returns_runtime_state(self) -> None:
-        deliveries = DeliveryStore(":memory:")
-        usage = UsageStore(":memory:")
+        deliveries = DeliveryStore(postgres_for_test(self))
+        usage = UsageStore(postgres_for_test(self))
         models = ModelCatalog.from_json(
             json.dumps(
                 {
@@ -642,6 +645,7 @@ class AdminTests(unittest.TestCase):
                 alert_store=AlertHistory(),
                 fleet_client=FleetClient(),
             ),
+            test_case=self,
             token="secret",
         )
 
@@ -937,6 +941,7 @@ class AdminTests(unittest.TestCase):
                 message_ledger=MessageLedger(),
                 settings=Settings(),
             ),
+            test_case=self,
             token="secret",
         )
 
@@ -1078,6 +1083,7 @@ class AdminTests(unittest.TestCase):
         register_admin(
             app,
             AdminServices(version="test", started_at=1),
+            test_case=self,
             token="secret",
         )
 

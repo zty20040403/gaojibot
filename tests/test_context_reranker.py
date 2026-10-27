@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -40,7 +42,7 @@ class _SemanticRecall:
 
 class HybridContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_recall_skips_embedding_and_memories(self) -> None:
-        ledger = MessageLedger(":memory:")
+        ledger = MessageLedger(postgres_for_test(self))
         self.addCleanup(ledger.close)
         scope = ConversationScope("onebot-v11", "group", "100")
         directory = TemporaryDirectory()
@@ -72,7 +74,7 @@ class HybridContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(semantic.scopes, [])
 
     async def test_recall_keeps_group_and_current_user_scopes_separate(self) -> None:
-        ledger = MessageLedger(":memory:")
+        ledger = MessageLedger(postgres_for_test(self))
         self.addCleanup(ledger.close)
         scope = ConversationScope("onebot-v11", "group", "100")
         visible = ledger.record_message(

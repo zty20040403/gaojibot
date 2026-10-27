@@ -8,24 +8,6 @@ from collections.abc import Callable, Mapping, Sequence
 from .conversation_scope import ConversationScope
 
 
-REACTION_VOTES_SQL = """
-CREATE TABLE IF NOT EXISTS turn_reaction_votes (
-    turn_id INTEGER NOT NULL REFERENCES agent_turns(turn_id) ON DELETE CASCADE,
-    reactor_principal_id INTEGER NOT NULL REFERENCES principals(principal_id),
-    message_id INTEGER NOT NULL REFERENCES messages(canonical_message_id),
-    is_asker INTEGER NOT NULL CHECK(is_asker IN (0, 1)),
-    vote INTEGER NOT NULL CHECK(vote IN (-1, 0, 1)),
-    emoji_id TEXT NOT NULL,
-    source_time INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    PRIMARY KEY (turn_id, reactor_principal_id)
-);
-CREATE INDEX IF NOT EXISTS idx_turn_reaction_votes_updated
-    ON turn_reaction_votes(updated_at, turn_id);
-"""
-
-
 class ReactionVoteStoreMixin:
     def set_reaction_vote(self, scope: ConversationScope, turn_id: int, *,
                           reactor_principal_id: int, message_id: int,
@@ -37,9 +19,10 @@ class ReactionVoteStoreMixin:
             raise ValueError("Invalid reaction vote")
         timestamp = int(time.time()) if now is None else now
         with self._transaction() as cursor:
-            if not self._legacy_sqlite:
-                cursor.execute("SELECT pg_advisory_xact_lock(hashtext(?))",
-                    (f"reaction:{turn_id}:{reactor_principal_id}",))
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                (f"reaction:{turn_id}:{reactor_principal_id}",),
+            )
             # Recheck visibility and the actual outgoing link in the write transaction.
             row = cursor.execute("""SELECT trigger.sender_principal_id AS asker
                 FROM agent_turns AS t

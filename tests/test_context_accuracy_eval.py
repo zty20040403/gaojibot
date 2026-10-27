@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import json
 import unittest
@@ -73,7 +75,7 @@ class ContextAccuracyEvaluationTests(unittest.TestCase):
         self.assertEqual(leakage_count, 0)
 
     def _evaluate(self, seed: dict[str, object], prompt: str) -> dict[str, bool]:
-        ledger = MessageLedger(":memory:")
+        ledger = MessageLedger(postgres_for_test(self, reset=True))
         self.addCleanup(ledger.close)
         scope = ConversationScope("onebot-v11", "group", "100")
         other_scope = ConversationScope("onebot-v11", "group", "200")
@@ -98,7 +100,7 @@ class ContextAccuracyEvaluationTests(unittest.TestCase):
             now=current.occurred_at,
         )
         context = ContextStore(
-            ":memory:",
+            postgres_for_test(self),
             input_budget_tokens=6000,
             historian_managed=True,
         )

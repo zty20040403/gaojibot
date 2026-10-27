@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import json
 import tempfile
@@ -29,10 +31,12 @@ class ExternalContinuationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.store = SubAgentStore(self.root / "agents.sqlite3")
-        self.jobs = DurableJobStore(self.root / "jobs.sqlite3", lease_seconds=10)
-        self.outbox = DeliveryStore(self.root / "deliveries.sqlite3")
-        self.catalog = ModelCatalog({"qwen-local": profile("qwen-local")}, default_profile="qwen-local")
+        self.store = SubAgentStore(postgres_for_test(self))
+        self.jobs = DurableJobStore(postgres_for_test(self), lease_seconds=10)
+        self.outbox = DeliveryStore(postgres_for_test(self))
+        self.catalog = ModelCatalog(
+            {"qwen-local": profile("qwen-local")}, default_profile="qwen-local"
+        )
         self.coordinator = SubAgentCoordinator(self.store, self.catalog, logger=Mock())
         self.event = GroupMessageEvent(time=int(time.time()), self_id=123, post_type="message",
             message_type="group", sub_type="normal", message_id=42, group_id=1, user_id=2,
@@ -125,8 +129,12 @@ class ExternalContinuationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ExternalPending):
             tracker.pause()
         self.store.close()
-        self.store = SubAgentStore(self.root / "agents.sqlite3")
-        final = {"operation_id": "op_test", "status": "succeeded", "result": {"bytes": 1234}}
+        self.store = SubAgentStore(postgres_for_test(self))
+        final = {
+            "operation_id": "op_test",
+            "status": "succeeded",
+            "result": {"bytes": 1234},
+        }
         self.client._request.return_value = final
         self.assertTrue(await poll_external(self.store, self.task, self.client))
         args = self.client._request.call_args
@@ -342,7 +350,7 @@ class ExternalContinuationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.store.get(self.task.task_id).status, "waiting_external")
             self.assertEqual(self.outbox.recent(), [])
             self.store.close()
-            self.store = SubAgentStore(self.root / "agents.sqlite3")
+            self.store = SubAgentStore(postgres_for_test(self))
             self.coordinator.store = self.store
             self.dispatcher.store = self.store
             self.services.context.subagent_store = self.store

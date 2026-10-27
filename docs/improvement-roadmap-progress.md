@@ -110,10 +110,10 @@ acceptance are not implied by this roadmap.
 
 ### Phase 8: PostgreSQL-only stores
 
-- [ ] Migrate tests to isolated PostgreSQL fixtures.
-- [ ] Remove production SQLite branches and ad-hoc schema creation.
-- [ ] Keep legacy SQLite import; make Alembic the sole schema authority.
-- [ ] Full PostgreSQL regressions and legacy-import acceptance.
+- [x] Migrate tests to isolated PostgreSQL fixtures.
+- [x] Remove production SQLite branches and ad-hoc schema creation.
+- [x] Keep legacy SQLite import; make Alembic the sole schema authority.
+- [x] Full PostgreSQL regressions and legacy-import acceptance.
 
 ### Phase 9: Product features
 
@@ -559,3 +559,49 @@ histogram_quantile(0.99,
 
 gaoji_event_loop_lag_seconds reports the latest sample, not a percentile. Production
 sampling is once per second; the benchmark uses 5 ms to expose short blocking calls.
+
+### Phase 8 PostgreSQL-only storage migration
+
+- Added a real PostgreSQL test fixture that creates an owned, randomly named
+  schema through Alembic, resets data between tests, and drops only that schema
+  during cleanup. It rejects remote databases and the configured bot database.
+- Converted the first batch of storage and handler tests to explicitly request
+  this fixture. Reopened stores within one test share the same PostgreSQL data;
+  context evaluation subcases explicitly reset their data.
+- Initial fixture, ledger, pins, reminders and quota run: 23 tests passed in
+  4.391 seconds; .cache/roadmap/phase8-fixture-focused.log. This is a focused
+  result, not a full-suite acceptance result for Phase 8.
+- Removed obsolete temporary SQLite paths from the migrated reopen tests.
+  Test-source Ruff and diff whitespace checks pass.
+- Removed the runtime SQLite branches and ad hoc table creation from the ledger,
+  context, journal, delivery, durable jobs, Sub-Agent and security stores. Runtime
+  now requires PostgreSQL and an Alembic HEAD match; failed revision checks close
+  the newly opened pool. PostgreSQL advisory locks and job-lease fencing remain.
+- Tests now run against class-owned or app-owned schemas. The CLI context replay
+  and live evaluation paths share an isolated PostgreSQL workspace; existing
+  prediction scoring still works without a database. Real model calls stay opt-in.
+- Legacy migration uses a frozen SQLite fixture, not the removed SQLite runtime.
+  The sandbox runner and separate model-control daemon keep their local receipt
+  caches; these are not alternative Bot persistence implementations.
+- Initial full run: 1,723 tests, 1 failure, 180 errors, 12 skipped, 203.644 seconds;
+  .cache/roadmap/phase8-full-first.log. It exposed four obsolete SQLite-only test
+  assertions and the CLI replay's in-memory backend. Those are now migrated.
+  The majority of subsequent errors were caused by the 512 MiB temporary database
+  filling up; that owned container exited. Its replacement uses 2 GiB temporary
+  data storage and bounded WAL/checkpoint settings. No production database failed.
+- A focused launch also exposed a missing NoneBot initialization when running
+  vision tests independently; fixed that setup dependency. Final focused run:
+  59 tests, OK, 19.057 seconds; .cache/roadmap/phase8-targeted-second.log.
+  Includes legacy import, replay with mocked models, media, fixture guards and
+  startup failure cleanup. Ruff and diff whitespace checks pass.
+- Final full PG suite: 1,734 tests, OK (12 skipped), 230.169 seconds;
+  .cache/roadmap/phase8-full-second.log. CI-path Ruff, Python compilation and diff
+  whitespace checks passed. PostgreSQL confirmed zero leftover owned test schemas
+  and pgvector remained in public after all fixture cleanup.
+- Formatting was limited to changed ranges and checked for identical Python ASTs;
+  unrelated configuration/App dictionary expansion was removed. No Desktop App
+  feature or UI source changed. The separate project-workspace design is untouched.
+- Phase 8 is complete locally and recorded in this phase's commit. Phases 0-8
+  are implemented, with earlier live gates still pending; Phase 9 has not started.
+- Work remains local. No production connection, push, deployment, rebuild or real
+  model/QQ request was made.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 
 import nonebot
@@ -19,7 +21,7 @@ from src.plugins.ai_chat.message_ir import (
 
 class MessageLedgerTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.ledger = MessageLedger(":memory:")
+        self.ledger = MessageLedger(postgres_for_test(self))
         self.addCleanup(self.ledger.close)
         self.group_a = ConversationScope(
             "onebot-v11",

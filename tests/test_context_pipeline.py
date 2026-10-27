@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 
 import nonebot
@@ -15,7 +17,7 @@ from src.plugins.ai_chat.message_ir import MentionNode, MessageBody, TextNode
 
 class ReferenceResolverTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.ledger = MessageLedger(":memory:")
+        self.ledger = MessageLedger(postgres_for_test(self))
         self.addCleanup(self.ledger.close)
         self.resolver = ReferenceResolver()
         self.group_a = ConversationScope("onebot-v11", "group", "100")
@@ -335,7 +337,7 @@ class ReferenceResolverTests(unittest.TestCase):
                 "semantic_similarity",
             }.issubset(relations)
         )
-        store = TopicGraphStore(":memory:")
+        store = TopicGraphStore(postgres_for_test(self))
         self.addCleanup(store.close)
         self.assertGreater(store.upsert(self.group_a, graph.edges), 0)
 

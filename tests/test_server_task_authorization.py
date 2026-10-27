@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import copy
-import os
 import re
 import unittest
 from types import SimpleNamespace
 
 import nonebot
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 nonebot.init()
 
 from src.bot_security.service import MobileAuthorization, current_principal
@@ -22,7 +22,7 @@ from tests.test_account_security import PASSWORD, QQ, BOT
 
 class ServerTaskAuthorizationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.store = SecurityStore(":memory:", b"x" * 32)
+        self.store = SecurityStore(postgres_for_test(self), b"x" * 32)
         self.addCleanup(self.store.close)
         self.account = self.store.bootstrap("kenneth", PASSWORD, QQ)
         self.sent = []

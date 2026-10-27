@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,11 +26,11 @@ class FileReceiptSettlementTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.store = SubAgentStore(self.root / "agents.sqlite3")
+        self.store = SubAgentStore(postgres_for_test(self))
         self.addCleanup(lambda: self.store.close())
-        self.jobs = DurableJobStore(self.root / "jobs.sqlite3")
+        self.jobs = DurableJobStore(postgres_for_test(self))
         self.addCleanup(self.jobs.close)
-        self.outbox = DeliveryStore(self.root / "outbox.sqlite3")
+        self.outbox = DeliveryStore(postgres_for_test(self))
         self.addCleanup(self.outbox.close)
         catalog = ModelCatalog({"qwen-local": profile("qwen-local")}, default_profile="qwen-local")
         coordinator = SubAgentCoordinator(self.store, catalog, logger=Mock())
@@ -74,7 +76,7 @@ class FileReceiptSettlementTests(unittest.TestCase):
                 self.dispatcher.settle_file_receipts(self.task.task_id)
         first = self.outbox.recent()[0]
         self.store.close()
-        self.store = SubAgentStore(self.root / "agents.sqlite3")
+        self.store = SubAgentStore(postgres_for_test(self))
         self.dispatcher.store = self.store
         self.assertIn(self.task.task_id, self.store.unsettled_file_receipts())
         second = self.dispatcher.settle_file_receipts(self.task.task_id)

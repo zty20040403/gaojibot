@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import json
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -87,8 +89,8 @@ class TimeoutMatcher:
 class TurnContinuityTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         super().setUp()
-        self.ledger = MessageLedger(":memory:")
-        self.journal = TurnJournal(":memory:")
+        self.ledger = MessageLedger(postgres_for_test(self))
+        self.journal = TurnJournal(postgres_for_test(self))
         self.addCleanup(self.ledger.close)
         self.addCleanup(self.journal.close)
         FakeMatcher.sent = []
@@ -635,7 +637,7 @@ class TurnContinuityTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCase
 
     async def test_context_search_and_episode_expand_share_current_scope(self) -> None:
         context = ContextStore(
-            ":memory:",
+            postgres_for_test(self),
             input_budget_tokens=1000,
             high_watermark_tokens=500,
             low_watermark_tokens=300,

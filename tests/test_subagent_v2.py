@@ -1,17 +1,16 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import json
 import os
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 os.environ.setdefault("AI_SUBAGENTS_ENABLED", "false")
 nonebot.init()
 
@@ -315,7 +314,7 @@ class ModelPolicyTests(unittest.TestCase):
 
 class SessionAndSchedulingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.store = SubAgentStore(":memory:")
+        self.store = SubAgentStore(postgres_for_test(self))
         self.profile = profile()
         self.coordinator = SubAgentCoordinator(self.store, ModelCatalog({"test": self.profile}, default_profile="test"), logger=Mock())
 
@@ -409,18 +408,37 @@ class SessionAndSchedulingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["deliveries"][0]["state"], "missing_artifact")
 
     async def test_transcript_survives_store_reopen(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "sessions.sqlite3"
-            store = SubAgentStore(path)
-            task = store.create_task(scope_key="group:1", conversation_id="group:1:user:2", requester_user_id=2,
-                                     trigger_message_id=3, objective="test", max_parallelism=1, max_steps=1)
-            run = store.create_run(task.task_id, TaskStep("code", "coder", "code", "files"), allowed_tools=[], model_profile="test")
-            store.save_agent_session(task.task_id, run.run_id, [{"role": "assistant", "content": "durable"}],
-                                     scope_key="group:1", requester_user_id=2, model_profile="test", expected_version=0)
-            store.close()
-            reopened = SubAgentStore(path)
-            try:
-                session = reopened.agent_session(task.task_id, run.run_id, scope_key="group:1", requester_user_id=2)
-                self.assertEqual(session["messages"][0]["content"], "durable")
-            finally:
-                reopened.close()
+        store = SubAgentStore(postgres_for_test(self))
+        task = store.create_task(
+            scope_key="group:1",
+            conversation_id="group:1:user:2",
+            requester_user_id=2,
+            trigger_message_id=3,
+            objective="test",
+            max_parallelism=1,
+            max_steps=1,
+        )
+        run = store.create_run(
+            task.task_id,
+            TaskStep("code", "coder", "code", "files"),
+            allowed_tools=[],
+            model_profile="test",
+        )
+        store.save_agent_session(
+            task.task_id,
+            run.run_id,
+            [{"role": "assistant", "content": "durable"}],
+            scope_key="group:1",
+            requester_user_id=2,
+            model_profile="test",
+            expected_version=0,
+        )
+        store.close()
+        reopened = SubAgentStore(postgres_for_test(self))
+        try:
+            session = reopened.agent_session(
+                task.task_id, run.run_id, scope_key="group:1", requester_user_id=2
+            )
+            self.assertEqual(session["messages"][0]["content"], "durable")
+        finally:
+            reopened.close()

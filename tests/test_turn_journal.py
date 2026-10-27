@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import tempfile
+from tests.postgres_fixture import postgres_for_test
+
 import time
 import unittest
-from pathlib import Path
 
 import nonebot
 
@@ -16,7 +16,7 @@ from src.plugins.ai_chat.turn_journal import TurnJournal
 
 class TurnJournalTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.journal = TurnJournal(":memory:")
+        self.journal = TurnJournal(postgres_for_test(self))
         self.addCleanup(self.journal.close)
         self.group_a = ConversationScope("onebot-v11", "group", "100")
         self.group_b = ConversationScope("onebot-v11", "group", "200")
@@ -542,10 +542,7 @@ class TurnJournalTests(unittest.TestCase):
         self.assertIn("sandbox_list", digest)
 
     def test_explicit_startup_recovery_marks_inflight_turn_as_crashed(self) -> None:
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        path = Path(temporary.name) / "turns.sqlite3"
-        first = TurnJournal(path)
+        first = TurnJournal(postgres_for_test(self))
         turn = first.start_turn(
             self.group_a,
             trigger_canonical_message_id=1,
@@ -555,7 +552,7 @@ class TurnJournalTests(unittest.TestCase):
         )
         first.close()
 
-        reopened = TurnJournal(path)
+        reopened = TurnJournal(postgres_for_test(self))
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.get_turn_by_id(turn.turn_id).status, "running")
         reopened.recover_interrupted()
@@ -564,11 +561,10 @@ class TurnJournalTests(unittest.TestCase):
         self.assertEqual(reopened.recovered_crashed_turns, 1)
         self.assertEqual(recovered.status, "crashed")  # type: ignore[union-attr]
 
-    def test_explicit_recovery_marks_unfinished_tool_effect_outcome_unknown(self) -> None:
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        path = Path(temporary.name) / "turns.sqlite3"
-        first = TurnJournal(path)
+    def test_explicit_recovery_marks_unfinished_tool_effect_outcome_unknown(
+        self,
+    ) -> None:
+        first = TurnJournal(postgres_for_test(self))
         turn = first.start_turn(
             self.group_a,
             trigger_canonical_message_id=1,
@@ -585,7 +581,7 @@ class TurnJournalTests(unittest.TestCase):
         )
         first.close()
 
-        reopened = TurnJournal(path)
+        reopened = TurnJournal(postgres_for_test(self))
         self.addCleanup(reopened.close)
         self.assertEqual([event.state for event in reopened.events_for_turn(turn.turn_id)], ["started"])
         reopened.recover_interrupted()
@@ -595,10 +591,7 @@ class TurnJournalTests(unittest.TestCase):
         self.assertEqual([event.state for event in events], ["started", "outcome-unknown"])
 
     def test_reopening_marks_dangling_send_on_finished_turn_unknown(self) -> None:
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        path = Path(temporary.name) / "turns.sqlite3"
-        first = TurnJournal(path)
+        first = TurnJournal(postgres_for_test(self))
         turn = first.start_turn(
             self.group_a,
             trigger_canonical_message_id=1,
@@ -610,7 +603,7 @@ class TurnJournalTests(unittest.TestCase):
         first.record_send_started(turn.turn_id, 1)
         first.close()
 
-        reopened = TurnJournal(path)
+        reopened = TurnJournal(postgres_for_test(self))
         self.addCleanup(reopened.close)
         reopened.recover_interrupted()
         send_events = [

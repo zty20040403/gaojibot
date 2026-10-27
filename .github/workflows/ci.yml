@@ -39,7 +39,6 @@ jobs:
       TEST_FILE_ACCEPTANCE_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/gaoji_acceptance
       TEST_OPS_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/gaoji_acceptance
       TEST_SECURITY_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/gaoji_acceptance
-      AI_ALLOW_LEGACY_SQLITE: "true"
       PYTHON_DOTENV_DISABLED: "1"
       AI_STATE_DIR: ${{ runner.temp }}/gaoji-ci-state
     steps:

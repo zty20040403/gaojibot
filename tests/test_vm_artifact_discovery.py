@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 
 import nonebot
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 os.environ.setdefault("AI_SUBAGENTS_ENABLED", "false")
 nonebot.init()
 

@@ -35,22 +35,6 @@ def assert_job_owned() -> None:
         fence.assert_owned()
 
 
-CONTROL_SQL = """
-CREATE TABLE IF NOT EXISTS subagent_controls (
-    task_id INTEGER PRIMARY KEY REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-    version INTEGER NOT NULL, revision INTEGER NOT NULL,
-    policy_json TEXT NOT NULL, dispatch_json TEXT NOT NULL,
-    updated_at INTEGER NOT NULL, final_queued_revision INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS subagent_deliveries (
-    task_id INTEGER NOT NULL REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-    revision INTEGER NOT NULL, delivery_key TEXT NOT NULL,
-    state TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at INTEGER NOT NULL,
-    PRIMARY KEY (task_id, revision, delivery_key)
-);
-"""
-
-
 class TaskControlStoreMixin:
     def revision_checkpoints(self, task_id: int) -> list[dict]:
         # Revision ancestry must not be truncated by the console's checkpoint page limit.
@@ -145,8 +129,11 @@ class TaskControlStoreMixin:
                 value[key] = update
         with self._transaction() as cursor:
             if policy is not None:
-                lock = "" if self._legacy_sqlite else " FOR UPDATE"
-                task = cursor.execute("SELECT status FROM subagent_tasks WHERE task_id=?" + lock, (task_id,)).fetchone()
+                lock = " FOR UPDATE"
+                task = cursor.execute(
+                    "SELECT status FROM subagent_tasks WHERE task_id=?" + lock,
+                    (task_id,),
+                ).fetchone()
                 if task is None or task["status"] in {"running", "planning", "verifying", "cancelling", "revising", "waiting_external"}:
                     raise ValueError("Task started before the model update; wait until it stops")
             if expected_version == 0:
@@ -181,9 +168,13 @@ class TaskControlStoreMixin:
         if revision is None:
             revision = self.control(task_id)["revision"]
         with self._transaction() as cursor:
-            lock = "" if self._legacy_sqlite else " FOR UPDATE"
-            row = cursor.execute("""SELECT state, payload_json FROM subagent_deliveries
-                WHERE task_id=? AND revision=? AND delivery_key=?""" + lock, (task_id, revision, key)).fetchone()
+            lock = " FOR UPDATE"
+            row = cursor.execute(
+                """SELECT state, payload_json FROM subagent_deliveries
+                WHERE task_id=? AND revision=? AND delivery_key=?"""
+                + lock,
+                (task_id, revision, key),
+            ).fetchone()
             if row is None or row["state"] not in {"sending", "unknown"}:
                 return False
             if expected_payload is not None and json.loads(row["payload_json"]) != expected_payload:
@@ -248,10 +239,14 @@ class TaskControlStoreMixin:
         from .outcomes import acceptance_blocks_completion, outcome_report
 
         with self._transaction() as cursor:
-            lock = "" if self._legacy_sqlite else " FOR UPDATE"
-            row = cursor.execute("""SELECT t.* FROM subagent_tasks t JOIN subagent_controls c ON c.task_id=t.task_id
+            lock = " FOR UPDATE"
+            row = cursor.execute(
+                """SELECT t.* FROM subagent_tasks t JOIN subagent_controls c ON c.task_id=t.task_id
                 WHERE t.task_id=? AND c.revision=?
-                AND t.status IN ('completed','partial','failed','cancelled')""" + lock, (task_id, revision)).fetchone()
+                AND t.status IN ('completed','partial','failed','cancelled')"""
+                + lock,
+                (task_id, revision),
+            ).fetchone()
             if row is None:
                 return None
             deliveries = cursor.execute("SELECT * FROM subagent_deliveries WHERE task_id=? AND revision=? ORDER BY delivery_key",

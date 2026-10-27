@@ -94,8 +94,10 @@ sudo journalctl -u gaoji -n 100 --no-pager
 
 不要删除旧目录。切换后的观察期至少保留
 `state.pre-postgres` 7 天。若启动前验证失败，PostgreSQL 事务已经自动回滚；恢复旧
-Bot 包并临时设置 `AI_ALLOW_LEGACY_SQLITE=true` 即可读取原目录。不要让 PostgreSQL
-版和 SQLite 版同时处理 QQ 消息，否则两边都会继续产生数据，无法无损合并。
+Bot 包及其配套配置，才能读取原目录。当前版本只支持 PostgreSQL，已经移除
+SQLite 回退开关；不要在当前版本上把 DSN 改成文件路径。若切换后已经产生新消息，
+恢复旧目录会丢失这些新增记录，必须先停机核对并导出增量数据。不要让 PostgreSQL
+版和旧 SQLite 版同时处理 QQ 消息，否则两边都会继续产生数据，无法无损合并。
 
 ## 备份与恢复
 

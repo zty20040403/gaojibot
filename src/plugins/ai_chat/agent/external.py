@@ -17,20 +17,15 @@ class ExternalPending(BaseException):
 active_external: ContextVar[ExternalCalls | None] = ContextVar("agent_external_calls", default=None)
 SUBMISSIONS = {"/v1/ops/call", "/v1/operations/prepare", "/v1/jobs", "/v1/deployments/prepare"}
 READ_PATH = re.compile(r"/v1/(operations|jobs|deployments)/[A-Za-z0-9_.-]+")
-TERMINAL = {"succeeded", "completed", "failed", "cancelled", "expired", "needs_attention", "timed_out"}
-EXTERNAL_SQL = """
-CREATE TABLE IF NOT EXISTS subagent_external_calls (
-    task_id INTEGER NOT NULL REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-    revision INTEGER NOT NULL,
-    run_id INTEGER NOT NULL REFERENCES subagent_runs(run_id) ON DELETE CASCADE,
-    call_id TEXT NOT NULL, request_json TEXT NOT NULL,
-    status TEXT NOT NULL, remote_path TEXT NOT NULL DEFAULT '',
-    response_json TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL,
-    PRIMARY KEY(task_id, revision, run_id, call_id)
-);
-CREATE INDEX IF NOT EXISTS idx_subagent_external_pending
-ON subagent_external_calls(task_id, revision, status);
-"""
+TERMINAL = {
+    "succeeded",
+    "completed",
+    "failed",
+    "cancelled",
+    "expired",
+    "needs_attention",
+    "timed_out",
+}
 
 
 def canonical(value):

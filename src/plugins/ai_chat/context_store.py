@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sqlite3
 import threading
 import time
 import uuid
@@ -12,15 +11,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterator
 
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor, StoreRow
 
 from .conversation_scope import ConversationScope
 from .ledger import CanonicalMessage, MessageLedger
 from .message_ir import body_to_json
 from .prompt_context import HISTORY_BLOCK_LINES
-
-
-CONTEXT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -81,7 +77,6 @@ class ContextStore:
         max_compartments: int = 12,
         historian_managed: bool = False,
     ) -> None:
-        self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
         self.input_budget_tokens = max(int(input_budget_tokens), 1000)
         self.high_watermark_tokens = min(
@@ -100,9 +95,6 @@ class ContextStore:
         self.max_compartments = min(max(int(max_compartments), 1), 50)
         self.historian_managed = bool(historian_managed)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            self._configure()
-            self._migrate()
 
     def close(self) -> None:
         with self._lock:
@@ -579,11 +571,10 @@ class ContextStore:
         generated = summaries or self._summaries(messages)
         source_hash = self._source_hash(messages)
         with self._transaction() as cursor:
-            if not self._legacy_sqlite:
-                cursor.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext(?))",
-                    (f"context:{scope_key}",),
-                )
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                (f"context:{scope_key}",),
+            )
             state = cursor.execute(
                 """
                 SELECT last_compacted_message_id, next_ordinal
@@ -843,16 +834,17 @@ class ContextStore:
 
     @staticmethod
     def _ensure_state(
-        cursor: sqlite3.Cursor,
+        cursor: StoreCursor,
         scope_key: str,
         floor: int,
     ) -> None:
         cursor.execute(
             """
-            INSERT OR IGNORE INTO context_state (
+            INSERT INTO context_state (
                 scope_key, visibility_floor, last_compacted_message_id,
                 next_ordinal, updated_at
             ) VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT (scope_key) DO NOTHING
             """,
             (scope_key, max(int(floor), 1), max(int(floor) - 1, 0), int(time.time())),
         )
@@ -870,7 +862,7 @@ class ContextStore:
         return [self._row_to_compartment(row) for row in rows]
 
     @staticmethod
-    def _row_to_compartment(row: sqlite3.Row) -> CompartmentRecord:
+    def _row_to_compartment(row: StoreRow) -> CompartmentRecord:
         try:
             raw_ids = json.loads(str(row["source_message_ids_json"]))
         except json.JSONDecodeError:
@@ -903,109 +895,15 @@ class ContextStore:
             confidence=_bounded_score(_row_value(row, "confidence", 0.5)),
             participants=participants,
             evidence_ids=evidence_ids or ids,
-            generation_mode=str(
-                _row_value(row, "generation_mode", "legacy")
-            ),
+            generation_mode=str(_row_value(row, "generation_mode", "legacy")),
         )
 
-    def _configure(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA foreign_keys = ON")
-            self._connection.execute("PRAGMA busy_timeout = 10000")
-            if self.path is not None:
-                self._connection.execute("PRAGMA journal_mode = WAL")
-            self._connection.execute("PRAGMA synchronous = NORMAL")
-
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS context_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS context_state (
-                    scope_key TEXT PRIMARY KEY,
-                    visibility_floor INTEGER NOT NULL,
-                    last_compacted_message_id INTEGER NOT NULL,
-                    next_ordinal INTEGER NOT NULL DEFAULT 1,
-                    updated_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS context_compartments (
-                    compartment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope_key TEXT NOT NULL,
-                    ordinal INTEGER NOT NULL,
-                    expand_handle TEXT NOT NULL UNIQUE,
-                    start_message_id INTEGER NOT NULL,
-                    end_message_id INTEGER NOT NULL,
-                    source_message_ids_json TEXT NOT NULL,
-                    source_hash TEXT NOT NULL,
-                    message_count INTEGER NOT NULL,
-                    token_estimate INTEGER NOT NULL,
-                    summary_p1 TEXT NOT NULL,
-                    summary_p2 TEXT NOT NULL,
-                    summary_p3 TEXT NOT NULL,
-                    summary_p4 TEXT NOT NULL DEFAULT '',
-                    topic TEXT NOT NULL DEFAULT '',
-                    importance REAL NOT NULL DEFAULT 0.5,
-                    confidence REAL NOT NULL DEFAULT 0.5,
-                    participants_json TEXT NOT NULL DEFAULT '[]',
-                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
-                    generation_mode TEXT NOT NULL DEFAULT 'legacy',
-                    active INTEGER NOT NULL DEFAULT 1,
-                    created_at INTEGER NOT NULL,
-                    UNIQUE(scope_key, ordinal)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_context_compartments_scope
-                    ON context_compartments(scope_key, active, ordinal);
-                CREATE INDEX IF NOT EXISTS idx_context_compartments_range
-                    ON context_compartments(scope_key, start_message_id, end_message_id);
-                """
-            )
-            columns = {
-                str(item[1])
-                for item in cursor.execute(
-                    "PRAGMA table_info(context_compartments)"
-                ).fetchall()
-            }
-            additions = {
-                "summary_p4": "TEXT NOT NULL DEFAULT ''",
-                "topic": "TEXT NOT NULL DEFAULT ''",
-                "importance": "REAL NOT NULL DEFAULT 0.5",
-                "confidence": "REAL NOT NULL DEFAULT 0.5",
-                "participants_json": "TEXT NOT NULL DEFAULT '[]'",
-                "evidence_ids_json": "TEXT NOT NULL DEFAULT '[]'",
-                "generation_mode": "TEXT NOT NULL DEFAULT 'legacy'",
-            }
-            for name, definition in additions.items():
-                if name not in columns:
-                    cursor.execute(
-                        f"ALTER TABLE context_compartments "
-                        f"ADD COLUMN {name} {definition}"
-                    )
-            row = cursor.execute(
-                "SELECT value FROM context_meta WHERE key = 'schema_version'"
-            ).fetchone()
-            if row is not None and int(row[0]) > CONTEXT_SCHEMA_VERSION:
-                raise RuntimeError("context store schema is newer than this bot")
-            cursor.execute(
-                """
-                INSERT INTO context_meta(key, value)
-                VALUES ('schema_version', ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                """,
-                (str(CONTEXT_SCHEMA_VERSION),),
-            )
-
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()
@@ -1023,7 +921,7 @@ def estimate_tokens(text: str) -> int:
     return max(int(units + 0.999), 1) if text else 0
 
 
-def _row_value(row: sqlite3.Row, key: str, default: object) -> object:
+def _row_value(row: StoreRow, key: str, default: object) -> object:
     return row[key] if key in row.keys() else default
 
 

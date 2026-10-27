@@ -5,15 +5,13 @@ import hmac
 import json
 import re
 import secrets
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Callable
 
-from src.bot_storage.database import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage.database import DatabaseError, DatabaseSource, PostgresDatabase
 from .passwords import DUMMY_HASH, hash_password, verify_password
-from .schema import STATEMENTS
 
 
 class SecurityError(ValueError):
@@ -38,7 +36,7 @@ class SecurityStore:
     """Serialize short security transactions across workers, including OTP consumption.
 
     No network or password hashing takes place while the database lock is held.
-    Production shares PostgreSQL; an explicit SQLite source is useful in isolated tests.
+    All instances share PostgreSQL; schema changes are managed by Alembic.
     """
 
     def __init__(self, source: DatabaseSource, secret: bytes, *, clock: Callable[[], float] = time.time):
@@ -47,26 +45,25 @@ class SecurityStore:
         self.secret = secret
         self.clock = clock
         self._lock = threading.RLock()
-        self._database = source if isinstance(source, PostgresDatabase) else None
-        self._sqlite = None
-        if self._database is None:
-            _, self._sqlite = open_store_connection(source)
-            for statement in STATEMENTS:
-                self._sqlite.execute(statement.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ").replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS "))
-            self._sqlite.commit()
+        if not isinstance(source, PostgresDatabase):
+            raise DatabaseError(
+                "Security storage requires PostgreSQL and Alembic migrations"
+            )
+        self._database = source
+        self._closed = False
 
     def close(self) -> None:
-        if self._sqlite is not None:
-            self._sqlite.close()
+        with self._lock:
+            self._closed = True
 
     @contextmanager
     def transaction(self):
         with self._lock:
-            connection = self._database.store_connection() if self._database else self._sqlite
+            if self._closed:
+                raise DatabaseError("Security store is closed")
+            connection = self._database.store_connection()
             cursor = connection.cursor()
             try:
-                if isinstance(connection, sqlite3.Connection):
-                    cursor.execute("BEGIN IMMEDIATE")
                 cursor.execute("INSERT INTO admin_security_lock VALUES (1, 0) ON CONFLICT (lock_id) DO NOTHING")
                 cursor.execute("UPDATE admin_security_lock SET revision=revision+1 WHERE lock_id=1")
                 yield cursor
@@ -76,8 +73,7 @@ class SecurityStore:
                 raise
             finally:
                 cursor.close()
-                if self._database:
-                    connection.close()
+                connection.close()
 
     def _audit(self, db, account: str, action: str, target: str = "", detail: str = "") -> None:
         db.execute("INSERT INTO admin_security_audit VALUES (?, ?, ?, ?, ?, ?)",

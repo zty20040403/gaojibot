@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import gc
 import threading
@@ -153,7 +155,7 @@ class DatabaseHotPathTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCas
 
     async def test_canonical_ingest_and_profile_writes_run_off_loop(self):
         event = group_event(20, Message("hello"))
-        ledger = MessageLedger(":memory:")
+        ledger = MessageLedger(postgres_for_test(self))
         self.addCleanup(ledger.close)
         self.handlers.ingest_adapter.message_ledger = ledger
         await self.assert_off_loop(

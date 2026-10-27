@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
@@ -9,7 +8,7 @@ from datetime import datetime
 from typing import Iterator
 from zoneinfo import ZoneInfo
 
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -47,15 +46,11 @@ class UsageStore:
         daily_input_token_limit: int = 0,
         daily_output_token_limit: int = 0,
     ) -> None:
-        self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
         self.daily_call_limit = max(int(daily_call_limit), 0)
         self.daily_input_token_limit = max(int(daily_input_token_limit), 0)
         self.daily_output_token_limit = max(int(daily_output_token_limit), 0)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            self._configure()
-            self._migrate()
 
     def close(self) -> None:
         with self._lock:
@@ -211,50 +206,12 @@ class UsageStore:
             reverse=True,
         )
 
-    def _configure(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA busy_timeout = 10000")
-            if self.path is not None:
-                self._connection.execute("PRAGMA journal_mode = WAL")
-            self._connection.execute("PRAGMA synchronous = NORMAL")
-
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS usage_events (
-                    usage_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope_key TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    input_tokens INTEGER NOT NULL,
-                    output_tokens INTEGER NOT NULL,
-                    cached_tokens INTEGER NOT NULL DEFAULT 0,
-                    turn_id INTEGER,
-                    occurred_at INTEGER NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_usage_scope_time
-                    ON usage_events(scope_key, occurred_at);
-                CREATE INDEX IF NOT EXISTS idx_usage_time
-                    ON usage_events(occurred_at);
-
-                CREATE TABLE IF NOT EXISTS quota_overrides (
-                    scope_key TEXT PRIMARY KEY,
-                    call_limit INTEGER NOT NULL,
-                    input_limit INTEGER NOT NULL,
-                    output_limit INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-                """
-            )
-
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()

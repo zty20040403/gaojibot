@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 
 import nonebot
@@ -12,7 +14,7 @@ from src.plugins.ai_chat.reminders import ReminderStore
 
 class ReminderStoreTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.store = ReminderStore(":memory:", max_per_scope=2)
+        self.store = ReminderStore(postgres_for_test(self), max_per_scope=2)
         self.scope = ConversationScope(
             "onebot-v11",
             "group",

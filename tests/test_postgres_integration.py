@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -11,7 +12,6 @@ import nonebot
 import psycopg
 from psycopg import sql
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 nonebot.init()
 
 from src.bot_storage.database import PostgresDatabase
@@ -31,7 +31,7 @@ from src.plugins.ai_chat.identity import GroupUserProfileStore
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.long_term_memory import LongTermMemoryStore
 from src.plugins.ai_chat.memory import ConversationMemory, GroupContextMemory
-from src.plugins.ai_chat.message_ir import MessageBody, TextNode
+from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_to_json
 from src.plugins.ai_chat.model_preferences import ModelPreferenceStore
 from src.plugins.ai_chat.pins import PinStore
 from src.plugins.ai_chat.quota import UsageStore
@@ -150,28 +150,52 @@ class PostgresIntegrationTests(unittest.TestCase):
     def test_legacy_snapshot_is_repeatable_and_resets_sequences(self) -> None:
         with TemporaryDirectory() as temporary:
             state_dir = Path(temporary)
-            legacy_ledger = MessageLedger(state_dir / "bot_state.sqlite3")
             scope = ConversationScope("onebot-v11", "group", "930690526")
+            legacy = sqlite3.connect(state_dir / "bot_state.sqlite3")
             try:
-                first = legacy_ledger.record_message(
-                    scope,
-                    native_message_id="1001",
-                    sender_native_user_id="3526452465",
-                    sender_display="Kenneth",
-                    body=MessageBody((TextNode(0, "旧数据库中的消息"),)),
-                    occurred_at=100,
+                legacy.executescript(
+                    (
+                        Path(__file__).parent / "fixtures" / "legacy_ledger.sql"
+                    ).read_text()
                 )
-                legacy_ledger.record_message(
-                    scope,
-                    native_message_id="1002",
-                    sender_native_user_id="2291939848",
-                    sender_display="群友",
-                    body=MessageBody((TextNode(0, "第二条旧消息"),)),
-                    occurred_at=101,
-                    reply_to_native_message_id="1001",
+                legacy.execute(
+                    "INSERT INTO conversations VALUES (1, ?, 'onebot-v11', 'group', '930690526', 100, 101)",
+                    (scope.key,),
                 )
+                for identifier, user, display, text in (
+                    (1, "3526452465", "Kenneth", "旧数据库中的消息"),
+                    (2, "2291939848", "群友", "第二条旧消息"),
+                ):
+                    legacy.execute(
+                        "INSERT INTO principals VALUES (?, ?, 100, 101)",
+                        (identifier, display),
+                    )
+                    legacy.execute(
+                        "INSERT INTO principal_identities VALUES (?, ?, 'onebot-v11', ?, ?, 101)",
+                        (identifier, identifier, user, display),
+                    )
+                    legacy.execute(
+                        "INSERT INTO messages VALUES (?, 1, ?, ?, ?, ?, ?, 'inbound', 'chat', ?, ?, ?, ?, ?, '{}')",
+                        (
+                            identifier,
+                            str(1000 + identifier),
+                            identifier,
+                            identifier,
+                            user,
+                            display,
+                            body_to_json(MessageBody((TextNode(0, text),))),
+                            text,
+                            99 + identifier,
+                            "1001" if identifier == 2 else None,
+                            1 if identifier == 2 else None,
+                        ),
+                    )
+                legacy.execute(
+                    "INSERT INTO conversation_visibility VALUES (1, 1, NULL)"
+                )
+                legacy.commit()
             finally:
-                legacy_ledger.close()
+                legacy.close()
 
             memory = ConversationMemory(
                 5, state_dir / "conversation_history.json"
@@ -226,7 +250,7 @@ class PostgresIntegrationTests(unittest.TestCase):
             try:
                 migrated = ledger.get_in_scope(
                     scope,
-                    first.canonical_message_id,
+                    1,
                 )
                 self.assertEqual(migrated.rendered_text, "旧数据库中的消息")
                 new_message = ledger.record_message(
@@ -239,7 +263,7 @@ class PostgresIntegrationTests(unittest.TestCase):
                 )
                 self.assertGreater(
                     new_message.canonical_message_id,
-                    first.canonical_message_id,
+                    2,
                 )
             finally:
                 ledger.close()

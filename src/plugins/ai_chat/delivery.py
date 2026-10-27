@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Literal
 
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor, StoreRow
 
 from .conversation_scope import ConversationScope
 from .message_ir import MessageBody, body_from_json, body_to_json, render_fallback_text
@@ -104,14 +103,10 @@ class DeliveryStore:
         lease_seconds: int = 90,
         recover_interrupted: bool = True,
     ) -> None:
-        self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
         self.max_attempts = min(max(int(max_attempts), 1), 50)
         self.lease_seconds = max(int(lease_seconds), 10)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            self._configure()
-            self._migrate()
         # Only a restarted sender may recover leases; maintenance clients coexist with it.
         self.recovered_ambiguous = self.park_interrupted_attempts() if recover_interrupted else 0
 
@@ -230,7 +225,7 @@ class DeliveryStore:
         bounded = min(max(int(limit), 1), 100)
         platform_clause = " AND target_platform NOT IN (" + ",".join("?" for _ in exclude_platforms) + ")" if exclude_platforms else ""
         with self._transaction() as cursor:
-            lock_clause = "" if self._legacy_sqlite else "FOR UPDATE SKIP LOCKED"
+            lock_clause = "FOR UPDATE SKIP LOCKED"
             rows = cursor.execute(
                 f"""
                 SELECT * FROM deliveries
@@ -628,7 +623,7 @@ class DeliveryStore:
 
     @staticmethod
     def _insert_attempt(
-        cursor: sqlite3.Cursor,
+        cursor: StoreCursor,
         delivery_id: int,
         attempt: int,
         started_at: int,
@@ -644,7 +639,7 @@ class DeliveryStore:
 
     @staticmethod
     def _finish_attempt(
-        cursor: sqlite3.Cursor,
+        cursor: StoreCursor,
         delivery_id: int,
         state: str,
         detail: str,
@@ -663,83 +658,12 @@ class DeliveryStore:
             (state, detail, finished_at, delivery_id),
         )
 
-    def _configure(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA foreign_keys = ON")
-            self._connection.execute("PRAGMA busy_timeout = 10000")
-            if self.path is not None:
-                self._connection.execute("PRAGMA journal_mode = WAL")
-            self._connection.execute("PRAGMA synchronous = FULL")
-
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS deliveries (
-                    delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    source_scope_key TEXT NOT NULL,
-                    source_canonical_message_id INTEGER,
-                    turn_id INTEGER,
-                    target_platform TEXT NOT NULL,
-                    target_kind TEXT NOT NULL CHECK(target_kind IN ('group', 'private')),
-                    target_native_conversation_id TEXT NOT NULL,
-                    reply_to_native_message_id TEXT NOT NULL DEFAULT '',
-                    body_json TEXT NOT NULL,
-                    content_fingerprint TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN (
-                        'pending', 'sending', 'ambiguous',
-                        'committed', 'failed', 'cancelled'
-                    )),
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    next_attempt_at INTEGER NOT NULL,
-                    lease_until INTEGER,
-                    native_message_id TEXT NOT NULL DEFAULT '',
-                    last_error TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_deliveries_due
-                    ON deliveries(status, next_attempt_at, delivery_id);
-                CREATE INDEX IF NOT EXISTS idx_deliveries_echo
-                    ON deliveries(
-                        target_platform, target_kind,
-                        target_native_conversation_id,
-                        content_fingerprint, status, created_at
-                    );
-
-                CREATE TABLE IF NOT EXISTS delivery_attempts (
-                    attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    delivery_id INTEGER NOT NULL REFERENCES deliveries(delivery_id),
-                    attempt INTEGER NOT NULL,
-                    state TEXT NOT NULL,
-                    detail TEXT NOT NULL DEFAULT '',
-                    started_at INTEGER NOT NULL,
-                    finished_at INTEGER,
-                    UNIQUE(delivery_id, attempt)
-                );
-                """
-            )
-            columns = {
-                str(row[1])
-                for row in cursor.execute(
-                    "PRAGMA table_info(deliveries)"
-                ).fetchall()
-            }
-            if "reply_to_native_message_id" not in columns:
-                cursor.execute(
-                    """
-                    ALTER TABLE deliveries
-                    ADD COLUMN reply_to_native_message_id TEXT NOT NULL DEFAULT ''
-                    """
-                )
-
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()
@@ -750,7 +674,7 @@ class DeliveryStore:
                 cursor.close()
 
     @staticmethod
-    def _row(row: sqlite3.Row) -> Delivery:
+    def _row(row: StoreRow) -> Delivery:
         lease = row["lease_until"]
         source_message_id = row["source_canonical_message_id"]
         turn_id = row["turn_id"]
@@ -781,7 +705,7 @@ class DeliveryStore:
         )
 
     @staticmethod
-    def _summary_row(row: sqlite3.Row) -> DeliverySummary:
+    def _summary_row(row: StoreRow) -> DeliverySummary:
         lease = row["lease_until"]
         source_message_id = row["source_canonical_message_id"]
         turn_id = row["turn_id"]

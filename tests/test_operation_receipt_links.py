@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import copy
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 from tests.test_subagent_v2 import profile
@@ -24,8 +24,7 @@ from src.plugins.ai_chat.subagents import AgentExecutionHooks, StepOutcome, SubA
 
 class OperationReceiptLinksTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.store = SubAgentStore(Path(self.tmp.name) / "agents.sqlite3")
+        self.store = SubAgentStore(postgres_for_test(self))
         self.task = self.new_task()
         self.step = TaskStep("inspect", "operator", "inspect", "report")
         self.run = self.store.create_run(self.task.task_id, self.step, allowed_tools=[], model_profile="qwen-local")
@@ -37,7 +36,6 @@ class OperationReceiptLinksTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     async def source(self, *, task=None, run=None, call_id="call1", response=None):
         task, run = task or self.task, run or self.run

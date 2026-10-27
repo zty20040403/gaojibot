@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import json
-import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from unittest.mock import patch
 
 from src.bot_security.passwords import hash_password
@@ -18,11 +18,10 @@ BOT = "987654321"
 
 class AccountStoreTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.path = Path(self.temp.name) / "auth.sqlite3"
         self.now = 1000
-        self.store = SecurityStore(self.path, b"x" * 32, clock=lambda: self.now)
+        self.store = SecurityStore(
+            postgres_for_test(self), b"x" * 32, clock=lambda: self.now
+        )
         self.addCleanup(self.store.close)
         self.admin = self.store.bootstrap("kenneth", PASSWORD, QQ)
 
@@ -163,7 +162,9 @@ class AccountStoreTests(unittest.TestCase):
     def test_restarting_store_does_not_revive_consumed_code(self):
         request, code = self.proposal()
         self.store.confirm(request["approval_id"], QQ, BOT, code)
-        restarted = SecurityStore(self.path, b"x" * 32, clock=lambda: self.now)
+        restarted = SecurityStore(
+            postgres_for_test(self), b"x" * 32, clock=lambda: self.now
+        )
         self.addCleanup(restarted.close)
         with self.assertRaises(SecurityError):
             restarted.confirm(request["approval_id"], QQ, BOT, code)
@@ -172,8 +173,11 @@ class AccountStoreTests(unittest.TestCase):
 
     def test_parallel_confirmations_across_stores_queue_once(self):
         request, code = self.proposal()
-        second = SecurityStore(self.path, b"x" * 32, clock=lambda: self.now)
+        second = SecurityStore(
+            postgres_for_test(self), b"x" * 32, clock=lambda: self.now
+        )
         self.addCleanup(second.close)
+
         def confirm(index):
             try:
                 (self.store if index % 2 else second).confirm(request["approval_id"] if index % 2 else None, QQ, BOT, code)
@@ -232,7 +236,7 @@ class AccountStoreTests(unittest.TestCase):
 
 class MobileAuthorizationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.store = SecurityStore(":memory:", b"z" * 32)
+        self.store = SecurityStore(postgres_for_test(self), b"z" * 32)
         self.addCleanup(self.store.close)
         self.account = self.store.bootstrap("kenneth", PASSWORD, QQ)
         self.sent = []

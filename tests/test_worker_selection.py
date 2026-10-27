@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import json
 import unittest
 from types import SimpleNamespace
@@ -56,7 +58,9 @@ class WorkerSelectionTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTestCas
         control = service()
         calls = []
         sent = []
-        store = SecurityStore(":memory:", b"test-worker-selection-secret-0000")
+        store = SecurityStore(
+            postgres_for_test(self), b"test-worker-selection-secret-0000"
+        )
         self.addCleanup(store.close)
         store.bootstrap("kenneth", PASSWORD, QQ)
         async def sender(bot, qq, text):

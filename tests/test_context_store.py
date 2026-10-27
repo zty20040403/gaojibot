@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 
 import nonebot
@@ -14,9 +16,9 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 
 class ContextStoreTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.ledger = MessageLedger(":memory:")
+        self.ledger = MessageLedger(postgres_for_test(self))
         self.context = ContextStore(
-            ":memory:",
+            postgres_for_test(self),
             input_budget_tokens=1000,
             high_watermark_tokens=180,
             low_watermark_tokens=90,
@@ -112,7 +114,7 @@ class ContextStoreTests(unittest.TestCase):
 
     def test_raw_tail_does_not_skip_an_oversized_middle_message(self) -> None:
         managed = ContextStore(
-            ":memory:",
+            postgres_for_test(self),
             input_budget_tokens=1000,
             historian_managed=True,
         )
@@ -139,7 +141,7 @@ class ContextStoreTests(unittest.TestCase):
 
     def test_per_turn_budget_limits_the_chronological_suffix(self) -> None:
         managed = ContextStore(
-            ":memory:",
+            postgres_for_test(self),
             input_budget_tokens=4000,
             historian_managed=True,
         )
@@ -188,7 +190,7 @@ class ContextStoreTests(unittest.TestCase):
 
     def test_historian_managed_projection_never_advances_cursor(self) -> None:
         managed = ContextStore(
-            ":memory:",
+            postgres_for_test(self),
             input_budget_tokens=1000,
             high_watermark_tokens=180,
             low_watermark_tokens=90,

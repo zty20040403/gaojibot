@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 
 import nonebot
@@ -18,11 +18,8 @@ from src.plugins.ai_chat.turn_journal import TurnJournal
 
 class ReactionFeedbackTests(unittest.TestCase):
     def setUp(self):
-        self.directory = TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        path = Path(self.directory.name) / "state.db"
-        self.ledger = MessageLedger(path)
-        self.journal = TurnJournal(path)
+        self.ledger = MessageLedger(postgres_for_test(self))
+        self.journal = TurnJournal(postgres_for_test(self))
         self.addCleanup(self.ledger.close)
         self.addCleanup(self.journal.close)
         self.scope = ConversationScope("onebot-v11", "group", "100")

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator
 
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor, StoreRow
 
 from .conversation_scope import ConversationScope
 from .ledger import CanonicalMessage, MessageLedger
@@ -23,13 +22,9 @@ class PinnedMessage:
 
 class PinStore:
     def __init__(self, path: DatabaseSource, *, max_per_scope: int = 50) -> None:
-        self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
         self.max_per_scope = max(int(max_per_scope), 1)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            self._configure()
-            self._migrate()
 
     def close(self) -> None:
         with self._lock:
@@ -176,39 +171,12 @@ class PinStore:
             used += len(lines[-1]) + 1
         return "\n".join(lines)
 
-    def _configure(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA busy_timeout = 10000")
-            if self.path is not None:
-                self._connection.execute("PRAGMA journal_mode = WAL")
-            self._connection.execute("PRAGMA synchronous = NORMAL")
-
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pinned_messages (
-                    scope_key TEXT NOT NULL,
-                    canonical_message_id INTEGER NOT NULL,
-                    pinned_by_principal_id INTEGER,
-                    created_at INTEGER NOT NULL,
-                    PRIMARY KEY(scope_key, canonical_message_id)
-                )
-                """
-            )
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_pins_scope_created
-                ON pinned_messages(scope_key, created_at)
-                """
-            )
-
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()
@@ -219,7 +187,7 @@ class PinStore:
                 cursor.close()
 
     @staticmethod
-    def _row(row: sqlite3.Row) -> PinnedMessage:
+    def _row(row: StoreRow) -> PinnedMessage:
         raw_actor = row["pinned_by_principal_id"]
         return PinnedMessage(
             scope_key=str(row["scope_key"]),

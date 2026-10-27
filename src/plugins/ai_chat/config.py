@@ -232,7 +232,6 @@ class Settings:
     quota_daily_calls: int
     quota_daily_input_tokens: int
     quota_daily_output_tokens: int
-    legacy_sqlite_allowed: bool
     postgres_schema: str
     postgres_pool_min_size: int
     postgres_pool_max_size: int
@@ -740,10 +739,6 @@ class Settings:
             quota_daily_output_tokens=max(
                 _get_int("AI_QUOTA_DAILY_OUTPUT_TOKENS", 0),
                 0,
-            ),
-            legacy_sqlite_allowed=_get_bool(
-                "AI_ALLOW_LEGACY_SQLITE",
-                False,
             ),
             postgres_schema=(
                 os.getenv("AI_POSTGRES_SCHEMA", "qq_bot").strip()

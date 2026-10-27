@@ -1,21 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from src.bot_storage.media_cleanup import LegacyMediaCleanup, MediaCleanupError
-
-
-class SQLiteDatabase:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def store_connection(self):
-        connection = sqlite3.connect(self.path, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        return connection
+from tests.postgres_fixture import postgres_for_test
 
 
 class LegacyMediaCleanupTests(unittest.TestCase):
@@ -28,28 +18,38 @@ class LegacyMediaCleanupTests(unittest.TestCase):
             ordinary_file.parent.mkdir(parents=True)
             ordinary_file.write_bytes(b"ordinary")
             sticker_file.write_bytes(b"sticker")
-            database = SQLiteDatabase(root / "cleanup.sqlite3")
-            self._create_schema(database)
+            database = postgres_for_test(self)
             connection = database.store_connection()
             connection.execute(
-                "INSERT INTO media_blobs VALUES (1, 'a', 8, 'blobs/ordinary.png', '', '')"
+                "INSERT INTO media_blobs (media_id, sha256, mime_type, byte_size, storage_path, first_seen_at, last_seen_at) "
+                "VALUES (1, 'a', 'image/png', 8, 'blobs/ordinary.png', 1, 1)"
             )
             connection.execute(
-                "INSERT INTO media_blobs VALUES (2, 'b', 7, 'blobs/sticker.png', '', '')"
+                "INSERT INTO media_blobs (media_id, sha256, mime_type, byte_size, storage_path, first_seen_at, last_seen_at) "
+                "VALUES (2, 'b', 'image/png', 7, 'blobs/sticker.png', 1, 1)"
             )
             connection.execute(
-                "INSERT INTO message_media VALUES (1, 1, 'image')"
+                "INSERT INTO message_media (media_id, scope_key, native_message_id, sender_native_user_id, "
+                "segment_index, media_kind, source_type, source_url, created_at, updated_at) "
+                "VALUES (1, 'group:1', '1', '2', 0, 'image', 'url', '', 1, 1)"
             )
             connection.execute(
-                "INSERT INTO message_media VALUES (2, 2, 'sticker')"
+                "INSERT INTO message_media (media_id, scope_key, native_message_id, sender_native_user_id, "
+                "segment_index, media_kind, source_type, source_url, created_at, updated_at) "
+                "VALUES (2, 'group:1', '2', '2', 0, 'sticker', 'url', '', 1, 1)"
             )
-            connection.execute("INSERT INTO sticker_library VALUES (2)")
             connection.execute(
-                "INSERT INTO semantic_documents VALUES ('media', 'media#1')"
+                "INSERT INTO sticker_library (media_id, created_at, updated_at) VALUES (2, 1, 1)"
+            )
+            connection.execute(
+                "INSERT INTO semantic_documents (scope_key, source_type, source_handle, content, content_hash, "
+                "embedding_model, embedding, created_at, updated_at) "
+                "VALUES ('group:1', 'media', 'media#1', 'ordinary', 'hash', 'test', ?::vector, 1, 1)",
+                ("[" + ",".join(["0.1"] * 1024) + "]",),
             )
             connection.close()
             cleanup = LegacyMediaCleanup(
-                database,  # type: ignore[arg-type]
+                database,
                 media_root=media_root,
             )
 
@@ -71,45 +71,6 @@ class LegacyMediaCleanupTests(unittest.TestCase):
         root = Path("/tmp/media-cleanup-root").resolve()
         with self.assertRaises(MediaCleanupError):
             LegacyMediaCleanup._safe_path(root, "../outside")
-
-    @staticmethod
-    def _create_schema(database: SQLiteDatabase) -> None:
-        connection = database.store_connection()
-        connection.executescript(
-            """
-            CREATE TABLE media_blobs (
-                media_id INTEGER PRIMARY KEY,
-                sha256 TEXT NOT NULL,
-                byte_size INTEGER NOT NULL,
-                storage_path TEXT NOT NULL,
-                prepared_path TEXT NOT NULL,
-                archive_path TEXT NOT NULL
-            );
-            CREATE TABLE message_media (
-                message_media_id INTEGER PRIMARY KEY,
-                media_id INTEGER NOT NULL,
-                media_kind TEXT NOT NULL
-            );
-            CREATE TABLE sticker_library (media_id INTEGER PRIMARY KEY);
-            CREATE TABLE semantic_documents (
-                source_type TEXT NOT NULL,
-                source_handle TEXT NOT NULL
-            );
-            CREATE TABLE media_cleanup_runs (
-                cleanup_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cleanup_kind TEXT NOT NULL,
-                confirmation_token TEXT NOT NULL,
-                candidate_count INTEGER NOT NULL,
-                candidate_bytes INTEGER NOT NULL,
-                deleted_count INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                report_json TEXT NOT NULL,
-                requested_at INTEGER NOT NULL,
-                finished_at INTEGER
-            );
-            """
-        )
-        connection.close()
 
 
 if __name__ == "__main__":

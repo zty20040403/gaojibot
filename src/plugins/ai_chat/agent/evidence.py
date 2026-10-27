@@ -11,23 +11,6 @@ from typing import Any
 from .control import assert_job_owned
 
 
-EVIDENCE_SQL = """
-CREATE TABLE IF NOT EXISTS subagent_evidence (
-    evidence_id TEXT PRIMARY KEY,
-    task_id INTEGER NOT NULL REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-    revision INTEGER NOT NULL,
-    run_id INTEGER NOT NULL REFERENCES subagent_runs(run_id) ON DELETE CASCADE,
-    call_id TEXT NOT NULL,
-    tool_name TEXT NOT NULL,
-    arguments_json TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    complete INTEGER NOT NULL,
-    recorded_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_subagent_evidence_task
-ON subagent_evidence(task_id, revision, run_id);
-"""
 MAX_EVIDENCE_BYTES = 256_000
 _SECRET_KEY = re.compile(r"^(?:.*[_-])?(?:password|secret|token|api[_-]?key|authorization|cookie|otp|验证码|密码)$", re.I)
 _SECRET_TEXT = re.compile(r"\bsk-[A-Za-z0-9_-]{10,}|(?i:Bearer\s+)[A-Za-z0-9._~+/=-]{8,}")
@@ -75,8 +58,10 @@ class EvidenceStoreMixin:
         timestamp = int(time.time() if now is None else now)
         with self._transaction() as cursor:
             # Ownership and revision are checked inside the write transaction.
-            lock = "" if self._legacy_sqlite else " FOR UPDATE"
-            task = cursor.execute("SELECT task_id FROM subagent_tasks WHERE task_id=?" + lock, (task_id,)).fetchone()
+            lock = " FOR UPDATE"
+            task = cursor.execute(
+                "SELECT task_id FROM subagent_tasks WHERE task_id=?" + lock, (task_id,)
+            ).fetchone()
             run = cursor.execute("SELECT task_id FROM subagent_runs WHERE run_id=?", (run_id,)).fetchone()
             control = cursor.execute("SELECT revision FROM subagent_controls WHERE task_id=?" + lock, (task_id,)).fetchone()
             current = int(control["revision"]) if control else 1

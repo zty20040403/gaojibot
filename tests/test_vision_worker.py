@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import json
-import sqlite3
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock
+
+import nonebot
+
+nonebot.init()
 
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.vision_worker import (
@@ -15,16 +18,6 @@ from src.plugins.ai_chat.vision_worker import (
     VisionResult,
     VisionWorker,
 )
-
-
-class SQLiteDatabase:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def store_connection(self):
-        connection = sqlite3.connect(self.path, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        return connection
 
 
 class VisionWorkerParsingTests(unittest.TestCase):
@@ -72,37 +65,20 @@ class VisionWorkerParsingTests(unittest.TestCase):
         )
 
     def test_completed_auto_job_is_handed_to_durable_outbox_once(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            database = SQLiteDatabase(root / "vision.sqlite3")
-            connection = database.store_connection()
+        database = postgres_for_test(self)
+        connection = database.store_connection()
+        try:
             connection.execute(
                 """
-                CREATE TABLE vision_jobs (
-                    vision_job_id INTEGER PRIMARY KEY,
-                    scope_key TEXT NOT NULL,
-                    native_message_id TEXT NOT NULL,
-                    target_platform TEXT NOT NULL,
-                    target_kind TEXT NOT NULL,
-                    target_native_conversation_id TEXT NOT NULL,
-                    reply_to_native_message_id TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    auto_deliver BOOLEAN NOT NULL,
-                    status TEXT NOT NULL,
-                    source_url TEXT NOT NULL,
-                    delivery_id INTEGER,
-                    delivery_enqueued_at INTEGER,
-                    updated_at INTEGER NOT NULL,
-                    expires_at INTEGER
-                )
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO vision_jobs VALUES (
+                INSERT INTO vision_jobs (
+                    vision_job_id, scope_key, native_message_id, target_platform,
+                    target_kind, target_native_conversation_id, reply_to_native_message_id,
+                    result_json, auto_deliver, status, segment_index, requester_native_user_id,
+                    next_attempt_at, created_at, updated_at
+                ) VALUES (
                     7, 'onebot-v11:group:123', '99', 'onebot-v11',
                     'group', '123', '99', ?, TRUE, 'succeeded',
-                    '', NULL, NULL, 1, NULL
+                    0, '456', 1, 1, 1
                 )
                 """,
                 (
@@ -119,18 +95,19 @@ class VisionWorkerParsingTests(unittest.TestCase):
                     ),
                 ),
             )
+        finally:
             connection.close()
-            deliveries = DeliveryStore(root / "deliveries.sqlite3")
-            self.addCleanup(deliveries.close)
-            worker = VisionWorker.__new__(VisionWorker)
-            worker.database = database
-            worker.delivery_store = deliveries
+        deliveries = DeliveryStore(database)
+        self.addCleanup(deliveries.close)
+        worker = VisionWorker.__new__(VisionWorker)
+        worker.database = database
+        worker.delivery_store = deliveries
 
-            self.assertEqual(worker.flush_completed_deliveries(), 1)
-            self.assertEqual(worker.flush_completed_deliveries(), 0)
-            stored = deliveries.recent_summaries(limit=5)
-            self.assertEqual(len(stored), 1)
-            self.assertEqual(stored[0].reply_to_native_message_id, "99")
+        self.assertEqual(worker.flush_completed_deliveries(), 1)
+        self.assertEqual(worker.flush_completed_deliveries(), 0)
+        stored = deliveries.recent_summaries(limit=5)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0].reply_to_native_message_id, "99")
 
 
 class VisionWorkerCacheTests(unittest.IsolatedAsyncioTestCase):

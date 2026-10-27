@@ -12,12 +12,16 @@ import httpx
 from src.bot_security.service import MobileAuthorization
 from src.bot_security.store import SecurityStore
 from src.plugins.ai_chat.admin import register_admin as real_register_admin
+from tests.postgres_fixture import isolated_postgres_for_test
 
 PASSWORD = "fixture-password-only"
 
 
-def register_admin(app, services, *, token="", **kwargs):
-    store = SecurityStore(":memory:", b"fixture-secret-for-test-only-0000")
+def register_admin(app, services, *, test_case, token="", **kwargs):
+    store = SecurityStore(
+        isolated_postgres_for_test(test_case), b"fixture-secret-for-test-only-0000"
+    )
+    test_case.addCleanup(store.close)
     store.bootstrap("kenneth", PASSWORD, "123456789")
     app.state.auth_clock = time.time()
     store.clock = lambda: app.state.auth_clock

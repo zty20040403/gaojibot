@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import unittest
 from types import SimpleNamespace
@@ -19,7 +21,7 @@ from src.plugins.ai_chat.onebot_delivery import OneBotDelivery
 
 class OneBotDeliveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.store = DeliveryStore(":memory:")
+        self.store = DeliveryStore(postgres_for_test(self))
         self.addCleanup(self.store.close)
         self.scope = ConversationScope("onebot-v11", "group", "100")
         self.bot = Mock(spec=Bot, self_id="123")

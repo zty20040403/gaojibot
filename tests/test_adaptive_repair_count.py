@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import tempfile
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tests.test_subagent_v2 import profile
@@ -12,16 +12,13 @@ from src.plugins.ai_chat.subagents import SubAgentCoordinator, SubAgentStore, Ta
 
 class AdaptiveRepairCountTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.path = Path(self.tmp.name) / "agents.sqlite3"
-        self.store = SubAgentStore(self.path)
+        self.store = SubAgentStore(postgres_for_test(self))
         self.catalog = ModelCatalog({"test": profile("test")}, default_profile="test")
         self.task = self.new_task()
         self.run = self.store.runs(self.task.task_id)[0]
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     def new_task(self):
         task = self.store.create_task(scope_key="group:1", conversation_id="group:1:user:2",
@@ -55,7 +52,7 @@ class AdaptiveRepairCountTests(unittest.TestCase):
 
     def reopen(self):
         self.store.close()
-        self.store = SubAgentStore(self.path)
+        self.store = SubAgentStore(postgres_for_test(self))
 
     def test_initial_revision_counts_only_planned_repairs_without_control_row(self):
         self.assertEqual(self.count(), 0)
@@ -134,10 +131,25 @@ class AdaptiveRepairCountTests(unittest.TestCase):
         self.store.update_control(self.task.task_id, expected_version=1, policy={"mode": "auto"})
         changed = Mock()
         self.store.set_change_listener(changed)
-        before = self.store._connection.total_changes
-        for _ in range(3):
-            self.assertEqual(self.count(), 1)
-        self.assertEqual(self.store._connection.total_changes, before)
+        with (
+            patch.object(
+                self.store._connection, "execute", wraps=self.store._connection.execute
+            ) as queries,
+            patch.object(
+                self.store._connection,
+                "cursor",
+                side_effect=AssertionError("Read path opened a transaction"),
+            ),
+        ):
+            for _ in range(3):
+                self.assertEqual(self.count(), 1)
+        self.assertEqual(queries.call_count, 3)
+        self.assertTrue(
+            all(
+                call.args[0].lstrip().upper().startswith("SELECT")
+                for call in queries.call_args_list
+            )
+        )
         changed.assert_not_called()
 
     def test_latest_run_checkpoint_returns_full_state_after_page_limit(self):
@@ -202,7 +214,23 @@ class AdaptiveRepairCountTests(unittest.TestCase):
                 self.reopen()
                 changed = Mock()
                 self.store.set_change_listener(changed)
-                before = self.store._connection.total_changes
-                self.assertEqual(self.store.latest_run_checkpoint(task_id, run_id, phase), state)
-                self.assertEqual(self.store._connection.total_changes, before)
+                with (
+                    patch.object(
+                        self.store._connection,
+                        "execute",
+                        wraps=self.store._connection.execute,
+                    ) as queries,
+                    patch.object(
+                        self.store._connection,
+                        "cursor",
+                        side_effect=AssertionError("Read path opened a transaction"),
+                    ),
+                ):
+                    self.assertEqual(
+                        self.store.latest_run_checkpoint(task_id, run_id, phase), state
+                    )
+                self.assertEqual(queries.call_count, 1)
+                self.assertTrue(
+                    queries.call_args.args[0].lstrip().upper().startswith("SELECT")
+                )
                 changed.assert_not_called()

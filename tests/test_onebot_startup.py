@@ -216,7 +216,6 @@ print("lazy import verified")
                     "PYTHON_DOTENV_DISABLED": "1",
                     "AI_STATE_DIR": str(state),
                     "AI_CACHE_DIR": str(state / "cache"),
-                    "AI_ALLOW_LEGACY_SQLITE": "false",
                     "AI_POSTGRES_DSN": "",
                 },
             )

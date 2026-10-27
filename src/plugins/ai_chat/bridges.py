@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
@@ -14,7 +13,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
 
 from .conversation_scope import ConversationScope
 from .delivery import Delivery, DeliveryStore
@@ -247,17 +246,8 @@ class MirrorStateStore:
     """Persistent transport evidence for bridge dedupe and native reply mapping."""
 
     def __init__(self, path: DatabaseSource) -> None:
-        self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            with self._lock:
-                self._connection.execute("PRAGMA foreign_keys = ON")
-                self._connection.execute("PRAGMA busy_timeout = 10000")
-                if self.path is not None:
-                    self._connection.execute("PRAGMA journal_mode = WAL")
-                self._connection.execute("PRAGMA synchronous = FULL")
-            self._migrate()
 
     def close(self) -> None:
         with self._lock:
@@ -437,47 +427,12 @@ class MirrorStateStore:
             )
         return {"source_events": sources, "confirmed_copies": copies}
 
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS bridge_sources (
-                    source_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    canonical_message_id INTEGER NOT NULL,
-                    scope_key TEXT NOT NULL,
-                    native_event_id TEXT NOT NULL,
-                    occurred_at INTEGER NOT NULL,
-                    UNIQUE(scope_key, native_event_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_bridge_sources_canonical
-                    ON bridge_sources(canonical_message_id);
-
-                CREATE TABLE IF NOT EXISTS bridge_deliveries (
-                    delivery_id INTEGER PRIMARY KEY,
-                    canonical_message_id INTEGER NOT NULL,
-                    target_scope_key TEXT NOT NULL,
-                    target_native_event_id TEXT NOT NULL DEFAULT '',
-                    confirmed_at INTEGER
-                );
-                CREATE INDEX IF NOT EXISTS idx_bridge_deliveries_reply
-                    ON bridge_deliveries(
-                        canonical_message_id, target_scope_key, confirmed_at
-                    );
-
-                CREATE TABLE IF NOT EXISTS bridge_cursors (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-                """
-            )
-
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()

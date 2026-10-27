@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import os
+from tests.postgres_fixture import postgres_for_test
+
 import re
 import unittest
 from types import SimpleNamespace
@@ -11,7 +12,6 @@ import nonebot
 from fastapi import FastAPI
 from nonebot.adapters.onebot.v11 import Bot
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 nonebot.init()
 
 from src.bot_security.passwords import hash_password
@@ -39,7 +39,7 @@ class Preferences:
 
 class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.store = SecurityStore(":memory:", b"t" * 32)
+        self.store = SecurityStore(postgres_for_test(self), b"t" * 32)
         self.addCleanup(self.store.close)
         self.account = self.store.bootstrap("kenneth", PASSWORD, QQ)
         self.store.apply_account_change(self.account, {"action": "create", "username": "viewer", "password_hash": hash_password(PASSWORD), "role": "member", "qq_id": None})

@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import re
-import sqlite3
 import threading
 import time
 import uuid
@@ -14,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any, Iterator, Literal
 
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
 
 from .agent import (
     AGENT_SPECS,
@@ -28,11 +27,29 @@ from .agent import (
     SubAgentRole,
 )
 from .ai_tools import ToolDefinition
-from .agent.execution import DECISION_TOOL, ENTRY_PROMPT, EntryDecision, ExecutionEntryError, active_agent_step
-from .agent.evidence import (EVIDENCE_SQL, EvidenceStoreMixin, READ_TASK_EVIDENCE, READ_TASK_EVIDENCE_BATCH,
-                             decode_result, evidence_index, read_evidence, read_evidence_batch)
-from .agent.outcomes import (acceptance_blocks_completion, acceptance_feedback, evaluate_acceptance,
-                             outcome_report, validate_report as validate_report)
+from .agent.execution import (
+    DECISION_TOOL,
+    ENTRY_PROMPT,
+    EntryDecision,
+    ExecutionEntryError,
+    active_agent_step,
+)
+from .agent.evidence import (
+    EvidenceStoreMixin,
+    READ_TASK_EVIDENCE,
+    READ_TASK_EVIDENCE_BATCH,
+    decode_result,
+    evidence_index,
+    read_evidence,
+    read_evidence_batch,
+)
+from .agent.outcomes import (
+    acceptance_blocks_completion,
+    acceptance_feedback,
+    evaluate_acceptance,
+    outcome_report,
+    validate_report as validate_report,
+)
 from .agent.file_outbox import FileOutboxStoreMixin, attempt_file
 from .agent.artifact_acceptance import (
     ACCEPTANCE_VERSION, artifact_delivery_allowed, artifact_draft_allowed, artifact_identity, artifact_verdicts,
@@ -41,14 +58,30 @@ from .agent.artifact_acceptance import (
 from .agent.model_routing import agent_profile_names, choose_agent_profile, scoped_agent_models, model_scope_for_role, validate_model_policy
 from .agent.scheduling import SpecialistScheduler
 from .agent.workspaces import ArtifactCaptureError, IMPORT_AGENT_ARTIFACT
-from .agent.sessions import AgentSessionStoreMixin, READ_AGENT_RESULT, read_upstream_result, upstream_index
-from .agent.external import ExternalCalls, ExternalPending, ExternalStoreMixin, EXTERNAL_SQL, active_external
+from .agent.sessions import (
+    AgentSessionStoreMixin,
+    READ_AGENT_RESULT,
+    read_upstream_result,
+    upstream_index,
+)
+from .agent.external import (
+    ExternalCalls,
+    ExternalPending,
+    ExternalStoreMixin,
+    active_external,
+)
 from .agent.receipt_links import evidence_fingerprint, link_operation_receipts
 from .agent.worker_report import (checked_report, checked_correction, correction_input, retain_execution_facts,
                                   separate_cluster_artifacts, report_refs, REPORT_CORRECTION_PROMPT)
 from .config import settings
-from .agent.control import (CONTROL_SQL, TaskControlStoreMixin, LeaseLost,
-                            active_job_fence, active_task_id as active_task_id, active_model_policy, assert_job_owned)
+from .agent.control import (
+    TaskControlStoreMixin,
+    LeaseLost,
+    active_job_fence,
+    active_task_id as active_task_id,
+    active_model_policy,
+    assert_job_owned,
+)
 from .agent_loop import (
     AgentLoopEvent,
     DeepSeekConfigError,
@@ -206,23 +239,17 @@ class RunRecord:
         return f"agent#{self.run_id}"
 
 
-class SubAgentStore(AgentSessionStoreMixin, TaskControlStoreMixin, ExternalStoreMixin, EvidenceStoreMixin, FileOutboxStoreMixin):
+class SubAgentStore(
+    AgentSessionStoreMixin,
+    TaskControlStoreMixin,
+    ExternalStoreMixin,
+    EvidenceStoreMixin,
+    FileOutboxStoreMixin,
+):
     def __init__(self, source: DatabaseSource) -> None:
-        self._legacy_sqlite = not isinstance(source, PostgresDatabase)
         self.path, self._connection = open_store_connection(source)
         self._lock = threading.RLock()
         self._change_listener: Callable[[int], None] | None = None
-        if self._legacy_sqlite:
-            self._configure()
-            self._migrate()
-            self._connection.executescript(CONTROL_SQL)
-            self._connection.executescript(EXTERNAL_SQL)
-            self._connection.executescript(EVIDENCE_SQL)
-            if "final_queued_revision" not in {row["name"] for row in self._connection.execute("PRAGMA table_info(subagent_controls)").fetchall()}:
-                self._connection.execute("ALTER TABLE subagent_controls ADD COLUMN final_queued_revision INTEGER NOT NULL DEFAULT 0")
-                self._connection.execute("UPDATE subagent_controls SET final_queued_revision=revision WHERE task_id IN (SELECT task_id FROM subagent_events WHERE event_type='task.final_delivery_queued')")
-            if "covered_sequence" not in {row["name"] for row in self._connection.execute("PRAGMA table_info(subagent_sessions)").fetchall()}:
-                self._connection.execute("ALTER TABLE subagent_sessions ADD COLUMN covered_sequence INTEGER NOT NULL DEFAULT 0")
         self.recovered_tasks = self.recover_interrupted()
 
     def set_change_listener(
@@ -365,8 +392,11 @@ class SubAgentStore(AgentSessionStoreMixin, TaskControlStoreMixin, ExternalStore
         timestamp = int(time.time())
         runs = []
         with self._transaction() as cursor:
-            lock = "" if self._legacy_sqlite else " FOR UPDATE"
-            row = cursor.execute("SELECT plan_json FROM subagent_tasks WHERE task_id=?" + lock, (task_id,)).fetchone()
+            lock = " FOR UPDATE"
+            row = cursor.execute(
+                "SELECT plan_json FROM subagent_tasks WHERE task_id=?" + lock,
+                (task_id,),
+            ).fetchone()
             plan = _json_object(row["plan_json"])
             adaptive = list(plan.get("adaptive_steps", []))
             for index, (step, allowed, profile) in enumerate(specs):
@@ -1009,136 +1039,26 @@ class SubAgentStore(AgentSessionStoreMixin, TaskControlStoreMixin, ExternalStore
             )
         return len(task_ids)
 
-    def _configure(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA busy_timeout = 10000")
-            if self.path is not None:
-                self._connection.execute("PRAGMA journal_mode = WAL")
-            self._connection.execute("PRAGMA synchronous = FULL")
-
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS subagent_tasks (
-                    task_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trace_id TEXT NOT NULL UNIQUE,
-                    scope_key TEXT NOT NULL,
-                    conversation_id TEXT NOT NULL,
-                    requester_user_id INTEGER NOT NULL,
-                    trigger_message_id INTEGER,
-                    objective TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    priority INTEGER NOT NULL DEFAULT 100,
-                    max_parallelism INTEGER NOT NULL,
-                    max_steps INTEGER NOT NULL,
-                    plan_json TEXT NOT NULL DEFAULT '{}',
-                    result_json TEXT NOT NULL DEFAULT '{}',
-                    last_error TEXT NOT NULL DEFAULT '',
-                    cancel_requested INTEGER NOT NULL DEFAULT 0,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    finished_at INTEGER
-                );
-                CREATE INDEX IF NOT EXISTS idx_subagent_tasks_scope_time
-                    ON subagent_tasks(scope_key, created_at, task_id);
-                CREATE INDEX IF NOT EXISTS idx_subagent_tasks_status_time
-                    ON subagent_tasks(status, updated_at, task_id);
-                CREATE TABLE IF NOT EXISTS subagent_runs (
-                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id INTEGER NOT NULL REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-                    step_key TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    objective TEXT NOT NULL,
-                    deliverable TEXT NOT NULL DEFAULT '',
-                    dependencies_json TEXT NOT NULL DEFAULT '[]',
-                    allowed_tools_json TEXT NOT NULL DEFAULT '[]',
-                    model_profile TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL,
-                    attempt INTEGER NOT NULL DEFAULT 0,
-                    result_json TEXT NOT NULL DEFAULT '{}',
-                    last_error TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL,
-                    started_at INTEGER,
-                    finished_at INTEGER,
-                    UNIQUE(task_id, step_key)
-                );
-                CREATE INDEX IF NOT EXISTS idx_subagent_runs_task_status
-                    ON subagent_runs(task_id, status, run_id);
-                CREATE TABLE IF NOT EXISTS subagent_events (
-                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id INTEGER NOT NULL REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-                    run_id INTEGER REFERENCES subagent_runs(run_id) ON DELETE CASCADE,
-                    sequence INTEGER NOT NULL,
-                    event_type TEXT NOT NULL,
-                    payload_json TEXT NOT NULL DEFAULT '{}',
-                    created_at INTEGER NOT NULL,
-                    UNIQUE(task_id, sequence)
-                );
-                CREATE INDEX IF NOT EXISTS idx_subagent_events_task_sequence
-                    ON subagent_events(task_id, sequence);
-                CREATE TABLE IF NOT EXISTS subagent_artifacts (
-                    artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id INTEGER NOT NULL REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-                    run_id INTEGER REFERENCES subagent_runs(run_id) ON DELETE SET NULL,
-                    kind TEXT NOT NULL,
-                    handle TEXT NOT NULL,
-                    name TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at INTEGER NOT NULL,
-                    UNIQUE(task_id, handle)
-                );
-                CREATE TABLE IF NOT EXISTS subagent_checkpoints (
-                    checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id INTEGER NOT NULL REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-                    run_id INTEGER REFERENCES subagent_runs(run_id) ON DELETE SET NULL,
-                    sequence INTEGER NOT NULL,
-                    phase TEXT NOT NULL,
-                    state_json TEXT NOT NULL DEFAULT '{}',
-                    created_at INTEGER NOT NULL,
-                    UNIQUE(task_id, sequence)
-                );
-                CREATE INDEX IF NOT EXISTS idx_subagent_checkpoints_task_sequence
-                    ON subagent_checkpoints(task_id, sequence);
-                CREATE TABLE IF NOT EXISTS subagent_run_contexts (
-                    context_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id INTEGER NOT NULL REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-                    run_id INTEGER NOT NULL UNIQUE REFERENCES subagent_runs(run_id) ON DELETE CASCADE,
-                    role TEXT NOT NULL,
-                    scope_key TEXT NOT NULL,
-                    context_hash TEXT NOT NULL,
-                    context_json TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_subagent_run_contexts_task
-                    ON subagent_run_contexts(task_id, run_id);
-                CREATE TABLE IF NOT EXISTS subagent_sessions (
-                    run_id INTEGER PRIMARY KEY REFERENCES subagent_runs(run_id) ON DELETE CASCADE,
-                    task_id INTEGER NOT NULL REFERENCES subagent_tasks(task_id) ON DELETE CASCADE,
-                    version INTEGER NOT NULL,
-                    transcript_json TEXT NOT NULL,
-                    model_profile TEXT NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_subagent_sessions_task ON subagent_sessions(task_id);
-                """
-            )
-
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 fence = active_job_fence.get()
                 if fence:
-                    if self._legacy_sqlite:
-                        fence.assert_owned()
-                    else:
-                        row = cursor.execute("SELECT status, lease_owner, attempts, lease_until FROM durable_jobs WHERE job_id=? FOR SHARE", (fence.job_id,)).fetchone()
-                        if (row is None or row['status'] != 'running' or row['lease_owner'] != fence.owner
-                                or int(row['attempts']) != fence.attempt or int(row['lease_until'] or 0) <= time.time()):
-                            raise LeaseLost("Sub-Agent task lease expired")
+                    row = cursor.execute(
+                        "SELECT status, lease_owner, attempts, lease_until FROM durable_jobs WHERE job_id=? FOR SHARE",
+                        (fence.job_id,),
+                    ).fetchone()
+                    if (
+                        row is None
+                        or row["status"] != "running"
+                        or row["lease_owner"] != fence.owner
+                        or int(row["attempts"]) != fence.attempt
+                        or int(row["lease_until"] or 0) <= time.time()
+                    ):
+                        raise LeaseLost("Sub-Agent task lease expired")
                 yield cursor
             except BaseException:
                 self._connection.rollback()
@@ -1352,9 +1272,12 @@ class SubAgentCoordinator:
             for run in runs:
                 if run.step_key not in selected or run.step_key in retired:
                     continue
-                lock = "" if self.store._legacy_sqlite else " FOR UPDATE"
-                session = cursor.execute("SELECT version, transcript_json, model_profile, covered_sequence FROM subagent_sessions WHERE task_id=? AND run_id=?" + lock,
-                    (task_id, run.run_id)).fetchone()
+                lock = " FOR UPDATE"
+                session = cursor.execute(
+                    "SELECT version, transcript_json, model_profile, covered_sequence FROM subagent_sessions WHERE task_id=? AND run_id=?"
+                    + lock,
+                    (task_id, run.run_id),
+                ).fetchone()
                 context_row = cursor.execute("SELECT context_json FROM subagent_run_contexts WHERE task_id=? AND run_id=?",
                     (task_id, run.run_id)).fetchone()
                 if session is not None or context_row is not None:

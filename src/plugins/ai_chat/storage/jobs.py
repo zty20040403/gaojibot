@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator, Literal, Mapping
 
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor, StoreRow
 
 
 DurableJobStatus = Literal[
@@ -79,14 +78,10 @@ class DurableJobStore:
         lease_seconds: int = 300,
         default_max_attempts: int = 3,
     ) -> None:
-        self._legacy_sqlite = not isinstance(source, PostgresDatabase)
         self.path, self._connection = open_store_connection(source)
         self.lease_seconds = max(int(lease_seconds), 10)
         self.default_max_attempts = min(max(int(default_max_attempts), 1), 50)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            self._configure()
-            self._migrate()
         self.recovered_jobs = self.recover_expired_leases()
 
     def close(self) -> None:
@@ -175,7 +170,7 @@ class DurableJobStore:
         scope_clause = "" if per_scope_limit is None else " AND (SELECT COUNT(*) FROM durable_jobs active WHERE active.scope_key=durable_jobs.scope_key AND active.kind=durable_jobs.kind AND active.status='running') < ?"
         with self._transaction() as cursor:
             self._recover_expired(cursor, timestamp)
-            lock_clause = "" if self._legacy_sqlite else "FOR UPDATE SKIP LOCKED"
+            lock_clause = "FOR UPDATE SKIP LOCKED"
             rows = cursor.execute(
                 f"""
                 SELECT * FROM durable_jobs
@@ -187,7 +182,12 @@ class DurableJobStore:
                 LIMIT ?
                 {lock_clause}
                 """,
-                (timestamp, *(kinds or ()), *((per_scope_limit,) if per_scope_limit is not None else ()), bounded),
+                (
+                    timestamp,
+                    *(kinds or ()),
+                    *((per_scope_limit,) if per_scope_limit is not None else ()),
+                    bounded,
+                ),
             ).fetchall()
             for row in rows:
                 if per_scope_limit is not None:
@@ -394,7 +394,7 @@ class DurableJobStore:
         }
 
     @staticmethod
-    def _recover_expired(cursor: sqlite3.Cursor, timestamp: int) -> int:
+    def _recover_expired(cursor: StoreCursor, timestamp: int) -> int:
         cursor.execute(
             """
             UPDATE durable_jobs
@@ -417,56 +417,12 @@ class DurableJobStore:
         )
         return max(int(cursor.rowcount), 0)
 
-    def _configure(self) -> None:
-        with self._lock:
-            self._connection.execute("PRAGMA busy_timeout = 10000")
-            if self.path is not None:
-                self._connection.execute("PRAGMA journal_mode = WAL")
-            self._connection.execute("PRAGMA synchronous = FULL")
-
-    def _migrate(self) -> None:
-        with self._transaction() as cursor:
-            cursor.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS durable_jobs (
-                    job_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    kind TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    scope_key TEXT NOT NULL DEFAULT '',
-                    payload_json TEXT NOT NULL DEFAULT '{}',
-                    status TEXT NOT NULL CHECK(status IN (
-                        'pending', 'running', 'succeeded', 'failed', 'cancelled'
-                    )),
-                    priority INTEGER NOT NULL DEFAULT 100,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    max_attempts INTEGER NOT NULL DEFAULT 3,
-                    next_attempt_at INTEGER NOT NULL,
-                    lease_owner TEXT NOT NULL DEFAULT '',
-                    lease_until INTEGER,
-                    result_json TEXT NOT NULL DEFAULT '{}',
-                    last_error TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    finished_at INTEGER
-                );
-                CREATE INDEX IF NOT EXISTS idx_durable_jobs_due
-                    ON durable_jobs(status, next_attempt_at, priority, job_id);
-                CREATE INDEX IF NOT EXISTS idx_durable_jobs_scope_time
-                    ON durable_jobs(scope_key, created_at, job_id);
-                CREATE INDEX IF NOT EXISTS idx_durable_jobs_lease
-                    ON durable_jobs(status, lease_until);
-                """
-            )
-            columns = {row[1] for row in cursor.execute("PRAGMA table_info(durable_jobs)").fetchall()}
-            if "resume_on_lease_loss" not in columns:
-                cursor.execute("ALTER TABLE durable_jobs ADD COLUMN resume_on_lease_loss INTEGER NOT NULL DEFAULT 0")
-
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()
@@ -477,7 +433,7 @@ class DurableJobStore:
                 cursor.close()
 
     @staticmethod
-    def _row(row: sqlite3.Row) -> DurableJob:
+    def _row(row: StoreRow) -> DurableJob:
         return DurableJob(
             job_id=int(row["job_id"]),
             kind=str(row["kind"]),
@@ -503,7 +459,7 @@ class DurableJobStore:
         )
 
     @staticmethod
-    def _summary_row(row: sqlite3.Row) -> JobSummary:
+    def _summary_row(row: StoreRow) -> JobSummary:
         return JobSummary(
             job_id=int(row["job_id"]),
             kind=str(row["kind"]),

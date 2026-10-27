@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 
 import nonebot
@@ -14,8 +16,8 @@ from src.plugins.ai_chat.pins import PinStore
 
 class PinStoreTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.ledger = MessageLedger(":memory:")
-        self.pins = PinStore(":memory:", max_per_scope=2)
+        self.ledger = MessageLedger(postgres_for_test(self))
+        self.pins = PinStore(postgres_for_test(self), max_per_scope=2)
         self.scope = ConversationScope(
             "onebot-v11", "group", "99", bot_native_user_id="1000"
         )

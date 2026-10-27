@@ -16,7 +16,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.context_evaluation import case_variants, evaluation_report
-from src.context_feedback_evaluation import compare_cases, digest, validate_export, write_private_json
+from src.context_feedback_evaluation import (
+    compare_cases,
+    digest,
+    validate_export,
+    write_private_json,
+)
+from src.bot_storage.disposable import IsolatedPostgres, validate_test_database
 
 
 async def replay_feedback(cases, profile_name, judge_name, *, timeout=120.0):
@@ -32,6 +38,7 @@ async def replay_feedback(cases, profile_name, judge_name, *, timeout=120.0):
     from src.plugins.ai_chat.prompt_context import quote_evidence
 
     catalog, gateway = _runtime()
+    workspace = None
     try:
         candidate, reviewer = [catalog.resolve_preference(name) for name in (profile_name, judge_name)]
         if any(profile.name != name or not profile.configured
@@ -39,8 +46,15 @@ async def replay_feedback(cases, profile_name, judge_name, *, timeout=120.0):
             raise ValueError("Select exact configured candidate and judge profiles")
 
         def project(case):
-            ledger = MessageLedger(":memory:")
-            store = ContextStore(":memory:", historian_managed=True, input_budget_tokens=6000)
+            nonlocal workspace
+            if workspace is None:
+                workspace = IsolatedPostgres(os.environ.get("TEST_POSTGRES_DSN", ""))
+            else:
+                workspace.reset()
+            ledger = MessageLedger(workspace.database)
+            store = ContextStore(
+                workspace.database, historian_managed=True, input_budget_tokens=6000
+            )
             scope = ConversationScope("onebot-v11", "group", "100")
             try:
                 for item in case["messages"]:
@@ -87,7 +101,11 @@ async def replay_feedback(cases, profile_name, judge_name, *, timeout=120.0):
                       system_prompt_sha256=digest(settings.system_prompt), context_budget_tokens=6000)
         return report
     finally:
-        await gateway.close()
+        try:
+            await gateway.close()
+        finally:
+            if workspace is not None:
+                workspace.close()
 
 
 async def live_predictions(cases, profile_name, embeddings):
@@ -111,10 +129,15 @@ async def live_predictions(cases, profile_name, embeddings):
         model=settings.embedding_model, dimensions=settings.embedding_dimensions,
     ) if embeddings else None
     results = []
+    workspace = None
     try:
+        workspace = IsolatedPostgres(os.environ.get("TEST_POSTGRES_DSN", ""))
         for case in cases:
-            ledger = MessageLedger(":memory:")
-            store = ContextStore(":memory:", historian_managed=True, input_budget_tokens=6000)
+            workspace.reset()
+            ledger = MessageLedger(workspace.database)
+            store = ContextStore(
+                workspace.database, historian_managed=True, input_budget_tokens=6000
+            )
             scope = ConversationScope("onebot-v11", "group", "100")
             ids = {}
             try:
@@ -169,7 +192,11 @@ async def live_predictions(cases, profile_name, embeddings):
                 store.close()
                 ledger.close()
     finally:
-        await gateway.close()
+        try:
+            await gateway.close()
+        finally:
+            if workspace is not None:
+                workspace.close()
     return results
 
 
@@ -188,6 +215,8 @@ def main():
     parser.add_argument("--embeddings", action="store_true", help="Call the configured BGE-M3 embedding endpoint")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.live or args.replay_export:
+        validate_test_database(os.environ.get("TEST_POSTGRES_DSN", ""))
     if args.replay_export:
         if (not args.profile or not args.judge_profile or not args.allow_provider_data
                 or not 1 <= args.limit <= 100 or not 1 <= args.timeout <= 300):
@@ -201,8 +230,12 @@ def main():
         output = args.output.resolve()
         with tempfile.TemporaryDirectory(prefix="gaoji-feedback-replay-") as temporary:
             os.chdir(temporary)
-            os.environ.update(PYTHON_DOTENV_DISABLED="1", AI_POSTGRES_DSN="", AI_ALLOW_LEGACY_SQLITE="true",
-                              AI_STATE_DIR=temporary, AI_CACHE_DIR=temporary)
+            os.environ.update(
+                PYTHON_DOTENV_DISABLED="1",
+                AI_POSTGRES_DSN="",
+                AI_STATE_DIR=temporary,
+                AI_CACHE_DIR=temporary,
+            )
             report = asyncio.run(replay_feedback(cases[:args.limit], args.profile, args.judge_profile,
                                                 timeout=args.timeout))
         report.update(export_sha256=digest(captured), available_cases=len(cases),
@@ -220,8 +253,15 @@ def main():
         cases = cases[:args.limit]
         with tempfile.TemporaryDirectory(prefix="gaoji-context-eval-") as temporary:
             os.chdir(temporary)
-            os.environ.update(AI_POSTGRES_DSN="", AI_ALLOW_LEGACY_SQLITE="true", AI_STATE_DIR=temporary, AI_CACHE_DIR=temporary)
-            predictions = asyncio.run(live_predictions(cases, args.profile, args.embeddings))
+            os.environ.update(
+                PYTHON_DOTENV_DISABLED="1",
+                AI_POSTGRES_DSN="",
+                AI_STATE_DIR=temporary,
+                AI_CACHE_DIR=temporary,
+            )
+            predictions = asyncio.run(
+                live_predictions(cases, args.profile, args.embeddings)
+            )
     else:
         captured = json.loads(args.predictions.read_text())
         predictions = captured["predictions"] if isinstance(captured, dict) else captured

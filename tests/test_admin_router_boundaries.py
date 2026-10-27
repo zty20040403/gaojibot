@@ -83,12 +83,19 @@ class AdminRouterBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     def make_app(self, prefix):
         app = FastAPI()
-        register_admin(app, AdminServices(
-            version="router-test",
-            started_at=1,
-            settings=SimpleNamespace(admin_origin="https://test", alert_notify_enabled=False),
-            alert_preferences=self.preferences,
-        ), path=prefix)
+        register_admin(
+            app,
+            AdminServices(
+                version="router-test",
+                started_at=1,
+                settings=SimpleNamespace(
+                    admin_origin="https://test", alert_notify_enabled=False
+                ),
+                alert_preferences=self.preferences,
+            ),
+            test_case=self,
+            path=prefix,
+        )
         self.addCleanup(app.state.mobile.store.close)
         return app
 

@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
 
@@ -153,6 +154,44 @@ class BackgroundTaskSupervisorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AppContextTests(unittest.IsolatedAsyncioTestCase):
+    def test_missing_dsn_never_falls_back_to_a_file_database(self):
+        with (
+            TemporaryDirectory() as tmp,
+            patch("src.plugins.ai_chat.runtime.PostgresDatabase") as database,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "AI_POSTGRES_DSN is required"):
+                build_app_context(
+                    replace(settings, postgres_dsn=""),
+                    state_dir=Path(tmp),
+                    project_root=Path(tmp),
+                    logger=RecordingLogger(),
+                    historian_generator=AsyncMock(),
+                    dream_generator=AsyncMock(),
+                    evidence_provider=Mock(),
+                )
+            database.assert_not_called()
+            self.assertEqual(list(Path(tmp).rglob("*.sqlite3")), [])
+
+    def test_schema_mismatch_closes_the_new_pool_before_failing(self):
+        with (
+            TemporaryDirectory() as tmp,
+            patch("src.plugins.ai_chat.runtime.PostgresDatabase") as database,
+        ):
+            database.return_value.require_revision.side_effect = RuntimeError(
+                "schema revision mismatch"
+            )
+            with self.assertRaisesRegex(RuntimeError, "schema revision mismatch"):
+                build_app_context(
+                    replace(settings, postgres_dsn="postgresql://unused/gaoji_test"),
+                    state_dir=Path(tmp),
+                    project_root=Path(tmp),
+                    logger=RecordingLogger(),
+                    historian_generator=AsyncMock(),
+                    dream_generator=AsyncMock(),
+                    evidence_provider=Mock(),
+                )
+            database.return_value.close.assert_called_once_with()
+
     async def test_builder_owns_core_resources_and_shutdown_is_idempotent(
         self,
     ) -> None:

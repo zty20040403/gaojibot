@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import json
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 from tests.test_subagent_v2 import decision
@@ -46,9 +46,7 @@ def metrics_receipt(at, *, host="h610"):
 
 class TaskEvidenceTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.path = Path(self.tmp.name) / "tasks.sqlite3"
-        self.store = SubAgentStore(self.path)
+        self.store = SubAgentStore(postgres_for_test(self))
         self.task = self.new_task("group:a")
         self.run = self.store.create_run(self.task.task_id, TaskStep("inspect", "operator", "inspect", "report"),
                                          allowed_tools=[], model_profile="test")
@@ -59,7 +57,6 @@ class TaskEvidenceTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     def record(self, payload, tool="host_inspect", at=1010, args=None):
         return self.store.record_evidence(self.task.task_id, self.run.run_id, tool,
@@ -75,7 +72,7 @@ class TaskEvidenceTests(unittest.TestCase):
         changed = self.record(observation(1020, 210), at=1020)
         self.assertNotEqual(first["ref"], changed["ref"])
         self.store.close()
-        self.store = SubAgentStore(self.path)
+        self.store = SubAgentStore(postgres_for_test(self))
         items = self.store.task_evidence(self.task.task_id)
         self.assertEqual(len(items), 2)
         self.assertEqual(items[0]["payload"]["hosts"][0]["root_disk"]["available_bytes"], 200)

@@ -63,13 +63,37 @@ class AcceptanceHarnessProcessTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 (root / "test-token").write_text("isolated-test-token")
-                result = subprocess.run([sys.executable, "-m", "tools.live_file_outbox_acceptance",
-                    "--webui-url", f"http://127.0.0.1:{server.server_port}", "--bot-id", "123",
-                    "--group-id", "456", "--requester-id", "789", "--token-file", str(root / "test-token"),
-                    "--output-dir", str(root / "output"), "--execute-live", "--confirm-group", "456"],
-                    cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=240,
-                    env={**os.environ, "AI_SUBAGENTS_ENABLED": "false", "AI_ALLOW_LEGACY_SQLITE": "true",
-                         "TEST_POSTGRES_DSN": os.environ["TEST_FILE_ACCEPTANCE_DSN"]})
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "tools.live_file_outbox_acceptance",
+                        "--webui-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--bot-id",
+                        "123",
+                        "--group-id",
+                        "456",
+                        "--requester-id",
+                        "789",
+                        "--token-file",
+                        str(root / "test-token"),
+                        "--output-dir",
+                        str(root / "output"),
+                        "--execute-live",
+                        "--confirm-group",
+                        "456",
+                    ],
+                    cwd=Path(__file__).resolve().parents[1],
+                    capture_output=True,
+                    text=True,
+                    timeout=240,
+                    env={
+                        **os.environ,
+                        "AI_SUBAGENTS_ENABLED": "false",
+                        "TEST_POSTGRES_DSN": os.environ["TEST_FILE_ACCEPTANCE_DSN"],
+                    },
+                )
                 self.assertEqual(result.returncode, 0, result.stdout[-1500:] + result.stderr[-1500:])
                 report = json.loads((root / "output/result.json").read_text())
                 self.assertEqual(report["status"], "passed")

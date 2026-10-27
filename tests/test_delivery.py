@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
-import tempfile
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 from psycopg._queries import PostgresQuery
@@ -21,7 +21,9 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 
 class DeliveryStoreTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.store = DeliveryStore(":memory:", max_attempts=3, lease_seconds=30)
+        self.store = DeliveryStore(
+            postgres_for_test(self), max_attempts=3, lease_seconds=30
+        )
         self.addCleanup(self.store.close)
         self.scope = ConversationScope("onebot-v11", "group", "100")
         self.body = MessageBody((TextNode(0, "hello"),))
@@ -109,27 +111,32 @@ class DeliveryStoreTests(unittest.TestCase):
         )
 
     def test_maintenance_client_does_not_recover_a_live_senders_attempt(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "outbox.sqlite3"
-            sender = DeliveryStore(path)
+        sender = DeliveryStore(postgres_for_test(self))
+        try:
+            delivery, _ = sender.enqueue(
+                idempotency_key="live",
+                source_scope_key=self.scope.key,
+                target_scope=self.scope,
+                body=self.body,
+                now=100,
+            )
+            sender.begin_direct_attempt(delivery.delivery_id, now=100)
+            maintenance = DeliveryStore(
+                postgres_for_test(self), recover_interrupted=False
+            )
             try:
-                delivery, _ = sender.enqueue(idempotency_key="live", source_scope_key=self.scope.key,
-                    target_scope=self.scope, body=self.body, now=100)
-                sender.begin_direct_attempt(delivery.delivery_id, now=100)
-                maintenance = DeliveryStore(path, recover_interrupted=False)
-                try:
-                    self.assertEqual(maintenance.recovered_ambiguous, 0)
-                    self.assertEqual(sender.get(delivery.delivery_id).status, "sending")
-                finally:
-                    maintenance.close()
+                self.assertEqual(maintenance.recovered_ambiguous, 0)
+                self.assertEqual(sender.get(delivery.delivery_id).status, "sending")
             finally:
-                sender.close()
-            recovered = DeliveryStore(path)
-            try:
-                self.assertEqual(recovered.recovered_ambiguous, 1)
-                self.assertEqual(recovered.get(delivery.delivery_id).status, "ambiguous")
-            finally:
-                recovered.close()
+                maintenance.close()
+        finally:
+            sender.close()
+        recovered = DeliveryStore(postgres_for_test(self))
+        try:
+            self.assertEqual(recovered.recovered_ambiguous, 1)
+            self.assertEqual(recovered.get(delivery.delivery_id).status, "ambiguous")
+        finally:
+            recovered.close()
 
     def test_expired_lease_is_parked_without_retry(self) -> None:
         delivery, _created = self.enqueue("expired")
@@ -144,16 +151,16 @@ class DeliveryStoreTests(unittest.TestCase):
 
     def test_recent_summaries_do_not_select_or_decode_message_bodies(self) -> None:
         delivery, _created = self.enqueue()
-        statements: list[str] = []
-        self.store._connection.set_trace_callback(statements.append)
-
-        summaries = self.store.recent_summaries()
+        with patch.object(
+            self.store._connection, "execute", wraps=self.store._connection.execute
+        ) as execute:
+            summaries = self.store.recent_summaries()
 
         self.assertEqual(summaries[0].delivery_id, delivery.delivery_id)
         self.assertFalse(hasattr(summaries[0], "body"))
         select = next(
             statement
-            for statement in statements
+            for statement in (call.args[0] for call in execute.call_args_list)
             if "FROM deliveries" in statement
         )
         self.assertNotIn("body_json", select)

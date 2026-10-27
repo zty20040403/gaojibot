@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import base64
 import json
-import tempfile
 import time
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -264,11 +264,7 @@ class AgentToolExecutorTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.bot = FakeBot()
         self.sandbox = FakeSandboxManager()
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary_directory.cleanup)
-        self.ledger = MessageLedger(
-            Path(self.temporary_directory.name) / "ledger.sqlite3"
-        )
+        self.ledger = MessageLedger(postgres_for_test(self))
         self.addCleanup(self.ledger.close)
         self.scope = ConversationScope(
             platform="onebot-v11",
@@ -498,7 +494,7 @@ class AgentToolExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0]["message_handle"], "msg#2")
 
     async def test_background_sandbox_exec_is_persistently_handed_off(self) -> None:
-        store = DurableJobStore(":memory:")
+        store = DurableJobStore(postgres_for_test(self))
         self.addCleanup(store.close)
         self.executor.job_store = store
         self.executor._task_sandbox_ids.add("s123abc")

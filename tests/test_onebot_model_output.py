@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import unittest
 from unittest.mock import AsyncMock
 
@@ -41,7 +43,7 @@ def group_event(group_id: int = 100) -> GroupMessageEvent:
 
 class OneBotModelOutputTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.ledger = MessageLedger(":memory:")
+        self.ledger = MessageLedger(postgres_for_test(self))
         self.addCleanup(self.ledger.close)
         self.scope = ConversationScope("onebot-v11", "group", "100")
         self.bot = AsyncMock()

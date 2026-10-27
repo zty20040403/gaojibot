@@ -332,12 +332,14 @@ POST http://机器人地址:8080/bot-bridge/bluebubbles?token=AI_IMESSAGE_WEBHOO
 
 ```bash
 python -m compileall -q src tests
-AI_ALLOW_LEGACY_SQLITE=true python -m unittest discover -s tests -v
+PYTHON_DOTENV_DISABLED=1 python -m unittest discover -s tests -v
 ```
 
-单元测试显式打开 legacy 模式，是因为它们会创建隔离的内存 SQLite 数据库；这不代表
-生产会回退 SQLite。真实 PostgreSQL 集成测试另设 `TEST_POSTGRES_DSN`，详见
-`tests/test_postgres_integration.py`。
+存储测试与生产统一使用 PostgreSQL。先准备两个本地测试数据库，分别设置
+`AI_POSTGRES_DSN` 和 `TEST_POSTGRES_DSN`，并按 CI 配置完成 Alembic 迁移。
+`TEST_POSTGRES_DSN` 只接受显式回环地址和 `_test` / `_acceptance` 库名，不能与
+`AI_POSTGRES_DSN` 指向同一数据库。各测试 fixture 拥有独立 schema，结束后自动清理。
+SQLite 只保留在旧数据导入，以及隔离沙盒、独立本地模型管理器的请求回执中，不能作为 Bot 主库。
 
 然后再启动 `python bot.py`，依次观察：OneBot 连接、outbox worker、可选 Matrix sync、
 semantic worker、Historian/Dream 日志。不要一次同时修改所有开关，否则某个外部服务

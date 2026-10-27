@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import threading
 import unittest
@@ -14,7 +13,6 @@ import nonebot
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 nonebot.init()
 
 from src.bot_storage.database import (
@@ -128,15 +126,15 @@ class PostgresCompatibilityTests(unittest.TestCase):
             "SELECT '?', \"?\" FROM messages WHERE id = %s AND body = %s",
         )
 
-    def test_insert_translation_returns_identity_and_maps_ignore(self) -> None:
-        query, identity = _translate_sql(
-            "INSERT INTO messages(body_json) VALUES (?)"
-        )
+    def test_insert_translation_returns_identity_and_preserves_conflict_clause(
+        self,
+    ) -> None:
+        query, identity = _translate_sql("INSERT INTO messages(body_json) VALUES (?)")
         self.assertEqual(identity, "canonical_message_id")
         self.assertTrue(query.endswith('RETURNING "canonical_message_id"'))
 
         ignored, identity = _translate_sql(
-            "INSERT OR IGNORE INTO context_state(scope_key) VALUES (?)"
+            "INSERT INTO context_state(scope_key) VALUES (?) ON CONFLICT DO NOTHING"
         )
         self.assertIsNone(identity)
         self.assertIn("ON CONFLICT DO NOTHING", ignored)

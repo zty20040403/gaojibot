@@ -6,7 +6,6 @@ import importlib
 import json
 import math
 import re
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
@@ -14,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator, Protocol, Sequence
 
 import httpx
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
 
 
 @dataclass(frozen=True)
@@ -405,20 +404,8 @@ class SemanticIndexState:
     """Local checkpoint for derived vectors; source data remains authoritative."""
 
     def __init__(self, path: DatabaseSource) -> None:
-        self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            with self._transaction() as cursor:
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS semantic_index_state (
-                        source_key TEXT PRIMARY KEY,
-                        content_hash TEXT NOT NULL,
-                        indexed_at INTEGER NOT NULL
-                    )
-                    """
-                )
 
     def close(self) -> None:
         with self._lock:
@@ -464,11 +451,11 @@ class SemanticIndexState:
                 )
 
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()

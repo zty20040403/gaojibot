@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import importlib.util
 from pathlib import Path
@@ -119,7 +121,7 @@ class SemanticRecallTests(unittest.TestCase):
             {"model": "bge-m3", "input": ["connection check"], "dimensions": 1024})
 
     def test_index_state_only_returns_changed_documents(self) -> None:
-        state = SemanticIndexState(":memory:")
+        state = SemanticIndexState(postgres_for_test(self))
         self.addCleanup(state.close)
         first = SemanticDocument(
             scope_key="onebot-v11:group:1",

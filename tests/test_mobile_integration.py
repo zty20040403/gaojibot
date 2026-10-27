@@ -1,17 +1,15 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import copy
-import os
 import re
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 nonebot.init()
 
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, PrivateMessageEvent
@@ -36,10 +34,7 @@ def event(text, *, group=False):
 
 class MobileIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        self.store_path = Path(temp.name) / "security.sqlite3"
-        self.store = SecurityStore(self.store_path, b"x" * 32)
+        self.store = SecurityStore(postgres_for_test(self), b"x" * 32)
         self.addCleanup(self.store.close)
         self.account = self.store.bootstrap("kenneth", PASSWORD, QQ)
         self.sent = []
@@ -294,7 +289,7 @@ class MobileIntegrationTests(unittest.IsolatedAsyncioTestCase):
         record.update(status="succeeded", result={"status_code": 200})
         sender = self.mobile.sender
         self.store.close()
-        reopened = SecurityStore(self.store_path, b"x" * 32)
+        reopened = SecurityStore(postgres_for_test(self), b"x" * 32)
         self.addCleanup(reopened.close)
         restarted = MobileAuthorization(reopened, sender=AsyncMock(side_effect=RuntimeError("QQ unavailable")), bot_selector=lambda: BOT)
         recovered = FleetAuthorization(SimpleNamespace(_raw_request=raw), restarted)

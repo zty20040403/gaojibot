@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import re
-import sqlite3
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-from typing import Any, Protocol, Union, overload
+from typing import Any, Protocol, overload
 
 import psycopg
 from psycopg import sql
@@ -20,7 +18,7 @@ class DatabaseError(RuntimeError):
 
 
 class StoreRow(Mapping[str, Any]):
-    """Row compatible with both sqlite3.Row access styles."""
+    """A buffered PostgreSQL row with named and positional access."""
 
     def __init__(self, columns: Sequence[str], values: Sequence[Any]) -> None:
         self._columns = tuple(columns)
@@ -62,9 +60,9 @@ class StoreCursor(Protocol):
 
     def executescript(self, script: str) -> StoreCursor: ...
 
-    def fetchone(self) -> StoreRow | sqlite3.Row | None: ...
+    def fetchone(self) -> StoreRow | None: ...
 
-    def fetchall(self) -> list[StoreRow] | list[sqlite3.Row]: ...
+    def fetchall(self) -> list[StoreRow]: ...
 
     def close(self) -> None: ...
 
@@ -87,7 +85,7 @@ class StoreConnection(Protocol):
     def close(self) -> None: ...
 
 
-DatabaseSource = Union[str, Path, "PostgresDatabase"]
+type DatabaseSource = PostgresDatabase
 
 
 _IDENTITY_COLUMNS = {
@@ -642,20 +640,13 @@ class _BufferedCursor:
 
 def open_store_connection(
     source: DatabaseSource,
-) -> tuple[Path | None, StoreConnection | sqlite3.Connection]:
-    if isinstance(source, PostgresDatabase):
-        return None, source.store_connection()
-
-    path = Path(source) if str(source) != ":memory:" else None
-    if path is not None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(
-        str(source),
-        timeout=10.0,
-        check_same_thread=False,
-    )
-    connection.row_factory = sqlite3.Row
-    return path, connection
+) -> tuple[None, StoreConnection]:
+    if not isinstance(source, PostgresDatabase):
+        raise DatabaseError(
+            "PostgreSQL storage is required; import legacy data with legacy_migration "
+            "and apply the Alembic migrations before starting the bot"
+        )
+    return None, source.store_connection()
 
 
 def _make_row(cursor: psycopg.Cursor[Any], values: Sequence[Any]) -> StoreRow:
@@ -664,26 +655,8 @@ def _make_row(cursor: psycopg.Cursor[Any], values: Sequence[Any]) -> StoreRow:
 
 
 def _translate_sql(query: str) -> tuple[str, str | None]:
-    stripped = query.strip()
-    if stripped.upper() == "BEGIN IMMEDIATE":
-        return "BEGIN", None
-
-    ignored_insert = bool(re.match(r"(?is)^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+", query))
-    translated = re.sub(
-        r"(?is)^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+",
-        "INSERT INTO ",
-        query,
-        count=1,
-    )
-    translated = _convert_qmark_placeholders(translated)
-    translated = re.sub(
-        r"(?is)\bLIMIT\s+-1\s+OFFSET\s+%s",
-        "OFFSET %s",
-        translated,
-    )
+    translated = _convert_qmark_placeholders(query)
     translated = translated.strip().rstrip(";")
-    if ignored_insert and "ON CONFLICT" not in translated.upper():
-        translated += " ON CONFLICT DO NOTHING"
 
     identity_column: str | None = None
     insert = re.match(

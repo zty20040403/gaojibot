@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import re
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
 
-from src.bot_storage import DatabaseSource, PostgresDatabase, open_store_connection
+from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
 
 from .context_store import CaptureCandidate, ContextStore
 from .conversation_scope import ConversationScope
@@ -413,20 +412,8 @@ class DreamService:
 
 class MaintenanceState:
     def __init__(self, path: DatabaseSource) -> None:
-        self._legacy_sqlite = not isinstance(path, PostgresDatabase)
         self.path, self._connection = open_store_connection(path)
         self._lock = threading.RLock()
-        if self._legacy_sqlite:
-            with self._transaction() as cursor:
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS maintenance_state (
-                        job_name TEXT PRIMARY KEY,
-                        last_success_key TEXT NOT NULL,
-                        updated_at INTEGER NOT NULL
-                    )
-                    """
-                )
 
     def close(self) -> None:
         with self._lock:
@@ -458,11 +445,11 @@ class MaintenanceState:
             )
 
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Cursor]:
+    def _transaction(self) -> Iterator[StoreCursor]:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 yield cursor
             except Exception:
                 self._connection.rollback()

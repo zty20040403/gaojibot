@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import tempfile
 import unittest
@@ -30,9 +32,9 @@ class HistorianTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         root = Path(self.temporary.name)
-        self.ledger = MessageLedger(":memory:")
+        self.ledger = MessageLedger(postgres_for_test(self))
         self.context = ContextStore(
-            ":memory:",
+            postgres_for_test(self),
             input_budget_tokens=1000,
             high_watermark_tokens=180,
             low_watermark_tokens=90,
@@ -96,7 +98,7 @@ class HistorianTests(unittest.TestCase):
         self.assertIsNotNone(self.context.capture_candidate(self.ledger, self.scope))
 
     def test_quiet_scope_schedules_exact_restart_safe_capture(self) -> None:
-        jobs = DurableJobStore(":memory:", default_max_attempts=4)
+        jobs = DurableJobStore(postgres_for_test(self), default_max_attempts=4)
         self.addCleanup(jobs.close)
 
         async def generate(candidate):
@@ -140,7 +142,7 @@ class HistorianTests(unittest.TestCase):
         self.assertEqual(episode.evidence_ids, tuple(job.payload["source_message_ids"]))
 
     def test_final_historian_attempt_uses_deterministic_fallback(self) -> None:
-        jobs = DurableJobStore(":memory:", default_max_attempts=2)
+        jobs = DurableJobStore(postgres_for_test(self), default_max_attempts=2)
         self.addCleanup(jobs.close)
 
         async def fail(_candidate):
@@ -219,7 +221,7 @@ class HistorianTests(unittest.TestCase):
         )
 
     def test_maintenance_state_is_persistent(self) -> None:
-        state = MaintenanceState(":memory:")
+        state = MaintenanceState(postgres_for_test(self))
         self.addCleanup(state.close)
         self.assertFalse(state.completed("dream", "2026-08-09"))
         state.mark_completed("dream", "2026-08-09")

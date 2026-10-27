@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import json
 import asyncio
 import os
@@ -9,7 +11,6 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
 
-os.environ.setdefault("AI_ALLOW_LEGACY_SQLITE", "true")
 os.environ.setdefault("AI_SUBAGENTS_ENABLED", "false")
 nonebot.init()
 
@@ -31,7 +32,7 @@ from src.plugins.ai_chat.tools.state import ToolContext
 
 class SubAgentStoreTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.store = SubAgentStore(":memory:")
+        self.store = SubAgentStore(postgres_for_test(self))
 
     def tearDown(self) -> None:
         self.store.close()
@@ -379,7 +380,7 @@ class SubAgentPlanTests(unittest.TestCase):
 
 class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_ready_child_runs_before_slow_sibling_finishes(self) -> None:
-        store = SubAgentStore(":memory:")
+        store = SubAgentStore(postgres_for_test(self))
         self.addCleanup(store.close)
         profile = ModelProfile(name="test", provider="test", protocol="openai-chat", model="test", base_url="http://127.0.0.1", api_key_required=False)
         coordinator = SubAgentCoordinator(store, ModelCatalog({"test": profile}, default_profile="test"), logger=Mock(), max_parallelism=2)
@@ -428,7 +429,7 @@ class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(c["phase"] == "step_completed" for c in store.checkpoints(task.task_id)))
 
     async def test_parent_cancellation_awaits_all_in_flight_workers(self) -> None:
-        store = SubAgentStore(":memory:")
+        store = SubAgentStore(postgres_for_test(self))
         self.addCleanup(store.close)
         profile = ModelProfile(name="test", provider="test", protocol="openai-chat", model="test", base_url="http://127.0.0.1", api_key_required=False)
         coordinator = SubAgentCoordinator(store, ModelCatalog({"test": profile}, default_profile="test"), logger=Mock(), max_parallelism=2)
@@ -464,7 +465,7 @@ class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((active, stopped), (0, 2))
 
     async def test_failed_step_gets_one_bounded_adaptive_repair(self) -> None:
-        store = SubAgentStore(":memory:")
+        store = SubAgentStore(postgres_for_test(self))
         profile = ModelProfile(
             name="test",
             provider="test",
@@ -540,7 +541,7 @@ class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_transient_worker_failure_retries_with_same_context(self) -> None:
-        store = SubAgentStore(":memory:")
+        store = SubAgentStore(postgres_for_test(self))
         profile = ModelProfile(
             name="test",
             provider="test",
@@ -594,7 +595,7 @@ class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_resume_reuses_frozen_context_and_skips_completed_steps(self) -> None:
-        store = SubAgentStore(":memory:")
+        store = SubAgentStore(postgres_for_test(self))
         profile = ModelProfile(
             name="test",
             provider="test",
@@ -704,7 +705,7 @@ class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_single_agent_delegation_skips_planner_and_synthesizer(self) -> None:
-        store = SubAgentStore(":memory:")
+        store = SubAgentStore(postgres_for_test(self))
         profile = ModelProfile(
             name="test",
             provider="test",
@@ -766,7 +767,7 @@ class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_plans_runs_and_synthesizes_fixed_agents(self) -> None:
-        store = SubAgentStore(":memory:")
+        store = SubAgentStore(postgres_for_test(self))
         profile = ModelProfile(
             name="test",
             provider="test",
@@ -834,8 +835,10 @@ class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("完成", contexts[1]["context"]["rendered_context"])
         store.close()
 
-    async def test_explicit_group_delivery_is_completed_after_worker_rounds(self) -> None:
-        store = SubAgentStore(":memory:")
+    async def test_explicit_group_delivery_is_completed_after_worker_rounds(
+        self,
+    ) -> None:
+        store = SubAgentStore(postgres_for_test(self))
         profile = ModelProfile(
             name="test",
             provider="test",
@@ -921,8 +924,10 @@ class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(task.result["deliveries"][0]["ok"])
         store.close()
 
-    async def test_failed_worker_blocks_dependent_step_but_still_synthesizes(self) -> None:
-        store = SubAgentStore(":memory:")
+    async def test_failed_worker_blocks_dependent_step_but_still_synthesizes(
+        self,
+    ) -> None:
+        store = SubAgentStore(postgres_for_test(self))
         profile = ModelProfile(
             name="test",
             provider="test",
@@ -988,7 +993,7 @@ class SubAgentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_progress_failure_does_not_fail_the_task(self) -> None:
-        store = SubAgentStore(":memory:")
+        store = SubAgentStore(postgres_for_test(self))
         profile = ModelProfile(
             name="test",
             provider="test",

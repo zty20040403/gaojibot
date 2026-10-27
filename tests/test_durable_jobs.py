@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import time
 import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import nonebot
@@ -32,54 +32,52 @@ class RecordingLogger:
 
 class DurableJobStoreTests(unittest.TestCase):
     def test_idempotent_enqueue_claim_and_restart_recovery(self) -> None:
-        with TemporaryDirectory() as tmp:
-            path = Path(tmp) / "jobs.sqlite3"
-            store = DurableJobStore(path, lease_seconds=10)
-            started_at = int(time.time())
-            first, created = store.enqueue(
-                kind="test.echo",
-                idempotency_key="same-operation",
-                payload={"value": 7},
-                now=started_at,
-            )
-            duplicate, duplicate_created = store.enqueue(
-                kind="test.echo",
-                idempotency_key="same-operation",
-                payload={"value": 99},
-                now=started_at + 1,
-            )
-            self.assertTrue(created)
-            self.assertFalse(duplicate_created)
-            self.assertEqual(duplicate.job_id, first.job_id)
-            self.assertEqual(duplicate.payload, {"value": 7})
+        store = DurableJobStore(postgres_for_test(self), lease_seconds=10)
+        started_at = int(time.time())
+        first, created = store.enqueue(
+            kind="test.echo",
+            idempotency_key="same-operation",
+            payload={"value": 7},
+            now=started_at,
+        )
+        duplicate, duplicate_created = store.enqueue(
+            kind="test.echo",
+            idempotency_key="same-operation",
+            payload={"value": 99},
+            now=started_at + 1,
+        )
+        self.assertTrue(created)
+        self.assertFalse(duplicate_created)
+        self.assertEqual(duplicate.job_id, first.job_id)
+        self.assertEqual(duplicate.payload, {"value": 7})
 
-            claimed = store.claim_due("worker-a", now=started_at)
-            self.assertEqual(len(claimed), 1)
-            self.assertEqual(claimed[0].attempts, 1)
-            store.close()
+        claimed = store.claim_due("worker-a", now=started_at)
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0].attempts, 1)
+        store.close()
 
-            restarted = DurableJobStore(path, lease_seconds=10)
-            self.assertEqual(restarted.recovered_jobs, 0)
-            self.assertEqual(
-                restarted.recover_expired_leases(now=started_at + 10),
-                1,
+        restarted = DurableJobStore(postgres_for_test(self), lease_seconds=10)
+        self.assertEqual(restarted.recovered_jobs, 0)
+        self.assertEqual(
+            restarted.recover_expired_leases(now=started_at + 10),
+            1,
+        )
+        reclaimed = restarted.claim_due("worker-b", now=started_at + 10)
+        self.assertEqual(len(reclaimed), 1)
+        self.assertEqual(reclaimed[0].attempts, 2)
+        self.assertTrue(
+            restarted.mark_succeeded(
+                reclaimed[0].job_id,
+                "worker-b",
+                result={"ok": True},
+                now=started_at + 11,
             )
-            reclaimed = restarted.claim_due("worker-b", now=started_at + 10)
-            self.assertEqual(len(reclaimed), 1)
-            self.assertEqual(reclaimed[0].attempts, 2)
-            self.assertTrue(
-                restarted.mark_succeeded(
-                    reclaimed[0].job_id,
-                    "worker-b",
-                    result={"ok": True},
-                    now=started_at + 11,
-                )
-            )
-            self.assertEqual(restarted.stats()["succeeded"], 1)
-            restarted.close()
+        )
+        self.assertEqual(restarted.stats()["succeeded"], 1)
+        restarted.close()
 
     def test_retry_limit_cancel_and_manual_requeue(self) -> None:
-        store = DurableJobStore(":memory:", default_max_attempts=2)
+        store = DurableJobStore(postgres_for_test(self), default_max_attempts=2)
         job, _ = store.enqueue(
             kind="test.fail",
             idempotency_key="failure",
@@ -119,7 +117,7 @@ class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(wait(), 2)
 
     async def test_queue_recovers_after_claim_errors(self) -> None:
-        store = DurableJobStore(":memory:")
+        store = DurableJobStore(postgres_for_test(self))
         worker = DurableJobWorker(store, logger=RecordingLogger(), poll_seconds=0.1)
         seen = []
         worker.register("test", lambda job: seen.append(job.job_id))
@@ -146,8 +144,10 @@ class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_one_settlement_error_does_not_stop_other_jobs(self) -> None:
-        store = DurableJobStore(":memory:")
-        worker = DurableJobWorker(store, logger=RecordingLogger(), concurrency=2, poll_seconds=0.1)
+        store = DurableJobStore(postgres_for_test(self))
+        worker = DurableJobWorker(
+            store, logger=RecordingLogger(), concurrency=2, poll_seconds=0.1
+        )
         first, _ = store.enqueue(kind="test", idempotency_key="broken")
         second, _ = store.enqueue(kind="test", idempotency_key="healthy")
 
@@ -170,8 +170,10 @@ class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_claim_outage_does_not_cancel_a_running_job(self) -> None:
-        store = DurableJobStore(":memory:")
-        worker = DurableJobWorker(store, logger=RecordingLogger(), concurrency=2, poll_seconds=0.1)
+        store = DurableJobStore(postgres_for_test(self))
+        worker = DurableJobWorker(
+            store, logger=RecordingLogger(), concurrency=2, poll_seconds=0.1
+        )
         first, _ = store.enqueue(kind="test", idempotency_key="already-running")
         started, claim_failed, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         claim = store.claim_due
@@ -207,7 +209,7 @@ class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_lost_success_ack_is_not_marked_as_handler_failure(self) -> None:
-        store = DurableJobStore(":memory:")
+        store = DurableJobStore(postgres_for_test(self))
         worker = DurableJobWorker(store, logger=RecordingLogger())
         seen = []
         worker.register("test", lambda job: seen.append(job.job_id))
@@ -221,8 +223,10 @@ class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.get(job.job_id).status, "running")
         store.close()
 
-    async def test_failed_heartbeat_stops_handler_and_preserves_continuation(self) -> None:
-        store = DurableJobStore(":memory:")
+    async def test_failed_heartbeat_stops_handler_and_preserves_continuation(
+        self,
+    ) -> None:
+        store = DurableJobStore(postgres_for_test(self))
         worker = DurableJobWorker(store, logger=RecordingLogger())
         started, stopped = asyncio.Event(), asyncio.Event()
 
@@ -248,7 +252,7 @@ class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_registered_handler_completes_job(self) -> None:
-        store = DurableJobStore(":memory:")
+        store = DurableJobStore(postgres_for_test(self))
         logger = RecordingLogger()
         worker = DurableJobWorker(
             store,
@@ -277,7 +281,7 @@ class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_running_job_can_be_cancelled_and_compensated(self) -> None:
-        store = DurableJobStore(":memory:", lease_seconds=10)
+        store = DurableJobStore(postgres_for_test(self), lease_seconds=10)
         logger = RecordingLogger()
         worker = DurableJobWorker(
             store,
@@ -307,7 +311,7 @@ class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
     async def test_job_timeout_is_terminal_and_compensated(self) -> None:
-        store = DurableJobStore(":memory:")
+        store = DurableJobStore(postgres_for_test(self))
         logger = RecordingLogger()
         worker = DurableJobWorker(store, logger=logger, worker_id="test-worker")
         compensated: list[str] = []

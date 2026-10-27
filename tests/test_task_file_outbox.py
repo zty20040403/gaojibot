@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import hashlib
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import nonebot
@@ -17,11 +17,16 @@ from src.plugins.ai_chat.subagents import SubAgentStore
 
 class TaskFileOutboxTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.path = Path(self.tmp.name) / "task.sqlite3"
-        self.store = SubAgentStore(self.path)
-        self.task = self.store.create_task(scope_key="group:1", conversation_id="group:1:user:2",
-            requester_user_id=2, trigger_message_id=None, objective="file", max_parallelism=1, max_steps=2)
+        self.store = SubAgentStore(postgres_for_test(self))
+        self.task = self.store.create_task(
+            scope_key="group:1",
+            conversation_id="group:1:user:2",
+            requester_user_id=2,
+            trigger_message_id=None,
+            objective="file",
+            max_parallelism=1,
+            max_steps=2,
+        )
         self.artifact = {"name": "result.txt", "size": 4, "snapshot": hashlib.sha256(b"test").hexdigest(),
                          "handle": "sandbox#s123abc/result.txt"}
         self.prepare = AsyncMock(return_value=b"test")
@@ -29,7 +34,6 @@ class TaskFileOutboxTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         self.store.close()
-        self.tmp.cleanup()
 
     def queue(self):
         return self.store.queue_file(self.task.task_id, self.artifact, "test-result.txt")
@@ -41,7 +45,7 @@ class TaskFileOutboxTests(unittest.IsolatedAsyncioTestCase):
     async def test_restart_before_upload_recovers_manifest_without_recreating_artifact(self):
         self.queue()
         self.store.close()
-        self.store = SubAgentStore(self.path)
+        self.store = SubAgentStore(postgres_for_test(self))
         result = await self.attempt(self.store.deliveries(self.task.task_id)[0])
         self.assertTrue(result["ok"])
         self.assertEqual(result["artifact"], self.artifact)
@@ -53,7 +57,7 @@ class TaskFileOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.artifact.update(draft=True, draft_reason="价格未核实")
         self.queue()
         self.store.close()
-        self.store = SubAgentStore(self.path)
+        self.store = SubAgentStore(postgres_for_test(self))
         result = await self.attempt(self.store.deliveries(self.task.task_id)[0])
         self.assertTrue(result["ok"])
         self.assertTrue(result["draft"])
@@ -66,7 +70,7 @@ class TaskFileOutboxTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await self.attempt()
         self.store.close()
-        self.store = SubAgentStore(self.path)
+        self.store = SubAgentStore(postgres_for_test(self))
         row = self.store.deliveries(self.task.task_id)[0]
         self.assertEqual(row["state"], "sending")
         self.send.side_effect = None
@@ -172,7 +176,7 @@ class TaskFileOutboxTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["attempts"], 0)
             self.assertEqual(result["artifact"], self.artifact)
             self.store.close()
-            self.store = SubAgentStore(self.path)
+            self.store = SubAgentStore(postgres_for_test(self))
         self.prepare.assert_not_awaited()
         self.send.assert_not_awaited()
         self.assertEqual(result["availability_checks"], 8)
@@ -243,7 +247,7 @@ class TaskFileOutboxTests(unittest.IsolatedAsyncioTestCase):
             dispatch={"bot_id": "123", "event": event.model_dump(mode="json")})
         self.send.return_value = {"ok": False, "not_sent": True, "retryable": False}
         await self.attempt()
-        outbox = DeliveryStore(Path(self.tmp.name) / "deliveries.sqlite3")
+        outbox = DeliveryStore(postgres_for_test(self))
         try:
             dispatcher = object.__new__(SubAgentDispatcher)
             dispatcher.store = self.store

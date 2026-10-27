@@ -73,7 +73,7 @@ class PostgresJsonState:
         with self._lock:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("BEGIN")
                 cursor.execute(
                     """
                     INSERT INTO state_blobs(namespace, payload_json, updated_at)

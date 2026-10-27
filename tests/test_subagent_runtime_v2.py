@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.postgres_fixture import postgres_for_test
+
 import asyncio
 import json
 import tempfile
@@ -45,8 +47,14 @@ from src.plugins.ai_chat.agent_loop import AgentTrace
 class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.store = SubAgentStore(Path(self.tmp.name) / "agents.sqlite3")
-        self.catalog = ModelCatalog({n: profile(n) for n in ("qwen-local", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")}, default_profile="qwen-local")
+        self.store = SubAgentStore(postgres_for_test(self))
+        self.catalog = ModelCatalog(
+            {
+                n: profile(n)
+                for n in ("qwen-local", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
+            },
+            default_profile="qwen-local",
+        )
         self.coordinator = SubAgentCoordinator(self.store, self.catalog, logger=Mock())
         self.packet = ContextPacket("group:1", "group:1:user:2", 2, 3, "实现商城")
 
@@ -170,7 +178,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.status, "queued")
         self.assertEqual(self.store.dispatchable_tasks(), [task.task_id])
         self.store.close()
-        self.store = SubAgentStore(Path(self.tmp.name) / "agents.sqlite3")
+        self.store = SubAgentStore(postgres_for_test(self))
         self.coordinator.store = self.store
         with patch.object(self.coordinator, "_execute_workflow", new=AsyncMock(return_value="done")) as execute, patch("src.plugins.ai_chat.subagents.ask_deepseek_json", new=AsyncMock()) as planner:
             await self.coordinator.resume(task.task_id, scope_key="group:1", requester_user_id=2,
@@ -253,8 +261,9 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
                     self.store.save_agent_session(task.task_id, run.run_id, histories[key], scope_key=task.scope_key,
                         requester_user_id=2, model_profile="qwen-local", expected_version=1)
         self.store.close()
-        self.store = SubAgentStore(Path(self.tmp.name) / "agents.sqlite3")
+        self.store = SubAgentStore(postgres_for_test(self))
         self.coordinator.store = self.store
+
         async def worker(text, history, tools, execute, **kwargs):
             self.assertEqual(history, [])
             self.assertIn("new research", text)
@@ -426,7 +435,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed["pdf"].result["artifacts"], original["artifacts"])
         self.assertEqual(len(_delivery_outcomes(task, completed)), 1)
         self.store.close()
-        self.store = SubAgentStore(Path(self.tmp.name) / "agents.sqlite3")
+        self.store = SubAgentStore(postgres_for_test(self))
         runs = self.store.runs(task.task_id)
         self.assertEqual(runs[-1].dependencies, ("pdf__repair_1_sources",))
         restored = {r.step_key: StepOutcome(TaskStep(r.step_key, r.role, r.objective, r.deliverable, r.dependencies),
@@ -458,7 +467,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
             draft = await self.coordinator._prepare_report_draft(*args, self.store.task_evidence(task.task_id),
                 selected_profile=self.catalog.default, parent_trace=None)
             self.store.close()
-            self.store = SubAgentStore(Path(self.tmp.name) / "agents.sqlite3")
+            self.store = SubAgentStore(postgres_for_test(self))
             self.coordinator.store = self.store
             restored = await self.coordinator._prepare_report_draft(*args, self.store.task_evidence(task.task_id),
                 selected_profile=self.catalog.default, parent_trace=None)
@@ -704,7 +713,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
             return_value=[{"sandbox_id": "s123abc", "purpose": "task"}]
         )
         manager.stop_owned = AsyncMock()
-        jobs = DurableJobStore(Path(self.tmp.name) / "receipt-jobs.sqlite3")
+        jobs = DurableJobStore(postgres_for_test(self))
         bot = Mock(self_id=123)
         bot.call_api = AsyncMock(
             side_effect=lambda action, **params: {"online": True, "good": True} if action == "get_status" else {
@@ -883,8 +892,9 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_exhausted_background_job_settles_task(self):
         from src.plugins.ai_chat.agent.background import SubAgentDispatcher
+
         task = self.submit()
-        jobs = DurableJobStore(Path(self.tmp.name) / "exhausted.sqlite3")
+        jobs = DurableJobStore(postgres_for_test(self))
         try:
             services = SimpleNamespace(context=SimpleNamespace(subagent_store=self.store, job_store=jobs,
                 subagent_coordinator=self.coordinator, logger=Mock()))
@@ -898,7 +908,7 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
             jobs.close()
 
     async def test_kind_filter_does_not_steal_workflows(self):
-        jobs = DurableJobStore(Path(self.tmp.name) / "jobs.sqlite3")
+        jobs = DurableJobStore(postgres_for_test(self))
         try:
             jobs.enqueue(kind="subagent.workflow", idempotency_key="task1")
             jobs.enqueue(kind="historian", idempotency_key="history1")
@@ -915,9 +925,21 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         from tests.admin_session_fixture import ApprovedClient, register_admin
         task = self.submit()
         app = FastAPI()
-        register_admin(app, AdminServices(version="test", started_at=1, subagent_store=self.store,
-            subagent_coordinator=self.coordinator, model_catalog=self.catalog), token="test-token")
-        async with ApprovedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        register_admin(
+            app,
+            AdminServices(
+                version="test",
+                started_at=1,
+                subagent_store=self.store,
+                subagent_coordinator=self.coordinator,
+                model_catalog=self.catalog,
+            ),
+            test_case=self,
+            token="test-token",
+        )
+        async with ApprovedClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
             headers = {"X-Test-Login": "admin", "If-Match": '"0"'}
             response = await client.get(f"/bot-admin/api/subagents/{task.task_id}", headers=headers)
             self.assertEqual(response.status_code, 200)
@@ -937,11 +959,19 @@ class RuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
             message_id=42, group_id=100, user_id=2, message=[{"type": "text", "data": {"text": "实现商城"}}], raw_message="实现商城", font=0,
             sender={"user_id": 2, "nickname": "Test", "role": "member"})
         packet = ContextPacket(scope_from_event(event).key, "group:100:user:2", 2, 3, "实现商城")
-        task = self.coordinator.submit(packet=packet, decision=EntryDecision.parse(decision("workflow")),
-            dispatch={"event": event.model_dump(mode="json"), "bot_id": "123", "profile": "qwen-local"})
-        jobs = DurableJobStore(Path(self.tmp.name) / "background.sqlite3")
-        delivery = DeliveryStore(Path(self.tmp.name) / "delivery.sqlite3")
+        task = self.coordinator.submit(
+            packet=packet,
+            decision=EntryDecision.parse(decision("workflow")),
+            dispatch={
+                "event": event.model_dump(mode="json"),
+                "bot_id": "123",
+                "profile": "qwen-local",
+            },
+        )
+        jobs = DurableJobStore(postgres_for_test(self))
+        delivery = DeliveryStore(postgres_for_test(self))
         try:
+
             async def execute(_bot, restored, _objective, **kwargs):
                 self.assertEqual(restored.group_id, 100)
                 self.assertEqual(kwargs['resume_task_id'], task.task_id)

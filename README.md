@@ -636,10 +636,15 @@ Alembic 在升级时管理 schema 版本，NixOS module 默认在服务启动前
 nix develop
 ```
 
-运行测试：
+运行测试前准备独立的本地 PostgreSQL/pgvector 测试库，并用 Alembic 更新到当前
+版本。`AI_POSTGRES_DSN` 与 `TEST_POSTGRES_DSN` 必须指向不同的数据库；后者只接受
+`127.0.0.1` 或 `::1`，库名必须以 `_test` 或 `_acceptance` 结尾。不要使用生产数据。
+隔离 fixture 自动创建、清理自己的 schema，不再使用 SQLite 代替 PostgreSQL。
+测试库须预先将 `vector` 扩展安装到 `public` schema，避免随临时 schema 被删除。
+完整环境变量见 `.github/workflows/ci.yml`。然后运行：
 
 ```bash
-AI_ALLOW_LEGACY_SQLITE=true python -m unittest discover -s tests
+PYTHON_DOTENV_DISABLED=1 python -m unittest discover -s tests
 nix flake check
 ```
 

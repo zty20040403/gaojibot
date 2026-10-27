@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -238,65 +237,52 @@ def build_app_context(
     cache_dir = cache_dir or state_dir / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    database: PostgresDatabase | None = None
-    if settings.postgres_dsn:
-        database = PostgresDatabase(
-            settings.postgres_dsn,
-            schema=settings.postgres_schema,
-            min_size=settings.postgres_pool_min_size,
-            max_size=max(
-                settings.postgres_pool_max_size,
-                settings.postgres_pool_min_size,
-            ),
-            timeout_seconds=settings.postgres_pool_timeout_seconds,
-            health_check_interval_seconds=(
-                settings.postgres_health_check_interval_seconds
-            ),
-            node_names=settings.postgres_node_names,
-        )
-        database.require_revision(HEAD_REVISION)
-        logger.info(
-            f"PostgreSQL storage ready in schema {settings.postgres_schema}."
-        )
-    elif not settings.legacy_sqlite_allowed:
+    if not settings.postgres_dsn:
         raise RuntimeError(
-            "AI_POSTGRES_DSN is required; SQLite fallback is disabled. "
-            "Run the migration or explicitly set AI_ALLOW_LEGACY_SQLITE=true "
-            "for a temporary rollback."
+            "AI_POSTGRES_DSN is required; import legacy data and apply the "
+            "Alembic migrations before starting the bot."
         )
+    database = PostgresDatabase(
+        settings.postgres_dsn,
+        schema=settings.postgres_schema,
+        min_size=settings.postgres_pool_min_size,
+        max_size=max(settings.postgres_pool_max_size, settings.postgres_pool_min_size),
+        timeout_seconds=settings.postgres_pool_timeout_seconds,
+        health_check_interval_seconds=settings.postgres_health_check_interval_seconds,
+        node_names=settings.postgres_node_names,
+    )
+    try:
+        database.require_revision(HEAD_REVISION)
+    except BaseException:
+        database.close()
+        raise
+    logger.info(f"PostgreSQL storage ready in schema {settings.postgres_schema}.")
 
-    def store_source(filename: str):
-        return database if database is not None else state_dir / filename
-
-    configure_learned_sticker_state(store_source("learned_stickers.json"))
+    configure_learned_sticker_state(database)
 
     memory = ConversationMemory(
         settings.max_context_turns,
-        store_source("conversation_history.json"),
+        database,
     )
     group_context = GroupContextMemory(
         settings.group_context_messages,
         settings.group_context_chars,
-        store_source("group_context.json"),
+        database,
     )
     long_term_memory = LongTermMemoryStore(
-        store_source("long_term_memory.json"),
+        database,
         max_entries_per_scope=settings.memory_max_entries,
         max_content_chars=settings.memory_max_chars,
     )
 
     running_tasks = RunningTaskRegistry()
-    user_profiles = GroupUserProfileStore(store_source("user_profiles.json"))
-    model_preferences = ModelPreferenceStore(
-        store_source("model_preferences.json")
-    )
+    user_profiles = GroupUserProfileStore(database)
+    model_preferences = ModelPreferenceStore(database)
     reasoning_preferences = ModelPreferenceStore(
-        store_source("reasoning_preferences.json"),
+        database,
         namespace="reasoning_preferences",
     )
-    alert_preferences = AlertNotificationPreferences(
-        store_source("alert_notification_preferences.json")
-    )
+    alert_preferences = AlertNotificationPreferences(database)
     model_catalog = ModelCatalog.from_settings(settings)
     if settings.model_simple_chat_profile:
         try:
@@ -344,12 +330,12 @@ def build_app_context(
     message_ledger: MessageLedger | None = None
     if settings.ledger_enabled:
         try:
-            message_ledger = MessageLedger(store_source("bot_state.sqlite3"))
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+            message_ledger = MessageLedger(database)
+        except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Canonical message ledger could not be opened: {exc}")
 
-    source_store = ContentSourceStore(database) if database is not None else None
-    alert_store = AlertEventStore(database) if database is not None else None
+    source_store = ContentSourceStore(database)
+    alert_store = AlertEventStore(database)
     mobile_authorization = build_mobile_authorization(settings, database)
     fleet_client: FleetControlClient | None = None
     if settings.cluster_enabled:
@@ -371,51 +357,47 @@ def build_app_context(
     if settings.context_lifecycle_enabled and message_ledger is not None:
         try:
             context_store = ContextStore(
-                store_source("context_store.sqlite3"),
+                database,
                 input_budget_tokens=settings.context_input_budget_tokens,
                 high_watermark_tokens=settings.context_high_watermark_tokens,
                 low_watermark_tokens=settings.context_low_watermark_tokens,
-                compartment_target_tokens=(
-                    settings.context_compartment_target_tokens
-                ),
+                compartment_target_tokens=(settings.context_compartment_target_tokens),
                 raw_tail_min_messages=settings.context_raw_tail_min_messages,
                 max_compartments=settings.context_max_compartments,
                 historian_managed=settings.historian_enabled,
             )
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+        except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Context store could not be opened: {exc}")
 
     topic_graph_store: TopicGraphStore | None = None
     if message_ledger is not None:
         try:
-            topic_graph_store = TopicGraphStore(
-                store_source("topic_graph.sqlite3")
-            )
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+            topic_graph_store = TopicGraphStore(database)
+        except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Topic graph store could not be opened: {exc}")
 
     pin_store: PinStore | None = None
     if message_ledger is not None:
         try:
-            pin_store = PinStore(store_source("pins.sqlite3"))
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+            pin_store = PinStore(database)
+        except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Pinned message store could not be opened: {exc}")
 
     reminder_store: ReminderStore | None = None
     if settings.reminders_enabled:
         try:
             reminder_store = ReminderStore(
-                store_source("reminders.sqlite3"),
+                database,
                 max_per_scope=settings.reminder_max_per_scope,
             )
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+        except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Reminder store could not be opened: {exc}")
 
     delivery_store: DeliveryStore | None = None
     if settings.outbox_enabled:
         try:
             delivery_store = DeliveryStore(
-                store_source("delivery_outbox.sqlite3"),
+                database,
                 max_attempts=settings.outbox_max_attempts,
                 lease_seconds=settings.outbox_lease_seconds,
             )
@@ -424,7 +406,7 @@ def build_app_context(
                     f"Parked {delivery_store.recovered_ambiguous} interrupted "
                     "delivery attempt(s) as ambiguous pending echo review."
                 )
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+        except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Durable delivery outbox could not be opened: {exc}")
 
     try:
@@ -442,9 +424,7 @@ def build_app_context(
             )
         else:
             try:
-                mirror_state = MirrorStateStore(
-                    store_source("bridge_state.sqlite3")
-                )
+                mirror_state = MirrorStateStore(database)
                 matrix_client: MatrixClient | None = None
                 imessage_client: BlueBubblesClient | None = None
                 if settings.matrix_enabled:
@@ -495,7 +475,6 @@ def build_app_context(
                 RuntimeError,
                 TypeError,
                 ValueError,
-                sqlite3.Error,
                 DatabaseError,
             ) as exc:
                 if mirror_state is not None:
@@ -508,12 +487,12 @@ def build_app_context(
     if settings.quota_enabled:
         try:
             usage_store = UsageStore(
-                store_source("usage.sqlite3"),
+                database,
                 daily_call_limit=settings.quota_daily_calls,
                 daily_input_token_limit=settings.quota_daily_input_tokens,
                 daily_output_token_limit=settings.quota_daily_output_tokens,
             )
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+        except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Usage and quota store could not be opened: {exc}")
 
     semantic_recall: SemanticRecallService | None = None
@@ -544,15 +523,12 @@ def build_app_context(
                         schema=settings.postgres_schema,
                     ),
                 )
-                semantic_index_state = SemanticIndexState(
-                    store_source("semantic_index_state.sqlite3")
-                )
+                semantic_index_state = SemanticIndexState(database)
             except (
                 OSError,
                 RuntimeError,
                 TypeError,
                 ValueError,
-                sqlite3.Error,
                 DatabaseError,
             ) as exc:
                 semantic_recall = None
@@ -562,10 +538,8 @@ def build_app_context(
     maintenance_state: MaintenanceState | None = None
     if settings.historian_enabled or settings.dream_enabled:
         try:
-            maintenance_state = MaintenanceState(
-                store_source("maintenance_state.sqlite3")
-            )
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+            maintenance_state = MaintenanceState(database)
+        except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Background maintenance state could not be opened: {exc}")
 
     historian_service: HistorianService | None = None
@@ -601,13 +575,13 @@ def build_app_context(
     if settings.turn_journal_enabled and message_ledger is not None:
         try:
             turn_journal = TurnJournal(
-                store_source("turn_journal.sqlite3"),
+                database,
                 archive_ttl_days=settings.turn_archive_ttl_days,
                 archive_max_per_scope=settings.turn_archive_max_per_scope,
                 archive_max_bytes=settings.turn_archive_max_bytes,
                 event_max_chars=settings.turn_event_max_chars,
             )
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+        except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Turn journal could not be opened: {exc}")
 
     browser_manager: BrowserManager | None = None
@@ -724,7 +698,7 @@ def build_app_context(
     if settings.durable_jobs_enabled:
         try:
             job_store = DurableJobStore(
-                store_source("durable_jobs.sqlite3"),
+                database,
                 lease_seconds=settings.durable_job_lease_seconds,
                 default_max_attempts=settings.durable_job_max_attempts,
             )
@@ -796,7 +770,7 @@ def build_app_context(
                 logger.warning(
                     f"Recovered {job_store.recovered_jobs} expired durable job lease(s)."
                 )
-        except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
+        except (OSError, RuntimeError, DatabaseError) as exc:
             if job_store is not None:
                 job_store.close()
             job_store = None
@@ -812,7 +786,7 @@ def build_app_context(
             )
             for profile_name in profile_overrides.values():
                 model_catalog.resolve(profile_name)
-            subagent_store = SubAgentStore(store_source("subagents.sqlite3"))
+            subagent_store = SubAgentStore(database)
             subagent_coordinator = SubAgentCoordinator(
                 subagent_store,
                 model_catalog,
@@ -828,7 +802,7 @@ def build_app_context(
                     "Preserved %s interrupted Sub-Agent task(s) for checkpoint resume.",
                     subagent_store.recovered_tasks,
                 )
-        except (OSError, RuntimeError, ValueError, sqlite3.Error, DatabaseError) as exc:
+        except (OSError, RuntimeError, ValueError, DatabaseError) as exc:
             if subagent_store is not None:
                 subagent_store.close()
             subagent_store = None

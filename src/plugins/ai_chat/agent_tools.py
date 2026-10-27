@@ -6,7 +6,6 @@ import hashlib
 import json
 import re
 import shlex
-import sqlite3
 import time
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
@@ -359,7 +358,6 @@ class AgentToolExecutor:
             OSError,
             RuntimeError,
             ValueError,
-            sqlite3.Error,
             DatabaseError,
         ) as exc:
             logger.warning(f"Agent tool {name} failed: {exc}")
@@ -1624,7 +1622,7 @@ class AgentToolExecutor:
                 canonical_message_id,
                 node_id=node_id,
             )
-        except (sqlite3.Error, DatabaseError) as exc:
+        except DatabaseError as exc:
             logger.warning(f"Could not link tool send to turn: {exc}")
 
     @staticmethod
