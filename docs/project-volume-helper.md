@@ -543,9 +543,59 @@ inferred from the fast in-process test transport.
 `tests/test_project_vm_files.py` covers actual files, hashes, journals, chunk
 retries, executable modes, empty files, path/link rejection and a deterministic
 bundle imported by a fresh isolated Python process. Guest mounts, cgroups and
-libvirt are fixtures. The guest dependency rebuild adapter, full lifecycle
-composition, native crash/reboot/hibernate acceptance and product registration
-are still pending; this private transport alone does not enable project VMs.
+libvirt are fixtures. Full lifecycle composition, native crash/reboot/hibernate
+acceptance and product registration are still pending; this private transport
+alone does not enable project VMs.
+
+## VM dependency reconstruction
+
+Retiring a VM removes its system disk, including the private guest file journal,
+while preserving its project data disk. A wake must not restore a snapshot over
+that nonempty workspace merely to recreate metadata. The private VM file client
+instead imports the exact canonical manifest from the PostgreSQL version store.
+The lifecycle executor checks its frozen version digest and rebuild recipe;
+each upload chunk rechecks the current lifecycle lease and project membership.
+The guest compares both lockfiles and every retained file against this manifest
+before allowing an installer to start.
+
+`dependency_begin` freezes the manifest size/digest and the project's process
+limit at its current reservation and fence. `dependency_manifest` uploads
+prefix-verified 48 KiB chunks. These actions do not write to the project tree.
+Private staging is durable before fence admission, so interrupted preparation
+can resume. Source, resource or reservation changes cannot reuse that operation.
+
+`dependency_run` and `dependency_status` drive a dedicated systemd supervisor,
+independent of the QGA client's lifetime. Its unique unit, guest boot ID,
+deadline and phase are journalled before dispatch. The worker journals `running`
+before executing scripts, holds the closed project gate/IO lock, and uses the
+existing cgroup-limited command runner. Status and repeated preparation do not
+wait for that worker's IO lock. A lost start reply reuses the original unit;
+an absent unit may be started only if the journal proves it never entered
+execution, the boot ID is unchanged and the deadline has not expired.
+
+Supported locked recipes remain `npm ci`, `uv sync --frozen` and
+`cargo build --locked`, with the existing flag allowlist. Guest toolchains are
+installed on demand from fixed administrator commands; uv uses the repository's
+CI pin. Project commands execute as `sandbox` with a clean environment, never
+as root or on the host. Admission rejects dependency installation at 95% quota.
+The whole operation has a 900-second deadline, including toolchain installation.
+
+Successful exit alone is insufficient. The worker must drain its command
+cgroups, prove no sandbox-user processes remain, and recheck retained files.
+The controller then stops the supervisor, checks the tree again, commits guest
+completion and acknowledges the host journal. A lost completion receipt resumes
+these checks, not the installer. Reboot, timeout, changed source, unexpected unit
+identity or missing execution result keeps maintenance reserved and reports an
+error. No uncertain installer is automatically replayed; recovery needs a new,
+explicitly reconciled lifecycle operation. Failed scripts can leave dependency
+files behind, but this path never silently restores or deletes retained data.
+
+`tests/test_project_vm_dependencies.py` exercises real metadata, source files and
+host/guest journals with explicit systemd/libvirt fixtures, including interrupted
+uploads, lost dispatch/completion, quota, changed locks, leftover processes and
+reboot. `tests/test_project_file_executor.py` additionally checks authoritative
+PostgreSQL version preparation. These checks do not constitute native installer,
+power-loss or end-to-end VM lifecycle acceptance.
 
 ## VM shutdown and retirement
 

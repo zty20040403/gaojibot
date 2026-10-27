@@ -113,6 +113,18 @@ class ProjectFileExecutor:
         spec = args["rebuild_spec"]
         if not baseline or not spec or spec["command"] != args["rebuild_command"]:
             raise ProjectConflict("Dependency rebuild has no frozen recipe")
+        prepare = getattr(self.client, "project_rebuild_prepare", None)
+        if prepare is not None:
+            # A fresh VM retains its data disk, not the retired system journal.
+            # Import the authoritative version without restoring over user files.
+            access, project = await self._context(job)
+            manifest = await _store(self.projects.manifest, access, project["project_id"], baseline["version_no"])
+            encoded = manifest_bytes(manifest, quota_bytes=project["quota_bytes"])
+            if hashlib.sha256(encoded).hexdigest() != baseline["manifest_sha256"] or manifest.get("rebuild") != spec:
+                raise ProjectConflict("Dependency rebuild baseline changed")
+            await prepare(args["owner"], args["project_id"], generation=args["generation"],
+                fence=args["fence"], reservation=args["reservation"], manifest=manifest,
+                check_context=lambda: self._context(job))
 
         async def observe(operation):
             await self._context(job)

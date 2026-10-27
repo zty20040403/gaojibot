@@ -6,7 +6,7 @@ import json
 import os
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
 
@@ -17,7 +17,7 @@ from src.project_content import CHUNK_BYTES
 from src.plugins.ai_chat.project_blobs import ProjectFile
 from src.plugins.ai_chat.project_file_executor import ProjectFileExecutor
 from src.plugins.ai_chat.project_executor import ProjectBackendUnavailable
-from src.plugins.ai_chat.projects import ProjectQuotaExceeded
+from src.plugins.ai_chat.projects import ProjectConflict, ProjectQuotaExceeded
 from src.sandbox_runtime.docker import SandboxError
 from tests import test_project_executor as fixture
 from tests.postgres_fixture import postgres_for_test
@@ -195,6 +195,37 @@ class ProjectFileExecutorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(restored["version_no"], 3)
         self.assertEqual(restored["manifest_sha256"], original["manifest_sha256"])
+
+    async def test_vm_rebuild_preparation_reads_frozen_pg_version_and_checks_lease(self):
+        await self.dependency_project()
+        version = self.projects.versions(self.access, self.pid)[0]
+        manifest = self.projects.manifest(self.access, self.pid, version["version_no"])
+        project = self.projects.get(self.access, self.pid)
+        args = dict(owner=self.scope.key, project_id=self.pid, generation=1, fence=30,
+                    reservation="a" * 32, baseline={k: version[k] for k in ("version_no", "manifest_sha256")},
+                    rebuild_spec=manifest["rebuild"], rebuild_command="npm ci")
+        receipt = {**{k: args[k] for k in ("project_id", "generation", "fence")},
+                   "manifest_sha256": version["manifest_sha256"], "command": "npm ci", "state": "completed",
+                   "pending": False, "exit_code": 0, "finished_at": int(time.time())}
+        client = Mock(project_rebuild=AsyncMock(return_value=receipt), project_rebuild_prepare=AsyncMock())
+        files = ProjectFileExecutor(self.lifecycle, client, resolve_access=lambda *a: self.access)
+        context = AsyncMock(return_value=(self.access, project))
+        async def prepare(*a, **kwargs):
+            self.assertEqual(kwargs["manifest"], manifest)
+            await kwargs["check_context"]()
+        client.project_rebuild_prepare.side_effect = prepare
+        with patch.object(files, "_context", context), patch.object(self.lifecycle, "record_progress"):
+            evidence = await files._rebuild(object(), {"arguments": args})
+        self.assertTrue(evidence["verified"])
+        self.assertEqual(context.await_count, 6)
+        self.assertEqual(client.project_rebuild.await_count, 2)
+        client.project_rebuild_prepare.assert_awaited_once()
+        client.reset_mock()
+        args["baseline"]["manifest_sha256"] = "f" * 64
+        with patch.object(files, "_context", context), self.assertRaises(ProjectConflict):
+            await files._rebuild(object(), {"arguments": args})
+        client.project_rebuild_prepare.assert_not_awaited()
+        client.project_rebuild.assert_not_awaited()
 
     async def test_stop_snapshots_real_bytes_without_restarting_a_writer(self):
         root = await self.wake()

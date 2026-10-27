@@ -5,11 +5,12 @@ from pathlib import Path
 import zipfile
 
 MODULES = (
-    "src/local_runtime/files.py", "src/project_content.py",
+    "src/local_runtime/files.py", "src/project_content.py", "src/project_capacity.py",
     "src/sandbox_runtime/errors.py", "src/sandbox_runtime/project_volume_journal.py",
     "src/sandbox_runtime/project_files.py", "src/sandbox_runtime/project_rebuild.py",
     "src/sandbox_runtime/project_vm_guest.py", "src/sandbox_runtime/project_vm_gate.py",
     "src/sandbox_runtime/project_vm_file_guest.py",
+    "src/sandbox_runtime/project_vm_dependency_guest.py",
 )
 
 

@@ -9,7 +9,7 @@ import time
 import tomllib
 
 from src.local_runtime.files import read_json, write_json
-from src.project_content import manifest_digest, project_path, rebuild_spec
+from src.project_content import manifest_bytes, manifest_digest, project_path, rebuild_spec
 from .project_volume_journal import ProjectVolumeError
 
 CONTROL = ".gaoji/rebuildable"
@@ -17,6 +17,22 @@ GENERIC = frozenset({"__pycache__", ".cache", ".npm", ".pnpm-store"})
 BROWSER = frozenset(
     {".gaoji/browser/Cache", ".gaoji/browser/Code Cache", ".gaoji/browser/GPUCache"}
 )
+
+
+def verify_dependency_tree(files, root, quota, source):
+    """Locked inputs and retained bytes must survive installation unchanged."""
+    spec, defaults, warnings = classify(files, root, source["rebuild"]["command"])
+    if warnings or spec is None or spec["locks"] != source["rebuild"]["locks"]:
+        raise ProjectVolumeError("Dependency rebuild inputs changed or are unsupported")
+    roots = {}
+    actual, _ = files.scan(root, quota, excluded_identities=roots, select=lambda path: (
+        path in spec["excluded"] or path in defaults or path.split("/")[-1] in GENERIC or path in BROWSER
+    ))
+    actual.update(format=2, rebuild={**spec, "excluded": sorted(roots)})
+    manifest_bytes(actual, quota_bytes=quota)
+    if actual["files"] != source["files"]:
+        raise ProjectVolumeError("Dependency rebuild changed retained project files")
+    return source
 
 
 def read_input(files, root, path, limit):

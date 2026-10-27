@@ -2371,3 +2371,44 @@ implementation evidence, not a claim that the production App has these features.
   maximum-size file-transfer acceptance, plus desktop soft quotas, remain.
   M3-M7 are pending. No production connection, nix-config edit, rebuild or App
   publication is included; the user-authored plan is unchanged and excluded.
+
+### M2 VM dependency reconstruction
+
+- Added a private dependency adapter using the reserved VM file transport.
+  Fresh guests import canonical version metadata without overwriting their
+  retained project data. The PostgreSQL executor verifies the frozen version
+  hash and recipe; each transfer rechecks its lease and live membership. The
+  guest checks locked inputs and the complete retained tree before execution.
+- Installation runs in a durable, uniquely identified systemd unit rather than
+  the QGA request process. Boot identity, source, resource limit, deadline and
+  execution phase survive client disconnection. Status can inspect the task
+  without waiting on its IO lock. Lost start and completion replies reconcile
+  the existing operation, never replay uncertain project scripts.
+- Guest toolchain setup is fixed and administrator-owned; the allowlisted
+  locked recipe runs as sandbox, inside the existing process/cgroup controls.
+  Quota admission, a total 900-second deadline, child-process drain and retained
+  source revalidation are required. Reboot, failed scripts or unverified
+  termination keep the project reserved instead of falsely marking it active.
+- Shared retained-tree verification keeps OCI and VM semantics consistent.
+  The stdlib-only guest bundle includes this adapter, not Bot credentials or
+  host drivers. No public model tool or unauthenticated control endpoint added.
+- Focused validation: 55 tests passed in 13.390 seconds, with ResourceWarning
+  promoted to errors (.cache/roadmap/m2-vm-dependencies-focused.log). Initial
+  test runs exposed a wrong fixture project ID, a mismatched expected exception
+  type and nested-fixture cleanup; these test-harness defects were corrected
+  without weakening the assertions.
+- Full isolated PostgreSQL regression: 2583 tests, OK (12 skipped), 431.540
+  seconds with ResourceWarning as errors
+  (.cache/roadmap/m2-vm-dependencies-full.log). Whole-CI Ruff, compileall and
+  whitespace checks passed. No product code changed after this run.
+- Nix package/import checks passed on aarch64-darwin
+  (.cache/roadmap/m2-vm-dependencies-nix.log); incompatible systems were omitted,
+  not tested. Byte comparisons confirm that the packaged guest dependency
+  helper, VM client and PostgreSQL file executor match the checked source.
+  Filesystem/journal tests use explicit systemd/libvirt fixtures, not native VM
+  acceptance. Temporary fixture files were cleaned; only ignored logs remain.
+- M2 is still incomplete and production-disabled. Assembled VM lifecycle
+  execution, native reboot/hibernate/power-loss and maximum-size file-transfer
+  acceptance, desktop soft quotas and remaining product integration are pending.
+  M3-M7 are pending. No production SSH, nix-config change, deployment or App
+  publication is included; the user-authored plan remains unchanged/untracked.

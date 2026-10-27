@@ -2,7 +2,8 @@
 
 Only root can invoke the bundled entry point. No request can select a host or
 guest path: the verified data disk is always /workspace and journals live on
-the private system disk. All calls hold the execution gate's maintenance lock.
+the private system disk. File IO holds the execution gate's maintenance lock;
+dependency status can inspect its durable worker while that lock is held.
 """
 
 import base64
@@ -25,7 +26,7 @@ STATE_ROOT = Path("/var/lib/gaoji-project-files")
 # QGA input is base64 nested in a virsh command argument. Stay below ARG_MAX.
 TRANSFER_BYTES = 48 * 1024
 REQUEST_BYTES = 80 * 1024
-UPLOADS = frozenset({"restore_manifest", "restore_file"})
+UPLOADS = frozenset({"restore_manifest", "restore_file", "dependency_manifest"})
 FIELDS = {
     "snapshot": (set(), {"rebuild_command"}),
     "page": ({"manifest_sha256", "index"}, set()),
@@ -38,6 +39,10 @@ FIELDS = {
     "restore_check": ({"manifest_sha256"}, set()),
     "prune": ({"manifest_sha256", "snapshot_fence"}, set()),
     "prune_check": ({"manifest_sha256", "snapshot_fence"}, set()),
+    "dependency_begin": ({"manifest_sha256", "manifest_size", "tasks"}, set()),
+    "dependency_manifest": ({"manifest_sha256", "offset"}, set()),
+    "dependency_run": ({"manifest_sha256"}, set()),
+    "dependency_status": ({"manifest_sha256"}, set()),
 }
 
 
@@ -53,6 +58,7 @@ def validate_parameters(action, parameters, payload=b""):
         ("index", 0, MAX_VERSION_FILES), ("offset", 0, MAX_FILE_BYTES),
         ("max_bytes", 1, TRANSFER_BYTES), ("manifest_size", 1, MAX_MANIFEST_BYTES),
         ("snapshot_fence", 1, 2**53 - 1),
+        ("tasks", 32, 4096),
     ):
         if key in parameters and (type(parameters[key]) is not int or not minimum <= parameters[key] <= maximum):
             raise ProjectVolumeError("Invalid guest file range")
@@ -113,9 +119,11 @@ class GuestFileVolumes(ProjectVolumeJournal):
 
 
 class ProjectGuestFiles:
-    def __init__(self, gate, *, root=STATE_ROOT, workspace=WORKSPACE):
+    def __init__(self, gate, *, root=STATE_ROOT, workspace=WORKSPACE, dependency_runtime=None):
+        from .project_vm_dependency_guest import GuestDependencies
         self.gate = gate
         self.volumes = GuestFileVolumes(gate, root=root, workspace=workspace)
+        self.dependencies = GuestDependencies(gate, self.volumes, runtime=dependency_runtime)
 
     def operate(self, request):
         if not isinstance(request, dict) or set(request) != {
@@ -140,6 +148,9 @@ class ProjectGuestFiles:
         parameters = dict(parameters)
         if action == "read":
             parameters.setdefault("max_bytes", TRANSFER_BYTES)
+        if action.startswith("dependency_"):
+            receipt = self.dependencies.operate(action, request["fence"], request["reservation"], parameters, payload)
+            return {"identity": self.gate.identity, "receipt": receipt, "payload": ""}
         with self.gate.maintenance(request["fence"]):
             self.volumes.admit(request["fence"], request["reservation"])
             receipt, body = ProjectFiles(self.volumes).operate(
@@ -154,6 +165,11 @@ class ProjectGuestFiles:
 def main():
     if os.geteuid() != 0:
         raise ProjectVolumeError("Project file helper requires the guest administrator")
+    if len(sys.argv) == 3 and sys.argv[1] == "--dependency-worker" and sys.argv[2].isdecimal():
+        ProjectGuestFiles(ProjectGuestGate(load_config())).dependencies.worker(int(sys.argv[2]))
+        return
+    if len(sys.argv) != 1:
+        raise ProjectVolumeError("Unsupported project helper arguments")
     data = sys.stdin.buffer.read(REQUEST_BYTES + 1)
     if len(data) > REQUEST_BYTES:
         raise ProjectVolumeError("Guest file request exceeds its limit")

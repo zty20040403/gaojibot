@@ -9,10 +9,9 @@ import time
 from contextlib import contextmanager
 
 from src.local_runtime.files import read_json, write_json
-from src.project_content import manifest_bytes
 from .docker import SandboxError
 from .project_files import ProjectFiles
-from .project_rebuild import BROWSER, GENERIC, classify
+from .project_rebuild import verify_dependency_tree
 from .project_volumes import MIB, ProjectVolumeError
 
 
@@ -56,31 +55,7 @@ class DependencyJournal:
         source = self.source(directory, record)
         files = ProjectFiles(self.volumes)
         with files.root(binding["path"]) as root:
-            spec, defaults, warnings = classify(
-                files, root, source["rebuild"]["command"]
-            )
-            if warnings or spec is None or spec["locks"] != source["rebuild"]["locks"]:
-                raise ProjectVolumeError(
-                    "Dependency rebuild inputs changed or are unsupported"
-                )
-            roots = {}
-            actual, _ = files.scan(
-                root,
-                record["quota_bytes"],
-                excluded_identities=roots,
-                select=lambda path: (
-                    path in spec["excluded"]
-                    or path in defaults
-                    or path.split("/")[-1] in GENERIC
-                    or path in BROWSER
-                ),
-            )
-            actual.update(format=2, rebuild={**spec, "excluded": sorted(roots)})
-            manifest_bytes(actual, quota_bytes=record["quota_bytes"])
-            if actual["files"] != source["files"]:
-                raise ProjectVolumeError(
-                    "Dependency rebuild changed retained project files"
-                )
+            verify_dependency_tree(files, root, record["quota_bytes"], source)
         return source
 
     def read(self, directory, record):
