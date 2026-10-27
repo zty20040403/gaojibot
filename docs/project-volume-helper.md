@@ -760,6 +760,48 @@ are removed. Windows, Desktop-engine crashes, controller-loss enforcement and
 complete App/workbench usage reporting remain acceptance work, not covered by
 this local macOS/Linux-container proof.
 
+### Opt-in application runtime
+
+`AI_PROJECTS_ENABLED` remains false by default. When explicitly enabled,
+`ProjectRuntime` is installed by OneBot assembly and starts before the shared
+durable worker. It composes the actual file adapter, lifecycle executor,
+30-second usage sampler, idle scheduler and version retention. Shutdown drains
+the application's workers before closing the project store. Cancelled startup
+does not leak a database connection or install a half-ready executor.
+
+The application requires sandbox permission controls, the ledger, durable jobs
+and Outbox. OCI must use the private runner: its authenticated health response
+must report project volumes, workspace support and hard/soft quota mode. Direct
+host Docker is not an unlimited fallback. Native runner mount-namespace
+activation is still gated on the acceptance work below. Desktop's directory
+backend explicitly reports soft quota even before the first workspace exists.
+
+VM composition binds the existing VM manager's project gate to a separate
+`project-volumes` directory under its owned root. `AI_PROJECT_INSTANCE_ID` must
+be a stable 32-character lowercase hexadecimal installation identifier; App
+instances may inherit `AI_APP_INSTANCE_ID` when that setting is empty. Do not
+generate a different identifier on each restart. An explicit instance ID is
+also checked against an OCI runner's health identity when supplied.
+
+Migration `0047_project_runtime_owner` preserves each new project's original bot
+account. Old unbound projects are not guessed or rebound automatically; an
+operator must explicitly migrate their account association before execution.
+Even another online bot in the same group is not a fallback. Recovery resolves
+the actor's current principal identity, checks the group is enabled, fetches
+fresh membership (including the bot), and rechecks execution permission. Private
+projects remain creator-only. The worker revalidates access after helper effects
+and before acknowledgement. Offline accounts/temporarily unavailable membership
+defer without spending a retry; confirmed revocation blocks further mutations
+while retaining the journal and data.
+
+`AI_PROJECT_IDLE_STOP_MINUTES`, `AI_PROJECT_HIBERNATE_DAYS`,
+`AI_PROJECT_ARCHIVE_DAYS` and `AI_PROJECT_VERSION_KEEP_RECENT` configure the
+existing policy. Invalid/nonincreasing thresholds are rejected before stores
+open. This composition does not enable automatic purge or provide a new host
+shell API. Chat tools, commands, task baseline publication, shared-platform
+adapters and the workbench still require M3-M7 integration. Live QQ membership
+in these tests is a fixture, not a production validation.
+
 ### Remaining acceptance
 
 `tests/test_project_volumes.py` uses actual private files and Unix RPC but an

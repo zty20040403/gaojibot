@@ -2549,3 +2549,40 @@ implementation evidence, not a claim that the production App has these features.
   acceptance, Desktop Windows/engine-loss validation and remaining task/product
   integration are pending. User-facing usage reporting belongs to the remaining
   workbench/tool integration. M3-M7 are not complete.
+
+### M2 opt-in application runtime and account-bound recovery
+
+- Connected project stores, physical OCI/VM backends, leased lifecycle jobs,
+  usage sampling and idle maintenance to application startup and shutdown.
+  `AI_PROJECTS_ENABLED` remains false by default. Explicit enablement requires
+  ledger, durable jobs, Outbox and the private quota-capable runner or VM
+  backend; ordinary unbounded Docker sandboxes are not a fallback.
+- Migration `0047_project_runtime_owner` binds each new project to its original
+  bot account. Recovery never chooses an unrelated online account. Existing
+  unbound records require operator migration; downgrade refuses to discard
+  nonempty bindings. VM storage additionally requires a stable instance ID.
+- Recovery resolves the principal from the ledger and checks live group
+  membership, group enablement and sandbox admission before execution. Private
+  projects remain owner-only. Offline QQ or temporarily unavailable membership
+  defers without consuming retries or falsely marking a physical operation
+  failed. Revocation preserves the journal and prevents further effects.
+- Real PostgreSQL and Unix-RPC integration covers complete OCI wake, restarting
+  the application, disconnection/reconnection, revocation during an effect,
+  unsupported/mismatched helpers, soft-mode accounting, VM adapter composition
+  and cancellation during store construction. QQ, kernel and libvirt operations
+  in these tests are fixtures, not live platform or VM acceptance.
+- Final runtime recovery tests passed 18 tests in 3.374 seconds; the affected
+  lifecycle/runtime/startup/config batch passed 70 tests in 10.706 seconds.
+  ResourceWarnings were errors. Logs:
+  `.cache/roadmap/m2-project-runtime-{recovery,focused}.log`.
+  An earlier 167-test run exposed an old ambient test schema and an overly
+  specific downgrade-error assertion. Tests now use an isolated migrated
+  database and verify that denied downgrade leaves the revision unchanged.
+- This checkpoint does not register project chat tools, bind Sub-Agent tasks,
+  expose workbench controls or prove native power-loss/large-file acceptance.
+  Native OCI runner activation is also still pending. M2 and M3-M7 remain
+  incomplete; no production SSH, shared nix-config edit, rebuild, live model/QQ
+  call or App release occurred. The user-authored plan remains unchanged.
+- Whole-CI Ruff, compileall and whitespace checks passed. Nix package/import
+  checks passed on aarch64-darwin; incompatible platforms were omitted, not
+  tested (`.cache/roadmap/m2-project-runtime-nix.log`).

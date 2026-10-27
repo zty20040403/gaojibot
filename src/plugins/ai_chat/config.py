@@ -218,6 +218,12 @@ class Settings:
     routine_check_seconds: int
     routine_max_per_owner: int
     routine_timeout_seconds: int
+    projects_enabled: bool
+    project_instance_id: str
+    project_idle_stop_minutes: int
+    project_hibernate_days: int
+    project_archive_days: int
+    project_version_keep_recent: int
     outbox_enabled: bool
     outbox_check_seconds: int
     outbox_lease_seconds: int
@@ -694,6 +700,12 @@ class Settings:
             routine_check_seconds=min(max(_get_int("AI_ROUTINE_CHECK_SECONDS", 15), 5), 300),
             routine_max_per_owner=min(max(_get_int("AI_ROUTINE_MAX_PER_OWNER", 5), 1), 20),
             routine_timeout_seconds=min(max(_get_int("AI_ROUTINE_TIMEOUT_SECONDS", 600), 30), 3600),
+            projects_enabled=_get_bool("AI_PROJECTS_ENABLED", False),
+            project_instance_id=os.getenv("AI_PROJECT_INSTANCE_ID", "").strip() or os.getenv("AI_APP_INSTANCE_ID", "").strip(),
+            project_idle_stop_minutes=_get_int("AI_PROJECT_IDLE_STOP_MINUTES", 30),
+            project_hibernate_days=_get_int("AI_PROJECT_HIBERNATE_DAYS", 7),
+            project_archive_days=_get_int("AI_PROJECT_ARCHIVE_DAYS", 60),
+            project_version_keep_recent=_get_int("AI_PROJECT_VERSION_KEEP_RECENT", 10),
             outbox_check_seconds=max(
                 _get_int("AI_OUTBOX_CHECK_SECONDS", 5),
                 1,

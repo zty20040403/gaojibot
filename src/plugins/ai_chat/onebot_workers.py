@@ -17,6 +17,9 @@ async def start_background_tasks(
     handlers: HandlerServices,
     alert_notifier: AlertNotificationService,
 ) -> None:
+    project_runtime = getattr(context, "project_runtime", None)
+    if project_runtime is not None:
+        await project_runtime.start()
     mcp_runtime = getattr(context, "mcp_runtime", None)
     if mcp_runtime is not None:
         await mcp_runtime.start()

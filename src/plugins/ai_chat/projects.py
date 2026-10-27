@@ -163,6 +163,8 @@ class ProjectStore:
             or (row["status"] == "trash" and not allow_trash)
         ):
             raise PermissionError("Project is not available in this conversation")
+        if row["bot_native_user_id"] and row["bot_native_user_id"] != access.scope.bot_native_user_id:
+            raise PermissionError("Project belongs to another bot account")
         is_owner = row["creator_principal_id"] == access.principal_id
         if access.scope.kind == "private" and not is_owner:
             raise PermissionError("Private projects are owner-only")
@@ -239,7 +241,8 @@ class ProjectStore:
                 raise ProjectQuotaExceeded("Project quota exceeds permitted capacity")
             row = cursor.execute(
                 """INSERT INTO projects(scope_key,creator_principal_id,title,backend,quota_bytes,
-                last_active_at,state_changed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *""",
+                last_active_at,state_changed_at,created_at,updated_at,bot_native_user_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING *""",
                 (
                     access.scope.key,
                     access.principal_id,
@@ -250,6 +253,7 @@ class ProjectStore:
                     now,
                     now,
                     now,
+                    access.scope.bot_native_user_id,
                 ),
             ).fetchone()
             pid = row["project_id"]
@@ -277,8 +281,9 @@ class ProjectStore:
             return [
                 dict(row)
                 for row in rows
-                if access.scope.kind == "group"
-                or row["creator_principal_id"] == access.principal_id
+                if (not row["bot_native_user_id"] or row["bot_native_user_id"] == access.scope.bot_native_user_id)
+                and (access.scope.kind == "group"
+                     or row["creator_principal_id"] == access.principal_id)
             ]
 
     @staticmethod

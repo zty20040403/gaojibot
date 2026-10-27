@@ -14,6 +14,7 @@ nonebot.init()
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.lifecycle import BackgroundTaskSupervisor
 from src.plugins.ai_chat.runtime import build_app_context
+from tests.postgres_fixture import isolated_postgres_for_test
 
 
 class RecordingLogger:
@@ -217,6 +218,7 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_builder_owns_core_resources_and_shutdown_is_idempotent(
         self,
     ) -> None:
+        database = isolated_postgres_for_test(self)
         logger = RecordingLogger()
         test_settings = replace(
             settings,
@@ -243,7 +245,9 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
         async def dream(_scope, _entries, _evidence):
             raise AssertionError("disabled dream should not run")
 
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory() as tmp, patch(
+            "src.plugins.ai_chat.runtime.PostgresDatabase", return_value=database
+        ):
             root = Path(tmp)
             project_root = root / "project"
             (project_root / "skills").mkdir(parents=True)

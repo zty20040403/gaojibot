@@ -1,7 +1,7 @@
-"""Private lifecycle journal, not an enabled scheduler or a host-command API.
+"""Private lifecycle journal, not a host-command API.
 
 The host adapter must reconcile each persisted step before acknowledging it.
-No production worker is registered until backend/native acceptance is complete.
+Registration is owned by the opt-in project runtime, disabled by default.
 """
 
 from __future__ import annotations

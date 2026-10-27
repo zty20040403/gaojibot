@@ -1,4 +1,4 @@
-"""Leased project execution over the private helper, disabled until wired by host.
+"""Leased project execution over the private helper, explicitly wired by host.
 
 The Docker backend handles verified workspace/volume effects. Retained-file
 operations are supplied by the host storage adapter, never by model tool calls.
@@ -14,6 +14,7 @@ import time
 
 from .project_lifecycle import KIND
 from .projects import ProjectAccess, ProjectConflict
+from .workers.durable_jobs import JobDeferred
 
 
 async def _store(method, *args, **kwargs):
@@ -303,6 +304,10 @@ class ProjectLifecycleExecutor:
                     self.lifecycle.context, job, access=await self._access(project, run)
                 )
                 await _store(self.lifecycle.acknowledge, job, step, evidence)
+        except JobDeferred:
+            # A disconnected account is a wait, not a failed physical operation.
+            # Keep the persisted step intact for the next leased attempt.
+            raise
         except Exception:
             try:
                 await _store(self.lifecycle.needs_attention, job)

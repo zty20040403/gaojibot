@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from .mcp_bridge.runtime import McpRuntime
     from .mcp_bridge.service import McpService
+    from .project_runtime import ProjectRuntime
 
 from src.bot_storage import DatabaseCalls, DatabaseError, PostgresDatabase
 from src.bot_storage.schema import HEAD_REVISION
@@ -139,6 +140,7 @@ class AppContext:
     proactive_learning: ProactiveLearningStore | None = None
     reminder_store: ReminderStore | None = None
     routine_store: RoutineStore | None = None
+    project_runtime: ProjectRuntime | None = field(default=None, repr=False)
     group_wiki_store: GroupWikiStore | None = None
     mcp_runtime: McpRuntime | None = field(default=None, repr=False)
     mcp_service: McpService | None = field(default=None, repr=False)
@@ -195,6 +197,7 @@ class AppContext:
             ("vision worker", self.vision_worker),
             ("cold archive", self.cold_archive),
             ("fleet control client", self.fleet_client),
+            ("project runtime", self.project_runtime),
         ):
             if resource is None:
                 continue
@@ -249,6 +252,9 @@ def build_app_context(
     evidence_provider: EvidenceProvider,
     started_at: int | None = None,
 ) -> AppContext:
+    from .project_runtime import validate_project_settings
+
+    validate_project_settings(settings)
     if settings.routines_enabled and not all((
         settings.durable_jobs_enabled, settings.outbox_enabled, settings.quota_enabled,
         settings.ledger_enabled, settings.turn_journal_enabled,

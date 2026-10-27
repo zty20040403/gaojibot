@@ -79,6 +79,9 @@ def assemble_handlers(context: AppContext) -> HandlerServices:
     from .mcp_bridge.runtime import install_mcp
 
     install_mcp(handlers)
+    from .project_runtime import install_projects
+
+    install_projects(handlers)
     return handlers
 
 

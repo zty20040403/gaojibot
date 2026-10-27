@@ -17,6 +17,7 @@ from alembic.config import Config
 nonebot.init()
 
 from src.bot_storage import open_store_connection
+from src.bot_storage.schema import HEAD_REVISION
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.project_blobs import ProjectFile
@@ -477,7 +478,8 @@ class ProjectLifecycleTests(unittest.TestCase):
                 "AI_POSTGRES_SCHEMA": self.db.schema,
             },
         ):
-            with self.assertRaisesRegex(RuntimeError, "retained project lifecycle"):
+            with self.assertRaisesRegex(RuntimeError, "retained project lifecycle|project account bindings"):
                 command.downgrade(config, "0043_project_workspace")
+        self.db.require_revision(HEAD_REVISION)
         self.assertEqual(len(self.lifecycle.journal(self.access, self.pid)), 1)
         self.assertIsNotNone(self.project()["lifecycle_job_id"])
