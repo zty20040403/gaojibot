@@ -49,6 +49,7 @@ from .mobile_authorization import build_mobile_authorization
 from src.bot_security.service import MobileAuthorization
 from .ocr import RecentImageStore
 from .pins import PinStore
+from .proactive_learning import ProactiveLearningStore
 from .quota import UsageStore
 from .reminders import ReminderStore
 from .sandbox import DockerSandboxManager
@@ -129,6 +130,7 @@ class AppContext:
     context_store: ContextStore | None = None
     topic_graph_store: TopicGraphStore | None = None
     pin_store: PinStore | None = None
+    proactive_learning: ProactiveLearningStore | None = None
     reminder_store: ReminderStore | None = None
     delivery_store: DeliveryStore | None = None
     job_store: DurableJobStore | None = None
@@ -197,6 +199,7 @@ class AppContext:
             ("context store", self.context_store),
             ("topic graph store", self.topic_graph_store),
             ("pin store", self.pin_store),
+            ("proactive learning", self.proactive_learning),
             ("reminder store", self.reminder_store),
             ("delivery store", self.delivery_store),
             ("durable job store", self.job_store),
@@ -839,6 +842,10 @@ def build_app_context(
         context_store=context_store,
         topic_graph_store=topic_graph_store,
         pin_store=pin_store,
+        proactive_learning=(
+            ProactiveLearningStore(database, feedback_seconds=settings.proactive_feedback_seconds)
+            if settings.proactive_adaptive else None
+        ),
         reminder_store=reminder_store,
         delivery_store=delivery_store,
         job_store=job_store,

@@ -117,7 +117,8 @@ acceptance are not implied by this roadmap.
 
 ### Phase 9: Product features
 
-- [ ] 9.1 Per-group adaptive proactive thresholds with feedback and opt-in flag.
+- [x] 9.1 Per-group adaptive proactive thresholds with feedback and opt-in flag.
+      Local regression/build pass; real QQ feedback acceptance remains pending.
 - [ ] 9.2 Durable cron routines: tools, command, creator ownership, budgets,
       ordinary Agent runs and durable Outbox delivery.
 - [ ] 9.3 Nightly group wiki, search command/admin page, opt-in newcomer brief.
@@ -605,3 +606,30 @@ sampling is once per second; the benchmark uses 5 ms to expose short blocking ca
   are implemented, with earlier live gates still pending; Phase 9 has not started.
 - Work remains local. No production connection, push, deployment, rebuild or real
   model/QQ request was made.
+
+### Phase 9.1 adaptive proactive replies
+
+- Added explicit global and per-group opt-in, defaulting off. Existing group
+  permissions, local sampling/check budgets and static behavior outside opted-in
+  groups remain. Explicit mentions and stale adaptive triggers do not provoke
+  unsolicited replies.
+- PostgreSQL migration 0031 stores send trials, per-actor feedback and per-group/
+  bot Thompson sampling arms. Only acknowledged sends learn. Duplicated triggers,
+  notices and settlement workers cannot multiply observations. Restart recovery
+  expires uncertain sends without resending or inventing feedback.
+- Only reactions, direct replies/mentions and another member's recall count.
+  Nearby unrelated group chatter is ignored. Retraction and event order are
+  enforced; a missing response is neutral with low weight, not a negative vote.
+  Feedback storage errors cannot stop normal message ingestion.
+- Focused checks: 68 tests, OK, 6.243 seconds;
+  .cache/roadmap/phase9-1-focused.log. Includes real PostgreSQL concurrency and
+  reopen tests, simulated QQ receipts, startup wiring and configuration defaults.
+- Configuration, reward weights, operational privacy and limitations are recorded
+  in proactive-learning.md. No real QQ or model provider was contacted. Live
+  feedback IDs and improved group behavior remain unverified.
+- Full PostgreSQL suite: 1,766 tests, OK (12 skipped), 235.245 seconds;
+  .cache/roadmap/phase9-1-full.log. CI-path Ruff, Python compilation, diff whitespace
+  checks and the admin TypeScript/Vite production build pass. No UI source changed.
+- Phase 9.1 is complete locally and recorded in this phase's commit. Phase 9.2
+  has not started. Earlier live acceptance gates still apply; there has been no
+  push, production connection, rebuild or real QQ/model call.

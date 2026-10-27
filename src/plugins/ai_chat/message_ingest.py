@@ -19,6 +19,7 @@ from .stickers import (
 )
 from .handler_services import HandlerService
 from .reaction_feedback import record_reaction_feedback
+from .proactive_learning import adaptive_for_group, is_rejection
 
 
 class MessageIngest(HandlerService):
@@ -39,6 +40,64 @@ class MessageIngest(HandlerService):
 
     async def handle_canonical_ingest(self, event: MessageEvent) -> None:
         await self.services.ingest_adapter.ingest(event)
+        await self._observe_proactive_message(event)
+
+    async def _learning_enabled(self, group_id: int) -> bool:
+        return (
+            self.context.proactive_learning is not None
+            and adaptive_for_group(self.context.settings, group_id)
+            and await self.context.db_call(self.services.group_enabled, group_id)
+        )
+
+    async def handle_proactive_notice(self, bot: Bot, event: NoticeEvent) -> None:
+        payload = event.model_dump()
+        try:
+            if not await self._learning_enabled(int(payload.get("group_id", 0))):
+                return
+            await self.context.db_call(
+                self.context.proactive_learning.observe_notice,
+                payload,
+                bot_id=str(bot.self_id),
+                positive_ids=self.context.settings.feedback_positive_emoji_ids,
+                negative_ids=self.context.settings.feedback_negative_emoji_ids,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self.context.logger.warning(f"Proactive feedback was not stored: {type(exc).__name__}")
+
+    async def _observe_proactive_message(self, event: MessageEvent) -> None:
+        if not isinstance(event, GroupMessageEvent) or event.user_id == event.self_id:
+            return
+        reply_id = str(event.reply.message_id) if event.reply is not None else None
+        if reply_id is None:
+            reply_id = next(
+                (str(segment.data["id"]) for segment in event.original_message
+                 if segment.type == "reply" and segment.data.get("id") is not None),
+                None,
+            )
+        addressed = any(
+            segment.type == "at" and str(segment.data.get("qq")) == str(event.self_id)
+            for segment in event.original_message
+        )
+        text = event.original_message.extract_plain_text().strip()
+        if (reply_id is None and not addressed) or not text or text.startswith("/"):
+            return
+        rejected = is_rejection(text)
+        try:
+            if not await self._learning_enabled(event.group_id):
+                return
+            await self.context.db_call(
+                self.context.proactive_learning.feedback,
+                scope_from_event(event),
+                str(event.self_id),
+                native_message_id=reply_id,
+                actor_id=str(event.user_id),
+                kind="rejected" if rejected else "follow_up",
+                value=-1 if rejected else 1,
+                source_id=str(event.message_id),
+                occurred_at=event.time,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.context.logger.warning(f"Proactive follow-up was not stored: {type(exc).__name__}")
 
     async def handle_group_activity(self, event: MessageEvent) -> None:
         await self.services.ingest_adapter.observe_group_activity(event)

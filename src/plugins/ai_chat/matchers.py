@@ -25,6 +25,10 @@ def _is_reaction_notice(event: NoticeEvent) -> bool:
     return event.notice_type == "group_msg_emoji_like"
 
 
+def _is_proactive_feedback_notice(event: NoticeEvent) -> bool:
+    return event.notice_type in {"group_msg_emoji_like", "group_recall"}
+
+
 ai = on_command("ai", aliases={"ds", "deepseek", "问"}, priority=10, block=True)
 web_search = on_command(
     "搜", aliases={"搜索", "联网搜索", "查一下", "search"}, priority=10, block=True
@@ -118,6 +122,7 @@ mention_ai = on_message(
 )
 canonical_ingest_tracker = on_message(priority=0, block=False)
 reaction_feedback_tracker = on_notice(rule=Rule(_is_reaction_notice), priority=5, block=False)
+proactive_feedback_tracker = on_notice(rule=Rule(_is_proactive_feedback_notice), priority=6, block=False)
 group_activity_tracker = on_message(priority=1, block=False)
 image_auto_description = on_message(priority=70, block=False)
 proactive_chat = on_message(priority=80, block=False)

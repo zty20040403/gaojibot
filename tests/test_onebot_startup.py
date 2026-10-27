@@ -302,6 +302,7 @@ class OneBotWorkerStartupTests(unittest.IsolatedAsyncioTestCase):
                 alert_notify_group_id=1,
             ),
             mobile_authorization=Mock(),
+            proactive_learning=Mock(),
             subagent_coordinator=Mock(),
             local_model=Mock(),
             job_store=SimpleNamespace(enqueue=Mock(return_value=(None, True))),
@@ -325,6 +326,7 @@ class OneBotWorkerStartupTests(unittest.IsolatedAsyncioTestCase):
             set(workers),
             {
                 "event-loop-lag",
+                "proactive-feedback",
                 "mobile-authorization",
                 "subagent-workflows",
                 "local-model-health",
@@ -344,6 +346,7 @@ class OneBotWorkerStartupTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIs(workers["delivery"], handlers.delivery._delivery_loop)
         self.assertIs(workers["historian"], handlers.triggers._historian_loop)
+        self.assertIs(workers["proactive-feedback"], handlers.triggers._proactive_feedback_loop)
         context.job_store.enqueue.assert_called_once()
 
 
@@ -367,6 +370,7 @@ EXPECTED_BINDINGS = (
     ("mention_ai", "commands", "handle_mention_ai"),
     ("canonical_ingest_tracker", "ingest", "handle_canonical_ingest"),
     ("reaction_feedback_tracker", "ingest", "handle_reaction_notice"),
+    ("proactive_feedback_tracker", "ingest", "handle_proactive_notice"),
     ("group_activity_tracker", "ingest", "handle_group_activity"),
     ("image_auto_description", "ingest", "handle_image_auto_description"),
     ("proactive_chat", "triggers", "handle_proactive_chat"),
@@ -380,7 +384,7 @@ EXPECTED_BINDINGS = (
 
 
 class OneBotMatcherStartupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_all_28_typed_adapters_delegate_to_the_owned_service(self):
+    async def test_all_typed_adapters_delegate_to_the_owned_service(self):
         class CaptureMatcher:
             def __init__(self):
                 self.endpoint = None
@@ -411,7 +415,7 @@ class OneBotMatcherStartupTests(unittest.IsolatedAsyncioTestCase):
             NoticeEvent: Mock(),
             Message: Message("args"),
         }
-        self.assertEqual(len(EXPECTED_BINDINGS), 28)
+        self.assertEqual(len(EXPECTED_BINDINGS), 29)
         for matcher, service, name in EXPECTED_BINDINGS:
             with self.subTest(matcher=matcher, handler=name):
                 endpoint = getattr(registry, matcher).endpoint

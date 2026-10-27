@@ -28,6 +28,8 @@ async def start_background_tasks(
             )
     if context.settings.observability_enabled:
         context.background_tasks.start("event-loop-lag", telemetry.monitor_event_loop)
+    if context.proactive_learning is not None:
+        context.background_tasks.start("proactive-feedback", handlers.triggers._proactive_feedback_loop)
     if context.mobile_authorization is not None:
         context.background_tasks.start(
             "mobile-authorization", context.mobile_authorization.run_forever

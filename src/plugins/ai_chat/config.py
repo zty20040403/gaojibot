@@ -202,6 +202,9 @@ class Settings:
     voice_timeout_seconds: int
     voice_recent_seconds: int
     proactive_enabled: bool
+    proactive_adaptive: bool
+    proactive_adaptive_groups: set[int]
+    proactive_feedback_seconds: int
     proactive_interest_threshold: int
     proactive_gate_percent: int
     proactive_max_checks_per_hour: int
@@ -644,6 +647,9 @@ class Settings:
                 _get_int("AI_VOICE_RECENT_SECONDS", 300), 30
             ),
             proactive_enabled=_get_bool("AI_PROACTIVE_ENABLED", False),
+            proactive_adaptive=_get_bool("AI_PROACTIVE_ADAPTIVE", False),
+            proactive_adaptive_groups=_get_group_ids("AI_PROACTIVE_ADAPTIVE_GROUPS"),
+            proactive_feedback_seconds=min(max(_get_int("AI_PROACTIVE_FEEDBACK_SECONDS", 300), 60), 3600),
             proactive_interest_threshold=min(
                 max(_get_int("AI_PROACTIVE_INTEREST_THRESHOLD", 98), 0), 100
             ),

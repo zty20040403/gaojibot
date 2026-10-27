@@ -61,6 +61,18 @@ class SettingsGroupFilterTests(unittest.TestCase):
         self.assertEqual(settings.proactive_max_checks_per_hour, 6)
         self.assertEqual(settings.proactive_classifier_profile, "deepseek")
         self.assertEqual(settings.proactive_voice_percent, 60)
+        self.assertFalse(settings.proactive_enabled)
+        self.assertFalse(settings.proactive_adaptive)
+        self.assertEqual(settings.proactive_adaptive_groups, set())
+        self.assertEqual(settings.proactive_feedback_seconds, 300)
+
+    def test_adaptive_proactive_has_explicit_group_scope_and_bounded_window(self):
+        with patch.dict(os.environ, {"AI_PROACTIVE_ADAPTIVE": "true", "AI_PROACTIVE_ADAPTIVE_GROUPS": "100,200",
+                                    "AI_PROACTIVE_FEEDBACK_SECONDS": "99999"}, clear=True):
+            settings = Settings.from_env()
+        self.assertTrue(settings.proactive_adaptive)
+        self.assertEqual(settings.proactive_adaptive_groups, {100, 200})
+        self.assertEqual(settings.proactive_feedback_seconds, 3600)
 
     def test_zero_sandbox_file_limit_means_unlimited(self) -> None:
         with patch.dict(

@@ -93,6 +93,9 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
     async def handle_reaction_notice(bot: Bot, event: NoticeEvent) -> None:
         await runtime.handlers.ingest.handle_reaction_notice(bot, event)
 
+    async def handle_proactive_notice(bot: Bot, event: NoticeEvent) -> None:
+        await runtime.handlers.ingest.handle_proactive_notice(bot, event)
+
     async def handle_group_activity(event: MessageEvent) -> None:
         await runtime.handlers.ingest.handle_group_activity(event)
 
@@ -140,6 +143,7 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
         (matchers.mention_ai, handle_mention_ai),
         (matchers.canonical_ingest_tracker, handle_canonical_ingest),
         (matchers.reaction_feedback_tracker, handle_reaction_notice),
+        (matchers.proactive_feedback_tracker, handle_proactive_notice),
         (matchers.group_activity_tracker, handle_group_activity),
         (matchers.image_auto_description, handle_image_auto_description),
         (matchers.proactive_chat, handle_proactive_chat),
