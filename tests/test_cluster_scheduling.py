@@ -83,12 +83,12 @@ class SchedulingPolicyTests(unittest.TestCase):
                     "artifact_id": "artifact_" + "a" * 32,
                     "ttl_seconds": 3600,
                 },
-                "constraints": {"safe_rerun": True, "checkpointable": True},
+                "constraints": {"safe_rerun": False, "checkpointable": False},
             },
             now=100,
         )
-        self.assertFalse(preview.constraints["safe_rerun"])
-        self.assertFalse(preview.constraints["checkpointable"])
+        self.assertTrue(preview.constraints["safe_rerun"])
+        self.assertTrue(preview.constraints["checkpointable"])
 
     def test_missing_owner_policy_fails_closed(self) -> None:
         self.assertEqual(

@@ -7,8 +7,10 @@ import logging
 import mimetypes
 import os
 import platform
+import re
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 import zipfile
@@ -237,7 +239,9 @@ class ClusterWorker:
             ).encode("utf-8")
             if hashlib.sha256(encoded).hexdigest() != checkpoint.get("state_hash"):
                 raise ValueError("saved checkpoint checksum mismatch")
-            return dict(state["result"])
+            # A saved URL is not a portable artifact: a new worker must publish its own files.
+            if job.get("kind") != "preview.static":
+                return dict(state["result"])
         kind = str(job["kind"])
         payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
         workspace = self.workspaces / f"{job['job_id']}-{job['fence']}"
@@ -316,14 +320,29 @@ class ClusterWorker:
 
     def _publish_preview(self, artifact: Path, payload: dict[str, Any]) -> dict[str, Any]:
         preview_id = str(payload["preview_id"])
+        if re.fullmatch(r"preview_[a-f0-9]{32}", preview_id) is None:
+            raise ValueError("invalid preview identity")
+        expires_at = payload.get("expires_at")
+        if type(expires_at) is not int or not int(time.time()) < expires_at <= int(time.time()) + 604800:
+            raise ValueError("invalid or expired preview lifetime")
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        public_url = f"{self.settings.public_base_url.rstrip('/')}/previews/{preview_id}/"
         target = self.previews / preview_id
-        if target.exists():
+        def reconcile() -> dict[str, Any]:
+            if target.is_symlink():
+                raise ValueError("preview root cannot be a symlink")
             metadata = json.loads(self._preview_metadata(target).read_text(encoding="utf-8"))
+            if (metadata.get("artifact_sha256") != digest or metadata.get("public_url") != public_url
+                    or metadata.get("expires_at") != expires_at):
+                raise ValueError("preview replay does not match its original artifact and lifetime")
             return {"public_url": metadata["public_url"], "reconciled": True}
-        temporary = self.previews / f".{preview_id}.tmp"
-        shutil.rmtree(temporary, ignore_errors=True)
-        temporary.mkdir(mode=0o700)
+        if target.exists() or target.is_symlink():
+            return reconcile()
+        staging_deadline = min(expires_at, int(time.time()) + 3600)
+        temporary = Path(tempfile.mkdtemp(prefix=f".{preview_id}.{staging_deadline}.", dir=self.previews))
         total_size = 0
+        written_size = 0
+        seen: set[str] = set()
         try:
             with zipfile.ZipFile(artifact) as archive:
                 members = archive.infolist()
@@ -331,21 +350,30 @@ class ClusterWorker:
                     raise ValueError("static preview archive has an invalid file count")
                 for member in members:
                     path = PurePosixPath(member.filename)
-                    if path.is_absolute() or ".." in path.parts or member.is_dir():
-                        if member.is_dir():
-                            continue
+                    if (path.is_absolute() or ".." in path.parts or "\\" in member.filename
+                            or any(ord(char) < 32 for char in member.filename)):
                         raise ValueError("static preview archive contains an unsafe path")
-                    if any(part.startswith(".") for part in path.parts):
+                    if any(part.startswith(".") for part in member.filename.rstrip("/").split("/")):
                         raise ValueError("static preview archive contains a hidden path")
-                    if ((member.external_attr >> 16) & 0o170000) == 0o120000:
-                        raise ValueError("static preview archive contains a symlink")
+                    kind = (member.external_attr >> 16) & 0o170000
+                    if kind not in {0, 0o040000 if member.is_dir() else 0o100000}:
+                        raise ValueError("static preview archive contains a symlink or special file")
+                    if path.as_posix() in seen:
+                        raise ValueError("static preview archive contains duplicate paths")
+                    seen.add(path.as_posix())
+                    if member.is_dir():
+                        continue
                     total_size += member.file_size
                     if total_size > 100 * 1024 * 1024:
                         raise ValueError("expanded preview exceeds 100 MiB")
                     destination = temporary.joinpath(*path.parts)
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, destination.open("wb") as output:
-                        shutil.copyfileobj(source, output)
+                        while chunk := source.read(1024 * 1024):
+                            written_size += len(chunk)
+                            if written_size > 100 * 1024 * 1024:
+                                raise ValueError("expanded preview exceeds 100 MiB")
+                            output.write(chunk)
             publish_root = temporary
             if not (publish_root / "index.html").is_file():
                 roots = list(temporary.iterdir())
@@ -355,27 +383,40 @@ class ClusterWorker:
                         or not (roots[0] / "index.html").is_file()):
                     raise ValueError("static preview requires index.html at archive root or in its only top-level directory")
                 publish_root = roots[0]
-            public_url = f"{self.settings.public_base_url}/previews/{preview_id}/"
             metadata = {
                 "preview_id": preview_id,
                 "public_url": public_url,
-                "expires_at": int(payload["expires_at"]),
+                "expires_at": expires_at,
+                "artifact_sha256": digest,
             }
             (publish_root / ".gaoji-preview.json").write_text(
                 json.dumps(metadata), encoding="utf-8"
             )
-            os.replace(publish_root, target)
+            if staging_deadline <= int(time.time()):
+                raise ValueError("preview expired during extraction")
+            try:
+                os.replace(publish_root, target)
+            except OSError:
+                if target.exists() or target.is_symlink():
+                    return reconcile()
+                raise
             if publish_root != temporary:
                 temporary.rmdir()
-        except Exception:
+        finally:
             shutil.rmtree(temporary, ignore_errors=True)
-            raise
         return {"public_url": public_url, "files": len(list(target.rglob("*"))), "size_bytes": total_size}
 
     def _clean_expired_previews(self) -> None:
         now = int(time.time())
         for path in self.previews.iterdir():
-            if not path.is_dir() or path.name.startswith("."):
+            if not path.is_dir() or path.is_symlink():
+                continue
+            staging = re.fullmatch(r"\.preview_[a-f0-9]{32}\.([0-9]{1,12})\.[a-z0-9_]+", path.name)
+            if staging:
+                if int(staging[1]) <= now:
+                    shutil.rmtree(path, ignore_errors=True)
+                continue
+            if re.fullmatch(r"preview_[a-f0-9]{32}", path.name) is None:
                 continue
             try:
                 metadata = json.loads(self._preview_metadata(path).read_text(encoding="utf-8"))
@@ -390,7 +431,9 @@ class ClusterWorker:
         return current if current.is_file() else root / ".kennethbot-preview.json"
 
     def preview_file(self, preview_id: str, relative_path: str) -> tuple[Path, str] | None:
-        if not preview_id.startswith("preview_") or len(preview_id) != 40:
+        if re.fullmatch(r"preview_[a-f0-9]{32}", preview_id) is None:
+            return None
+        if (self.previews / preview_id).is_symlink():
             return None
         root = (self.previews / preview_id).resolve()
         metadata = self._preview_metadata(root)
@@ -402,7 +445,8 @@ class ClusterWorker:
         except Exception:
             return None
         requested = relative_path or "index.html"
-        if any(part.startswith(".") for part in PurePosixPath(requested).parts):
+        if ("\\" in requested or PurePosixPath(requested).is_absolute()
+                or any(part.startswith(".") for part in PurePosixPath(requested).parts)):
             return None
         candidate = (root / requested).resolve()
         try:

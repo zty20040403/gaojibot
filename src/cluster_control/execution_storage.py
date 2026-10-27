@@ -487,20 +487,36 @@ class ClusterExecutionStore:
         connection = self.database.store_connection()
         cursor = connection.cursor()
         try:
+            cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", (
+                canonical_json(["worker-job", record["actor_id"], record["origin_scope"], record["idempotency_key"]]),
+            ))
             existing = cursor.execute(
                 """SELECT * FROM fleet_worker_jobs
-                   WHERE actor_id = ? AND origin_scope = ? AND idempotency_key = ?""",
+                   WHERE actor_id = ? AND origin_scope = ? AND idempotency_key = ? FOR UPDATE""",
                 (record["actor_id"], record["origin_scope"], record["idempotency_key"]),
             ).fetchone()
             if existing:
                 item = self._job(dict(existing), cursor)
+                old_payload, new_payload = dict(item["payload"]), dict(record["payload"])
+                old_constraints, new_constraints = dict(item["constraints"]), dict(record["constraints"])
+                if record.get("policy_derived"):
+                    for key in ("safe_rerun", "checkpointable"):
+                        old_constraints.pop(key, None)
+                        new_constraints.pop(key, None)
+                if item["kind"] == record["kind"] == "preview.static":
+                    for key in ("preview_id", "expires_at"):
+                        old_payload.pop(key, None)
+                        new_payload.pop(key, None)
                 if (
                     item["kind"] != record["kind"]
-                    or item["payload"] != record["payload"]
-                    or item["constraints"] != record["constraints"]
-                    or int(item["deadline_at"]) != int(record["deadline_at"])
+                    or old_payload != new_payload
+                    or old_constraints != new_constraints
+                    or (record.get("deadline_explicit", True)
+                        and int(item["deadline_at"]) != int(record["deadline_at"]))
                 ):
                     raise ValueError("idempotency key already belongs to a different job")
+                self._ensure_preview(cursor, item)
+                connection.commit()
                 return item
             cursor.execute(
                 """INSERT INTO fleet_worker_jobs
@@ -519,6 +535,7 @@ class ClusterExecutionStore:
                 cursor, "fleet_job_events", "job_id", record["job_id"],
                 event_type="submitted", status="queued", created_at=record["created_at"],
             )
+            self._ensure_preview(cursor, {**record, "status": "queued"})
             connection.commit()
             return self.get_job(record["job_id"]) or {}
         except Exception:
@@ -616,7 +633,7 @@ class ClusterExecutionStore:
                             stale["grant_id"],
                         ),
                     )
-                if stale["kind"] == "preview.static" or not can_retry:
+                if not can_retry:
                     cursor.execute(
                         """UPDATE fleet_worker_jobs SET status = 'failed',
                            error_code = 'outcome_unknown', lease_expires_at = NULL,
@@ -1291,28 +1308,30 @@ class ClusterExecutionStore:
             cursor.close()
             connection.close()
 
-    def create_preview(self, record: dict[str, Any]) -> dict[str, Any]:
-        connection = self.database.store_connection()
-        cursor = connection.cursor()
-        try:
-            cursor.execute(
-                """INSERT INTO fleet_previews
-                   (preview_id, job_id, artifact_id, actor_id, origin_scope, route,
-                    state, expires_at, cleanup_policy, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)""",
-                (record["preview_id"], record["job_id"], record["artifact_id"],
-                 record["actor_id"], record["origin_scope"], record["route"],
-                 record["expires_at"], record["cleanup_policy"],
-                 record["created_at"], record["created_at"]),
-            )
-            connection.commit()
-            return self.preview(record["preview_id"]) or {}
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            cursor.close()
-            connection.close()
+    def _ensure_preview(self, cursor: Any, job: dict[str, Any]) -> None:
+        if job["kind"] != "preview.static":
+            return
+        payload = job["payload"]
+        preview_id = payload["preview_id"]
+        # The route reservation and job must commit together. Repair older split commits too.
+        cursor.execute("""INSERT INTO fleet_previews
+            (preview_id, job_id, artifact_id, actor_id, origin_scope, route,
+             state, expires_at, cleanup_policy, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
+            (preview_id, job["job_id"], payload["artifact_id"], job["actor_id"], job["origin_scope"],
+             f"/previews/{preview_id}/", payload["expires_at"], "disable-route-retain-artifact",
+             job["created_at"], job["created_at"]))
+        created = cursor.rowcount == 1
+        row = cursor.execute("SELECT * FROM fleet_previews WHERE preview_id=?", (preview_id,)).fetchone()
+        if row is None or any(row[key] != value for key, value in {
+            "job_id": job["job_id"], "actor_id": job["actor_id"], "origin_scope": job["origin_scope"],
+            "artifact_id": payload["artifact_id"], "expires_at": payload["expires_at"],
+            "route": f"/previews/{preview_id}/",
+        }.items()):
+            raise ValueError("preview identity already belongs to another job")
+        if created and job["status"] not in {"queued", "running", "verifying", "cancelling"}:
+            self._finish_preview(cursor, {**job, "payload_json": canonical_json(payload)},
+                                 job.get("result", {}), job["status"], int(time.time()))
 
     def _finish_preview(
         self, cursor: Any, job: dict[str, Any], result: dict[str, Any],
@@ -1322,12 +1341,20 @@ class ClusterExecutionStore:
         preview_id = str(payload.get("preview_id") or "")
         if not preview_id:
             return
+        url = str(result.get("public_url") or "")
+        state = "disabled" if status == "cancelled" else "failed"
+        if status == "succeeded":
+            worker = cursor.execute("SELECT public_base_url FROM fleet_workers WHERE worker_id=?",
+                                    (job.get("worker_id"),)).fetchone()
+            base = str((worker or {}).get("public_base_url") or "").rstrip("/")
+            if base and url == f"{base}/previews/{preview_id}/":
+                state = "active" if int(payload.get("expires_at") or 0) > now else "expired"
+        healthy = state == "active"
         cursor.execute(
             """UPDATE fleet_previews SET worker_id = ?, public_url = ?, state = ?,
                health_status = ?, last_checked_at = ?, updated_at = ? WHERE preview_id = ?""",
-            (job.get("worker_id"), str(result.get("public_url") or "") if status == "succeeded" else "",
-             "active" if status == "succeeded" else ("disabled" if status == "cancelled" else "failed"),
-             "healthy" if status == "succeeded" else status,
+            (job.get("worker_id"), url if healthy else "", state,
+             "published" if healthy else state,
              now, now, preview_id),
         )
 

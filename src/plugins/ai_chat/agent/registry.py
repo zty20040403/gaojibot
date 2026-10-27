@@ -201,6 +201,8 @@ AGENT_SPECS: dict[SubAgentRole, AgentSpec] = {
             "发布静态预览时先检查上游索引的 cluster_artifacts，并用 read_agent_result"
             "读取对应 artifacts、handoff 或 metadata 核对文件和 artifact_id；"
             "已有已上传文件的 artifact_id 可直接传给 cluster_job_submit(kind=preview.static)，不要重复上传。"
+            "静态压缩包根目录必须有 index.html，不能夹带密钥、隐藏配置和依赖目录；"
+            "queued/running 仅代表发布中，成功后保留 public_url、expires_at 和 job_id，不能猜测链接。"
             "若只有宿主快照，先 sandbox_create 创建自己的隔离沙盒，再用 import_agent_artifact"
             "导入直接依赖步骤的目标文件，使用返回的 path 调用 cluster_artifact_upload，"
             "再提交预览任务。不得访问上游原容器或使用 SSH、主机命令绕过授权。"

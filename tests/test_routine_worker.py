@@ -177,6 +177,44 @@ class RoutineWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get_run(run.run_id).delivery_id, result["delivery_id"])
         self.assertIsNone(active_job_fence.get())
 
+    async def test_child_preview_receipt_is_in_parent_outbox_even_if_synthesis_omits_it(self):
+        from src.plugins.ai_chat.agent.external import ExternalCalls
+        from src.plugins.ai_chat.subagents import TaskStep
+
+        _, run, job = self.running()
+        inputs = self.child_inputs()
+        url = "http://worker.test/previews/preview_" + "a" * 32 + "/"
+
+        async def agent(*args, **kwargs):
+            execution = kwargs["routine_execution"]
+            child = self.store.prepare_child(job, execution.run.attempt_id,
+                subagents=self.app.subagent_store, **inputs, max_parallelism=2, max_steps=4)
+            step = self.app.subagent_store.create_run(child.task_id,
+                TaskStep("publish", "operator", "publish", "url"), allowed_tools=[], model_profile=self.profile.name)
+            tracker = ExternalCalls(self.app.subagent_store, child.task_id, step.run_id)
+            tracker.call_id, tracker.tool_name = "preview-call", "cluster_job_submit"
+            tracker.arguments = {"kind": "preview.static", "payload": {"artifact_id": "artifact_" + "b" * 32}}
+
+            async def remote(body):
+                return {**body, "job_id": "job_preview", "status": "succeeded",
+                    "actor_id": "qq:201", "origin_scope": self.scope.key,
+                    "payload": {**body["payload"], "preview_id": "preview_" + "a" * 32,
+                                "expires_at": int(time.time()) + 3600}, "result": {"public_url": url}}
+
+            await tracker.request("POST", "/v1/jobs", tracker.arguments,
+                actor="qq:201", origin=self.scope.key, perform=remote)
+            self.app.subagent_store.set_task_state(child.task_id, "partial", result={"answer": "Mobile check pending"})
+            return "Preview published, mobile check pending"
+
+        self.services.tools._ask_ai.side_effect = agent
+        result = await self.dispatcher.execute(job)
+        delivery = self.outbox.recent()[0]
+        self.assertIn(url, str(delivery.body))
+        self.assertIn("mobile check pending", str(delivery.body))
+        self.assertEqual(delivery.target_scope.key, self.scope.key)
+        self.assertEqual(self.store.get_run(run.run_id).delivery_id, result["delivery_id"])
+        self.assertEqual(len(self.outbox.recent()), 1)
+
     async def test_takeover_resumes_frozen_child_before_parent_synthesis(self):
         _, run, job = self.running()
         inputs = self.child_inputs()

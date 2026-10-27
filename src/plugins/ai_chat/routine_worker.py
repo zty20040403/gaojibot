@@ -12,6 +12,7 @@ from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, PrivateMessa
 
 from .agent.control import JobFence, LeaseLost, active_job_fence
 from .agent.execution import active_agent_step
+from .agent.preview_receipts import routine_preview_delivery_note
 from .agent_loop import AgentTrace
 from .model_budget import ModelBudgetExceeded, ModelCallBudget, model_budget_scope
 from .onebot_codec import decode_onebot_message
@@ -306,6 +307,12 @@ class RoutineDispatcher:
                     except Exception as exc:
                         self.app.logger.error(f"Routine turn finalization failed: {type(exc).__name__}")
         message = answer if isinstance(answer, Message) else Message(str(answer))
+        children = await self.app.db_call(self.store.child_receipts, job)
+        if children:
+            preview_note = await self.app.db_call(routine_preview_delivery_note,
+                self.app.subagent_store, run, children)
+            if preview_note:
+                message += "\n\n" + preview_note
         quiet = status == "completed" and all(segment.type == "text" for segment in message) and plan_reply(
             message.extract_plain_text()).silence
         body = decode_onebot_message(message).body

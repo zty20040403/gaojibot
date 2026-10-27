@@ -17,6 +17,7 @@ from ..workers.durable_jobs import DurableJobWorker, JobDeferred
 from .external import poll_external
 from ..delivery import body_fingerprint
 from .file_outbox import attempt_file
+from .preview_receipts import preview_delivery_note
 from ..tool_policy import tool_enabled
 
 
@@ -63,6 +64,9 @@ class SubAgentDispatcher:
         text = str(task.result.get("answer") or task.result.get("result", {}).get("summary") or task.last_error or task.status)
         if task.status in {"failed", "cancelled"}:
             text = ("任务已取消。" if task.status == "cancelled" else "任务未完成。") + (task.last_error or text)
+        preview_note = preview_delivery_note(self.store, task, control["revision"])
+        if preview_note:
+            text += "\n\n" + preview_note
         body = decode_onebot_message(Message(MessageSegment.text(f"{task.handle}\n{text}"))).body
         delivery, _ = self.context.delivery_store.enqueue(
             idempotency_key=f"subagent-final:{task_id}:{control['revision']}",

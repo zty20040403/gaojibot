@@ -233,28 +233,14 @@ class ClusterExecutionService:
             "kind": proposal.kind,
             "payload": payload,
             "constraints": proposal.constraints,
+            "policy_derived": True,
             "deadline_at": proposal.deadline_at,
+            "deadline_explicit": bool(raw.get("deadline_at")),
             "idempotency_key": proposal.idempotency_key,
             "created_at": now,
         }
         job = self.store.submit_job(record)
-        if proposal.kind == "preview.static" and job["job_id"] == job_id:
-            preview_id = str(payload["preview_id"])
-            self.store.create_preview(
-                {
-                    "preview_id": preview_id,
-                    "job_id": job_id,
-                    "artifact_id": artifact_id,
-                    "actor_id": actor_id,
-                    "origin_scope": origin_scope,
-                    "route": f"/previews/{preview_id}/",
-                    "expires_at": int(payload["expires_at"]),
-                    "cleanup_policy": "disable-route-retain-artifact",
-                    "created_at": now,
-                }
-            )
-            job["preview_id"] = preview_id
-        elif proposal.kind == "preview.static":
+        if proposal.kind == "preview.static":
             job["preview_id"] = str(job.get("payload", {}).get("preview_id") or "")
         return job
 
@@ -349,8 +335,12 @@ class ClusterExecutionService:
             worker = self.store.worker(worker_id)
             public_url = str(result.get("public_url") or "")
             expected_base = str((worker or {}).get("public_base_url") or "").rstrip("/")
-            if not expected_base or not public_url.startswith(expected_base + "/previews/"):
-                raise PermissionError("worker returned a preview URL outside its configured base")
+            expected_url = f"{expected_base}/previews/{job['payload']['preview_id']}/"
+            if not expected_base or public_url != expected_url:
+                raise PermissionError("worker returned a preview URL that does not match this job")
+            if int(job["payload"]["expires_at"]) <= int(time.time()):
+                ok, error_code = False, "preview_expired"
+                result = {"message": "Preview expired before its receipt was confirmed"}
         return self.store.complete_job(
             job_id, worker_id=worker_id, fence=fence, ok=ok,
             result=result, error_code=error_code,

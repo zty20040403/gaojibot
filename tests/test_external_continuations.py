@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.postgres_fixture import postgres_for_test
 
 import asyncio
+import copy
 import json
 import tempfile
 import time
@@ -17,6 +18,7 @@ from src.plugins.ai_chat.agent import ContextPacket
 from src.plugins.ai_chat.agent.background import SubAgentDispatcher
 from src.plugins.ai_chat.agent.execution import EntryDecision
 from src.plugins.ai_chat.agent.external import ExternalCalls, ExternalPending, active_external, poll_external
+from src.plugins.ai_chat.agent.preview_receipts import preview_delivery_note
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.fleet_client import FleetControlError
 from src.plugins.ai_chat.model_catalog import ModelCatalog
@@ -256,6 +258,83 @@ class ExternalContinuationTests(unittest.IsolatedAsyncioTestCase):
         claimed = self.outbox.claim_due()[0]
         self.assertTrue(self.outbox.defer_unsent(claimed, "offline", delay_seconds=0))
         self.assertEqual(self.outbox.claim_due()[0].attempts, 1)
+
+    async def publish_preview(self):
+        tracker = self.tracker()
+        tracker.tool_name = "cluster_job_submit"
+        tracker.arguments = {"kind": "preview.static", "payload": {"artifact_id": "artifact_" + "a" * 32}}
+        perform = AsyncMock(return_value={"job_id": "job_preview", "status": "queued"})
+        await tracker.request("POST", "/v1/jobs", tracker.arguments,
+            actor="qq:2", origin=self.scope, perform=perform)
+        key = perform.call_args.args[0]["idempotency_key"]
+        record = {"job_id": "job_preview", "kind": "preview.static", "status": "succeeded",
+            "actor_id": "qq:2", "origin_scope": self.scope, "idempotency_key": key,
+            "payload": {"artifact_id": "artifact_" + "a" * 32, "preview_id": "preview_" + "b" * 32,
+                        "expires_at": int(time.time()) + 3600},
+            "result": {"public_url": "http://worker.test/previews/preview_" + "b" * 32 + "/"}}
+        return tracker, record
+
+    async def test_preview_restart_preserves_receipt_and_outbox_link_if_model_omits_it(self):
+        tracker, record = await self.publish_preview()
+        self.assertEqual(preview_delivery_note(self.store, self.task, 1), "")
+        self.session()
+        with self.assertRaises(ExternalPending):
+            tracker.pause()
+        self.store.close()
+        self.store = SubAgentStore(postgres_for_test(self))
+        self.services.context.subagent_store = self.store
+        self.dispatcher = SubAgentDispatcher(self.services)
+        self.client._request.return_value = record
+        self.assertTrue(await poll_external(self.store, self.task, self.client))
+        self.assertEqual(self.client._request.call_args.args, ("GET", "/v1/jobs/job_preview"))
+        self.store.set_task_state(self.task.task_id, "partial", result={"answer": "页面完成，移动端尚未验收。"})
+        with patch.object(self.store, "mark_final_queued", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self.dispatcher.enqueue_final(self.task.task_id)
+        delivery = self.dispatcher.enqueue_final(self.task.task_id)
+        self.assertEqual(len(self.outbox.recent()), 1)
+        text = str(delivery.body)
+        self.assertIn(record["result"]["public_url"], text)
+        self.assertIn("移动端尚未验收", text)
+        self.assertIn("有效期至", text)
+        self.assertEqual(delivery.target_scope.key, self.scope)
+        self.assertEqual(delivery.reply_to_native_message_id, "42")
+        self.assertEqual(self.store.get(self.task.task_id).status, "partial")
+
+    async def test_preview_note_rejects_foreign_failed_and_forged_receipts(self):
+        _, record = await self.publish_preview()
+        self.client._request.return_value = record
+        await poll_external(self.store, self.task, self.client)
+        item = self.store.external_calls(self.task.task_id)[0]
+        mutations = [("response", "actor_id", "qq:3"), ("response", "origin_scope", "group:other"),
+                     ("response", "status", "failed"), ("response", "idempotency_key", "invented"),
+                     ("request", "actor", "qq:3"), ("request", "origin", "group:other")]
+        for section, field, value in mutations:
+            changed = copy.deepcopy(item)
+            changed[section][field] = value
+            with self.subTest(field=field), patch.object(self.store, "external_calls", return_value=[changed]):
+                self.assertEqual(preview_delivery_note(self.store, self.task, 1), "")
+        for url in ("javascript:alert(1)", "http://worker.test/previews/other/",
+                    "http://user:password@worker.test/previews/" + record["payload"]["preview_id"] + "/"):
+            changed = copy.deepcopy(item)
+            changed["response"]["result"]["public_url"] = url
+            with self.subTest(url=url), patch.object(self.store, "external_calls", return_value=[changed]):
+                self.assertEqual(preview_delivery_note(self.store, self.task, 1), "")
+        note = preview_delivery_note(self.store, self.task, 1, now=record["payload"]["expires_at"])
+        self.assertIn("已发布预览已于", note)
+        self.assertNotIn("http://", note)
+
+    async def test_preview_note_inherits_only_explicit_revision_checkpoint_runs(self):
+        _, record = await self.publish_preview()
+        self.client._request.return_value = record
+        await poll_external(self.store, self.task, self.client)
+        self.assertEqual(preview_delivery_note(self.store, self.task, 2), "")
+        self.store.set_task_state(self.task.task_id, "completed", result={"answer": "done"})
+        self.coordinator.revise(self.task.task_id, scope_key=self.scope, requester_user_id=2,
+            instruction="check mobile", step_keys=[self.step.key],
+            expected_version=self.store.control(self.task.task_id)["version"])
+        note = preview_delivery_note(self.store, self.task, 2)
+        self.assertIn(record["result"]["public_url"], note)
 
     async def test_lost_final_receipt_matches_only_correct_bot_group_body(self):
         self.store.set_task_state(self.task.task_id, "completed", result={"answer": "完成"})

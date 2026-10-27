@@ -45,6 +45,9 @@ def create_app(worker: ClusterWorker) -> FastAPI:
             media_type=media_type,
             headers={
                 "Cache-Control": "no-store",
+                "X-Robots-Tag": "noindex, nofollow",
+                # Static assets use anonymous CORS because sandboxed documents have opaque origins.
+                "Access-Control-Allow-Origin": "*",
                 "Content-Security-Policy": (
                     "sandbox allow-scripts; default-src 'self' data: blob:; "
                     "script-src 'self' 'unsafe-inline' blob:; "

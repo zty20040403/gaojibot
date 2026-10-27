@@ -141,7 +141,10 @@ acceptance are not implied by this roadmap.
       Includes evidence validation, versioned settings/audit, original-account
       durable delivery and fresh membership checks. Disabled by default; real
       generation quality and QQ private-message acceptance remain pending.
-- [ ] 9.4 Sandbox web artifacts to expiring, scoped preview links in chat.
+- [x] 9.4 Sandbox web artifacts to expiring preview links in chat.
+      Scoped publication and receipt recovery, full PostgreSQL regression,
+      admin build and responsive browser checks pass locally. HTTP links remain
+      network-reachable capabilities; real QQ and recipient access gates pending.
 - [ ] 9.5 Delegated task collaborators and two-administrator high-risk quorum.
 - [ ] 9.6 Official-SDK MCP client through the registry, conservative permissions,
       and read-only MCP server with group-scoped tokens.
@@ -970,3 +973,59 @@ sampling is once per second; the benchmark uses 5 ms to expose short blocking ca
 - Phase 9.3 is locally complete. Remaining earlier-plan work is 9.4-9.6; the new
   project-workspace M0-M7 plan is not started, remains unmodified and is excluded
   from the commit. No push, rebuild, production access or real messages occurred.
+
+### Phase 9.4 preview publication and delivery
+
+- Reuse the existing sandbox artifact upload, Fleet Worker preview jobs,
+  persistent Sub-Agent continuations and Outbox. Do not create a second website
+  deployment service. Added build/publication guidance and documented an ordinary
+  chat request, prerequisites and the distinction from future project workspaces.
+- Serialize scoped idempotency keys and commit jobs/events/preview reservations
+  together. Replays keep the original preview identity, TTL and default deadline;
+  changed artifacts, TTL, constraints and explicit deadlines remain conflicts.
+  Old split-commit orphan routes are repaired only with verified binding and URL;
+  expired or invalid historical receipts cannot become active routes.
+- Preview completion must name the exact worker/job URL. New jobs are retryable
+  and checkpointable; worker takeover republishes or reconciles the actual local
+  files rather than trusting a URL from another host. Existing job policies are
+  retained. Deployment must upgrade Bot, Control and Worker together.
+- Harden ZIP extraction, bounded streamed writes, path/identity/lifetime checks,
+  concurrent temporary directories and artifact-hash replay checks. Expired
+  routes return 404 before cleanup. Interrupted staging directories have at most
+  a one-hour deadline; cleanup waits for the normal worker loop to run.
+- Published links and UTC expiry are appended from host-bound durable receipts,
+  even when model synthesis omits them. Partial task status stays partial.
+  Explicit revision ancestry may expose earlier links labelled with their source
+  revision; foreign actor/scope/key receipts are rejected. Routine-owned children
+  hand links to their parent's one Outbox result instead of independently sending.
+- Anonymous static-asset CORS supports module scripts inside the existing opaque
+  CSP sandbox. No cookies, credentials or control APIs are enabled. Preview URLs
+  are random, network-reachable capabilities, not member-authenticated pages;
+  this is documented rather than claiming private group-only HTTP access.
+- The first focused run exposed the old scheduler's hard-coded refusal to retry
+  preview jobs, plus a test using TaskStep.step_key rather than its actual key.
+  Fixed both. Expanded focused run: 121 tests, OK, 18.496 seconds;
+  .cache/roadmap/phase9-4-focused.log. Whole-suite run before the final staging
+  cleanup addition: 1,951 tests, OK (12 skipped), 306.775 seconds;
+  .cache/roadmap/phase9-4-first-full.log.
+- Final worker-focused check: 6 tests, OK, 0.682 seconds. Playwright at 1280x900
+  and 390x844 passed after the staging change: local CSS and ES module imports,
+  moving/nonblank canvas, button action, no horizontal overflow and blocked cookie
+  access; .cache/roadmap/phase9-4-browser.log. Screenshots were inspected; the
+  temporary fixture, local server and browser were removed/stopped.
+- Ruff and diff checks pass. Admin TypeScript/Vite build passes; real model generation, recipient
+  network access and QQ receipt/reconnect acceptance remain authorized live gates.
+  Control's source ZIPs are not newly garbage-collected by preview expiration.
+  The newer plan remains unmodified and untracked; no production action occurred.
+- Staging-cleanup whole-suite run: 1,953 tests, OK (12 skipped), 301.752 seconds;
+  .cache/roadmap/phase9-4-staging-full.log. Final review added an upgrade replay
+  regression: policy fields derived by the service are not new caller intent,
+  so an existing job retains its old execution flags rather than conflicting or
+  silently acquiring new retry permissions. A verifying orphan remains pending.
+  Preview-focused tests after this correction: 14 tests, OK, 1.814 seconds;
+  .cache/roadmap/phase9-4-upgrade-focused.log.
+- Final full PostgreSQL regression after the upgrade fix: 1,954 tests, OK
+  (12 skipped), 299.403 seconds; .cache/roadmap/phase9-4-final-full.log.
+  Both disposable databases remain at 0037 with zero leftover owned test schemas.
+  Phase 9.4 is locally complete; 9.5 and 9.6 remain before the newer M0-M7 plan.
+  No push, rebuild, production access or real QQ/model request occurred.

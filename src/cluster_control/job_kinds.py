@@ -14,7 +14,7 @@ WORKER_JOB_CATALOG = {
     "artifact.inspect": WorkerJobKind(safe_rerun=True, checkpointable=True),
     "document.verify": WorkerJobKind(safe_rerun=True, checkpointable=True),
     "media.inspect": WorkerJobKind(safe_rerun=True, checkpointable=True),
-    "preview.static": WorkerJobKind(safe_rerun=False, checkpointable=False),
+    "preview.static": WorkerJobKind(safe_rerun=True, checkpointable=True),
 }
 
 WORKER_JOB_KINDS = frozenset(WORKER_JOB_CATALOG)
