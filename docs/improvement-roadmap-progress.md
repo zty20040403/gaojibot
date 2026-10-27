@@ -2009,3 +2009,62 @@ implementation evidence, not a claim that the production App has these features.
   disks, Desktop soft quotas, measured usage and quota alerts/metrics, complete
   task admission, compensation/retry/trash workflows and production composition.
   M3-M7 remain pending. The supplied plan is still untouched and excluded.
+
+### M2 measured usage and quota checkpoint
+
+- Added private, read-only project accounting bound to the volume owner,
+  generation and observed mount identity. Mounted ext4 usage comes from available
+  filesystem blocks, not the sparse image's apparent size. Offline usage requires
+  a clean ext4 header and matching geometry; sampling never mounts a volume.
+  Reserved blocks are unavailable in both measurements. A verified deletion can
+  report zero; a missing volume or failed probe cannot.
+- Rebuildable-byte estimates use the existing pinned-lockfile recipes. Traversal
+  is descriptor-relative, bounded and does not follow symlinks or cross devices.
+  Shared hard links are counted once and retained aliases prevent reclamation
+  claims. Unknown recipes retain everything. Scan failure or an unmounted volume
+  yields an unknown estimate, not a fabricated zero or permission to delete.
+- Migration 0046 adds a separate usage-observation cache. Failure preserves the
+  last known values but invalidates write admission. Samples must match project
+  identity, quota and generation, pass the optimistic version check and be fresh.
+  Metadata observation does not renew activity, focus or configuration version.
+- Added scoped usage/status and capacity gates. Unknown/stale usage, including
+  another project in the same conversation, blocks admission. Session totals
+  include retained versions. At 95 percent the private dependency executor also
+  checks live volume usage before creating an installer. Full-volume rejection
+  names cleanup, old-version pruning and administrator expansion as options.
+  This is not yet atomic reservation of concurrent future writes, nor a parser
+  for arbitrary shell commands that happen to install packages.
+- At 80 percent a warning is queued in the same PostgreSQL transaction as usage,
+  with one idempotency key per conversation and UTC day. Concurrent samplers,
+  restarts and multiple full projects cannot enqueue duplicate daily warnings.
+  No live QQ message was sent by this checkpoint.
+- The opt-in sampler uses bounded inventory pages, verifies the current owner
+  before and after the helper probe, isolates failures and preserves cancellation.
+  It never registers itself in production startup. Telemetry exposes workspace,
+  version and known rebuildable bytes, state counts, quota rejections and separate
+  unknown total/rebuildable counts. Workspace metrics are last-known values, not
+  a claim that stale measurements are current. Lifecycle transition counters and
+  the complete capacity-snapshot composition remain pending.
+- Focused local PostgreSQL/helper regression: 111 tests passed in 27.398 seconds
+  (.cache/roadmap/m2-usage-focused.log), before a rejection-message clarification.
+  Docker and kernel observations in these tests are fixtures; they are not native
+  Linux enforcement acceptance. The approved plan was not modified.
+- The first full run exposed an outdated local acceptance database (0045) and
+  a logging assertion affected by Alembic's process-wide logging configuration.
+  Upgraded only the loopback test schema to 0046 and asserted the sanitized log
+  call without relying on global logger configuration. The 22 targeted checks
+  then passed (.cache/roadmap/m2-usage-environment-check.log).
+- Final full isolated PostgreSQL regression: 2411 tests, OK (12 skipped),
+  426.260 seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-usage-full.log). No product code changed after this run.
+  CI-path Ruff, compileall and whitespace checks passed. Nix package/import
+  checks passed on aarch64-darwin (.cache/roadmap/m2-usage-nix.log); incompatible
+  platforms were omitted, not tested. Fixture-owned temporary directories and
+  schemas are cleaned automatically. Only small ignored diagnostics remain.
+- This checkpoint is committed/pushed to the bot main branch only. It does not
+  update nix-config, enable the worker in production, deploy to a server or make
+  live QQ/model calls. No user plan or unrelated local changes are included.
+- Still required in M2: native lifecycle and host-reboot acceptance, VM project
+  disks and discard, Desktop soft quotas with running-writer cancellation,
+  complete atomic admission, compensation/retry/trash workflows and runtime
+  composition. Commands, control-panel usage UI and later M3-M7 work remain open.

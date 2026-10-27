@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+import time
 
 from .project_lifecycle import KIND
 from .projects import ProjectAccess, ProjectConflict
@@ -65,6 +66,16 @@ class DockerProjectBackend:
 
     def __init__(self, client, *, files=None):
         self.client, self.files = client, files
+
+    async def sample_usage(self, project):
+        if project["workspace_generation"] == 0:
+            return {"project_id": project["project_id"], "generation": 0, "fence": 0,
+                    "quota_bytes": project["quota_bytes"], "quota_mode": "hard", "used_bytes": 0,
+                    "rebuildable_bytes": 0, "complete": True, "sampled_at": int(time.time())}
+        return await self.client.project_usage(
+            project["scope_key"], project["project_id"], generation=project["workspace_generation"],
+            rebuild_command=project["rebuild_command"],
+        )
 
     async def maintenance_ready(self, project):
         if project["lifecycle_job_id"] is not None or project["locked_task_id"] is not None:

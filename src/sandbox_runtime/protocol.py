@@ -49,6 +49,7 @@ FIELDS = {
     "project_volume_trim": ({"owner", "project_id", "fence"}, {"generation", "reservation"}),
     "project_volume_delete": ({"owner", "project_id", "fence"}, {"generation", "reservation"}),
     "project_workspace_status": ({"owner", "project_id", "generation"}, set()),
+    "project_usage": ({"owner", "project_id", "generation"}, {"rebuild_command"}),
     "project_workspace_start": ({"owner", "project_id", "generation", "fence"}, {"reservation"}),
     "project_workspace_stop": ({"owner", "project_id", "generation", "fence"}, {"reservation"}),
     "project_workspace_remove": ({"owner", "project_id", "generation", "fence"}, {"reservation"}),
@@ -163,6 +164,8 @@ def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
             raise ProtocolError("项目编号或操作代次无效。")
     if "reservation" in args and (not isinstance(args["reservation"], str) or not ID_PATTERN.fullmatch(args["reservation"])):
         raise ProtocolError("项目维护凭据无效。")
+    if method == "project_usage" and "rebuild_command" in args and not _text(args["rebuild_command"], 4000, blank=True):
+        raise ProtocolError("Invalid project rebuild classification command")
     if method.startswith(("project_files_", "project_rebuild_")):
         if "rebuild_command" in args and not _text(args["rebuild_command"], 4000, blank=True):
             raise ProtocolError("项目重建命令不正确。")

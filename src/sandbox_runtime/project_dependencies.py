@@ -368,6 +368,16 @@ class ProjectDependencies:
                         "Dependency container disappeared; refusing to replay its command"
                     )
                 await call(journal.verify)
+                from src.project_capacity import quota_rejection
+                from .project_usage import ProjectUsage
+
+                usage = await call(
+                    ProjectUsage(self.workspaces.volumes).measure,
+                    owner, project_id, generation=generation, reservation=reservation,
+                )
+                rejected = quota_rejection(usage["used_bytes"], usage["quota_bytes"], installing_dependencies=True)
+                if rejected:
+                    raise SandboxError(rejected + ": clean dependencies, prune old versions, or ask an administrator to increase quota before rebuilding")
                 await call(self.workspaces.volumes._admit, 256 * MIB)
                 if time.time() >= run["deadline"]:
                     run = await call(

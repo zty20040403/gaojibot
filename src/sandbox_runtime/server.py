@@ -190,6 +190,11 @@ class SandboxRunner:
                         "max_file_bytes": self.manager.max_file_bytes, "active_operations": len(self.inflight)}
                 data['project_volumes_enabled'] = self.project_volumes is not None
                 data['project_workspaces_enabled'] = self.manager.project_workspaces is not None
+            elif method == 'project_usage':
+                if self.manager.project_workspaces is None:
+                    raise ProtocolError("Project accounting is unavailable")
+                from .project_usage import ProjectUsage
+                data = await self.manager.project_workspaces._volume(ProjectUsage(self.project_volumes).measure, **args)
             elif method.startswith('project_rebuild_'):
                 if self.manager.project_workspaces is None:
                     raise ProtocolError("此沙盒通道尚未配置项目重建。")

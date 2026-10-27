@@ -87,6 +87,27 @@ class LinuxVolumeHost:
         except (KeyError, ValueError):
             raise ProjectVolumeError("Cannot verify ext4 capacity") from None
 
+    def used_bytes(self, image, root, quota):
+        if root is not None:
+            usage = os.fstatvfs(root)
+            available = usage.f_bavail * usage.f_frsize
+        else:
+            result = self.run("dumpe2fs", "-h", str(image), timeout=10)
+            values = dict(line.split(":", 1) for line in result.splitlines() if ":" in line)
+            try:
+                if values["Filesystem state"].strip() != "clean":
+                    raise ValueError("Unclean filesystem")
+                blocks, size, free = (int(values[key].strip()) for key in ("Block count", "Block size", "Free blocks"))
+                reserved = int(values["Reserved block count"].strip())
+                if size <= 0 or blocks * size != quota or not 0 <= free <= blocks or not 0 <= reserved <= blocks:
+                    raise ValueError("Invalid filesystem geometry")
+                available = max(0, free - reserved) * size
+            except (KeyError, ValueError):
+                raise ProjectVolumeError("Cannot measure offline ext4 usage") from None
+        if not 0 <= available <= quota:
+            raise ProjectVolumeError("Filesystem available space differs from project quota")
+        return quota - available
+
     def loops(self):
         result = self.run(
             "losetup",

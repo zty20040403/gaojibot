@@ -104,6 +104,10 @@ class SandboxClient:
     async def create(self, owner, runtime="python", *, purpose="task"):
         return (await self.request("create", {"owner": owner, "runtime": runtime, "purpose": purpose}))[0]
 
+    async def project_usage(self, owner, project_id, *, generation, rebuild_command=""):
+        return (await self.request("project_usage", {"owner": owner, "project_id": project_id,
+            "generation": generation, "rebuild_command": rebuild_command}))[0]
+
     async def project_workspace(self, operation, owner, project_id, *, generation, fence=None, request_id=None, reservation=None):
         if operation not in {"start", "stop", "remove", "status", "reserve", "release"}:
             raise ProtocolError("Unsupported project-workspace operation")

@@ -133,8 +133,21 @@ class BotTelemetry:
             ("status",),
             registry=self.registry,
         )
+        self.project_bytes = Gauge("gaoji_project_bytes", "Last measured workspace and retained-version bytes.", ("kind",), registry=self.registry)
+        self.projects = Gauge("gaoji_projects", "Retained project counts by state.", ("state",), registry=self.registry)
+        self.project_usage_unknown = Gauge("gaoji_project_usage_unknown", "Projects without a current verified usage sample.", registry=self.registry)
+        self.project_rebuildable_unknown = Gauge("gaoji_project_rebuildable_unknown", "Projects without a current rebuildable-bytes estimate.", registry=self.registry)
+        self.project_quota_rejections = Counter("gaoji_project_quota_rejections_total", "Project capacity admissions rejected.", registry=self.registry)
         self._configured = False
         self._tracer = trace.get_tracer("gaoji")
+
+    def update_project_gauges(self, value):
+        for kind in ("workspace", "rebuildable", "versions"):
+            self.project_bytes.labels(kind=kind).set(value["bytes"].get(kind, 0))
+        for state in ("active", "stopped", "hibernated", "archived", "trash"):
+            self.projects.labels(state=state).set(value["states"].get(state, 0))
+        self.project_usage_unknown.set(value["unknown"])
+        self.project_rebuildable_unknown.set(value["rebuildable_unknown"])
 
     async def monitor_event_loop(self, interval_seconds: float = 1.0) -> None:
         if interval_seconds <= 0:

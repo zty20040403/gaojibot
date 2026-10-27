@@ -35,6 +35,7 @@ class HostFixture:
         self.filesystems = {}
         self.loop_rows, self.mount_rows, self.calls = [], [], []
         self.busy = False
+        self.measured_used_bytes = 0
         self.after = {}
         self.next_device = 20
         self.boot = "11111111-1111-4111-8111-111111111111"
@@ -64,6 +65,9 @@ class HostFixture:
 
     def filesystem_bytes(self, image):
         return self.filesystems[str(image)]["bytes"]
+
+    def used_bytes(self, image, root, quota):
+        return self.measured_used_bytes
 
     def loops(self):
         return [dict(row) for row in self.loop_rows]

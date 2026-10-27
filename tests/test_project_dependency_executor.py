@@ -141,6 +141,37 @@ class ProjectDependencyExecutorTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await self.backend.maintenance_ready(project))
         self.assertTrue(await self.backend.maintenance_ready(project))
 
+    async def test_usage_rpc_measures_mounted_and_offline_without_remount(self):
+        await self.wake()
+        project = self.projects.get(self.access, self.pid)
+        self.host.measured_used_bytes = 123456
+        sample = await self.backend.sample_usage(project)
+        self.assertEqual(sample["used_bytes"], 123456)
+        self.assertTrue(sample["mounted"])
+        with self.assertRaises(SandboxError):
+            await self.client.project_usage("foreign", self.pid, generation=project["workspace_generation"])
+        self.request("stop")
+        await self.executor(self.claim())
+        self.request("hibernate")
+        await self.executor(self.claim())
+        calls = list(self.host.calls)
+        sample = await self.backend.sample_usage(self.projects.get(self.access, self.pid))
+        self.assertEqual(sample["used_bytes"], 123456)
+        self.assertIsNone(sample["rebuildable_bytes"])
+        self.assertFalse(sample["mounted"])
+        self.assertEqual(self.host.calls, calls)
+
+    async def test_95_percent_blocks_actual_installer_creation_not_just_ui(self):
+        self.seed_locked_version()
+        quota = self.projects.get(self.access, self.pid)["quota_bytes"]
+        self.host.measured_used_bytes = (quota * 95 + 99) // 100
+        self.request()
+        with self.assertRaisesRegex(SandboxError, "project_dependency_limit"):
+            await self.executor(self.claim())
+        self.assertFalse(any(c[1] == "create" for c in self.docker.actions))
+        self.assertEqual(self.projects.get(self.access, self.pid)["status"], "stopped")
+        self.assertEqual(self.projects.read_file(self.access, self.pid, 1, "source.js"), b"retained source")
+
     async def test_old_helper_without_busy_observation_is_not_eligible(self):
         await self.wake()
         project = self.projects.get(self.access, self.pid)
