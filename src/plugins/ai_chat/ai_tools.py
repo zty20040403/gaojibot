@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Union
 
+from .project_tool_definitions import PROJECT_TOOLS
+
 ToolDefinition = dict[str, Any]
 ToolChoice = Union[str, dict[str, Any]]
 
@@ -1864,6 +1866,7 @@ TOOL_DEFINITIONS = (
     USE_SKILL_TOOL, INSPECT_SOURCE_TOOL, GROUP_MEMBERS_TOOL,
     REMINDER_SET_TOOL, REMINDER_LIST_TOOL, REMINDER_CANCEL_TOOL,
     ROUTINE_SET_TOOL, ROUTINE_LIST_TOOL, ROUTINE_CANCEL_TOOL,
+    *PROJECT_TOOLS,
     DELEGATE_AGENT_TOOL, RUN_SUBAGENTS_TOOL, RESUME_SUBAGENT_TOOL,
 )
 

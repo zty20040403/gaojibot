@@ -2586,3 +2586,46 @@ implementation evidence, not a claim that the production App has these features.
 - Whole-CI Ruff, compileall and whitespace checks passed. Nix package/import
   checks passed on aarch64-darwin; incompatible platforms were omitted, not
   tested (`.cache/roadmap/m2-project-runtime-nix.log`).
+
+### M3 initial project registry tools and QQ commands
+
+- Added six registry handlers: create/list/open/status/versions/set-rebuild,
+  with host-owned policy and capabilities. QQ `/项目` adapters delegate to the
+  same registry and use its enablement and permission checks. Unsupported
+  project operations are not advertised as implemented; no branch was added
+  to the legacy tool dispatcher.
+- Creation persists an immutable, scoped message identity with a database
+  uniqueness constraint (`0048_project_creation_key`). Concurrent deliveries
+  and application restart do not create duplicate projects. Replaying a lost
+  result does not reset a newer current-project choice. A queued lifecycle job
+  wakes through the existing fenced physical backend; the response distinguishes
+  queued/active/needs-attention instead of announcing premature completion.
+- Live membership, original bot binding and sandbox admission are checked.
+  Group viewers can select and inspect without gaining edit or execution
+  permission. Private scope remains owner-only; cross-group/account and unbound
+  legacy records are not exposed. Model arguments cannot choose scope, admin
+  flags, host paths, quotas or creation keys. Routine/Sub-Agent management
+  access remains disabled until their ownership integration is implemented.
+- Status exposes measured/unknown usage, hard versus soft quota, version bytes,
+  lifecycle step progress and task handles. Configuration revisions are distinct
+  from content version numbers. QQ output treats titles as text, preventing
+  injected CQ mentions/actions. Recording a rebuild command does not run it.
+- Focused regression passed 91 tests in 15.384 seconds, with ResourceWarnings
+  as errors (`.cache/roadmap/m3-project-tools-verified.log`). This uses real
+  PostgreSQL and Unix RPC with mocked QQ/kernel effects. It covers independent
+  connection concurrency, downgrade protection, restart, failed preparation,
+  identity isolation, viewer/editor rights, hidden capabilities and command
+  binding. Earlier runs exposed a test-only stale closed-store reference and
+  the matcher fixture's fixed binding list/count; both fixtures were corrected.
+- Whole-CI Ruff, compileall and whitespace checks passed. No unrelated full
+  test suite, production connection, model call, shared nix-config modification,
+  rebuild or App release was performed. The user-authored plan is unchanged.
+- This is an M3 checkpoint, not completion. Remaining: project sandbox/browser
+  defaults and prompt context; snapshot/restore/delete/preview operations;
+  Sub-Agent baseline, locks and accepted-version publication; console and
+  shared-platform ownership integration. M2 native acceptance and M4-M7 also
+  remain unfinished. The feature remains default-disabled.
+- Nix package/import checks passed on aarch64-darwin
+  (`.cache/roadmap/m3-project-tools-nix.log`). Linux and other incompatible
+  architectures were omitted, not verified. No generated proof containers or
+  volumes were left behind by the tests.

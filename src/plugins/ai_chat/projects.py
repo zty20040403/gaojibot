@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Iterable
@@ -200,7 +201,8 @@ class ProjectStore:
         )
 
     def create(
-        self, access, title, *, backend="oci", quota_bytes=2 * 1024**3, now=None
+        self, access, title, *, backend="oci", quota_bytes=2 * 1024**3, now=None,
+        creation_key=None,
     ):
         now = int(time.time()) if now is None else now
         title = title.strip()
@@ -208,10 +210,27 @@ class ProjectStore:
             not 1 <= len(title) <= 120
             or backend not in {"oci", "vm"}
             or quota_bytes <= 0
+            or (creation_key is not None and (
+                not isinstance(creation_key, str) or not re.fullmatch(r"[a-f0-9]{64}", creation_key)
+            ))
         ):
             raise ValueError("Invalid project title, backend or quota")
         with self._transaction() as cursor:
             self._scope_lock(cursor, access)
+            if creation_key is not None:
+                previous = cursor.execute(
+                    """SELECT p.project_id,e.payload FROM projects p JOIN project_events e
+                    ON e.project_id=p.project_id AND e.kind='created'
+                    WHERE p.scope_key=? AND p.bot_native_user_id=?
+                    AND p.creator_principal_id=? AND p.creation_key=?""",
+                    (access.scope.key, access.scope.bot_native_user_id, access.principal_id, creation_key),
+                ).fetchone()
+                if previous is not None:
+                    if previous["payload"] != {"title": title, "backend": backend, "quota_bytes": quota_bytes}:
+                        raise ProjectConflict("Project creation identity was reused")
+                    # Do not reset someone else's newer focus when replaying an
+                    # already committed creation after a lost response.
+                    return self._get(cursor, access, previous["project_id"], owner=True)
             group = access.scope.kind == "group"
             cursor.execute(
                 """INSERT INTO project_scope_limits(scope_key,kind,quota_bytes,max_projects)
@@ -241,8 +260,8 @@ class ProjectStore:
                 raise ProjectQuotaExceeded("Project quota exceeds permitted capacity")
             row = cursor.execute(
                 """INSERT INTO projects(scope_key,creator_principal_id,title,backend,quota_bytes,
-                last_active_at,state_changed_at,created_at,updated_at,bot_native_user_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+                last_active_at,state_changed_at,created_at,updated_at,bot_native_user_id,creation_key)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
                 (
                     access.scope.key,
                     access.principal_id,
@@ -254,6 +273,7 @@ class ProjectStore:
                     now,
                     now,
                     access.scope.bot_native_user_id,
+                    creation_key,
                 ),
             ).fetchone()
             pid = row["project_id"]
@@ -263,12 +283,14 @@ class ProjectStore:
                 (pid, access.principal_id, access.principal_id, now),
             )
             self._focus(cursor, access, pid, now)
-            self._event(cursor, pid, access, "created", {"title": title}, now)
+            self._event(cursor, pid, access, "created", {
+                "title": title, "backend": backend, "quota_bytes": quota_bytes,
+            }, now)
             return dict(row)
 
-    def get(self, access, project_id):
+    def get(self, access, project_id, *, edit=False):
         with self._transaction() as cursor:
-            return self._get(cursor, access, project_id)
+            return self._get(cursor, access, project_id, edit=edit)
 
     def list(self, access, *, include_trash=False):
         with self._transaction() as cursor:

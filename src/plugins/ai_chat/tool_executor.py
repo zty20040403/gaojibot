@@ -439,6 +439,8 @@ class ToolExecutor(HandlerService):
             tool_capabilities.add("reminders")
         if self.context.routine_store is not None:
             tool_capabilities.add("routines")
+        if getattr(self.context, "project_runtime", None) is not None:
+            tool_capabilities.add("projects")
         if getattr(self.context, "mcp_service", None) is not None:
             tool_capabilities.add("mcp")
         if self.context.settings.voice_enabled:

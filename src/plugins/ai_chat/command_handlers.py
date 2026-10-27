@@ -1377,6 +1377,10 @@ class CommandHandlers(HandlerService):
         from .routine_commands import handle_routine_command
         await handle_routine_command(self.services, event, args)
 
+    async def handle_project_command(self, event: MessageEvent, args: Message) -> None:
+        from .project_commands import handle_project_command
+        await handle_project_command(self.services, event, args)
+
     async def handle_wiki_command(self, event: MessageEvent, args: Message) -> None:
         from .matchers import wiki_command
 

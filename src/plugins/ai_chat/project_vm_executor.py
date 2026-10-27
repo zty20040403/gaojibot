@@ -8,6 +8,7 @@ from .projects import ProjectConflict
 
 
 class VmProjectBackend:
+    quota_mode = "hard"
     ACTIONS = {
         "create_volume": "create",
         "delete_volume": "delete",

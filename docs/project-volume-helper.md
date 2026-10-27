@@ -798,9 +798,52 @@ while retaining the journal and data.
 `AI_PROJECT_ARCHIVE_DAYS` and `AI_PROJECT_VERSION_KEEP_RECENT` configure the
 existing policy. Invalid/nonincreasing thresholds are rejected before stores
 open. This composition does not enable automatic purge or provide a new host
-shell API. Chat tools, commands, task baseline publication, shared-platform
-adapters and the workbench still require M3-M7 integration. Live QQ membership
+shell API. Task baseline publication, shared-platform adapters and the workbench
+still require M3-M7 integration. Live QQ membership
 in these tests is a fixture, not a production validation.
+
+### Initial project chat interface (M3 in progress)
+
+With the opt-in application runtime ready, the tool registry exposes
+`project_create`, `project_list`, `project_open`, `project_status`,
+`project_versions` and `project_set_rebuild`. The same handlers serve these QQ
+commands; a disabled tool cannot be bypassed through its command:
+
+```text
+/项目
+/项目 新建 班级网站
+/项目 切换 prj#3
+/项目 状态
+/项目 状态 prj#3
+/项目 版本 prj#3
+```
+
+Creation stores the project and current-user focus, then enqueues a durable
+wake. A queued/failed wake is not advertised as an active workspace. Open
+changes only the requesting user's focus; group members without editor or
+sandbox permission can view without waking a workspace. Membership is checked
+live. Unbound legacy records remain hidden pending explicit account migration.
+
+Migration `0048_project_creation_key` adds a scoped, account/principal-bound
+creation identity with a unique database index. It is derived from the received
+message and normalized title, not model arguments. Concurrent deliveries and
+retries after application restart reuse the project and cannot reset a newer
+focus. The original creation parameters remain in its audit event. A different
+message can intentionally create another project with the same title.
+
+Status reports configuration `revision` separately from saved-content `vN`,
+measured versus unknown/stale usage, hard/soft quota, retained version bytes and
+pending lifecycle progress. Failure details and helper reservations are not
+exposed. Labels/titles are sent as QQ text, never interpreted as CQ actions.
+`project_set_rebuild` records metadata only; the physical adapter still checks
+locked recipes before executing a reconstruction.
+
+This is not the complete M3 interface. Snapshot/restore/delete/preview tools,
+automatic project routing of existing sandbox/browser tools, current-project
+prompt context, Sub-Agent baselines and accepted-version publication, shared
+Matrix/iMessage ownership, and console management remain pending. Routine and
+Sub-Agent contexts do not receive these management tools until their project
+ownership is wired explicitly. No production enablement is implied.
 
 ### Remaining acceptance
 

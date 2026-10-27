@@ -11,6 +11,7 @@ from .mcp import handlers as mcp_handlers
 from .registry import ToolRegistry
 from .reminders import HANDLERS as REMINDER_HANDLERS
 from .routines import HANDLERS as ROUTINE_HANDLERS
+from .projects import HANDLERS as PROJECT_HANDLERS
 from .sources import HANDLERS as SOURCE_HANDLERS
 from .stickers import HANDLERS as STICKER_HANDLERS
 from .subagents import HANDLERS as SUBAGENT_HANDLERS
@@ -27,6 +28,7 @@ domain_registry = ToolRegistry(
         *SUBAGENT_HANDLERS,
         *REMINDER_HANDLERS,
         *ROUTINE_HANDLERS,
+        *PROJECT_HANDLERS,
         *FLEET_HANDLERS,
         *EXECUTOR_HANDLERS,
     ),

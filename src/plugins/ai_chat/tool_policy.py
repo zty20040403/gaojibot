@@ -81,6 +81,9 @@ _READ_TOOLS = {
     "group_members",
     "reminder_list",
     "routine_list",
+    "project_list",
+    "project_status",
+    "project_versions",
     "view_forward",
     "view_bilibili",
     "inspect_shared_content",
@@ -277,6 +280,15 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         side_effects=("spawn:agent", "model:multiple", "write:task-ledger"),
         timeout_seconds=3600.0,
         max_identical_calls=1,
+    )
+    policies["project_create"] = ToolPolicy(
+        risk="medium", idempotency="keyed", side_effects=("write:project",), timeout_seconds=30,
+    )
+    policies["project_open"] = ToolPolicy(
+        risk="medium", idempotency="idempotent", side_effects=("write:project",), timeout_seconds=30,
+    )
+    policies["project_set_rebuild"] = ToolPolicy(
+        risk="medium", idempotency="non-idempotent", side_effects=("write:project",), timeout_seconds=30,
     )
     policies["routine_set"] = ToolPolicy(
         risk="medium", idempotency="keyed", side_effects=("write:routine", "schedule:model"),
