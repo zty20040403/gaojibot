@@ -90,18 +90,32 @@ def run(args):
                            log=args.output.with_suffix('.console.log'))
                 console.command('test "$(cat /etc/gaoji-m0-disposable)" = gaoji-m0')
                 console.command('systemctl is-active docker', timeout=120)
-                if boot == 0:
+                if boot == 0 or args.product_helper:
                     console.command('mkdir -p /mnt/fixtures')
                     console.command('mount -o ro /dev/disk/by-label/M0FIXTURES /mnt/fixtures')
+                if boot == 0:
                     console.command('docker --host=unix:///var/run/docker.sock load -i /mnt/fixtures/python-worker.tar',
                                     timeout=180)
-                    result = console.command('python3 /mnt/fixtures/verify_project_native_host.py', timeout=300)
+                    if args.product_helper:
+                        # ISO9660 readers can truncate source filenames. A tar
+                        # fixture preserves Python module names and file modes.
+                        console.command('mkdir /var/tmp/gaoji-m2-fixtures')
+                        console.command('tar -xf /mnt/fixtures/workspace.tar -C /var/tmp/gaoji-m2-fixtures')
+                        report['fixture_sha256'] = console.command('sha256sum /mnt/fixtures/workspace.tar')['output']
+                        probe = '/var/tmp/gaoji-m2-fixtures/verify_project_workspace_native.py --phase prepare'
+                    else:
+                        probe = '/mnt/fixtures/verify_project_native_host.py'
+                    result = console.command('python3 ' + probe, timeout=600)
                     values = [line for line in result['output'].splitlines() if line.startswith('{')]
                     report['probe'] = json.loads(values[-1])
                     console.command('printf retained-proof > /var/tmp/m0-reboot-proof')
                     console.command('sync')
                 else:
                     console.command('test "$(cat /var/tmp/m0-reboot-proof)" = retained-proof')
+                    if args.product_helper:
+                        result = console.command('python3 /var/tmp/gaoji-m2-fixtures/verify_project_workspace_native.py --phase recover', timeout=600)
+                        values = [line for line in result['output'].splitlines() if line.startswith('{')]
+                        report['recovery'] = json.loads(values[-1])
                     console.command('test -z "$(docker ps -aq --filter label=io.gaoji.m0)"')
                     console.command('test -z "$(docker volume ls -q --filter label=io.gaoji.m0)"')
                     report['host_reboot_verified'] = True
@@ -142,6 +156,7 @@ def main():
     parser.add_argument('--qemu-img', required=True)
     parser.add_argument('--accel', choices=['hvf', 'tcg'], default='tcg')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--product-helper', action='store_true', help='Exercise product RPC and retain projects across guest reboot')
     args = parser.parse_args()
     args.assets = args.assets.resolve(strict=True)
     args.fixtures = args.fixtures.resolve(strict=True)
@@ -153,8 +168,12 @@ def main():
     report = run(args)
     args.output.write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({key: value for key, value in report.items() if key != 'events'}, indent=2))
+    product_ok = (report.get('probe', {}).get('quota', {}).get('errno') == 28
+                  and report.get('probe', {}).get('pending_start_retained')
+                  and report.get('recovery', {}).get('reboot_recovery_verified')
+                  and report.get('recovery', {}).get('owned_resources_removed'))
     return 0 if (not report.get('error') and report.get('host_reboot_verified')
-        and report.get('probe', {}).get('hard_quota_verified')
+        and (product_ok if args.product_helper else report.get('probe', {}).get('hard_quota_verified'))
         and report['image_check_returncode'] == 0 and report['temporary_root_removed']) else 1
 
 

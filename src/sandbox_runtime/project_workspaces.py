@@ -215,8 +215,18 @@ class ProjectWorkspaces:
                 project_id,
                 generation=generation,
                 allow_pending=True,
+                maintenance=True,
             )
             current = await self._observe(owner, binding)
+            if (
+                action == "start"
+                and not binding["mount_matches"]
+                and current
+                and current["State"]["Running"]
+            ):
+                raise SandboxError(
+                    "Stop the old project container before recovering its mount"
+                )
             if action == "remove" and current and current["State"]["Running"]:
                 raise SandboxError("Stop the project workspace before removal")
             if action == "stop" and current is None:
@@ -262,6 +272,34 @@ class ProjectWorkspaces:
                 # must not silently re-execute a start after an external stop.
                 if binding["pending"]:
                     if action == "start":
+                        if not binding["mount_matches"]:
+                            previous = binding["workspace"]
+                            if (
+                                not previous
+                                or not previous.get("boot_id")
+                                or previous["boot_id"] == binding["boot_id"]
+                            ):
+                                raise SandboxError(
+                                    "Mount recovery requires proof of a host reboot"
+                                )
+                            if current is not None:
+                                if current["State"]["Running"]:
+                                    raise SandboxError(
+                                        "Old project container is still running"
+                                    )
+                                await self._command("rm", current)
+                            if await self._observe(owner, binding) is not None:
+                                raise SandboxError(
+                                    "Old container removal was not confirmed"
+                                )
+                            binding = await self._volume(
+                                self.volumes.recover_workspace,
+                                owner,
+                                project_id,
+                                generation=generation,
+                                fence=fence,
+                            )
+                            current = await self._observe(owner, binding)
                         if current is None:
                             await self.manager._create(
                                 owner, "debian", purpose="project", project=binding
@@ -317,6 +355,7 @@ class ProjectWorkspaces:
             project_id,
             generation=generation,
             allow_pending=True,
+            maintenance=True,
         )
         container = await self._observe(owner, binding)
         state = (
@@ -326,7 +365,9 @@ class ProjectWorkspaces:
             if container["State"]["Running"]
             else "stopped"
         )
-        if state == "running":
+        if not binding["mount_matches"] and binding["workspace"]:
+            state = "needs_recovery"
+        elif state == "running":
             await self._verify_running(binding, container)
         return {
             "project_id": project_id,
@@ -335,7 +376,9 @@ class ProjectWorkspaces:
             "sandbox_id": (binding["workspace"] or {}).get("sandbox_id"),
             "state": state,
             "pending": binding["pending"],
-            "verified": not binding["pending"] and state != "missing",
+            "verified": not binding["pending"]
+            and state not in {"missing", "needs_recovery"},
+            "mounted": binding["mounted"],
         }
 
     async def for_sandbox(self, owner, sandbox_id):

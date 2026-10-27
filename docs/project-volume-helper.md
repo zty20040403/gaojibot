@@ -137,11 +137,47 @@ automatic compensation/reconfiguration is not implemented yet. This adapter
 does not turn fixture evidence into native acceptance and is not enabled by
 the default runner configuration.
 
-Recovery covered here is runner-process interruption with the original host
-mount intact. A full host reboot can lose loop mounts or change their device
-numbers. This checkpoint intentionally rejects the old binding in that state;
-it does not yet remount/rebind a retained Docker container automatically. That
-native reboot recovery must be implemented and tested before product enablement.
+### Host reboot reconciliation
+
+Bindings now retain the kernel boot UUID as well as the mounted root identity.
+After reboot, status reports `needs_recovery`, not a ready empty directory.
+Ordinary commands and file transfers remain blocked until reconciliation.
+
+- Recovery requires a different, readable canonical boot UUID, the same
+  backing-file identity, filesystem UUID, capacity and workspace generation.
+  A missing mount during the same boot is not permission to replace a binding.
+  Older bindings without a boot UUID require explicit operator reconciliation.
+- Start retains its pending fence across reboot. It removes only the verified,
+  stopped old Docker container, observes its absence and independently checks
+  that no other container references the mount. A running container blocks
+  recovery; the helper never force-removes it.
+- With no mount, the helper checks ext4, attaches the existing image and mounts
+  it. It refuses to hide unexpected files in the underlying directory. It does
+  not reformat, resize or copy project data.
+- The new container identity/token and root identity are published atomically
+  before creation. The original start remains pending until Docker and an exec
+  probe confirm the correct mount. Interrupted mount/publication/start stages
+  resume the same fence rather than allocating another project generation.
+- Backing-device/inode changes, corrupt filesystems or changed isolation still
+  fail closed. This is reconciliation on a requested start, not a boot-time
+  scheduler or a promise to recover arbitrary filesystem damage.
+
+`tools/verify_project_workspace_native.py` exercises the real Unix RPC, quota
+filesystem and Docker driver in a marked disposable VM. Prepare fills one
+64 MiB project to ENOSPC, checks a second project remains writable, and leaves a
+start completion unacknowledged. After a real poweroff and second boot, recover
+checks both original files and filesystem UUIDs, replacement container identity,
+and final removal of owned containers, loops, mounts and cache volume.
+
+Use `tools/verify_project_native_vm.py --product-helper` with the existing
+Ubuntu/NixOS fixture assets. The ISO needs `python-worker.tar` (a local exported
+`python:3.12-slim`) and `workspace.tar` containing `src/__init__.py`,
+`src/storage_admission.py`, `src/local_runtime/`, `src/sandbox_runtime/`,
+`verify_project_workspace_native.py` and `project-worker/` from
+`tools/fixtures/project-worker/`. Exclude bytecode caches. The tar preserves
+module filenames and permissions even with ISO9660 readers. The fixture image
+has only the seed script required to exercise storage; it does not validate Nix
+package installation or an application dependency rebuild.
 
 ## Durable lifecycle journal
 

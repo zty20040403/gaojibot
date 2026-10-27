@@ -63,6 +63,15 @@ class LinuxVolumeHost:
     def format(self, image, fs_uuid):
         self.run("mkfs.ext4", "-q", "-F", "-m", "0", "-U", fs_uuid, str(image))
 
+    def boot_id(self):
+        try:
+            value = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+            if str(uuid.UUID(value)) != value:
+                raise ValueError("Noncanonical boot identity")
+        except (OSError, ValueError):
+            raise ProjectVolumeError("Cannot identify the host boot") from None
+        return value
+
     def filesystem(self, image):
         result = self.run("blkid", "-p", "-o", "export", str(image), accepted=(0, 2))
         return dict(line.split("=", 1) for line in result.splitlines() if "=" in line)
@@ -581,23 +590,7 @@ class ProjectVolumes:
             if not self._begin(directory, record, operation, fence, arguments):
                 return self._status(directory, record)
             if operation == "mount":
-                if mount is None:
-                    self._private_directory(target)
-                    if any(target.iterdir()):
-                        raise ProjectVolumeError(
-                            "Mount would hide unexpected project files"
-                        )
-                    if device is None:
-                        self.host.attach(image)
-                    _, _, _, device, mount = self._observed(directory, record)
-                    if not device:
-                        raise ProjectVolumeError("Loop attachment not confirmed")
-                    self.host.mount(device, target)
-                if self._observed(directory, record)[4] is None:
-                    raise ProjectVolumeError("Project mount was not observed")
-                if not record["initialized"]:
-                    self.host.initialize_owner(target)
-                    record["initialized"] = True
+                self._mount(directory, record)
             elif operation == "unmount":
                 if mount:
                     self.host.unmount(target)
@@ -618,6 +611,24 @@ class ProjectVolumes:
             else:
                 self._delete(directory, record)
             return self._finish(directory, record)
+
+    def _mount(self, directory, record):
+        image, target, _, device, mount = self._observed(directory, record)
+        if mount is None:
+            self._private_directory(target)
+            if any(target.iterdir()):
+                raise ProjectVolumeError("Mount would hide unexpected project files")
+            if device is None:
+                self.host.attach(image)
+            _, _, _, device, mount = self._observed(directory, record)
+            if not device:
+                raise ProjectVolumeError("Loop attachment not confirmed")
+            self.host.mount(device, target)
+        if self._observed(directory, record)[4] is None:
+            raise ProjectVolumeError("Project mount was not observed")
+        if not record["initialized"]:
+            self.host.initialize_owner(target)
+            record["initialized"] = True
 
     def _delete(self, directory, record):
         image, target = self._paths(directory, record)
@@ -680,7 +691,9 @@ class ProjectVolumes:
                 raise ProjectVolumeError("Project volume is not mounted")
             return target
 
-    def workspace(self, owner, project_id, *, generation, allow_pending=False):
+    def workspace(
+        self, owner, project_id, *, generation, allow_pending=False, maintenance=False
+    ):
         """Private local driver data. Never send this binding over the RPC socket."""
         with self._locked(owner, project_id) as (directory, record):
             self._generation(record, generation)
@@ -688,17 +701,24 @@ class ProjectVolumes:
                 raise ProjectVolumeError("Project workspace is unavailable")
             if record["pending"] and not allow_pending:
                 raise ProjectVolumeError("Project workspace is undergoing maintenance")
-            return self._workspace_binding(directory, record)
+            return self._workspace_binding(directory, record, maintenance=maintenance)
 
-    def _workspace_binding(self, directory, record):
+    def _workspace_binding(self, directory, record, *, maintenance=False):
         _, target, _, _, mount = self._observed(directory, record)
         workspace = record.get("workspace")
+        matches = bool(mount)
+        boot_id = self.host.boot_id()
         if workspace:
-            if mount is None:
-                raise ProjectVolumeError("Referenced project workspace is not mounted")
-            identity = target.stat()
-            if workspace["root_identity"] != f"{identity.st_dev}:{identity.st_ino}":
-                raise ProjectVolumeError("Project workspace mount identity changed")
+            identity = target.stat() if mount else None
+            matches = (
+                identity is not None
+                and workspace["root_identity"] == f"{identity.st_dev}:{identity.st_ino}"
+                and workspace.get("boot_id", boot_id) == boot_id
+            )
+            if not matches and not maintenance:
+                raise ProjectVolumeError(
+                    "Project workspace mount identity changed; recovery is required"
+                )
         return {
             "workspace": workspace,
             "path": str(target),
@@ -707,6 +727,8 @@ class ProjectVolumes:
             "fence": record["fence"],
             "pending": record["pending"],
             "mounted": mount is not None,
+            "mount_matches": matches,
+            "boot_id": boot_id,
         }
 
     def begin_workspace(self, owner, project_id, *, generation, fence, action, image):
@@ -723,8 +745,14 @@ class ProjectVolumes:
             self._generation(record, generation)
             if record is None or record.get("deleted"):
                 raise ProjectVolumeError("Project volume does not exist")
-            binding = self._workspace_binding(directory, record)
-            if action == "start" and not binding["mounted"]:
+            binding = self._workspace_binding(directory, record, maintenance=True)
+            workspace = record.get("workspace")
+            recoverable = (
+                workspace
+                and workspace.get("boot_id")
+                and workspace["boot_id"] != binding["boot_id"]
+            )
+            if action == "start" and not binding["mount_matches"] and not recoverable:
                 raise ProjectVolumeError(
                     "Mount the project before starting a workspace"
                 )
@@ -736,7 +764,7 @@ class ProjectVolumes:
                 # A restart may have a newer configured image; the persisted
                 # operation still reconciles its original immutable image.
                 self._begin(directory, record, operation, fence, intent["arguments"])
-                return self._workspace_binding(directory, record)
+                return self._workspace_binding(directory, record, maintenance=True)
             if record["pending"] or fence < record["fence"]:
                 raise ProjectVolumeError(
                     "Previous project operation must be reconciled first"
@@ -748,6 +776,7 @@ class ProjectVolumes:
                     "token": secrets.token_hex(16),
                     "image": image,
                     "root_identity": f"{info.st_dev}:{info.st_ino}",
+                    "boot_id": binding["boot_id"],
                 }
             self._begin(
                 directory,
@@ -756,6 +785,58 @@ class ProjectVolumes:
                 fence,
                 {"workspace": record.get("workspace")},
             )
+            return self._workspace_binding(directory, record, maintenance=True)
+
+    def recover_workspace(self, owner, project_id, *, generation, fence):
+        """Rematerialize a stopped, removed binding after a verified host reboot.
+
+        Docker removal is checked by the driver and independently by _idle.
+        The existing start fence remains pending throughout recovery.
+        """
+        if type(fence) is not int or not 1 <= fence < 2**53:
+            raise ProjectVolumeError("Invalid workspace recovery fence")
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            if (
+                record is None
+                or record.get("deleted")
+                or not record["pending"]
+                or record["fence"] != fence
+                or record["intent"]["operation"] != "workspace_start"
+            ):
+                raise ProjectVolumeError(
+                    "No pending start authorizes workspace recovery"
+                )
+            binding = self._workspace_binding(directory, record, maintenance=True)
+            previous = record.get("workspace")
+            if (
+                not previous
+                or not previous.get("boot_id")
+                or previous["boot_id"] == binding["boot_id"]
+            ):
+                raise ProjectVolumeError(
+                    "Workspace recovery requires a different verified host boot"
+                )
+            image, target, info, device, mount = self._observed(directory, record)
+            self._idle(target)
+            if (
+                info.st_size != record["quota_bytes"]
+                or self.host.filesystem_bytes(image) != record["quota_bytes"]
+            ):
+                raise ProjectVolumeError("Recovery cannot change project capacity")
+            if mount is None:
+                self.host.fsck(device or image)
+            self._mount(directory, record)
+            identity = target.stat()
+            record["workspace"] = {
+                "sandbox_id": "s" + secrets.token_hex(3),
+                "token": secrets.token_hex(16),
+                "image": previous["image"],
+                "root_identity": f"{identity.st_dev}:{identity.st_ino}",
+                "boot_id": binding["boot_id"],
+                "recovered_from": previous["sandbox_id"],
+            }
+            self._save(directory, record)
             return self._workspace_binding(directory, record)
 
     def finish_workspace(self, owner, project_id, *, generation, fence, action):

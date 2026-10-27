@@ -37,6 +37,10 @@ class HostFixture:
         self.busy = False
         self.after = {}
         self.next_device = 20
+        self.boot = "11111111-1111-4111-8111-111111111111"
+
+    def boot_id(self):
+        return self.boot
 
     def done(self, operation):
         self.calls.append(operation)
@@ -486,6 +490,18 @@ class LinuxVolumeHostTests(unittest.TestCase):
         ):
             self.host = LinuxVolumeHost()
         self.host.run = Mock()
+
+    def test_boot_identity_requires_readable_canonical_uuid(self):
+        value = "12345678-abcd-4000-8000-123456789abc"
+        with patch.object(Path, "read_text", return_value=value + "\n"):
+            self.assertEqual(self.host.boot_id(), value)
+        for value in ("", "not-a-boot", value.upper(), "0" * 32):
+            with patch.object(Path, "read_text", return_value=value):
+                with self.assertRaisesRegex(ProjectVolumeError, "host boot"):
+                    self.host.boot_id()
+        with patch.object(Path, "read_text", side_effect=OSError("unavailable")):
+            with self.assertRaisesRegex(ProjectVolumeError, "host boot"):
+                self.host.boot_id()
 
     def test_stopped_container_references_and_ancestor_mounts_protect_volume(self):
         identifier = "a" * 64

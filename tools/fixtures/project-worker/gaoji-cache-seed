@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+# Only the storage protocol is exercised; this fixture does not install Nix.
+mkdir -p /cache/nix/store

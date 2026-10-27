@@ -1718,3 +1718,53 @@ implementation evidence, not a claim that the production App has these features.
   binding. Native remount/rebind recovery, Ubuntu/NixOS acceptance, lifecycle
   worker dispatch, VM integration, Desktop soft quotas, idle scheduling,
   rebuildable-data policy, retention/accounting and compensation remain.
+
+### M2 native host-reboot recovery checkpoint
+
+- Project bindings now record the Linux boot UUID. Lost mounts report
+  `needs_recovery`; file and command access remain blocked. Reconciliation
+  requires a different verified boot, the original backing identity/UUID and
+  unchanged capacity/generation. Same-boot mount loss and legacy bindings without
+  boot proof fail closed rather than silently creating an empty workspace.
+- A pending start keeps its original fence. Only the verified stopped container
+  is removed; independent consumer checks precede fsck/remount. The helper
+  publishes the replacement binding atomically and confirms the actual Docker
+  mount before acknowledging. No reformat, quota change, forced removal or
+  automatic application restart is introduced.
+- Focused regression: 53 tests, OK in 1.035 seconds
+  (.cache/roadmap/m2-reboot-focused.log). Fault cases include interruption after
+  fsck, attachment and mount; an unacknowledged pre-reboot start; active old
+  containers; unexpected underlying files; invalid/unreadable boot identity.
+- Native product RPC acceptance passed on disposable aarch64 Ubuntu 24.04 and
+  NixOS guests under QEMU HVF. Each wrote a 64 MiB project to ENOSPC while the
+  second project remained writable, retained a pending start, powered off,
+  booted the same guest disk and recovered both files under new container IDs.
+  Original filesystem UUIDs and generation 1 were preserved. Both guests
+  removed owned containers, mounts, loops and cache volume, powered off cleanly,
+  and passed qemu-img checks. The temporary overlay disks were removed.
+- Evidence: .cache/roadmap/m2-native-ubuntu.json and m2-native-nixos.json. Fixture
+  archive SHA256: c3f9886b74d453dbbb11d93f5ef58c644b9856ace26c7355f8201bb8f07f8ede.
+  The injected write reached 57,307,136 bytes on Ubuntu and 55,574,528 on NixOS
+  before ENOSPC; these exclude filesystem overhead, not a promise of 64 MiB
+  usable data. The seeded Python fixture tests storage, not Nix installation.
+- Early harness attempts exposed ISO filename truncation, incomplete fixture
+  imports and an incorrectly public test-state directory. Fixed fixture
+  packaging and setup, without weakening product ownership/isolation checks.
+  Ubuntu used public package-download NAT only; NixOS had no NIC. Neither guest
+  had SSH, host directory mounts, production credentials or real QQ/model calls.
+- Native-builder container removed. This checkpoint's approximately 2.4 GiB of
+  downloaded/generated guest disks, ISOs and exported worker tar were removed;
+  only small diagnostics and fixture source staging remain. Unrelated Docker
+  images, services and user files were not cleaned or changed.
+- Full isolated PostgreSQL regression: 2265 tests, OK (12 skipped), 384.167
+  seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-reboot-full.log). CI-path Ruff, compileall and whitespace
+  checks passed. `nix flake check --no-update-lock-file` passed aarch64-darwin
+  imports/package checks (.cache/roadmap/m2-reboot-nix.log); omitted platforms
+  are not covered by that command. The native Linux evidence above separately
+  validates the helper, not a complete Linux product installation. No UI changed.
+- The default runner remains unchanged/disabled. M2 still needs lifecycle worker
+  dispatch, VM-backed project disks, Desktop soft quotas, automatic dependency
+  reconstruction, idle scheduling, retention/accounting and compensation. This
+  checkpoint does not complete M2, merge main or deploy to a server. The approved
+  plan remains unchanged and unstaged.

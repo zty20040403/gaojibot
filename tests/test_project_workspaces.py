@@ -427,6 +427,91 @@ class ProjectWorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.journal()["pending"])
         self.driver._remove_volume.assert_not_awaited()
 
+    def simulate_host_reboot(self):
+        self.host.boot = "22222222-2222-4222-8222-222222222222"
+        self.host.loop_rows.clear()
+        self.host.mount_rows.clear()
+        for row in self.docker.containers.values():
+            row["State"]["Running"] = False
+
+    async def test_host_reboot_replaces_container_but_not_project_image(self):
+        original = await self.operate("start", 3)
+        journal = self.journal()
+        self.simulate_host_reboot()
+        status = await self.client.project_workspace("status", "scope", 1, generation=1)
+        self.assertEqual(status["state"], "needs_recovery")
+        self.assertFalse(status["verified"])
+        self.assertFalse(status["mounted"])
+        recovered = await self.operate("start", 4)
+        self.assertTrue(recovered["verified"])
+        self.assertNotEqual(recovered["sandbox_id"], original["sandbox_id"])
+        self.assertEqual(self.journal()["fs_uuid"], journal["fs_uuid"])
+        self.assertEqual(self.journal()["image_identity"], journal["image_identity"])
+        self.assertEqual(self.journal()["generation"], journal["generation"])
+        self.assertEqual(
+            self.journal()["workspace"]["recovered_from"], original["sandbox_id"]
+        )
+        self.assertEqual(self.host.calls.count("format"), 1)
+        self.assertIn("fsck", self.host.calls)
+        self.assertEqual(len(self.docker.containers), 1)
+
+    async def test_reboot_recovery_resumes_after_each_mount_step(self):
+        await self.operate("start", 3)
+        self.simulate_host_reboot()
+        for step in ("fsck", "attach", "mount"):
+            self.host.after[step] = RuntimeError("lost recovery acknowledgement")
+            with self.assertRaises(SandboxError):
+                await self.operate("start", 4)
+            self.assertTrue(self.journal()["pending"])
+            with self.assertRaises(SandboxError):
+                await self.operate("start", 5)
+        result = await self.operate("start", 4)
+        self.assertTrue(result["verified"])
+        self.assertEqual(self.docker.serial, 2)
+        self.assertEqual(sum(command[1] == "rm" for command in self.docker.commands), 1)
+        self.assertEqual(self.host.calls.count("attach"), 2)
+
+    async def test_reboot_during_unacknowledged_start_keeps_original_fence(self):
+        self.docker.after["run"] = RuntimeError("lost first start")
+        with self.assertRaises(SandboxError):
+            await self.operate("start", 3)
+        self.simulate_host_reboot()
+        with self.assertRaises(SandboxError):
+            await self.operate("start", 4)
+        self.assertTrue((await self.operate("start", 3))["verified"])
+        self.assertEqual(self.journal()["fence"], 3)
+
+    async def test_recovery_rejects_running_old_container_and_same_boot_mount_loss(
+        self,
+    ):
+        await self.operate("start", 3)
+        self.host.loop_rows.clear()
+        self.host.mount_rows.clear()
+        with self.assertRaises(SandboxError):
+            await self.operate("start", 4)
+        self.container()["State"]["Running"] = False
+        with self.assertRaises(SandboxError):
+            await self.operate("start", 4)
+        self.assertEqual(self.journal()["fence"], 3)
+        self.assertEqual(len(self.docker.containers), 1)
+
+    async def test_recovery_rejects_unexpected_files_in_unmounted_directory(self):
+        await self.operate("start", 3)
+        self.simulate_host_reboot()
+        orphan = self.volumes.root / "p1/mount/unexpected.txt"
+        orphan.write_text("do not hide or delete")
+        with self.assertRaises(SandboxError):
+            await self.operate("start", 4)
+        self.assertEqual(orphan.read_text(), "do not hide or delete")
+        self.assertTrue(self.journal()["pending"])
+
+    async def test_stale_stopped_binding_can_be_removed_without_remounting(self):
+        await self.operate("start", 3)
+        self.simulate_host_reboot()
+        self.assertEqual((await self.operate("remove", 4))["state"], "absent")
+        self.assertEqual(self.host.calls.count("mount"), 1)
+        self.assertIsNone(self.journal()["workspace"])
+
     async def test_stop_waits_for_no_active_file_transfer(self):
         sandbox_id = (await self.operate("start", 3))["sandbox_id"]
         self.docker.tee_entered, self.docker.tee_release = (
