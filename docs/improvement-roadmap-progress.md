@@ -1630,3 +1630,48 @@ implementation evidence, not a claim that the production App has these features.
   Push the current work branch without merging main or deploying. The approved
   plan stays unchanged and unstaged. SSH, production changes, real model/QQ
   requests and nix-config edits remain outside this work.
+
+### M2 incarnation and lifecycle-journal checkpoint
+
+- User explicitly approved using the existing GitHub SSH key after HTTPS push
+  lacked workflow scope. All earlier checkpoints through `50eac2b` were pushed
+  to `wip/desktop-app`. This exception permits GitHub only, not production SSH;
+  there was no main merge, server deployment or nix-config change.
+- Volume RPC now carries a positive workspace generation. Archive restoration
+  requires the next generation, a new UUID and a higher project-wide fence.
+  Atomic publication preserves the tombstone high-water mark. Stale reads,
+  bindings and mutations cannot operate on the replacement, even with a higher
+  supplied fence. Interrupted new-generation format resumes without overwriting.
+- Migration 0044 adds lifecycle runs and per-step journals to PostgreSQL, reusing
+  `DurableJobStore`. Request, frozen plan, incarnation and project lock commit
+  together. Each step persists arguments, a physical fence, a transport receipt,
+  lease generation and evidence. Takeover keeps the physical intent but rotates
+  the uncertain receipt. Old leases cannot snapshot, acknowledge or finish.
+- Scoped project writers respect lifecycle locks. Only the current pending
+  snapshot step may publish a version, with lease validity checked again before
+  commit. Snapshot evidence references a real retained version. Completion,
+  queue settlement, unlock and audit commit atomically. Failed operations retain
+  their lock/journal; invalid transitions and pinned archival are refused.
+- Linked unfinished tasks, required-but-missing deliveries, unresolved receipts
+  and artifacts without current-revision acknowledgement conservatively block
+  transitions. Physical command quiescence and atomic admission coordination
+  still require the backend integration; these SQL guards alone do not prove
+  that an external writer has stopped.
+- Focused PostgreSQL/Unix RPC regression: 101 tests, OK in 11.131 seconds
+  (.cache/roadmap/m2-lifecycle-reviewed.log). An initial added RPC test had four
+  lines from its preceding test misplaced; restored those lines to their
+  original test, without changing product generation checks.
+- Full isolated regression: 2241 tests, OK (12 skipped), 381.857 seconds with
+  ResourceWarning promoted to errors (.cache/roadmap/m2-lifecycle-full.log).
+  CI-path Ruff, compileall and whitespace checks passed. `nix flake check
+  --no-update-lock-file` passed aarch64-darwin package/import checks
+  (.cache/roadmap/m2-lifecycle-nix.log); incompatible Linux systems were omitted,
+  so this is not native Linux acceptance. No frontend changes required a build.
+- The tests cleaned their temporary workspaces/schemas; only small ignored
+  diagnostic logs remain. No real QQ/model call, production connection or change
+  to the Desktop App/approved plan was made.
+- The worker is deliberately not registered and helper remains default-disabled.
+  Fixture step acknowledgements are not physical execution evidence. Still to
+  do: Docker/VM adapters, native mount/reboot tests, soft quotas, rebuildable-data
+  policy, idle scheduler, retention/accounting, compensation and user controls.
+  M2 and subsequent milestones remain incomplete. The approved plan is unchanged.

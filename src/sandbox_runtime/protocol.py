@@ -37,14 +37,14 @@ FIELDS = {
     "install_readonly_file": ({"owner", "sandbox_id", "path"}, set()),
     "read_file": ({"owner", "sandbox_id", "path"}, {"max_bytes"}),
     "export_artifact": ({"owner", "sandbox_id", "path"}, set()),
-    "project_volume_status": ({"owner", "project_id"}, set()),
-    "project_volume_create": ({"owner", "project_id", "quota_bytes", "fence"}, set()),
-    "project_volume_mount": ({"owner", "project_id", "fence"}, set()),
-    "project_volume_unmount": ({"owner", "project_id", "fence"}, set()),
-    "project_volume_resize": ({"owner", "project_id", "quota_bytes", "fence"}, set()),
-    "project_volume_fsck": ({"owner", "project_id", "fence"}, set()),
-    "project_volume_trim": ({"owner", "project_id", "fence"}, set()),
-    "project_volume_delete": ({"owner", "project_id", "fence"}, set()),
+    "project_volume_status": ({"owner", "project_id"}, {"generation"}),
+    "project_volume_create": ({"owner", "project_id", "quota_bytes", "fence"}, {"generation"}),
+    "project_volume_mount": ({"owner", "project_id", "fence"}, {"generation"}),
+    "project_volume_unmount": ({"owner", "project_id", "fence"}, {"generation"}),
+    "project_volume_resize": ({"owner", "project_id", "quota_bytes", "fence"}, {"generation"}),
+    "project_volume_fsck": ({"owner", "project_id", "fence"}, {"generation"}),
+    "project_volume_trim": ({"owner", "project_id", "fence"}, {"generation"}),
+    "project_volume_delete": ({"owner", "project_id", "fence"}, {"generation"}),
 }
 UPLOADS = {"write_file", "install_readonly_file"}
 
@@ -128,7 +128,7 @@ def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
         raise ProtocolError("沙盒文件大小不正确或超过传输上限。")
     if "owner" in args and not _text(args["owner"], 200):
         raise ProtocolError("沙盒所属会话无效。")
-    for field in ("project_id", "fence"):
+    for field in ("project_id", "fence", "generation"):
         if field in args and (type(args[field]) is not int or not 1 <= args[field] < 2**53):
             raise ProtocolError("项目编号或操作代次无效。")
     if "quota_bytes" in args and (type(args["quota_bytes"]) is not int

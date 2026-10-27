@@ -80,10 +80,10 @@ class SandboxClient:
     async def health(self):
         return (await self.request("health", {}))[0]
 
-    async def project_volume(self, operation, owner, project_id, *, fence=None, quota_bytes=None, request_id=None):
+    async def project_volume(self, operation, owner, project_id, *, fence=None, quota_bytes=None, request_id=None, generation=1):
         if operation not in {'create', 'status', 'mount', 'unmount', 'resize', 'fsck', 'trim', 'delete'}:
             raise ProtocolError('Unsupported project-volume operation')
-        args = {'owner': owner, 'project_id': project_id}
+        args = {'owner': owner, 'project_id': project_id, 'generation': generation}
         if fence is not None:
             args['fence'] = fence
         if quota_bytes is not None:

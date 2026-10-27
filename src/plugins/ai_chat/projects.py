@@ -34,6 +34,27 @@ class ProjectQuotaExceeded(ValueError):
     pass
 
 
+def require_project_lease(cursor, project, job, now=None):
+    """Host-only continuation guard; a job ID alone is never an authorization."""
+    now = int(time.time()) if now is None else now
+    if job is None or project["lifecycle_job_id"] != job.job_id:
+        raise ProjectConflict("Project is locked by a lifecycle operation")
+    row = cursor.execute(
+        """SELECT * FROM durable_jobs WHERE job_id=? AND kind='project.lifecycle'
+        AND scope_key=? AND status='running' AND lease_owner=? AND lease_generation=?
+        AND lease_until>? FOR UPDATE""",
+        (job.job_id, project["scope_key"], job.lease_owner, job.lease_generation, now),
+    ).fetchone()
+    if (
+        row is None
+        or job.kind != "project.lifecycle"
+        or job.scope_key != project["scope_key"]
+        or json.loads(row["payload_json"]) != job.payload
+        or job.payload != {"project_id": project["project_id"]}
+    ):
+        raise ProjectConflict("Project lifecycle lease was lost")
+
+
 @dataclass(frozen=True)
 class ProjectAccess:
     scope: ConversationScope
@@ -117,6 +138,8 @@ class ProjectStore:
         owner=False,
         expected=None,
         allow_trash=False,
+        lifecycle_job=None,
+        now=None,
     ):
         validate_project_access(cursor, access)
         row = cursor.execute(
@@ -145,6 +168,8 @@ class ProjectStore:
             raise ProjectConflict("Project changed; reload its current version")
         if edit and row["locked_task_id"] is not None:
             raise ProjectConflict(f"Project is locked by task#{row['locked_task_id']}")
+        if edit and (row["lifecycle_job_id"] is not None or lifecycle_job is not None):
+            require_project_lease(cursor, row, lifecycle_job, now)
         return dict(row)
 
     @staticmethod
@@ -417,15 +442,38 @@ class ProjectStore:
         source_turn_id=None,
         now=None,
         force_version=False,
+        lifecycle_job=None,
     ):
+        supplied_now = now
         now = int(time.time()) if now is None else now
         if len(label) > 120:
             raise ValueError("Version label exceeds 120 characters")
         with self._transaction() as cursor:
             self._scope_lock(cursor, access)
             row = self._get(
-                cursor, access, project_id, edit=True, expected=expected_version
+                cursor,
+                access,
+                project_id,
+                edit=True,
+                expected=expected_version,
+                lifecycle_job=lifecycle_job,
+                now=supplied_now,
             )
+            if lifecycle_job is not None:
+                step = cursor.execute(
+                    """SELECT 1 FROM project_lifecycle_runs r
+                    JOIN project_lifecycle_steps s ON s.job_id=r.job_id AND s.step_index=r.next_step
+                    WHERE r.job_id=? AND r.project_id=? AND r.generation=? AND r.status='running'
+                    AND s.status='pending' AND s.operation='snapshot_workspace' AND s.dispatch_lease=?""",
+                    (
+                        lifecycle_job.job_id,
+                        project_id,
+                        row["workspace_generation"],
+                        lifecycle_job.lease_generation,
+                    ),
+                ).fetchone()
+                if step is None:
+                    raise ProjectConflict("No leased lifecycle snapshot is pending")
             self._blob_lock(cursor)
             for table, column, identifier in (
                 ("subagent_tasks", "task_id", source_task_id),
@@ -507,6 +555,8 @@ class ProjectStore:
                     (now, project_id),
                 )
                 self._touch_focus(cursor, access, project_id, now)
+                if lifecycle_job is not None:
+                    require_project_lease(cursor, row, lifecycle_job, supplied_now)
                 return dict(previous)
             version = 1 if previous is None else previous["version_no"] + 1
             record = cursor.execute(
@@ -556,6 +606,8 @@ class ProjectStore:
                 {"version_no": version, "files": len(manifest)},
                 now,
             )
+            if lifecycle_job is not None:
+                require_project_lease(cursor, row, lifecycle_job, supplied_now)
             return dict(record)
 
     def versions(self, access, project_id):

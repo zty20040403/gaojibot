@@ -42,9 +42,10 @@ request ID for transport retries; these are two different identities:
 2. The durable volume intent lets a new request reconcile an interrupted
    operation after a receipt becomes uncertain.
 
-The application must persist and allocate the fence before dispatch. A job's
-attempt number is NOT an adequate project-wide fence. This allocator and the
-durable lifecycle worker have not yet been connected.
+The application persists and allocates a fence before dispatch in
+`project_lifecycle_steps`. A job's attempt number is NOT an adequate
+project-wide fence. The lifecycle journal now owns that allocator; its physical
+backend adapters and worker registration remain unimplemented/default-disabled.
 
 Native utilities run in a worker thread. Cancellation waits for the bounded
 utility to finish before releasing the runner lock. It is not rollback and does
@@ -65,7 +66,7 @@ not report cancellation as proof that no filesystem change occurred.
   `fsck` and deletion require a detached image; trim requires an idle mounted one.
 - Delete persists intent before unlinking. Retrying that same pending deletion
   can finish after the image has already disappeared. The tombstone prevents
-  recreating a deleted ID. A status request in this interrupted interval can
+  recreating the same workspace generation. A status request in this interrupted interval can
   fail because the image is missing; the persisted intent, not a generic retry
   with a new fence, is the recovery source.
 
@@ -74,6 +75,67 @@ inspection. Do not erase the journal, advance the fence or reformat to clear an
 error. A future compensator must independently prove a safe recovery action.
 Helper deletion is not a replacement for application-level retention, running
 task, undelivered-artifact or accepted-snapshot guards.
+
+## Workspace generations
+
+`generation` identifies the materialized workspace, not the project or RPC.
+All volume operations accept it; omission means generation 1 for old callers.
+An absent journal can only create generation 1. Replacing a completed workspace
+tombstone requires exactly the next generation and a strictly higher fence.
+The new UUID, generation and first pending intent are published atomically;
+the old fence high-water mark is never reset. An interrupted format resumes
+with the same generation/UUID/fence instead of formatting a third workspace.
+
+Reads, bindings and mutations reject a superseded generation even if its caller
+supplies a higher fence. This prevents delayed old work from deleting the new
+workspace after restore. The application still distinguishes archive/restore
+from permanent project deletion; the helper does not authorize either policy.
+
+## Durable lifecycle journal
+
+Migration 0044 and `project_lifecycle.py` add a private control-plane checkpoint:
+
+- Requests validate scope, membership, editor rights and optimistic revision.
+  The existing `DurableJobStore` queue, frozen transition plan, workspace
+  generation and project lock commit together. Repeated request keys return
+  the same operation; changing its actor/action is rejected.
+- Supported transition plans are wake, stop, hibernate and archive. New projects
+  materialize on first wake; archive restore creates the next generation.
+  Pinned projects cannot archive and an archived project without a retained
+  version cannot restore as an empty directory.
+- Each step records its index, operation, frozen arguments, project-wide fence,
+  RPC request ID, dispatch lease and bounded evidence before advancing. The
+  next step cannot overtake an unacknowledged step.
+- Reclaiming an expired queue lease preserves the physical effect fence and
+  arguments but rotates the uncertain transport receipt. The former worker
+  cannot acknowledge, snapshot or complete after losing its lease.
+- Ordinary metadata/version writers cannot bypass the lifecycle lock. The
+  private snapshot continuation requires the current lease and an actually
+  pending `snapshot_workspace` step; expiry is checked again before publishing.
+- Linked non-completed tasks, unresolved file receipts, missing required file
+  delivery, and artifacts without current-revision acknowledgements block
+  transitions. Checks are intentionally conservative, including historical
+  unresolved outputs. Reconciliation must release these references explicitly.
+- Snapshot acknowledgement must reference the real latest retained version.
+  Final acknowledgement must identify the expected state and workspace.
+  Finishing changes the state, settles the queue job, releases the lock and
+  writes the event in one transaction. Failure leaves the lock and journal
+  intact; no timeout handler automatically deletes a workspace.
+
+This is **not a physical executor**. `verified` evidence is accepted only from
+trusted future adapters, never a model, tool input or HTTP request. The tests
+use explicitly labelled fixture observations. Native observations, command
+quiescence and atomic coordination of task attachment/container start with
+maintenance are mandatory before enabling a worker. The journal does not yet
+prove those operations succeed on a real host. Generic queue retries alone
+must not be mistaken for a complete compensator.
+
+Remaining lifecycle integration includes physical adapters, automatic idle
+scheduling, rebuild/lockfile rules, retention sampling, trash/purge, and recovery
+UI. In particular, hibernated snapshots need a read-only export path without
+starting an application writer. Do not register `project.lifecycle` as a worker
+kind until these adapters honor every persisted step and independently verify
+the resulting state.
 
 ## Evidence and remaining gates
 
@@ -98,13 +160,11 @@ Before enabling this helper, M2 still needs:
   must not accidentally make a successful mount private to the helper.
 - Atomic project-container binding/start and maintenance coordination.
 - PostgreSQL lifecycle jobs/fences, active-task/delivery protection, snapshots,
-  rebuildable-data cleanup and version retention.
-- An explicit workspace-incarnation protocol for archive/restore. The current
-  low-level tombstone deliberately forbids recreating the same volume identity;
-  a retained project restored from a snapshot needs a new incarnation while
-  preserving the project-wide high-water fence. Do not clear its tombstone or
-  reset a fence to work around this. Ordinary permanent project deletion must
-  remain distinct from deleting an archived project's materialized workspace.
+  and incarnation journaling now have local PostgreSQL/Unix RPC coverage.
+  Their concrete backend execution, cross-process admission coordination,
+  rebuildable-data cleanup, compensation and version retention still need
+  integration and native acceptance. Do not clear a tombstone or reset a fence
+  to work around a failed restore.
 - Desktop soft-quota monitoring and cancellation, plus VM project-disk/discard
   integration, metrics and user-facing usage reporting.
 

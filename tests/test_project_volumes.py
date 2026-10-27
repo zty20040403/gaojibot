@@ -376,6 +376,61 @@ class ProjectVolumeTests(unittest.TestCase):
         with self.assertRaises(ProjectVolumeError):
             self.store.mutate("scope", 1, "fsck", fence=5)
 
+    def test_restore_uses_next_generation_and_preserves_fence(self):
+        self.create()
+        old_uuid = self.record()["fs_uuid"]
+        self.store.mutate("scope", 1, "delete", fence=9)
+        for generation, fence in ((1, 10), (3, 10), (2, 9)):
+            with self.assertRaises(ProjectVolumeError):
+                self.store.create(
+                    "scope", 1, quota_bytes=64 * MIB, fence=fence, generation=generation
+                )
+        self.store.create("scope", 1, quota_bytes=64 * MIB, fence=10, generation=2)
+        self.assertNotEqual(self.record()["fs_uuid"], old_uuid)
+        result = self.store.mutate("scope", 1, "mount", fence=11, generation=2)
+        self.assertEqual(result["generation"], 2)
+        calls = list(self.host.calls)
+        for call in (
+            lambda: self.store.status("scope", 1),
+            lambda: self.store.binding("scope", 1),
+            lambda: self.store.mutate("scope", 1, "unmount", fence=100, generation=1),
+            lambda: self.store.mutate("scope", 1, "delete", fence=101, generation=1),
+        ):
+            with self.assertRaises(ProjectVolumeError):
+                call()
+        self.assertEqual(self.host.calls, calls)
+        self.assertEqual(self.record()["fence"], 11)
+
+    def test_restore_format_crash_keeps_new_generation_and_uuid(self):
+        self.create()
+        self.store.mutate("scope", 1, "delete", fence=2)
+        self.host.after["format"] = RuntimeError("new generation crash")
+        with self.assertRaises(RuntimeError):
+            self.store.create("scope", 1, quota_bytes=64 * MIB, fence=3, generation=2)
+        record = self.record()
+        with self.assertRaises(ProjectVolumeError):
+            self.store.create("scope", 1, quota_bytes=64 * MIB, fence=4, generation=3)
+        self.reopen().create("scope", 1, quota_bytes=64 * MIB, fence=3, generation=2)
+        self.assertEqual(self.record()["fs_uuid"], record["fs_uuid"])
+        self.assertEqual(self.record()["fence"], 3)
+        self.assertEqual(self.host.calls.count("format"), 2)
+        self.assertFalse(self.record()["pending"])
+
+    def test_new_generation_publication_is_atomic_and_cannot_skip_initial(self):
+        with self.assertRaises(ProjectVolumeError):
+            self.create(generation=2)
+        self.create()
+        self.store.mutate("scope", 1, "delete", fence=2)
+        tombstone = self.record()
+        with patch.object(self.store, "_save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.store.create(
+                    "scope", 1, quota_bytes=64 * MIB, fence=3, generation=2
+                )
+        self.assertEqual(self.record(), tombstone)
+        self.assertFalse(list((self.root / "p1").glob("*.ext4")))
+        self.store.create("scope", 1, quota_bytes=64 * MIB, fence=3, generation=2)
+
     def test_rpc_rejects_paths_devices_unknown_operations_and_unbounded_numbers(self):
         args = {"owner": "scope", "project_id": 1, "quota_bytes": 64 * MIB, "fence": 1}
         validate_request(request("project_volume_create", args), file_limit=MIB)
@@ -385,6 +440,9 @@ class ProjectVolumeTests(unittest.TestCase):
             {"quota_bytes": 0},
             {"quota_bytes": 64 * MIB + 1},
             {"fence": True},
+            {"generation": True},
+            {"generation": 0},
+            {"generation": 2**53},
             {"project_id": "../1"},
         ):
             with self.assertRaises(SandboxError):
@@ -528,10 +586,25 @@ class ProjectVolumeRpcTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first, again)
         self.assertEqual(self.host.calls.count("format"), 1)
+
         await self.client.project_volume("mount", "scope", 1, fence=2)
         status = await self.client.project_volume("status", "scope", 1)
         self.assertTrue(status["mounted"])
         self.assertNotIn(str(self.root), json.dumps(status))
+
+    async def test_generation_round_trip_and_stale_rpc_rejection(self):
+        await self.client.project_volume(
+            "create", "scope", 1, quota_bytes=64 * MIB, fence=1
+        )
+        await self.client.project_volume("delete", "scope", 1, fence=2)
+        created = await self.client.project_volume(
+            "create", "scope", 1, quota_bytes=64 * MIB, fence=3, generation=2
+        )
+        self.assertEqual(created["generation"], 2)
+        with self.assertRaises(SandboxError):
+            await self.client.project_volume("delete", "scope", 1, fence=4)
+        result = await self.client.project_volume("status", "scope", 1, generation=2)
+        self.assertEqual(result["fence"], 3)
 
     async def test_cancel_waits_for_filesystem_operation_and_does_not_block_event_loop(
         self,

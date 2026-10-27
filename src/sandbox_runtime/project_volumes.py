@@ -216,6 +216,13 @@ class ProjectVolumes:
             )
         return value
 
+    @staticmethod
+    def _generation(record, generation):
+        if type(generation) is not int or not 1 <= generation < 2**53:
+            raise ProjectVolumeError("Invalid workspace generation")
+        if record is not None and record.get("generation", 1) != generation:
+            raise ProjectVolumeError("Workspace generation was superseded")
+
     @contextmanager
     def _locked(self, owner, project_id):
         if (
@@ -382,6 +389,7 @@ class ProjectVolumes:
         if record.get("deleted"):
             return {
                 "project_id": record["project_id"],
+                "generation": record.get("generation", 1),
                 "fence": record["fence"],
                 "deleted": True,
             }
@@ -390,6 +398,7 @@ class ProjectVolumes:
             raise ProjectVolumeError("Project image capacity differs from its journal")
         result = {
             "project_id": record["project_id"],
+            "generation": record.get("generation", 1),
             "fence": record["fence"],
             "quota_mode": "hard",
             "quota_bytes": record["quota_bytes"],
@@ -408,18 +417,35 @@ class ProjectVolumes:
             ) * usage.f_frsize
         return result
 
-    def status(self, owner, project_id):
+    def status(self, owner, project_id, *, generation=1):
         with self._locked(owner, project_id) as (directory, record):
             if record is None:
                 raise ProjectVolumeError("Project volume does not exist")
+            self._generation(record, generation)
             return self._status(directory, record)
 
-    def create(self, owner, project_id, *, quota_bytes, fence):
+    def create(self, owner, project_id, *, quota_bytes, fence, generation=1):
         quota_bytes = self._quota(quota_bytes)
+        self._generation(None, generation)
         if type(fence) is not int or not 1 <= fence < 2**53:
             raise ProjectVolumeError("Invalid project operation fence")
         with self._locked(owner, project_id) as (directory, record):
-            if record is None:
+            previous_fence = record["fence"] if record else 0
+            replacing = record is not None and record.get("deleted", False)
+            if replacing:
+                if (
+                    generation != record.get("generation", 1) + 1
+                    or fence <= previous_fence
+                    or record["pending"]
+                ):
+                    raise ProjectVolumeError(
+                        "Deleted workspace needs the next generation and a newer fence"
+                    )
+            else:
+                self._generation(record, generation)
+                if record is None and generation != 1:
+                    raise ProjectVolumeError("Initial workspace generation must be one")
+            if record is None or replacing:
                 self._admit(min(quota_bytes, 256 * MIB))
                 if any(path.name != "volume.json" for path in directory.iterdir()):
                     raise ProjectVolumeError(
@@ -429,16 +455,18 @@ class ProjectVolumes:
                     "schema": 1,
                     "instance_id": self.instance_id,
                     "project_id": project_id,
+                    "generation": generation,
                     "owner_hash": hashlib.sha256(owner.encode()).hexdigest(),
                     "fs_uuid": str(uuid.uuid4()),
                     "quota_bytes": quota_bytes,
                     "image_identity": None,
-                    "fence": 0,
+                    "fence": previous_fence,
                     "pending": False,
                     "intent": None,
                     "initialized": False,
                 }
-                self._save(directory, record)
+                # Publish the new incarnation and its first intent atomically.
+                # The previous generation's high-water fence is never reset.
             if record.get("deleted") or (
                 record["intent"] and record["intent"]["operation"] != "create"
             ):
@@ -506,7 +534,9 @@ class ProjectVolumes:
         if self.host.in_use(target):
             raise ProjectVolumeError("Project has an active filesystem consumer")
 
-    def mutate(self, owner, project_id, operation, *, fence, quota_bytes=None):
+    def mutate(
+        self, owner, project_id, operation, *, fence, quota_bytes=None, generation=1
+    ):
         if operation not in {"mount", "unmount", "resize", "fsck", "trim", "delete"}:
             raise ProjectVolumeError("Unsupported project-volume operation")
         arguments = (
@@ -517,6 +547,7 @@ class ProjectVolumes:
         with self._locked(owner, project_id) as (directory, record):
             if record is None:
                 raise ProjectVolumeError("Project volume does not exist")
+            self._generation(record, generation)
             if record.get("deleted"):
                 if operation == "delete" and fence == record["fence"]:
                     return self._status(directory, record)
@@ -632,9 +663,10 @@ class ProjectVolumes:
         finally:
             os.close(fd)
 
-    def binding(self, owner, project_id):
+    def binding(self, owner, project_id, *, generation=1):
         """Trusted local Docker driver only; never expose this path in RPC responses."""
         with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
             if record is None or record.get("deleted") or record["pending"]:
                 raise ProjectVolumeError("Project volume is not ready for a writer")
             _, target, _, _, mount = self._observed(directory, record)
