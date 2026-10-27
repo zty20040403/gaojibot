@@ -18,6 +18,10 @@ from .external import poll_external
 from ..delivery import body_fingerprint
 from .file_outbox import attempt_file
 from .preview_receipts import preview_delivery_note
+from .collaboration_runtime import (
+    CollaborationGuard, CollaborationRevoked, CollaborationUnavailable,
+    active_collaboration_guard, execution_event,
+)
 from ..tool_policy import tool_enabled
 
 
@@ -403,6 +407,7 @@ class SubAgentDispatcher:
 
         fence = JobFence(job.job_id, job.lease_owner, job.attempts, owns_lease)
         token = active_job_fence.set(fence)
+        collaboration_token = active_collaboration_guard.set(None)
         try:
             fence.assert_owned()
             if task.cancel_requested and task.status != "cancelled":
@@ -420,6 +425,11 @@ class SubAgentDispatcher:
                         raise JobDeferred("QQ 未连接，恢复连接后继续任务", 30) from None
                     if isinstance(event, GroupMessageEvent) and not self.services.group_enabled(event.group_id):
                         raise JobDeferred("群已停用，暂停执行", 30)
+                    actual_event = execution_event(self.store, task, control)
+                    if actual_event is not None:
+                        guard = CollaborationGuard(self.context, bot, task, actual_event, control["revision"])
+                        await guard.check()
+                        active_collaboration_guard.set(guard)
                     external = self.store.external_calls(task_id)
                     if any(c["status"] == "pending" for c in external):
                         client = getattr(self.context, "fleet_client", None)
@@ -441,9 +451,15 @@ class SubAgentDispatcher:
                     remaining = float(dispatch.get("deadline", time.time() + self.coordinator.timeout_seconds)) - time.time()
                     trace = AgentTrace(trace_id=task.trace_id)
                     async with asyncio.timeout(remaining):
-                        await self.services.tools._ask_ai(bot, event, task.objective,
-                            selected_model_override=dispatch.get("profile"), turn_trace=trace,
+                        await self.services.tools._ask_ai(bot, actual_event or event, task.objective,
+                            selected_model_override=None if actual_event is not None else dispatch.get("profile"), turn_trace=trace,
                             resume_task_id=task_id)
+                except CollaborationUnavailable as exc:
+                    self.store.interrupt_task(task_id)
+                    raise JobDeferred(str(exc), 30) from exc
+                except CollaborationRevoked as exc:
+                    self.store.settle_unfinished_runs(task_id, running_status="cancelled", pending_status="skipped", error=str(exc))
+                    self.store.set_task_state(task_id, "cancelled", error=str(exc))
                 except ContinuationCancelled:
                     self.store.settle_unfinished_runs(task_id, running_status="cancelled", pending_status="skipped", error="用户取消任务")
                     self.store.set_task_state(task_id, "cancelled", error="用户取消任务；已提交的远程作业需另行核对。")
@@ -464,4 +480,5 @@ class SubAgentDispatcher:
         except LeaseLost:
             raise asyncio.CancelledError("worker lease lost")
         finally:
+            active_collaboration_guard.reset(collaboration_token)
             active_job_fence.reset(token)

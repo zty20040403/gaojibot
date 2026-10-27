@@ -34,7 +34,7 @@ def preview_delivery_note(store, task, revision: int, *, now: int | None = None)
         ).hexdigest()
         if (item["task_id"] != task.task_id or item["status"] != "resolved" or item["run_id"] not in run_ids
                 or request.get("method") != "POST" or request.get("path") != "/v1/jobs"
-                or request.get("actor") != f"qq:{task.requester_user_id}" or request.get("origin") != task.scope_key
+                or request.get("actor") != f"qq:{store.revision_actor(task.task_id, item['revision'])}" or request.get("origin") != task.scope_key
                 or body.get("kind") != "preview.static" or body.get("idempotency_key") != expected_key
                 or record.get("kind") != "preview.static" or record.get("status") != "succeeded"
                 or record.get("actor_id") != request["actor"] or record.get("origin_scope") != task.scope_key

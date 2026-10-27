@@ -32,7 +32,7 @@ def audit_actor() -> str:
 
 
 def approval_command(text: str, *, private: bool = False) -> bool:
-    return bool(re.match(r"^\s*/?(?:确认|取消|重发|审批状态|confirm|cancel|resend)\s+AP-", text, re.I)
+    return bool(re.match(r"^\s*/?(?:确认|取消|重发|审批状态|复核|撤销复核|confirm|cancel|resend|review)\s+AP-", text, re.I)
                 or (private and re.fullmatch(r"[0-9]{6}", text.strip())))
 
 
@@ -50,13 +50,18 @@ class MobileAuthorization:
         result = await asyncio.to_thread(self.store.apply_account_change, request["account"], request["payload"])
         return {"ok": True, "account": result}
 
-    async def propose(self, account: dict[str, Any], *, kind: str, payload: dict[str, Any], summary: str, reference: str = "") -> dict[str, Any]:
+    async def propose(self, account: dict[str, Any], *, kind: str, payload: dict[str, Any], summary: str, reference: str = "", quorum: int = 1) -> dict[str, Any]:
         bot_id = self.bot_selector()
-        request, code = await asyncio.to_thread(self.store.propose, account, bot_id=bot_id, kind=kind, payload=payload, summary=summary, reference=reference)
+        request, code = await asyncio.to_thread(self.store.propose, account, bot_id=bot_id, kind=kind, payload=payload, summary=summary, reference=reference, quorum=quorum)
         if code is not None:
             await self._send_code(request, code)
         result = await asyncio.to_thread(self.store.get, request["approval_id"], account["account_id"])
-        return {**result, "executed": False, "message": "在绑定 QQ 的机器人私聊中核对内容，直接回复 6 位验证码即授权并自动继续；无需再确认。"}
+        message = "在绑定 QQ 的机器人私聊中核对内容，回复 6 位验证码。"
+        if result["quorum"] > 1:
+            message += f"此操作须两位不同管理员确认；另一位私聊发送「复核 {request['approval_id']}」，核对后输入自己的验证码。"
+        else:
+            message += "授权后自动继续，无需再确认。"
+        return {**result, "executed": False, "message": message}
 
     async def propose_qq(self, qq_id: str, *, kind: str, payload: dict[str, Any], summary: str) -> dict[str, Any]:
         account = await asyncio.to_thread(self.store.account_for_qq, qq_id)
@@ -65,9 +70,11 @@ class MobileAuthorization:
         return await self.propose(account, kind=kind, payload=payload, summary=summary)
 
     async def _send_code(self, request: dict[str, Any], code: str) -> None:
+        review = (f"\n高风险操作须两位不同管理员批准。另一位请私聊：复核 {request['approval_id']}\n"
+                  if request["quorum"] > 1 else f"\n复核原操作：{request['parent_approval_id']}；记一票，不单独执行命令。\n" if request.get("parent_approval_id") else "")
         text = (f"待确认操作：{request['approval_id']}\n{request['summary']}\n\n"
                 f"一次性口令：{code}\n3 分钟有效，仅本人可用，成功一次立即失效。\n"
-                f"直接回复 {code} 即授权并自动继续，无需操作编号或再次确认。\n"
+                f"直接回复 {code} 记录本人的批准；达到所需人数才会执行。{review}\n"
                 f"取消请回复：取消 {request['approval_id']}\n"
                 f"重发请回复：重发 {request['approval_id']}")
         try:
@@ -84,7 +91,7 @@ class MobileAuthorization:
             try:
                 request = await asyncio.to_thread(self.store.confirm, None, qq_id, bot_id, text.strip())
                 self.wake.set()
-                return f"{request['approval_id']} 已授权，验证码已失效，将自动继续执行，无需再次确认。"
+                return self.confirmation_text(request)
             except SecurityError as exc:
                 return str(exc)
         parts = text.strip().lstrip("/").split()
@@ -93,9 +100,17 @@ class MobileAuthorization:
         verb, approval_id = parts[0].lower(), parts[1].upper()
         try:
             if verb in {"确认", "confirm"} and len(parts) == 3:
-                await asyncio.to_thread(self.store.confirm, approval_id, qq_id, bot_id, parts[2])
+                request = await asyncio.to_thread(self.store.confirm, approval_id, qq_id, bot_id, parts[2])
                 self.wake.set()
-                return f"{approval_id} 已确认，口令已失效，操作已进入执行队列。"
+                return self.confirmation_text(request)
+            if verb in {"复核", "review"} and len(parts) == 2:
+                request, code = await asyncio.to_thread(self.store.request_review, approval_id, qq_id, bot_id)
+                if code is not None:
+                    await self._send_code(request, code)
+                return f"{request['approval_id']}：请核对私聊中的原始操作，回复你自己的验证码；重复申请不会增加票数。"
+            if verb == "撤销复核" and len(parts) == 2:
+                await asyncio.to_thread(self.store.revoke_review, approval_id, qq_id, bot_id)
+                return f"{approval_id} 复核已撤销，未开始的操作不会继续。"
             if verb in {"取消", "cancel"} and len(parts) == 2:
                 await asyncio.to_thread(self.store.cancel, approval_id, qq_id, bot_id)
                 return f"{approval_id} 已取消，口令已失效。"
@@ -112,6 +127,13 @@ class MobileAuthorization:
             return "直接回复 6 位验证码即可授权；取消/重发 AP-操作编号。"
         except SecurityError as exc:
             return str(exc)
+
+    @staticmethod
+    def confirmation_text(request):
+        count, quorum = request.get("approved_count", 1), request.get("quorum", 1)
+        if request["status"] == "queued":
+            return f"{request['approval_id']} 已授权（{count}/{quorum}），验证码已失效，将自动继续执行。"
+        return f"{request['approval_id']} 已记录本人批准（{count}/{quorum}），尚未执行，仍需另一位管理员确认。"
 
     async def run_once(self) -> bool:
         request = await asyncio.to_thread(self.store.claim, self.owner)

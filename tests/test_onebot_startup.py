@@ -373,6 +373,7 @@ EXPECTED_BINDINGS = (
     ("usage_command", "commands", "handle_usage_command"),
     ("routine_command", "commands", "handle_routine_command"),
     ("wiki_command", "commands", "handle_wiki_command"),
+    ("collaboration_command", "commands", "handle_collaboration_command"),
     ("task_stop", "commands", "handle_task_stop"),
     ("mention_ai", "commands", "handle_mention_ai"),
     ("canonical_ingest_tracker", "ingest", "handle_canonical_ingest"),
@@ -425,7 +426,7 @@ class OneBotMatcherStartupTests(unittest.IsolatedAsyncioTestCase):
             GroupIncreaseNoticeEvent: Mock(),
             Message: Message("args"),
         }
-        self.assertEqual(len(EXPECTED_BINDINGS), 32)
+        self.assertEqual(len(EXPECTED_BINDINGS), 33)
         for matcher, service, name in EXPECTED_BINDINGS:
             with self.subTest(matcher=matcher, handler=name):
                 endpoint = getattr(registry, matcher).endpoint

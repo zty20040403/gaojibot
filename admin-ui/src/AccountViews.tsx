@@ -46,7 +46,7 @@ export function MemberStatus({ plane }: { plane: Plane }) {
   </div>
 }
 
-const LABELS: Record<string, string> = { sending: '发送口令中', pending: '待手机确认', queued: '已确认，待执行', executing: '执行中', succeeded: '操作完成', failed: '执行失败', expired: '已过期', cancelled: '已取消', locked: '口令已锁定', delivery_failed: '私聊发送失败', needs_attention: '需核对结果' }
+const LABELS: Record<string, string> = { sending: '发送口令中', pending: '待手机确认', awaiting_quorum: '等待另一位管理员', queued: '已确认，待执行', executing: '执行中', succeeded: '操作完成', failed: '执行失败', expired: '已过期', cancelled: '已取消', locked: '口令已锁定', delivery_failed: '私聊发送失败', needs_attention: '需核对结果' }
 
 export function AccountsView({ plane }: { plane: Plane }) {
   const [selected, setSelected] = useState<JsonObject | null>(null)
@@ -89,14 +89,15 @@ export function AccountsView({ plane }: { plane: Plane }) {
         <div className="account-actions"><button className="primary-button" type="submit" disabled={busy}>{busy ? '保存中…' : '保存'}</button><button type="button" className="text-button" onClick={() => { setSelected(null); setCreating(false); setPassword('') }}>关闭表单</button></div>
       </form>}
     </Section>
-    <Section title="服务器任务授权" description="Bot 的重要服务器命令按任务授权一次，子任务共享，任务结束后失效。" action={<button className="command-button" onClick={() => void plane.refresh('approvals')}>刷新</button>}>
+    <Section title="服务器任务授权" description="高风险服务器操作需要两位管理员；任务内共享授权，结束或修订后失效。" action={<button className="command-button" onClick={() => void plane.refresh('approvals')}>刷新</button>}>
       {!approvals.length && <EmptyState>还没有需要确认的操作。</EmptyState>}
       <div className="approval-list">{approvals.map((item) => <article key={item.approval_id}>
-        <header><code>{item.approval_id}</code><StatusBadge value={item.status} label={LABELS[item.status] ?? item.status} /><small>{fmtTime(item.created_at)}</small></header>
+        <header><code>{item.approval_id}</code><StatusBadge value={item.status} label={item.kind === 'quorum_vote' && item.status === 'succeeded' ? '复核已记录' : LABELS[item.status] ?? item.status} /><small>{fmtTime(item.created_at)}</small></header>
+        {item.quorum > 1 && <p>已确认 {item.approved_count ?? 0}/{item.quorum} · <code>{item.review_command}</code>{item.parent_approval_id && <> · 原操作 {LABELS[item.parent_status] ?? item.parent_status}</>}</p>}
         <details><summary>查看操作内容</summary><pre>{item.summary}</pre>{Object.keys(item.result ?? {}).length > 0 && <pre>{JSON.stringify(item.result, null, 2)}</pre>}</details>
         <div className="account-actions">
-          {['pending', 'expired', 'locked', 'delivery_failed'].includes(item.status) && <button className="command-button" onClick={async () => { try { await plane.approvalAction(item.approval_id, 'resend') } catch (e) { setError(String(e)) } }}>重发口令</button>}
-          {['pending', 'queued', 'sending', 'expired', 'locked', 'delivery_failed'].includes(item.status) && <button className="text-button" onClick={async () => { try { await plane.approvalAction(item.approval_id, 'cancel') } catch (e) { setError(String(e)) } }}>取消操作</button>}
+          {['pending', 'awaiting_quorum', 'expired', 'locked', 'delivery_failed'].includes(item.status) && <button className="command-button" onClick={async () => { try { await plane.approvalAction(item.approval_id, 'resend') } catch (e) { setError(String(e)) } }}>重发口令</button>}
+          {['pending', 'awaiting_quorum', 'queued', 'sending', 'expired', 'locked', 'delivery_failed'].includes(item.status) && <button className="text-button" onClick={async () => { try { await plane.approvalAction(item.approval_id, 'cancel') } catch (e) { setError(String(e)) } }}>取消操作</button>}
         </div>
       </article>)}</div>
       {error && <p className="account-error" role="alert">{error}</p>}
@@ -109,5 +110,5 @@ export function AccountsView({ plane }: { plane: Plane }) {
 
 export function ApprovalNotice({ plane }: { plane: Plane }) {
   if (!plane.pendingApproval) return null
-  return <div className="approval-notice" role="status"><ShieldCheck size={19} /><div><strong>{LABELS[plane.pendingApproval.status] ?? '等待手机确认'} · {plane.pendingApproval.approval_id}</strong><span>请在绑定 QQ 的机器人私聊中核对操作并回复 6 位口令。</span></div></div>
+  return <div className="approval-notice" role="status"><ShieldCheck size={19} /><div><strong>{LABELS[plane.pendingApproval.status] ?? '等待手机确认'} · {plane.pendingApproval.approval_id}</strong><span>{plane.pendingApproval.quorum > 1 ? `已确认 ${plane.pendingApproval.approved_count ?? 0}/${plane.pendingApproval.quorum}；另一位管理员私聊发送「${plane.pendingApproval.review_command}」，核对后回复自己的验证码。` : '请在绑定 QQ 的机器人私聊中核对操作并回复 6 位口令。'}</span></div></div>
 }

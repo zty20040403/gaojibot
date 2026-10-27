@@ -85,6 +85,9 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
     async def handle_wiki_command(event: MessageEvent, args: Message = CommandArg()) -> None:
         await runtime.handlers.commands.handle_wiki_command(event, args)
 
+    async def handle_collaboration_command(bot: Bot, event: MessageEvent, args: Message = CommandArg()) -> None:
+        await runtime.handlers.commands.handle_collaboration_command(bot, event, args)
+
     async def handle_task_stop(
         event: MessageEvent, args: Message = CommandArg()
     ) -> None:
@@ -151,6 +154,7 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
         (matchers.usage_command, handle_usage_command),
         (matchers.routine_command, handle_routine_command),
         (matchers.wiki_command, handle_wiki_command),
+        (matchers.collaboration_command, handle_collaboration_command),
         (matchers.task_stop, handle_task_stop),
         (matchers.mention_ai, handle_mention_ai),
         (matchers.canonical_ingest_tracker, handle_canonical_ingest),

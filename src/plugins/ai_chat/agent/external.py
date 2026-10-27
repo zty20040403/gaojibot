@@ -144,7 +144,9 @@ class ExternalCalls:
         if not self.call_id or not ((method == "POST" and path in SUBMISSIONS)
                                    or (method == "GET" and READ_PATH.fullmatch(path))):
             return await perform(body)
-        if actor != f"qq:{task.requester_user_id}" or origin != task.scope_key:
+        actual_user = self.store.revision_actor(self.task_id)
+        self.store.require_execution_actor(self.task_id, actual_user)
+        if actor != f"qq:{actual_user}" or origin != task.scope_key:
             raise PermissionError("External call does not match the task owner")
         body = dict(body or {}) if body is not None else None
         if method == "POST":
@@ -173,8 +175,10 @@ async def poll_external(store, task, client):
     """Called only by the task lease holder; never runs an LLM."""
     from ..server_task_authorization import server_task
     control = store.control(task.task_id)
+    actual_user = store.revision_actor(task.task_id)
+    store.require_execution_actor(task.task_id, actual_user)
     scope = {"kind": "task", "id": task.task_id, "revision": control["revision"],
-             "scope": task.scope_key, "qq_id": str(task.requester_user_id),
+             "scope": task.scope_key, "qq_id": str(actual_user),
              "bot_id": str(control["dispatch"]["bot_id"]), "objective": task.objective}
     token = server_task.set(scope)
     try:
@@ -182,11 +186,13 @@ async def poll_external(store, task, client):
             if item["status"] != "pending":
                 continue
             assert_job_owned()
+            from .collaboration_runtime import guard_collaboration
+            await guard_collaboration()
             current = store.get(task.task_id)
             if current.cancel_requested or current.finished_at is not None or store.control(task.task_id)["revision"] != control["revision"]:
                 return False
             request = item["request"]
-            if request["actor"] != f"qq:{task.requester_user_id}" or request["origin"] != task.scope_key:
+            if request["actor"] != f"qq:{actual_user}" or request["origin"] != task.scope_key:
                 raise PermissionError("Stored external request has an invalid owner")
             try:
                 if item["remote_path"]:

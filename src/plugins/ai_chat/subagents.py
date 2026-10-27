@@ -82,6 +82,8 @@ from .agent.control import (
     active_model_policy,
     assert_job_owned,
 )
+from .agent.collaboration import TaskCollaborationStoreMixin, feedback_instruction
+from .agent.collaboration_runtime import active_collaboration_guard, guard_collaboration
 from .agent_loop import (
     AgentLoopEvent,
     DeepSeekConfigError,
@@ -242,6 +244,7 @@ class RunRecord:
 class SubAgentStore(
     AgentSessionStoreMixin,
     TaskControlStoreMixin,
+    TaskCollaborationStoreMixin,
     ExternalStoreMixin,
     EvidenceStoreMixin,
     FileOutboxStoreMixin,
@@ -1235,6 +1238,8 @@ class SubAgentCoordinator:
         task = self.store.get(task_id)
         if not task or task.status in {"planning", "running", "verifying", "cancelling", "waiting_external"}:
             raise ValueError("Change task models while queued or stopped, not during an active step")
+        if self.store.revision_actor(task_id) != task.requester_user_id:
+            raise ValueError("协作者修订按其实际权限自动选模，不覆盖任务发起人的模型策略。")
         clean = validate_model_policy(policy, self.model_catalog)
         result = self.store.update_control(task_id, expected_version=expected_version, policy=clean)
         self.store.append_event(task_id, "task.model_policy_changed", {"policy": clean, "version": result["version"]})
@@ -1243,11 +1248,16 @@ class SubAgentCoordinator:
     def revise(self, task_id: int, *, scope_key: str, requester_user_id: int, instruction: str,
                step_keys: Sequence[str], expected_version: int,
                file_delivery_required: bool | None = None,
-               contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
+               contract: Mapping[str, Any] | None = None,
+               include_feedback: bool = False,
+               revision_context: ContextPacket | None = None,
+               revision_event: dict | None = None) -> dict[str, Any]:
         self.store.require_routine_owner(task_id)
         task = self.store.get(task_id)
-        if task is None or task.scope_key != scope_key or task.requester_user_id != requester_user_id:
+        if task is None or task.scope_key != scope_key:
             raise ValueError("Cannot revise a task belonging to another user or conversation")
+        if task.requester_user_id != requester_user_id and (revision_context is None or revision_event is None):
+            raise ValueError("Cannot revise another user's task without fresh authorized execution context")
         if task.status not in {"completed", "partial", "failed", "cancelled", "interrupted"}:
             raise ValueError("Wait for the running task or cancel it before revising")
         if not instruction.strip() or len(instruction) > 12000:
@@ -1269,6 +1279,28 @@ class SubAgentCoordinator:
             selected = expanded
         if expected_version != control["version"]:
             raise ValueError("Task version changed; refresh before revising")
+        execution = None
+        if revision_context is not None or revision_event is not None:
+            if revision_context is None or revision_event is None:
+                raise ValueError("Revision context and event must be provided together")
+            execution = self.store.revision_execution(task_id, scope_key=scope_key,
+                requester_user_id=requester_user_id, expected_version=expected_version,
+                context_packet=revision_context, event_payload=revision_event)
+        if type(include_feedback) is not bool:
+            raise ValueError("include_feedback must be a boolean")
+        if task.requester_user_id != requester_user_id:
+            include_feedback = True
+        feedback = []
+        if include_feedback:
+            feedback = self.store.pending_revision_feedback(task_id, scope_key=scope_key,
+                requester_user_id=requester_user_id, expected_version=expected_version)
+            instruction += feedback_instruction(feedback)
+            if len(instruction) > 12000:
+                raise ValueError("Combined revision exceeds 12000 characters; dismiss or shorten feedback first")
+            if feedback:
+                # The entry model did not necessarily see the inbox. Let the durable
+                # supervisor reconcile the entire batch before any worker starts.
+                contract = None
         if contract is not None:
             contract = self._revision_contract(task_id, step_keys, contract)
             if file_delivery_required is not None:
@@ -1279,10 +1311,16 @@ class SubAgentCoordinator:
         if parent is not None:
             deadline = min(deadline, parent["deadline_at"])
         updated["dispatch"] = {**control["dispatch"], "deadline": deadline}
+        updated["dispatch"].pop("execution", None)
+        if execution is not None:
+            updated["dispatch"]["execution"] = execution
         retired = {r.step_key for r in runs if r.step_key.startswith("acceptance_r")
             or (_repair_target(r.step_key) or _repair_support_target(r.step_key)) in selected}
-        checkpoint = {"revision": updated["revision"], "instruction": instruction, "steps": sorted(selected),
+        checkpoint = {"revision": updated["revision"], "actor_user_id": requester_user_id,
+            "instruction": instruction, "steps": sorted(selected),
             "previous_result": task.result, "previous_runs": [{"run_id": r.run_id, "result": r.result, "status": r.status} for r in runs]}
+        if feedback:
+            checkpoint["feedback"] = feedback
         plan = dict(task.plan)
         checkpoint["previous_contract"] = plan.get("contract", {})
         if contract is not None:
@@ -1304,6 +1342,8 @@ class SubAgentCoordinator:
                 (updated["version"], updated["revision"], json.dumps(updated["dispatch"]), int(time.time()), task_id, expected_version))
             if cursor.rowcount != 1:
                 raise ValueError("Task version changed; refresh before revising")
+            self.store.consume_revision_feedback(cursor, task_id, feedback,
+                revision=updated["revision"], timestamp=int(time.time()))
             cursor.execute("UPDATE subagent_tasks SET status='revising' WHERE task_id=? AND status IN ('completed','partial','failed','cancelled','interrupted')", (task_id,))
             if cursor.rowcount != 1:
                 raise ValueError("Task started concurrently; revision aborted")
@@ -1572,18 +1612,28 @@ class SubAgentCoordinator:
         task = self.store.get(task_id)
         if task is None:
             raise ValueError(f"Sub-Agent 任务 task#{task_id} 不存在。")
-        if task.scope_key != scope_key or task.requester_user_id != requester_user_id:
+        if task.scope_key != scope_key or self.store.revision_actor(task_id) != requester_user_id:
             raise ValueError("不能恢复其他群或其他用户发起的 Sub-Agent 任务。")
+        self.store.require_execution_actor(task_id, requester_user_id)
         if task.status not in {"interrupted", "queued", "waiting_external"}:
             raise ValueError(f"{task.handle} 当前状态是 {task.status}，不能断点续跑。")
         context = _checkpoint_context_packet(self.store.checkpoints(task_id))
+        execution = self.store.control(task_id)["dispatch"].get("execution")
+        if execution is not None:
+            guard = active_collaboration_guard.get()
+            if guard is None or guard.task.task_id != task_id:
+                raise PermissionError("Collaborative revisions must resume through their guarded background job")
+            await guard.check()
+            context = ContextPacket.from_payload(execution["context_packet"])
         if context is None:
             raise RuntimeError(f"{task.handle} 缺少可恢复的上下文检查点。")
         if context.scope_key != task.scope_key:
             raise RuntimeError(f"{task.handle} 的检查点作用域不一致。")
+        if context.requester_user_id != requester_user_id:
+            raise RuntimeError(f"{task.handle} 的恢复上下文不属于本版执行者。")
         if not self.store.prepare_resume(task_id):
             raise RuntimeError(f"{task.handle} 未能进入恢复状态。")
-        active_model_policy.set(self.store.control(task_id)["policy"])
+        active_model_policy.set(self.store.execution_model_policy(task_id))
 
         current = asyncio.current_task()
         if current is not None:
@@ -2921,6 +2971,7 @@ class SubAgentCoordinator:
 
         async def worker_execute_tool(name: str, arguments: dict[str, Any]) -> str:
             assert_job_owned()
+            await guard_collaboration()
             if not tool_enabled(name):
                 return json.dumps({"ok": False, "error": "This tool was disabled by the administrator"})
             if self.store.cancellation_requested(task.task_id):

@@ -359,6 +359,7 @@ class FleetControlClientTests(unittest.IsolatedAsyncioTestCase):
         store = Mock()
         store.control.return_value = {"revision": 1}
         store.get.return_value = SimpleNamespace(requester_user_id=2, scope_key="test:scope")
+        store.revision_actor.return_value = 2
         store.external_calls.return_value = [item]
 
         def finish(_, response):

@@ -63,7 +63,7 @@ def scoped_agent_models(method):
     @wraps(method)
     async def wrapped(self, *args, **kwargs):
         task_id = kwargs.get("task_id") or (args[0] if args and isinstance(args[0], int) else None)
-        policy = self.store.control(task_id)["policy"] if task_id else {}
+        policy = self.store.execution_model_policy(task_id) if task_id else {}
         overrides = dict(self.profile_overrides)
         for role, value in policy.get("roles", {}).items():
             if value.get("profile"):

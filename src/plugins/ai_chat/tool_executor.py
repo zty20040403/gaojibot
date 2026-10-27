@@ -51,6 +51,7 @@ from .ai_tools import (
 from .agent import ContextPacket
 from .agent.execution import EntryDecision, active_agent_step
 from .agent.control import assert_job_owned
+from .agent.collaboration_runtime import guard_collaboration
 from .agent.workspaces import StepWorkspaces
 from .context_policy import (
     chronological_projection_budget,
@@ -609,6 +610,7 @@ class ToolExecutor(HandlerService):
 
         async def call_tool(name: str, arguments: dict[str, object]) -> str:
             assert_job_owned()
+            await guard_collaboration()
             async with telemetry.tool(name):
                 fleet_auth = getattr(self.context.fleet_client, "authorization", None)
                 task_auth = getattr(fleet_auth, "tasks", None)
@@ -630,12 +632,14 @@ class ToolExecutor(HandlerService):
             return str(saved["result"])
 
         async def handoff_tool(name, arguments, fingerprint):
+            await guard_collaboration()
             action = lambda: agent_executor.handoff_tool(name, arguments, fingerprint)
             if routine_execution is None:
                 return await action()
             return await routine_execution.tool(name, arguments, action)
 
         async def compensate_tool(name, arguments, reason):
+            await guard_collaboration()
             if routine_execution is not None:
                 await routine_execution.guard()
             return await agent_executor.compensate_tool(name, arguments, reason)
@@ -1395,10 +1399,20 @@ class ToolExecutor(HandlerService):
                             "steps": list(decision.step_ids), "contract": decision.contract.as_payload(),
                         }, revise_owned)
                         return await run_resume_goal(decision.task_id)
-                    control = coordinator.store.control(decision.task_id)
-                    revised = coordinator.revise(decision.task_id, scope_key=scope_from_event(event).key,
-                        requester_user_id=event.user_id, instruction=user_text, step_keys=decision.step_ids,
-                        expected_version=control["version"], contract=decision.contract.as_payload())
+                    revision_fields = {}
+                    if isinstance(event, GroupMessageEvent):
+                        from .collaboration_handlers import collaboration_access
+                        _, view, _ = await collaboration_access(self.services, bot, event, decision.task_id, merging=True)
+                        version = view["version"]
+                        revision_fields = {"revision_context": await subagent_context_packet(user_text),
+                            "revision_event": event.model_dump(mode="json"), "include_feedback": True}
+                    else:
+                        control = await self.context.db_call(coordinator.store.control, decision.task_id)
+                        version = control["version"]
+                    revised = await self.context.db_call(coordinator.revise, decision.task_id,
+                        scope_key=scope_from_event(event).key, requester_user_id=event.user_id,
+                        instruction=user_text, step_keys=decision.step_ids, expected_version=version,
+                        contract=decision.contract.as_payload(), **revision_fields)
                     return f"task#{decision.task_id} 已追加第 {revised['revision']} 版修改，沿用原任务和各 Agent 的独立上下文。"
                 required_tool = RUN_SUBAGENTS_TOOL_NAME if decision.mode == "workflow" else DELEGATE_AGENT_TOOL_NAME
                 if not tool_enabled(required_tool):
@@ -1429,6 +1443,18 @@ class ToolExecutor(HandlerService):
                     return await resume_child(routine_execution, task_id,
                         selected_profile=selected_profile, tools=tools, execute_tool=execute_tool,
                         parent_trace=turn_trace, progress=report_subagent_progress, hooks=subagent_hooks)
+                if resume_task_id is None:
+                    store = self.context.subagent_store
+                    control = await self.context.db_call(store.control, task_id)
+                    if control["dispatch"].get("execution") is not None:
+                        from .collaboration_handlers import collaboration_access
+                        task, _, _ = await collaboration_access(self.services, bot, event, task_id)
+                        await self.context.db_call(store.require_execution_actor, task_id, event.user_id)
+                        dispatcher = self.context.subagent_coordinator.dispatcher
+                        if task.status not in {"queued", "interrupted", "waiting_external"} or dispatcher is None:
+                            raise ValueError("这项协作修订目前不能后台续跑。")
+                        await self.context.db_call(dispatcher.enqueue, task_id)
+                        return f"task#{task_id} 已排队续跑，重新核对成员和协作授权后继续。"
                 return await self.context.subagent_coordinator.resume(
                     task_id,
                     scope_key=scope_from_event(event).key,
@@ -1447,10 +1473,17 @@ class ToolExecutor(HandlerService):
                 resume=run_resume_goal,
             )
             if self.context.subagent_coordinator is not None:
-                own_tasks = [t for t in self.context.subagent_store.recent(limit=20, scope_key=scope_from_event(event).key)
-                    if t.requester_user_id == event.user_id and self.context.subagent_store.control(t.task_id)["dispatch"]][:5]
+                own_tasks = await self.context.db_call(self.context.subagent_store.revisable_tasks,
+                    scope_key=scope_from_event(event).key, requester_user_id=event.user_id, limit=5)
                 visible_tasks = []
                 for task in own_tasks:
+                    if task.requester_user_id != event.user_id:
+                        from .collaboration_handlers import collaboration_access
+                        from .workers.durable_jobs import JobDeferred
+                        try:
+                            await collaboration_access(self.services, bot, event, task.task_id)
+                        except (ValueError, PermissionError, JobDeferred):
+                            continue
                     parent = await self.context.db_call(self.context.subagent_store.routine_parent, task.task_id)
                     if ((routine_execution is None and parent is None) or
                             (routine_execution is not None and parent is not None and
@@ -1458,7 +1491,7 @@ class ToolExecutor(HandlerService):
                         visible_tasks.append(task)
                 own_tasks = visible_tasks
                 if own_tasks:
-                    context_parts.append("[当前用户可续作任务，只有明确续作本任务才选 revise]\n" + quote_evidence(json.dumps([
+                    context_parts.append("[当前用户可续作任务，只有明确续作本任务才选 revise；授权协作者用自己的权限执行，主控合并待处理意见]\n" + quote_evidence(json.dumps([
                         {"task_id": t.task_id, "objective": t.objective[:600], "status": t.status,
                          "contract": t.plan.get("contract", {}),
                          "steps": [{"id": r.step_key, "role": r.role, "objective": r.objective[:200]}

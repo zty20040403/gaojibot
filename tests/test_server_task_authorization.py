@@ -12,7 +12,7 @@ import nonebot
 
 nonebot.init()
 
-from src.bot_security.service import MobileAuthorization, current_principal
+from src.bot_security.service import MobileAuthorization, current_principal, approved_request
 from src.bot_security.store import SecurityError, SecurityStore
 from src.plugins.ai_chat.fleet_authorization import FleetAuthorization
 from src.plugins.ai_chat.server_task_authorization import ServerTaskAuthorization, server_task
@@ -25,6 +25,8 @@ class ServerTaskAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.store = SecurityStore(postgres_for_test(self), b"x" * 32)
         self.addCleanup(self.store.close)
         self.account = self.store.bootstrap("kenneth", PASSWORD, QQ)
+        self.reviewer = self.store.apply_account_change(self.account, {"action": "create", "username": "reviewer",
+            "password_hash": "unused-test-hash", "role": "admin", "qq_id": "223456789"})
         self.sent = []
         async def send(bot, qq, text):
             self.sent.append(text)
@@ -34,7 +36,9 @@ class ServerTaskAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.revision = 1
         self.context = SimpleNamespace(mobile_authorization=self.mobile,
             subagent_store=SimpleNamespace(get=lambda task_id: self.task if task_id == 7 else None,
-                control=lambda _: {"revision": self.revision}),
+                control=lambda _: {"revision": self.revision},
+                revision_actor=lambda _: self.task.requester_user_id,
+                require_execution_actor=lambda task_id, user_id: None),
             turn_journal=SimpleNamespace(get_turn_by_id=lambda _: None))
         self.tasks = ServerTaskAuthorization(self.context)
         self.scope = {"kind": "task", "id": 7, "scope": "group:test", "qq_id": QQ,
@@ -65,6 +69,13 @@ class ServerTaskAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(self.sent[0], r"AP-[A-F0-9]+")
         code = re.search(r"一次性口令：([0-9]{6})", self.sent[0])[1]
         response = await self.mobile.handle_message(qq_id=QQ, bot_id=BOT, private=True, text=code)
+        self.assertIn("1/2", response)
+        self.assertFalse(await self.mobile.run_once())
+        self.assertFalse(self.writes)
+        approval_id = re.search(r"AP-[A-F0-9]+", self.sent[0])[0]
+        await self.mobile.handle_message(qq_id=self.reviewer["qq_id"], bot_id=BOT, private=True, text=f"复核 {approval_id}")
+        code = re.search(r"一次性口令：([0-9]{6})", self.sent[-1])[1]
+        response = await self.mobile.handle_message(qq_id=self.reviewer["qq_id"], bot_id=BOT, private=True, text=code)
         self.assertIn("已授权", response)
         await self.mobile.run_once()
 
@@ -89,12 +100,12 @@ class ServerTaskAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             for job in jobs:
                 job.cancel()
             await asyncio.gather(*jobs, return_exceptions=True)
-        self.assertEqual(len([s for s in self.sent if "一次性口令：" in s]), 1)
+        self.assertEqual(len([s for s in self.sent if "一次性口令：" in s]), 2)
 
         self.assertTrue(all(r["submitted"] and not r["approval_required"] for r in results))
         await self.prepare("h310")
         self.assertEqual(len(self.writes), 3)
-        self.assertEqual(len([s for s in self.sent if "一次性口令：" in s]), 1)
+        self.assertEqual(len([s for s in self.sent if "一次性口令：" in s]), 2)
 
     async def test_durable_task_returns_approval_handle_without_holding_worker(self):
         token = active_external.set(object())
@@ -143,9 +154,9 @@ class ServerTaskAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         restarted.tasks = ServerTaskAuthorization(self.context)
         await restarted.poll()
         self.assertEqual(len(self.writes), 1)
-        self.assertEqual(len([s for s in self.sent if "一次性口令：" in s]), 1)
+        self.assertEqual(len([s for s in self.sent if "一次性口令：" in s]), 2)
 
-    async def test_admin_console_approve_is_direct_but_still_checks_contract(self):
+    async def test_admin_console_host_operation_requires_quorum_and_checks_contract(self):
         login = self.store.login("kenneth", PASSWORD, "test")
         token = current_principal.set(self.store.session(login["session"]))
         try:
@@ -159,8 +170,9 @@ class ServerTaskAuthorizationTests(unittest.IsolatedAsyncioTestCase):
                     actor="admin:kenneth", origin="admin-console")
             await self.fleet.request("POST", path, {"contract_hash": "hash", "resource_version": 1},
                 actor="admin:kenneth", origin="admin-console")
+            self.assertFalse(self.writes)
+            await self.confirm()
             self.assertEqual(self.writes, [path])
-            self.assertFalse(self.sent)
         finally:
             current_principal.reset(token)
 
@@ -168,4 +180,27 @@ class ServerTaskAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SecurityError):
             await self.fleet.request("POST", "/v1/host-shell", {"command": "anything"},
                 actor="qq:" + QQ, origin="group:test")
+        self.assertFalse(self.writes)
+
+    async def test_unrelated_approved_handler_cannot_bypass_host_quorum(self):
+        token = approved_request.set({"kind": "tool", "payload": {"name": "some_tool"}})
+        try:
+            with self.assertRaises(SecurityError):
+                await self.fleet.request("POST", "/v1/host-shell", {"command": "anything"},
+                    actor="qq:" + QQ, origin="group:test")
+        finally:
+            approved_request.reset(token)
+        self.assertFalse(self.writes)
+
+    async def test_revoked_second_admin_stops_restarted_watcher_before_host_write(self):
+        await self.authorize()
+        record = await self.raw("POST", "/v1/operations/prepare", {"host_id": "h610"})
+        token = server_task.set(self.scope)
+        try:
+            await self.fleet.watch(record, self.account, "admin:kenneth", "group:test")
+        finally:
+            server_task.reset(token)
+        self.store.apply_account_change(self.account, {"action": "update", "account_id": self.reviewer["account_id"],
+            "expected_version": 1, "changes": {"enabled": False}})
+        await self.fleet.poll()
         self.assertFalse(self.writes)

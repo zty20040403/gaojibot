@@ -41,7 +41,7 @@ def receipt_sources(store, task, run_ids, revision):
                 continue
             request = item["request"]
             if (request.get("method") != "POST" or request.get("path") != "/v1/ops/call"
-                    or request.get("actor") != f"qq:{task.requester_user_id}"
+                    or request.get("actor") != f"qq:{store.revision_actor(task.task_id, source_revision)}"
                     or request.get("origin") != task.scope_key):
                 continue
             body = request.get("body")
@@ -103,7 +103,7 @@ async def link_operation_receipts(store, task, run_ids, lookup):
         try:
             async with asyncio.timeout(5):
                 proof = await lookup(request["body"]["idempotency_key"],
-                                     actor=request["actor"], origin=request["origin"])
+                                     actor=f"qq:{store.revision_actor(task.task_id)}", origin=request["origin"])
         except Exception:
             # A missing receipt is not an instruction to resubmit or approve a server command.
             check_owned()

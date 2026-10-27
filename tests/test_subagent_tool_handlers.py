@@ -152,7 +152,7 @@ class SubAgentToolHandlerTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTes
             run=AsyncMock(return_value="done"),
             resume=AsyncMock(return_value="done"),
         )
-        task_store = SimpleNamespace(recent=Mock(return_value=[]))
+        task_store = SimpleNamespace(revisable_tasks=Mock(return_value=[]), control=Mock(return_value={"dispatch": {}}))
         settings = replace(
             self.app_context.settings,
             subagent_entry_enabled=False,

@@ -548,6 +548,12 @@ dd { margin: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .agent-model-controls select { width: 100%; min-width: 0; height: 36px; border: 1px solid #d4d4d8; background: #fff; border-radius: 4px; padding: 0 8px; }
 .agent-revision { margin: 12px 0; }
 .agent-revision summary { cursor: pointer; font-size: 14px; }
+.task-collaboration { min-width: 0; margin: 14px 0; }
+.task-collaboration-members, .task-feedback-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; font-size: 12px; }
+.task-feedback-list { list-style: none; padding: 0; margin: 10px 0; }
+.task-feedback-list li { border-top: 1px solid var(--border, #dedee3); padding: 10px 0; min-width: 0; }
+.task-feedback-meta time { color: var(--muted, #71717a); }
+.task-feedback-list p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
 .agent-step-selection { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
 .agent-step-selection label { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; min-width: 0; }
 .agent-revision textarea { display: block; box-sizing: border-box; width: 100%; min-height: 90px; resize: vertical; padding: 10px; margin-bottom: 10px; }

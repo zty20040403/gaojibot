@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from src.bot_security.service import principal
 
 from .context import (
     AdminRouteContext,
@@ -84,6 +85,8 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             "progress": progress,
             "control": {key: control[key] for key in ("version", "revision", "policy")},
             "background": bool(control["dispatch"]),
+            "revision_allowed": str(task.requester_user_id) == str(principal().get("qq_id")),
+            "collaboration": services.subagent_store.collaboration_snapshot(task_id),
             "final_delivery": {"delivery_id": final.delivery_id, "status": final.status, "attempts": final.attempts,
                 "updated_at": final.updated_at, "last_error": final.last_error} if final else None,
             "artifact_deliveries": services.subagent_store.deliveries(task_id),
@@ -172,6 +175,8 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             task = services.subagent_store.get(task_id)
             if task is None:
                 raise HTTPException(404, "Task not found")
+            if str(task.requester_user_id) != str(principal().get("qq_id")):
+                raise HTTPException(403, "不能冒用任务发起人执行修订；被授权的参与者请在原群发起协作修订。")
             try:
                 return services.subagent_coordinator.revise(task_id, scope_key=task.scope_key,
                     requester_user_id=task.requester_user_id, instruction=payload.instruction,

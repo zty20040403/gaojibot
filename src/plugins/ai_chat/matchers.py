@@ -99,6 +99,7 @@ usage_command = on_command(
 )
 routine_command = on_command("例行", aliases={"routine", "routines"}, priority=10, block=True)
 wiki_command = on_command("群百科", aliases={"wiki"}, priority=10, block=True)
+collaboration_command = on_command("协作", aliases={"collaborate"}, priority=10, block=True)
 task_stop = on_command(
     "停止", aliases={"stop", "kill", "取消任务"}, priority=10, block=True
 )

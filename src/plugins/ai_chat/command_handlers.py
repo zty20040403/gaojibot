@@ -1384,6 +1384,13 @@ class CommandHandlers(HandlerService):
         result = await wiki.command(event, args.extract_plain_text()) if wiki is not None else "群百科功能尚未启用。"
         await wiki_command.finish(MessageSegment.text(result))
 
+    async def handle_collaboration_command(self, bot: Bot, event: MessageEvent, args: Message) -> None:
+        from .matchers import collaboration_command
+        from .collaboration_handlers import collaboration_command as run_command
+
+        result = await run_command(self.services, bot, event, args)
+        await collaboration_command.finish(MessageSegment.text(result))
+
     async def handle_usage_command(self, event: MessageEvent) -> None:
         await self.services.replies._finish_safely(
             usage_command,

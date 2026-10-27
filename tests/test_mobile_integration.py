@@ -37,6 +37,8 @@ class MobileIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.store = SecurityStore(postgres_for_test(self), b"x" * 32)
         self.addCleanup(self.store.close)
         self.account = self.store.bootstrap("kenneth", PASSWORD, QQ)
+        self.peer = self.store.apply_account_change(self.account, {"action": "create", "username": "reviewer",
+            "password_hash": "unused-test-hash", "role": "admin", "qq_id": "223456789"})
         self.sent = []
         async def sender(bot, qq, text):
             self.sent.append((bot, qq, text))
@@ -47,7 +49,13 @@ class MobileIntegrationTests(unittest.IsolatedAsyncioTestCase):
         identifier = re.search(r"AP-[A-F0-9]+", text)[0]
         code = re.search(r"一次性口令：([0-9]{6})", text)[1]
         reply = await self.mobile.handle_message(qq_id=QQ, bot_id=BOT, private=True, text=f"确认 {identifier} {code}")
-        self.assertIn("已确认", reply)
+        if self.store.get(identifier, self.account["account_id"])["quorum"] > 1:
+            self.assertIn("1/2", reply)
+            self.assertFalse(await self.mobile.run_once())
+            await self.mobile.handle_message(qq_id=self.peer["qq_id"], bot_id=BOT, private=True, text=f"复核 {identifier}")
+            review_code = re.search(r"一次性口令：([0-9]{6})", self.sent[-1][2])[1]
+            reply = await self.mobile.handle_message(qq_id=self.peer["qq_id"], bot_id=BOT, private=True, text=review_code)
+        self.assertIn("已授权", reply)
         return identifier
 
     async def test_admin_qq_command_executes_without_phone(self):

@@ -146,6 +146,8 @@ class RoutineChildrenTests(unittest.TestCase):
 
     def test_child_resume_and_revise_require_the_actual_parent_job_fence(self):
         task = self.prepare()
+        with self.assertRaisesRegex(ValueError, "Scheduled child"):
+            self.children.collaboration(task.task_id, scope_key=self.scope.key, requester_user_id=201)
         with self.assertRaises(PermissionError):
             self.children.require_routine_owner(task.task_id)
         with self.assertRaises(PermissionError):

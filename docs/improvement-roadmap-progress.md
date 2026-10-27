@@ -145,7 +145,11 @@ acceptance are not implied by this roadmap.
       Scoped publication and receipt recovery, full PostgreSQL regression,
       admin build and responsive browser checks pass locally. HTTP links remain
       network-reachable capabilities; real QQ and recipient access gates pending.
-- [ ] 9.5 Delegated task collaborators and two-administrator high-risk quorum.
+- [x] 9.5 Delegated task collaborators and two-administrator high-risk quorum.
+      Group command, fresh member checks, actual-executor isolation, revision
+      feedback, UI and independent OTP votes are implemented. Full PG regression,
+      admin build and responsive UI checks pass. Real QQ collaboration and
+      two-phone review remain pending acceptance; no production deployment.
 - [ ] 9.6 Official-SDK MCP client through the registry, conservative permissions,
       and read-only MCP server with group-scoped tokens.
 - [ ] Per-feature focused/full PG tests, UI builds and recorded live gates.
@@ -1029,3 +1033,97 @@ sampling is once per second; the benchmark uses 5 ms to expose short blocking ca
   Both disposable databases remain at 0037 with zero leftover owned test schemas.
   Phase 9.4 is locally complete; 9.5 and 9.6 remain before the newer M0-M7 plan.
   No push, rebuild, production access or real QQ/model request occurred.
+
+### Phase 9.5 collaboration foundation (in progress)
+
+- Added migration 0038 for task-local principal grants and revision-bound
+  feedback. The task owner alone changes grants. Private conversations, other
+  groups/tasks and routine-owned child jobs cannot share these grants. New rows
+  reference canonical principals rather than copying QQ identifiers.
+- Every mutation uses the task control version, with controls locked before
+  tasks to match revision locking. Incoming-message keys deduplicate feedback;
+  key reuse with different text is rejected. Revocation atomically dismisses
+  that participant's pending feedback, and replay cannot reactivate it.
+- Bound active collaborators to 20 and pending comments to 10 of at most 1,000
+  characters. The owner or comment author can dismiss a pending comment. Oversize
+  batches are rejected rather than silently truncated or partially consumed.
+- An explicit owner revision can merge the inbox in the same transaction as the
+  revision/checkpoint. It forces durable supervisor contract refresh before
+  workers start, quotes each comment with author/evidence IDs, and retains scope,
+  original requester and delivery identity. Concurrent revocation invalidates
+  the version; a crash rolls back comment consumption together with the revision.
+- First focused run: 79 tests, 12 errors in the new fixture because store.path
+  is a display path, not a PostgreSQL database source. Reused the explicit fixture
+  database object for ledger/reopened stores. Existing regressions passed.
+  Corrected integration run: 79 tests, OK, 14.050 seconds;
+  .cache/roadmap/phase9-5-collaboration-focused-final.log.
+- Expanded collaboration tests: 16 tests, OK, 3.838 seconds;
+  .cache/roadmap/phase9-5-collaboration-concurrency.log. Includes two concurrent
+  revision callers, independent connection replay, restart, SQL constraints,
+  limits, revoked grants and transaction rollback. Ruff over all CI paths and
+  git diff checks pass. Disposable class schemas were removed by their fixtures.
+- This is a foundation checkpoint, not a completed phase: no public collaboration
+  entry point is enabled and collaborators still cannot execute as the creator.
+  Fresh group membership checks, command/tool/UI integration, distinct execution
+  identity and high-risk two-admin quorum remain. No phase commit or complete
+  phase regression yet; no push, rebuild, SSH, real QQ or model calls occurred.
+  The newer M0-M7 plan remains unchanged, untracked and not started.
+
+### Phase 9.5 execution and quorum checkpoint
+
+- Added the explicit `/协作` group command, fresh member-list verification,
+  participant feedback merging and the natural revision-tool entry point.
+  The actual reviser's event, context and grant generation are frozen separately
+  from original task ownership and group delivery. Revocation/regrant cannot
+  revive an old execution. Unknown membership pauses; departure or revocation
+  stops later tools rather than falling back to the creator's identity.
+- Model routing, quota, server authorization and external continuation polling
+  use the actual executor. Background approval watchers also verify current
+  group membership, outside the task's normal guard. Historical receipts retain
+  their original revision actor. Existing submitted remote actions are not
+  automatically undone when collaboration is revoked.
+- Added the read-only control-panel collaboration view with five recent comments,
+  expansion, exact timestamps, creator and actual executor. Console revision is
+  creator-only; participants revise from the original group. Collaborator runs
+  cannot inherit the creator's locked model policy or personal memory.
+- Collaboration integration: 141 tests, OK, 32.645 seconds;
+  .cache/roadmap/phase9-5-collaboration-execution.log.
+- Added migration 0039 and independent administrator OTP review. Server task
+  grants and Fleet host mutations require quorum=2; ordinary settings and isolated
+  Worker jobs do not. Private `复核 AP-...` creates an idempotent second-person
+  challenge. Both account and QQ identities must differ. Votes bind exact payload,
+  generation, bot and account versions; one vote never enters execution.
+- Recheck votes before claim, after preflight and when reusing task authorization.
+  Expiry, resend, revocation and changed accounts invalidate old votes. Review
+  challenges never execute commands or produce misleading completion receipts.
+  Removed the generic already-approved-handler bypass around Fleet host checks.
+- Focused security/collaboration run: 65 tests, OK, 15.496 seconds;
+  .cache/roadmap/phase9-5-quorum-focused.log. Two additional watcher/bypass cases
+  are included in the currently running full phase regression.
+- Local Chrome fixture passed at 1280x900 and 390x844: SSE retains input, selector
+  focus and expanded details; long unbroken feedback wraps; collaborator-only
+  controls and 1/2 approval state display correctly. Screenshots inspected, fixture
+  sources deleted and temporary Vite server stopped. No production was contacted.
+- Both disposable base databases were upgraded to 0039. Full phase regression
+  is running; no phase commit yet. The newer plan remains untouched/untracked.
+- First complete regression: 2,010 tests, 1 failure and 12 errors (12 skipped),
+  321.113 seconds; .cache/roadmap/phase9-5-first-full.log. Old fixtures lacked a
+  second admin or the new actor/revisable-task interfaces. Updated those fixtures
+  to exercise the actual contracts instead of relaxing production authorization.
+  Removing the broad approved-handler bypass also dropped a Worker `submitted`
+  projection; restored that receipt metadata on the ordinary, permission-checked
+  path so queued work is not described as finished. Added two edge regressions:
+  a maximum-length review summary and refusing to relabel a completed command as
+  cancelled when someone later retracts a vote.
+- Repair-focused regression: 118 tests, OK, 23.520 seconds;
+  .cache/roadmap/phase9-5-repair-focused.log. Final complete PostgreSQL regression:
+  2,013 tests, OK (12 skipped), 319.989 seconds;
+  .cache/roadmap/phase9-5-final-full.log. Includes migration from 0038 with legacy
+  grants: cancel reusable old authorization, retain ambiguous in-flight commands
+  as needs_attention, and never automatically replay an operation.
+- Admin TypeScript/Vite build, Ruff over all CI paths and diff checks pass. Both
+  disposable databases are at 0039_approval_quorum with no leftover owned test
+  schemas. Phase 9.5 is locally complete. Real QQ member changes, two-admin OTP
+  delivery and production upgrade acceptance remain explicit live gates.
+  The newer plan is still unmodified/untracked. No push, rebuild, server access
+  or real model call occurred.

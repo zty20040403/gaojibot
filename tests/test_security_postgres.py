@@ -18,6 +18,34 @@ from tests.test_account_security import PASSWORD, QQ, BOT
 
 @unittest.skipUnless(os.getenv("TEST_SECURITY_POSTGRES_DSN"), "isolated PostgreSQL not configured")
 class SecurityPostgresTests(unittest.TestCase):
+    def test_quorum_upgrade_invalidates_legacy_grants_without_replaying_them(self):
+        dsn = os.environ["TEST_SECURITY_POSTGRES_DSN"]
+        schema = "gaoji_security_test_" + uuid.uuid4().hex[:12]
+        try:
+            with patch.dict(os.environ, AI_POSTGRES_DSN=dsn, AI_POSTGRES_SCHEMA=schema):
+                command.upgrade(Config("alembic.ini"), "0038_task_collaboration")
+            with psycopg.connect(dsn) as connection:
+                connection.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
+                connection.execute("INSERT INTO admin_accounts VALUES ('owner','owner','unused','admin',%s,1,1,1)", (QQ,))
+                for identifier, kind, status in (("grant", "server_task", "succeeded"),
+                        ("active", "fleet", "executing"), ("pending", "test", "pending"),
+                        ("finished", "test", "succeeded")):
+                    connection.execute("""INSERT INTO admin_approvals
+                        (approval_id,account_id,account_version,qq_id,bot_id,session_hash,kind,payload_json,
+                         payload_hash,summary,code_hash,expires_at,status,created_at,updated_at)
+                        VALUES (%s,'owner',1,%s,%s,'',%s,'{}','legacy-hash','legacy-summary','legacy-otp',99999,%s,1,1)""",
+                        (identifier, QQ, BOT, kind, status))
+            with patch.dict(os.environ, AI_POSTGRES_DSN=dsn, AI_POSTGRES_SCHEMA=schema):
+                command.upgrade(Config("alembic.ini"), "head")
+                command.upgrade(Config("alembic.ini"), "head")
+            with psycopg.connect(dsn) as connection:
+                rows = connection.execute(sql.SQL("SELECT approval_id,status,quorum FROM {}.admin_approvals").format(sql.Identifier(schema))).fetchall()
+            self.assertEqual({row[0]: row[1:] for row in rows}, {"grant": ("cancelled", 2),
+                "active": ("needs_attention", 2), "pending": ("cancelled", 1), "finished": ("succeeded", 1)})
+        finally:
+            with psycopg.connect(dsn) as connection:
+                connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
+
     def test_migration_atomic_confirmation_rollback_and_restart(self):
         dsn = os.environ["TEST_SECURITY_POSTGRES_DSN"]
         schema = "gaoji_security_test_" + uuid.uuid4().hex[:12]

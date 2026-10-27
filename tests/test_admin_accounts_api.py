@@ -213,6 +213,8 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_logout_invalidates_pending_approval(self):
         await self.login()
+        await self.client.post("/bot-admin/api/v1/accounts", json={"username": "reviewer", "password": PASSWORD,
+            "role": "admin", "qq_id": "333333333"})
         account = self.store.session(self.client.cookies.get("gaoji_session"))
         request = await self.mobile.propose(account, kind="server_task", payload={"id": 1}, summary="test task")
         identifier = request["approval_id"]

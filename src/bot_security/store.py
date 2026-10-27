@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from src.bot_storage.database import DatabaseError, DatabaseSource, PostgresDatabase
 from .passwords import DUMMY_HASH, hash_password, verify_password
+from .quorum import ApprovalQuorum
 
 
 class SecurityError(ValueError):
@@ -32,7 +33,7 @@ def public_account(account: dict[str, Any]) -> dict[str, Any]:
     return {key: account[key] for key in ("account_id", "username", "role", "qq_id", "enabled", "version")}
 
 
-class SecurityStore:
+class SecurityStore(ApprovalQuorum):
     """Serialize short security transactions across workers, including OTP consumption.
 
     No network or password hashing takes place while the database lock is held.
@@ -165,7 +166,7 @@ class SecurityStore:
         with self.transaction() as db:
             key = digest(token)
             db.execute("DELETE FROM admin_sessions WHERE session_hash=?", (key,))
-            db.execute("UPDATE admin_approvals SET status='cancelled', code_hash='', updated_at=? WHERE session_hash=? AND status IN ('sending','pending','queued')", (int(self.clock()), key))
+            db.execute("UPDATE admin_approvals SET status='cancelled', code_hash='', updated_at=? WHERE session_hash=? AND status IN ('sending','pending','awaiting_quorum','queued')", (int(self.clock()), key))
 
     def _current(self, db, request: dict[str, Any]) -> bool:
         row = db.execute("SELECT * FROM admin_accounts WHERE account_id=?", (request["account_id"],)).fetchone()
@@ -178,13 +179,16 @@ class SecurityStore:
         return True
 
     def _code_hash(self, request: dict[str, Any], code: str) -> str:
-        binding = [request[k] for k in ("approval_id", "account_id", "account_version", "qq_id", "bot_id", "payload_hash", "expires_at", "code_generation")]
+        binding = [request[k] for k in ("approval_id", "account_id", "account_version", "qq_id", "bot_id", "payload_hash", "expires_at", "code_generation", "quorum", "parent_approval_id", "parent_generation")]
         return hmac.new(self.secret, (canonical(binding) + ":" + code).encode(), hashlib.sha256).hexdigest()
 
     def _code_fingerprint(self, approval_id: str, code: str) -> str:
         return hmac.new(self.secret, f"previous-code:{approval_id}:{code}".encode(), hashlib.sha256).hexdigest()
 
-    def propose(self, account: dict[str, Any], *, bot_id: str, kind: str, payload: dict[str, Any], summary: str, reference: str = "") -> tuple[dict[str, Any], str | None]:
+    def propose(self, account: dict[str, Any], *, bot_id: str, kind: str, payload: dict[str, Any], summary: str, reference: str = "", quorum: int = 1, _parent=None) -> tuple[dict[str, Any], str | None]:
+        quorum = self.required_quorum(kind, quorum)
+        if (kind == "quorum_vote") != (_parent is not None):
+            raise SecurityError("无效复核对象")
         encoded = canonical(payload)
         if len(encoded.encode()) > 128 * 1024 or not 1 <= len(summary) <= 12000:
             raise SecurityError("操作内容过长，请拆分为可核对的独立操作", 400)
@@ -194,20 +198,32 @@ class SecurityStore:
                        session_hash=account.get("session_hash", ""), kind=kind, payload_json=encoded,
                        payload_hash=digest(encoded), summary=summary, code_hash="", code_generation=1,
                        attempts=0, expires_at=now + 180, status="sending", result_json="{}",
-                       created_at=now, updated_at=now, consumed_at=None, execution_owner="", lease_until=0, notice_sent=0)
+                       created_at=now, updated_at=now, consumed_at=None, execution_owner="", lease_until=0, notice_sent=0,
+                       quorum=quorum, parent_approval_id=_parent[0] if _parent else None,
+                       parent_generation=_parent[1] if _parent else None)
         with self.transaction() as db:
             if not self._current(db, request):
                 raise SecurityError("仅已绑定 QQ 的有效管理员可以发起管理操作")
+            if _parent:
+                parent = self._vote_parent(db, request)
+                request["expires_at"] = parent["expires_at"]
+                previous = db.execute("SELECT * FROM admin_approvals WHERE parent_approval_id=? AND parent_generation=? AND account_id=?", (*_parent, account["account_id"])).fetchone()
+                if previous:
+                    return dict(previous), None
+            if quorum == 2:
+                count = db.execute("SELECT COUNT(DISTINCT qq_id) FROM admin_accounts WHERE enabled=1 AND role='admin'").fetchone()[0]
+                if count < 2:
+                    raise SecurityError("高风险操作需要两位不同的已绑定 QQ 管理员；请先配置第二位管理员", 409)
             if reference:
                 previous = db.execute("SELECT a.* FROM admin_approvals a JOIN admin_approval_references r ON r.approval_id=a.approval_id WHERE r.reference=?", (reference,)).fetchone()
                 if previous:
-                    if previous["account_id"] != account["account_id"] or previous["payload_hash"] != request["payload_hash"]:
+                    if previous["account_id"] != account["account_id"] or previous["kind"] != kind or previous["quorum"] != quorum or previous["payload_hash"] != request["payload_hash"]:
                         raise SecurityError("操作引用或参数已变化", 409)
                     return dict(previous), None
             existing = db.execute("""SELECT * FROM admin_approvals WHERE account_id=? AND account_version=?
-                AND session_hash=? AND kind=? AND payload_hash=? AND status IN ('sending','pending','queued','executing')
+                AND session_hash=? AND kind=? AND payload_hash=? AND quorum=? AND status IN ('sending','pending','awaiting_quorum','queued','executing')
                 AND (expires_at>? OR status IN ('queued','executing')) ORDER BY created_at DESC LIMIT 1""",
-                (request["account_id"], request["account_version"], request["session_hash"], kind, request["payload_hash"], now)).fetchone()
+                (request["account_id"], request["account_version"], request["session_hash"], kind, request["payload_hash"], quorum, now)).fetchone()
             if existing:
                 return dict(existing), None
             self._limit(db, "issue:" + request["account_id"], 5, 60)
@@ -230,11 +246,12 @@ class SecurityStore:
     def resend(self, approval_id: str, qq_id: str, bot_id: str) -> tuple[dict[str, Any], str]:
         with self.transaction() as db:
             row = db.execute("SELECT * FROM admin_approvals WHERE approval_id=? AND qq_id=? AND bot_id=?", (approval_id, qq_id, bot_id)).fetchone()
-            if not row or row["status"] not in {"pending", "delivery_failed", "expired", "locked"}:
+            if not row or row["status"] not in {"pending", "awaiting_quorum", "delivery_failed", "expired", "locked"}:
                 raise SecurityError("这项操作不能重新发送口令")
             request = dict(row)
             if not self._current(db, request):
                 raise SecurityError("账户或登录状态已变化，请重新发起操作")
+            parent = self._vote_parent(db, request) if request["parent_approval_id"] else None
             self._limit(db, "resend:" + request["account_id"], 3, 180)
             # A six-digit value from ANY earlier resend must never become valid again.
             code = f"{secrets.randbelow(1_000_000):06d}"
@@ -242,10 +259,12 @@ class SecurityStore:
                 code = f"{secrets.randbelow(1_000_000):06d}"
             db.execute("INSERT INTO admin_approval_codes VALUES (?, ?)", (approval_id, self._code_fingerprint(approval_id, code)))
             request.update(code_generation=request["code_generation"] + 1, attempts=0,
-                           expires_at=int(self.clock()) + 180, status="sending", updated_at=int(self.clock()))
+                           expires_at=parent["expires_at"] if parent else int(self.clock()) + 180,
+                           status="sending", updated_at=int(self.clock()), consumed_at=None)
             request["code_hash"] = self._code_hash(request, code)
-            db.execute("UPDATE admin_approvals SET code_generation=?, attempts=0, expires_at=?, status='sending', updated_at=?, code_hash=? WHERE approval_id=?",
+            db.execute("UPDATE admin_approvals SET code_generation=?, attempts=0, expires_at=?, status='sending', consumed_at=NULL, updated_at=?, code_hash=? WHERE approval_id=?",
                        (request["code_generation"], request["expires_at"], request["updated_at"], request["code_hash"], approval_id))
+            db.execute("UPDATE admin_approvals SET status='cancelled', code_hash='', updated_at=? WHERE parent_approval_id=?", (int(self.clock()), approval_id))
             self._audit(db, request["account_id"], "approval.resent", approval_id)
             return request, code
 
@@ -291,19 +310,25 @@ class SecurityStore:
                         status, error = "locked", "口令输错 5 次，已作废"
                     self._audit(db, request["account_id"], "approval.code_failed", approval_id)
                 else:
-                    status = "queued"
+                    if request["parent_approval_id"]:
+                        self._vote_parent(db, request)
+                    status = "succeeded" if request["parent_approval_id"] else "awaiting_quorum" if request["quorum"] > 1 else "queued"
                     accepted = request
                     self._audit(db, request["account_id"], "approval.confirmed", approval_id, request["payload_hash"])
                 db.execute("UPDATE admin_approvals SET status=?, attempts=?, updated_at=?, consumed_at=? WHERE approval_id=?",
                            (status, attempts, int(self.clock()), int(self.clock()) if accepted else None, approval_id))
+                if accepted is not None:
+                    if request["parent_approval_id"]:
+                        db.execute("UPDATE admin_approvals SET notice_sent=1, code_hash='' WHERE approval_id=?", (approval_id,))
+                    accepted = self._settle_vote(db, request)
         if accepted is None:
             raise SecurityError(error)
-        return {**accepted, "status": "queued"}
+        return accepted
 
     def cancel(self, approval_id: str, qq_id: str, bot_id: str) -> None:
         with self.transaction() as db:
             row = db.execute("SELECT * FROM admin_approvals WHERE approval_id=? AND qq_id=? AND bot_id=?", (approval_id, qq_id, bot_id)).fetchone()
-            if not row or not self._current(db, dict(row)) or row["status"] not in {"sending", "pending", "queued", "delivery_failed", "expired", "locked"}:
+            if not row or not self._current(db, dict(row)) or row["status"] not in {"sending", "pending", "awaiting_quorum", "queued", "delivery_failed", "expired", "locked"}:
                 raise SecurityError("操作不存在、无权取消或已经开始执行")
             db.execute("UPDATE admin_approvals SET status='cancelled', updated_at=? WHERE approval_id=?", (int(self.clock()), approval_id))
             self._audit(db, row["account_id"], "approval.cancelled", approval_id)
@@ -311,24 +336,24 @@ class SecurityStore:
     def get(self, approval_id: str, account_id: str) -> dict[str, Any]:
         with self.transaction() as db:
             now = int(self.clock())
-            db.execute("UPDATE admin_approvals SET status='expired', updated_at=? WHERE approval_id=? AND account_id=? AND status IN ('sending','pending') AND expires_at<=?", (now, approval_id, account_id, now))
+            db.execute("UPDATE admin_approvals SET status='expired', updated_at=? WHERE approval_id=? AND account_id=? AND status IN ('sending','pending','awaiting_quorum') AND expires_at<=?", (now, approval_id, account_id, now))
             row = db.execute("SELECT * FROM admin_approvals WHERE approval_id=? AND account_id=?", (approval_id, account_id)).fetchone()
             if not row:
                 raise SecurityError("操作不存在", 404)
-            return self._public_request(dict(row))
+            return self._public_request(dict(row), db)
 
-    @staticmethod
-    def _public_request(row: dict[str, Any]) -> dict[str, Any]:
+    def _public_request(self, row: dict[str, Any], db) -> dict[str, Any]:
         status = row["status"]
         return {"approval_id": row["approval_id"], "status": status, "kind": row["kind"], "summary": row["summary"],
                 "expires_at": row["expires_at"], "created_at": row["created_at"],
-                "result": json.loads(row["result_json"]), "approval_required": status in {"sending", "pending"}}
+                "result": json.loads(row["result_json"]), "approval_required": status in {"sending", "pending", "awaiting_quorum"},
+                **self.quorum_snapshot(db, row)}
 
     def pending(self, account_id: str) -> list[dict[str, Any]]:
         with self.transaction() as db:
             now = int(self.clock())
-            db.execute("UPDATE admin_approvals SET status='expired', updated_at=? WHERE status IN ('sending','pending') AND expires_at<=?", (now, now))
-            return [self._public_request(dict(row)) for row in db.execute("SELECT * FROM admin_approvals WHERE account_id=? ORDER BY created_at DESC LIMIT 100", (account_id,)).fetchall()]
+            db.execute("UPDATE admin_approvals SET status='expired', updated_at=? WHERE status IN ('sending','pending','awaiting_quorum') AND expires_at<=?", (now, now))
+            return [self._public_request(dict(row), db) for row in db.execute("SELECT * FROM admin_approvals WHERE account_id=? ORDER BY created_at DESC LIMIT 100", (account_id,)).fetchall()]
 
     def claim(self, owner: str) -> dict[str, Any] | None:
         with self.transaction() as db:
@@ -337,7 +362,7 @@ class SecurityStore:
             db.execute("UPDATE admin_approvals SET status='needs_attention', updated_at=? WHERE status='executing' AND lease_until<=?", (now, now))
             for row in db.execute("SELECT * FROM admin_approvals WHERE status='queued' ORDER BY created_at LIMIT 100").fetchall():
                 request = dict(row)
-                if not self._current(db, request) or request["expires_at"] <= now or digest(request["payload_json"]) != request["payload_hash"]:
+                if request["expires_at"] <= now or not self._quorum_valid(db, request):
                     db.execute("UPDATE admin_approvals SET status='cancelled', updated_at=? WHERE approval_id=?", (now, request["approval_id"]))
                     continue
                 db.execute("UPDATE admin_approvals SET status='executing', execution_owner=?, lease_until=?, updated_at=? WHERE approval_id=?",
@@ -382,7 +407,7 @@ class SecurityStore:
             db.execute("UPDATE admin_accounts SET password_hash=?, role=?, qq_id=?, enabled=?, version=version+1 WHERE account_id=?",
                        (new["password_hash"], new["role"], new["qq_id"], int(new["enabled"]), target["account_id"]))
             db.execute("DELETE FROM admin_sessions WHERE account_id=?", (target["account_id"],))
-            db.execute("UPDATE admin_approvals SET status='cancelled', updated_at=? WHERE account_id=? AND status IN ('sending','pending','queued')", (int(self.clock()), target["account_id"]))
+            db.execute("UPDATE admin_approvals SET status='cancelled', updated_at=? WHERE account_id=? AND status IN ('sending','pending','awaiting_quorum','queued')", (int(self.clock()), target["account_id"]))
             self._audit(db, actor["account_id"], "account.updated", target["account_id"], canonical(sorted(payload["changes"])))
             return public_account(dict(db.execute("SELECT * FROM admin_accounts WHERE account_id=?", (target["account_id"],)).fetchone()))
 
@@ -401,7 +426,9 @@ class SecurityStore:
                 ORDER BY created_at DESC LIMIT 1""",
                 (account["account_id"], account["version"], bot_id, digest(canonical(payload)))).fetchone()
             if row and self._current(db, dict(row)):
-                return self._public_request(dict(row))
+                if row["status"] == "succeeded" and not self._quorum_valid(db, dict(row)):
+                    return None
+                return self._public_request(dict(row), db)
         return None
 
     def unsent_receipts(self) -> list[dict[str, Any]]:

@@ -6,7 +6,7 @@ import re
 import time
 from typing import Any
 
-from src.bot_security.service import MobileAuthorization, approved_request, assert_approved, current_principal
+from src.bot_security.service import MobileAuthorization, assert_approved, current_principal
 from src.bot_security.store import SecurityError
 from .server_task_authorization import server_task
 from .agent.external import active_external
@@ -54,20 +54,15 @@ class FleetAuthorization:
                     wait=active_external.get() is None)
                 return {**result, **approval}
             return result
-        if approved_request.get() is not None:
-            # This call is made by a fixed, already approved HTTP/tool/command handler.
-            result = await self.client._raw_request(method, path, body, actor=actor, origin=origin)
-            if result.get("operation_id") or result.get("deployment_id") or result.get("job_id"):
-                await self.watch(result, account, actor, origin)
-            if result.get("job_id") and result.get("status") in {"queued", "running", "verifying", "cancelling"}:
-                return {**result, "submitted": True}
-            return result
         if re.fullmatch(r"/v1/(operations|deployments)/[^/]+/approve", path):
             record = await self.client._raw_request("GET", path.removesuffix("/approve"), actor=actor, origin=origin)
             self.check_contract(record, body or {})
-            if not console:
-                return await self.propose_record(record, account, actor, origin)
-        elif not console and self.important_mutation(path):
+            return await self.propose_record(record, account, actor, origin, authorize_console=console)
+        elif self.important_mutation(path):
+            if console:
+                payload = {"method": method, "path": path, "body": body, "actor": actor, "origin": origin}
+                return await self.mobile.propose(account, kind="fleet", payload=payload,
+                    summary="服务器高风险变更：\n" + json.dumps(payload, ensure_ascii=False, indent=2))
             scope = server_task.get()
             if self.tasks is None or scope is None or scope["scope"] != origin:
                 raise SecurityError("重要服务器命令需要绑定当前任务后申请统一授权")
@@ -77,6 +72,8 @@ class FleetAuthorization:
             await self.watch(result, account, actor, origin)
         await asyncio.to_thread(self.mobile.store.record_action, account["account_id"],
             "fleet.submitted", path, "console" if console else "task")
+        if result.get("job_id") and result.get("status") in {"queued", "running", "verifying", "cancelling"}:
+            return {**result, "submitted": True}
         return result
 
     @staticmethod
@@ -124,6 +121,7 @@ class FleetAuthorization:
             self.check_contract(record, payload["body"])
             if self.contract_view(record) != payload["contract"]:
                 raise SecurityError("操作参数已变化，旧口令不可使用", 409)
+        await asyncio.to_thread(self.mobile.store.validate_execution_approval, request["approval_id"], self.mobile.owner)
         result = await self.client._raw_request(payload["method"], payload["path"], payload["body"], actor=payload["actor"], origin=payload["origin"])
         if result.get("operation_id") or result.get("deployment_id") or result.get("job_id"):
             await self.watch(result, request["account"], payload["actor"], payload["origin"])
@@ -148,13 +146,13 @@ class FleetAuthorization:
         await asyncio.to_thread(self.mobile.store.watch_fleet, self.record_path(record), metadata,
                                self.mobile.bot_selector(), actor, origin)
 
-    async def propose_record(self, record, account, actor, origin, *, wait=True):
+    async def propose_record(self, record, account, actor, origin, *, wait=True, authorize_console=False):
         path = self.record_path(record)
         if not record.get("contract_hash") or not record.get("resource_version"):
             raise SecurityError("操作未提供完整批准信息", 502)
-        if account.get("session_hash") and origin == "admin-console":
+        if account.get("session_hash") and origin == "admin-console" and not authorize_console:
             return {"approval_required": True, "operation": record,
-                    "next_action": "操作参数已准备，在控制台执行即可，不需要手机口令。尚未代表目标机检查或执行成功。"}
+                    "next_action": "操作参数已准备；点击执行会申请两位管理员复核，尚未执行服务器命令。"}
         scope = server_task.get() or account.get("server_task")
         if scope is not None:
             if self.tasks is None or scope["scope"] != origin:
@@ -167,7 +165,9 @@ class FleetAuthorization:
             # one submission lock; the server also checks contract/version CAS.
             async with self.submit_lock:
                 latest = await self.client._raw_request("GET", path, actor=actor, origin=origin)
-                self.tasks.validate(scope)
+                await self.tasks.validate_execution(scope)
+                if not await self.tasks.ensure(scope, account, wait=False):
+                    raise SecurityError("任务双人授权尚未完成", 409)
                 if latest.get("status") == "awaiting_approval":
                     if self.contract_view(latest) != self.contract_view(record):
                         raise SecurityError("服务器操作预检已变化，请重新读取", 409)
