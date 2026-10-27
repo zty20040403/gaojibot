@@ -98,16 +98,30 @@ class ProjectBlobStore:
         finally:
             Path(temporary).unlink(missing_ok=True)
 
-    def read(self, sha: str) -> bytes:
+    def read(self, sha: str, *, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+            raise ValueError("Invalid project read limit")
         fd = os.open(self.path(sha), os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
                 raise ValueError("Invalid stored project object")
-            data = stream.read(MAX_FILE_BYTES + 1)
-        if len(data) > MAX_FILE_BYTES or hashlib.sha256(data).hexdigest() != sha:
+            if max_bytes is None:
+                data = stream.read(MAX_FILE_BYTES + 1)
+                size, digest = len(data), hashlib.sha256(data)
+            else:
+                # Hash the whole object even when only its prefix enters a prompt.
+                # The retained buffer stays bounded for large/malicious notes.
+                digest, size, data = hashlib.sha256(), 0, bytearray()
+                while block := stream.read(1024 * 1024):
+                    size += len(block)
+                    if size > MAX_FILE_BYTES:
+                        raise ValueError("Project object exceeds its size limit")
+                    digest.update(block)
+                    data.extend(block[:max(0, max_bytes - len(data))])
+        if size > MAX_FILE_BYTES or size != info.st_size or digest.hexdigest() != sha:
             raise ValueError("Project object integrity check failed")
-        return data
+        return bytes(data)
 
     def verify(self, sha: str, expected_size: int):
         if len(self.read(sha)) != expected_size:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import codecs
 import json
 from pathlib import Path
 import re
@@ -341,18 +342,91 @@ class ProjectStore:
     def current(self, access, *, now=None):
         now = int(time.time()) if now is None else now
         with self._transaction() as cursor:
-            validate_project_access(cursor, access)
-            focus = cursor.execute(
-                """SELECT project_id FROM project_focus WHERE scope_key=? AND principal_id=?
-                AND updated_at>?""",
-                (access.scope.key, access.principal_id, now - 24 * 3600),
-            ).fetchone()
-            if focus is None:
+            return self._current(cursor, access, now)
+
+    def _current(self, cursor, access, now):
+        validate_project_access(cursor, access)
+        focus = cursor.execute(
+            """SELECT project_id FROM project_focus WHERE scope_key=? AND principal_id=?
+            AND updated_at>?""",
+            (access.scope.key, access.principal_id, now - 24 * 3600),
+        ).fetchone()
+        if focus is None:
+            return None
+        try:
+            return self._get(cursor, access, focus["project_id"])
+        except PermissionError:
+            return None
+
+    def has_focus(self, scope, principal, *, now=None):
+        """Private optimization, not authorization: exposes no project content."""
+        now = int(time.time()) if now is None else now
+        with self._transaction() as cursor:
+            return cursor.execute(
+                """SELECT 1 FROM project_focus f JOIN projects p USING(project_id)
+                WHERE f.scope_key=? AND f.principal_id=? AND f.updated_at>?
+                AND p.bot_native_user_id=? AND p.status NOT IN ('trash','purged')""",
+                (scope.key, principal, now - 24 * 3600, scope.bot_native_user_id),
+            ).fetchone() is not None
+
+    def prompt_context(self, access, *, now=None):
+        """One coherent, read-only view of focus, versions and saved notes."""
+        now = int(time.time()) if now is None else now
+        with self._transaction() as cursor:
+            row = self._current(cursor, access, now)
+            if row is None or row["bot_native_user_id"] != access.scope.bot_native_user_id:
                 return None
-            try:
-                return self._get(cursor, access, focus["project_id"])
-            except PermissionError:
-                return None
+            pid = row["project_id"]
+            versions = cursor.execute(
+                """SELECT version_no,label,pinned,created_at FROM project_versions
+                WHERE project_id=? ORDER BY version_no DESC LIMIT 3""",
+                (pid,),
+            ).fetchall()
+            editor = (
+                row["creator_principal_id"] == access.principal_id
+                or access.admin
+                or cursor.execute(
+                    "SELECT 1 FROM project_members WHERE project_id=? AND principal_id=? AND role='editor'",
+                    (pid, access.principal_id),
+                ).fetchone() is not None
+            )
+            notes = {"source": "saved_version", "state": "no_saved_version"}
+            if versions:
+                number = versions[0]["version_no"]
+                notes.update(version=f"v{number}", state="absent_in_saved_version")
+                try:
+                    manifest = self._manifest(cursor, access, pid, number)
+                    item = next(
+                        (item for item in manifest["files"] if item["path"] == ".gaoji/NOTES.md"),
+                        None,
+                    )
+                    if item is not None:
+                        prefix = self.blobs.read(item["sha256"], max_bytes=8192)
+                        # Do not inject a partial UTF-8 character at the boundary.
+                        content = codecs.getincrementaldecoder("utf-8")().decode(
+                            prefix, final=item["size"] <= 8192,
+                        )
+                        notes.update(
+                            state="available", content=content,
+                            truncated=item["size"] > len(content.encode("utf-8")),
+                        )
+                except (OSError, ValueError):
+                    notes.update(state="unavailable")
+            return {
+                "handle": f"prj#{pid}",
+                "title": row["title"],
+                "status": row["status"],
+                "revision": row["version"],
+                "access": "editor" if editor else "viewer",
+                "preparing": row["lifecycle_job_id"] is not None,
+                "task_handle": f"task#{row['locked_task_id']}" if row["locked_task_id"] else None,
+                "versions": [
+                    {"handle": f"v{v['version_no']}",
+                     **{key: v[key] for key in ("label", "pinned", "created_at")}}
+                    for v in versions
+                ],
+                "notes": notes,
+            }
 
     def update(
         self,

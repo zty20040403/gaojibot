@@ -838,9 +838,27 @@ exposed. Labels/titles are sent as QQ text, never interpreted as CQ actions.
 `project_set_rebuild` records metadata only; the physical adapter still checks
 locked recipes before executing a reconstruction.
 
+The ordinary chat prompt now includes the requesting user's current project,
+its configuration revision, state, viewer/editor role, pending task and latest
+three saved versions, immediately before the current question. Titles, labels
+and notes are quoted evidence, never system instructions. The stable system and
+group-history prefix is unchanged. Switching/creating a project also returns
+the fresh current-project context for subsequent calls in that same turn.
+
+Notes come from `.gaoji/NOTES.md` in the latest **saved version**, with an 8 KiB
+UTF-8 prefix limit and full-object checksum validation using bounded memory.
+Their source/version and truncation are explicit: they are not a live reading
+of unsaved workspace changes. Missing, invalid or corrupt notes do not fall
+back to older versions. No workspace is started and no shell command is run
+just to assemble a prompt. Context reads do not extend the 24-hour focus TTL.
+Without a focus, chat makes no extra membership API calls. With a focus,
+membership is checked before/after reading and concurrent focus/revision
+changes discard the stale result; unavailable membership reports unavailable
+context without revealing project data.
+
 This is not the complete M3 interface. Snapshot/restore/delete/preview tools,
-automatic project routing of existing sandbox/browser tools, current-project
-prompt context, Sub-Agent baselines and accepted-version publication, shared
+automatic project routing of existing sandbox/browser tools, live workspace
+notes, Sub-Agent baselines and accepted-version publication, shared
 Matrix/iMessage ownership, and console management remain pending. Routine and
 Sub-Agent contexts do not receive these management tools until their project
 ownership is wired explicitly. No production enablement is implied.

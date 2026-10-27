@@ -2629,3 +2629,41 @@ implementation evidence, not a claim that the production App has these features.
   (`.cache/roadmap/m3-project-tools-nix.log`). Linux and other incompatible
   architectures were omitted, not verified. No generated proof containers or
   volumes were left behind by the tests.
+
+### M3 current-project chat context
+
+- Ordinary chat now appends a scoped current-project block just before the
+  user's question: handle/title, state, configuration revision, latest three
+  saved versions, viewer/editor permission, sandbox admission and pending task.
+  It never modifies the system prefix or existing group-history blocks.
+  Create/open tools return the updated context so same-turn focus changes do
+  not leave the model using the previous project's notes.
+- Unified host identity resolution for tools and context. An inexpensive
+  private focus probe avoids live membership queries and identity creation on
+  unrelated chat. Actual content reads still require fresh membership and
+  account binding, followed by revalidation of membership, focus and revision.
+  Revocation reveals no data; offline/timeout/changed focus returns no stale
+  evidence. Reading context does not renew the 24-hour focus TTL.
+- Saved `.gaoji/NOTES.md` contributes at most an 8 KiB UTF-8 prefix. Its complete
+  content hash is checked without buffering the entire file for prefix reads;
+  the existing full-file API keeps its normal allocation path. Missing,
+  corrupted or invalid-UTF-8 notes are explicit and never reuse an older
+  version. Titles, labels and notes remain inside escaped untrusted evidence.
+- Notes are explicitly identified as the latest saved version, not unsaved
+  workspace content. Prompt construction neither starts a sandbox nor runs a
+  shell. Routine/Sub-Agent contexts remain excluded until ownership is wired.
+- Local PostgreSQL/RPC tests use fake QQ/kernel effects, not production calls.
+  The actual chat orchestrator is also exercised through a fake model boundary
+  to verify that project data reaches only the final-user context. Full native
+  execution is not implied by these checks.
+- Final affected regression passed 85 tests in 16.990 seconds, treating
+  ResourceWarnings as errors (`.cache/roadmap/m3-project-context-verified.log`).
+  Whole-CI Ruff, compileall and whitespace checks passed. Nix package/import
+  checks passed on aarch64-darwin; other architectures were omitted, not tested
+  (`.cache/roadmap/m3-project-context-nix.log`). Tests removed their temporary
+  project/RPC state; no production accounts or containers were used.
+- M3 remains in progress: existing sandbox/browser default routing, live notes,
+  task baseline/lock/publication, remaining project commands, console and
+  cross-platform ownership still need integration. M2 native acceptance and
+  M4-M7 remain open. No shared nix-config change, server connection, deployment,
+  App release or alteration to the user-authored plan occurred.

@@ -5,29 +5,14 @@ import hashlib
 import json
 
 from jsonschema import ValidationError, validate
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
-
-from ..agent.execution import active_agent_step
 from ..onebot_codec import scope_from_event
+from ..project_access import project_access as _access, projects_available as enabled
+from ..project_context import current_project_payload
 from ..project_executor import _store
 from ..project_tool_definitions import PROJECT_TOOLS
 from ..projects import ProjectConflict, ProjectQuotaExceeded
 from ..workers.durable_jobs import JobDeferred
 from .registry import FunctionTool
-
-
-def enabled(context):
-    runtime = getattr(context.app, "project_runtime", None)
-    return bool(
-        "projects" in context.capabilities
-        and runtime is not None
-        and runtime.ready
-        and not runtime.closed
-        and context.app.settings.projects_enabled
-        and not context.routine_run_id
-        and active_agent_step.get() is None
-        and isinstance(context.event, (GroupMessageEvent, PrivateMessageEvent))
-    )
 
 
 def _key(context, action, target):
@@ -43,31 +28,6 @@ def _key(context, action, target):
         target,
     ]
     return hashlib.sha256(json.dumps(source, ensure_ascii=False).encode()).hexdigest()
-
-
-async def _access(context):
-    runtime, app = context.app.project_runtime, context.app
-    scope = scope_from_event(context.event)
-    principal = await app.db_call(
-        app.message_ledger.principal_id_for_native,
-        scope.platform,
-        scope.actor_native_user_id,
-    )
-    if principal is None:
-        principal = await app.db_call(
-            app.message_ledger.ensure_principal_identity,
-            scope.platform,
-            scope.actor_native_user_id,
-            "",
-        )
-    return await runtime.resolve_access(
-        {
-            "scope_key": scope.key,
-            "bot_native_user_id": scope.bot_native_user_id,
-            "creator_principal_id": principal,
-        },
-        principal,
-    )
 
 
 def _execution_allowed(context):
@@ -256,6 +216,8 @@ async def execute(turn, arguments, *, name):
             result["project"]["operation_status"] = (
                 operation["status"] if operation else "unknown"
             )
+        if name in {"project_create", "project_open"}:
+            result["current_project_context"] = await current_project_payload(context)
         result = {"ok": True, **result}
     except JobDeferred:
         result = {

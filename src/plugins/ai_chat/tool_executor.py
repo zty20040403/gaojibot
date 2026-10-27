@@ -113,6 +113,7 @@ from .video import (
 from .handler_services import HandlerService
 from .handler_constants import (TURN_PROMPT_VERSION)
 from .prompt_context import quote_evidence
+from .project_context import current_project_context
 from .intent_routing import ToolIntent, classify_tool_intent
 from .tools import registry_for
 from .tools.state import SubAgentActions, ToolContext, TurnState
@@ -1529,6 +1530,10 @@ class ToolExecutor(HandlerService):
                     "报告关键阶段，主 Agent 不要重复刷进度。用户要求继续 interrupted 的 "
                     "task#编号时调用 resume_subagent。"
                 )
+
+            project_context = await current_project_context(turn.context)
+            if project_context:
+                context_parts.append(project_context)
 
             if turn.mcp_checkpoint is not None:
                 turn.mcp_checkpoint.system_context = ("\n\n".join(stable_context_parts) if _mcp_execution is None
