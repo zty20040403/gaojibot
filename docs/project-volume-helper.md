@@ -727,6 +727,39 @@ rejects dirty filesystems, and proves source-image bytes are unchanged. It runs
 only in a disposable local container without capabilities or active networking;
 it is not a native KVM or crash-recovery acceptance test.
 
+### Docker Desktop soft quota
+
+The Desktop runner uses `DirectoryProjectVolumes` inside its existing private
+data volume. Only an exact `volume-subpath` is exposed to each sandbox, with
+copy-up disabled. Immutable directory identity, owner, generation and operation
+fences are verified; the sandbox cannot access sibling projects or controller
+credentials. No loop mount or Docker VM host path is assumed.
+
+The existing reserved snapshot, restore, rebuild and lifecycle operations work
+on this directory backend. Accounting and the runner capability report explicitly
+say `quota_mode=soft`. Data is charged by allocated blocks; it may exceed the
+declared limit. This is not a hard filesystem quota or a guarantee against a
+fast writer filling storage between samples.
+
+The runner inspects projects every 30 seconds, including dependency rebuild
+containers and writers recovered from private journals after a runner restart.
+New executions, writes and readonly imports check capacity before dispatch;
+known dependency installation is refused at 95%. Overfull or unreadable usage
+stops only the identity-verified project container by immutable ID, without
+waiting for its active execution lock. Detached children stop with it. No
+retained files are deleted. A failed stop is unverified, not reported successful.
+The instance-level capacity guard still applies outside the project quota.
+
+`tools/verify_project_desktop.py` verifies actual volume-subpath isolation and
+writer termination using existing local Docker Desktop images. Its only fixture
+is an empty readonly Nix cache; it does not install packages or contact servers.
+It writes 80 MiB into a 64 MiB project, checks the writer was stopped, checks a
+second project remains usable and retained files survive, then verifies restart
+after test-only removal of the fill file. All fixture containers and volumes
+are removed. Windows, Desktop-engine crashes, controller-loss enforcement and
+complete App/workbench usage reporting remain acceptance work, not covered by
+this local macOS/Linux-container proof.
+
 ### Remaining acceptance
 
 `tests/test_project_volumes.py` uses actual private files and Unix RPC but an
@@ -761,8 +794,8 @@ Before enabling this helper, M2 still needs:
   the assembled reconstruction path still needs native acceptance. Do not clear
   a tombstone or reset a fence
   to work around a failed restore.
-- Desktop soft-quota monitoring and cancellation, plus VM project-disk/discard
-  integration, metrics and user-facing usage reporting.
+- Desktop Windows/engine-loss acceptance, VM project-disk/discard full native
+  lifecycle acceptance, metrics and user-facing usage reporting.
 
 The M0 experiments remain evidence for the storage design, not substitutes for
 these product gates. M1 is complete locally; M2 through M7 are not complete.

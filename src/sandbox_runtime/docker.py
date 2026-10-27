@@ -10,6 +10,7 @@ import re
 import secrets
 import shlex
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -490,6 +491,14 @@ class DockerSandboxManager:
             value = await value
         return value is True
 
+    @asynccontextmanager
+    async def _project_write_guard(self, owner, sandbox_id, **options):
+        if self.project_workspaces is None:
+            yield
+        else:
+            async with self.project_workspaces.write_guard(owner, sandbox_id, **options):
+                yield
+
     async def exec(
         self,
         owner: str,
@@ -501,7 +510,7 @@ class DockerSandboxManager:
         if not command.strip():
             raise SandboxError("命令不能为空。")
         lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
-        async with lock:
+        async with lock, self._project_write_guard(owner, sandbox_id, dependencies=bool(packages)):
             name = await self._owned_container(owner, sandbox_id)
             timeout = min(
                 max(timeout_seconds or self.default_timeout_seconds, 1),
@@ -924,7 +933,7 @@ class DockerSandboxManager:
         *,
         allow_large: bool = False,
     ) -> int:
-        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()), self._project_write_guard(owner, sandbox_id, incoming=len(content)):
             return await self._write_file(owner, sandbox_id, path, content, allow_large=allow_large)
 
     async def _write_file(self, owner, sandbox_id, path, content, *, allow_large=False):
@@ -965,7 +974,7 @@ class DockerSandboxManager:
         return len(content)
 
     async def install_readonly_file(self, owner: str, sandbox_id: str, path: str, content: bytes) -> None:
-        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()), self._project_write_guard(owner, sandbox_id, incoming=len(content)):
             await self._install_readonly_file(owner, sandbox_id, path, content)
 
     async def _install_readonly_file(self, owner, sandbox_id, path, content):

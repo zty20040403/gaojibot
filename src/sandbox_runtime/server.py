@@ -37,7 +37,12 @@ class SandboxRunner:
         manager.project_workspaces = None
         if project_volumes is not None:
             from .project_workspaces import ProjectWorkspaces
-            manager.project_workspaces = ProjectWorkspaces(manager, project_volumes)
+            if project_volumes.storage_kind == 'desktop-directory':
+                from .project_desktop_workspaces import DesktopProjectWorkspaces
+                manager.project_workspaces = DesktopProjectWorkspaces(manager, project_volumes)
+            else:
+                manager.project_workspaces = ProjectWorkspaces(manager, project_volumes)
+        self.quota_watch = None
         self.server = self.receipts = self.lock = None
         self.inflight: dict[str, tuple[str, asyncio.Task]] = {}
         self.connections: set[asyncio.Task] = set()
@@ -76,6 +81,8 @@ class SandboxRunner:
             os.chmod(self.socket_path, 0o660)
             if self.socket_gid is not None:
                 os.chown(self.socket_path, -1, self.socket_gid)
+            if self.project_volumes is not None and self.project_volumes.storage_kind == 'desktop-directory':
+                self.quota_watch = asyncio.create_task(self.manager.project_workspaces.watch(), name='project-soft-quota')
         except BaseException:
             await self.close()
             raise
@@ -85,6 +92,9 @@ class SandboxRunner:
         if server:
             server.close()
         tasks = [task for _, task in self.inflight.values()] + list(self.connections)
+        if self.quota_watch is not None:
+            tasks.append(self.quota_watch)
+            self.quota_watch = None
         for task in tasks:
             task.cancel()
         if tasks:
@@ -190,6 +200,7 @@ class SandboxRunner:
                         "max_file_bytes": self.manager.max_file_bytes, "active_operations": len(self.inflight)}
                 data['project_volumes_enabled'] = self.project_volumes is not None
                 data['project_workspaces_enabled'] = self.manager.project_workspaces is not None
+                data['project_quota_mode'] = self.project_volumes.quota_mode if self.project_volumes is not None else None
             elif method == 'project_usage':
                 if self.manager.project_workspaces is None:
                     raise ProtocolError("Project accounting is unavailable")
@@ -312,12 +323,21 @@ def manager_from_config(config: dict) -> DockerSandboxManager:
         docker_executable=config["docker"], docker_host=config["docker_host"], **limits)
 
 
-async def serve(config: dict):
+async def serve(config: dict, *, desktop_storage=None):
     manager = manager_from_config(config)
     from src.storage_admission import require_capacity
+    capacity_check = (lambda size: require_capacity(size, filename=Path(config["capacity_file"]), instance_id=config["instance_id"])) if config.get("capacity_file") else None
+    volumes = None
+    if desktop_storage is not None:
+        from .project_directory import DesktopVolumeHost, DirectoryProjectVolumes
+        host = DesktopVolumeHost(data_root=desktop_storage['root'], volume=desktop_storage['volume'],
+                                 docker=config['docker'], docker_host=config['docker_host'])
+        root = Path(config['state_directory']) / 'project-volumes'
+        host.subpath(root)
+        volumes = DirectoryProjectVolumes(root, config['instance_id'], host=host, capacity_check=capacity_check)
     runner = SandboxRunner(manager, socket_path=Path(config["socket_path"]),
         state_directory=Path(config["state_directory"]), token=config["token"], socket_gid=10001,
-        capacity_check=(lambda size: require_capacity(size, filename=Path(config["capacity_file"]), instance_id=config["instance_id"])) if config.get("capacity_file") else None)
+        capacity_check=capacity_check, project_volumes=volumes)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for value in (signal.SIGINT, signal.SIGTERM):

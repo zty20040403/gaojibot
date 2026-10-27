@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from contextlib import asynccontextmanager
 
 from .docker import SandboxError
 from .project_volumes import LinuxVolumeHost
@@ -62,6 +63,16 @@ class ProjectWorkspaces:
     def startup_command(binding):
         identity = binding["workspace"]["root_identity"]
         return f"test \"$(stat -c '%d:%i' /workspace)\" = '{identity}' || exit 78; exec sleep infinity"
+
+    @asynccontextmanager
+    async def write_guard(self, owner, sandbox_id, *, incoming=0, dependencies=False):
+        # Native volumes enforce capacity at the filesystem boundary.
+        yield
+
+    def _workspace_mount_matches(self, binding, work, host):
+        return (len(work) == 1 and work[0]["Type"] == "bind"
+                and work[0]["Source"] == binding["path"]
+                and work[0]["RW"] is True and work[0]["Propagation"] == "rprivate")
 
     async def _inspect(self, sandbox_id):
         name = self.manager._container_name(sandbox_id)
@@ -134,11 +145,7 @@ class ProjectWorkspaces:
                 or type(state["Running"]) is not bool
                 or state.get("Paused")
                 or state.get("Restarting")
-                or len(work) != 1
-                or work[0]["Type"] != "bind"
-                or work[0]["Source"] != binding["path"]
-                or work[0]["RW"] is not True
-                or work[0]["Propagation"] != "rprivate"
+                or not self._workspace_mount_matches(binding, work, host)
                 or len(nix) != 1
                 or nix[0]["Type"] != "volume"
                 or nix[0]["Name"] != self.manager.nix_cache_volume

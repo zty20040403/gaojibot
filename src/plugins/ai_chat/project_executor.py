@@ -64,13 +64,16 @@ class DockerProjectBackend:
         {"verify_active", "verify_stopped", "verify_hibernated", "verify_archived"}
     )
 
-    def __init__(self, client, *, files=None):
+    def __init__(self, client, *, files=None, quota_mode="hard"):
+        if quota_mode not in {"hard", "soft"}:
+            raise ValueError("Unknown project quota mode")
         self.client, self.files = client, files
+        self.quota_mode = quota_mode
 
     async def sample_usage(self, project):
         if project["workspace_generation"] == 0:
             return {"project_id": project["project_id"], "generation": 0, "fence": 0,
-                    "quota_bytes": project["quota_bytes"], "quota_mode": "hard", "used_bytes": 0,
+                    "quota_bytes": project["quota_bytes"], "quota_mode": self.quota_mode, "used_bytes": 0,
                     "rebuildable_bytes": 0, "complete": True, "sampled_at": int(time.time())}
         return await self.client.project_usage(
             project["scope_key"], project["project_id"], generation=project["workspace_generation"],

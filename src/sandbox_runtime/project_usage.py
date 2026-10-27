@@ -97,6 +97,9 @@ class ProjectUsage:
     def measure(
         self, owner, project_id, *, generation, rebuild_command="", reservation=None
     ):
+        if self.volumes.storage_kind == "desktop-directory":
+            return self.volumes.measure(owner, project_id, generation=generation,
+                                        rebuild_command=rebuild_command, reservation=reservation)
         with self.volumes._locked(owner, project_id) as (directory, record):
             if record is None:
                 raise ProjectVolumeError("Project volume does not exist")

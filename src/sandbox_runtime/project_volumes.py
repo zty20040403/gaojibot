@@ -20,6 +20,7 @@ import uuid
 
 from src.local_runtime.files import read_json
 from src.project_content import MAX_MANIFEST_BYTES
+from .project_workspace_journal import ProjectWorkspaceJournal
 from .project_volume_journal import (
     MAX_QUOTA as MAX_QUOTA,
     MIN_QUOTA as MIN_QUOTA,
@@ -91,19 +92,31 @@ class LinuxVolumeHost:
             available = usage.f_bavail * usage.f_frsize
         else:
             result = self.run("dumpe2fs", "-h", str(image), timeout=10)
-            values = dict(line.split(":", 1) for line in result.splitlines() if ":" in line)
+            values = dict(
+                line.split(":", 1) for line in result.splitlines() if ":" in line
+            )
             try:
                 if values["Filesystem state"].strip() != "clean":
                     raise ValueError("Unclean filesystem")
-                blocks, size, free = (int(values[key].strip()) for key in ("Block count", "Block size", "Free blocks"))
+                blocks, size, free = (
+                    int(values[key].strip())
+                    for key in ("Block count", "Block size", "Free blocks")
+                )
                 reserved = int(values["Reserved block count"].strip())
-                if size <= 0 or blocks * size != quota or not 0 <= free <= blocks or not 0 <= reserved <= blocks:
+                if (
+                    size <= 0
+                    or blocks * size != quota
+                    or not 0 <= free <= blocks
+                    or not 0 <= reserved <= blocks
+                ):
                     raise ValueError("Invalid filesystem geometry")
                 available = max(0, free - reserved) * size
             except (KeyError, ValueError):
                 raise ProjectVolumeError("Cannot measure offline ext4 usage") from None
         if not 0 <= available <= quota:
-            raise ProjectVolumeError("Filesystem available space differs from project quota")
+            raise ProjectVolumeError(
+                "Filesystem available space differs from project quota"
+            )
         return quota - available
 
     def loops(self):
@@ -203,13 +216,15 @@ class LinuxVolumeHost:
         self.run("fstrim", str(target))
 
 
-class ProjectVolumes(ProjectVolumeJournal):
+class ProjectVolumes(ProjectWorkspaceJournal, ProjectVolumeJournal):
     """Private runner journal and fixed-operation host filesystem adapter.
 
     Fence numbers increase per project *operation*, not per transient RPC retry.
     Retrying the same fence requires exactly the same operation and arguments.
     A new fence cannot overtake an unfinished filesystem mutation.
     """
+
+    quota_mode = "hard"
 
     def __init__(self, root: Path, instance_id: str, *, host=None, capacity_check=None):
         super().__init__(root, instance_id, capacity_check=capacity_check)
@@ -644,27 +659,6 @@ class ProjectVolumes(ProjectVolumeJournal):
                 raise ProjectVolumeError("Project volume is not mounted")
             return target
 
-    def workspace(
-        self,
-        owner,
-        project_id,
-        *,
-        generation,
-        allow_pending=False,
-        maintenance=False,
-        reservation=None,
-    ):
-        """Private local driver data. Never send this binding over the RPC socket."""
-        with self._locked(owner, project_id) as (directory, record):
-            self._generation(record, generation)
-            if record is None or record.get("deleted"):
-                raise ProjectVolumeError("Project workspace is unavailable")
-            if record["pending"] and not allow_pending:
-                raise ProjectVolumeError("Project workspace is undergoing maintenance")
-            if not maintenance:
-                self._require_reservation(record, reservation)
-            return self._workspace_binding(directory, record, maintenance=maintenance)
-
     def _workspace_binding(self, directory, record, *, maintenance=False):
         _, target, _, _, mount = self._observed(directory, record)
         workspace = record.get("workspace")
@@ -693,65 +687,6 @@ class ProjectVolumes(ProjectVolumeJournal):
             "boot_id": boot_id,
             "maintenance_active": bool(record.get("maintenance")),
         }
-
-    def begin_workspace(
-        self, owner, project_id, *, generation, fence, action, image, reservation=None
-    ):
-        if type(fence) is not int or not 1 <= fence < 2**53:
-            raise ProjectVolumeError("Invalid project operation fence")
-        if action not in {"start", "stop", "remove"}:
-            raise ProjectVolumeError("Unsupported project workspace operation")
-        if not isinstance(image, str) or not re.fullmatch(
-            r"(?:gaoji-app-sandbox:[a-f0-9]{64}|[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64})",
-            image,
-        ):
-            raise ProjectVolumeError("A pinned project image is required")
-        with self._locked(owner, project_id) as (directory, record):
-            self._generation(record, generation)
-            if record is None or record.get("deleted"):
-                raise ProjectVolumeError("Project volume does not exist")
-            self._require_reservation(record, reservation)
-            binding = self._workspace_binding(directory, record, maintenance=True)
-            workspace = record.get("workspace")
-            recoverable = (
-                workspace
-                and workspace.get("boot_id")
-                and workspace["boot_id"] != binding["boot_id"]
-            )
-            if action == "start" and not binding["mount_matches"] and not recoverable:
-                raise ProjectVolumeError(
-                    "Mount the project before starting a workspace"
-                )
-            operation = "workspace_" + action
-            if fence == record["fence"]:
-                intent = record["intent"]
-                if intent["operation"] != operation:
-                    raise ProjectVolumeError("Project fence was already used")
-                # A restart may have a newer configured image; the persisted
-                # operation still reconciles its original immutable image.
-                self._begin(directory, record, operation, fence, intent["arguments"])
-                return self._workspace_binding(directory, record, maintenance=True)
-            if record["pending"] or fence < record["fence"]:
-                raise ProjectVolumeError(
-                    "Previous project operation must be reconciled first"
-                )
-            if action == "start" and not record.get("workspace"):
-                info = Path(binding["path"]).stat()
-                record["workspace"] = {
-                    "sandbox_id": "s" + secrets.token_hex(3),
-                    "token": secrets.token_hex(16),
-                    "image": image,
-                    "root_identity": f"{info.st_dev}:{info.st_ino}",
-                    "boot_id": binding["boot_id"],
-                }
-            self._begin(
-                directory,
-                record,
-                operation,
-                fence,
-                {"workspace": record.get("workspace")},
-            )
-            return self._workspace_binding(directory, record, maintenance=True)
 
     def recover_workspace(
         self, owner, project_id, *, generation, fence, reservation=None
@@ -807,28 +742,3 @@ class ProjectVolumes(ProjectVolumeJournal):
             }
             self._save(directory, record)
             return self._workspace_binding(directory, record)
-
-    def finish_workspace(
-        self, owner, project_id, *, generation, fence, action, reservation=None
-    ):
-        if (
-            action not in {"start", "stop", "remove"}
-            or type(fence) is not int
-            or not 1 <= fence < 2**53
-        ):
-            raise ProjectVolumeError("Invalid workspace completion")
-        with self._locked(owner, project_id) as (directory, record):
-            self._generation(record, generation)
-            self._require_reservation(record, reservation)
-            if record is None or record.get("deleted") or record["fence"] != fence:
-                raise ProjectVolumeError("Workspace operation was superseded")
-            if record["intent"]["operation"] != "workspace_" + action:
-                raise ProjectVolumeError("Workspace operation does not match journal")
-            if not record["pending"]:
-                return self._status(directory, record)
-            if action == "remove":
-                # The driver independently verified container absence. Also
-                # reject any remaining (including stopped) external consumer.
-                self._idle(self._paths(directory, record)[1])
-                record["workspace"] = None
-            return self._finish(directory, record)

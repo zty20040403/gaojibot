@@ -317,7 +317,8 @@ def main():
         if deployment.get("instance_id") != directory.name:
             raise SetupError("沙盒启动记录不属于当前实例")
         ensure_desktop_network(deployment)
-        asyncio.run(serve(load_config(directory / "config/sandbox-runner.json")))
+        asyncio.run(serve(load_config(directory / "config/sandbox-runner.json"),
+                          desktop_storage={"root": ROOT, "volume": deployment["volume"]}))
         return
     if len(sys.argv) == 3 and sys.argv[1] == "update":
         from .desktop_updates import DesktopUpdateWorker

@@ -2497,3 +2497,55 @@ implementation evidence, not a claim that the production App has these features.
   and remaining task/product integration are still required. M3-M7 are pending.
   No production SSH, shared nix-config edit, rebuild or App release occurred.
   The user-authored plan remains unchanged and excluded from this checkpoint.
+
+### M2 Desktop project directories and soft-quota enforcement
+
+- Added an explicit Desktop directory backend inside the instance's existing
+  private data volume. Sandboxes receive only their own `volume-subpath`, with
+  copy-up disabled; no loop device, privileged sandbox or guessed Docker VM
+  host path is needed. Shared fenced workspace methods were extracted without
+  changing the native ext4 backend's lifecycle contract.
+- Directory generations, immutable root identity, private operation journals,
+  reservations, offline file snapshots and dependency rebuilds reuse the
+  existing project interfaces. Data is not silently replaced on identity loss;
+  deletion still requires the fenced lifecycle and absence of consumers.
+  Desktop accounting and helper health explicitly report soft quota, including
+  usage above the configured limit. The OCI backend can also report soft mode
+  for a not-yet-provisioned project instead of assuming a hard limit.
+- Added fresh admission for command execution, file writes and readonly imports,
+  a 95-percent known dependency-install guard, post-operation checks and a
+  30-second runner inspection loop. Overfull or unreadable usage stops the
+  verified project container by immutable ID without acquiring its busy writer
+  lock. This includes detached children and durable dependency-rebuild containers;
+  it never deletes retained files or stops a different project. Private journals
+  recover the inspection inventory after runner restart. Empty directories left
+  by lookups of nonexistent projects do not disable the monitor.
+- Real local Docker Desktop verification used existing pinned images and a
+  fresh labelled data volume. A 64 MiB project reached 83,894,272 allocated bytes;
+  enforcement stopped its still-running command with exit 137 in 5.37 seconds.
+  A second project remained usable; retained files survived; restart succeeded
+  after removal of only the generated fill file. Evidence:
+  `.cache/roadmap/m2-desktop-project-proof.log`.
+- The initial proof fixture needed FOWNER to change the ownership of its test
+  directory. The real engine then exposed an empty `VolumeOptions.DriverConfig`
+  field absent from unit fixtures. Product mount validation now accepts that
+  empty default while rejecting custom drivers, wrong subpaths and extra
+  options. A regression test covers both forms; no identity check was removed.
+- The relevant project batch passed 451 tests in 92.325 seconds before final
+  hardening. Final focused tests passed 157 tests in 1.836 seconds; the affected
+  PostgreSQL executor/file/dependency/usage tests passed 58 tests in 31.385
+  seconds. ResourceWarnings were errors. Logs are
+  `.cache/roadmap/m2-desktop-project-{regression,focused,backend}.log`.
+- Whole-CI Ruff, compileall and whitespace checks passed. Nix package/import
+  checks passed on aarch64-darwin; other architectures were omitted, not tested
+  (`.cache/roadmap/m2-desktop-project-nix.log`). No unrelated full suite ran.
+- All newly created proof containers and volumes were removed; no image was
+  built or downloaded. Existing containers, including the local PostgreSQL
+  fixture, were left alone. No production SSH, shared nix-config edit, rebuild,
+  model/QQ call or App release occurred. The user-authored plan is unchanged.
+- This remains soft enforcement, not a hard quota: fast writers may overshoot
+  between inspections, and controller/engine loss needs further acceptance.
+  M2 is still incomplete: native complete lifecycle/power-loss and large-transfer
+  acceptance, Desktop Windows/engine-loss validation and remaining task/product
+  integration are pending. User-facing usage reporting belongs to the remaining
+  workbench/tool integration. M3-M7 are not complete.
