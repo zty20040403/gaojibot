@@ -446,11 +446,21 @@ class ProjectWorkspaces:
             state = "needs_recovery"
         elif state == "running":
             await self._verify_running(binding, container)
+        sandbox_id = (binding["workspace"] or {}).get("sandbox_id")
+        busy = False
+        if sandbox_id:
+            lock = self.manager._exec_locks.get(sandbox_id)
+            busy = bool(lock and lock.locked())
+            try:
+                self.manager._ensure_idle(sandbox_id)
+            except SandboxError:
+                busy = True
         return {
             "project_id": project_id,
             "generation": generation,
             "fence": binding["fence"],
-            "sandbox_id": (binding["workspace"] or {}).get("sandbox_id"),
+            "sandbox_id": sandbox_id,
+            "busy": busy,
             "state": state,
             "pending": binding["pending"],
             "verified": not binding["pending"]

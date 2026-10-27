@@ -13,6 +13,8 @@ import nonebot
 nonebot.init()
 
 from src.plugins.ai_chat.project_blobs import ProjectFile
+from src.plugins.ai_chat.project_maintenance import ProjectMaintenance
+from src.plugins.ai_chat.project_policy import DAY
 from src.plugins.ai_chat.projects import ProjectConflict
 from src.sandbox_runtime.docker import SandboxError
 from tests import test_project_file_executor as fixture
@@ -103,6 +105,54 @@ class ProjectDependencyExecutorTests(unittest.IsolatedAsyncioTestCase):
         return self.sql.execute(
             "SELECT * FROM project_lifecycle_steps WHERE operation='rebuild_dependencies' ORDER BY job_id DESC LIMIT 1"
         ).fetchone()
+
+    async def test_automatic_idle_cycle_uses_private_helper_and_restores_retained_files(self):
+        root = await self.wake()
+        (root / "source.txt").write_bytes(b"automatic retained content")
+        maintenance = ProjectMaintenance(
+            self.lifecycle, {"oci": self.backend}, enabled=True,
+            resolve_access=lambda project, actor: self.access,
+        )
+        for age, action, state in ((1801, "stop", "stopped"), (7 * DAY + 1, "hibernate", "hibernated"),
+                                   (60 * DAY + 1, "archive", "archived")):
+            now = int(time.time())
+            self.sql.execute("UPDATE projects SET last_active_at=? WHERE project_id=?", (now - age, self.pid))
+            result = await maintenance.run_once(now=now)
+            self.assertEqual(result[0].get("action"), action, result)
+            await self.executor(self.claim())
+            project = self.projects.get(self.access, self.pid)
+            self.assertEqual(project["status"], state)
+            self.assertEqual(project["last_active_at"], now - age)
+        self.assertEqual(len(self.docker.containers), 0)
+        self.assertTrue(await self.backend.maintenance_ready(project))
+        self.request("wake")
+        await self.executor(self.claim())
+        restored = self.volumes.binding(self.scope.key, self.pid, generation=2)
+        self.assertEqual((restored / "source.txt").read_bytes(), b"automatic retained content")
+
+    async def test_helper_reports_busy_command_and_file_transfer_without_reclaiming(self):
+        await self.wake()
+        project = self.projects.get(self.access, self.pid)
+        self.assertTrue(await self.backend.maintenance_ready(project))
+        lock = self.driver._exec_locks.setdefault(project["sandbox_id"], asyncio.Lock())
+        async with lock:
+            self.assertFalse(await self.backend.maintenance_ready(project))
+        with patch.object(self.driver, "_ensure_idle", side_effect=SandboxError("fixture command active")):
+            self.assertFalse(await self.backend.maintenance_ready(project))
+        self.assertTrue(await self.backend.maintenance_ready(project))
+
+    async def test_old_helper_without_busy_observation_is_not_eligible(self):
+        await self.wake()
+        project = self.projects.get(self.access, self.pid)
+        original = self.client.project_workspace
+
+        async def old(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            result.pop("busy", None)
+            return result
+
+        with patch.object(self.client, "project_workspace", side_effect=old):
+            self.assertFalse(await self.backend.maintenance_ready(project))
 
     async def test_fresh_restore_rebuilds_before_start_with_published_evidence(self):
         version = self.seed_locked_version()

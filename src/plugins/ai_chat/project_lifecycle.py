@@ -12,6 +12,7 @@ import time
 import uuid
 
 from .projects import ProjectConflict, require_project_lease
+from .project_policy import ProjectPolicy
 
 
 KIND = "project.lifecycle"
@@ -141,8 +142,13 @@ class ProjectLifecycle:
         return dict(row) if row else None
 
     def request(
-        self, access, project_id, action, *, expected_version, request_key, now=None
+        self, access, project_id, action, *, expected_version, request_key, now=None,
+        idle_policy=None, preflight=None,
     ):
+        if idle_policy is not None and (
+            not isinstance(idle_policy, ProjectPolicy) or not callable(preflight)
+        ):
+            raise ValueError("Automatic lifecycle requires a host policy and backend preflight")
         if not isinstance(request_key, str) or not re.fullmatch(
             r"[A-Za-z0-9_.:-]{1,120}", request_key
         ):
@@ -163,8 +169,11 @@ class ProjectLifecycle:
                     raise ProjectConflict("Lifecycle request identity was reused")
                 return self._public_run(previous)
             project = self.projects._get(
-                cursor, access, project_id, edit=True, expected=expected_version
+                cursor, access, project_id, edit=True, expected=expected_version,
+                owner=idle_policy is not None,
             )
+            if idle_policy is not None and idle_policy.idle_action(project, now=now) != action:
+                raise ProjectConflict("Project is no longer eligible for this idle transition")
             self._idle(cursor, project)
             baseline = self._baseline(cursor, project_id)
             rebuild = (
@@ -179,6 +188,9 @@ class ProjectLifecycle:
             )
             if generation >= 2**53:
                 raise ProjectConflict("Workspace generation exhausted")
+            if idle_policy is not None:
+                plan["trigger"] = {"kind": "idle", "last_active_at": project["last_active_at"]}
+                preflight(plan)
             job, created = self.jobs.enqueue(
                 kind=KIND,
                 idempotency_key=f"project:{project_id}:lifecycle:{request_key}",
@@ -514,12 +526,13 @@ class ProjectLifecycle:
             require_project_lease(cursor, project, job, lease_now)
             cursor.execute(
                 """UPDATE projects SET status=?,sandbox_id=?,lifecycle_job_id=NULL,
-                version=version+1,state_changed_at=?,updated_at=? WHERE project_id=?""",
+                version=version+1,state_changed_at=?,updated_at=?,last_active_at=? WHERE project_id=?""",
                 (
                     run["target_state"],
                     rows[-1]["evidence"].get("sandbox_id"),
                     now,
                     now,
+                    now if run["action"] == "wake" else project["last_active_at"],
                     project["project_id"],
                 ),
             )
@@ -549,6 +562,18 @@ class ProjectLifecycle:
                 ),
             )
             return result
+
+    def maintenance_candidates(self, *, after=0, limit=50):
+        """Private host inventory, not a cross-conversation API."""
+        if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("Invalid project maintenance page")
+        with self.projects._transaction() as cursor:
+            return [dict(row) for row in cursor.execute(
+                """SELECT * FROM projects WHERE project_id>? AND status IN
+                ('active','stopped','hibernated','archived') AND lifecycle_job_id IS NULL
+                AND locked_task_id IS NULL ORDER BY project_id LIMIT ?""",
+                (after, limit),
+            ).fetchall()]
 
     def needs_attention(self, job, *, now=None):
         """Never unlock or delete data just because an operation timed out."""

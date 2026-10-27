@@ -1960,3 +1960,52 @@ implementation evidence, not a claim that the production App has these features.
   task admission and compensation/retry UX. No production switch, QQ/model call,
   App release, nix-config change or main merge is part of this checkpoint.
   The approved plan remains unchanged, untracked and excluded from commits.
+
+### M2 automatic idle and retention checkpoint
+
+- Added an explicitly enabled host scheduler, with bounded round-robin project
+  pages, isolated failures and live owner/membership resolution. It does not
+  manufacture an administrator identity, start itself on import, purge projects
+  or directly operate containers. Unsupported/unverified backends are skipped.
+- Idle policy uses actual activity: 30 minutes to stop, seven days to hibernate,
+  60 days to archive. Pinned projects may stop/hibernate but cannot archive.
+  Eligibility, optimistic version, task locks and unresolved deliveries are
+  checked again under the project lock before queue admission. Backend preflight
+  runs before a durable job is created. Concurrent schedulers cannot create two
+  operations for one project; executor receipts still determine completion.
+- Fixed lifecycle snapshots renewing the activity/focus timestamp. Both new and
+  unchanged maintenance snapshots now preserve it, and a successful manual wake
+  renews it. Opening a project races safely with admission: an earlier open
+  cancels eligibility; an admitted transition blocks opening until it finishes.
+- The private helper reports active commands/file transfers, and automatic
+  maintenance requires an idle, correctly identified workspace. Old helpers
+  without this observation are not assumed idle. Reservations remain the final
+  serialized gate against a command starting after the observation.
+- Retention reads the full history rather than the UI's 200-version page. It
+  keeps labelled/pinned versions, ten recent automatic versions, daily versions
+  for 30 days and weekly versions thereafter, using UTC calendar buckets. Archive
+  retention keeps the latest/permanent versions. Clock-future versions remain
+  protected. Durable task and preview references override retention, including
+  expired previews until their reference is explicitly removed.
+- Version deletion and its audit are atomic. Object collection is bounded to
+  100 blob deletions per hourly pass and retains the existing 24-hour grace and staged
+  snapshot/reference guards. Neither retention nor inventory polling renews
+  activity. No original project or unrelated cache directory is swept.
+- Focused regression: 134 tests passed in 46.145 seconds before hourly collection
+  and its two additional tests (.cache/roadmap/m2-policy-focused.log). Final full
+  isolated PostgreSQL regression: 2378 tests passed (12 skipped), 435.110 seconds
+  with ResourceWarning promoted to errors (.cache/roadmap/m2-policy-full.log).
+  This includes actual PostgreSQL and private Unix RPC with simulated Docker and
+  kernel observations, not native Linux acceptance. No product code changed after
+  this run. CI-path Ruff, compileall and whitespace checks passed. Nix package and
+  import checks passed on aarch64-darwin (.cache/roadmap/m2-policy-nix.log);
+  incompatible systems were omitted, not tested. Temporary fixture schemas and
+  directories are cleaned automatically; the remaining diagnostics are small.
+- The user authorized merging the verified work into main and deleting the two
+  merged branches. Both remote branches are deleted; the older detached checkout
+  and its ignored user data were preserved. Checkpoints now target the bot's main
+  branch. No server SSH, rebuild, App publication or nix-config update occurred.
+- M2 remains incomplete: native lifecycle/host-reboot acceptance, VM project
+  disks, Desktop soft quotas, measured usage and quota alerts/metrics, complete
+  task admission, compensation/retry/trash workflows and production composition.
+  M3-M7 remain pending. The supplied plan is still untouched and excluded.

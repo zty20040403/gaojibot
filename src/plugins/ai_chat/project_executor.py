@@ -66,6 +66,35 @@ class DockerProjectBackend:
     def __init__(self, client, *, files=None):
         self.client, self.files = client, files
 
+    async def maintenance_ready(self, project):
+        if project["lifecycle_job_id"] is not None or project["locked_task_id"] is not None:
+            return False
+        if project["workspace_generation"] == 0:
+            return project["status"] == "stopped"
+        options = {"generation": project["workspace_generation"]}
+        if project["status"] == "archived":
+            state = await self.client.project_volume(
+                "status", project["scope_key"], project["project_id"], **options
+            )
+            ready = state.get("deleted") is True
+        else:
+            state = await self.client.project_workspace(
+                "status", project["scope_key"], project["project_id"], **options
+            )
+            ready = (
+                state.get("verified") is True and state.get("busy") is False
+                and state.get("state") == {
+                    "active": "running", "stopped": "stopped", "hibernated": "absent",
+                }.get(project["status"])
+                and (project["status"] == "hibernated"
+                     or state.get("sandbox_id") == project["sandbox_id"])
+            )
+        return (
+            ready and state.get("project_id") == project["project_id"]
+            and state.get("generation") == project["workspace_generation"]
+            and not state.get("pending") and not state.get("maintenance_active")
+        )
+
     def preflight(self, plan):
         if (
             plan.get("protocol") != 2

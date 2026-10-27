@@ -293,6 +293,8 @@ class ProjectStore:
         now = int(time.time()) if now is None else now
         with self._transaction() as cursor:
             row = self._get(cursor, access, project_id)
+            if row["lifecycle_job_id"] is not None:
+                raise ProjectConflict("Project maintenance is pending; wait for it to finish")
             self._focus(cursor, access, project_id, now)
             cursor.execute(
                 "UPDATE projects SET last_active_at=? WHERE project_id=?",
@@ -600,11 +602,12 @@ class ProjectStore:
                         {"version_no": previous["version_no"], "label": label},
                         now,
                     )
-                cursor.execute(
-                    "UPDATE projects SET last_active_at=? WHERE project_id=?",
-                    (now, project_id),
-                )
-                self._touch_focus(cursor, access, project_id, now)
+                if lifecycle_job is None:
+                    cursor.execute(
+                        "UPDATE projects SET last_active_at=? WHERE project_id=?",
+                        (now, project_id),
+                    )
+                    self._touch_focus(cursor, access, project_id, now)
                 if lifecycle_job is not None:
                     require_project_lease(cursor, row, lifecycle_job, supplied_now)
                     cursor.execute(
@@ -649,9 +652,10 @@ class ProjectStore:
                 )
             cursor.execute(
                 "UPDATE projects SET version=version+1,last_active_at=?,updated_at=? WHERE project_id=?",
-                (now, now, project_id),
+                (now if lifecycle_job is None else row["last_active_at"], now, project_id),
             )
-            self._touch_focus(cursor, access, project_id, now)
+            if lifecycle_job is None:
+                self._touch_focus(cursor, access, project_id, now)
             self._event(
                 cursor,
                 project_id,
@@ -841,14 +845,16 @@ class ProjectStore:
                 now,
             )
 
-    def prune_versions(self, access, project_id, keep, *, expected_version, now=None):
+    def prune_versions(
+        self, access, project_id, keep, *, expected_version, now=None, idle_guard=None
+    ):
         """M2 computes retention; this boundary additionally protects durable references."""
         now = int(time.time()) if now is None else now
-        keep = {int(number) for number in keep}
+        keep = keep if callable(keep) else {int(number) for number in keep}
         removed = []
         with self._transaction() as cursor:
             self._scope_lock(cursor, access)
-            self._get(
+            project = self._get(
                 cursor,
                 access,
                 project_id,
@@ -856,11 +862,15 @@ class ProjectStore:
                 owner=True,
                 expected=expected_version,
             )
+            if idle_guard is not None:
+                idle_guard(cursor, project)
             self._blob_lock(cursor)
             versions = cursor.execute(
                 "SELECT * FROM project_versions WHERE project_id=? ORDER BY version_no DESC",
                 (project_id,),
             ).fetchall()
+            if callable(keep):
+                keep = set(keep(versions, now=now))
             if versions:
                 keep.add(versions[0]["version_no"])
             for version in versions:
