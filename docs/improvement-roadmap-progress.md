@@ -2068,3 +2068,47 @@ implementation evidence, not a claim that the production App has these features.
   disks and discard, Desktop soft quotas with running-writer cancellation,
   complete atomic admission, compensation/retry/trash workflows and runtime
   composition. Commands, control-panel usage UI and later M3-M7 work remain open.
+
+### M2 independent VM disk foundation
+
+- Extracted the existing private directory, owner/instance checks, operation
+  fences and atomic intent journal into one shared implementation. Native ext4
+  volumes retain their existing format and API. New qcow2 journals explicitly
+  identify their storage backend; neither backend can adopt the other's data.
+- Added private host-owned project data disks outside temporary VM system
+  overlays. Virtual size is exactly the project quota, with sparse allocation
+  and no backing chain, external data file, encryption or internal snapshots.
+  Guest filesystem usage is deliberately not inferred from qcow2 allocation.
+- Creation, offline disk growth and deletion are journalled. Reopening after a
+  lost acknowledgement inspects the existing image rather than formatting again.
+  Missing, replaced, corrupt or partially initialized disks fail closed. Deletion
+  leaves a generation/fence tombstone; recreation requires the next generation.
+  Growth here changes only the block device: guest filesystem growth and all
+  shrinking remain separate, unimplemented lifecycle operations.
+- A durable attachment claim protects a disk even before a VM is defined.
+  Release requires the domain to be undefined, not merely stopped. Inventory
+  checks live and inactive libvirt definitions and backing-store references;
+  failed inventory is not interpreted as an empty list. A matching domain name
+  alone does not authorize adopting an unjournalled attachment. No generic task
+  cleanup can delete a claimed project disk through this API.
+- Existing VM creation previously normalized unsupported purposes to `task`.
+  It now rejects `project` rather than silently assigning temporary retention.
+  The project disk API is not exposed through a model tool, helper RPC or runtime
+  startup yet. The next VM work must integrate the reserved lifecycle executor,
+  guest filesystem identity/mounting, independent system overlays, discard and
+  trim, retained-file operations and recovery before enabling this backend.
+- Focused regression: 99 tests passed in 1.766 seconds, followed by a stricter
+  encrypted-header rejection and explicit growth fsync covered by the final
+  regression below. The local QEMU test created a real 64 MiB sparse qcow2,
+  wrote a known byte pattern, reopened it, grew it to 96 MiB, verified the pattern
+  and deleted it. Fixture-owned directories and disk files are automatically
+  removed. Libvirt inventory tests use fixtures, not a running production daemon.
+- Final full isolated PostgreSQL regression: 2434 tests, OK (12 skipped),
+  433.520 seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-vm-disks-full.log). CI-path Ruff, compileall and whitespace
+  checks passed. Nix package/import checks passed on aarch64-darwin
+  (.cache/roadmap/m2-vm-disks-nix.log); incompatible systems were omitted, not
+  tested. No product code changed after the final regression.
+- This is not guest ENOSPC/trim/reboot acceptance and does not complete M2.
+  The supplied plan remains unchanged and excluded from commits. No production
+  SSH, nix-config edits, rebuild, live QQ/model call or App release occurred.

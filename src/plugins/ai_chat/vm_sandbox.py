@@ -355,6 +355,8 @@ class VmSandboxManager:
         return code == 0
 
     async def create(self, owner: str, runtime: str = "python", *, purpose: str = "task") -> dict[str, str]:
+        if purpose not in {"task", "shell"}:
+            raise SandboxError("持久项目必须通过项目生命周期创建，不能降级为临时 VM 沙盒。")
         if runtime not in {"python", "node", "debian"}:
             raise SandboxError("不支持的运行环境。")
         async with self._create_lock:

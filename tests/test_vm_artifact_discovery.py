@@ -13,9 +13,17 @@ nonebot.init()
 
 from src.plugins.ai_chat.subagents import _single_observed_artifact
 from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
+from src.sandbox_runtime.docker import SandboxError
 
 
 class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_project_creation_cannot_fall_back_to_ephemeral_task(self):
+        manager = VmSandboxManager(image="/unused/image", root="/unused/root")
+        manager._all_metadata = AsyncMock()
+        with self.assertRaisesRegex(SandboxError, "持久项目"):
+            await manager.create("scope", purpose="project")
+        manager._all_metadata.assert_not_awaited()
+
     def test_vm_provisions_the_shared_cjk_pdf_helper(self):
         config = json.loads(VmSandboxManager._cloud_config().split("\n", 1)[1])
         for package in ("python3-reportlab", "python3-pypdf", "fonts-wqy-microhei", "poppler-utils"):
