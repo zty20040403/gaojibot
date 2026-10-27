@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 import base64
 import hashlib
 import json
@@ -12,6 +13,7 @@ import re
 import secrets
 import shlex
 import shutil
+import stat
 import time
 import uuid
 from pathlib import Path, PurePosixPath
@@ -130,7 +132,7 @@ class VmSandboxManager:
                 ["mkdir", "-p", "/workspace"], ["chown", "sandbox:sandbox", "/workspace"]],
         }
         if project_disk is not None:
-            from src.sandbox_runtime import project_vm_guest
+            from src.sandbox_runtime import project_vm_gate, project_vm_guest
 
             project = project_disk.guest_config(initialize=initialize_project)
             config["users"] = [{"name": "sandbox", "uid": 1000, "shell": "/bin/bash",
@@ -141,6 +143,8 @@ class VmSandboxManager:
                  "content": json.dumps(project)},
                 {"path": project_vm_guest.HELPER_PATH, "permissions": "0755", "owner": "root:root",
                  "content": Path(project_vm_guest.__file__).read_text(encoding="utf-8")},
+                {"path": project_vm_gate.HELPER_PATH, "permissions": "0755", "owner": "root:root",
+                 "content": Path(project_vm_gate.__file__).read_text(encoding="utf-8")},
                 {"path": "/etc/systemd/system/gaoji-project-workspace.service", "permissions": "0644", "owner": "root:root",
                  "content": "[Unit]\nDescription=Gaoji project workspace\nAfter=local-fs.target\n"
                             "[Service]\nType=oneshot\nRemainAfterExit=yes\nTimeoutStartSec=300\n"
@@ -193,15 +197,39 @@ class VmSandboxManager:
         self._active_execs: dict[str, SandboxExecutionActivity] = {}
         self._last_execs: dict[str, SandboxExecutionActivity] = {}
         self.project_mounts = None
+        self._io_scope = ContextVar("vm_project_io", default=None)
 
     @asynccontextmanager
     async def allocation_lock(self):
-        from src.sandbox_runtime.project_vm_provision import _host_lock
+        from src.sandbox_runtime.project_vm_io import host_lock
 
         async with self._create_lock:
             self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-            async with _host_lock(self.root / ".vm-allocation.lock"):
+            async with host_lock(self.root / ".vm-allocation.lock"):
                 yield
+
+    @asynccontextmanager
+    async def io_lock(self, sandbox_id, *, timeout=10):
+        from src.sandbox_runtime.project_vm_io import host_lock
+
+        self._directory(sandbox_id)
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            info = self.root.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o077):
+                raise SandboxError("VM operation root must be a private owned directory")
+            # Outside the VM directory: boot and retirement must share this lock.
+            async with AsyncExitStack() as stack:
+                try:
+                    await stack.enter_async_context(host_lock(self.root / f".io-{sandbox_id}.lock", timeout=timeout))
+                except TimeoutError:
+                    raise SandboxError("Project workspace has an active command or file transfer") from None
+                token = self._io_scope.set({"id": sandbox_id})
+                try:
+                    yield
+                finally:
+                    self._io_scope.reset(token)
 
     @staticmethod
     def _owner_hash(owner: str) -> str:
@@ -312,6 +340,25 @@ class VmSandboxManager:
         return parsed.get("return", {})
 
     async def _guest_exec(
+        self, sandbox_id: str, path: str, args: list[str], *, timeout: int = 60,
+        input_bytes: bytes | None = None,
+    ) -> tuple[int, bytes, bytes]:
+        scope = self._io_scope.get()
+        if scope and scope["id"] == sandbox_id and "epoch" in scope:
+            from src.sandbox_runtime.project_vm_gate import HELPER_PATH, MAX_REQUEST_BYTES
+
+            if input_bytes is not None:
+                raise SandboxError("Project commands do not accept an unmanaged stdin stream")
+            request = json.dumps({"action": "run", "epoch": scope["epoch"],
+                                  "argv": [path, *args], "timeout": timeout,
+                                  "tasks": scope["tasks"]}).encode()
+            if len(request) > MAX_REQUEST_BYTES:
+                raise SandboxError("Project command exceeds the execution gate request limit")
+            return await self._guest_exec_raw(sandbox_id, "/usr/bin/python3", [HELPER_PATH],
+                                              input_bytes=request, timeout=timeout + 30)
+        return await self._guest_exec_raw(sandbox_id, path, args, timeout=timeout, input_bytes=input_bytes)
+
+    async def _guest_exec_raw(
         self, sandbox_id: str, path: str, args: list[str], *, timeout: int = 60,
         input_bytes: bytes | None = None,
     ) -> tuple[int, bytes, bytes]:
@@ -551,7 +598,12 @@ class VmSandboxManager:
         if metadata.get("purpose") == "project":
             if self.project_mounts is None:
                 raise SandboxError("项目 VM 生命周期适配器尚未启用。")
-            await self.project_mounts.authorize(owner, sandbox_id, metadata)
+            observed = await self.project_mounts.authorize(owner, sandbox_id, metadata)
+            scope = self._io_scope.get()
+            if scope and scope["id"] == sandbox_id:
+                spec = metadata.get("project_spec") or {}
+                self._io_scope.set({**scope, "epoch": observed["io_epoch"],
+                                    "tasks": spec.get("pids_limit", self.pids_limit)})
         return metadata
 
     async def _verify_project_mount(self, sandbox_id, metadata):
@@ -583,8 +635,7 @@ class VmSandboxManager:
     ) -> SandboxResult:
         if not command.strip():
             raise SandboxError("命令不能为空。")
-        lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
-        async with lock:
+        async with self.io_lock(sandbox_id):
             metadata = await self._owned_running(owner, sandbox_id)
             pids_limit = metadata["project_spec"]["pids_limit"] if metadata.get("project_spec") else self.pids_limit
             timeout = min(max(timeout_seconds or self.default_timeout_seconds, 1), 300)
@@ -678,7 +729,7 @@ class VmSandboxManager:
         self, owner: str, sandbox_id: str, path: str, content: bytes, *,
         allow_large: bool, readonly: bool,
     ) -> int:
-        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+        async with self.io_lock(sandbox_id):
             return await self._write_content_locked(
                 owner, sandbox_id, path, content, allow_large=allow_large, readonly=readonly,
             )
@@ -773,7 +824,7 @@ class VmSandboxManager:
     async def read_file(
         self, owner: str, sandbox_id: str, path: str, max_bytes: int | None = 64 * 1024,
     ) -> bytes:
-        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+        async with self.io_lock(sandbox_id):
             await self._owned_running(owner, sandbox_id)
             target = self._workspace_path(path)
             return await self._read_guest_file(sandbox_id, target, max_bytes)
@@ -786,7 +837,7 @@ class VmSandboxManager:
                                   allow_large=True, readonly=True)
 
     async def export_artifact(self, owner: str, sandbox_id: str, path: str) -> tuple[bytes, bool]:
-        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+        async with self.io_lock(sandbox_id):
             return await self._export_artifact_locked(owner, sandbox_id, path)
 
     async def _export_artifact_locked(self, owner: str, sandbox_id: str, path: str) -> tuple[bytes, bool]:

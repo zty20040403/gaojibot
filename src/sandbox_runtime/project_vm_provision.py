@@ -5,8 +5,6 @@ boot. Every external mutation is preceded by a journalled stage. No task cleanup
 or retry path removes a system disk which might already have executed guest code.
 """
 
-import asyncio
-from contextlib import asynccontextmanager
 import copy
 import hashlib
 import json
@@ -15,35 +13,13 @@ from pathlib import Path
 import stat
 from xml.etree import ElementTree
 
-from src.local_runtime.files import file_lock, write_json
+from src.local_runtime.files import write_json
 from .docker import SandboxError
 from .project_vm_disks import QcowProjectHost
 from .project_vm_guest import HELPER_PATH
 from .project_vm_mounts import VmProjectMounts, _journal
 
 FILES = frozenset({"disk.qcow2", "seed.iso", "user-data", "meta-data", "domain.xml", "metadata.json"})
-
-
-@asynccontextmanager
-async def _host_lock(path):
-    context = file_lock(path, timeout=10)
-    entering = asyncio.create_task(asyncio.to_thread(context.__enter__))
-    try:
-        await asyncio.shield(entering)
-    except asyncio.CancelledError:
-        while not entering.done():
-            try:
-                await asyncio.shield(entering)
-            except asyncio.CancelledError:
-                continue
-        # If acquisition failed there is no descriptor owned by this context.
-        if entering.exception() is None:
-            await _journal(context.__exit__, None, None, None)
-        raise
-    try:
-        yield
-    finally:
-        await _journal(context.__exit__, None, None, None)
 
 
 class VmProjectProvisioner:
@@ -281,7 +257,7 @@ class VmProjectProvisioner:
                                   fence=fence, reservation=reservation, spec=spec)
             manager = self._manager(boot)
             binding = boot["binding"]
-            async with manager._exec_locks.setdefault(binding.sandbox_id, asyncio.Lock()):
+            async with manager.io_lock(binding.sandbox_id):
                 async def checkpoint(stage, **kwargs):
                     return await _journal(self.disks.checkpoint_boot, owner, project_id, generation=generation,
                                           fence=fence, reservation=reservation, stage=stage, **kwargs)
@@ -345,6 +321,9 @@ class VmProjectProvisioner:
                     raise SandboxError("Invalid guest mount acknowledgement") from None
                 if await self._observe(manager, boot) != "running":
                     raise SandboxError("Project VM changed before acknowledgement")
+                await VmProjectMounts(manager, self.disks)._control(
+                    binding.sandbox_id, binding, "quiesce", fence,
+                )
                 result = await _journal(self.disks.finish_boot, owner, project_id, receipt,
                     generation=generation, fence=fence, reservation=reservation)
                 return {**result, "verified": True, "state": "running", "used_bytes": receipt["used_bytes"]}

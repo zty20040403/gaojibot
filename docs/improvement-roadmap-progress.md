@@ -2248,3 +2248,41 @@ implementation evidence, not a claim that the production App has these features.
 - M2-M7 remain incomplete. No production registration, server SSH, nix-config
   update, rebuild, live QQ/model request or App release is included. The approved
   input plan is unchanged and excluded from commits.
+
+### M2 cross-process VM IO and guest execution epochs
+
+- Commands, file transfers, provisioning and maintenance now share a per-VM host
+  file lock, in addition to the existing async lock. Separate manager processes
+  cannot reserve a workspace during another process's IO. Lock files are private,
+  outside removable domain directories, and reject links or special files.
+  Cancellation drains lock acquisition and journal writes before unlocking.
+- Added a standalone root-owned guest gate with a durable execution epoch.
+  Admission starts closed. Maintenance persists `closing` before draining guest
+  commands; reactivation advances the epoch, so delayed requests cannot write
+  into a later lifecycle operation. Epoch state and project/disk identity are
+  checked again inside the guest, independent of host process survival.
+- Project commands and fixed root import/export/package helpers use transient
+  systemd services with whole-cgroup termination, runtime and task limits.
+  Sandbox commands retain their unprivileged user identity. Quiescence requires
+  an exclusive guest IO lock, an empty cgroup and no sandbox-UID processes; a
+  successful stop command alone cannot produce an acknowledgement. Failed or
+  uncertain quiescence leaves admission closed. Boot completes only after gate
+  quiescence, and release activates the guest before settling the host journal.
+- Focused regression: 140 checks passed in 2.965 seconds with ResourceWarning
+  promoted to errors (.cache/roadmap/m2-vm-gate-focused.log). Real filesystem and
+  independent-process lock tests cover stale epochs, interrupted acquisition,
+  lost control/release replies, corrupt journals and retained reservations.
+  Guest mounts, systemd and cgroup observations are explicit fixtures, not a
+  claim of native Linux VM acceptance. Ruff, compileall and whitespace checks
+  passed.
+- Full isolated PostgreSQL regression: 2519 tests, OK (12 skipped), 431.206
+  seconds with ResourceWarning as errors (.cache/roadmap/m2-vm-gate-full.log).
+  Nix package/import checks passed on aarch64-darwin
+  (.cache/roadmap/m2-vm-gate-nix.log); incompatible platforms were omitted,
+  not tested. No product code changed after this run. All fixture directories,
+  child processes and transient test images were cleaned up; ignored logs remain.
+- M2 is still incomplete and production-disabled. Remaining work includes
+  native command-tree/disconnect/reboot acceptance, safe guest retained-file
+  snapshot/restore/prune and dependency reconstruction, the VM-specific durable
+  lifecycle and desktop soft-quota integration. The input plan is unchanged.
+  No server connection, nix-config edit, rebuild or App release is included.

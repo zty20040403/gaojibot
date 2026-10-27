@@ -183,12 +183,22 @@ class MountBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.metadata = {"purpose": "project", "project": config, "project_domain_uuid": DOMAIN}
         self.manager._metadata = AsyncMock(return_value=self.metadata)
         self.manager._running = AsyncMock(return_value=True)
-        self.manager._guest_exec = AsyncMock(return_value=(0, json.dumps(self.fixture.receipt()).encode(), b""))
+        self.manager._guest_exec = AsyncMock(side_effect=self.guest)
         with patch("shutil.which", return_value="/test/qemu"):
             self.xml = self.manager._domain_xml(SID, self.manager._directory(SID),
                 project_disk=grant["binding"], project_domain_uuid=DOMAIN)
         self.manager._virsh = AsyncMock(side_effect=self.virsh)
         self.host.attached = {"gaoji-vm-" + SID}
+
+    async def guest(self, sandbox_id, path, args, **kwargs):
+        if args[-1].endswith("project_gate.py"):
+            request = json.loads(kwargs["input_bytes"])
+            receipt = {key: self.metadata["project"][key]
+                       for key in ("project_id", "generation", "filesystem_uuid", "serial")}
+            receipt.update(epoch=request["epoch"], verified=True,
+                           mode="active" if request["action"] == "activate" else "quiesced")
+            return 0, json.dumps(receipt).encode(), b""
+        return 0, json.dumps(self.fixture.receipt()).encode(), b""
 
     async def virsh(self, *args, **kwargs):
         if args[0] == "list":
@@ -224,7 +234,7 @@ class MountBridgeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SandboxError):
             await self.mount()
         self.assertFalse(self.fixture.record()["guest_initialized"])
-        self.manager._guest_exec.side_effect = None
+        self.manager._guest_exec.side_effect = self.guest
         save = self.store._save
         def crash(directory, record):
             save(directory, record)
@@ -297,6 +307,7 @@ class MountBridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_file_export_does_not_reenter_lock(self):
         self.manager._owned_running = AsyncMock(return_value={})
+        self.manager._guest_exec.side_effect = None
         self.manager._guest_exec.return_value = (0, b"file", b"")
         self.manager._read_guest_file = AsyncMock(return_value=b"pdf")
         self.assertEqual(await asyncio.wait_for(self.manager.export_artifact("scope", SID, "a.pdf"), 2), (b"pdf", False))
@@ -313,6 +324,7 @@ class MountBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.manager._exec_locks[SID].locked())
 
     async def test_invalid_or_unsealed_receipt_does_not_acknowledge(self):
+        self.manager._guest_exec.side_effect = None
         for receipt in (b"not-json", b"null", b"{}", json.dumps({**self.fixture.receipt(), "initialization_sealed": False}).encode()):
             self.manager._guest_exec.return_value = (0, receipt, b"")
             with self.subTest(receipt=receipt), self.assertRaises(SandboxError):

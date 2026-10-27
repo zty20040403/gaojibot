@@ -12,20 +12,7 @@ from xml.etree import ElementTree
 
 from .docker import SandboxError
 from .project_vm_guest import HELPER_PATH, validate_config
-
-
-async def _journal(method, *args, **kwargs):
-    worker = asyncio.create_task(asyncio.to_thread(method, *args, **kwargs))
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        while not worker.done():
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                continue
-        worker.result()
-        raise
+from .project_vm_io import _journal
 
 
 class VmProjectMounts:
@@ -48,9 +35,53 @@ class VmProjectMounts:
             if lock is None:
                 return await _journal(self.disks.reserve, owner, project_id, generation=generation,
                                       fence=fence, action=action, reservation=reservation)
-            async with lock:
+            async with self.manager.io_lock(actual, timeout=0):
+                status = await _journal(self.disks.status, owner, project_id, generation=generation)
+                if status.get("sandbox_id") != actual:
+                    raise SandboxError("Project VM identity changed before maintenance")
+                if action == "release" and status["maintenance_active"]:
+                    metadata = await self.manager._metadata(owner, actual)
+                    binding, domain_uuid = await self._binding(owner, actual, metadata, reservation=reservation)
+                    if type(fence) is not int or fence <= status["fence"]:
+                        raise SandboxError("Execution admission requires a new release fence")
+                    if await self.manager._running(actual):
+                        await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
+                        await self._control(actual, binding, "activate", fence)
+                        await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
                 return await _journal(self.disks.reserve, owner, project_id, generation=generation,
                                       fence=fence, action=action, reservation=reservation)
+
+    async def _control(self, sandbox_id, binding, action, epoch):
+        from .project_vm_gate import HELPER_PATH as GATE_PATH
+
+        code, output, _ = await self.manager._guest_exec(
+            sandbox_id, "/usr/bin/python3", [GATE_PATH], timeout=90,
+            input_bytes=json.dumps({"action": action, "epoch": epoch}).encode(),
+        )
+        expected = {key: binding.guest_config()[key]
+                    for key in ("project_id", "generation", "filesystem_uuid", "serial")}
+        expected.update(epoch=epoch, mode="active" if action == "activate" else "quiesced", verified=True)
+        try:
+            receipt = json.loads(output)
+            if (code or not isinstance(receipt, dict) or set(receipt) != set(expected)
+                    or any(type(receipt[key]) is not type(value) or receipt[key] != value
+                           for key, value in expected.items())):
+                raise ValueError()
+        except ValueError:
+            raise SandboxError("Guest execution gate did not acknowledge the requested epoch") from None
+        return receipt
+
+    async def quiesce(self, owner, sandbox_id, metadata, *, reservation, fence):
+        async with self.manager.io_lock(sandbox_id, timeout=0):
+            binding, domain_uuid = await self._binding(owner, sandbox_id, metadata, reservation=reservation)
+            status = await _journal(self.disks.status, owner, binding.project_id, generation=binding.generation)
+            if type(fence) is not int or status["fence"] != fence or status["pending"]:
+                raise SandboxError("Project quiescence requires the current settled reservation fence")
+            await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
+            receipt = await self._control(sandbox_id, binding, "quiesce", fence)
+            await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
+            await self._binding(owner, sandbox_id, metadata, reservation=reservation)
+            return receipt
 
     async def _domain(self, binding, domain_uuid, *, spec=None):
         identifiers = (await self.manager._virsh("list", "--all", "--uuid")).split()
@@ -147,7 +178,7 @@ class VmProjectMounts:
         return binding, domain_uuid
 
     async def mount(self, owner, sandbox_id, metadata, *, reservation, fence):
-        async with self.manager._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+        async with self.manager.io_lock(sandbox_id):
             binding, domain_uuid = await self._binding(
                 owner, sandbox_id, metadata, reservation=reservation, require_initialized=False,
                 acknowledge_fence=fence,
@@ -173,9 +204,13 @@ class VmProjectMounts:
     async def authorize(self, owner, sandbox_id, metadata):
         """Caller holds the shared IO lock; membership is checked by the executor."""
         binding, domain_uuid = await self._binding(owner, sandbox_id, metadata)
+        before = await _journal(self.disks.status, owner, binding.project_id, generation=binding.generation)
         await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
         observed = await self.manager._verify_project_mount(sandbox_id, metadata)
         after, after_uuid = await self._binding(owner, sandbox_id, metadata)
         if after != binding or after_uuid != domain_uuid:
             raise SandboxError("Project VM claim changed during admission")
-        return observed
+        final = await _journal(self.disks.status, owner, binding.project_id, generation=binding.generation)
+        if final["fence"] != before["fence"] or final["maintenance_active"] or final["pending"]:
+            raise SandboxError("Project VM execution epoch changed during admission")
+        return {**observed, "io_epoch": final["fence"]}

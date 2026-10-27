@@ -352,6 +352,16 @@ class ProjectGuestWorkspace:
         }
 
 
+def load_config():
+    fd = os.open(CONFIG_PATH, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+                or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 8192):
+            raise GuestDiskError("Unsafe project guest configuration")
+        return validate_config(json.load(stream))
+
+
 def main():
     import fcntl
 
@@ -387,18 +397,7 @@ def main():
                         "Guest project disk management is busy"
                     ) from None
                 time.sleep(0.05)
-        fd = os.open(CONFIG_PATH, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != 0
-                or info.st_nlink != 1
-                or info.st_mode & 0o077
-                or info.st_size > 8192
-            ):
-                raise GuestDiskError("Unsafe project guest configuration")
-            config = json.load(stream)
+        config = load_config()
         result = getattr(ProjectGuestWorkspace(config), args.action)()
         if args.action == "mount" and config["initialize"]:
             seal_initialization(config)

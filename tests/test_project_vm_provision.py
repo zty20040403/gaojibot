@@ -121,8 +121,16 @@ class ProvisionTests(unittest.IsolatedAsyncioTestCase):
         if "cloud-init" in " ".join(args):
             self.done("cloud-init")
             return 0, b"done", b""
-        self.assertIn(args[-1], {"mount", "verify"})
         metadata = json.loads((self.directory() / "metadata.json").read_text())
+        if args[-1].endswith("project_gate.py"):
+            request = json.loads(kwargs["input_bytes"])
+            receipt = {key: metadata["project"][key]
+                       for key in ("project_id", "generation", "filesystem_uuid", "serial")}
+            receipt.update(epoch=request["epoch"], verified=True,
+                           mode="quiesced" if request["action"] == "quiesce" else "active")
+            self.done("gate")
+            return 0, json.dumps(receipt).encode(), b""
+        self.assertIn(args[-1], {"mount", "verify"})
         receipt = {**metadata["project"], "mounted": True, "verified": True,
                    "initialization_sealed": True, "used_bytes": MIB}
         self.done("mount")

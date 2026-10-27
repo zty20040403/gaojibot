@@ -431,7 +431,7 @@ ready -> resuming -> defined -> starting -> started -> ready
   Invalid, absent or conflicting domain definitions cannot count as success.
 - Every start shares the VM allocation file lock, including ordinary temporary
   VMs. Different manager instances cannot both pass admission at once. This is
-  allocation serialization, not the still-pending cross-process guest IO lease.
+  separate from the per-VM operation lock described below.
 - Project cloud-init creates only the unprivileged `sandbox` account, avoiding
   competition with a distribution's default user. The guest helper also verifies
   that `sandbox` exclusively owns UID/GID 1000 before changing ownership or
@@ -449,9 +449,61 @@ ready -> resuming -> defined -> starting -> started -> ready
 with explicit libvirt/guest fixtures, plus real local QEMU overlay creation and
 read/write checks. The latter uses a fixture seed and does **not** boot Linux.
 Native cloud-init, guest-agent, quota, discard and reboot acceptance remain
-required, alongside the VM-specific database lifecycle, guest writer quiescence,
+required, alongside the VM-specific database lifecycle, native writer-quiescence acceptance,
 retained-file adapters and hibernate/archive retirement path. Do not substitute
 the OCI lifecycle order: a stopped VM cannot run guest file/trim commands.
+
+## VM execution epochs and writer quiescence
+
+The private VM adapter now uses two distinct forms of exclusion:
+
+1. A private host file lock, shared by provisioning, command execution, reads,
+   imports, exports and maintenance. It sits outside the VM directory so domain
+   retirement cannot replace its inode. An active operation in another process
+   prevents maintenance admission. Cancellation waits for lock acquisition and
+   any journal write to settle before releasing owned resources.
+2. A root-owned guest gate in `/usr/local/lib/gaoji/project_gate.py`. Its journal
+   persists on the system disk; a missing journal is closed, not implicitly
+   active. Every project command carries the host's settled release fence as
+   its execution epoch. Delayed commands from an older epoch are rejected even
+   after the project is reopened. Guest execution is serialized independently
+   of host process lifetime.
+
+Commands, package installation and fixed root file import/export helpers run
+in transient systemd services in `gaojiproject.slice`. `RuntimeMaxSec`,
+`TasksMax`, `KillMode=control-group`, no-new-privileges and read-only cgroup
+control apply to the command tree. User code still runs through `runuser` as
+`sandbox`; the execution gate does not grant it root. Shell dollar signs are
+escaped for systemd's environment expansion before the original arguments reach
+the shell, as specified by the [systemd-run manual](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html).
+
+The private lifecycle sequence is:
+
+```text
+reserve host workspace -> quiesce guest at current reservation fence
+  -> retained-file maintenance / snapshot (adapter still pending)
+  -> activate guest at next release fence -> release host reservation
+```
+
+Quiescence persists `closing` before stopping command cgroups. It acknowledges
+`quiesced` only while holding the exclusive guest IO lock, after observing an
+empty cgroup and no remaining sandbox-UID processes. A failed stop, busy IO,
+unexpected process or unreadable cgroup leaves the gate closed. The return code
+of `systemctl stop` alone is not evidence. First boot and resumed provisioning
+also drain the gate before completing their boot journal.
+
+Guest activation precedes host reservation release. A lost guest reply retains
+the reservation; a retry uses the same epoch. A lost host journal reply is
+reconciled using the original release fence, without starting another command.
+Stopped guests remain inaccessible and are not implicitly activated by release.
+
+`tests/test_project_vm_gate.py` exercises real private files, fsynced epoch
+journals and locks across independent OS processes. Guest mount, systemd and
+cgroup actions are fixtures. Native detached-process termination, guest reboot,
+QGA disconnect and end-to-end lifecycle acceptance are still required. QGA file
+RPCs stage uploads outside `/workspace`; a leaked guest file descriptor must
+not be worked around with forced/lazy unmount. This checkpoint does not expose
+the private VM project adapter in production or complete VM version IO.
 
 ## Evidence and remaining gates
 

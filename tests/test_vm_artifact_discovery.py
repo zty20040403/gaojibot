@@ -46,6 +46,10 @@ class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(files["/etc/gaoji-project.json"]["permissions"], "0600")
         self.assertEqual(files[HELPER_PATH]["owner"], "root:root")
         compile(files[HELPER_PATH]["content"], HELPER_PATH, "exec")
+        gate = files["/usr/local/lib/gaoji/project_gate.py"]
+        self.assertEqual(gate["owner"], "root:root")
+        self.assertEqual(gate["permissions"], "0755")
+        compile(gate["content"], gate["path"], "exec")
         self.assertEqual(json.loads(files["/etc/gaoji-project.json"]["content"]), binding().guest_config(initialize=True))
         self.assertEqual(config["users"], [{"name": "sandbox", "uid": 1000, "shell": "/bin/bash", "lock_passwd": True, "sudo": False}])
         self.assertNotIn(["chown", "sandbox:sandbox", "/workspace"], config["runcmd"])
@@ -54,7 +58,9 @@ class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             VmSandboxManager._cloud_config(initialize_project=True)
 
     async def test_project_commands_stop_before_user_code_when_mount_is_missing(self):
-        manager = VmSandboxManager(image="/base.qcow2", root="/vm")
+        temporary = tempfile.TemporaryDirectory(prefix="gaoji-vm-admission-")
+        self.addCleanup(temporary.cleanup)
+        manager = VmSandboxManager(image="/base.qcow2", root=temporary.name)
         config = binding().guest_config()
         config.pop("initialize")
         manager._metadata = AsyncMock(return_value={"purpose": "project", "project": config})
