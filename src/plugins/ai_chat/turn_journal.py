@@ -6,7 +6,7 @@ import re
 import threading
 import time
 import zlib
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterator, Literal
@@ -658,11 +658,12 @@ class TurnJournal(ReactionVoteStoreMixin):
         output_tokens: int = 0,
         total_tokens: int = 0,
         finished_at: int | None = None,
+        transaction_cursor: StoreCursor | None = None,
     ) -> TurnRecord | None:
         if status == "running":
             raise ValueError("finish_turn requires a terminal status")
         now = int(finished_at or time.time())
-        with self._transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             cursor.execute(
                 """
                 UPDATE agent_turns

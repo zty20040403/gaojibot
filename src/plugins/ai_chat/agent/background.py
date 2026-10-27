@@ -47,6 +47,8 @@ class SubAgentDispatcher:
         return event
 
     def enqueue_final(self, task_id):
+        if self.store.routine_parent(task_id) is not None:
+            return None
         control = self.store.control(task_id)
         task = self.store.get(task_id)
         if self.store.control(task_id)["revision"] != control["revision"]:
@@ -94,6 +96,8 @@ class SubAgentDispatcher:
             active_job_fence.reset(token)
 
     def enqueue(self, task_id: int):
+        if self.store.routine_parent(task_id) is not None:
+            return None
         task = self.store.get(task_id)
         control = self.store.control(task_id)
         return self.jobs.enqueue(kind=self.kind, idempotency_key=f"subagent:{task_id}:revision:{control['revision']}",
@@ -378,6 +382,8 @@ class SubAgentDispatcher:
 
     async def execute(self, job):
         task_id = int(job.payload["task_id"])
+        if self.store.routine_parent(task_id) is not None:
+            return {"state": "owned_by_routine"}
         task = self.store.get(task_id)
         control = self.store.control(task_id)
         if task is None or job.scope_key != task.scope_key or control["revision"] != int(job.payload["revision"]):

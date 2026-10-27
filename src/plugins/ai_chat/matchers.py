@@ -93,6 +93,7 @@ task_status = on_command(
 usage_command = on_command(
     "usage", aliases={"用量", "token用量"}, priority=10, block=True
 )
+routine_command = on_command("例行", aliases={"routine", "routines"}, priority=10, block=True)
 task_stop = on_command(
     "停止", aliases={"stop", "kill", "取消任务"}, priority=10, block=True
 )

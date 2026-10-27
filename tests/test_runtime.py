@@ -33,6 +33,17 @@ class RecordingLogger:
 
 
 class BackgroundTaskSupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_routine_prerequisites_fail_before_database_or_workers_open(self):
+        for field in ("durable_jobs_enabled", "outbox_enabled", "quota_enabled", "ledger_enabled", "turn_journal_enabled"):
+            with self.subTest(field=field), TemporaryDirectory() as directory, patch("src.plugins.ai_chat.runtime.PostgresDatabase") as database:
+                values = dict(routines_enabled=True, durable_jobs_enabled=True, outbox_enabled=True,
+                              quota_enabled=True, ledger_enabled=True, turn_journal_enabled=True)
+                values[field] = False
+                with self.assertRaisesRegex(RuntimeError, "AI_ROUTINES_ENABLED"):
+                    build_app_context(replace(settings, **values), state_dir=Path(directory), project_root=Path(directory),
+                                      logger=Mock(), historian_generator=AsyncMock(), dream_generator=AsyncMock(), evidence_provider=Mock())
+                database.assert_not_called()
+
     async def test_start_is_idempotent_and_shutdown_cancels_task(self) -> None:
         logger = RecordingLogger()
         supervisor = BackgroundTaskSupervisor(logger)

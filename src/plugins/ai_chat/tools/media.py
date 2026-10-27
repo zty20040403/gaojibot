@@ -17,6 +17,7 @@ from ..ai_tools import (
     REPLY_WITH_VOICE_TOOL,
 )
 from ..ocr import OCRError, recognize_images, reply_message_id
+from ..model_budget import ModelBudgetExceeded
 from ..onebot_codec import scope_from_event
 from ..video import (
     VideoReference,
@@ -236,6 +237,8 @@ async def view_image(turn: TurnState, arguments: dict[str, object]) -> str:
             question=question,
             wait_seconds=min(turn.context.app.settings.media_timeout_seconds, 45),
         )
+    except ModelBudgetExceeded:
+        raise
     except (
         ActionFailed,
         OSError,
@@ -294,6 +297,8 @@ async def view_video(turn: TurnState, arguments: dict[str, object]) -> str:
             target_video.source_url,
             question=str(arguments.get("question") or "").strip(),
         )
+    except ModelBudgetExceeded:
+        raise
     except (ActionFailed, OSError, RuntimeError, ValueError) as exc:
         turn.context.app.logger.warning(f"QQ video analysis tool failed: {exc}")
         error = (

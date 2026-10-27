@@ -45,6 +45,24 @@ class ServiceVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.manager.proposal_result(record)["effect_verified"])
         self.assertEqual(len(self.posts("units.restart")), 1)
 
+    async def test_operation_and_receipt_share_the_controlled_clock(self):
+        self.now = 1_700_000_000.75
+        self.finished_at = self.now
+        await self.start()
+        self.assertEqual(self.record()["created_at"], int(self.now))
+        await self.manager.run_once()
+        self.assertEqual(self.record()["status"], "reconciling")
+        await self.finish_verification()
+        self.assertEqual(self.record()["status"], "succeeded")
+
+    async def test_receipt_before_operation_remains_rejected(self):
+        await self.start()
+        self.finished_at = self.record()["created_at"] - 1
+        await self.manager.run_once()
+        self.assertEqual(self.record()["status"], "needs_attention")
+        self.assertEqual(self.record()["error_code"], "service_receipt_unverified")
+        self.assertFalse(self.posts("units.status"))
+
     async def test_job_success_without_instance_change_is_not_restart_success(self):
         await self.start()
         self.after["invocation_id"] = self.before["invocation_id"]

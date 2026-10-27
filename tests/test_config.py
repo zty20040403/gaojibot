@@ -12,6 +12,17 @@ from src.plugins.ai_chat.config import Settings
 
 
 class SettingsGroupFilterTests(unittest.TestCase):
+    def test_routines_are_opt_in_with_bounded_worker_settings(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env()
+        self.assertFalse(settings.routines_enabled)
+        self.assertEqual((settings.routine_check_seconds, settings.routine_max_per_owner, settings.routine_timeout_seconds), (15, 5, 600))
+        with patch.dict(os.environ, {"AI_ROUTINES_ENABLED": "true", "AI_ROUTINE_CHECK_SECONDS": "0",
+                                    "AI_ROUTINE_MAX_PER_OWNER": "1000", "AI_ROUTINE_TIMEOUT_SECONDS": "99999"}, clear=True):
+            settings = Settings.from_env()
+        self.assertTrue(settings.routines_enabled)
+        self.assertEqual((settings.routine_check_seconds, settings.routine_max_per_owner, settings.routine_timeout_seconds), (5, 20, 3600))
+
     def test_intent_classifier_defaults_and_bounded_timeout(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings.from_env()

@@ -24,6 +24,7 @@ from .delivery import DeliveryStore
 from .llm_gateway import LLMGateway
 from .message_ir import MessageBody, TextNode
 from .model_catalog import ModelCatalog, ModelProfile
+from .model_budget import active_model_budget
 
 
 SUPPORTED_SOURCE_SCHEMES = {"http", "https"}
@@ -145,6 +146,7 @@ class VisionWorker:
         self._cache_hits = 0
         self._cache_misses = 0
         self._deduplicated_requests = 0
+        self._execution_slots = asyncio.Semaphore(self.worker_concurrency)
 
         profile = self._vision_profile()
         if not profile.capabilities.vision:
@@ -239,6 +241,24 @@ class VisionWorker:
         question: str = "",
         wait_seconds: float = 45,
     ) -> VisionResult | None:
+        budget = active_model_budget()
+        if budget is not None:
+            selected_mode = str(mode).strip().lower()
+            if selected_mode not in {"summary", "detail"}:
+                raise VisionJobError("vision mode must be summary or detail")
+            if not self._supported_source(source_url):
+                raise VisionJobError("unsupported image source URL")
+            # The parent durable run owns this read and its budget. A separate
+            # queue or shielded task could outlive cancellation and settlement.
+            job = VisionJob(
+                0, str(native_message_id), max(int(segment_index), 0),
+                source_url, selected_mode, str(question).strip()[:2000], 1,
+            )
+            async with asyncio.timeout(min(max(float(wait_seconds), 1.0), self.timeout_seconds)):
+                async with self._execution_slots:
+                    if budget.before_request is not None:
+                        await budget.before_request()
+                    return await self._analyze(job)
         job_id = await asyncio.to_thread(
             self.submit,
             scope_key=scope_key,
@@ -262,7 +282,6 @@ class VisionWorker:
         return None
 
     async def run_forever(self) -> None:
-        semaphore = asyncio.Semaphore(self.worker_concurrency)
         last_cleanup = 0.0
         while not self._closed:
             now = time.monotonic()
@@ -281,7 +300,7 @@ class VisionWorker:
                 continue
 
             async def run(job: VisionJob) -> None:
-                async with semaphore:
+                async with self._execution_slots:
                     try:
                         result = await self._analyze(job)
                     except asyncio.CancelledError:
@@ -360,7 +379,8 @@ class VisionWorker:
             if not refreshed or refreshed == job.source_url:
                 raise original_error
             content, mime_type = await self._download(refreshed)
-            await asyncio.to_thread(self._update_source_url, job.job_id, refreshed)
+            if job.job_id:
+                await asyncio.to_thread(self._update_source_url, job.job_id, refreshed)
         content, mime_type = await asyncio.to_thread(
             self._prepare_for_vision,
             content,
@@ -421,6 +441,7 @@ class VisionWorker:
         mime_type: str,
     ) -> VisionResult:
         now = time.monotonic()
+        owned = active_model_budget() is not None
         async with self._cache_lock:
             cached = self._analysis_cache.get(cache_key)
             if cached is not None and cached[0] > now:
@@ -428,8 +449,10 @@ class VisionWorker:
                 return cached[1]
             if cached is not None:
                 self._analysis_cache.pop(cache_key, None)
-            task = self._analysis_inflight.get(cache_key)
-            if task is None:
+            task = self._analysis_inflight.get(cache_key) if not owned else None
+            if owned:
+                self._cache_misses += 1
+            elif task is None:
                 self._cache_misses += 1
                 task = asyncio.create_task(
                     self._request_analysis(job, content, mime_type),
@@ -443,6 +466,13 @@ class VisionWorker:
                 )
             else:
                 self._deduplicated_requests += 1
+        if owned:
+            result = await self._request_analysis(job, content, mime_type)
+            async with self._cache_lock:
+                if self.cache_seconds > 0:
+                    self._analysis_cache[cache_key] = (time.monotonic() + self.cache_seconds, result)
+                    self._trim_analysis_cache()
+            return result
         return await asyncio.shield(task)
 
     async def _finalize_analysis_task(

@@ -329,6 +329,7 @@ class OneBotWorkerStartupTests(unittest.IsolatedAsyncioTestCase):
                 "proactive-feedback",
                 "mobile-authorization",
                 "subagent-workflows",
+                "agent-routines",
                 "local-model-health",
                 "alert-notifier",
                 "durable-jobs",
@@ -345,6 +346,7 @@ class OneBotWorkerStartupTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertIs(workers["delivery"], handlers.delivery._delivery_loop)
+        self.assertIs(workers["agent-routines"], handlers.routines.run_forever)
         self.assertIs(workers["historian"], handlers.triggers._historian_loop)
         self.assertIs(workers["proactive-feedback"], handlers.triggers._proactive_feedback_loop)
         context.job_store.enqueue.assert_called_once()
@@ -366,6 +368,7 @@ EXPECTED_BINDINGS = (
     ("pins_command", "commands", "handle_pins_command"),
     ("task_status", "commands", "handle_task_status"),
     ("usage_command", "commands", "handle_usage_command"),
+    ("routine_command", "commands", "handle_routine_command"),
     ("task_stop", "commands", "handle_task_stop"),
     ("mention_ai", "commands", "handle_mention_ai"),
     ("canonical_ingest_tracker", "ingest", "handle_canonical_ingest"),
@@ -415,7 +418,7 @@ class OneBotMatcherStartupTests(unittest.IsolatedAsyncioTestCase):
             NoticeEvent: Mock(),
             Message: Message("args"),
         }
-        self.assertEqual(len(EXPECTED_BINDINGS), 29)
+        self.assertEqual(len(EXPECTED_BINDINGS), 30)
         for matcher, service, name in EXPECTED_BINDINGS:
             with self.subTest(matcher=matcher, handler=name):
                 endpoint = getattr(registry, matcher).endpoint

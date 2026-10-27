@@ -45,6 +45,8 @@ async def start_background_tasks(
         context.background_tasks.start(
             "local-model-health", context.local_model.run_forever
         )
+    if getattr(handlers, "routines", None) is not None:
+        context.background_tasks.start("agent-routines", handlers.routines.run_forever)
     if (
         context.settings.alertmanager_url
         and context.settings.alert_notify_group_id > 0

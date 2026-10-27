@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Iterator, Literal
 
@@ -125,6 +125,7 @@ class DeliveryStore:
         source_canonical_message_id: int | None = None,
         turn_id: int | None = None,
         now: int | None = None,
+        transaction_cursor: StoreCursor | None = None,
     ) -> tuple[Delivery, bool]:
         key = " ".join(str(idempotency_key).split())[:300]
         if not key:
@@ -133,7 +134,7 @@ class DeliveryStore:
         encoded_body = body_to_json(body)
         reply_target = str(reply_to_native_message_id or "")
         fingerprint = body_fingerprint(body, reply_target)
-        with self._transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             existing = cursor.execute(
                 "SELECT * FROM deliveries WHERE idempotency_key = ?",
                 (key,),

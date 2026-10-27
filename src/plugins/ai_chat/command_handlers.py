@@ -1372,6 +1372,10 @@ class CommandHandlers(HandlerService):
             self.services.replies._reply_message(event, self._task_status_text(event)),
         )
 
+    async def handle_routine_command(self, event: MessageEvent, args: Message) -> None:
+        from .routine_commands import handle_routine_command
+        await handle_routine_command(self.services, event, args)
+
     async def handle_usage_command(self, event: MessageEvent) -> None:
         await self.services.replies._finish_safely(
             usage_command,

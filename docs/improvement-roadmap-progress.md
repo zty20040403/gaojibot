@@ -17,6 +17,17 @@ acceptance are not implied by this roadmap.
 - Do not publish private chat data, feedback exports, credentials or ops notes.
 - Do not push, rebuild or connect to production hosts as part of local work.
 
+## New-plan sequencing
+
+- The user identified `docs/project-workspace-v1-plan.md` as the newer plan.
+  Complete the remaining earlier roadmap work first, then follow its M0-M7
+  milestones. Reuse the routine/recovery and preview foundations; do not create
+  competing implementations for the overlapping 9.2 and 9.4 requirements.
+- Project quotas, version storage, member workbench and watch routines are not
+  implemented by the Phase 9.2 foundation. The new plan has not started and its
+  user-authored file remains unchanged. Mark superseded roadmap items explicitly
+  when implementation of that plan starts, as the new plan requests.
+
 ## Progress
 
 ### Phase 0: Preserve and merge
@@ -119,8 +130,12 @@ acceptance are not implied by this roadmap.
 
 - [x] 9.1 Per-group adaptive proactive thresholds with feedback and opt-in flag.
       Local regression/build pass; real QQ feedback acceptance remains pending.
-- [ ] 9.2 Durable cron routines: tools, command, creator ownership, budgets,
+- [x] 9.2 Durable cron routines: tools, command, creator ownership, budgets,
       ordinary Agent runs and durable Outbox delivery.
+      Local implementation and final regression complete. Includes shared model
+      budgets, child takeover, member checks, quiet completion, original-account
+      delivery and atomic result/journal settlement. Keep disabled until live
+      acceptance. Watch sources and project integration belong to the newer plan.
 - [ ] 9.3 Nightly group wiki, search command/admin page, opt-in newcomer brief.
 - [ ] 9.4 Sandbox web artifacts to expiring, scoped preview links in chat.
 - [ ] 9.5 Delegated task collaborators and two-administrator high-risk quorum.
@@ -633,3 +648,208 @@ sampling is once per second; the benchmark uses 5 ms to expose short blocking ca
 - Phase 9.1 is complete locally and recorded in this phase's commit. Phase 9.2
   has not started. Earlier live acceptance gates still apply; there has been no
   push, production connection, rebuild or real QQ/model call.
+
+### Phase 9.2 routine foundation (in progress, not a completed phase)
+
+- Added croniter with locked/exported dependencies, five-field numeric cron,
+  named timezones and bounded calendar search. Tests cover local-time schedules,
+  DST changes, leap days and invalid/unreachable expressions.
+- Migration 0032 stores creator-owned definitions, versioned execution snapshots
+  and budget reservations. Optimistic versions and per-owner limits are checked
+  transactionally. Different groups, bots and creators remain isolated.
+- Scheduling coalesces downtime to one occurrence and prevents overlapping runs.
+  Schedule advancement and durable-job insertion share a transaction. Generated
+  results survive process restart; result-to-Outbox insertion is atomic and
+  idempotent. Cancel/update fence stale workers and cancel unsent deliveries,
+  but never rewrite receipts for messages already sent.
+- Each model attempt reserves its full per-run token allowance before execution.
+  Lost/unknown attempts retain that charge; known usage settles once into the
+  existing usage ledger. Accounting days use Asia/Shanghai, like current quotas.
+  Daily run counts survive routine edits, and retries also consume token capacity.
+  This is reservation infrastructure, not yet an execution-time model token cap.
+- Terminal-job reconciliation unblocks failed schedules and can requeue saved
+  results without rerunning their model work. Runtime scheduling, normal Agent
+  integration, command/tools, permission enforcement, actual model-call limits
+  and original-bot delivery routing are still pending. No new routine runs are
+  enabled automatically by this work.
+- Focused PostgreSQL suite: 44 tests, OK, 9.722 seconds;
+  .cache/roadmap/phase9-2-foundation.log. Includes existing job/usage/delivery
+  regressions, concurrent scheduling/reservation/settlement, restart recovery,
+  stale leases and rollback after partial job, budget or Outbox writes.
+- CI-path Ruff, Python compilation and diff whitespace checks pass. Full PG
+  regression and admin build remain required before completing/committing 9.2.
+  These edits are uncommitted. No production access, push, deployment, rebuild,
+  real QQ/model request or change to the unrelated workspace-plan document.
+
+### Phase 9.2 runtime integration (still in progress)
+
+- Added `/例行` add/list/edit/cancel and registry handlers with creator, bot and
+  conversation checks. Scheduled runs cannot create further recurring routines.
+- Added a default-off scheduler and normal `_ask_ai` invocation, using a synthetic
+  non-ledger event for the original creator. Job and model calls recheck the lease;
+  disabling the group prevents further model/tool calls. Logged-out or missing
+  QQ accounts defer before reserving a model budget.
+- The gateway limits output and counts fallback, compatibility retries and stream
+  usage in the current run. It disables hidden SDK retries in budgeted calls only.
+  Text estimates use UTF-8 bytes plus overhead, not a universal tokenizer promise.
+  Missing usage retains the reservation. Anthropic now honors per-call limits.
+- The complete tool catalog measured 45,458 UTF-8 bytes. Increased the default
+  routine allowance from 20,000 to 100,000 tokens, with 300,000 per day, so the
+  conservative request estimate does not reject the tool definitions alone.
+- Migration 0033 adds fenced receipts for non-repeatable tool effects. Completed
+  effects are reused within the same scheduled occurrence; an interrupted effect
+  without a receipt stops takeover and produces an explicit uncertainty notice.
+  Prepared reply segments survive receipt reuse, not just the tool's JSON text.
+- Persisted final messages re-enter Outbox without another model call. Delivery
+  selects the recorded QQ account, never another connected account. Failure and
+  quota notices are durable; quota exhaustion is reported once per accounting day.
+- Inline Sub-Agent execution shares the parent's model budget instead of starting
+  a detached model job. This is not yet complete Sub-Agent restart recovery:
+  child task IDs/checkpoints, revisions/external continuations, and independently
+  queued vision work need further integration. Do not mark 9.2 complete or enable
+  it in production on the strength of the basic worker tests.
+- Midpoint full PG suite before runtime integration: 1,807 tests, OK (12 skipped),
+  243.183 seconds; .cache/roadmap/phase9-2-midpoint-full.log.
+- Worker-focused checks: 56 tests, OK, 6.201 seconds. The first expanded run
+  found one startup fixture expecting the old worker set; its expectation now
+  includes and verifies the routine callback. Expanded rerun: 125 tests, OK,
+  10.821 seconds; .cache/roadmap/phase9-2-worker-integration-second.log.
+- Admin TypeScript/Vite production build passed. These changes remain local and
+  uncommitted; the unrelated Desktop/workspace document is untouched. No external
+  model, QQ, production host, push or rebuild was used.
+- First post-wiring full PG run: 1,830 tests, one failure, 12 skipped,
+  245.178 seconds; .cache/roadmap/phase9-2-worker-full.log. An existing service
+  verification fixture froze the receipt clock but used wall time for intent
+  creation. Crossing a second could correctly reject the fixture's own receipt
+  as preceding the operation. A fixed-epoch regression reproduced the mismatch.
+- Unified the fixture clocks and timestamp each simulated submission, including
+  successive hosts. Production receipt validation is unchanged; a regression
+  still rejects receipts predating the operation. Focused rerun: 54 tests, OK
+  (one PostgreSQL-only skip), 2.360 seconds.
+- Full PostgreSQL rerun: 1,832 tests, OK (12 skipped), 243.362 seconds;
+  .cache/roadmap/phase9-2-worker-full-second.log. This includes the PostgreSQL
+  case skipped by the focused clock run. Ruff and diff whitespace checks pass.
+  The known detached-worker and Sub-Agent recovery gaps above still prevent
+  completion or activation of Phase 9.2.
+
+### Phase 9.2 bounded vision and recovery ownership (still in progress)
+
+- Budgeted foreground vision now runs inside its parent's execution context,
+  using the shared concurrency limit. It does not enqueue a detached vision job
+  or join another caller's shielded request. Completed cache entries remain
+  reusable. Cancellation reaches the provider before usage settlement; unknown
+  usage is conservatively charged. Media handlers propagate budget exhaustion.
+- The first focused vision launch lacked TEST_POSTGRES_DSN and failed in fixture
+  setup. The correctly configured rerun passed 35 tests in 0.887 seconds;
+  .cache/roadmap/phase9-2-vision-budget-second.log. No external model was called.
+- Migration 0034 preserves one absolute execution deadline across retries.
+  Expiry does not require QQ to be online and does not reserve another budget.
+  Exception/cancellation paths close their own journal turns as crashed/aborted.
+  Terminal recovery validates the job envelope and lease before queueing an
+  idempotent notification. Retrying a failed notification cannot restart a model.
+- Sub-Agent task creation now commits the task, initial context checkpoint,
+  dispatch controls and initial events together. Notifications and job enqueue
+  happen after commit. An enqueue failure leaves a fully reconstructable task.
+- An initial expanded run found a missing test import, then two preparation-test
+  assumptions: existing JSON encoding stringifies arbitrary objects, and a new
+  pooled connection cannot see an uncommitted transaction. Tests now inject a
+  genuinely invalid cyclic payload and check both transaction-local visibility
+  and external isolation. Recovery-focused rerun: 121 tests, OK, 13.992 seconds;
+  .cache/roadmap/phase9-2-recovery-focused-second.log.
+- Migration 0035 adds durable occurrence-to-child ownership. Creation and binding
+  are atomic; concurrent preparation and takeover reuse the same task and frozen
+  context. A child inherits the parent's persisted deadline. Ordinary Sub-Agent
+  workers do not enqueue, execute or emit a separate final message for these
+  children. Resume/revise/model controls require the actual parent job fence.
+- Child ownership and terminal-recovery checks: 112 tests, OK, 16.651 seconds;
+  .cache/roadmap/phase9-2-child-ownership.log. Includes rollback, separate-store
+  concurrency, reopened-store takeover, wrong owner/bot/scope, stale lease and
+  disabled-parent rejection. The initial migration CLI invocation used a package
+  without a __main__; Alembic then applied both migrations to local test databases.
+- Ownership storage is not yet wired through all routine delegation paths. The
+  automatic revise entry, external continuations and parent/child completion
+  still need end-to-end integration. Member-departure checks, quiet completion
+  and the new plan's explicit confirmation/watch behavior also remain pending.
+- Full PostgreSQL regression: 1,861 tests, OK (12 skipped), 248.232 seconds;
+  .cache/roadmap/phase9-2-ownership-full.log. The admin TypeScript/Vite build,
+  Ruff and diff whitespace checks pass. PostgreSQL confirmed zero leftover
+  owned test schemas; pgvector remains installed in public.
+- This phase is not complete, not committed and remains disabled by default.
+  No production connection, QQ/model request, push, deployment or rebuild was
+  performed. The Desktop App and the newer user-authored plan are unchanged.
+
+### Phase 9.2 owned-child execution and quiet completion (still in progress)
+
+- Normal delegation tools and automatic delegate/workflow entry now prepare or
+  resume an occurrence-owned child. The ordinary Sub-Agent dispatcher cannot
+  separately execute or post the final text for that child. The parent uses the
+  persisted result, not another detached task, and retains final Outbox ownership.
+- Parent takeover first resumes unfinished children with their original context
+  and saved steps, then supplies their receipts as quoted recovery evidence for
+  final synthesis. A pending remote receipt suspends the whole parent turn;
+  it cannot be swallowed as an ordinary model/tool error or silently retried.
+- Child orchestration does not create a conflicting generic "started" effect.
+  Child tool effects continue to use the existing session/external receipts;
+  parent tools retain routine effect receipts. Every tool/model request still
+  checks the parent lease and cancellation, sharing its model budget and deadline.
+- Parent cancellation/expiry reconciliation settles unfinished child statuses
+  transactionally, preserving completed steps, draft results and remote receipt
+  data. It does not claim to cancel already submitted remote operations or delete
+  their output. Late interruption cannot reopen a terminal task. Revisions keep
+  the original parent deadline rather than resetting it for each revision.
+- Group membership is checked before model spending and rechecked before model
+  and tool calls at most 30 seconds after the last successful check. A confirmed
+  departure disables the creator's schedule; an unavailable/invalid roster defers
+  without assuming permission or disabling a valid schedule. Private routines
+  do not query a group roster. Live NapCat roster acceptance remains pending.
+- Migration 0036 adds a terminal `quiet` state. Intentional silence survives
+  takeover without emitting a `[silence]` marker or running the model again.
+  Prepared images/voice are not discarded because accompanying text is silent.
+- Initial focused baseline: 58 tests passed. Real workflow tests initially found
+  the mock specialist reports lacked required envelope fields, causing legitimate
+  extra correction rounds. Corrected the test responses, not production report
+  validation. Expanded child/worker/Sub-Agent suite: 65 tests, OK, 11.795 seconds;
+  .cache/roadmap/phase9-2-child-execution.log.
+- Quiet/membership/store/tool checks: 75 tests, OK, 11.941 seconds;
+  .cache/roadmap/phase9-2-routine-finish-focused.log. Normal pipeline entry checks:
+  33 tests, OK, 5.947 seconds; .cache/roadmap/phase9-2-entrypoints.log. This covers
+  all three Sub-Agent tools and both automatic entry modes without detached work.
+- Revision deadline regression: one test, OK, 1.408 seconds;
+  .cache/roadmap/phase9-2-revision-deadline.log. It exercises a real coordinator
+  revision, keeps one child ID, reruns only affected steps and enqueues no ordinary
+  background workflow. Model output and artifact validation are mocked; these
+  tests do not claim live model quality or real QQ delivery.
+- Full PostgreSQL regression before the final revision-deadline adjustment:
+  1,875 tests, OK (12 skipped), 252.046 seconds;
+  .cache/roadmap/phase9-2-takeover-full.log. Includes the interrupted real child
+  recovery test: completed frontend work runs once, interrupted backend resumes,
+  and integration completes without a second child or final Outbox message.
+  The deadline adjustment was verified by its separate focused test above, not
+  retroactively counted as part of this full run.
+- Admin TypeScript/Vite build, Ruff and diff whitespace checks pass. Both isolated
+  local databases are at migration 0036 and have zero leftover test schemas.
+  Phase 9.2 still needs final recovery review (including journal settlement after
+  saved-output takeover) and a full regression on its eventual commit candidate.
+  This checkpoint does not complete or commit the phase. No production access,
+  push or rebuild; the newer plan is still untouched.
+
+### Phase 9.2 final validation
+
+- Routine output and journal completion now commit in one transaction, including
+  final text, usage, digest and trace archive. A journal failure rolls both back;
+  a lost commit response leaves a durable completion that takeover only delivers.
+  Quiet turns retain `silence`; a budget/timeout failure remains `aborted`, never
+  upgraded to execution success merely because its failure notice was delivered.
+- Added regressions for post-commit interruption, Outbox unavailability, journal
+  rollback, original-turn ownership and stale leases. Focused store/worker/journal
+  run: 86 tests, OK, 13.913 seconds; .cache/roadmap/phase9-2-atomic-finish.log.
+- Final full PostgreSQL regression, including the revision deadline fix:
+  1,881 tests, OK (12 skipped), 251.708 seconds;
+  .cache/roadmap/phase9-2-final-full.log. Admin TypeScript/Vite build passed;
+  .cache/roadmap/phase9-2-final-admin-build.log. Ruff passed over every CI path.
+- README documents the opt-in flag, creator-scoped commands, budget and delivery
+  boundaries. This completes the earlier roadmap's 9.2 foundation only. New-plan
+  confirmation, watch sources, project storage and member workbench are pending.
+- This phase is a local-only commit. No real model/QQ calls, server connections,
+  push or rebuild. Live roster, provider accounting and delivery acceptance remain
+  pending; the supplied newer plan is unchanged and excluded from the commit.

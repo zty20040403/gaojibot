@@ -52,6 +52,7 @@ from .pins import PinStore
 from .proactive_learning import ProactiveLearningStore
 from .quota import UsageStore
 from .reminders import ReminderStore
+from .routines import RoutineStore
 from .sandbox import DockerSandboxManager
 from src.sandbox_runtime.client import SandboxClient
 from src.sandbox_runtime.factory import manager_from_settings
@@ -132,6 +133,7 @@ class AppContext:
     pin_store: PinStore | None = None
     proactive_learning: ProactiveLearningStore | None = None
     reminder_store: ReminderStore | None = None
+    routine_store: RoutineStore | None = None
     delivery_store: DeliveryStore | None = None
     job_store: DurableJobStore | None = None
     job_worker: DurableJobWorker | None = None
@@ -201,6 +203,7 @@ class AppContext:
             ("pin store", self.pin_store),
             ("proactive learning", self.proactive_learning),
             ("reminder store", self.reminder_store),
+            ("routine store", self.routine_store),
             ("delivery store", self.delivery_store),
             ("durable job store", self.job_store),
             ("Sub-Agent task store", self.subagent_store),
@@ -236,6 +239,11 @@ def build_app_context(
     evidence_provider: EvidenceProvider,
     started_at: int | None = None,
 ) -> AppContext:
+    if settings.routines_enabled and not all((
+        settings.durable_jobs_enabled, settings.outbox_enabled, settings.quota_enabled,
+        settings.ledger_enabled, settings.turn_journal_enabled,
+    )):
+        raise RuntimeError("AI_ROUTINES_ENABLED requires durable jobs, Outbox, quotas, ledger and turn journal")
     state_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = cache_dir or state_dir / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -780,6 +788,15 @@ def build_app_context(
             job_worker = None
             logger.error(f"Durable application job queue could not be opened: {exc}")
 
+    routine_store = None
+    if settings.routines_enabled:
+        if any(value is None for value in (job_store, job_worker, delivery_store, usage_store, turn_journal)):
+            raise RuntimeError("Routines require available jobs, delivery, usage and turn stores")
+        routine_store = RoutineStore(
+            database, jobs=job_store, outbox=delivery_store, usage=usage_store,
+            max_per_owner=settings.routine_max_per_owner,
+        )
+
     subagent_store: SubAgentStore | None = None
     subagent_coordinator: SubAgentCoordinator | None = None
     if settings.subagents_enabled:
@@ -847,6 +864,7 @@ def build_app_context(
             if settings.proactive_adaptive else None
         ),
         reminder_store=reminder_store,
+        routine_store=routine_store,
         delivery_store=delivery_store,
         job_store=job_store,
         job_worker=job_worker,

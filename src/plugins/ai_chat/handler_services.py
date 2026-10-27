@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .tool_executor import ToolExecutor
     from .trigger_service import TriggerService
     from .video_analysis import DeepVideoAnalyzer
+    from .routine_worker import RoutineDispatcher
 
 
 class HandlerService:
@@ -41,6 +42,7 @@ class HandlerServices:
     tools: ToolExecutor = field(init=False)
     replies: ReplyService = field(init=False)
     delivery: OneBotDelivery = field(init=False)
+    routines: RoutineDispatcher | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         from .onebot_chat import OneBotChatService
@@ -63,6 +65,10 @@ class HandlerServices:
         self.tools = ToolExecutor(self)
         self.replies = ReplyService(self)
         self.delivery = OneBotDelivery(self)
+        if getattr(self.context, "routine_store", None) is not None:
+            from .routine_worker import RoutineDispatcher
+
+            self.routines = RoutineDispatcher(self)
         coordinator = getattr(self.context, "subagent_coordinator", None)
         if (
             coordinator is not None

@@ -20,6 +20,7 @@ from src.llm_options import anthropic_messages_url, chat_options, thinking_body
 from .model_catalog import ModelCatalog, ModelProfile
 from .local_model import LocalModelRuntime
 from .observability import telemetry
+from .model_budget import BudgetedStream, active_model_budget
 
 
 _logger = logging.getLogger(__name__)
@@ -394,8 +395,10 @@ class OpenAIChatProvider:
         **kwargs: Any,
     ) -> Any:
         client = self._client(profile)
+        if active_model_budget() is not None:
+            client = client.with_options(max_retries=0)
         request = {key: value for key, value in kwargs.items() if value is not None}
-        if profile.max_output_tokens > 0 and "max_tokens" not in request:
+        if profile.max_output_tokens > 0 and not {"max_tokens", "max_completion_tokens"} & request.keys():
             request["max_tokens"] = profile.max_output_tokens
         try:
             return await client.chat.completions.create(**request)
@@ -814,7 +817,21 @@ class LLMGateway:
             raise LLMConfigError(
                 f"model profile {profile.name!r} does not support native JSON mode"
             )
-        return await provider.create_completion(profile, **kwargs)
+        budget = active_model_budget()
+        if budget is None:
+            return await provider.create_completion(profile, **kwargs)
+        if budget.before_request is not None:
+            await budget.before_request()
+        request, reservation = budget.prepare(profile, kwargs)
+        try:
+            response = await provider.create_completion(profile, **request)
+            if request.get("stream"):
+                return BudgetedStream(response, reservation)
+        except BaseException:
+            reservation.finish()
+            raise
+        reservation.finish(response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None))
+        return response
 
     def health_snapshot(self) -> dict[str, dict[str, object]]:
         names = (
@@ -1117,9 +1134,14 @@ def _anthropic_request(
     if not isinstance(messages, list):
         raise LLMConfigError("Anthropic Messages requires a messages list")
     system, converted_messages = _convert_anthropic_messages(messages)
+    max_tokens = kwargs.get("max_tokens", profile.max_output_tokens or 4096)
+    if type(max_tokens) is not int or max_tokens <= 0:
+        raise LLMConfigError("Anthropic max_tokens must be a positive integer")
+    if profile.max_output_tokens > 0:
+        max_tokens = min(max_tokens, profile.max_output_tokens)
     body: dict[str, Any] = {
         "model": str(kwargs.get("model") or profile.model),
-        "max_tokens": profile.max_output_tokens or 4096,
+        "max_tokens": max_tokens,
         "messages": converted_messages,
     }
     if system:

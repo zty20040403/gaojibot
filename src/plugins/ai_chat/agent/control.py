@@ -36,6 +36,66 @@ def assert_job_owned() -> None:
 
 
 class TaskControlStoreMixin:
+    def reconcile_routine_parents(self, *, limit: int = 50) -> int:
+        """Settle abandoned children without inventing remote cancellation receipts."""
+        timestamp = int(time.time())
+        changed = []
+        with self._transaction() as cursor:
+            rows = cursor.execute("""SELECT t.task_id,r.status AS parent_status FROM routine_children c
+                JOIN routine_runs r ON r.run_id=c.run_id JOIN subagent_tasks t ON t.task_id=c.task_id
+                WHERE r.status IN ('failed','skipped','cancelled','enqueued','quiet')
+                  AND t.status NOT IN ('completed','partial','failed','cancelled')
+                ORDER BY r.run_id,t.task_id LIMIT ? FOR UPDATE OF r,t SKIP LOCKED""",
+                (min(max(limit, 1), 100),)).fetchall()
+            for row in rows:
+                task_id = row["task_id"]
+                cancelled = row["parent_status"] == "cancelled"
+                status = "cancelled" if cancelled else "failed"
+                error = "所属例行任务已取消" if cancelled else "所属例行任务已结束，子任务尚未完成"
+                error += "；已提交的远程操作需另行核对，未删除产物或伪造取消回执。"
+                cursor.execute("""UPDATE subagent_runs SET status=CASE WHEN status='pending' THEN 'skipped' ELSE ? END,
+                    last_error=?,finished_at=? WHERE task_id=?
+                    AND status IN ('pending','running','interrupted','waiting_external')""",
+                    (status, error, timestamp, task_id))
+                cursor.execute("""UPDATE subagent_tasks SET status=?,cancel_requested=?,last_error=?,
+                    finished_at=?,updated_at=? WHERE task_id=?""",
+                    (status, cancelled, error, timestamp, timestamp, task_id))
+                self.append_checkpoint(task_id, "routine_parent_ended",
+                    {"parent_status": row["parent_status"], "remote_outcome": "requires_receipt_check"},
+                    now=timestamp, transaction_cursor=cursor)
+                self.append_event(task_id, f"task.{status}", {"error": error},
+                    now=timestamp, transaction_cursor=cursor)
+                changed.append(task_id)
+        for task_id in changed:
+            self._notify_changed(task_id)
+        return len(changed)
+
+    def routine_parent(self, task_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute("""SELECT c.run_id, r.job_id, r.attempt_id, r.status,
+                r.deadline_at FROM routine_children c JOIN routine_runs r ON r.run_id=c.run_id
+                WHERE c.task_id=?""", (task_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def require_routine_owner(self, task_id: int) -> None:
+        parent = self.routine_parent(task_id)
+        if parent is None:
+            return
+        fence = active_job_fence.get()
+        if fence is None or fence.job_id != parent["job_id"]:
+            raise PermissionError("This Sub-Agent belongs to a scheduled occurrence, not a standalone job")
+        fence.assert_owned()
+        with self._lock:
+            owned = self._connection.execute("""SELECT 1 FROM routine_children c
+                JOIN routine_runs r ON r.run_id=c.run_id JOIN agent_routines a ON a.routine_id=r.routine_id
+                JOIN durable_jobs j ON j.job_id=r.job_id
+                WHERE c.task_id=? AND r.status='running' AND r.deadline_at>?
+                  AND a.enabled AND a.version=r.version AND j.job_id=?
+                  AND j.status='running' AND j.lease_owner=? AND j.attempts=? AND j.lease_until>?""",
+                (task_id, time.time(), fence.job_id, fence.owner, fence.attempt, time.time())).fetchone()
+        if owned is None:
+            raise LeaseLost("Routine child lost its owning execution lease")
+
     def revision_checkpoints(self, task_id: int) -> list[dict]:
         # Revision ancestry must not be truncated by the console's checkpoint page limit.
         with self._lock:
@@ -105,11 +165,16 @@ class TaskControlStoreMixin:
         return not pending
 
     def interrupt_task(self, task_id: int) -> None:
-        running = [r.run_id for r in self.runs(task_id) if r.status in {"running", "interrupted", "waiting_external"}]
         with self._transaction() as cursor:
+            cursor.execute("""UPDATE subagent_tasks SET status='interrupted', finished_at=NULL WHERE task_id=?
+                AND status NOT IN ('completed','partial','failed','cancelled')""", (task_id,))
+            if cursor.rowcount != 1:
+                return
+            running = [row["run_id"] for row in cursor.execute("""SELECT run_id FROM subagent_runs
+                WHERE task_id=? AND status IN ('running','interrupted','waiting_external')""", (task_id,)).fetchall()]
             cursor.execute("UPDATE subagent_runs SET status='interrupted' WHERE task_id=? AND status='running'", (task_id,))
-            cursor.execute("UPDATE subagent_tasks SET status='interrupted', finished_at=NULL WHERE task_id=?", (task_id,))
-        self.append_checkpoint(task_id, "process_interrupted", {"interrupted_runs": running, "reason": "worker_takeover"})
+            self.append_checkpoint(task_id, "process_interrupted", {"interrupted_runs": running, "reason": "worker_takeover"},
+                                   transaction_cursor=cursor)
 
     def control(self, task_id: int) -> dict[str, Any]:
         with self._lock:
@@ -199,6 +264,7 @@ class TaskControlStoreMixin:
         with self._lock:
             rows = self._connection.execute("""SELECT t.task_id FROM subagent_tasks t JOIN subagent_controls c ON t.task_id=c.task_id
                 WHERE t.status IN ('queued', 'interrupted', 'waiting_external') AND t.cancel_requested=?
+                AND NOT EXISTS (SELECT 1 FROM routine_children r WHERE r.task_id=t.task_id)
                 ORDER BY t.created_at LIMIT 100""", (False,)).fetchall()
         return [int(row["task_id"]) for row in rows]
 
@@ -208,6 +274,7 @@ class TaskControlStoreMixin:
                 JOIN subagent_controls c ON t.task_id=c.task_id
                 WHERE t.status IN ('completed','partial','failed','cancelled')
                   AND c.dispatch_json <> '{}' AND c.final_queued_revision <> c.revision
+                  AND NOT EXISTS (SELECT 1 FROM routine_children r WHERE r.task_id=t.task_id)
                 ORDER BY t.finished_at, t.task_id LIMIT 100""").fetchall()
         return [int(row["task_id"]) for row in rows]
 

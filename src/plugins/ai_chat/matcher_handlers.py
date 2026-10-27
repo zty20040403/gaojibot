@@ -79,6 +79,9 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
     async def handle_usage_command(event: MessageEvent) -> None:
         await runtime.handlers.commands.handle_usage_command(event)
 
+    async def handle_routine_command(event: MessageEvent, args: Message = CommandArg()) -> None:
+        await runtime.handlers.commands.handle_routine_command(event, args)
+
     async def handle_task_stop(
         event: MessageEvent, args: Message = CommandArg()
     ) -> None:
@@ -139,6 +142,7 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
         (matchers.pins_command, handle_pins_command),
         (matchers.task_status, handle_task_status),
         (matchers.usage_command, handle_usage_command),
+        (matchers.routine_command, handle_routine_command),
         (matchers.task_stop, handle_task_stop),
         (matchers.mention_ai, handle_mention_ai),
         (matchers.canonical_ingest_tracker, handle_canonical_ingest),

@@ -69,9 +69,12 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         self.response_job_id = 'job_test'
         self.now = time.time()
         self.finished_at = self.now
-        self.clock = patch('src.cluster_control.service_verification.time', SimpleNamespace(time=lambda: self.now))
-        self.clock.start()
-        self.addCleanup(self.clock.stop)
+        clock = SimpleNamespace(time=lambda: self.now)
+        # Intent creation and simulated receipts must use the same clock.
+        for module in ('service_verification', 'ops_management'):
+            clock_patch = patch(f'src.cluster_control.{module}.time', clock)
+            clock_patch.start()
+            self.addCleanup(clock_patch.stop)
         self.params = {'host': 'h610', 'unit': 'test.service'}
         self.before = {'active_state': 'active', 'sub_state': 'running', 'invocation_id': 'a' * 32}
         self.after = {'active_state': 'active', 'sub_state': 'running', 'invocation_id': 'b' * 32,
@@ -115,6 +118,7 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
             if op in {'units.start', 'units.stop', 'units.restart', 'units.reload'}:
                 self.params = json.loads(request.content)['params']
                 self.unit_operation = op
+                self.finished_at = self.now
                 if self.fail_submission:
                     raise httpx.ReadTimeout('lost receipt', request=request)
                 return httpx.Response(200, json={'job_id': 'job_test', 'revision': 1, 'state': 'queued'})

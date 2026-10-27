@@ -9,7 +9,12 @@ from typing import (
     Any,
     Awaitable,
     Callable,
+    TYPE_CHECKING,
 )
+from .model_budget import ModelBudgetExceeded
+
+if TYPE_CHECKING:
+    from .routine_worker import RoutineExecution
 from .application import ChatFailure
 from src.bot_storage import (
     DatabaseError,
@@ -193,6 +198,7 @@ class ToolExecutor(HandlerService):
         simple_chat_profile: str = "",
         resume_task_id: int | None = None,
         _approved_call: dict[str, Any] | None = None,
+        routine_execution: RoutineExecution | None = None,
     ) -> Message | str:
         if _approved_call is not None:
             assert_approved("tool", _approved_call)
@@ -426,6 +432,8 @@ class ToolExecutor(HandlerService):
             tool_capabilities.add("subagents")
         if self.context.reminder_store is not None:
             tool_capabilities.add("reminders")
+        if self.context.routine_store is not None:
+            tool_capabilities.add("routines")
         if self.context.settings.voice_enabled:
             tool_capabilities.add("voice")
             if available_voice_message_id is not None:
@@ -433,6 +441,7 @@ class ToolExecutor(HandlerService):
         turn = TurnState(
             context=ToolContext(
                 self.services, event, frozenset(tool_capabilities), agent_executor,
+                routine_run_id=routine_execution.run.run_id if routine_execution else "",
             ),
             bot=bot,
             user_text=user_text,
@@ -598,7 +607,7 @@ class ToolExecutor(HandlerService):
         if _approved_call is not None:
             return await _execute_tool_impl(_approved_call["tool"], _approved_call["arguments"])
 
-        async def execute_tool(name: str, arguments: dict[str, object]) -> str:
+        async def call_tool(name: str, arguments: dict[str, object]) -> str:
             assert_job_owned()
             async with telemetry.tool(name):
                 fleet_auth = getattr(self.context.fleet_client, "authorization", None)
@@ -607,6 +616,29 @@ class ToolExecutor(HandlerService):
                     with task_auth.bind(event, journal_turn_id):
                         return await _execute_tool_impl(name, arguments)
                 return await _execute_tool_impl(name, arguments)
+
+        async def execute_tool(name: str, arguments: dict[str, object]) -> str:
+            if routine_execution is None:
+                return await call_tool(name, arguments)
+
+            async def call_and_capture() -> str:
+                result = await call_tool(name, arguments)
+                return json.dumps({"result": result, "reply": turn.reply_checkpoint()}, ensure_ascii=False)
+
+            saved = json.loads(await routine_execution.tool(name, arguments, call_and_capture))
+            turn.restore_reply_checkpoint(saved["reply"])
+            return str(saved["result"])
+
+        async def handoff_tool(name, arguments, fingerprint):
+            action = lambda: agent_executor.handoff_tool(name, arguments, fingerprint)
+            if routine_execution is None:
+                return await action()
+            return await routine_execution.tool(name, arguments, action)
+
+        async def compensate_tool(name, arguments, reason):
+            if routine_execution is not None:
+                await routine_execution.guard()
+            return await agent_executor.compensate_tool(name, arguments, reason)
 
         subagent_hooks = AgentExecutionHooks(
             operation_receipt=getattr(self.context.fleet_client, "operation_receipt", None),
@@ -627,10 +659,10 @@ class ToolExecutor(HandlerService):
                 )
             ),
             handoff_tool=(
-                agent_executor.handoff_tool if agent_executor is not None else None
+                handoff_tool if agent_executor is not None else None
             ),
             compensate_tool=(
-                agent_executor.compensate_tool if agent_executor is not None else None
+                compensate_tool if agent_executor is not None else None
             ),
         )
 
@@ -1242,7 +1274,16 @@ class ToolExecutor(HandlerService):
                         packet, selected_profile, role=role, parent_trace=turn_trace)
                 if decision is not None:
                     packet = with_task_contract(packet, decision)
-                if self.context.subagent_coordinator.dispatcher is not None and resume_task_id is None:
+                if routine_execution is not None:
+                    from .routine_subagents import run_child
+                    return await run_child(routine_execution,
+                        intent={"tool": DELEGATE_AGENT_TOOL_NAME, "role": role, "objective": objective},
+                        packet=packet, decision=decision,
+                        dispatch={"event": event.model_dump(mode="json"), "bot_id": bot.self_id,
+                                  "profile": selected_profile.name},
+                        selected_profile=selected_profile, tools=tools, execute_tool=execute_tool,
+                        parent_trace=turn_trace, hooks=subagent_hooks)
+                if self.context.subagent_coordinator.dispatcher is not None and resume_task_id is None and routine_execution is None:
                     task = self.context.subagent_coordinator.submit(
                         packet=packet,
                         decision=decision,
@@ -1286,7 +1327,16 @@ class ToolExecutor(HandlerService):
                         packet, selected_profile, parent_trace=turn_trace)
                 if decision is not None:
                     packet = with_task_contract(packet, decision)
-                if self.context.subagent_coordinator.dispatcher is not None and resume_task_id is None:
+                if routine_execution is not None:
+                    from .routine_subagents import run_child
+                    result = await run_child(routine_execution,
+                        intent={"tool": RUN_SUBAGENTS_TOOL_NAME, "goal": goal}, packet=packet, decision=decision,
+                        dispatch={"event": event.model_dump(mode="json"), "bot_id": bot.self_id,
+                                  "profile": selected_profile.name},
+                        selected_profile=selected_profile, tools=tools, execute_tool=execute_tool,
+                        parent_trace=turn_trace, progress=report_subagent_progress, hooks=subagent_hooks)
+                    return result["answer"]
+                if self.context.subagent_coordinator.dispatcher is not None and resume_task_id is None and routine_execution is None:
                     task = self.context.subagent_coordinator.submit(packet=packet, decision=decision,
                         dispatch={"event": event.model_dump(mode="json"), "bot_id": bot.self_id, "profile": selected_profile.name})
                     return f"{task.handle} 已进入后台执行，会汇报关键进度并把结果发回这里。"
@@ -1324,6 +1374,22 @@ class ToolExecutor(HandlerService):
                     if not tool_enabled("revise_subagent"):
                         raise ValueError("管理员已关闭任务修订")
                     coordinator = self.context.subagent_coordinator
+                    if routine_execution is not None:
+                        parent = await self.context.db_call(coordinator.store.routine_parent, decision.task_id)
+                        if parent is None or parent["run_id"] != routine_execution.run.run_id:
+                            return None
+                        async def revise_owned():
+                            control = await self.context.db_call(coordinator.store.control, decision.task_id)
+                            result = await self.context.db_call(coordinator.revise, decision.task_id,
+                                scope_key=scope_from_event(event).key, requester_user_id=event.user_id,
+                                instruction=user_text, step_keys=decision.step_ids,
+                                expected_version=control["version"], contract=decision.contract.as_payload())
+                            return json.dumps(result, ensure_ascii=False)
+                        await routine_execution.tool("revise_subagent", {
+                            "task_id": decision.task_id, "instruction": user_text,
+                            "steps": list(decision.step_ids), "contract": decision.contract.as_payload(),
+                        }, revise_owned)
+                        return await run_resume_goal(decision.task_id)
                     control = coordinator.store.control(decision.task_id)
                     revised = coordinator.revise(decision.task_id, scope_key=scope_from_event(event).key,
                         requester_user_id=event.user_id, instruction=user_text, step_keys=decision.step_ids,
@@ -1353,6 +1419,11 @@ class ToolExecutor(HandlerService):
                     if agent_executor is not None:
                         await execute_tool(SAY_TOOL_NAME, {"text": text[:200]})
 
+                if routine_execution is not None:
+                    from .routine_subagents import resume_child
+                    return await resume_child(routine_execution, task_id,
+                        selected_profile=selected_profile, tools=tools, execute_tool=execute_tool,
+                        parent_trace=turn_trace, progress=report_subagent_progress, hooks=subagent_hooks)
                 return await self.context.subagent_coordinator.resume(
                     task_id,
                     scope_key=scope_from_event(event).key,
@@ -1373,6 +1444,14 @@ class ToolExecutor(HandlerService):
             if self.context.subagent_coordinator is not None:
                 own_tasks = [t for t in self.context.subagent_store.recent(limit=20, scope_key=scope_from_event(event).key)
                     if t.requester_user_id == event.user_id and self.context.subagent_store.control(t.task_id)["dispatch"]][:5]
+                visible_tasks = []
+                for task in own_tasks:
+                    parent = await self.context.db_call(self.context.subagent_store.routine_parent, task.task_id)
+                    if ((routine_execution is None and parent is None) or
+                            (routine_execution is not None and parent is not None and
+                             parent["run_id"] == routine_execution.run.run_id)):
+                        visible_tasks.append(task)
+                own_tasks = visible_tasks
                 if own_tasks:
                     context_parts.append("[当前用户可续作任务，只有明确续作本任务才选 revise]\n" + quote_evidence(json.dumps([
                         {"task_id": t.task_id, "objective": t.objective[:600], "status": t.status,
@@ -1440,12 +1519,12 @@ class ToolExecutor(HandlerService):
                         )
                     ),
                     handoff_tool=(
-                        agent_executor.handoff_tool
+                        handoff_tool
                         if agent_executor is not None
                         else None
                     ),
                     compensate_tool=(
-                        agent_executor.compensate_tool
+                        compensate_tool
                         if agent_executor is not None
                         else None
                     ),
@@ -1458,6 +1537,8 @@ class ToolExecutor(HandlerService):
                     entry_profile=entry_profile,
                     entry_allowed_profiles=entry_allowed_profiles,
                 )
+        except ModelBudgetExceeded:
+            raise
         except ChatFailure:
             raise
         except DeepSeekConfigError as exc:

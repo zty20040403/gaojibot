@@ -214,6 +214,10 @@ class Settings:
     reminders_enabled: bool
     reminder_check_seconds: int
     reminder_max_per_scope: int
+    routines_enabled: bool
+    routine_check_seconds: int
+    routine_max_per_owner: int
+    routine_timeout_seconds: int
     outbox_enabled: bool
     outbox_check_seconds: int
     outbox_lease_seconds: int
@@ -679,6 +683,10 @@ class Settings:
                 200,
             ),
             outbox_enabled=_get_bool("AI_OUTBOX_ENABLED", True),
+            routines_enabled=_get_bool("AI_ROUTINES_ENABLED", False),
+            routine_check_seconds=min(max(_get_int("AI_ROUTINE_CHECK_SECONDS", 15), 5), 300),
+            routine_max_per_owner=min(max(_get_int("AI_ROUTINE_MAX_PER_OWNER", 5), 1), 20),
+            routine_timeout_seconds=min(max(_get_int("AI_ROUTINE_TIMEOUT_SECONDS", 600), 30), 3600),
             outbox_check_seconds=max(
                 _get_int("AI_OUTBOX_CHECK_SECONDS", 5),
                 1,

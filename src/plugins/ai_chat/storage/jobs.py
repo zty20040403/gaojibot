@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Iterator, Literal, Mapping
 
@@ -100,7 +100,9 @@ class DurableJobStore:
         resume_on_lease_loss: bool = False,
         run_at: int | None = None,
         now: int | None = None,
+        transaction_cursor: StoreCursor | None = None,
     ) -> tuple[DurableJob, bool]:
+        """Optionally enlist in the caller's transaction on the same database."""
         clean_kind = " ".join(str(kind).split())[:120]
         clean_key = " ".join(str(idempotency_key).split())[:300]
         if not clean_kind:
@@ -115,7 +117,7 @@ class DurableJobStore:
         attempts_limit = min(
             max(int(max_attempts or self.default_max_attempts), 1), 50
         )
-        with self._transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             cursor.execute(
                 """
                 INSERT INTO durable_jobs (

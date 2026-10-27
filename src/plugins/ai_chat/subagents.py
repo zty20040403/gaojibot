@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any, Iterator, Literal
@@ -273,10 +273,11 @@ class SubAgentStore(
         max_parallelism: int,
         max_steps: int,
         now: int | None = None,
+        transaction_cursor: StoreCursor | None = None,
     ) -> TaskRecord:
         timestamp = int(time.time() if now is None else now)
         trace_id = uuid.uuid4().hex
-        with self._transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             row = cursor.execute(
                 """
                 INSERT INTO subagent_tasks (
@@ -303,11 +304,44 @@ class SubAgentStore(
                     timestamp,
                 ),
             ).fetchone()
-        if row is None:
-            raise RuntimeError("Sub-Agent task was not stored")
-        task = self._task_row(row)
-        self.append_event(task.task_id, "task.created", {"objective": task.objective})
+            if row is None:
+                raise RuntimeError("Sub-Agent task was not stored")
+            task = self._task_row(row)
+            self.append_event(task.task_id, "task.created", {"objective": task.objective},
+                              now=timestamp, transaction_cursor=cursor)
+        if transaction_cursor is None:
+            self._notify_changed(task.task_id)
         return task
+
+    def prepare_task(
+        self, *, packet: ContextPacket, decision: EntryDecision | None,
+        dispatch: dict[str, Any], max_parallelism: int, max_steps: int,
+        transaction_cursor: StoreCursor | None = None,
+    ) -> TaskRecord:
+        """Commit a task, its recovery checkpoint and its envelope together."""
+        timestamp = int(time.time())
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
+            task = self.create_task(
+                scope_key=packet.scope_key, conversation_id=packet.conversation_id,
+                requester_user_id=packet.requester_user_id, trigger_message_id=packet.trigger_message_id,
+                objective=packet.objective, max_parallelism=max_parallelism, max_steps=max_steps,
+                now=timestamp, transaction_cursor=cursor,
+            )
+            self.append_checkpoint(task.task_id, "task_received", {
+                "mode": "workflow", "context_packet": packet.as_payload(),
+                "entry_decision": decision.as_payload() if decision else None,
+            }, now=timestamp, transaction_cursor=cursor)
+            cursor.execute("""INSERT INTO subagent_controls
+                (task_id,version,revision,policy_json,dispatch_json,updated_at)
+                VALUES (?,1,1,?,?,?)""",
+                (task.task_id, _json_dump({"mode": "auto"}), _json_dump(dispatch), timestamp))
+            row = cursor.execute("UPDATE subagent_tasks SET status='queued' WHERE task_id=? RETURNING *",
+                                 (task.task_id,)).fetchone()
+            self.append_event(task.task_id, "task.queued", {"error": ""},
+                              now=timestamp, transaction_cursor=cursor)
+        if transaction_cursor is None:
+            self._notify_changed(task.task_id)
+        return self._task_row(row)
 
     def set_task_state(
         self,
@@ -614,9 +648,10 @@ class SubAgentStore(
         *,
         run_id: int | None = None,
         now: int | None = None,
+        transaction_cursor: StoreCursor | None = None,
     ) -> None:
         timestamp = int(time.time() if now is None else now)
-        with self._transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             row = cursor.execute(
                 "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM subagent_events WHERE task_id = ?",
                 (int(task_id),),
@@ -637,7 +672,8 @@ class SubAgentStore(
                     timestamp,
                 ),
             )
-        self._notify_changed(task_id)
+        if transaction_cursor is None:
+            self._notify_changed(task_id)
 
     def _notify_changed(self, task_id: int) -> None:
         listener = self._change_listener
@@ -690,9 +726,10 @@ class SubAgentStore(
         *,
         run_id: int | None = None,
         now: int | None = None,
+        transaction_cursor: StoreCursor | None = None,
     ) -> dict[str, Any]:
         timestamp = int(time.time() if now is None else now)
-        with self._transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             row = cursor.execute(
                 """
                 SELECT COALESCE(MAX(sequence), 0) AS sequence
@@ -735,6 +772,7 @@ class SubAgentStore(
             },
             run_id=run_id,
             now=timestamp,
+            transaction_cursor=transaction_cursor,
         )
         return checkpoint
 
@@ -1184,20 +1222,16 @@ class SubAgentCoordinator:
     def submit(self, *, packet: ContextPacket, decision: EntryDecision | None, dispatch: dict[str, Any]) -> TaskRecord:
         if decision is not None:
             _validate_plan({"steps": list(decision.steps)}, packet.objective, self.max_steps, strict=True)
-        task = self.store.create_task(scope_key=packet.scope_key, conversation_id=packet.conversation_id,
-            requester_user_id=packet.requester_user_id, trigger_message_id=packet.trigger_message_id,
-            objective=packet.objective, max_parallelism=self.max_parallelism, max_steps=self.max_steps)
-        self.store.append_checkpoint(task.task_id, "task_received", {
-            "mode": "workflow", "context_packet": packet.as_payload(),
-            "entry_decision": decision.as_payload() if decision else None})
-        self.store.update_control(task.task_id, expected_version=0,
-            dispatch={**dispatch, "deadline": int(time.time()) + self.timeout_seconds + 900})
-        self.store.set_task_state(task.task_id, "queued")
+        task = self.store.prepare_task(
+            packet=packet, decision=decision, max_parallelism=self.max_parallelism, max_steps=self.max_steps,
+            dispatch={**dispatch, "deadline": int(time.time()) + self.timeout_seconds + 900},
+        )
         if self.dispatcher:
             self.dispatcher.enqueue(task.task_id)
         return self.store.get(task.task_id)
 
     def configure_models(self, task_id: int, policy: dict[str, Any], expected_version: int) -> dict[str, Any]:
+        self.store.require_routine_owner(task_id)
         task = self.store.get(task_id)
         if not task or task.status in {"planning", "running", "verifying", "cancelling", "waiting_external"}:
             raise ValueError("Change task models while queued or stopped, not during an active step")
@@ -1210,6 +1244,7 @@ class SubAgentCoordinator:
                step_keys: Sequence[str], expected_version: int,
                file_delivery_required: bool | None = None,
                contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        self.store.require_routine_owner(task_id)
         task = self.store.get(task_id)
         if task is None or task.scope_key != scope_key or task.requester_user_id != requester_user_id:
             raise ValueError("Cannot revise a task belonging to another user or conversation")
@@ -1239,7 +1274,11 @@ class SubAgentCoordinator:
             if file_delivery_required is not None:
                 contract["delivery_required"] = file_delivery_required
         updated = {**control, "version": expected_version + 1, "revision": control["revision"] + 1}
-        updated["dispatch"] = {**control["dispatch"], "deadline": int(time.time()) + self.timeout_seconds + 900}
+        deadline = int(time.time()) + self.timeout_seconds + 900
+        parent = self.store.routine_parent(task_id)
+        if parent is not None:
+            deadline = min(deadline, parent["deadline_at"])
+        updated["dispatch"] = {**control["dispatch"], "deadline": deadline}
         retired = {r.step_key for r in runs if r.step_key.startswith("acceptance_r")
             or (_repair_target(r.step_key) or _repair_support_target(r.step_key)) in selected}
         checkpoint = {"revision": updated["revision"], "instruction": instruction, "steps": sorted(selected),
@@ -1529,6 +1568,7 @@ class SubAgentCoordinator:
     ) -> str:
         """Resume an interrupted task without replanning or widening context."""
 
+        self.store.require_routine_owner(task_id)
         task = self.store.get(task_id)
         if task is None:
             raise ValueError(f"Sub-Agent 任务 task#{task_id} 不存在。")

@@ -17,6 +17,7 @@ from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.onebot_availability import delivery_blocker, file_delivery_blocker
 from src.plugins.ai_chat.onebot_delivery import OneBotDelivery
+from src.bot_storage import DatabaseCalls
 
 
 class OneBotDeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -111,6 +112,26 @@ class OneBotDeliveryTests(unittest.IsolatedAsyncioTestCase):
         pending = self.store.get(record.delivery_id)
         self.assertEqual((pending.status, pending.attempts), ("pending", 0))
         other.call_api.assert_not_awaited()
+        self.bot.send_group_msg.assert_not_awaited()
+
+    async def test_routine_final_uses_original_bot_not_first_connected_bot(self):
+        self.context.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.context.db_call.close)
+        self.context.routine_store = Mock()
+        self.context.routine_store.get_run.return_value = SimpleNamespace(spec=SimpleNamespace(scope_key=self.scope.key, bot_id="123"))
+        record = self.enqueue("routine-final:run-1")
+        other = Mock(spec=Bot, self_id="456", call_api=AsyncMock(), send_group_msg=AsyncMock())
+        await self.cycle({"456": other, "123": self.bot})
+        self.assertEqual(self.store.get(record.delivery_id).status, "committed")
+        self.bot.send_group_msg.assert_awaited_once()
+        other.call_api.assert_not_awaited()
+        other.send_group_msg.assert_not_awaited()
+
+    async def test_disabled_routines_do_not_fall_back_to_another_bot(self):
+        self.context.routine_store = None
+        record = self.enqueue("routine-final:run-1")
+        await self.cycle()
+        self.assertEqual(self.store.get(record.delivery_id).status, "pending")
         self.bot.send_group_msg.assert_not_awaited()
 
     async def test_account_status_is_rechecked_after_next_due_time(self):

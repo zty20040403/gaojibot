@@ -80,6 +80,7 @@ _READ_TOOLS = {
     "use_skill",
     "group_members",
     "reminder_list",
+    "routine_list",
     "view_forward",
     "view_bilibili",
     "inspect_shared_content",
@@ -108,6 +109,8 @@ _MEMORY_WRITE_TOOLS = {
     "unpin_message",
     "reminder_set",
     "reminder_cancel",
+    "routine_set",
+    "routine_cancel",
 }
 
 _SANDBOX_WRITE_TOOLS = {
@@ -274,6 +277,14 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         side_effects=("spawn:agent", "model:multiple", "write:task-ledger"),
         timeout_seconds=3600.0,
         max_identical_calls=1,
+    )
+    policies["routine_set"] = ToolPolicy(
+        risk="medium", idempotency="keyed", side_effects=("write:routine", "schedule:model"),
+        timeout_seconds=15.0, max_identical_calls=1,
+    )
+    policies["routine_cancel"] = ToolPolicy(
+        risk="medium", idempotency="idempotent", side_effects=("write:routine", "cancel:owned-job"),
+        timeout_seconds=15.0, max_identical_calls=1,
     )
     policies["delegate_agent"] = ToolPolicy(
         risk="medium",

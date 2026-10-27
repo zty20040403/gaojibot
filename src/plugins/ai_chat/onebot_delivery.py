@@ -214,6 +214,15 @@ class OneBotDelivery(HandlerService):
                             task_id = int(delivery.idempotency_key.split(":")[1])
                             dispatch = self.context.subagent_store.control(task_id)["dispatch"]
                             selected_bot = next((bot for bot in bots if str(bot.self_id) == str(dispatch["bot_id"])), None)
+                        elif delivery.idempotency_key.startswith("routine-final:"):
+                            store = getattr(self.context, "routine_store", None)
+                            if store is None:
+                                self.context.delivery_store.defer_unsent(delivery, "例行任务已停用，暂停投递")
+                                continue
+                            run = await self.context.db_call(store.get_run, delivery.idempotency_key.split(":", 1)[1])
+                            if run is None or run.spec.scope_key != delivery.target_scope.key:
+                                raise BridgePermanentError("例行任务投递范围不匹配")
+                            selected_bot = next((bot for bot in bots if str(bot.self_id) == run.spec.bot_id), None)
                         if selected_bot is None:
                             self.context.delivery_store.defer_unsent(delivery, "原任务的 QQ 账号尚未连接")
                             continue
