@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -22,6 +22,8 @@ from .delivery import DeliveryStore
 from .message_ir import MessageBody, TextNode, body_from_json, body_to_json
 from .quota import UsageStore
 from .storage.jobs import DurableJob, DurableJobStore
+from .ledger import MessageLedger
+from .projects import ProjectAccess, ProjectStore
 
 if TYPE_CHECKING:
     from .agent import ContextPacket
@@ -87,6 +89,13 @@ class Routine:
     next_due_at: int
     created_at: int
     updated_at: int
+    project_id: int | None = None
+    creator_principal_id: int | None = None
+    routine_kind: str = "schedule"
+    state: str = "active"
+    spec: dict = field(default_factory=dict)
+    dispatch: dict = field(default_factory=dict)
+    consecutive_failures: int = 0
 
     @property
     def handle(self) -> str:
@@ -153,6 +162,7 @@ class RoutineStore:
         max_per_owner: int = 5,
     ) -> None:
         _, self._connection = open_store_connection(source)
+        self._source = source
         self._lock = threading.RLock()
         self.jobs, self.outbox, self.usage = jobs, outbox, usage
         self.max_per_owner = min(max(int(max_per_owner), 1), 20)
@@ -221,7 +231,12 @@ class RoutineStore:
         ):
             raise ValueError("Routine budget is outside the permitted bounds")
         due = cron_time(cron, timezone, timestamp)
+        principal_id = self._creator_principal(scope, timestamp)
         with self._transaction() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?,0))",
+                ("routine-scope:" + scope.key,),
+            )
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
                 ("routine-owner:" + ":".join(owner),),
@@ -240,6 +255,16 @@ class RoutineStore:
                 daily_runs=daily_runs,
             )
             if existing is not None:
+                if (
+                    existing["routine_kind"] != "schedule"
+                    or existing["state"] in {"pending_confirmation", "deleted"}
+                    or existing["project_id"] is not None
+                    or existing["spec"]
+                    or existing["dispatch"]
+                ):
+                    raise ValueError(
+                        "Use the confirmation/update flow for this routine"
+                    )
                 if existing["enabled"] and all(
                     existing[key] == value for key, value in config.items()
                 ):
@@ -256,6 +281,7 @@ class RoutineStore:
                         "Routine version changed; list it again before editing"
                     )
             if existing is None or not existing["enabled"]:
+                self._check_scope_limit(cursor, scope)
                 count = cursor.execute(
                     "SELECT COUNT(*) AS n FROM agent_routines WHERE scope_key=? AND bot_id=? AND creator_id=? AND enabled",
                     owner,
@@ -270,8 +296,9 @@ class RoutineStore:
                 row = cursor.execute(
                     """INSERT INTO agent_routines
                     (scope_key, platform, kind, conversation_id, bot_id, creator_id, name, prompt,
-                     cron, timezone, enabled, version, max_tokens, daily_tokens, daily_runs, next_due_at, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, 1, ?, ?, ?, ?, ?, ?) RETURNING *""",
+                     cron, timezone, enabled, version, max_tokens, daily_tokens, daily_runs, next_due_at, created_at, updated_at,
+                     creator_principal_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, 1, ?, ?, ?, ?, ?, ?, ?) RETURNING *""",
                     (
                         scope.key,
                         scope.platform,
@@ -289,13 +316,14 @@ class RoutineStore:
                         due,
                         timestamp,
                         timestamp,
+                        principal_id,
                     ),
                 ).fetchone()
             else:
                 self._cancel_runs(cursor, existing["routine_id"], timestamp)
                 row = cursor.execute(
                     """UPDATE agent_routines SET prompt=?, cron=?, timezone=?,
-                    enabled=TRUE, version=version+1, max_tokens=?, daily_tokens=?, daily_runs=?,
+                    enabled=TRUE, state='active', version=version+1, max_tokens=?, daily_tokens=?, daily_runs=?,
                     next_due_at=?, updated_at=? WHERE routine_id=? RETURNING *""",
                     (
                         prompt,
@@ -310,6 +338,151 @@ class RoutineStore:
                     ),
                 ).fetchone()
             return Routine(**dict(row))
+
+    def _creator_principal(self, scope, now):
+        ledger = MessageLedger(self._source)
+        try:
+            return ledger.ensure_principal_identity(
+                scope.platform, scope.actor_native_user_id, "", seen_at=now
+            )
+        finally:
+            ledger.close()
+
+    @staticmethod
+    def _check_scope_limit(cursor, scope):
+        count = cursor.execute(
+            """SELECT count(*) FROM agent_routines WHERE scope_key=?
+            AND state IN ('active','pending_confirmation')""",
+            (scope.key,),
+        ).fetchone()[0]
+        if count >= (10 if scope.kind == "group" else 5):
+            raise ValueError("Conversation routine limit reached")
+
+    def create_pending(
+        self,
+        scope,
+        *,
+        name,
+        prompt,
+        cron="0 0 * * *",
+        timezone="Asia/Shanghai",
+        routine_kind="schedule",
+        spec=None,
+        dispatch=None,
+        project_id=None,
+        access: ProjectAccess | None = None,
+        now=None,
+    ):
+        """Persist a draft only. M4 adds source validation, watch polling and UI."""
+        owner = self._owner(scope)
+        now = int(time.time()) if now is None else now
+        name, prompt = name.strip(), prompt.strip()
+        spec, dispatch = dict(spec or {}), dict(dispatch or {})
+        if (
+            not 1 <= len(name) <= 64
+            or not 1 <= len(prompt) <= 4000
+            or routine_kind not in {"schedule", "watch"}
+        ):
+            raise ValueError("Invalid routine draft")
+        if len(json.dumps(spec)) > 16000 or len(json.dumps(dispatch)) > 16000:
+            raise ValueError("Routine metadata exceeds its limit")
+        due = cron_time(cron, timezone, now)
+        principal = self._creator_principal(scope, now)
+        with self._transaction() as cursor:
+            # Scope lock also serializes drafts created by different group members.
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?,0))",
+                ("routine-scope:" + scope.key,),
+            )
+            self._check_scope_limit(cursor, scope)
+            if project_id is not None:
+                if (
+                    access is None
+                    or access.scope.key != scope.key
+                    or access.principal_id != principal
+                ):
+                    raise PermissionError(
+                        "Project access must match the routine creator"
+                    )
+                ProjectStore._get(cursor, access, project_id, edit=True)
+            row = cursor.execute(
+                """INSERT INTO agent_routines(scope_key,platform,kind,conversation_id,bot_id,creator_id,
+                name,prompt,cron,timezone,enabled,version,max_tokens,daily_tokens,daily_runs,next_due_at,created_at,updated_at,
+                creator_principal_id,project_id,routine_kind,state,spec,dispatch)
+                VALUES (?,?,?,?,?,?,?,?,?,?,FALSE,1,100000,300000,?,?,?, ?,?,?,?,'pending_confirmation',?::jsonb,?::jsonb) RETURNING *""",
+                (
+                    scope.key,
+                    scope.platform,
+                    scope.kind,
+                    scope.native_conversation_id,
+                    owner[1],
+                    owner[2],
+                    name,
+                    prompt,
+                    cron,
+                    timezone,
+                    12 if routine_kind == "watch" else 24,
+                    due,
+                    now,
+                    now,
+                    principal,
+                    project_id,
+                    routine_kind,
+                    json.dumps(spec),
+                    json.dumps(dispatch),
+                ),
+            ).fetchone()
+            if routine_kind == "watch":
+                cursor.execute(
+                    "INSERT INTO watch_state(routine_id) VALUES (?)",
+                    (row["routine_id"],),
+                )
+            return Routine(**dict(row))
+
+    def confirm(
+        self,
+        scope,
+        routine_id,
+        *,
+        expected_version,
+        access: ProjectAccess | None = None,
+        now=None,
+    ):
+        owner = self._owner(scope)
+        now = int(time.time()) if now is None else now
+        with self._transaction() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?,0))",
+                ("routine-scope:" + scope.key,),
+            )
+            row = cursor.execute(
+                """SELECT * FROM agent_routines WHERE scope_key=? AND bot_id=? AND creator_id=?
+                AND routine_id=? FOR UPDATE""",
+                (*owner, routine_id),
+            ).fetchone()
+            if row is None:
+                raise PermissionError("Routine not owned in this conversation")
+            if (
+                row["version"] != expected_version
+                or row["state"] != "pending_confirmation"
+            ):
+                raise ValueError("Draft changed or was already confirmed")
+            if row["project_id"] is not None:
+                if (
+                    access is None
+                    or access.scope.key != scope.key
+                    or access.principal_id != row["creator_principal_id"]
+                ):
+                    raise PermissionError(
+                        "Project access must match the routine creator"
+                    )
+                ProjectStore._get(cursor, access, row["project_id"], edit=True)
+            result = cursor.execute(
+                """UPDATE agent_routines SET state='active',enabled=TRUE,version=version+1,
+                next_due_at=?,updated_at=? WHERE routine_id=? RETURNING *""",
+                (cron_time(row["cron"], row["timezone"], now), now, routine_id),
+            ).fetchone()
+            return Routine(**dict(result))
 
     def list_owned(
         self, scope: ConversationScope, *, include_disabled: bool = True
@@ -347,10 +520,12 @@ class RoutineStore:
                 raise ValueError(
                     "Routine version changed; list it again before cancelling"
                 )
-            if not row["enabled"]:
+            if not row["enabled"] and row["state"] != "pending_confirmation":
                 return False
             cursor.execute(
-                "UPDATE agent_routines SET enabled=FALSE, version=version+1, updated_at=? WHERE routine_id=?",
+                """UPDATE agent_routines SET enabled=FALSE,
+                state=CASE WHEN state='pending_confirmation' THEN 'deleted' ELSE 'paused' END,
+                version=version+1, updated_at=? WHERE routine_id=?""",
                 (timestamp, routine_id),
             )
             self._cancel_runs(cursor, routine_id, timestamp)
@@ -389,7 +564,7 @@ class RoutineStore:
         result = []
         with self._transaction() as cursor:
             rows = cursor.execute(
-                """SELECT * FROM agent_routines WHERE enabled AND next_due_at<=?
+                """SELECT * FROM agent_routines WHERE enabled AND state='active' AND routine_kind='schedule' AND next_due_at<=?
                 ORDER BY next_due_at, routine_id LIMIT ? FOR UPDATE SKIP LOCKED""",
                 (timestamp, min(max(limit, 1), 100)),
             ).fetchall()

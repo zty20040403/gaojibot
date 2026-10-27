@@ -1437,7 +1437,7 @@ Its original file remains unmodified and unstaged. The following checklist is
 implementation evidence, not a claim that the production App has these features.
 
 - [x] M0: technical validation and ADR 006 (local experiments complete).
-- [ ] M1: scoped stores, migration and content-addressed versions.
+- [x] M1: scoped stores, migration and content-addressed versions (local acceptance complete).
 - [ ] M2: project quota helper, lifecycle, snapshots and metrics.
 - [ ] M3: project tools/commands, Sub-Agent integration and admin page.
 - [ ] M4: confirmed routines and bounded, private-network-safe watch sources.
@@ -1544,3 +1544,46 @@ implementation evidence, not a claim that the production App has these features.
   implemented yet; nothing pushed or deployed. Next is M1's data layer, extending
   the existing RoutineStore rather than creating a competing scheduler. Its new
   migration must follow current head 0042, not the plan's historical 0030 note.
+
+### M1 data-layer implementation and review
+
+- Added migration `0043_project_workspace`: scoped projects/limits/grants, current
+  focus, content versions/references/events, preview metadata, task baselines,
+  pending schedule/watch definitions and independent workbench credentials.
+  Existing RoutineStore/queue/Outbox continue to own scheduling; no second engine.
+- ProjectStore validates platform/principal identity and scope, enforces editor
+  grants and optimistic revisions, serializes per-scope quota/count admission,
+  keeps restore history and charges deduplicated objects once per project.
+- Private CAS objects use bounded streaming, SHA-256, atomic hard-link publication,
+  file/directory fsync and integrity checks. Collection shares the publication
+  lock, preserves references and gives unreferenced/orphan/staging data a 24-hour
+  grace period. No user workspace can write into this object root.
+- Workbench credentials are separate from administrator sessions: hashed one-use
+  ten-minute codes, scoped seven-day sessions and hashed CSRF secrets. Principal
+  revocation is serialized with redemption. Live membership and HTTP security
+  remain explicit M5 entry-point obligations, not claimed as implemented routes.
+- Focused project/routine regression: 54 tests, OK, 9.740 seconds
+  (.cache/roadmap/m1-reviewed-focused.log). Includes real isolated PostgreSQL
+  concurrency, cancelled drafts, quota races, upgrade/backfill, reversible empty
+  downgrade and refusal to downgrade retained data.
+- Review caught a remaining legacy-setter permission bypass for confirmed
+  project/structured routines. It now rejects those definitions; a regression
+  assertion covers it. An in-progress full run was stopped deliberately and is
+  not counted as passing (.cache/roadmap/m1-final-full.log). Its one leftover
+  schema, owned by the stopped test PID, was removed from the disposable DB.
+- Final full isolated PostgreSQL regression, including that fix: 2195 tests,
+  OK (12 skipped), 380.655 seconds, ResourceWarning promoted to errors
+  (.cache/roadmap/m1-accepted-full.log). Both disposable base schemas are at
+  0043. Provider/QQ boundaries remain simulated, not real-account acceptance.
+- After range-formatting only the edited routine methods, the focused suite
+  again passed 54 tests in 9.420 seconds (.cache/roadmap/m1-final-focused.log).
+- CI-path Ruff and compileall pass. M1 changes no frontend, product helper or Nix
+  module, so there is no additional UI/Nix build gate for this milestone.
+- `docs/project-workspace-data.md` records the data contract and remaining M2-M6
+  integration responsibilities. The approved plan is unchanged and unstaged.
+  No push, SSH, production migration, model request, QQ call or deployment.
+- M1 is complete locally. Next is M2: helper-owned quota volumes and durable
+  project lifecycle. The current runner admits only task/shell purposes; adding
+  project volumes must preserve its fixed-operation RPC boundary and the
+  Desktop runner's unprivileged isolation, rather than exposing arbitrary mounts.
+  M2-M7 remain incomplete; no project feature is enabled in production.
