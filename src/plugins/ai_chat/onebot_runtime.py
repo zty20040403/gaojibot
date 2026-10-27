@@ -71,6 +71,7 @@ def assemble_handlers(context: AppContext) -> HandlerServices:
         recent_images=context.recent_images,
         recent_voices=context.recent_voices,
         recent_videos=context.recent_videos,
+        db_call=context.db_call,
     )
     from .qq_action_authorization import register_qq_executors
 
@@ -175,8 +176,8 @@ class OneBotRuntime:
             raise IgnoredException(
                 "Mobile authorization handled outside conversation history"
             )
-        if isinstance(event, GroupMessageEvent) and not self.handlers.group_enabled(
-            event.group_id
+        if isinstance(event, GroupMessageEvent) and not await self.context.db_call(
+            self.handlers.group_enabled, event.group_id
         ):
             raise IgnoredException("QQ group is disabled for this bot")
 

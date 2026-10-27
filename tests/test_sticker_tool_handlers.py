@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
+from src.bot_storage import DatabaseCalls
 
 nonebot.init()
 
@@ -46,6 +47,8 @@ class StickerToolHandlerTests(unittest.IsolatedAsyncioTestCase):
             mark_sent=Mock(),
         )
         self.app = SimpleNamespace(media_library=self.library, logger=Mock())
+        self.app.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.app.db_call.close)
         self.turn = TurnState(
             ToolContext(
                 SimpleNamespace(context=self.app),

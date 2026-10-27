@@ -67,7 +67,11 @@ async def resolve_video_reference(
     if requested_handle:
         canonical_id = services.commands._canonical_message_id(requested_handle)
         target = (
-            services.context.message_ledger.get_in_scope(scope, canonical_id)
+            (
+                await services.context.db_call(
+                    services.context.message_ledger.get_in_scope, scope, canonical_id
+                )
+            )
             if services.context.message_ledger is not None and canonical_id is not None
             else None
         )
@@ -159,7 +163,13 @@ async def view_image(turn: TurnState, arguments: dict[str, object]) -> str:
                 requested_handle
             )
             target = (
-                turn.context.app.message_ledger.get_in_scope(scope, canonical_id)
+                (
+                    await turn.context.app.db_call(
+                        turn.context.app.message_ledger.get_in_scope,
+                        scope,
+                        canonical_id,
+                    )
+                )
                 if turn.context.app.message_ledger is not None
                 and canonical_id is not None
                 else None

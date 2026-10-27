@@ -87,9 +87,9 @@ class TriggerService(HandlerService):
         )
         user_text = (
             "最近群聊：\n"
-            f"{self.services.chat._current_group_context(event, policy=proactive_context_policy())}\n\n"
+            f"{(await self.context.db_call(self.services.chat._current_group_context, event, policy=proactive_context_policy()))}\n\n"
             "当前待判断消息：\n"
-            f"{self.services.chat._current_user_identity(event)}: {latest_text}"
+            f"{(await self.context.db_call(self.services.chat._current_user_identity, event))}: {latest_text}"
         )
 
         try:
@@ -108,13 +108,18 @@ class TriggerService(HandlerService):
                 profile=selected_profile,
                 trace=trace,
             )
-            self._record_background_usage(
-                self.services.chat._conversation_scope(event).key,
-                "proactive-interest",
-                trace,
+            (
+                await self.context.db_call(
+                    self._record_background_usage,
+                    self.services.chat._conversation_scope(event).key,
+                    "proactive-interest",
+                    trace,
+                )
             )
         except DeepSeekConfigError:
-            self.context.logger.warning("Proactive chat skipped: model profile is not configured.")
+            self.context.logger.warning(
+                "Proactive chat skipped: model profile is not configured."
+            )
             return ProactiveDecision(0, "", False)
         except RuntimeError as exc:
             self.context.logger.warning(f"Proactive model request failed: {exc}")
@@ -193,13 +198,20 @@ class TriggerService(HandlerService):
     async def _semantic_index_once(self) -> int:
         if self.context.semantic_recall is None or self.context.semantic_index_state is None:
             return 0
-        changed = self.context.semantic_index_state.changed(self._semantic_documents())
+        changed = await self.context.db_call(
+            self.context.semantic_index_state.changed,
+            (
+                await self.context.db_call(
+                    self._semantic_documents,
+                )
+            ),
+        )
         indexed = 0
         batch_size = self.context.settings.semantic_batch_size
         for start in range(0, len(changed), batch_size):
             batch = changed[start : start + batch_size]
             count = await self.context.semantic_recall.index(batch)
-            self.context.semantic_index_state.mark(batch)
+            (await self.context.db_call(self.context.semantic_index_state.mark, batch))
             indexed += count
         return indexed
 
@@ -281,7 +293,14 @@ class TriggerService(HandlerService):
                 result = parse_historian_payload(payload)
             return result
         finally:
-            self._record_background_usage(candidate.scope_key, "historian", trace)
+            (
+                await self.context.db_call(
+                    self._record_background_usage,
+                    candidate.scope_key,
+                    "historian",
+                    trace,
+                )
+            )
 
     def _dream_evidence(self, entry: MemoryEntry) -> str:
         if self.context.message_ledger is None or entry.source_message_id is None:
@@ -356,7 +375,11 @@ class TriggerService(HandlerService):
             )
             return parse_dream_payload(payload)
         finally:
-            self._record_background_usage(scope_key, "memory-dream", trace)
+            (
+                await self.context.db_call(
+                    self._record_background_usage, scope_key, "memory-dream", trace
+                )
+            )
 
     async def _historian_loop(self) -> None:
         while True:
@@ -382,11 +405,21 @@ class TriggerService(HandlerService):
                 self.context.dream_service is not None
                 and self.context.maintenance_state is not None
                 and now.hour >= self.context.settings.dream_hour
-                and not self.context.maintenance_state.completed("memory-dream", day)
+                and not (
+                    await self.context.db_call(
+                        self.context.maintenance_state.completed, "memory-dream", day
+                    )
+                )
             ):
                 result = await self.context.dream_service.run_once()
                 if result["failed_scopes"] == 0:
-                    self.context.maintenance_state.mark_completed("memory-dream", day)
+                    (
+                        await self.context.db_call(
+                            self.context.maintenance_state.mark_completed,
+                            "memory-dream",
+                            day,
+                        )
+                    )
                 if result["changed"]:
                     self.context.logger.info(
                         f"Dream consolidation applied {result['changed']} mutation(s)."
@@ -406,7 +439,9 @@ class TriggerService(HandlerService):
             return
         if event.user_id == event.self_id:
             return
-        if not self.services.group_enabled(event.group_id):
+        if not (
+            await self.context.db_call(self.services.group_enabled, event.group_id)
+        ):
             return
 
         latest_text = self.services.chat._render_message_text(event.original_message)
@@ -453,4 +488,11 @@ class TriggerService(HandlerService):
             finish=False,
         )
         if sent and self.context.message_ledger is None:
-            self.context.group_context.append(event.group_id, "机器人", decision.reply)
+            (
+                await self.context.db_call(
+                    self.context.group_context.append,
+                    event.group_id,
+                    "机器人",
+                    decision.reply,
+                )
+            )

@@ -379,35 +379,51 @@ class OneBotChatService(HandlerService):
         }
         metadata = {key: value for key, value in metadata.items() if value not in {"", 0}}
         if event.kind == "model_note":
-            self.context.turn_journal.record_model_note(turn_id, event.sequence, event.note)
+            (
+                await self.context.db_call(
+                    self.context.turn_journal.record_model_note,
+                    turn_id,
+                    event.sequence,
+                    event.note,
+                )
+            )
         elif event.kind == "tool_started":
-            self.context.turn_journal.record_tool_started(
-                turn_id,
-                event.sequence,
-                event.tool_name,
-                event.arguments,
-                labels,
-                metadata,
+            (
+                await self.context.db_call(
+                    self.context.turn_journal.record_tool_started,
+                    turn_id,
+                    event.sequence,
+                    event.tool_name,
+                    event.arguments,
+                    labels,
+                    metadata,
+                )
             )
         elif event.kind == "tool_rejected":
-            self.context.turn_journal.record_tool_rejected(
-                turn_id,
-                event.sequence,
-                event.tool_name,
-                event.arguments,
-                event.result,
-                labels,
-                metadata,
+            (
+                await self.context.db_call(
+                    self.context.turn_journal.record_tool_rejected,
+                    turn_id,
+                    event.sequence,
+                    event.tool_name,
+                    event.arguments,
+                    event.result,
+                    labels,
+                    metadata,
+                )
             )
         elif event.kind in {"tool_finished", "tool_compensated"}:
-            self.context.turn_journal.record_tool_finished(
-                turn_id,
-                event.sequence,
-                event.tool_name,
-                event.state,  # type: ignore[arg-type]
-                event.result,
-                labels,
-                metadata,
+            (
+                await self.context.db_call(
+                    self.context.turn_journal.record_tool_finished,
+                    turn_id,
+                    event.sequence,
+                    event.tool_name,
+                    event.state,  # type: ignore[arg-type]
+                    event.result,
+                    labels,
+                    metadata,
+                )
             )
 
     def _conversation_id(self, event: MessageEvent) -> str:
@@ -535,7 +551,9 @@ class OneBotChatService(HandlerService):
                 is_silence_reply=lambda reply: (
                     isinstance(reply, str) and plan_reply(reply).silence
                 ),
-                journal_reply_text=lambda reply: self.services.replies._journal_reply_text(reply),
+                journal_reply_text=lambda reply: (
+                    self.services.replies._journal_reply_text(reply)
+                ),
             ),
             running_tasks=self.context.running_tasks,
             model_preferences=self.context.model_preferences,
@@ -546,6 +564,7 @@ class OneBotChatService(HandlerService):
             logger=self.context.logger,
             prompt_version=TURN_PROMPT_VERSION,
             simple_chat_profile=self.context.settings.model_simple_chat_profile,
+            db_call=self.context.db_call,
         )
 
     async def _run_tracked_ai(self,

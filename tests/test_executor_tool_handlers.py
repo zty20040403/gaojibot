@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
+from src.bot_storage import DatabaseCalls
 
 nonebot.init()
 
@@ -49,6 +50,8 @@ class ExecutorToolHandlerTests(unittest.IsolatedAsyncioTestCase):
             source_store=Mock(),
         )
         self.app = SimpleNamespace(settings=SimpleNamespace(sandbox_backend="oci"))
+        self.app.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.app.db_call.close)
         self.turn = TurnState(
             ToolContext(
                 SimpleNamespace(context=self.app),

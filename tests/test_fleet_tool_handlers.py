@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
+from src.bot_storage import DatabaseCalls
 
 nonebot.init()
 
@@ -51,6 +52,8 @@ class FleetToolHandlerTests(unittest.IsolatedAsyncioTestCase):
             semantic_index_state=Mock(),
             logger=Mock(),
         )
+        self.app.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.app.db_call.close)
         self.event = SimpleNamespace(user_id=7, group_id=100)
         self.scope = "onebot-v11:group:100"
         services = SimpleNamespace(

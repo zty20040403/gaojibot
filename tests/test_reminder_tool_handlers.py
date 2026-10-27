@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import nonebot
+from src.bot_storage import DatabaseCalls
 
 nonebot.init()
 
@@ -43,6 +44,8 @@ class ReminderToolHandlerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.store = Mock()
         self.app = SimpleNamespace(reminder_store=self.store, message_ledger=Mock())
+        self.app.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.app.db_call.close)
         self.app.message_ledger.principal_id_for_native.return_value = 17
         services = SimpleNamespace(context=self.app)
         services.commands = CommandHandlers(services)

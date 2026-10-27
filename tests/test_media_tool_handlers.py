@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
+from src.bot_storage import DatabaseCalls
 
 nonebot.init()
 
@@ -79,6 +80,8 @@ class MediaToolHandlerTests(unittest.IsolatedAsyncioTestCase):
             recent_images=RecentImageStore(300),
             recent_videos=RecentVideoStore(300),
         )
+        self.app.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.app.db_call.close)
         self.bot = AsyncMock()
         self.services = SimpleNamespace(
             context=self.app,

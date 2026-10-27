@@ -91,7 +91,9 @@ class ToolRegistry:
         handler = self._handlers.get(name)
         if handler is None:
             return None
-        if not tool_enabled(name) or not handler.enabled(turn.context):
+        if not tool_enabled(name) or not await turn.context.app.db_call(
+            handler.enabled, turn.context
+        ):
             return json.dumps(
                 {
                     "ok": False,

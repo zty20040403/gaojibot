@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 import os
@@ -18,11 +19,13 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Status, StatusCode
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
+from src.bot_storage import DatabaseCalls
 
 
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 TURN_BUCKETS = (0.25, 0.5, 1, 2, 4, 8, 15, 30, 60, 120, 300, 900, 1800)
 STAGE_BUCKETS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60, 120, 300)
+LOOP_LAG_BUCKETS = (0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30)
 _logger = logging.getLogger("ai_chat.observability")
 
 
@@ -113,6 +116,17 @@ class BotTelemetry:
             "Currently active in-process AI tasks.",
             registry=self.registry,
         )
+        self.event_loop_lag = Gauge(
+            "gaoji_event_loop_lag_seconds",
+            "Latest event loop scheduling delay; sampled once per second.",
+            registry=self.registry,
+        )
+        self.event_loop_lag_distribution = Histogram(
+            "gaoji_event_loop_lag_observed_seconds",
+            "Event loop scheduling delays, for rate-based percentile queries.",
+            buckets=LOOP_LAG_BUCKETS,
+            registry=self.registry,
+        )
         self.outbox = Gauge(
             "gaoji_outbox_deliveries",
             "Current durable outbox deliveries by status.",
@@ -121,6 +135,17 @@ class BotTelemetry:
         )
         self._configured = False
         self._tracer = trace.get_tracer("gaoji")
+
+    async def monitor_event_loop(self, interval_seconds: float = 1.0) -> None:
+        if interval_seconds <= 0:
+            raise ValueError("event loop sampling interval must be positive")
+        loop = asyncio.get_running_loop()
+        while True:
+            expected = loop.time() + interval_seconds
+            await asyncio.sleep(interval_seconds)
+            lag = max(loop.time() - expected, 0.0)
+            self.event_loop_lag.set(lag)
+            self.event_loop_lag_distribution.observe(lag)
 
     def configure(
         self,
@@ -406,13 +431,16 @@ class BotTelemetry:
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cached_tokens": cached_tokens,
-                "cache_hit_ratio": cached_tokens / input_tokens if input_tokens else 0.0,
+                "cache_hit_ratio": cached_tokens / input_tokens
+                if input_tokens
+                else 0.0,
                 "tool_calls": tool_calls,
                 "tool_failures": tool_failures,
                 "deliveries": delivery_attempts,
                 "delivery_failures": delivery_failures,
-                "running_tasks": int(
-                    _sample_value(samples, "gaoji_runtime_tasks")
+                "running_tasks": int(_sample_value(samples, "gaoji_runtime_tasks")),
+                "event_loop_lag_seconds": _sample_value(
+                    samples, "gaoji_event_loop_lag_seconds"
                 ),
                 "outbox_pending": int(outbox.get("pending", 0)),
                 "outbox_ambiguous": int(outbox.get("ambiguous", 0)),
@@ -445,7 +473,9 @@ def register_metrics_endpoint(
     otlp_endpoint: str = "",
     running_tasks: Any = None,
     delivery_store: Any = None,
+    db_call: DatabaseCalls | None = None,
 ) -> None:
+    calls = db_call if db_call is not None else DatabaseCalls()
     normalized_path = "/" + path.strip("/")
     telemetry.configure(
         service_name,
@@ -455,7 +485,9 @@ def register_metrics_endpoint(
 
     @app.get(normalized_path, include_in_schema=False)
     async def prometheus_metrics() -> Response:
-        telemetry.update_runtime_gauges(running_tasks, delivery_store)
+        telemetry.update_runtime_gauges(running_tasks, None)
+        if delivery_store is not None:
+            await calls(telemetry.update_runtime_gauges, None, delivery_store)
         return Response(
             content=telemetry.render(),
             media_type=PROMETHEUS_CONTENT_TYPE,

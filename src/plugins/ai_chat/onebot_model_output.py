@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from src.bot_storage import DatabaseCalls
 from nonebot.adapters.onebot.v11 import (
     Bot,
     GroupMessageEvent,
@@ -68,10 +69,12 @@ class OneBotModelOutputResolver:
         ledger: MessageLedger | None,
         *,
         scope: ConversationScope | None = None,
+        db_call: DatabaseCalls | None = None,
     ) -> None:
         self.bot = bot
         self.event = event
         self.ledger = ledger
+        self.db_call = db_call if db_call is not None else DatabaseCalls()
         self.scope = scope or (
             scope_from_event(event) if isinstance(event, MessageEvent) else None
         )
@@ -86,7 +89,9 @@ class OneBotModelOutputResolver:
         if may_contain_model_mention(text):
             if self.ledger is not None and self.scope is not None:
                 try:
-                    roster = self.ledger.principal_roster(self.scope, 100)
+                    roster = await self.db_call(
+                        self.ledger.principal_roster, self.scope, 100
+                    )
                 except (OSError, RuntimeError, TypeError, ValueError):
                     roster = ()
             if self._is_group():
@@ -109,7 +114,8 @@ class OneBotModelOutputResolver:
             ).strip()
             if self.ledger is not None and bot_native_user_id:
                 try:
-                    self_principal_id = self.ledger.principal_id_for_native(
+                    self_principal_id = await self.db_call(
+                        self.ledger.principal_id_for_native,
                         "onebot-v11",
                         bot_native_user_id,
                     )
@@ -129,7 +135,7 @@ class OneBotModelOutputResolver:
             elif isinstance(node, ModelFace):
                 self._append_face(message, node)
             elif isinstance(node, ModelMediaReference):
-                self._append_media(message, node)
+                await self.db_call(self._append_media, message, node)
         return message
 
     async def _load_members(self) -> None:
@@ -163,14 +169,10 @@ class OneBotModelOutputResolver:
         }
         if self.ledger is not None:
             try:
-                self._member_principals = (
-                    self.ledger.ensure_principal_identities(
-                        "onebot-v11",
-                        [
-                            (member.native_user_id, member.display)
-                            for member in members
-                        ],
-                    )
+                self._member_principals = await self.db_call(
+                    self.ledger.ensure_principal_identities,
+                    "onebot-v11",
+                    [(member.native_user_id, member.display) for member in members],
                 )
             except (OSError, RuntimeError, TypeError, ValueError):
                 self._member_principals = {}

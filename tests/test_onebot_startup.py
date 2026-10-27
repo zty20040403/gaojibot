@@ -27,6 +27,7 @@ from nonebot.exception import IgnoredException
 nonebot.init()
 
 from src.plugins.ai_chat import agent_loop, matcher_handlers
+from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.onebot_runtime import OneBotRuntime
 from src.plugins.ai_chat.onebot_workers import start_background_tasks
@@ -52,6 +53,7 @@ class OneBotStartupTests(unittest.IsolatedAsyncioTestCase):
             alert_store=None,
             alert_preferences=Mock(),
             shutdown=AsyncMock(),
+            db_call=DatabaseCalls(),
         )
         self.handlers = SimpleNamespace(
             group_enabled=Mock(return_value=True),
@@ -296,6 +298,7 @@ class OneBotWorkerStartupTests(unittest.IsolatedAsyncioTestCase):
             logger=Mock(),
             settings=replace(
                 settings,
+                observability_enabled=True,
                 alertmanager_url="https://alerts.test",
                 alert_notify_group_id=1,
             ),
@@ -322,6 +325,7 @@ class OneBotWorkerStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             set(workers),
             {
+                "event-loop-lag",
                 "mobile-authorization",
                 "subagent-workflows",
                 "local-model-health",

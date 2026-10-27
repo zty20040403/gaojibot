@@ -60,7 +60,9 @@ async def change_pin(
         )
     scope = scope_from_event(turn.context.event)
     if name == UNPIN_MESSAGE_TOOL_NAME:
-        removed = turn.context.app.pin_store.unpin(scope, message_id)
+        removed = await turn.context.app.db_call(
+            turn.context.app.pin_store.unpin, scope, message_id
+        )
         return json.dumps(
             {
                 "ok": removed,
@@ -70,12 +72,14 @@ async def change_pin(
             },
             ensure_ascii=False,
         )
-    principal_id = turn.context.app.message_ledger.principal_id_for_native(
+    principal_id = await turn.context.app.db_call(
+        turn.context.app.message_ledger.principal_id_for_native,
         scope.platform,
         turn.context.event.user_id,
     )
     try:
-        pinned, created = turn.context.app.pin_store.pin(
+        pinned, created = await turn.context.app.db_call(
+            turn.context.app.pin_store.pin,
             turn.context.app.message_ledger,
             scope,
             message_id,
@@ -122,9 +126,12 @@ async def group_members(turn: TurnState, arguments: dict[str, object]) -> str:
         )
     decoded_members = decode_group_members(raw_members)
     principal_ids = (
-        turn.context.app.message_ledger.ensure_principal_identities(
-            "onebot-v11",
-            [(member.native_user_id, member.display) for member in decoded_members],
+        (
+            await turn.context.app.db_call(
+                turn.context.app.message_ledger.ensure_principal_identities,
+                "onebot-v11",
+                [(member.native_user_id, member.display) for member in decoded_members],
+            )
         )
         if turn.context.app.message_ledger is not None
         else {}
@@ -165,7 +172,8 @@ async def expand(turn: TurnState, arguments: dict[str, object]) -> str:
                 ensure_ascii=False,
             )
         handle = target.removeprefix("episode#").strip()
-        expanded_episode = turn.context.app.context_store.expand(
+        expanded_episode = await turn.context.app.db_call(
+            turn.context.app.context_store.expand,
             turn.context.app.message_ledger,
             scope_from_event(turn.context.event),
             handle,
@@ -200,7 +208,8 @@ async def expand(turn: TurnState, arguments: dict[str, object]) -> str:
         )
     except (TypeError, ValueError):
         requested_turn = 0
-    expanded = turn.context.app.turn_journal.render_turn(
+    expanded = await turn.context.app.db_call(
+        turn.context.app.turn_journal.render_turn,
         scope_from_event(turn.context.event),
         requested_turn,
         max_chars=turn.context.app.settings.turn_expand_max_chars,
@@ -236,18 +245,27 @@ async def search(turn: TurnState, arguments: dict[str, object]) -> str:
             ensure_ascii=False,
         )
     scope = scope_from_event(turn.context.event)
-    messages = turn.context.app.message_ledger.search_in_scope(scope, query, limit)
+    messages = await turn.context.app.db_call(
+        turn.context.app.message_ledger.search_in_scope, scope, query, limit
+    )
     episodes = (
-        turn.context.app.context_store.search(scope, query, limit=limit)
+        (
+            await turn.context.app.db_call(
+                turn.context.app.context_store.search, scope, query, limit=limit
+            )
+        )
         if turn.context.app.context_store is not None
         else []
     )
     pinned_matches = (
-        turn.context.app.pin_store.search(
-            turn.context.app.message_ledger,
-            scope,
-            query,
-            limit=limit,
+        (
+            await turn.context.app.db_call(
+                turn.context.app.pin_store.search,
+                turn.context.app.message_ledger,
+                scope,
+                query,
+                limit=limit,
+            )
         )
         if turn.context.app.pin_store is not None
         else []
@@ -255,8 +273,11 @@ async def search(turn: TurnState, arguments: dict[str, object]) -> str:
     folded_query = query.casefold()
     memory_matches = [
         entry
-        for entry in turn.context.app.long_term_memory.list_entries(
-            turn.context.services.commands._memory_scope_keys(turn.context.event)
+        for entry in (
+            await turn.context.app.db_call(
+                turn.context.app.long_term_memory.list_entries,
+                turn.context.services.commands._memory_scope_keys(turn.context.event),
+            )
         )
         if folded_query in entry.content.casefold()
     ][:limit]

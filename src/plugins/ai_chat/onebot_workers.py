@@ -8,6 +8,7 @@ from src.bot_storage import DatabaseError
 
 from .alert_notifier import AlertNotificationService
 from .handler_services import HandlerServices
+from .observability import telemetry
 from .runtime import AppContext
 
 
@@ -25,6 +26,8 @@ async def start_background_tasks(
             context.logger.warning(
                 f"Recovered {context.turn_journal.recovered_crashed_turns} interrupted turns and {context.turn_journal.recovered_unknown_effects} unknown effects at service startup."
             )
+    if context.settings.observability_enabled:
+        context.background_tasks.start("event-loop-lag", telemetry.monitor_event_loop)
     if context.mobile_authorization is not None:
         context.background_tasks.start(
             "mobile-authorization", context.mobile_authorization.run_forever

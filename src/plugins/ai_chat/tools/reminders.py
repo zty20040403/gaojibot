@@ -36,7 +36,11 @@ async def execute(turn: TurnState, arguments: dict[str, object], *, name: str) -
                 "ok": True,
                 "reminders": [
                     turn.context.services.commands._reminder_payload(item)
-                    for item in turn.context.app.reminder_store.list_pending(scope)
+                    for item in (
+                        await turn.context.app.db_call(
+                            turn.context.app.reminder_store.list_pending, scope
+                        )
+                    )
                 ],
             },
             ensure_ascii=False,
@@ -50,7 +54,9 @@ async def execute(turn: TurnState, arguments: dict[str, object], *, name: str) -
                 {"ok": False, "error": "reminder_handle 格式无效。"},
                 ensure_ascii=False,
             )
-        removed = turn.context.app.reminder_store.cancel(scope, reminder_id)
+        removed = await turn.context.app.db_call(
+            turn.context.app.reminder_store.cancel, scope, reminder_id
+        )
         return json.dumps(
             {
                 "ok": removed,
@@ -64,13 +70,17 @@ async def execute(turn: TurnState, arguments: dict[str, object], *, name: str) -
         due_at = turn.context.services.commands._parse_reminder_due_at(
             arguments.get("due_at")
         )
-        reminder = turn.context.app.reminder_store.create(
+        reminder = await turn.context.app.db_call(
+            turn.context.app.reminder_store.create,
             scope,
             creator_native_user_id=turn.context.event.user_id,
             creator_principal_id=(
-                turn.context.app.message_ledger.principal_id_for_native(
-                    scope.platform,
-                    turn.context.event.user_id,
+                (
+                    await turn.context.app.db_call(
+                        turn.context.app.message_ledger.principal_id_for_native,
+                        scope.platform,
+                        turn.context.event.user_id,
+                    )
                 )
                 if turn.context.app.message_ledger is not None
                 else None

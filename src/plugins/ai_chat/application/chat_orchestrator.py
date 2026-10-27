@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from src.bot_storage import DatabaseCalls
 from ..agent import AgentTrace
 
 
@@ -66,6 +67,7 @@ class ChatOrchestrator:
         logger: ApplicationLogger,
         prompt_version: str,
         simple_chat_profile: str = "",
+        db_call: DatabaseCalls | None = None,
     ) -> None:
         self.ports = ports
         self.running_tasks = running_tasks
@@ -77,6 +79,7 @@ class ChatOrchestrator:
         self.logger = logger
         self.prompt_version = prompt_version
         self.simple_chat_profile = str(simple_chat_profile).strip()
+        self.db_call = db_call if db_call is not None else DatabaseCalls()
 
     async def run(
         self,
@@ -89,7 +92,7 @@ class ChatOrchestrator:
         scope = self.ports.conversation_scope(event)
         stream_context = kwargs.pop("_stream_context", None)
         if self.usage_store is not None:
-            quota = self.usage_store.status(scope.key)
+            quota = await self.db_call(self.usage_store.status, scope.key)
             if not quota.allowed:
                 return ChatTurnResult(
                     reply=(
@@ -113,102 +116,131 @@ class ChatOrchestrator:
         )
         journal_turn_id: int | None = None
         trace: AgentTrace | None = None
-        caller_selected_profile = "selected_profile_override" in kwargs
-        explicit_profile = self.model_preferences.get_explicit(conversation_id)
-        group_default_profile = self.ports.group_default_profile(conversation_id)
-        selected_profile = self.model_catalog.resolve_preference(
-            explicit_profile or group_default_profile
-        )
-        simple_chat_routing_allowed = (
-            not caller_selected_profile
-            and explicit_profile is None
-            and group_default_profile is None
-        )
-        if explicit_profile is None and group_default_profile is None:
-            previous_turn = self.ports.reply_target_turn(event)
-            if previous_turn is not None:
-                inherited_profile = self.model_catalog.find_runtime(
-                    profile=previous_turn.profile,
-                    provider=previous_turn.provider,
-                    model=previous_turn.model,
-                )
-                if inherited_profile is not None:
-                    selected_profile = inherited_profile
-                    simple_chat_routing_allowed = False
-        kwargs.setdefault("selected_profile_override", selected_profile)
-        kwargs.setdefault(
-            "simple_chat_profile",
-            self.simple_chat_profile if simple_chat_routing_allowed else "",
-        )
-
-        if self.usage_store is not None:
-            trace = AgentTrace(
-                provider=selected_profile.provider_identity,
-                model=selected_profile.model,
-                profile=selected_profile.name,
+        try:
+            caller_selected_profile = "selected_profile_override" in kwargs
+            explicit_profile = await self.db_call(
+                self.model_preferences.get_explicit, conversation_id
             )
-            kwargs.setdefault("turn_trace", trace)
-
-        journal_scope_enabled = (
-            group_id is None or self.ports.group_enabled(group_id)
-        )
-        if (
-            self.turn_journal is not None
-            and self.message_ledger is not None
-            and journal_scope_enabled
-        ):
-            trigger_message_id = self.message_ledger.canonical_id_for_native(
-                scope,
-                int(event.message_id),
+            group_default_profile = await self.db_call(
+                self.ports.group_default_profile, conversation_id
             )
-            if trigger_message_id is None:
-                try:
-                    trigger_message_id = self.ports.record_trigger(event, scope)
-                except Exception as exc:
-                    self.logger.warning(f"Could not journal the turn trigger: {exc}")
-            try:
-                turn = self.turn_journal.start_turn(
-                    scope,
-                    trigger_canonical_message_id=trigger_message_id,
-                    objective=user_text,
+            selected_profile = self.model_catalog.resolve_preference(
+                explicit_profile or group_default_profile
+            )
+            simple_chat_routing_allowed = (
+                not caller_selected_profile
+                and explicit_profile is None
+                and group_default_profile is None
+            )
+            if explicit_profile is None and group_default_profile is None:
+                previous_turn = await self.db_call(self.ports.reply_target_turn, event)
+                if previous_turn is not None:
+                    inherited_profile = self.model_catalog.find_runtime(
+                        profile=previous_turn.profile,
+                        provider=previous_turn.provider,
+                        model=previous_turn.model,
+                    )
+                    if inherited_profile is not None:
+                        selected_profile = inherited_profile
+                        simple_chat_routing_allowed = False
+            kwargs.setdefault("selected_profile_override", selected_profile)
+            kwargs.setdefault(
+                "simple_chat_profile",
+                self.simple_chat_profile if simple_chat_routing_allowed else "",
+            )
+
+            if self.usage_store is not None:
+                trace = AgentTrace(
                     provider=selected_profile.provider_identity,
                     model=selected_profile.model,
                     profile=selected_profile.name,
-                    prompt_version=self.prompt_version,
                 )
-                journal_turn_id = turn.turn_id
-                if trace is None:
-                    trace = AgentTrace(
-                        provider=selected_profile.provider_identity,
-                        model=selected_profile.model,
-                        profile=selected_profile.name,
-                    )
-                kwargs.setdefault("journal_turn_id", journal_turn_id)
                 kwargs.setdefault("turn_trace", trace)
-                kwargs.setdefault(
-                    "turn_context",
-                    self.ports.current_turn_context(event, journal_turn_id),
-                )
-            except Exception as exc:
-                self.logger.warning(f"Could not start the durable AI turn: {exc}")
 
-        if isinstance(stream_context, dict):
-            stream_context["turn_id"] = journal_turn_id
-        try:
+            journal_scope_enabled = group_id is None or (
+                await self.db_call(self.ports.group_enabled, group_id)
+            )
+            if (
+                self.turn_journal is not None
+                and self.message_ledger is not None
+                and journal_scope_enabled
+            ):
+                trigger_message_id = await self.db_call(
+                    self.message_ledger.canonical_id_for_native,
+                    scope,
+                    int(event.message_id),
+                )
+                if trigger_message_id is None:
+                    try:
+                        trigger_message_id = await self.db_call(
+                            self.ports.record_trigger, event, scope
+                        )
+                    except Exception as exc:
+                        self.logger.warning(
+                            f"Could not journal the turn trigger: {exc}"
+                        )
+                try:
+
+                    def start_turn() -> None:
+                        nonlocal journal_turn_id
+                        turn = self.turn_journal.start_turn(
+                            scope,
+                            trigger_canonical_message_id=trigger_message_id,
+                            objective=user_text,
+                            provider=selected_profile.provider_identity,
+                            model=selected_profile.model,
+                            profile=selected_profile.name,
+                            prompt_version=self.prompt_version,
+                        )
+                        # db_call drains this write before propagating cancellation.
+                        journal_turn_id = turn.turn_id
+
+                    await self.db_call(start_turn)
+                    if trace is None:
+                        trace = AgentTrace(
+                            provider=selected_profile.provider_identity,
+                            model=selected_profile.model,
+                            profile=selected_profile.name,
+                        )
+                    kwargs.setdefault("journal_turn_id", journal_turn_id)
+                    kwargs.setdefault("turn_trace", trace)
+                    kwargs.setdefault(
+                        "turn_context",
+                        (
+                            await self.db_call(
+                                self.ports.current_turn_context, event, journal_turn_id
+                            )
+                        ),
+                    )
+                except Exception as exc:
+                    self.logger.warning(f"Could not start the durable AI turn: {exc}")
+
+            if isinstance(stream_context, dict):
+                stream_context["turn_id"] = journal_turn_id
             reply = await self.ports.ask_agent(bot, event, user_text, **kwargs)
             status = "silence" if self.ports.is_silence_reply(reply) else "succeeded"
-            self._finish_turn(
-                journal_turn_id,
-                status,
-                trace,
-                self.ports.journal_reply_text(reply),
-                scope_key=scope.key,
+            (
+                await self.db_call(
+                    self._finish_turn,
+                    journal_turn_id,
+                    status,
+                    trace,
+                    self.ports.journal_reply_text(reply),
+                    scope_key=scope.key,
+                )
             )
             return ChatTurnResult(reply=reply, turn_id=journal_turn_id, status=status)
         except ChatFailure as exc:
-            self._finish_turn(
-                journal_turn_id, "crashed", trace, exc.reply,
-                scope_key=scope.key, error_code=exc.code,
+            (
+                await self.db_call(
+                    self._finish_turn,
+                    journal_turn_id,
+                    "crashed",
+                    trace,
+                    exc.reply,
+                    scope_key=scope.key,
+                    error_code=exc.code,
+                )
             )
             return ChatTurnResult(
                 reply=exc.reply, turn_id=journal_turn_id,
@@ -218,19 +250,25 @@ class ChatOrchestrator:
             self.logger.info(
                 f"AI task {task.task_id} cancelled for {conversation_id}."
             )
-            self._finish_turn(
-                journal_turn_id,
-                "aborted",
-                trace,
-                scope_key=scope.key,
+            (
+                await self.db_call(
+                    self._finish_turn,
+                    journal_turn_id,
+                    "aborted",
+                    trace,
+                    scope_key=scope.key,
+                )
             )
             return None
         except Exception:
-            self._finish_turn(
-                journal_turn_id,
-                "crashed",
-                trace,
-                scope_key=scope.key,
+            (
+                await self.db_call(
+                    self._finish_turn,
+                    journal_turn_id,
+                    "crashed",
+                    trace,
+                    scope_key=scope.key,
+                )
             )
             raise
         finally:

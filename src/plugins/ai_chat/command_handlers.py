@@ -290,7 +290,9 @@ class CommandHandlers(HandlerService):
         event: MessageEvent,
         query: str,
     ) -> str:
-        if isinstance(event, GroupMessageEvent) and not self.services.group_enabled(event.group_id):
+        if isinstance(event, GroupMessageEvent) and not (
+            await self.context.db_call(self.services.group_enabled, event.group_id)
+        ):
             return "这个群暂时没有开启搜索。"
         if not self.context.settings.search_enabled:
             return "联网搜索暂时没有开启。"
@@ -516,17 +518,28 @@ class CommandHandlers(HandlerService):
         args: Message = CommandArg(),
     ) -> None:
         conversation_id = self.services.chat._conversation_id(event)
-        current_profile = self.services.chat._preferred_model_profile(conversation_id)
+        current_profile = await self.context.db_call(
+            self.services.chat._preferred_model_profile, conversation_id
+        )
         requested = args.extract_plain_text().strip()
 
         if requested.lower() in {"默认", "default", "reset", "重置"}:
-            self.context.model_preferences.clear(conversation_id)
-            default_profile = self.services.chat._preferred_model_profile(conversation_id)
-            if (
-                default_profile.provider not in {"openai", "cliproxy"}
-                and self.context.reasoning_preferences.clear(conversation_id)
+            (
+                await self.context.db_call(
+                    self.context.model_preferences.clear, conversation_id
+                )
+            )
+            default_profile = await self.context.db_call(
+                self.services.chat._preferred_model_profile, conversation_id
+            )
+            if default_profile.provider not in {"openai", "cliproxy"} and (
+                await self.context.db_call(
+                    self.context.reasoning_preferences.clear, conversation_id
+                )
             ):
-                default_profile = self.services.chat._preferred_model_profile(conversation_id)
+                default_profile = await self.context.db_call(
+                    self.services.chat._preferred_model_profile, conversation_id
+                )
             default_scope = (
                 "当前群默认模型"
                 if self.services.chat._group_default_model_preference(conversation_id) is not None
@@ -548,7 +561,9 @@ class CommandHandlers(HandlerService):
                 "enabled": "开启",
                 "disabled": "关闭",
             }
-            explicit_effort = self.context.reasoning_preferences.get_explicit(conversation_id)
+            explicit_effort = await self.context.db_call(
+                self.context.reasoning_preferences.get_explicit, conversation_id
+            )
             effort_text = current_profile.reasoning_effort or "服务端默认"
             if explicit_effort:
                 effort_text += "（当前会话覆盖）"
@@ -609,10 +624,15 @@ class CommandHandlers(HandlerService):
             )
             return
 
-        self.context.model_preferences.set(conversation_id, target_profile.name)
-        effort_cleared = (
-            target_profile.provider not in {"openai", "cliproxy"}
-            and self.context.reasoning_preferences.clear(conversation_id)
+        (
+            await self.context.db_call(
+                self.context.model_preferences.set, conversation_id, target_profile.name
+            )
+        )
+        effort_cleared = target_profile.provider not in {"openai", "cliproxy"} and (
+            await self.context.db_call(
+                self.context.reasoning_preferences.clear, conversation_id
+            )
         )
         await self.services.replies._finish_safely(
             model_command,
@@ -634,7 +654,9 @@ class CommandHandlers(HandlerService):
         args: Message = CommandArg(),
     ) -> None:
         conversation_id = self.services.chat._conversation_id(event)
-        profile = self.services.chat._preferred_model_profile(conversation_id)
+        profile = await self.context.db_call(
+            self.services.chat._preferred_model_profile, conversation_id
+        )
         requested = args.extract_plain_text().strip().lower()
         aliases = {
             "最低": "minimal",
@@ -647,7 +669,9 @@ class CommandHandlers(HandlerService):
         }
         requested = aliases.get(requested, requested)
         valid = {"minimal", "low", "medium", "high", "xhigh", "max", "none"}
-        explicit = self.context.reasoning_preferences.get_explicit(conversation_id)
+        explicit = await self.context.db_call(
+            self.context.reasoning_preferences.get_explicit, conversation_id
+        )
         group_default = self.services.chat._group_member_reasoning_preference(conversation_id)
 
         if not requested:
@@ -678,8 +702,14 @@ class CommandHandlers(HandlerService):
             return
 
         if requested in {"default", "reset", "默认", "重置"}:
-            self.context.reasoning_preferences.clear(conversation_id)
-            restored = self.services.chat._preferred_model_profile(conversation_id)
+            (
+                await self.context.db_call(
+                    self.context.reasoning_preferences.clear, conversation_id
+                )
+            )
+            restored = await self.context.db_call(
+                self.services.chat._preferred_model_profile, conversation_id
+            )
             await self.services.replies._finish_safely(
                 effort_command,
                 self.services.replies._reply_message(
@@ -712,7 +742,11 @@ class CommandHandlers(HandlerService):
             )
             return
 
-        self.context.reasoning_preferences.set(conversation_id, requested)
+        (
+            await self.context.db_call(
+                self.context.reasoning_preferences.set, conversation_id, requested
+            )
+        )
         await self.services.replies._finish_safely(
             effort_command,
             self.services.replies._reply_message(
@@ -840,7 +874,11 @@ class CommandHandlers(HandlerService):
         normalized_action = action.casefold()
 
         if normalized_action in {"审计", "audit", "history", "历史"}:
-            mutations = self.context.long_term_memory.audit(self._memory_scope_keys(event), limit=30)
+            mutations = await self.context.db_call(
+                self.context.long_term_memory.audit,
+                self._memory_scope_keys(event),
+                limit=30,
+            )
             if not mutations:
                 message = "当前可见范围内还没有长期记忆变更记录。"
             else:
@@ -869,7 +907,10 @@ class CommandHandlers(HandlerService):
             return
 
         if not requested or normalized_action in {"列表", "list", "ls", "查看"}:
-            entries = self.context.long_term_memory.list_entries(self._memory_scope_keys(event))
+            entries = await self.context.db_call(
+                self.context.long_term_memory.list_entries,
+                self._memory_scope_keys(event),
+            )
             if not entries:
                 await self.services.replies._finish_safely(
                     memory_command,
@@ -894,17 +935,22 @@ class CommandHandlers(HandlerService):
                 memory_id = int(raw_id)
             except ValueError:
                 memory_id = 0
-            entry = self._find_visible_memory(event, memory_id)
+            entry = await self.context.db_call(
+                self._find_visible_memory, event, memory_id
+            )
             if entry is None:
                 message = "没有找到这条可见记忆。发送 /记忆 查看 ID。"
             elif entry.scope_type == "group" and not self._can_edit_group_memory(event):
                 message = "只有群管理员或机器人授权用户可以删除群记忆。"
             else:
-                self.context.long_term_memory.remove(
-                    memory_id,
-                    self._memory_scope_keys(event),
-                    **self._memory_provenance(event),
-                    reason="memory command remove",
+                (
+                    await self.context.db_call(
+                        self.context.long_term_memory.remove,
+                        memory_id,
+                        self._memory_scope_keys(event),
+                        **(await self.context.db_call(self._memory_provenance, event)),
+                        reason="memory command remove",
+                    )
                 )
                 message = f"已删除 #{memory_id} [{self._memory_label(entry)}] 记忆。"
             await self.services.replies._finish_safely(
@@ -919,9 +965,10 @@ class CommandHandlers(HandlerService):
                 if not self._can_edit_group_memory(event):
                     message = "只有群管理员或机器人授权用户可以清空群记忆。"
                 else:
-                    removed = self.context.long_term_memory.clear(
+                    removed = await self.context.db_call(
+                        self.context.long_term_memory.clear,
                         self._memory_scope_keys(event, "group"),
-                        **self._memory_provenance(event),
+                        **(await self.context.db_call(self._memory_provenance, event)),
                         reason="memory command clear group",
                     )
                     message = f"已清空当前群长期记忆，共 {removed} 条。"
@@ -929,16 +976,18 @@ class CommandHandlers(HandlerService):
                 scopes = self._memory_scope_keys(event, "user")
                 if self._can_edit_group_memory(event):
                     scopes.extend(self._memory_scope_keys(event, "group"))
-                removed = self.context.long_term_memory.clear(
+                removed = await self.context.db_call(
+                    self.context.long_term_memory.clear,
                     scopes,
-                    **self._memory_provenance(event),
+                    **(await self.context.db_call(self._memory_provenance, event)),
                     reason="memory command clear all visible",
                 )
                 message = f"已清空你有权修改的长期记忆，共 {removed} 条。"
             else:
-                removed = self.context.long_term_memory.clear(
+                removed = await self.context.db_call(
+                    self.context.long_term_memory.clear,
                     self._memory_scope_keys(event, "user"),
-                    **self._memory_provenance(event),
+                    **(await self.context.db_call(self._memory_provenance, event)),
                     reason="memory command clear user",
                 )
                 message = f"已清空你的长期记忆，共 {removed} 条。"
@@ -985,16 +1034,15 @@ class CommandHandlers(HandlerService):
         if self._looks_like_secret(content):
             message = "检测到可能的密码、Token 或密钥，拒绝保存。"
         else:
-            provenance = self._memory_provenance(event)
+            provenance = await self.context.db_call(self._memory_provenance, event)
             try:
-                entry, created = self.context.long_term_memory.add(
+                entry, created = await self.context.db_call(
+                    self.context.long_term_memory.add,
                     scope_key,
                     scope_type,
                     content,
                     creator_user_id=event.user_id,
-                    creator_principal_id=int(
-                        provenance["actor_principal_id"] or 0
-                    ),
+                    creator_principal_id=int(provenance["actor_principal_id"] or 0),
                     source_message_id=provenance["source_message_id"],
                     reason="memory command add",
                 )
@@ -1039,7 +1087,9 @@ class CommandHandlers(HandlerService):
                     self.services.replies._reply_message(event, "用法：/feedback 需要补充或修改的内容"),
                 )
             replied_id = reply_message_id(event.original_message)
-            author = self.services.chat._current_user_identity(event)
+            author = await self.context.db_call(
+                self.services.chat._current_user_identity, event
+            )
             selected = self.context.running_tasks.push_feedback(
                 f"{author}: {body}",
                 conversation_id=self.services.chat._conversation_id(event),
@@ -1105,7 +1155,9 @@ class CommandHandlers(HandlerService):
             )
 
         if verb in {"pin", "unpin"}:
-            target_id = self._pin_target_message_id(event, body)
+            target_id = await self.context.db_call(
+                self._pin_target_message_id, event, body
+            )
             if self.context.pin_store is None or self.context.message_ledger is None:
                 await self.services.replies._finish_safely(
                     control_command,
@@ -1120,7 +1172,9 @@ class CommandHandlers(HandlerService):
                     ),
                 )
             if verb == "unpin":
-                changed = self.context.pin_store.unpin(scope_from_event(event), target_id)
+                changed = await self.context.db_call(
+                    self.context.pin_store.unpin, scope_from_event(event), target_id
+                )
                 fallback = (
                     f"已取消固定 msg#{target_id}。"
                     if changed
@@ -1139,12 +1193,14 @@ class CommandHandlers(HandlerService):
                 )
             scope = scope_from_event(event)
             try:
-                pinned, _created = self.context.pin_store.pin(
+                pinned, _created = await self.context.db_call(
+                    self.context.pin_store.pin,
                     self.context.message_ledger,
                     scope,
                     target_id,
                     pinned_by_principal_id=(
-                        self.context.message_ledger.principal_id_for_native(
+                        await self.context.db_call(
+                            self.context.message_ledger.principal_id_for_native,
                             scope.platform,
                             event.user_id,
                         )
@@ -1166,7 +1222,11 @@ class CommandHandlers(HandlerService):
             if self.context.pin_store is None or self.context.message_ledger is None:
                 text = "固定消息功能暂时不可用。"
             else:
-                rendered = self.context.pin_store.render(self.context.message_ledger, scope_from_event(event))
+                rendered = await self.context.db_call(
+                    self.context.pin_store.render,
+                    self.context.message_ledger,
+                    scope_from_event(event),
+                )
                 text = rendered or "当前会话还没有固定消息。"
             await self.services.replies._finish_safely(
                 control_command,
@@ -1176,7 +1236,9 @@ class CommandHandlers(HandlerService):
         if verb == "usage":
             await self.services.replies._finish_safely(
                 control_command,
-                self.services.replies._reply_message(event, self._usage_text(event)),
+                self.services.replies._reply_message(
+                    event, (await self.context.db_call(self._usage_text, event))
+                ),
             )
 
         if verb == "version":
@@ -1205,7 +1267,8 @@ class CommandHandlers(HandlerService):
         event: MessageEvent,
         args: Message = CommandArg(),
     ) -> None:
-        target_id = self._pin_target_message_id(
+        target_id = await self.context.db_call(
+            self._pin_target_message_id,
             event,
             args.extract_plain_text().strip(),
         )
@@ -1215,12 +1278,14 @@ class CommandHandlers(HandlerService):
             message = "请引用一条消息发送 /pin，或使用 /pin msg#编号。"
         else:
             scope = scope_from_event(event)
-            principal_id = self.context.message_ledger.principal_id_for_native(
+            principal_id = await self.context.db_call(
+                self.context.message_ledger.principal_id_for_native,
                 scope.platform,
                 event.user_id,
             )
             try:
-                pinned, created = self.context.pin_store.pin(
+                pinned, created = await self.context.db_call(
+                    self.context.pin_store.pin,
                     self.context.message_ledger,
                     scope,
                     target_id,
@@ -1241,7 +1306,8 @@ class CommandHandlers(HandlerService):
         event: MessageEvent,
         args: Message = CommandArg(),
     ) -> None:
-        target_id = self._pin_target_message_id(
+        target_id = await self.context.db_call(
+            self._pin_target_message_id,
             event,
             args.extract_plain_text().strip(),
         )
@@ -1249,7 +1315,9 @@ class CommandHandlers(HandlerService):
             message = "固定消息功能暂时不可用。"
         elif target_id is None:
             message = "请引用一条固定消息发送 /unpin，或使用 /unpin msg#编号。"
-        elif self.context.pin_store.unpin(scope_from_event(event), target_id):
+        elif await self.context.db_call(
+            self.context.pin_store.unpin, scope_from_event(event), target_id
+        ):
             message = f"已取消固定：msg#{target_id}。"
         else:
             message = "当前会话没有固定这条消息。"
@@ -1262,7 +1330,11 @@ class CommandHandlers(HandlerService):
         if self.context.pin_store is None or self.context.message_ledger is None:
             message = "固定消息功能暂时不可用。"
         else:
-            entries = self.context.pin_store.messages(self.context.message_ledger, scope_from_event(event))
+            entries = await self.context.db_call(
+                self.context.pin_store.messages,
+                self.context.message_ledger,
+                scope_from_event(event),
+            )
             if not entries:
                 message = "当前会话还没有固定消息。"
             else:
@@ -1303,7 +1375,9 @@ class CommandHandlers(HandlerService):
     async def handle_usage_command(self, event: MessageEvent) -> None:
         await self.services.replies._finish_safely(
             usage_command,
-            self.services.replies._reply_message(event, self._usage_text(event)),
+            self.services.replies._reply_message(
+                event, (await self.context.db_call(self._usage_text, event))
+            ),
         )
 
     @mobile_command
@@ -1380,19 +1454,34 @@ class CommandHandlers(HandlerService):
     @mobile_command
     async def handle_ai_reset(self, event: MessageEvent) -> None:
         conversation_id = self.services.chat._conversation_id(event)
-        self.context.memory.clear(conversation_id)
+        (await self.context.db_call(self.context.memory.clear, conversation_id))
         scope = scope_from_event(event)
         if self.context.turn_journal is not None:
-            self.context.turn_journal.hide_history(scope)
+            (await self.context.db_call(self.context.turn_journal.hide_history, scope))
         if self.context.message_ledger is not None:
-            self.context.message_ledger.hide_history(scope)
+            (
+                await self.context.db_call(
+                    self.context.message_ledger.hide_history, scope
+                )
+            )
             if self.context.context_store is not None:
-                self.context.context_store.hide_history(
-                    scope,
-                    self.context.message_ledger.visible_message_floor(scope),
+                (
+                    await self.context.db_call(
+                        self.context.context_store.hide_history,
+                        scope,
+                        (
+                            await self.context.db_call(
+                                self.context.message_ledger.visible_message_floor, scope
+                            )
+                        ),
+                    )
                 )
         if isinstance(event, GroupMessageEvent):
-            self.context.group_context.clear(event.group_id)
+            (
+                await self.context.db_call(
+                    self.context.group_context.clear, event.group_id
+                )
+            )
             await self.services.replies._finish_safely(
                 ai_reset,
                 self.services.replies._reply_message(event, "已清空当前会话记忆和群聊上下文。"),
@@ -1405,35 +1494,49 @@ class CommandHandlers(HandlerService):
     @mobile_command
     async def handle_clear_data(self, event: MessageEvent) -> None:
         conversation_id = self.services.chat._conversation_id(event)
-        self.context.memory.clear(conversation_id)
+        (await self.context.db_call(self.context.memory.clear, conversation_id))
         scope = scope_from_event(event)
-        memory_provenance = self._memory_provenance(event)
+        memory_provenance = await self.context.db_call(self._memory_provenance, event)
 
         cleared_items = ["当前会话记忆"]
         if self.context.turn_journal is not None:
-            turn_count = self.context.turn_journal.hide_history(scope)
+            turn_count = await self.context.db_call(
+                self.context.turn_journal.hide_history, scope
+            )
             cleared_items.append(f"工作回合 {turn_count} 条")
         if self.context.message_ledger is not None:
-            ledger_count = self.context.message_ledger.hide_history(scope)
+            ledger_count = await self.context.db_call(
+                self.context.message_ledger.hide_history, scope
+            )
             cleared_items.append(f"规范消息上下文 {ledger_count} 条")
             if self.context.context_store is not None:
-                compartment_count = self.context.context_store.hide_history(
+                compartment_count = await self.context.db_call(
+                    self.context.context_store.hide_history,
                     scope,
-                    self.context.message_ledger.visible_message_floor(scope),
+                    (
+                        await self.context.db_call(
+                            self.context.message_ledger.visible_message_floor, scope
+                        )
+                    ),
                 )
                 cleared_items.append(f"历史摘要 {compartment_count} 条")
         memory_scopes = self._memory_scope_keys(event, "user")
         if self._can_edit_group_memory(event):
             memory_scopes.extend(self._memory_scope_keys(event, "group"))
-        long_term_count = self.context.long_term_memory.clear(
+        long_term_count = await self.context.db_call(
+            self.context.long_term_memory.clear,
             memory_scopes,
             **memory_provenance,
             reason="clear command",
         )
         cleared_items.append(f"长期记忆 {long_term_count} 条")
-        if self.context.model_preferences.clear(conversation_id):
+        if await self.context.db_call(
+            self.context.model_preferences.clear, conversation_id
+        ):
             cleared_items.append("当前模型选择")
-        if self.context.reasoning_preferences.clear(conversation_id):
+        if await self.context.db_call(
+            self.context.reasoning_preferences.clear, conversation_id
+        ):
             cleared_items.append("当前推理强度")
         if self.context.browser_manager is not None:
             try:
@@ -1442,9 +1545,15 @@ class CommandHandlers(HandlerService):
             except (OSError, RuntimeError, ValueError) as exc:
                 self.context.logger.warning(f"Could not clear browser profile: {exc}")
         if isinstance(event, GroupMessageEvent):
-            self.context.group_context.clear(event.group_id)
+            (
+                await self.context.db_call(
+                    self.context.group_context.clear, event.group_id
+                )
+            )
             cleared_items.append("当前群聊上下文")
-            profile_count = self.context.user_profiles.clear_group(event.group_id)
+            profile_count = await self.context.db_call(
+                self.context.user_profiles.clear_group, event.group_id
+            )
             cleared_items.append(f"当前群成员身份 {profile_count} 个")
 
         sticker_count = clear_learned_stickers()

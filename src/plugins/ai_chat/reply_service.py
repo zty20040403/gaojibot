@@ -163,7 +163,8 @@ class ReplyService(HandlerService):
             content = resolved_content
             if not content:
                 return Message()
-        return self._planned_chunk_message(
+        return await self.context.db_call(
+            self._planned_chunk_message,
             event,
             chunk,
             first=first,
@@ -196,7 +197,9 @@ class ReplyService(HandlerService):
         added: bool,
         canonical_message_id: int | None = None,
     ) -> bool:
-        target = self._reaction_target_message_id(event, canonical_message_id)
+        target = await self.context.db_call(
+            self._reaction_target_message_id, event, canonical_message_id
+        )
         if target is None:
             return False
         try:
@@ -375,7 +378,9 @@ class ReplyService(HandlerService):
         stream_context: dict[str, int | None] = {"turn_id": None}
         final_stream_state = FinalStreamState()
         stream_message_count = 0
-        output_resolver = OneBotModelOutputResolver(bot, event, self.context.message_ledger)
+        output_resolver = OneBotModelOutputResolver(
+            bot, event, self.context.message_ledger, db_call=self.context.db_call
+        )
 
         async def send_stream_fragment(fragment: str) -> None:
             nonlocal stream_message_count
@@ -398,7 +403,8 @@ class ReplyService(HandlerService):
                 delivery: Delivery | None = None
                 if self.context.delivery_store is not None:
                     decoded = decode_onebot_message(outgoing)
-                    delivery, created = self.context.delivery_store.enqueue(
+                    delivery, created = await self.context.db_call(
+                        self.context.delivery_store.enqueue,
                         idempotency_key=(
                             f"onebot:{event.self_id}:{target_scope.key}:"
                             f"trigger:{event.message_id}:turn:{turn_id or 0}:"
@@ -406,9 +412,12 @@ class ReplyService(HandlerService):
                         ),
                         source_scope_key=source_scope.key,
                         source_canonical_message_id=(
-                            self.context.message_ledger.canonical_id_for_native(
-                                source_scope,
-                                event.message_id,
+                            (
+                                await self.context.db_call(
+                                    self.context.message_ledger.canonical_id_for_native,
+                                    source_scope,
+                                    event.message_id,
+                                )
                             )
                             if self.context.message_ledger is not None
                             else None
@@ -426,32 +435,55 @@ class ReplyService(HandlerService):
                     }:
                         stream_message_count += 1
                         continue
-                    self.context.delivery_store.begin_direct_attempt(delivery.delivery_id)
+                    (
+                        await self.context.db_call(
+                            self.context.delivery_store.begin_direct_attempt,
+                            delivery.delivery_id,
+                        )
+                    )
                 if turn_id is not None and self.context.turn_journal is not None:
-                    self.context.turn_journal.record_send_started(turn_id, 100000 + stream_index)
+                    (
+                        await self.context.db_call(
+                            self.context.turn_journal.record_send_started,
+                            turn_id,
+                            100000 + stream_index,
+                        )
+                    )
                 try:
                     with telemetry.delivery("onebot-v11"):
                         response = await bot.send(event, outgoing)
                 except ActionFailed as exc:
                     if self.context.delivery_store is not None and delivery is not None:
                         if self._is_napcat_send_timeout(exc):
-                            self.context.delivery_store.mark_ambiguous(delivery.delivery_id, str(exc))
+                            (
+                                await self.context.db_call(
+                                    self.context.delivery_store.mark_ambiguous,
+                                    delivery.delivery_id,
+                                    str(exc),
+                                )
+                            )
                         else:
-                            self.context.delivery_store.mark_failed(
-                                delivery.delivery_id,
-                                str(exc),
-                                retryable=False,
+                            (
+                                await self.context.db_call(
+                                    self.context.delivery_store.mark_failed,
+                                    delivery.delivery_id,
+                                    str(exc),
+                                    retryable=False,
+                                )
                             )
                     if turn_id is not None and self.context.turn_journal is not None:
-                        self.context.turn_journal.record_send_finished(
-                            turn_id,
-                            100000 + stream_index,
-                            (
-                                "outcome-unknown"
-                                if self._is_napcat_send_timeout(exc)
-                                else "failed"
-                            ),
-                            {"ok": False, "error": str(exc)},
+                        (
+                            await self.context.db_call(
+                                self.context.turn_journal.record_send_finished,
+                                turn_id,
+                                100000 + stream_index,
+                                (
+                                    "outcome-unknown"
+                                    if self._is_napcat_send_timeout(exc)
+                                    else "failed"
+                                ),
+                                {"ok": False, "error": str(exc)},
+                            )
                         )
                     if not self._is_napcat_send_timeout(exc):
                         raise
@@ -462,13 +494,17 @@ class ReplyService(HandlerService):
                 else:
                     native_message_id = self._sent_message_id(response)
                     if self.context.delivery_store is not None and delivery is not None:
-                        self.context.delivery_store.mark_committed(
-                            delivery.delivery_id,
-                            native_message_id=native_message_id or "",
+                        (
+                            await self.context.db_call(
+                                self.context.delivery_store.mark_committed,
+                                delivery.delivery_id,
+                                native_message_id=native_message_id or "",
+                            )
                         )
                     canonical_message_id: int | None = None
                     if native_message_id is not None and self.context.message_ledger is not None:
-                        stored = record_onebot_outgoing(
+                        stored = await self.context.db_call(
+                            record_onebot_outgoing,
                             self.context.message_ledger,
                             source_scope,
                             native_message_id=native_message_id,
@@ -477,35 +513,46 @@ class ReplyService(HandlerService):
                         )
                         canonical_message_id = stored.canonical_message_id
                         if turn_id is not None and self.context.turn_journal is not None:
-                            self.context.turn_journal.link_send(
-                                turn_id,
-                                canonical_message_id,
-                                node_id=f"stream:{stream_index}",
+                            (
+                                await self.context.db_call(
+                                    self.context.turn_journal.link_send,
+                                    turn_id,
+                                    canonical_message_id,
+                                    node_id=f"stream:{stream_index}",
+                                )
                             )
                         if self.context.bridge_manager is not None:
                             decoded = decode_onebot_message(outgoing)
-                            self.context.bridge_manager.mirror_local_outgoing(
-                                source_scope=target_scope,
-                                source_native_event_id=str(native_message_id),
-                                canonical_message_id=canonical_message_id,
-                                body=decoded.body,
-                                occurred_at=int(time.time()),
-                                reply_to_native_message_id=(
-                                    decoded.reply_to_native_message_id
-                                ),
+                            (
+                                await self.context.db_call(
+                                    self.context.bridge_manager.mirror_local_outgoing,
+                                    source_scope=target_scope,
+                                    source_native_event_id=str(native_message_id),
+                                    canonical_message_id=canonical_message_id,
+                                    body=decoded.body,
+                                    occurred_at=int(time.time()),
+                                    reply_to_native_message_id=(
+                                        decoded.reply_to_native_message_id
+                                    ),
+                                )
                             )
                     if turn_id is not None and self.context.turn_journal is not None:
-                        self.context.turn_journal.record_send_finished(
-                            turn_id,
-                            100000 + stream_index,
-                            "committed",
-                            {
-                                "ok": True,
-                                "delivery_id": (
-                                    delivery.delivery_id if delivery is not None else None
-                                ),
-                                "canonical_message_id": canonical_message_id,
-                            },
+                        (
+                            await self.context.db_call(
+                                self.context.turn_journal.record_send_finished,
+                                turn_id,
+                                100000 + stream_index,
+                                "committed",
+                                {
+                                    "ok": True,
+                                    "delivery_id": (
+                                        delivery.delivery_id
+                                        if delivery is not None
+                                        else None
+                                    ),
+                                    "canonical_message_id": canonical_message_id,
+                                },
+                            )
                         )
                 stream_message_count += 1
                 if self.context.settings.reply_chunk_delay_seconds:
@@ -524,7 +571,8 @@ class ReplyService(HandlerService):
                 target_scope = scope_from_event(event)
                 source_scope = self.services.chat._conversation_scope(event)
                 decoded = decode_onebot_message(sent_message)
-                delivery, _created = self.context.delivery_store.enqueue(
+                delivery, _created = await self.context.db_call(
+                    self.context.delivery_store.enqueue,
                     idempotency_key=(
                         f"onebot:{event.self_id}:{target_scope.key}:"
                         f"trigger:{event.message_id}:turn:{result.turn_id or 0}:"
@@ -532,9 +580,12 @@ class ReplyService(HandlerService):
                     ),
                     source_scope_key=source_scope.key,
                     source_canonical_message_id=(
-                        self.context.message_ledger.canonical_id_for_native(
-                            source_scope,
-                            event.message_id,
+                        (
+                            await self.context.db_call(
+                                self.context.message_ledger.canonical_id_for_native,
+                                source_scope,
+                                event.message_id,
+                            )
                         )
                         if self.context.message_ledger is not None
                         else None
@@ -542,17 +593,23 @@ class ReplyService(HandlerService):
                     turn_id=result.turn_id,
                     target_scope=target_scope,
                     body=decoded.body,
-                    reply_to_native_message_id=(
-                        decoded.reply_to_native_message_id
-                    ),
+                    reply_to_native_message_id=(decoded.reply_to_native_message_id),
                 )
                 delivery_ids[send_index] = delivery.delivery_id
-                self.context.delivery_store.begin_direct_attempt(delivery.delivery_id)
+                (
+                    await self.context.db_call(
+                        self.context.delivery_store.begin_direct_attempt,
+                        delivery.delivery_id,
+                    )
+                )
             if result is None or result.turn_id is None or self.context.turn_journal is None:
                 return
-            self.context.turn_journal.record_send_started(
-                result.turn_id,
-                send_index * 10 + attempt,
+            (
+                await self.context.db_call(
+                    self.context.turn_journal.record_send_started,
+                    result.turn_id,
+                    send_index * 10 + attempt,
+                )
             )
 
         async def link_sent_reply(
@@ -566,7 +623,8 @@ class ReplyService(HandlerService):
             native_message_id = self._sent_message_id(response)
             if native_message_id is not None and self.context.message_ledger is not None:
                 canonical_scope = self.services.chat._conversation_scope(event)
-                stored = record_onebot_outgoing(
+                stored = await self.context.db_call(
+                    record_onebot_outgoing,
                     self.context.message_ledger,
                     canonical_scope,
                     native_message_id=native_message_id,
@@ -575,40 +633,52 @@ class ReplyService(HandlerService):
                 )
                 canonical_message_id = stored.canonical_message_id
                 if result.turn_id is not None and self.context.turn_journal is not None:
-                    self.context.turn_journal.link_send(
-                        result.turn_id,
-                        canonical_message_id,
-                        node_id=f"final:{send_index}",
+                    (
+                        await self.context.db_call(
+                            self.context.turn_journal.link_send,
+                            result.turn_id,
+                            canonical_message_id,
+                            node_id=f"final:{send_index}",
+                        )
                     )
                 if self.context.bridge_manager is not None:
                     decoded = decode_onebot_message(sent_message)
-                    self.context.bridge_manager.mirror_local_outgoing(
-                        source_scope=scope_from_event(event),
-                        source_native_event_id=str(native_message_id),
-                        canonical_message_id=canonical_message_id,
-                        body=decoded.body,
-                        occurred_at=int(time.time()),
-                        reply_to_native_message_id=(
-                            decoded.reply_to_native_message_id
-                        ),
+                    (
+                        await self.context.db_call(
+                            self.context.bridge_manager.mirror_local_outgoing,
+                            source_scope=scope_from_event(event),
+                            source_native_event_id=str(native_message_id),
+                            canonical_message_id=canonical_message_id,
+                            body=decoded.body,
+                            occurred_at=int(time.time()),
+                            reply_to_native_message_id=(
+                                decoded.reply_to_native_message_id
+                            ),
+                        )
                     )
             delivery_id = delivery_ids.get(send_index)
             if self.context.delivery_store is not None and delivery_id is not None:
-                self.context.delivery_store.mark_committed(
-                    delivery_id,
-                    native_message_id=native_message_id or "",
+                (
+                    await self.context.db_call(
+                        self.context.delivery_store.mark_committed,
+                        delivery_id,
+                        native_message_id=native_message_id or "",
+                    )
                 )
             if result.turn_id is not None and self.context.turn_journal is not None:
-                self.context.turn_journal.record_send_finished(
-                    result.turn_id,
-                    send_index * 10 + attempt,
-                    "committed",
-                    {
-                        "ok": True,
-                        "delivery_id": delivery_id,
-                        "canonical_message_id": canonical_message_id,
-                        "receipt_message_id_present": native_message_id is not None,
-                    },
+                (
+                    await self.context.db_call(
+                        self.context.turn_journal.record_send_finished,
+                        result.turn_id,
+                        send_index * 10 + attempt,
+                        "committed",
+                        {
+                            "ok": True,
+                            "delivery_id": delivery_id,
+                            "canonical_message_id": canonical_message_id,
+                            "receipt_message_id_present": native_message_id is not None,
+                        },
+                    )
                 )
 
         async def record_unknown_send(
@@ -619,13 +689,20 @@ class ReplyService(HandlerService):
             del sent_message
             delivery_id = delivery_ids.get(send_index)
             if self.context.delivery_store is not None and delivery_id is not None:
-                self.context.delivery_store.mark_ambiguous(delivery_id, detail)
+                (
+                    await self.context.db_call(
+                        self.context.delivery_store.mark_ambiguous, delivery_id, detail
+                    )
+                )
             if result is not None and result.turn_id is not None and self.context.turn_journal is not None:
-                self.context.turn_journal.record_send_finished(
-                    result.turn_id,
-                    send_index * 10 + attempt,
-                    "outcome-unknown",
-                    {"ok": False, "error": detail},
+                (
+                    await self.context.db_call(
+                        self.context.turn_journal.record_send_finished,
+                        result.turn_id,
+                        send_index * 10 + attempt,
+                        "outcome-unknown",
+                        {"ok": False, "error": detail},
+                    )
                 )
 
         async def record_failed_send(
@@ -636,13 +713,23 @@ class ReplyService(HandlerService):
             del sent_message
             delivery_id = delivery_ids.get(send_index)
             if self.context.delivery_store is not None and delivery_id is not None:
-                self.context.delivery_store.mark_failed(delivery_id, detail, retryable=False)
+                (
+                    await self.context.db_call(
+                        self.context.delivery_store.mark_failed,
+                        delivery_id,
+                        detail,
+                        retryable=False,
+                    )
+                )
             if result is not None and result.turn_id is not None and self.context.turn_journal is not None:
-                self.context.turn_journal.record_send_finished(
-                    result.turn_id,
-                    send_index * 10 + attempt,
-                    "failed",
-                    {"ok": False, "error": detail},
+                (
+                    await self.context.db_call(
+                        self.context.turn_journal.record_send_finished,
+                        result.turn_id,
+                        send_index * 10 + attempt,
+                        "failed",
+                        {"ok": False, "error": detail},
+                    )
                 )
 
         try:

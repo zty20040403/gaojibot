@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+import threading
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Literal
 
@@ -80,6 +81,7 @@ class LongTermMemoryStore:
         max_entries_per_scope: int = 30,
         max_content_chars: int = 300,
     ) -> None:
+        self._lock = threading.RLock()
         self._state = open_json_state(state_path, "long_term_memory")
         self._max_entries_per_scope = max(max_entries_per_scope, 1)
         self._max_content_chars = max(max_content_chars, 20)
@@ -104,75 +106,79 @@ class LongTermMemoryStore:
         source_message_id: int | None = None,
         reason: str = "explicit add",
     ) -> tuple[MemoryEntry, bool]:
-        content = " ".join(content.split())
-        if not content:
-            raise LongTermMemoryError("记忆内容不能为空。")
-        if len(content) > self._max_content_chars:
-            raise LongTermMemoryError(
-                f"单条记忆不能超过 {self._max_content_chars} 个字符。"
+        with self._lock:
+            content = " ".join(content.split())
+            if not content:
+                raise LongTermMemoryError("记忆内容不能为空。")
+            if len(content) > self._max_content_chars:
+                raise LongTermMemoryError(
+                    f"单条记忆不能超过 {self._max_content_chars} 个字符。"
+                )
+            if scope_type not in {"group", "user"}:
+                raise LongTermMemoryError("记忆范围无效。")
+
+            folded_content = content.casefold()
+            for entry in self._entries:
+                if (
+                    entry.scope_key == scope_key
+                    and entry.content.casefold() == folded_content
+                ):
+                    return entry, False
+
+            now = int(time.time())
+            entry = MemoryEntry(
+                id=self._next_id,
+                scope_key=scope_key,
+                scope_type=scope_type,
+                content=content,
+                creator_user_id=max(int(creator_user_id), 0),
+                created_at=now,
+                version=1,
+                creator_principal_id=max(int(creator_principal_id), 0),
+                source_message_id=(
+                    max(int(source_message_id), 1)
+                    if source_message_id is not None
+                    else None
+                ),
+                updated_at=now,
             )
-        if scope_type not in {"group", "user"}:
-            raise LongTermMemoryError("记忆范围无效。")
-
-        folded_content = content.casefold()
-        for entry in self._entries:
-            if (
-                entry.scope_key == scope_key
-                and entry.content.casefold() == folded_content
-            ):
-                return entry, False
-
-        now = int(time.time())
-        entry = MemoryEntry(
-            id=self._next_id,
-            scope_key=scope_key,
-            scope_type=scope_type,
-            content=content,
-            creator_user_id=max(int(creator_user_id), 0),
-            created_at=now,
-            version=1,
-            creator_principal_id=max(int(creator_principal_id), 0),
-            source_message_id=(
-                max(int(source_message_id), 1)
-                if source_message_id is not None
-                else None
-            ),
-            updated_at=now,
-        )
-        self._next_id += 1
-        self._entries.append(entry)
-        self._append_mutation(
-            entry,
-            "create",
-            from_version=0,
-            to_version=1,
-            actor_user_id=creator_user_id,
-            actor_principal_id=creator_principal_id,
-            source_message_id=source_message_id,
-            reason=reason,
-            created_at=now,
-        )
-        self._trim_scope(
-            scope_key,
-            actor_user_id=creator_user_id,
-            actor_principal_id=creator_principal_id,
-            source_message_id=source_message_id,
-        )
-        self._save()
-        return entry, True
+            self._next_id += 1
+            self._entries.append(entry)
+            self._append_mutation(
+                entry,
+                "create",
+                from_version=0,
+                to_version=1,
+                actor_user_id=creator_user_id,
+                actor_principal_id=creator_principal_id,
+                source_message_id=source_message_id,
+                reason=reason,
+                created_at=now,
+            )
+            self._trim_scope(
+                scope_key,
+                actor_user_id=creator_user_id,
+                actor_principal_id=creator_principal_id,
+                source_message_id=source_message_id,
+            )
+            self._save()
+            return entry, True
 
     def list_entries(self, scope_keys: Iterable[str]) -> list[MemoryEntry]:
-        allowed = set(scope_keys)
-        return sorted(
-            (entry for entry in self._entries if entry.scope_key in allowed),
-            key=lambda entry: entry.id,
-        )
+        with self._lock:
+            allowed = set(scope_keys)
+            return sorted(
+                (entry for entry in self._entries if entry.scope_key in allowed),
+                key=lambda entry: entry.id,
+            )
 
     def all_entries(self) -> list[MemoryEntry]:
-        return sorted(self._entries, key=lambda entry: entry.id)
+        with self._lock:
+            return sorted(self._entries, key=lambda entry: entry.id)
 
     def scope_keys(self) -> list[str]:
-        return sorted({entry.scope_key for entry in self._entries})
+        with self._lock:
+            return sorted({entry.scope_key for entry in self._entries})
 
     def update(
         self,
@@ -186,45 +192,46 @@ class LongTermMemoryStore:
         source_message_id: int | None = None,
         reason: str = "explicit update",
     ) -> MemoryEntry:
-        allowed = set(scope_keys)
-        normalized = " ".join(content.split())
-        if not normalized:
-            raise LongTermMemoryError("记忆内容不能为空。")
-        if len(normalized) > self._max_content_chars:
-            raise LongTermMemoryError(
-                f"单条记忆不能超过 {self._max_content_chars} 个字符。"
-            )
-        for index, entry in enumerate(self._entries):
-            if entry.id != entry_id or entry.scope_key not in allowed:
-                continue
-            if entry.version != int(expected_version):
+        with self._lock:
+            allowed = set(scope_keys)
+            normalized = " ".join(content.split())
+            if not normalized:
+                raise LongTermMemoryError("记忆内容不能为空。")
+            if len(normalized) > self._max_content_chars:
                 raise LongTermMemoryError(
-                    f"记忆版本已变化，当前版本是 {entry.version}。"
+                    f"单条记忆不能超过 {self._max_content_chars} 个字符。"
                 )
-            now = int(time.time())
-            updated = MemoryEntry(
-                **{
-                    **asdict(entry),
-                    "content": normalized,
-                    "version": entry.version + 1,
-                    "updated_at": now,
-                }
-            )
-            self._entries[index] = updated
-            self._append_mutation(
-                updated,
-                "update",
-                from_version=entry.version,
-                to_version=updated.version,
-                actor_user_id=actor_user_id,
-                actor_principal_id=actor_principal_id,
-                source_message_id=source_message_id,
-                reason=reason,
-                created_at=now,
-            )
-            self._save()
-            return updated
-        raise LongTermMemoryError("当前可见范围内找不到这条记忆。")
+            for index, entry in enumerate(self._entries):
+                if entry.id != entry_id or entry.scope_key not in allowed:
+                    continue
+                if entry.version != int(expected_version):
+                    raise LongTermMemoryError(
+                        f"记忆版本已变化，当前版本是 {entry.version}。"
+                    )
+                now = int(time.time())
+                updated = MemoryEntry(
+                    **{
+                        **asdict(entry),
+                        "content": normalized,
+                        "version": entry.version + 1,
+                        "updated_at": now,
+                    }
+                )
+                self._entries[index] = updated
+                self._append_mutation(
+                    updated,
+                    "update",
+                    from_version=entry.version,
+                    to_version=updated.version,
+                    actor_user_id=actor_user_id,
+                    actor_principal_id=actor_principal_id,
+                    source_message_id=source_message_id,
+                    reason=reason,
+                    created_at=now,
+                )
+                self._save()
+                return updated
+            raise LongTermMemoryError("当前可见范围内找不到这条记忆。")
 
     def remove(
         self,
@@ -236,33 +243,34 @@ class LongTermMemoryStore:
         source_message_id: int | None = None,
         reason: str = "explicit remove",
     ) -> bool:
-        allowed = set(scope_keys)
-        removed_entries = [
-            entry
-            for entry in self._entries
-            if entry.id == entry_id and entry.scope_key in allowed
-        ]
-        self._entries = [
-            entry
-            for entry in self._entries
-            if not (entry.id == entry_id and entry.scope_key in allowed)
-        ]
-        if removed_entries:
-            now = int(time.time())
-            for entry in removed_entries:
-                self._append_mutation(
-                    entry,
-                    "remove",
-                    from_version=entry.version,
-                    to_version=entry.version,
-                    actor_user_id=actor_user_id,
-                    actor_principal_id=actor_principal_id,
-                    source_message_id=source_message_id,
-                    reason=reason,
-                    created_at=now,
-                )
-            self._save()
-        return bool(removed_entries)
+        with self._lock:
+            allowed = set(scope_keys)
+            removed_entries = [
+                entry
+                for entry in self._entries
+                if entry.id == entry_id and entry.scope_key in allowed
+            ]
+            self._entries = [
+                entry
+                for entry in self._entries
+                if not (entry.id == entry_id and entry.scope_key in allowed)
+            ]
+            if removed_entries:
+                now = int(time.time())
+                for entry in removed_entries:
+                    self._append_mutation(
+                        entry,
+                        "remove",
+                        from_version=entry.version,
+                        to_version=entry.version,
+                        actor_user_id=actor_user_id,
+                        actor_principal_id=actor_principal_id,
+                        source_message_id=source_message_id,
+                        reason=reason,
+                        created_at=now,
+                    )
+                self._save()
+            return bool(removed_entries)
 
     def clear(
         self,
@@ -273,29 +281,30 @@ class LongTermMemoryStore:
         source_message_id: int | None = None,
         reason: str = "explicit clear",
     ) -> int:
-        allowed = set(scope_keys)
-        removed_entries = [
-            entry for entry in self._entries if entry.scope_key in allowed
-        ]
-        self._entries = [
-            entry for entry in self._entries if entry.scope_key not in allowed
-        ]
-        if removed_entries:
-            now = int(time.time())
-            for entry in removed_entries:
-                self._append_mutation(
-                    entry,
-                    "clear",
-                    from_version=entry.version,
-                    to_version=entry.version,
-                    actor_user_id=actor_user_id,
-                    actor_principal_id=actor_principal_id,
-                    source_message_id=source_message_id,
-                    reason=reason,
-                    created_at=now,
-                )
-            self._save()
-        return len(removed_entries)
+        with self._lock:
+            allowed = set(scope_keys)
+            removed_entries = [
+                entry for entry in self._entries if entry.scope_key in allowed
+            ]
+            self._entries = [
+                entry for entry in self._entries if entry.scope_key not in allowed
+            ]
+            if removed_entries:
+                now = int(time.time())
+                for entry in removed_entries:
+                    self._append_mutation(
+                        entry,
+                        "clear",
+                        from_version=entry.version,
+                        to_version=entry.version,
+                        actor_user_id=actor_user_id,
+                        actor_principal_id=actor_principal_id,
+                        source_message_id=source_message_id,
+                        reason=reason,
+                        created_at=now,
+                    )
+                self._save()
+            return len(removed_entries)
 
     def audit(
         self,
@@ -303,37 +312,38 @@ class LongTermMemoryStore:
         *,
         limit: int = 100,
     ) -> list[MemoryMutation]:
-        allowed = set(scope_keys)
-        limit = min(max(int(limit), 1), 500)
-        return [
-            mutation
-            for mutation in reversed(self._mutations)
-            if mutation.scope_key in allowed
-        ][:limit]
+        with self._lock:
+            allowed = set(scope_keys)
+            limit = min(max(int(limit), 1), 500)
+            return [
+                mutation
+                for mutation in reversed(self._mutations)
+                if mutation.scope_key in allowed
+            ][:limit]
 
     def render(self, group_scope: str | None, user_scope: str) -> str:
-        sections: list[str] = []
-        if group_scope is not None:
-            group_entries = self.list_entries([group_scope])
-            if group_entries:
+        with self._lock:
+            sections: list[str] = []
+            if group_scope is not None:
+                group_entries = self.list_entries([group_scope])
+                if group_entries:
+                    sections.append(
+                        "[当前群长期记忆]\n"
+                        + "\n".join(
+                            f"- [#{entry.id}] {entry.content}"
+                            for entry in group_entries
+                        )
+                    )
+
+            user_entries = self.list_entries([user_scope])
+            if user_entries:
                 sections.append(
-                    "[当前群长期记忆]\n"
+                    "[当前用户长期记忆]\n"
                     + "\n".join(
-                        f"- [#{entry.id}] {entry.content}"
-                        for entry in group_entries
+                        f"- [#{entry.id}] {entry.content}" for entry in user_entries
                     )
                 )
-
-        user_entries = self.list_entries([user_scope])
-        if user_entries:
-            sections.append(
-                "[当前用户长期记忆]\n"
-                + "\n".join(
-                    f"- [#{entry.id}] {entry.content}"
-                    for entry in user_entries
-                )
-            )
-        return "\n\n".join(sections)
+            return "\n\n".join(sections)
 
     def render_relevant(
         self,
@@ -348,48 +358,52 @@ class LongTermMemoryStore:
         max_entries_per_scope: int = 4,
         max_chars: int = 1200,
     ) -> str:
-        max_entries = min(max(int(max_entries_per_scope), 1), 12)
-        char_budget = min(max(int(max_chars), 200), 4000)
-        query_terms = _memory_terms(query)
-        sections: list[tuple[str, list[MemoryEntry]]] = []
+        with self._lock:
+            max_entries = min(max(int(max_entries_per_scope), 1), 12)
+            char_budget = min(max(int(max_chars), 200), 4000)
+            query_terms = _memory_terms(query)
+            sections: list[tuple[str, list[MemoryEntry]]] = []
 
-        if include_group and group_scope is not None:
-            entries = self._relevant_entries(
-                self.list_entries([group_scope]),
-                query_terms,
-                fallback=fallback_group,
-                limit=max_entries,
-            )
-            if entries:
-                sections.append(("[当前群相关长期记忆]", entries))
+            if include_group and group_scope is not None:
+                entries = self._relevant_entries(
+                    self.list_entries([group_scope]),
+                    query_terms,
+                    fallback=fallback_group,
+                    limit=max_entries,
+                )
+                if entries:
+                    sections.append(("[当前群相关长期记忆]", entries))
 
-        if include_user:
-            entries = self._relevant_entries(
-                self.list_entries([user_scope]),
-                query_terms,
-                fallback=fallback_user,
-                limit=max_entries,
-            )
-            if entries:
-                sections.append(("[当前用户相关长期记忆]", entries))
+            if include_user:
+                entries = self._relevant_entries(
+                    self.list_entries([user_scope]),
+                    query_terms,
+                    fallback=fallback_user,
+                    limit=max_entries,
+                )
+                if entries:
+                    sections.append(("[当前用户相关长期记忆]", entries))
 
-        rendered: list[str] = []
-        used = 0
-        for title, entries in sections:
-            lines = [title]
-            for entry in entries:
-                line = f"- [#{entry.id}] {entry.content}"
-                if used + sum(len(item) + 1 for item in lines) + len(line) > char_budget:
+            rendered: list[str] = []
+            used = 0
+            for title, entries in sections:
+                lines = [title]
+                for entry in entries:
+                    line = f"- [#{entry.id}] {entry.content}"
+                    if (
+                        used + sum(len(item) + 1 for item in lines) + len(line)
+                        > char_budget
+                    ):
+                        break
+                    lines.append(line)
+                if len(lines) == 1:
+                    continue
+                block = "\n".join(lines)
+                if rendered and used + len(block) + 2 > char_budget:
                     break
-                lines.append(line)
-            if len(lines) == 1:
-                continue
-            block = "\n".join(lines)
-            if rendered and used + len(block) + 2 > char_budget:
-                break
-            rendered.append(block)
-            used += len(block) + 2
-        return "\n\n".join(rendered)
+                rendered.append(block)
+                used += len(block) + 2
+            return "\n\n".join(rendered)
 
     @staticmethod
     def _relevant_entries(

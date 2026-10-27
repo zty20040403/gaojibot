@@ -199,6 +199,20 @@ class RunningTaskRegistry:
                 count += 1
         return count
 
+    async def cancel_all_and_wait(self) -> int:
+        current = asyncio.current_task()
+        active = {
+            task
+            for _info, task in self._tasks.values()
+            if task is not current and not task.done()
+        }
+        for task in active:
+            task.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
+        self._discard_finished()
+        return len(active)
+
     def _discard_finished(self) -> None:
         finished_ids = [
             task_id

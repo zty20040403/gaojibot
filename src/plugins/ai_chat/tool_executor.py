@@ -6,7 +6,6 @@ import json
 import hashlib
 import re
 import sqlite3
-import asyncio
 from typing import (
     Any,
     Awaitable,
@@ -199,7 +198,9 @@ class ToolExecutor(HandlerService):
         if _approved_call is not None:
             assert_approved("tool", _approved_call)
 
-        if isinstance(event, GroupMessageEvent) and not self.services.group_enabled(event.group_id):
+        if isinstance(event, GroupMessageEvent) and not (
+            await self.context.db_call(self.services.group_enabled, event.group_id)
+        ):
             return "这个群暂时没有开启 AI。"
 
         if resume_task_id is None and len(user_text) > self.context.settings.max_input_chars:
@@ -214,13 +215,16 @@ class ToolExecutor(HandlerService):
 
         conversation_id = self.services.chat._conversation_id(event)
         alert_tools_enabled = bool(
-            self.context.alert_store is not None and self._alert_tools_allowed(event)
+            self.context.alert_store is not None
+            and (await self.context.db_call(self._alert_tools_allowed, event))
         )
         fleet_tools_enabled = bool(
-            self.context.fleet_client is not None and self._fleet_tools_allowed(event)
+            self.context.fleet_client is not None
+            and (await self.context.db_call(self._fleet_tools_allowed, event))
         )
         fleet_logs_enabled = bool(
-            fleet_tools_enabled and self._fleet_logs_allowed(event)
+            fleet_tools_enabled
+            and (await self.context.db_call(self._fleet_logs_allowed, event))
         )
         sandbox_tools_enabled = (
             isinstance(event, GroupMessageEvent)
@@ -246,8 +250,10 @@ class ToolExecutor(HandlerService):
             if agent_executor_enabled and isinstance(event, GroupMessageEvent)
             else None
         )
-        selected_profile = selected_profile_override or self.services.chat._preferred_model_profile(
-            conversation_id
+        selected_profile = selected_profile_override or (
+            await self.context.db_call(
+                self.services.chat._preferred_model_profile, conversation_id
+            )
         )
         if selected_model_override:
             configured_override = self.context.model_catalog.try_resolve(selected_model_override)
@@ -296,17 +302,26 @@ class ToolExecutor(HandlerService):
         if not any((force_search, force_ocr, force_voice_reply, force_voice_transcription,
                     task_mode, resume_task_id is not None, _approved_call is not None)):
             intent = await classify_tool_intent(
-                user_text, catalog=self.context.model_catalog,
+                user_text,
+                catalog=self.context.model_catalog,
                 profile_name=self.context.settings.model_simple_chat_profile,
                 allowed_tools=frozenset(intent_tools),
-                media={"image_available": bool(available_image_sources),
-                       "image_attached_now": bool(image_sources(event.original_message, max_images=1)),
-                       "video_available": available_video is not None,
-                       "video_attached_now": contains_video(event.original_message)},
+                media={
+                    "image_available": bool(available_image_sources),
+                    "image_attached_now": bool(
+                        image_sources(event.original_message, max_images=1)
+                    ),
+                    "video_available": available_video is not None,
+                    "video_attached_now": contains_video(event.original_message),
+                },
                 local_model=self.context.local_model,
-                load_context=lambda: asyncio.to_thread(self._tool_intent_context, event),
-                trace=turn_trace, enabled=self.context.settings.tool_intent_enabled,
-                timeout_seconds=self.context.settings.tool_intent_timeout_seconds)
+                load_context=lambda: self.context.db_call(
+                    self._tool_intent_context, event
+                ),
+                trace=turn_trace,
+                enabled=self.context.settings.tool_intent_enabled,
+                timeout_seconds=self.context.settings.tool_intent_timeout_seconds,
+            )
         automatic_subagent_route = route_subagent_request(
             user_text,
             has_media=bool(available_image_sources or available_video),
@@ -383,7 +398,7 @@ class ToolExecutor(HandlerService):
             tool_capabilities.add("alerts")
         if fleet_tools_enabled:
             tool_capabilities.add("fleet")
-            if self._registered_admin(event.user_id):
+            if await self.context.db_call(self._registered_admin, event.user_id):
                 tool_capabilities.add("ops")
         if fleet_logs_enabled:
             tool_capabilities.add("fleet_logs")
@@ -426,27 +441,34 @@ class ToolExecutor(HandlerService):
             voice_message_id=available_voice_message_id,
             subagent_task_started=resume_task_id is not None,
         )
-        tools = available_tools(turn.context)
+        tools = await self.context.db_call(available_tools, turn.context)
         current_tool_catalog_version = tool_catalog_fingerprint(tools)
         if self.context.turn_journal is not None and journal_turn_id is not None:
             try:
-                self.context.turn_journal.update_environment(
-                    journal_turn_id,
-                    provider=selected_profile.provider_identity,
-                    model=selected_profile.model,
-                    profile=selected_profile.name,
-                    prompt_version=TURN_PROMPT_VERSION,
-                    tool_catalog_version=current_tool_catalog_version,
+                (
+                    await self.context.db_call(
+                        self.context.turn_journal.update_environment,
+                        journal_turn_id,
+                        provider=selected_profile.provider_identity,
+                        model=selected_profile.model,
+                        profile=selected_profile.name,
+                        prompt_version=TURN_PROMPT_VERSION,
+                        tool_catalog_version=current_tool_catalog_version,
+                    )
                 )
             except (OSError, RuntimeError, sqlite3.Error, DatabaseError) as exc:
-                self.context.logger.warning(f"Could not update the turn environment: {exc}")
+                self.context.logger.warning(
+                    f"Could not update the turn environment: {exc}"
+                )
             if self.context.settings.turn_replay_enabled:
-                parent_turn = self.context.turn_journal.fork_parent(
+                parent_turn = await self.context.db_call(
+                    self.context.turn_journal.fork_parent,
                     scope_from_event(event),
                     journal_turn_id,
                 )
                 if parent_turn is not None:
-                    replay = self.context.turn_journal.build_replay(
+                    replay = await self.context.db_call(
+                        self.context.turn_journal.build_replay,
                         scope_from_event(event),
                         parent_turn.turn_ordinal,
                         current_provider=selected_profile.provider_identity,
@@ -459,7 +481,8 @@ class ToolExecutor(HandlerService):
                     )
                     replay_reason = replay.reason
                     replay_digest_prefix = replay.digest_prefix
-                    turn_context = self.services.chat._current_turn_context(
+                    turn_context = await self.context.db_call(
+                        self.services.chat._current_turn_context,
                         event,
                         journal_turn_id,
                         include_recent=False,
@@ -474,13 +497,16 @@ class ToolExecutor(HandlerService):
 
         try:
             with telemetry.stage("context.resolve"):
-                context_plan = self.services.chat._group_turn_context_plan(
+                context_plan = await self.context.db_call(
+                    self.services.chat._group_turn_context_plan,
                     event,
                     user_text,
                     journal_turn_id,
                 )
         except (OSError, RuntimeError, ValueError, sqlite3.Error, DatabaseError) as exc:
-            self.context.logger.warning(f"Group reference resolution failed softly: {exc}")
+            self.context.logger.warning(
+                f"Group reference resolution failed softly: {exc}"
+            )
         with telemetry.stage("context.route"):
             # Keep the live conversation chronological. The
             # lightweight route is retained for memory budgets and observability,
@@ -530,10 +556,13 @@ class ToolExecutor(HandlerService):
                 }
                 payload["evidence_guard"] = evidence_assessment.journal_payload()
                 context_plan_payload = payload
-                self.context.turn_journal.record_context_plan(
-                    journal_turn_id,
-                    payload,
-                    created_at=event.time,
+                (
+                    await self.context.db_call(
+                        self.context.turn_journal.record_context_plan,
+                        journal_turn_id,
+                        payload,
+                        created_at=event.time,
+                    )
                 )
             except (OSError, RuntimeError, ValueError, sqlite3.Error, DatabaseError):
                 pass
@@ -791,7 +820,13 @@ class ToolExecutor(HandlerService):
                 scope = scope_from_event(event)
                 replied_native_id = reply_message_id(event.original_message)
                 replied_canonical_id = (
-                    self.context.message_ledger.canonical_id_for_native(scope, replied_native_id)
+                    (
+                        await self.context.db_call(
+                            self.context.message_ledger.canonical_id_for_native,
+                            scope,
+                            replied_native_id,
+                        )
+                    )
                     if replied_native_id is not None
                     else None
                 )
@@ -803,7 +838,8 @@ class ToolExecutor(HandlerService):
                 sections: list[str] = []
                 projection_built = False
                 if self.context.pin_store is not None:
-                    pinned = self.context.pin_store.render(
+                    pinned = await self.context.db_call(
+                        self.context.pin_store.render,
                         self.context.message_ledger,
                         scope,
                         max_chars=2400,
@@ -817,7 +853,8 @@ class ToolExecutor(HandlerService):
                         actual_context_usage["timeline"] += estimate_tokens(
                             pinned_block
                         )
-                        for _pin, message in self.context.pin_store.messages(
+                        for _pin, message in await self.context.db_call(
+                            self.context.pin_store.messages,
                             self.context.message_ledger,
                             scope,
                         ):
@@ -840,14 +877,13 @@ class ToolExecutor(HandlerService):
                             )
                 if self.context.context_store is not None:
                     try:
-                        projection = self.context.context_store.build_projection(
+                        projection = await self.context.db_call(
+                            self.context.context_store.build_projection,
                             self.context.message_ledger,
                             scope,
                             exclude_native_message_id=event.message_id,
                             protected_message_ids=protected_ids,
-                            exclude_canonical_message_ids=(
-                                replay_covered_message_ids
-                            ),
+                            exclude_canonical_message_ids=(replay_covered_message_ids),
                             materialize=False,
                             token_budget=chronological_projection_budget(
                                 self.context.settings.context_input_budget_tokens,
@@ -864,8 +900,7 @@ class ToolExecutor(HandlerService):
                         DatabaseError,
                     ) as exc:
                         self.context.logger.warning(
-                            "Chronological context projection failed softly: "
-                            f"{exc}"
+                            f"Chronological context projection failed softly: {exc}"
                         )
                     else:
                         projection_built = True
@@ -883,7 +918,8 @@ class ToolExecutor(HandlerService):
                             "raw_message_ids",
                             (),
                         ):
-                            message = self.context.message_ledger.get_in_scope(
+                            message = await self.context.db_call(
+                                self.context.message_ledger.get_in_scope,
                                 scope,
                                 int(message_id),
                             )
@@ -925,14 +961,13 @@ class ToolExecutor(HandlerService):
                                 }
                             )
                 if not projection_built:
-                    fallback = self.context.message_ledger.render_recent(
+                    fallback = await self.context.db_call(
+                        self.context.message_ledger.render_recent,
                         scope,
                         max_messages=self.context.settings.group_context_messages,
                         max_chars=max(self.context.settings.group_context_chars, 12000),
                         exclude_native_message_id=event.message_id,
-                        exclude_canonical_message_ids=(
-                            replay_covered_message_ids
-                        ),
+                        exclude_canonical_message_ids=(replay_covered_message_ids),
                     )
                     if fallback:
                         fallback_block = "[protected live tail]\n" + fallback
@@ -942,7 +977,11 @@ class ToolExecutor(HandlerService):
                         )
                         for matched in re.finditer(r"\bmsg#([1-9][0-9]*)", fallback):
                             message_id = int(matched.group(1))
-                            message = self.context.message_ledger.get_in_scope(scope, message_id)
+                            message = await self.context.db_call(
+                                self.context.message_ledger.get_in_scope,
+                                scope,
+                                message_id,
+                            )
                             actual_context_candidates.append(
                                 {
                                     "handle": f"msg#{message_id}",
@@ -963,9 +1002,13 @@ class ToolExecutor(HandlerService):
                             )
                 if self.context.source_store is not None:
                     try:
-                        recent_sources = self.context.source_store.render_recent(scope)
+                        recent_sources = await self.context.db_call(
+                            self.context.source_store.render_recent, scope
+                        )
                     except (OSError, RuntimeError, ValueError, DatabaseError) as exc:
-                        self.context.logger.warning(f"Recent shared-source context failed: {exc}")
+                        self.context.logger.warning(
+                            f"Recent shared-source context failed: {exc}"
+                        )
                     else:
                         if recent_sources:
                             source_block = (
@@ -994,7 +1037,8 @@ class ToolExecutor(HandlerService):
                                     }
                                 )
                 if replied_canonical_id is not None:
-                    replied = self.context.message_ledger.get_in_scope(
+                    replied = await self.context.db_call(
+                        self.context.message_ledger.get_in_scope,
                         scope,
                         replied_canonical_id,
                     )
@@ -1022,12 +1066,14 @@ class ToolExecutor(HandlerService):
                         )
                 group_prompt_context = "\n\n".join(sections)
             else:
-                group_prompt_context = self.services.chat._current_group_context(
+                group_prompt_context = await self.context.db_call(
+                    self.services.chat._current_group_context,
                     event,
                     policy=context_policy,
                     exclude_canonical_message_ids=replay_covered_message_ids,
                 )
-            memory_prompt_context = self.services.commands._current_long_term_memory(
+            memory_prompt_context = await self.context.db_call(
+                self.services.commands._current_long_term_memory,
                 event,
                 user_text,
                 context_policy,
@@ -1146,10 +1192,13 @@ class ToolExecutor(HandlerService):
                     )
                 context_plan_payload["evidence_guard"] = evidence_payload
                 try:
-                    self.context.turn_journal.record_context_plan(
-                        journal_turn_id,
-                        context_plan_payload,
-                        created_at=event.time,
+                    (
+                        await self.context.db_call(
+                            self.context.turn_journal.record_context_plan,
+                            journal_turn_id,
+                            context_plan_payload,
+                            created_at=event.time,
+                        )
                     )
                 except (
                     OSError,
@@ -1158,10 +1207,14 @@ class ToolExecutor(HandlerService):
                     sqlite3.Error,
                     DatabaseError,
                 ) as exc:
-                    self.context.logger.warning(f"Final context projection journal failed: {exc}")
-            def subagent_context_packet(objective: str) -> ContextPacket:
+                    self.context.logger.warning(
+                        f"Final context projection journal failed: {exc}"
+                    )
+
+            async def subagent_context_packet(objective: str) -> ContextPacket:
                 trigger_message_id = (
-                    self.context.message_ledger.canonical_id_for_native(
+                    await self.context.db_call(
+                        self.context.message_ledger.canonical_id_for_native,
                         scope_from_event(event),
                         event.message_id,
                     )
@@ -1187,7 +1240,7 @@ class ToolExecutor(HandlerService):
             async def run_delegate_goal(role: str, objective: str, decision: EntryDecision | None = None) -> dict[str, Any]:
                 if self.context.subagent_coordinator is None:
                     raise ValueError("Sub-Agent 任务模式暂时没有开启。")
-                packet = subagent_context_packet(objective)
+                packet = await subagent_context_packet(objective)
                 if decision is None:
                     decision = await self.context.subagent_coordinator.prepare_entry(
                         packet, selected_profile, role=role, parent_trace=turn_trace)
@@ -1231,7 +1284,7 @@ class ToolExecutor(HandlerService):
                     if agent_executor is not None:
                         await execute_tool(SAY_TOOL_NAME, {"text": text[:200]})
 
-                packet = subagent_context_packet(goal)
+                packet = await subagent_context_packet(goal)
                 if decision is None:
                     decision = await self.context.subagent_coordinator.prepare_entry(
                         packet, selected_profile, parent_trace=turn_trace)
@@ -1351,13 +1404,21 @@ class ToolExecutor(HandlerService):
                     (
                         []
                         if replay_prefix or isinstance(event, GroupMessageEvent)
-                        else self.context.memory.get(conversation_id)
+                        else (
+                            await self.context.db_call(
+                                self.context.memory.get, conversation_id
+                            )
+                        )
                     ),
                     tools,
                     execute_tool,
                     group_context=group_prompt_context,
                     memory_context=memory_prompt_context,
-                    current_user=self.services.chat._current_user_identity(event),
+                    current_user=(
+                        await self.context.db_call(
+                            self.services.chat._current_user_identity, event
+                        )
+                    ),
                     tool_choice=tool_choice,
                     profile=selected_profile,
                     max_tool_rounds=(
@@ -1393,7 +1454,11 @@ class ToolExecutor(HandlerService):
                         else None
                     ),
                     entry_handler=handle_entry if semantic_entry_enabled else None,
-                    entry_max_steps=(self.context.subagent_coordinator.max_steps if semantic_entry_enabled else 8),
+                    entry_max_steps=(
+                        self.context.subagent_coordinator.max_steps
+                        if semantic_entry_enabled
+                        else 8
+                    ),
                     entry_profile=entry_profile,
                     entry_allowed_profiles=entry_allowed_profiles,
                 )
@@ -1449,9 +1514,23 @@ class ToolExecutor(HandlerService):
         if turn.used_voice_texts:
             memory_user_text += "\n\n[语音转文字]\n" + "\n\n".join(turn.used_voice_texts)
         memory_answer = answer or "[工具动作：发送了一个表情]"
-        self.context.memory.append_turn(conversation_id, memory_user_text, memory_answer)
+        (
+            await self.context.db_call(
+                self.context.memory.append_turn,
+                conversation_id,
+                memory_user_text,
+                memory_answer,
+            )
+        )
         if isinstance(event, GroupMessageEvent) and self.context.message_ledger is None:
-            self.context.group_context.append(event.group_id, "机器人", memory_answer)
+            (
+                await self.context.db_call(
+                    self.context.group_context.append,
+                    event.group_id,
+                    "机器人",
+                    memory_answer,
+                )
+            )
 
         if (
             turn.voice_reply_segment is None

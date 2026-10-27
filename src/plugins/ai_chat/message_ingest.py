@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from src.bot_storage import (
     DatabaseError,
 )
@@ -25,11 +24,16 @@ from .reaction_feedback import record_reaction_feedback
 class MessageIngest(HandlerService):
     async def handle_reaction_notice(self, bot: Bot, event: NoticeEvent) -> None:
         try:
-            await asyncio.to_thread(record_reaction_feedback, event.model_dump(),
-                bot_id=int(bot.self_id), ledger=self.context.message_ledger,
-                journal=self.context.turn_journal, group_enabled=self.services.group_enabled,
+            await self.context.db_call(
+                record_reaction_feedback,
+                event.model_dump(),
+                bot_id=int(bot.self_id),
+                ledger=self.context.message_ledger,
+                journal=self.context.turn_journal,
+                group_enabled=self.services.group_enabled,
                 positive_ids=self.context.settings.feedback_positive_emoji_ids,
-                negative_ids=self.context.settings.feedback_negative_emoji_ids)
+                negative_ids=self.context.settings.feedback_negative_emoji_ids,
+            )
         except (OSError, RuntimeError, ValueError, DatabaseError) as exc:
             self.context.logger.warning(f"Reaction feedback was not stored: {type(exc).__name__}")
 
@@ -44,10 +48,14 @@ class MessageIngest(HandlerService):
             return
         if event.user_id == event.self_id:
             return
-        if isinstance(event, GroupMessageEvent) and not self.services.group_enabled(event.group_id):
+        if isinstance(event, GroupMessageEvent) and not (
+            await self.context.db_call(self.services.group_enabled, event.group_id)
+        ):
             return
-        if isinstance(event, GroupMessageEvent) and not self.services.auto_describe_enabled(
-            event.group_id
+        if isinstance(event, GroupMessageEvent) and not (
+            await self.context.db_call(
+                self.services.auto_describe_enabled, event.group_id
+            )
         ):
             return
         if not isinstance(event, GroupMessageEvent) and not self.context.settings.vision_auto_describe:
@@ -62,7 +70,7 @@ class MessageIngest(HandlerService):
             return
         segment_index, source_url = source_items[0]
         try:
-            await asyncio.to_thread(
+            await self.context.db_call(
                 self.context.vision_worker.submit,
                 scope_key=scope_from_event(event).key,
                 native_message_id=event.message_id,
@@ -82,10 +90,16 @@ class MessageIngest(HandlerService):
             return
         if event.user_id == event.self_id:
             return
-        if not self.services.group_enabled(event.group_id):
+        if not (
+            await self.context.db_call(self.services.group_enabled, event.group_id)
+        ):
             return
 
-        learn_stickers_from_message(event.original_message)
+        (
+            await self.context.db_call(
+                learn_stickers_from_message, event.original_message
+            )
+        )
 
         if self.context.message_ledger is not None:
             return
@@ -94,10 +108,13 @@ class MessageIngest(HandlerService):
         if not text or text.lstrip().startswith("/"):
             return
 
-        self.context.group_context.append(
-            event.group_id,
-            self.services.chat._sender_label(event),
-            text,
-            timestamp=event.time,
-            message_id=event.message_id,
+        (
+            await self.context.db_call(
+                self.context.group_context.append,
+                event.group_id,
+                self.services.chat._sender_label(event),
+                text,
+                timestamp=event.time,
+                message_id=event.message_id,
+            )
         )

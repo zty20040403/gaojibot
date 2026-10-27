@@ -103,9 +103,10 @@ acceptance are not implied by this roadmap.
 
 ### Phase 7: Nonblocking database work
 
-- [ ] Event-loop lag sampling and Prometheus metric.
-- [ ] Move hot-path synchronous store calls to a bounded/thread-safe db_call.
-- [ ] Slow-store concurrency regression and before/after P99 evidence.
+- [x] Event-loop lag sampling and Prometheus metric.
+- [x] Move hot-path synchronous store calls to a bounded/thread-safe db_call.
+- [x] Slow-store concurrency regression and local before/after P99 evidence.
+- [ ] Measure production event-loop lag after an authorized deployment.
 
 ### Phase 8: PostgreSQL-only stores
 
@@ -488,3 +489,73 @@ isolated roadmap test database is used for validation.
 - Phases 6.1-6.4 are complete locally. Phases 7-9 and the previously listed live
   acceptance checks remain pending. No push, production connection, deployment
   or real model/QQ request was made.
+
+### Phase 7 nonblocking database validation
+
+- Added an application-owned DatabaseCalls boundary with four concurrent worker
+  slots, ContextVar propagation, exception propagation and shutdown draining.
+  Cancelling a caller does not release its slot or close stores while its write
+  is still running. It does not retry queries or pass live cursors between threads.
+- Offloaded OneBot canonical ingest, profile/context reads, normal chat history,
+  journal events, reply planning, durable send attempts and receipts, and related
+  command/tool store calls. Same-scope ingest is serialized without holding up
+  unrelated groups. Mutable memory/profile stores now lock complete read/write
+  operations, including persistence, rather than only individual list updates.
+- Shutdown waits for tracked turns to finish cancellation cleanup, then drains
+  database work before closing stores/pools. A turn cancelled during creation
+  still records the newly created turn as aborted. This is not an async rewrite
+  of every store, background worker, bridge or third-party tool implementation.
+- Added one-second event-loop lag sampling after startup recovery, a latest-value
+  Gauge, a Histogram and the current lag in the admin telemetry totals. Metrics
+  collection no longer queries delivery stats directly on the event loop.
+- Review found that moving media ingest to a worker thread also moved its asyncio
+  Event notification. Notifications now use the worker loop's thread-safe queue;
+  clearing the event before polling also prevents losing a wakeup during a query.
+- Initial full run: 1,717 tests with 84 errors, all caused by eight domain test
+  fixtures missing the new db_call dependency. Added real DatabaseCalls instances
+  and cleanup to those fixtures; retained every existing behavioral assertion.
+  Their 46 focused tests passed. Boundary/startup/metric/benchmark checks: 39
+  passed. Media notification and parsing checks: 26 passed.
+- An added weak-lock cleanup assertion initially retained a cancelled task's
+  exception frame. It now releases that completed task and collects the frame
+  before checking lock reclamation; ordering and cross-group progress assertions
+  remain unchanged. Earlier sampler timing and startup fixture failures are
+  preserved in .cache/roadmap/phase7-boundary-focused.log and
+  .cache/roadmap/phase7-hotpath-focused.log.
+- Final full PG suite: 1,723 tests, OK (12 skipped), 92.562 seconds;
+  .cache/roadmap/phase7-full-final.log. CI-path Ruff and diff whitespace checks
+  passed. Only changed formatting ranges were processed; AST equality was checked.
+  This phase has no admin UI source changes.
+- Local controlled comparison: 40 identical read-only SELECT pg_sleep(0.03)
+  queries against the disposable loopback PostgreSQL database, with a 5 ms
+  heartbeat. Inline P99 lag was 60.0176 ms; db_call P99 was 6.7996 ms. Total
+  elapsed times were 2.3530 s and 2.2894 s. These are synthetic slow-query results,
+  not production latency or a claim that PostgreSQL queries became faster.
+  Evidence: .cache/roadmap/phase7-loop-benchmark-final.json.
+- Phases 0-7 are implemented locally, subject to the live acceptance gates above.
+  Phases 8-9 remain pending. No push, production connection, rebuild, real model
+  request or QQ interaction was performed.
+
+#### Reproducing the loop measurement
+
+The default benchmark is synthetic and makes no network request:
+
+```sh
+.build-venv/bin/python tools/benchmark_event_loop.py
+```
+
+For a disposable local PostgreSQL database, set TEST_POSTGRES_DSN and optionally
+TEST_POSTGRES_SCHEMA, then add --postgres. The tool rejects non-loopback addresses,
+alternate routing parameters and database names not ending in _test or _acceptance.
+It does not create or alter tables and does not print the DSN.
+
+After an authorized deployment, compare the per-instance five-minute P99:
+
+```promql
+histogram_quantile(0.99,
+  sum by (instance, le) (rate(gaoji_event_loop_lag_observed_seconds_bucket[5m]))
+)
+```
+
+gaoji_event_loop_lag_seconds reports the latest sample, not a percentile. Production
+sampling is once per second; the benchmark uses 5 ms to expose short blocking calls.

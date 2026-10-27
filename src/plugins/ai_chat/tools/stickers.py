@@ -110,7 +110,9 @@ async def send_sticker(turn: TurnState, arguments: dict[str, object]) -> str:
     ):
         try:
             media_id = int(media_handle.removeprefix("media#"))
-            record = turn.context.app.media_library.get_sticker(media_id)
+            record = await turn.context.app.db_call(
+                turn.context.app.media_library.get_sticker, media_id
+            )
             if (
                 require_different
                 and record is not None
@@ -148,7 +150,11 @@ async def send_sticker(turn: TurnState, arguments: dict[str, object]) -> str:
         turn.visual_reply_segment = MessageSegment.image(
             record.storage_path.read_bytes()
         )
-        turn.context.app.media_library.mark_sent(record.media_id)
+        (
+            await turn.context.app.db_call(
+                turn.context.app.media_library.mark_sent, record.media_id
+            )
+        )
         return json.dumps(
             {
                 "ok": True,

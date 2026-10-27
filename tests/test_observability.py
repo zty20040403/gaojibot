@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import asyncio
+import time
 import unittest
+from unittest.mock import patch
 
 import httpx
 import nonebot
@@ -109,6 +112,39 @@ class ObservabilityTests(unittest.TestCase):
             'gaoji_outbox_deliveries{status="pending"} 2.0',
             response.text,
         )
+
+
+class EventLoopTelemetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sampler_reports_delay_and_can_be_cancelled(self):
+        metrics = BotTelemetry()
+        sampled = asyncio.Event()
+        original = metrics.event_loop_lag_distribution.observe
+
+        def observe(lag):
+            original(lag)
+            sampled.set()
+
+        with patch.object(metrics.event_loop_lag_distribution, "observe", observe):
+            sampler = asyncio.create_task(metrics.monitor_event_loop(0.005))
+            try:
+                await asyncio.sleep(0)
+                time.sleep(0.03)
+                await asyncio.wait_for(sampled.wait(), 1)
+                snapshot = metrics.admin_snapshot()
+                self.assertGreater(snapshot["totals"]["event_loop_lag_seconds"], 0.015)
+                rendered = metrics.render().decode()
+                self.assertIn("gaoji_event_loop_lag_seconds", rendered)
+                self.assertIn(
+                    "gaoji_event_loop_lag_observed_seconds_count 1.0", rendered
+                )
+            finally:
+                sampler.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await sampler
+
+    async def test_sampler_rejects_busy_loop_interval(self):
+        with self.assertRaises(ValueError):
+            await BotTelemetry().monitor_event_loop(0)
 
 
 if __name__ == "__main__":

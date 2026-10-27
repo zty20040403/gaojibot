@@ -41,9 +41,10 @@ async def add(turn: TurnState, arguments: dict[str, object]) -> str:
             {"ok": False, "error": "检测到可能的密码、Token 或密钥，拒绝保存。"},
             ensure_ascii=False,
         )
-    provenance = commands._memory_provenance(event)
+    provenance = await turn.context.app.db_call(commands._memory_provenance, event)
     try:
-        entry, created = turn.context.app.long_term_memory.add(
+        entry, created = await turn.context.app.db_call(
+            turn.context.app.long_term_memory.add,
             scope_key,
             scope_type,
             content,
@@ -69,8 +70,9 @@ async def list_entries(turn: TurnState, arguments: dict[str, object]) -> str:
     requested_scope = str(arguments.get("scope", "all")).strip().lower()
     if requested_scope not in {"user", "group", "all"}:
         requested_scope = "all"
-    entries = turn.context.app.long_term_memory.list_entries(
-        commands._memory_scope_keys(event, requested_scope)
+    entries = await turn.context.app.db_call(
+        turn.context.app.long_term_memory.list_entries,
+        commands._memory_scope_keys(event, requested_scope),
     )
     return json.dumps(
         {
@@ -87,7 +89,9 @@ async def remove(turn: TurnState, arguments: dict[str, object]) -> str:
         memory_id = int(arguments.get("memory_id") or 0)
     except (TypeError, ValueError):
         memory_id = 0
-    entry = commands._find_visible_memory(event, memory_id)
+    entry = await turn.context.app.db_call(
+        commands._find_visible_memory, event, memory_id
+    )
     if (
         entry is not None
         and entry.scope_type == "group"
@@ -96,10 +100,11 @@ async def remove(turn: TurnState, arguments: dict[str, object]) -> str:
         return json.dumps(
             {"ok": False, "error": "你没有修改群记忆的权限。"}, ensure_ascii=False
         )
-    removed = turn.context.app.long_term_memory.remove(
+    removed = await turn.context.app.db_call(
+        turn.context.app.long_term_memory.remove,
         memory_id,
         commands._memory_scope_keys(event),
-        **commands._memory_provenance(event),
+        **(await turn.context.app.db_call(commands._memory_provenance, event)),
         reason="model memory_remove tool",
     )
     return json.dumps(

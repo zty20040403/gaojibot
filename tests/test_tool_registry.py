@@ -15,6 +15,7 @@ from src.plugins.ai_chat.ai_tools import (
     MEMORY_ADD_TOOL,
     QUERY_ALERTS_TOOL,
 )
+from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.agent_tools import AGENT_TOOL_METHODS, AgentToolExecutor
 from src.plugins.ai_chat.long_term_memory import LongTermMemoryError
 from src.plugins.ai_chat import tool_policy
@@ -26,8 +27,12 @@ from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.app = SimpleNamespace(
-            long_term_memory=Mock(), alert_store=Mock(), logger=Mock()
+            long_term_memory=Mock(),
+            alert_store=Mock(),
+            logger=Mock(),
+            db_call=DatabaseCalls(),
         )
+        self.addAsyncCleanup(self.app.db_call.close)
         self.commands = Mock()
         self.commands._memory_scopes.return_value = ("group:10", "user:10:7")
         self.commands._memory_scope_keys.return_value = ["group:10", "user:10:7"]

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
+from src.bot_storage import DatabaseCalls
 
 nonebot.init()
 
@@ -27,6 +28,8 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
             skill_registry=Mock(),
             self_source=Mock(),
         )
+        self.app.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.app.db_call.close)
         self.turn = TurnState(
             ToolContext(
                 SimpleNamespace(context=self.app), Mock(), frozenset({"web", "self"})

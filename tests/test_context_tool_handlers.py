@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import nonebot
+from src.bot_storage import DatabaseCalls
 
 nonebot.init()
 
@@ -66,6 +67,8 @@ class ContextToolHandlerTests(unittest.IsolatedAsyncioTestCase):
             logger=Mock(),
             settings=SimpleNamespace(turn_expand_max_chars=2000),
         )
+        self.app.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.app.db_call.close)
         self.app.long_term_memory.list_entries.return_value = []
         self.bot = AsyncMock()
         self.turn = TurnState(

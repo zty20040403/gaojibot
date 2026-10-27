@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -21,6 +22,7 @@ class GroupContextMessage:
 
 class ConversationMemory:
     def __init__(self, max_turns: int, state_path: StateSource = None) -> None:
+        self._lock = threading.RLock()
         self._max_messages = max(max_turns, 1) * 2
         self._state = open_json_state(state_path, "conversation_history")
         self._histories: defaultdict[str, deque[ChatMessage]] = defaultdict(
@@ -32,7 +34,8 @@ class ConversationMemory:
         return deque(maxlen=self._max_messages)
 
     def get(self, conversation_id: str) -> list[ChatMessage]:
-        return list(self._histories.get(conversation_id, ()))
+        with self._lock:
+            return list(self._histories.get(conversation_id, ()))
 
     def append_turn(
         self,
@@ -40,16 +43,18 @@ class ConversationMemory:
         user_text: str,
         assistant_text: str,
     ) -> None:
-        history = self._histories[conversation_id]
-        history.append({"role": "user", "content": user_text})
-        history.append({"role": "assistant", "content": assistant_text})
-        self._save()
+        with self._lock:
+            history = self._histories[conversation_id]
+            history.append({"role": "user", "content": user_text})
+            history.append({"role": "assistant", "content": assistant_text})
+            self._save()
 
     def clear(self, conversation_id: str) -> bool:
-        removed = self._histories.pop(conversation_id, None) is not None
-        if removed:
-            self._save()
-        return removed
+        with self._lock:
+            removed = self._histories.pop(conversation_id, None) is not None
+            if removed:
+                self._save()
+            return removed
 
     def _load(self) -> None:
         loaded = self._state.load()
@@ -83,6 +88,7 @@ class GroupContextMemory:
         max_chars: int,
         state_path: StateSource = None,
     ) -> None:
+        self._lock = threading.RLock()
         self._max_messages = max(max_messages, 1)
         self._messages: defaultdict[int, deque[GroupContextMessage]] = defaultdict(
             self._new_group
@@ -103,43 +109,46 @@ class GroupContextMemory:
         timestamp: int | None = None,
         message_id: int = 0,
     ) -> None:
-        content = " ".join(content.split())
-        sender = " ".join(sender.split())
-        if not content or not sender:
-            return
-        self._messages[group_id].append(
-            GroupContextMessage(
-                sender=sender[:200],
-                content=content[: max(self._max_chars, 1000)],
-                timestamp=max(int(timestamp or time.time()), 0),
-                message_id=max(int(message_id), 0),
+        with self._lock:
+            content = " ".join(content.split())
+            sender = " ".join(sender.split())
+            if not content or not sender:
+                return
+            self._messages[group_id].append(
+                GroupContextMessage(
+                    sender=sender[:200],
+                    content=content[: max(self._max_chars, 1000)],
+                    timestamp=max(int(timestamp or time.time()), 0),
+                    message_id=max(int(message_id), 0),
+                )
             )
-        )
-        self._save()
+            self._save()
 
     def render(self, group_id: int) -> str:
-        lines = [
-            _render_group_message(message)
-            for message in self._messages.get(group_id, ())
-        ]
-        if not lines:
-            return ""
+        with self._lock:
+            lines = [
+                _render_group_message(message)
+                for message in self._messages.get(group_id, ())
+            ]
+            if not lines:
+                return ""
 
-        kept: list[str] = []
-        total = 0
-        for line in reversed(lines):
-            line_len = len(line) + 1
-            if kept and total + line_len > self._max_chars:
-                break
-            kept.append(line)
-            total += line_len
-        return "\n".join(reversed(kept))
+            kept: list[str] = []
+            total = 0
+            for line in reversed(lines):
+                line_len = len(line) + 1
+                if kept and total + line_len > self._max_chars:
+                    break
+                kept.append(line)
+                total += line_len
+            return "\n".join(reversed(kept))
 
     def clear(self, group_id: int) -> int:
-        removed = self._messages.pop(group_id, None)
-        if removed is not None:
-            self._save()
-        return len(removed or ())
+        with self._lock:
+            removed = self._messages.pop(group_id, None)
+            if removed is not None:
+                self._save()
+            return len(removed or ())
 
     def _load(self) -> None:
         loaded = self._state.load()

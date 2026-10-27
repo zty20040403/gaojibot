@@ -34,6 +34,7 @@ def register_http_surfaces(
                 otlp_endpoint=settings.otel_exporter_otlp_endpoint,
                 running_tasks=context.running_tasks,
                 delivery_store=context.delivery_store,
+                db_call=context.db_call,
             )
         except (RuntimeError, TypeError, ValueError) as exc:
             logger.error(f"Observability endpoint could not be registered: {exc}")

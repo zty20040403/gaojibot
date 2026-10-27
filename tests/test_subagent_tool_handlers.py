@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
+from src.bot_storage import DatabaseCalls
 
 nonebot.init()
 
@@ -31,6 +32,8 @@ class SubAgentToolHandlerTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTes
             resume=AsyncMock(return_value="task#7 resumed"),
         )
         self.app = SimpleNamespace(subagent_coordinator=object())
+        self.app.db_call = DatabaseCalls()
+        self.addAsyncCleanup(self.app.db_call.close)
         self.turn = TurnState(
             ToolContext(
                 SimpleNamespace(context=self.app), Mock(), frozenset({"subagents"})

@@ -1,5 +1,6 @@
 """Shared durable storage primitives for the bot."""
 
+from .async_calls import DatabaseCalls
 from .database import (
     DatabaseError,
     DatabaseSource,
@@ -11,6 +12,7 @@ from .database import (
 from .state import JsonState, StateSource, open_json_state
 
 __all__ = [
+    "DatabaseCalls",
     "DatabaseError",
     "DatabaseSource",
     "PostgresDatabase",

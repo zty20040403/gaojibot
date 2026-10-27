@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any, Protocol
+from weakref import WeakValueDictionary
 
+from src.bot_storage import DatabaseCalls
 from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
     MessageEvent,
@@ -48,6 +51,7 @@ class OneBotIngestAdapter:
         recent_images: Any = None,
         recent_voices: Any = None,
         recent_videos: Any = None,
+        db_call: DatabaseCalls | None = None,
     ) -> None:
         self.group_enabled = group_enabled
         self.canonical_scope = canonical_scope
@@ -67,8 +71,19 @@ class OneBotIngestAdapter:
         self.recent_images = recent_images
         self.recent_voices = recent_voices
         self.recent_videos = recent_videos
+        self.db_call = db_call if db_call is not None else DatabaseCalls()
+        self._ingest_locks: WeakValueDictionary[str, asyncio.Lock] = (
+            WeakValueDictionary()
+        )
 
     async def ingest(self, event: MessageEvent) -> None:
+        scope_key = scope_from_event(event).key
+        lock = self._ingest_locks.setdefault(scope_key, asyncio.Lock())
+        # Preserve arrival order within a conversation without blocking other groups.
+        async with lock:
+            await self.db_call(self._ingest, event)
+
+    def _ingest(self, event: MessageEvent) -> None:
         if (
             isinstance(event, GroupMessageEvent)
             and not self.group_enabled(event.group_id)
@@ -177,10 +192,11 @@ class OneBotIngestAdapter:
         if event.user_id == event.self_id:
             return
         if isinstance(event, GroupMessageEvent):
-            if not self.group_enabled(event.group_id):
+            if not await self.db_call(self.group_enabled, event.group_id):
                 return
             if self.user_profiles is not None:
-                self.user_profiles.observe(
+                await self.db_call(
+                    self.user_profiles.observe,
                     event.group_id,
                     event.user_id,
                     nickname=event.sender.nickname or "",

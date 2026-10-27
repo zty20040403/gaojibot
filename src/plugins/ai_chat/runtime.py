@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from src.bot_storage import DatabaseError, PostgresDatabase
+from src.bot_storage import DatabaseCalls, DatabaseError, PostgresDatabase
 from src.bot_storage.schema import HEAD_REVISION
 
 from .alert_history import AlertEventStore
@@ -155,6 +155,7 @@ class AppContext:
     alert_store: AlertEventStore | None = None
     fleet_client: FleetControlClient | None = None
     mobile_authorization: MobileAuthorization | None = None
+    db_call: DatabaseCalls = field(default_factory=DatabaseCalls, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
     async def shutdown(self) -> None:
@@ -165,11 +166,13 @@ class AppContext:
         if stopped:
             self.logger.info(f"Stopped {stopped} background task(s).")
 
-        cancelled = self.running_tasks.cancel_all()
+        cancelled = await self.running_tasks.cancel_all_and_wait()
         if cancelled:
             self.logger.info(
                 f"Cancelled {cancelled} running AI task(s) during shutdown."
             )
+
+        await self.db_call.close()
 
         for name, resource in (
             ("LLM gateway", self.llm_gateway),

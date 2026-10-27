@@ -248,6 +248,7 @@ class MediaLibrary:
         )
         self.worker_id = f"{socket.gethostname()}:{os.getpid()}"
         self._wake = asyncio.Event()
+        self._worker_loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
 
         profile = self.model_catalog.resolve(self.vision_profile_name)
@@ -348,15 +349,33 @@ class MediaLibrary:
         finally:
             connection.close()
         if added:
-            self._wake.set()
+            self._notify_worker()
         return added
 
+    def _notify_worker(self) -> None:
+        loop = self._worker_loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._wake.set)
+        except RuntimeError:
+            if not loop.is_closed():
+                raise
+
     async def run_forever(self) -> None:
+        self._worker_loop = asyncio.get_running_loop()
+        try:
+            await self._run_jobs()
+        finally:
+            self._worker_loop = None
+
+    async def _run_jobs(self) -> None:
         semaphore = asyncio.Semaphore(self.worker_concurrency)
         while not self._closed:
+            # Notifications arriving during the query must survive until wait().
+            self._wake.clear()
             jobs = await asyncio.to_thread(self.claim_jobs)
             if not jobs:
-                self._wake.clear()
                 try:
                     await asyncio.wait_for(self._wake.wait(), timeout=15)
                 except TimeoutError:
@@ -739,7 +758,7 @@ class MediaLibrary:
         finally:
             connection.close()
         if added:
-            self._wake.set()
+            self._notify_worker()
         return added
 
     def find_media(
