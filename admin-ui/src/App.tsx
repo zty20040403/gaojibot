@@ -24,6 +24,7 @@ import {
 import { LoginGate, MemberStatus, AccountsView, ApprovalNotice } from './AccountViews'
 import { StatusBadge } from './components'
 import { ContextDebugView } from './ContextDebugView'
+import { WikiView } from './WikiView'
 import { DETAIL_META, DetailView, type DetailViewId } from './detailViews'
 import { useControlPlane } from './useControlPlane'
 import {
@@ -49,7 +50,7 @@ const runtime = window.__GAOJI_ADMIN__ ?? {
   requiresLogin: true,
 }
 
-type ViewId = 'accounts' | 'overview' | 'observability' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'context-debug' | 'databases' | 'fleet' | 'sandboxes' | 'media' | 'audit' | 'help'
+type ViewId = 'accounts' | 'overview' | 'observability' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'context-debug' | 'wiki' | 'databases' | 'fleet' | 'sandboxes' | 'media' | 'audit' | 'help'
 
 const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group: string; icon: ComponentType<{ size?: number }> }> = [
   { id: 'accounts', label: '账户与任务授权', description: '账户权限、服务器任务授权与操作记录', group: '配置', icon: Users },
@@ -61,6 +62,7 @@ const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group:
   { id: 'context-debug', label: '上下文调试', description: '查看话题、原消息、候选评分、Token 和人工反馈', group: '运行', icon: ScanSearch },
   { id: 'sandboxes', label: '沙盒', description: '隔离环境、命令和资源使用情况', group: '资源', icon: Boxes },
   { id: 'media', label: '媒体审核', description: '表情候选、识图和分享内容记录', group: '资源', icon: Image },
+  { id: 'wiki', label: '群百科', description: '群知识、来源证据与新人简报', group: '资源', icon: BookOpen },
   { id: 'groups', label: '模型与群友', description: '配置群开关、统一模型和个人模型', group: '配置', icon: Users },
   { id: 'tools', label: '工具权限', description: '控制 Agent 可见工具与执行策略', group: '配置', icon: Wrench },
   { id: 'databases', label: '数据库', description: '主备节点、连接池与复制状态', group: '基础设施', icon: Database },
@@ -179,6 +181,7 @@ export function App() {
               {active === 'tools' && <ToolsView plane={plane} />}
               {active === 'traces' && <TracesView plane={plane} onOpenDetail={openDetail} />}
               {active === 'context-debug' && <ContextDebugView plane={plane} />}
+              {active === 'wiki' && <WikiView plane={plane} />}
               {active === 'databases' && <DatabasesView plane={plane} />}
               {active === 'fleet' && <FleetView plane={plane} />}
               {active === 'sandboxes' && <SandboxesView plane={plane} />}

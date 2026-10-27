@@ -20,6 +20,7 @@ from .admin_api import (
     subagents,
     tasks,
     tools,
+    wiki,
 )
 from .admin_api.context import AdminRouteContext
 from .admin_api.contracts import AdminServices
@@ -55,6 +56,7 @@ _PAGE_ROUTERS = (
     observability,
     events,
     fleet,
+    wiki,
 )
 
 

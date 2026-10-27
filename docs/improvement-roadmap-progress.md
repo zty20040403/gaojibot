@@ -136,7 +136,11 @@ acceptance are not implied by this roadmap.
       budgets, child takeover, member checks, quiet completion, original-account
       delivery and atomic result/journal settlement. Keep disabled until live
       acceptance. Watch sources and project integration belong to the newer plan.
-- [ ] 9.3 Nightly group wiki, search command/admin page, opt-in newcomer brief.
+- [x] 9.3 Nightly group wiki, search command/admin page, opt-in newcomer brief.
+      Local implementation, PostgreSQL regression and responsive UI checks pass.
+      Includes evidence validation, versioned settings/audit, original-account
+      durable delivery and fresh membership checks. Disabled by default; real
+      generation quality and QQ private-message acceptance remain pending.
 - [ ] 9.4 Sandbox web artifacts to expiring, scoped preview links in chat.
 - [ ] 9.5 Delegated task collaborators and two-administrator high-risk quorum.
 - [ ] 9.6 Official-SDK MCP client through the registry, conservative permissions,
@@ -853,3 +857,116 @@ sampling is once per second; the benchmark uses 5 ms to expose short blocking ca
 - This phase is a local-only commit. No real model/QQ calls, server connections,
   push or rebuild. Live roster, provider accounting and delivery acceptance remain
   pending; the supplied newer plan is unchanged and excluded from the commit.
+
+### Phase 9.3 wiki storage (in progress, not committed)
+
+- Applied migration 0037 only to the two disposable local databases. Added
+  group-scoped opt-in settings, current knowledge pages and publication receipts.
+  Wiki access and newcomer brief preferences are separate, both default off.
+- Added a bounded ContextStore chapter reader that verifies scope, visibility,
+  original message IDs and canonical IR hashes. Captured P1/P2/P3 sources include
+  quoted participant statements with principal IDs. Expertise entries must cite
+  the named participant's own quoted messages, not another user's claims.
+- Concurrent enqueueing uses one frozen source/job per group/configuration/slot.
+  Publication and receipt commit together under the current job lease. A lost
+  response can reuse the receipt; old generations cannot overwrite newer pages.
+  Reads revalidate sources, so clearing history or changing canonical evidence
+  immediately hides derived entries. Disabling the wiki cancels pending work.
+- Initial focused run: 26 tests, one failure because the fixture edited the
+  rebuildable search cache rather than canonical message IR. Fixed the fixture
+  to modify the actual body and added a cache-independence regression; no
+  production evidence validation was relaxed. Intermediate rerun: 27 passed.
+- Final storage/context/Historian focused run: 29 tests, OK, 8.518 seconds;
+  .cache/roadmap/phase9-3-wiki-store-final.log. Ruff over CI paths and whitespace
+  checks pass. A full phase regression and UI build are still pending integration.
+- The initial source capture is bounded to recent chapters. Incremental retention
+  of older verified wiki entries must be implemented before this can be presented
+  as a continuing knowledge page. No nightly generator, QQ command, newcomer
+  delivery, admin API or page is wired yet. This is not a completed phase and
+  remains uncommitted. The newer M0-M7 project plan has not started.
+- Phase 9.2 was committed locally as `3e50940`. No push, production connection,
+  real QQ/model call or deployment occurred in this step.
+
+### Phase 9.3 incremental generation and commands (in progress)
+
+- Replaced recent-only capture with oldest-first bounded batches. Verified older
+  entries survive later batches; unchanged chapters (including empty results)
+  are checkpointed, while regenerated/hidden evidence cannot retain derived
+  entries. Evidence validation pages through more than 100 source chapters.
+  Exact category/title/participant keys may be updated by newer evidence without
+  deleting unrelated knowledge. Semantic duplicate/conflict resolution is not
+  claimed by this deterministic merge.
+- Added the nightly durable worker, global opt-in, configured timezone/hour,
+  original-account/group availability checks and generation without tools.
+  At most four batches per group/date and three persisted generation reservations
+  per job. Each reservation bounds model requests and tokens, including retries;
+  interruptions cannot reset that allowance. Checked unchanged days skip further
+  source scans; one group's scheduling failure does not starve other groups.
+- The uncommitted 0037 migration now also owns the generation budget table and
+  checked-day field. The first local downgrade attempt failed because the added
+  table was not present in the earlier disposable schema; the transaction rolled
+  back. Recreated only the Wiki tables in the two isolated test databases and
+  reapplied 0037. No existing production schema or server was accessed.
+- Added `/群百科 [关键词]`, `/群百科 开启` and `/群百科 关闭`. Only group or bot
+  administrators can change settings; reads use the actual incoming group and
+  never request a model. Private lookups and disabled groups are rejected.
+  Replies are bounded literal text, not parsed CQ segments. Obvious credential
+  patterns are redacted from generation input and rejected in published entries.
+  This filter is not a guarantee that every form of private information is found.
+- Initial incremental store run: 19 tests, OK, 16.529 seconds;
+  .cache/roadmap/phase9-3-wiki-incremental.log. Initial integrated run: 71 tests,
+  one error and one failure from stale matcher/worker expectation lists. Updated
+  those lists and added the new adapter coverage rather than relaxing behavior.
+- Expanded integration run: 73 tests, OK, 21.292 seconds;
+  .cache/roadmap/phase9-3-wiki-worker-final.log. Ruff then caught a missing
+  MessageSegment import in the command boundary; fixed it and added a direct
+  literal-CQ regression. Final worker/adapter run: 24 tests, OK, 5.746 seconds;
+  .cache/roadmap/phase9-3-wiki-command-final.log. Ruff over every CI path passes.
+- Full isolated PostgreSQL regression for this checkpoint: 1,917 tests, OK
+  (12 skipped), 300.350 seconds; .cache/roadmap/phase9-3-worker-full.log. Admin
+  TypeScript/Vite build passes; .cache/roadmap/phase9-3-worker-admin-build.log.
+  Both disposable databases are at 0037 and have zero leftover test schemas.
+  No phase commit until newcomer delivery, admin API/UI, their tests/build and
+  the complete phase regression have been finished. This is not live model or
+  QQ acceptance, and no Wiki admin page has been implemented yet.
+- The newer M0-M7 plan remains unchanged and untracked. No push, rebuild, SSH,
+  real model request or real QQ message was performed.
+
+### Phase 9.3 newcomer delivery, admin API and final validation
+
+- Group-increase notices create deduplicated durable jobs only for an opted-in
+  group/account. Briefs exclude expertise profiles, contain at most five verified
+  entries and expire after one day. Membership is checked both before enqueueing
+  delivery and immediately before sending. A confirmed departure or hidden
+  evidence cancels delivery; an unavailable roster defers without assuming access.
+- Job takeover reuses one Outbox record and never switches to another QQ account.
+  A missing native receipt is ambiguous, not delivered or automatically resent.
+  Briefs and their outgoing echoes are excluded from the private ledger and
+  cross-platform mirroring, including late ambiguous echoes after restart.
+- Added administrator-only Wiki routes, strict configuration inputs, mandatory
+  resource If-Match plus group-setting version checks, and existing audit records.
+  Store calls and event publication run off the event loop. SSE invalidates wiki
+  views when evidence is edited/hidden; ordinary new chat alone does not rescan it.
+- Added the group wiki page: search, five entries per page, original evidence IDs,
+  version/timestamp, independent wiki/newcomer switches and five recent jobs.
+  SSE preserves drafts and focused controls. Saving temporarily disables group
+  switching so a late response cannot populate another group's draft.
+- Initial newcomer tests exposed unescaped SQL LIKE percent literals in psycopg
+  statements. Bound those patterns as parameters. Subsequent failures were a
+  hardcoded principal fixture and an incorrect audit-status expectation; corrected
+  the fixtures to the actual canonical principal and existing `succeeded` status.
+- Focused integration: 91 tests, OK, 45.168 seconds;
+  .cache/roadmap/phase9-3-integration-final.log. Complete PostgreSQL regression:
+  1,936 tests, OK (12 skipped), 307.658 seconds;
+  .cache/roadmap/phase9-3-final-full.log. Both disposable databases are at 0037,
+  with zero leftover owned test schemas. Ruff across CI paths and diff checks pass.
+- After that full run, the only product edit was the frontend save/switch guard.
+  The admin TypeScript/Vite build passed again. Playwright component-harness checks
+  at 1280x900 and 390x844 verify SSE draft/focus retention, search, pagination,
+  delayed-save isolation and no overflow or browser errors;
+  .cache/roadmap/phase9-3-wiki-visual-final.log. Screenshots were inspected, the
+  temporary harness removed, and its local server stopped. This is mocked UI
+  verification, not live QQ or provider acceptance.
+- Phase 9.3 is locally complete. Remaining earlier-plan work is 9.4-9.6; the new
+  project-workspace M0-M7 plan is not started, remains unmodified and is excluded
+  from the commit. No push, rebuild, production access or real messages occurred.

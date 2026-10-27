@@ -265,6 +265,11 @@ class Settings:
     historian_max_scopes: int
     historian_idle_seconds: int
     historian_max_attempts: int
+    group_wiki_enabled: bool
+    group_wiki_profile: str
+    group_wiki_hour: int
+    group_wiki_timezone: str
+    group_wiki_check_seconds: int
     dream_enabled: bool
     dream_profile: str
     dream_model: str
@@ -840,6 +845,11 @@ class Settings:
                 max(_get_int("AI_HISTORIAN_MAX_ATTEMPTS", 4), 2),
                 10,
             ),
+            group_wiki_enabled=_get_bool("AI_GROUP_WIKI_ENABLED", False),
+            group_wiki_profile=os.getenv("AI_GROUP_WIKI_PROFILE", "").strip(),
+            group_wiki_hour=_get_resource_limit("AI_GROUP_WIKI_HOUR", 3, 0, 23),
+            group_wiki_timezone=os.getenv("AI_GROUP_WIKI_TIMEZONE", "Asia/Shanghai").strip() or "Asia/Shanghai",
+            group_wiki_check_seconds=_get_resource_limit("AI_GROUP_WIKI_CHECK_SECONDS", 300, 30, 3600),
             dream_enabled=_get_bool("AI_DREAM_ENABLED", False),
             dream_profile=os.getenv("AI_DREAM_PROFILE", "").strip(),
             dream_model=os.getenv("AI_DREAM_MODEL", "").strip(),

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, NoticeEvent
+from nonebot.adapters.onebot.v11 import Bot, GroupIncreaseNoticeEvent, Message, MessageEvent, NoticeEvent
 from nonebot.params import CommandArg
 
 from . import matchers
@@ -82,6 +82,9 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
     async def handle_routine_command(event: MessageEvent, args: Message = CommandArg()) -> None:
         await runtime.handlers.commands.handle_routine_command(event, args)
 
+    async def handle_wiki_command(event: MessageEvent, args: Message = CommandArg()) -> None:
+        await runtime.handlers.commands.handle_wiki_command(event, args)
+
     async def handle_task_stop(
         event: MessageEvent, args: Message = CommandArg()
     ) -> None:
@@ -98,6 +101,10 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
 
     async def handle_proactive_notice(bot: Bot, event: NoticeEvent) -> None:
         await runtime.handlers.ingest.handle_proactive_notice(bot, event)
+
+    async def handle_wiki_newcomer(event: GroupIncreaseNoticeEvent) -> None:
+        if runtime.handlers.wiki is not None:
+            await runtime.handlers.wiki.newcomer_notice(event)
 
     async def handle_group_activity(event: MessageEvent) -> None:
         await runtime.handlers.ingest.handle_group_activity(event)
@@ -143,11 +150,13 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
         (matchers.task_status, handle_task_status),
         (matchers.usage_command, handle_usage_command),
         (matchers.routine_command, handle_routine_command),
+        (matchers.wiki_command, handle_wiki_command),
         (matchers.task_stop, handle_task_stop),
         (matchers.mention_ai, handle_mention_ai),
         (matchers.canonical_ingest_tracker, handle_canonical_ingest),
         (matchers.reaction_feedback_tracker, handle_reaction_notice),
         (matchers.proactive_feedback_tracker, handle_proactive_notice),
+        (matchers.wiki_newcomer_tracker, handle_wiki_newcomer),
         (matchers.group_activity_tracker, handle_group_activity),
         (matchers.image_auto_description, handle_image_auto_description),
         (matchers.proactive_chat, handle_proactive_chat),

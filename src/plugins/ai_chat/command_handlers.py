@@ -12,6 +12,7 @@ from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
     Message,
     MessageEvent,
+    MessageSegment,
 )
 from nonebot.exception import (
     FinishedException,
@@ -1375,6 +1376,13 @@ class CommandHandlers(HandlerService):
     async def handle_routine_command(self, event: MessageEvent, args: Message) -> None:
         from .routine_commands import handle_routine_command
         await handle_routine_command(self.services, event, args)
+
+    async def handle_wiki_command(self, event: MessageEvent, args: Message) -> None:
+        from .matchers import wiki_command
+
+        wiki = self.services.wiki
+        result = await wiki.command(event, args.extract_plain_text()) if wiki is not None else "群百科功能尚未启用。"
+        await wiki_command.finish(MessageSegment.text(result))
 
     async def handle_usage_command(self, event: MessageEvent) -> None:
         await self.services.replies._finish_safely(

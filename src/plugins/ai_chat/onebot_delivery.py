@@ -38,6 +38,7 @@ from .reminders import (
     Reminder,
 )
 from .handler_services import HandlerService
+from .group_wiki import NEWCOMER_DELIVERY_PREFIX, WikiSuperseded
 
 
 class OneBotDelivery(HandlerService):
@@ -116,6 +117,12 @@ class OneBotDelivery(HandlerService):
                     self.context.reminder_store.mark_sent(reminder.reminder_id)
 
     async def _deliver_onebot_outbox(self, bot: Bot, delivery: Delivery) -> None:
+        is_wiki_brief = delivery.idempotency_key.startswith(NEWCOMER_DELIVERY_PREFIX)
+        if is_wiki_brief:
+            wiki = getattr(self.services, "wiki", None)
+            if wiki is None:
+                raise BridgePermanentError("群百科已停用，取消新人简报")
+            await wiki.validate_newcomer_delivery(bot, delivery)
         if delivery.target_kind == "group" and not self.services.group_enabled(
             int(delivery.target_native_conversation_id)
         ):
@@ -141,11 +148,16 @@ class OneBotDelivery(HandlerService):
                     message=message,
                 )
         native_message_id = self.services.replies._sent_message_id(response)
+        if is_wiki_brief and not native_message_id:
+            raise BridgeOutcomeUnknown("新人简报没有取得 QQ 消息回执，暂停自动重发")
         if self.context.delivery_store is not None:
             self.context.delivery_store.mark_committed(
                 delivery.delivery_id,
                 native_message_id=native_message_id or "",
             )
+        # Group knowledge stays group-scoped, even when delivered privately to a newcomer.
+        if is_wiki_brief:
+            return
         if native_message_id is not None and self.context.mirror_state is not None:
             self.context.mirror_state.confirm_delivery(
                 delivery.delivery_id,
@@ -223,6 +235,15 @@ class OneBotDelivery(HandlerService):
                             if run is None or run.spec.scope_key != delivery.target_scope.key:
                                 raise BridgePermanentError("例行任务投递范围不匹配")
                             selected_bot = next((bot for bot in bots if str(bot.self_id) == run.spec.bot_id), None)
+                        elif delivery.idempotency_key.startswith(NEWCOMER_DELIVERY_PREFIX):
+                            wiki_store = getattr(self.context, "group_wiki_store", None)
+                            if wiki_store is None:
+                                raise BridgePermanentError("群百科已停用，取消新人简报")
+                            try:
+                                payload = await self.context.db_call(wiki_store.newcomer_delivery, delivery)
+                            except WikiSuperseded as exc:
+                                raise BridgePermanentError(str(exc)) from exc
+                            selected_bot = next((bot for bot in bots if str(bot.self_id) == payload["bot_id"]), None)
                         if selected_bot is None:
                             self.context.delivery_store.defer_unsent(delivery, "原任务的 QQ 账号尚未连接")
                             continue

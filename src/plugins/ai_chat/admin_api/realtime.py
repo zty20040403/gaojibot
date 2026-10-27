@@ -95,6 +95,12 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "principals": ("groups",),
     "principal_identities": ("groups",),
     "messages": ("groups", "context-debug"),
+    "conversation_visibility": ("context-debug", "wiki"),
+    "context_compartments": ("context-debug", "wiki"),
+    "group_wiki_settings": ("wiki",),
+    "group_wiki_pages": ("wiki",),
+    "group_wiki_publications": ("wiki",),
+    "group_wiki_generations": ("wiki",),
     "deliveries": ("deliveries", "subagents", "overview", "observability"),
     "delivery_attempts": ("deliveries", "subagents", "overview", "observability"),
     "usage_events": ("usage", "overview", "observability"),
@@ -105,7 +111,7 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "turn_reaction_votes": ("context-debug",),
     "turn_edges": ("traces", "context-debug"),
     "turn_digests": ("traces", "context-debug"),
-    "durable_jobs": ("jobs", "media", "context-debug", "overview"),
+    "durable_jobs": ("jobs", "media", "context-debug", "overview", "wiki"),
     "media_blobs": ("media", "stickers"),
     "message_media": ("media", "stickers"),
     "media_jobs": ("media",),
@@ -149,6 +155,9 @@ def _changed_database_resources(
     for table, counters in current.items():
         if previous.get(table) != counters:
             changed.update(_DATABASE_RESOURCE_MAP.get(table, ()))
+            # New chat alone cannot change published wiki evidence; edits/deletes can.
+            if table == "messages" and previous.get(table, (0, 0, 0))[1:] != counters[1:]:
+                changed.add("wiki")
     return changed
 
 
@@ -219,6 +228,7 @@ class AdminRealtimeMonitor:
                             "tools",
                             "traces",
                             "context-debug",
+                            "wiki",
                             "audit",
                         )
                     )

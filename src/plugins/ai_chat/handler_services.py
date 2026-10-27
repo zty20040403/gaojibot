@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from .trigger_service import TriggerService
     from .video_analysis import DeepVideoAnalyzer
     from .routine_worker import RoutineDispatcher
+    from .group_wiki_handlers import GroupWikiHandlers
 
 
 class HandlerService:
@@ -43,6 +44,7 @@ class HandlerServices:
     replies: ReplyService = field(init=False)
     delivery: OneBotDelivery = field(init=False)
     routines: RoutineDispatcher | None = field(init=False, default=None)
+    wiki: GroupWikiHandlers | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         from .onebot_chat import OneBotChatService
@@ -69,6 +71,10 @@ class HandlerServices:
             from .routine_worker import RoutineDispatcher
 
             self.routines = RoutineDispatcher(self)
+        if getattr(self.context, "group_wiki_store", None) is not None:
+            from .group_wiki_handlers import GroupWikiHandlers
+
+            self.wiki = GroupWikiHandlers(self)
         coordinator = getattr(self.context, "subagent_coordinator", None)
         if (
             coordinator is not None

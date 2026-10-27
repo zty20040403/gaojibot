@@ -293,6 +293,56 @@ class ContextStore:
             ).fetchall()
         return [self._row_to_compartment(row) for row in reversed(rows)]
 
+    def compartment_ids_after(
+        self, ledger: MessageLedger, scope: ConversationScope, *,
+        after_id: int = 0, limit: int = 100,
+    ) -> tuple[int, ...]:
+        """Page chapter references, including invalid evidence so callers can advance."""
+        floor = ledger.visible_message_floor(scope)
+        self._sync_visibility(scope.key, floor)
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT compartment_id FROM context_compartments WHERE scope_key=? "
+                "AND active=1 AND start_message_id>=? AND compartment_id>? "
+                "ORDER BY compartment_id LIMIT ?",
+                (scope.key, floor, max(0, int(after_id)), min(max(int(limit), 1), 100)),
+            ).fetchall()
+        return tuple(int(row["compartment_id"]) for row in rows)
+
+    def visible_compartments(
+        self, ledger: MessageLedger, scope: ConversationScope, *, limit: int = 32,
+        compartment_ids: tuple[int, ...] | None = None,
+    ) -> list[CompartmentRecord]:
+        """Return only scoped chapters whose original evidence remains intact."""
+        floor = ledger.visible_message_floor(scope)
+        self._sync_visibility(scope.key, floor)
+        bounded = min(max(int(limit), 1), 100)
+        conditions = ""
+        values: list[object] = [scope.key, floor]
+        if compartment_ids is not None:
+            ids = tuple(dict.fromkeys(int(item) for item in compartment_ids))
+            if not ids:
+                return []
+            if len(ids) > 100:
+                raise ValueError("At most 100 compartment references can be checked")
+            conditions = " AND compartment_id IN (" + ",".join("?" for _ in ids) + ")"
+            values.extend(ids)
+        values.append(bounded)
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM context_compartments WHERE scope_key=? AND active=1 "
+                "AND start_message_id>=?" + conditions + " ORDER BY ordinal DESC LIMIT ?",
+                tuple(values),
+            ).fetchall()
+        result = []
+        for row in reversed(rows):
+            chapter = self._row_to_compartment(row)
+            messages = ledger.visible_messages_by_ids(scope, chapter.source_message_ids)
+            if (tuple(item.canonical_message_id for item in messages) == chapter.source_message_ids
+                    and self._source_hash(messages) == chapter.source_hash):
+                result.append(chapter)
+        return result
+
     def capture_candidate(
         self,
         ledger: MessageLedger,

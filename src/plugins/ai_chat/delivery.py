@@ -462,6 +462,20 @@ class DeliveryStore:
             ).fetchone()
         return self._row(stored) if stored is not None else None
 
+    def is_group_brief_echo(self, scope: ConversationScope, body: MessageBody,
+                            *, native_message_id: str | int) -> bool:
+        if scope.platform != "onebot-v11" or scope.kind != "private":
+            return False
+        with self._lock:
+            row = self._connection.execute("""SELECT 1 FROM deliveries
+                WHERE target_platform=? AND target_kind=? AND target_native_conversation_id=?
+                AND content_fingerprint=?
+                AND ((native_message_id=? AND status='committed') OR status IN ('sending','ambiguous'))
+                AND idempotency_key LIKE ? LIMIT 1""",
+                (scope.platform, scope.kind, scope.native_conversation_id,
+                 body_fingerprint(body, ""), str(native_message_id), "wiki-newcomer:%")).fetchone()
+        return row is not None
+
     def park_interrupted_attempts(self, *, now: int | None = None) -> int:
         timestamp = int(time.time() if now is None else now)
         with self._transaction() as cursor:

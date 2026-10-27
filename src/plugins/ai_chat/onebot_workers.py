@@ -47,6 +47,8 @@ async def start_background_tasks(
         )
     if getattr(handlers, "routines", None) is not None:
         context.background_tasks.start("agent-routines", handlers.routines.run_forever)
+    if getattr(handlers, "wiki", None) is not None:
+        context.background_tasks.start("group-wiki", handlers.wiki.worker.run_forever)
     if (
         context.settings.alertmanager_url
         and context.settings.alert_notify_group_id > 0

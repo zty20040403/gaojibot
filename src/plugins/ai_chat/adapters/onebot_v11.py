@@ -107,8 +107,14 @@ class OneBotIngestAdapter:
                         str(event.message_id),
                         confirmed_at=int(event.time),
                     )
+                if physical_scope.kind == "private" and self.delivery_store.is_group_brief_echo(
+                    physical_scope, decoded.body, native_message_id=event.message_id,
+                ):
+                    return
             except Exception as exc:
                 self.logger.warning(f"Outbound echo reconciliation failed: {exc}")
+                if physical_scope.kind == "private":
+                    return
         if self.message_ledger is None:
             return
         try:

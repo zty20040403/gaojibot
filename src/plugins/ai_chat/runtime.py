@@ -53,6 +53,7 @@ from .proactive_learning import ProactiveLearningStore
 from .quota import UsageStore
 from .reminders import ReminderStore
 from .routines import RoutineStore
+from .group_wiki import GroupWikiStore
 from .sandbox import DockerSandboxManager
 from src.sandbox_runtime.client import SandboxClient
 from src.sandbox_runtime.factory import manager_from_settings
@@ -134,6 +135,7 @@ class AppContext:
     proactive_learning: ProactiveLearningStore | None = None
     reminder_store: ReminderStore | None = None
     routine_store: RoutineStore | None = None
+    group_wiki_store: GroupWikiStore | None = None
     delivery_store: DeliveryStore | None = None
     job_store: DurableJobStore | None = None
     job_worker: DurableJobWorker | None = None
@@ -204,6 +206,7 @@ class AppContext:
             ("proactive learning", self.proactive_learning),
             ("reminder store", self.reminder_store),
             ("routine store", self.routine_store),
+            ("group wiki store", self.group_wiki_store),
             ("delivery store", self.delivery_store),
             ("durable job store", self.job_store),
             ("Sub-Agent task store", self.subagent_store),
@@ -244,6 +247,9 @@ def build_app_context(
         settings.ledger_enabled, settings.turn_journal_enabled,
     )):
         raise RuntimeError("AI_ROUTINES_ENABLED requires durable jobs, Outbox, quotas, ledger and turn journal")
+    if settings.group_wiki_enabled and not all((settings.durable_jobs_enabled, settings.ledger_enabled,
+                                               settings.context_lifecycle_enabled, settings.outbox_enabled)):
+        raise RuntimeError("AI_GROUP_WIKI_ENABLED requires durable jobs, Outbox, ledger and context")
     state_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = cache_dir or state_dir / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -797,6 +803,14 @@ def build_app_context(
             max_per_owner=settings.routine_max_per_owner,
         )
 
+    group_wiki_store = None
+    if settings.group_wiki_enabled:
+        if any(value is None for value in (job_store, job_worker, message_ledger, context_store, delivery_store)):
+            raise RuntimeError("Group wiki requires available jobs, delivery, ledger and context stores")
+        if settings.group_wiki_profile:
+            model_catalog.resolve(settings.group_wiki_profile)
+        group_wiki_store = GroupWikiStore(database, ledger=message_ledger, context=context_store, jobs=job_store)
+
     subagent_store: SubAgentStore | None = None
     subagent_coordinator: SubAgentCoordinator | None = None
     if settings.subagents_enabled:
@@ -865,6 +879,7 @@ def build_app_context(
         ),
         reminder_store=reminder_store,
         routine_store=routine_store,
+        group_wiki_store=group_wiki_store,
         delivery_store=delivery_store,
         job_store=job_store,
         job_worker=job_worker,

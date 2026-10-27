@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from nonebot.adapters.onebot.v11 import (
     Bot,
     GroupMessageEvent,
+    GroupIncreaseNoticeEvent,
     Message,
     MessageEvent,
     NoticeEvent,
@@ -330,6 +331,7 @@ class OneBotWorkerStartupTests(unittest.IsolatedAsyncioTestCase):
                 "mobile-authorization",
                 "subagent-workflows",
                 "agent-routines",
+                "group-wiki",
                 "local-model-health",
                 "alert-notifier",
                 "durable-jobs",
@@ -347,6 +349,7 @@ class OneBotWorkerStartupTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIs(workers["delivery"], handlers.delivery._delivery_loop)
         self.assertIs(workers["agent-routines"], handlers.routines.run_forever)
+        self.assertIs(workers["group-wiki"], handlers.wiki.worker.run_forever)
         self.assertIs(workers["historian"], handlers.triggers._historian_loop)
         self.assertIs(workers["proactive-feedback"], handlers.triggers._proactive_feedback_loop)
         context.job_store.enqueue.assert_called_once()
@@ -369,11 +372,13 @@ EXPECTED_BINDINGS = (
     ("task_status", "commands", "handle_task_status"),
     ("usage_command", "commands", "handle_usage_command"),
     ("routine_command", "commands", "handle_routine_command"),
+    ("wiki_command", "commands", "handle_wiki_command"),
     ("task_stop", "commands", "handle_task_stop"),
     ("mention_ai", "commands", "handle_mention_ai"),
     ("canonical_ingest_tracker", "ingest", "handle_canonical_ingest"),
     ("reaction_feedback_tracker", "ingest", "handle_reaction_notice"),
     ("proactive_feedback_tracker", "ingest", "handle_proactive_notice"),
+    ("wiki_newcomer_tracker", "wiki", "newcomer_notice"),
     ("group_activity_tracker", "ingest", "handle_group_activity"),
     ("image_auto_description", "ingest", "handle_image_auto_description"),
     ("proactive_chat", "triggers", "handle_proactive_chat"),
@@ -406,6 +411,7 @@ class OneBotMatcherStartupTests(unittest.IsolatedAsyncioTestCase):
             commands=SimpleNamespace(),
             ingest=SimpleNamespace(),
             triggers=SimpleNamespace(),
+            wiki=SimpleNamespace(),
         )
         for _, service, name in EXPECTED_BINDINGS:
             setattr(getattr(services, service), name, AsyncMock())
@@ -416,9 +422,10 @@ class OneBotMatcherStartupTests(unittest.IsolatedAsyncioTestCase):
             Bot: Mock(),
             MessageEvent: Mock(),
             NoticeEvent: Mock(),
+            GroupIncreaseNoticeEvent: Mock(),
             Message: Message("args"),
         }
-        self.assertEqual(len(EXPECTED_BINDINGS), 30)
+        self.assertEqual(len(EXPECTED_BINDINGS), 32)
         for matcher, service, name in EXPECTED_BINDINGS:
             with self.subTest(matcher=matcher, handler=name):
                 endpoint = getattr(registry, matcher).endpoint

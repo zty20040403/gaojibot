@@ -29,6 +29,10 @@ def _is_proactive_feedback_notice(event: NoticeEvent) -> bool:
     return event.notice_type in {"group_msg_emoji_like", "group_recall"}
 
 
+def _is_group_increase(event: NoticeEvent) -> bool:
+    return event.notice_type == "group_increase"
+
+
 ai = on_command("ai", aliases={"ds", "deepseek", "问"}, priority=10, block=True)
 web_search = on_command(
     "搜", aliases={"搜索", "联网搜索", "查一下", "search"}, priority=10, block=True
@@ -94,6 +98,7 @@ usage_command = on_command(
     "usage", aliases={"用量", "token用量"}, priority=10, block=True
 )
 routine_command = on_command("例行", aliases={"routine", "routines"}, priority=10, block=True)
+wiki_command = on_command("群百科", aliases={"wiki"}, priority=10, block=True)
 task_stop = on_command(
     "停止", aliases={"stop", "kill", "取消任务"}, priority=10, block=True
 )
@@ -124,6 +129,7 @@ mention_ai = on_message(
 canonical_ingest_tracker = on_message(priority=0, block=False)
 reaction_feedback_tracker = on_notice(rule=Rule(_is_reaction_notice), priority=5, block=False)
 proactive_feedback_tracker = on_notice(rule=Rule(_is_proactive_feedback_notice), priority=6, block=False)
+wiki_newcomer_tracker = on_notice(rule=Rule(_is_group_increase), priority=7, block=False)
 group_activity_tracker = on_message(priority=1, block=False)
 image_auto_description = on_message(priority=70, block=False)
 proactive_chat = on_message(priority=80, block=False)
