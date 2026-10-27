@@ -1587,3 +1587,46 @@ implementation evidence, not a claim that the production App has these features.
   project volumes must preserve its fixed-operation RPC boundary and the
   Desktop runner's unprivileged isolation, rather than exposing arbitrary mounts.
   M2-M7 remain incomplete; no project feature is enabled in production.
+
+### M2 quota-helper checkpoint (lifecycle still in progress)
+
+- Added a default-disabled project-volume primitive to the existing authenticated
+  Unix runner. Its fixed operations never accept caller-controlled host paths,
+  devices, mount flags or shell commands. Existing task/shell behavior and the
+  Desktop runner's unprivileged installation are unchanged.
+- Private atomic journals bind owner/instance/project, filesystem UUID, image
+  device/inode and operation fence. Each mutation rechecks loop backing identity,
+  mount geometry and ext4 capacity. Stale or changed requests cannot overtake
+  unfinished work. Missing images and uncertain formats are never overwritten.
+- Added resumable create/mount/unmount/grow/shrink/fsck/trim/delete operations,
+  stopped-container reference protection and cancellation that waits for a
+  bounded filesystem utility instead of claiming rollback. Shrink verifies the
+  smaller filesystem before truncating; deletion keeps an ownership tombstone.
+- Focused journal/Unix RPC regression: 53 tests, OK in 0.589 seconds
+  (.cache/roadmap/m2-volumes-reviewed-final.log). Host mutations are explicitly
+  simulated in these tests. Initial failures were fixture setup permissions and
+  macOS canonical paths; neither required relaxing product ownership checks.
+- Real utility probe: the product helper created a 64 MiB ext4 image, grew it to
+  96 MiB, shrank it back, ran fsck, preserved a sentinel and resumed interrupted
+  growth to 80 MiB before deletion. This was a capability-free, networkless local
+  container with no host mounts or Docker socket. It proves regular-file ext4
+  utility behavior, NOT native mounted quotas, reboot or production wiring.
+  Evidence: .cache/roadmap/m2-image-utilities.log. The initial Dockerfile used an
+  image-ID form BuildKit interpreted as a registry name; the verified existing
+  local tag was used instead. No production image was pulled or changed.
+- The temporary container, test files and fixture image were removed. Exactly
+  nine verified fixture build-cache IDs were pruned (35.64 MB); unrelated images,
+  containers, runtime caches and data were preserved.
+- Full isolated PostgreSQL regression: 2220 tests, OK (12 skipped), 377.363
+  seconds, ResourceWarning promoted to errors (.cache/roadmap/m2-helper-full.log).
+  CI-path Ruff, compileall and whitespace checks pass. Local `nix flake check
+  --no-update-lock-file` passed package/import checks for aarch64-darwin; its
+  incompatible-system warning is not Linux acceptance. No frontend changed.
+- docs/project-volume-helper.md records the contract and remaining gates:
+  native mount namespace/reboot verification, atomic container binding, durable
+  lifecycle/fence allocation, archive/restore workspace incarnations, Desktop
+  soft quotas, VM disk integration and accounting. M2 is NOT complete.
+- User now authorizes incremental GitHub pushes after each verified checkpoint.
+  Push the current work branch without merging main or deploying. The approved
+  plan stays unchanged and unstaged. SSH, production changes, real model/QQ
+  requests and nix-config edits remain outside this work.

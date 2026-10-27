@@ -19,7 +19,8 @@ from .receipts import Receipts
 
 class SandboxRunner:
     def __init__(self, manager: DockerSandboxManager, *, socket_path: Path, state_directory: Path,
-                 token: str, socket_gid: int | None = None, concurrency: int = 4, capacity_check=None):
+                 token: str, socket_gid: int | None = None, concurrency: int = 4, capacity_check=None,
+                 project_volumes=None):
         if not manager.namespace:
             raise ValueError("The runner requires an isolated instance driver")
         if not TOKEN_PATTERN.fullmatch(token) or not socket_path.is_absolute() or len(os.fsencode(socket_path)) > 100:
@@ -29,6 +30,10 @@ class SandboxRunner:
         self.manager, self.socket_path, self.state_directory = manager, socket_path, state_directory
         self.token, self.socket_gid, self.concurrency = token, socket_gid, concurrency
         self.capacity_check = capacity_check
+        if project_volumes is not None and (project_volumes.instance_id != manager.namespace
+                or project_volumes.root != (state_directory / 'project-volumes').resolve()):
+            raise ValueError("Project volumes must belong to this runner's private state")
+        self.project_volumes = project_volumes
         self.server = self.receipts = self.lock = None
         self.inflight: dict[str, tuple[str, asyncio.Task]] = {}
         self.connections: set[asyncio.Task] = set()
@@ -167,7 +172,8 @@ class SandboxRunner:
     async def perform(self, identifier, method, args, payload, eligible):
         output = b""
         try:
-            if self.capacity_check is not None and method in {"create", "ensure_default", "exec", "write_file", "install_readonly_file", "start_owned"}:
+            if self.capacity_check is not None and method in {"create", "ensure_default", "exec", "write_file", "install_readonly_file", "start_owned",
+                                                              "project_volume_create", "project_volume_mount", "project_volume_resize"}:
                 from src.storage_admission import CapacityError, MIB
                 try:
                     self.capacity_check(max(len(payload), 256 * MIB))
@@ -177,6 +183,30 @@ class SandboxRunner:
                 data = {"channel_ready": True, "instance_id": self.manager.namespace,
                         "image": self.manager.image,
                         "max_file_bytes": self.manager.max_file_bytes, "active_operations": len(self.inflight)}
+                data['project_volumes_enabled'] = self.project_volumes is not None
+            elif method.startswith('project_volume_'):
+                if self.project_volumes is None:
+                    raise ProtocolError("此沙盒通道尚未配置项目配额卷。")
+                operation = method.removeprefix('project_volume_')
+                if operation == 'create':
+                    function, parameters = self.project_volumes.create, args
+                elif operation == 'status':
+                    function, parameters = self.project_volumes.status, args
+                else:
+                    function, parameters = self.project_volumes.mutate, {**args, 'operation': operation}
+                worker = asyncio.create_task(asyncio.to_thread(function, **parameters))
+                try:
+                    data = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    # A filesystem utility must finish or time out before this
+                    # runner releases its lock. Cancellation is not rollback.
+                    while not worker.done():
+                        try:
+                            await asyncio.shield(worker)
+                        except asyncio.CancelledError:
+                            continue
+                    worker.result()
+                    raise
             elif method == "cancel":
                 active = self.inflight.get(args["request_id"])
                 if active:

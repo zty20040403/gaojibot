@@ -9,6 +9,7 @@ import re
 import struct
 
 from .docker import NIX_ATTRIBUTE_PATTERN, RUNTIME_IMAGES, SANDBOX_ID_PATTERN, SandboxError
+from .project_volumes import MIN_QUOTA, MAX_QUOTA, MIB
 
 
 VERSION = 1
@@ -17,7 +18,9 @@ REQUEST_LIMIT = 64 * 1024
 ID_PATTERN = re.compile(r"[a-f0-9]{32}")
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 MUTATIONS = frozenset({"create", "ensure_default", "destroy", "exec", "write_file",
-                      "install_readonly_file", "start_owned", "stop_owned", "reclaim_stopped"})
+                      "install_readonly_file", "start_owned", "stop_owned", "reclaim_stopped",
+                      "project_volume_create", "project_volume_mount", "project_volume_unmount",
+                      "project_volume_resize", "project_volume_fsck", "project_volume_trim", "project_volume_delete"})
 FIELDS = {
     "health": (set(), set()), "admin_snapshot": (set(), set()),
     "cancel": ({"request_id"}, set()),
@@ -34,6 +37,14 @@ FIELDS = {
     "install_readonly_file": ({"owner", "sandbox_id", "path"}, set()),
     "read_file": ({"owner", "sandbox_id", "path"}, {"max_bytes"}),
     "export_artifact": ({"owner", "sandbox_id", "path"}, set()),
+    "project_volume_status": ({"owner", "project_id"}, set()),
+    "project_volume_create": ({"owner", "project_id", "quota_bytes", "fence"}, set()),
+    "project_volume_mount": ({"owner", "project_id", "fence"}, set()),
+    "project_volume_unmount": ({"owner", "project_id", "fence"}, set()),
+    "project_volume_resize": ({"owner", "project_id", "quota_bytes", "fence"}, set()),
+    "project_volume_fsck": ({"owner", "project_id", "fence"}, set()),
+    "project_volume_trim": ({"owner", "project_id", "fence"}, set()),
+    "project_volume_delete": ({"owner", "project_id", "fence"}, set()),
 }
 UPLOADS = {"write_file", "install_readonly_file"}
 
@@ -117,6 +128,12 @@ def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
         raise ProtocolError("沙盒文件大小不正确或超过传输上限。")
     if "owner" in args and not _text(args["owner"], 200):
         raise ProtocolError("沙盒所属会话无效。")
+    for field in ("project_id", "fence"):
+        if field in args and (type(args[field]) is not int or not 1 <= args[field] < 2**53):
+            raise ProtocolError("项目编号或操作代次无效。")
+    if "quota_bytes" in args and (type(args["quota_bytes"]) is not int
+            or not MIN_QUOTA <= args["quota_bytes"] <= MAX_QUOTA or args["quota_bytes"] % MIB):
+        raise ProtocolError("项目卷配额必须为 64 MiB 至 100 GiB，按 MiB 对齐。")
     if "sandbox_id" in args and (not isinstance(args["sandbox_id"], str) or not SANDBOX_ID_PATTERN.fullmatch(args["sandbox_id"])):
         raise ProtocolError("沙盒编号无效。")
     if "runtime" in args and (not isinstance(args["runtime"], str) or args["runtime"] not in RUNTIME_IMAGES):
