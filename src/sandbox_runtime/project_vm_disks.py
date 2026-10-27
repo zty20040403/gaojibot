@@ -16,6 +16,7 @@ from xml.etree import ElementTree
 
 from .docker import SANDBOX_ID_PATTERN
 from .project_volume_journal import MIB, ProjectVolumeError, ProjectVolumeJournal
+from .project_vm_guest import disk_serial, validate_config
 
 
 class QcowProjectHost:
@@ -114,6 +115,14 @@ class VmProjectDiskBinding:
     path: Path
     filesystem_uuid: str
     quota_bytes: int
+
+    def guest_config(self, *, initialize=False):
+        return validate_config({
+            "project_id": self.project_id, "generation": self.generation,
+            "filesystem_uuid": self.filesystem_uuid, "quota_bytes": self.quota_bytes,
+            "serial": disk_serial(self.project_id, self.generation, self.filesystem_uuid),
+            "initialize": initialize,
+        })
 
 
 class VmProjectDisks(ProjectVolumeJournal):

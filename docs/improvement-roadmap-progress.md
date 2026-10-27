@@ -2112,3 +2112,52 @@ implementation evidence, not a claim that the production App has these features.
 - This is not guest ENOSPC/trim/reboot acceptance and does not complete M2.
   The supplied plan remains unchanged and excluded from commits. No production
   SSH, nix-config edits, rebuild, live QQ/model call or App release occurred.
+
+### M2 VM guest mount and identity contract
+
+- Added a standalone root-only guest helper with fixed `/dev/vdb` and
+  `/workspace` targets. It verifies the virtio serial, exact device capacity,
+  ext4 UUID/geometry, mount device number/root/options and uid/gid 1000 ownership.
+  A plain directory on the system disk cannot pass workspace verification.
+  Filesystem accounting uses available guest blocks, not qcow2 physical size.
+- Formatting needs explicit first-boot permission and a bounded read proving
+  the entire device is zero, not just an empty superblock. Foreign filesystems,
+  partition tables, partial nonzero disks, extra mounts and unexpected capacity
+  are rejected. Successful mount consumes the guest's initialization permission
+  through an fsynced atomic config replacement. Root-owned configuration and a
+  bounded guest lock serialize management commands. Host-side initialization
+  acknowledgement across replacement system overlays still needs lifecycle wiring.
+- The mountpoint is empty and root-only before mounting and after unmounting;
+  pre-existing files or symlinks are not hidden or removed. Mount retry reconciles
+  a previously successful format/mount and finishes ownership initialization.
+  Unmount never uses force/lazy flags. Trim verifies the workspace before and after
+  `sync -f`/`fstrim`; its receipt confirms the guest discard command, not an invented
+  number of physical bytes reclaimed on the host.
+- The existing VM domain/cloud-init builders now accept a private claimed-disk
+  binding. Project data is a separate virtio disk with `discard=unmap`, a stable
+  serial and project identity metadata. The root-owned helper/config and a bounded
+  oneshot mount service replace generic mkdir/chown setup for project VMs. Normal
+  task/shell templates remain unchanged. Public `create` still rejects project
+  purpose: the private builders are not yet a production provisioning path.
+- Project-mode command/read/write/export admission verifies the guest mount and
+  matches its structured receipt against host metadata before user work. Generic
+  start/stop/destroy cannot operate project VMs; the durable project executor must
+  own these transitions. Live membership, host disk-claim revalidation, task/IO
+  reservations, snapshot/restore, dependency rebuilding and boot recovery remain
+  requirements of that adapter, not capabilities asserted by this checkpoint.
+- Focused regression: 78 tests passed in 1.084 seconds
+  (.cache/roadmap/m2-vm-mount-focused.log). This covers blank-device scanning,
+  interrupted initialization, identity mismatches, system-disk fallback rejection,
+  busy unmounts, atomic config replacement, XML/cloud-init assembly and tool guards.
+  Guest mount/block observations are fixtures. No new native Linux/libvirt guest
+  was booted here; real quota/trim/reboot acceptance remains a separate gate.
+- Final full isolated PostgreSQL regression: 2458 tests, OK (12 skipped),
+  438.906 seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-vm-mount-full.log). CI-path Ruff, compileall and whitespace
+  checks passed. Nix package/import checks passed on aarch64-darwin
+  (.cache/roadmap/m2-vm-mount-nix.log); incompatible systems were omitted, not
+  tested. No product code changed after this run. Temporary test files were
+  cleaned automatically; only small ignored diagnostics remain.
+- M2 remains incomplete and disabled in production. No server SSH, rebuild,
+  nix-config change, live QQ/model call or App publication occurred. The supplied
+  plan remains unchanged and excluded from the checkpoint.

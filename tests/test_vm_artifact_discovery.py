@@ -4,7 +4,9 @@ import os
 import json
 import tempfile
 import unittest
-from unittest.mock import AsyncMock
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+from xml.etree import ElementTree
 
 import nonebot
 
@@ -14,9 +16,75 @@ nonebot.init()
 from src.plugins.ai_chat.subagents import _single_observed_artifact
 from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
 from src.sandbox_runtime.docker import SandboxError
+from src.sandbox_runtime.project_vm_guest import HELPER_PATH
+from tests.test_project_vm_guest import binding
 
 
 class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_project_domain_separates_data_disk_with_discard_and_identity(self):
+        manager = VmSandboxManager(image="/base.qcow2", root="/vm")
+        with patch("shutil.which", return_value="/test/qemu"):
+            xml = manager._domain_xml("s123456", Path("/vm/s123456"), project_disk=binding())
+        root = ElementTree.fromstring(xml)
+        disks = root.findall("./devices/disk")
+        self.assertEqual(len(disks), 3)
+        data = next(item for item in disks if item.find("target").get("dev") == "vdb")
+        self.assertEqual(data.find("driver").get("discard"), "unmap")
+        self.assertEqual(data.find("source").get("file"), str(binding().path))
+        self.assertEqual(data.findtext("serial"), binding().guest_config()["serial"])
+        self.assertEqual(root.find("./metadata/{urn:gaoji:project:1}workspace").get("generation"), "2")
+        with patch("shutil.which", return_value="/test/qemu"), self.assertRaises(SandboxError):
+            manager._domain_xml("s654321", Path("/vm/s654321"), project_disk=binding())
+
+    def test_project_cloud_init_mounts_with_readonly_root_owned_helper(self):
+        config = json.loads(VmSandboxManager._cloud_config(project_disk=binding(), initialize_project=True).split("\n", 1)[1])
+        files = {item["path"]: item for item in config["write_files"]}
+        self.assertEqual(files["/etc/gaoji-project.json"]["permissions"], "0600")
+        self.assertEqual(files[HELPER_PATH]["owner"], "root:root")
+        compile(files[HELPER_PATH]["content"], HELPER_PATH, "exec")
+        self.assertEqual(json.loads(files["/etc/gaoji-project.json"]["content"]), binding().guest_config(initialize=True))
+        self.assertNotIn(["chown", "sandbox:sandbox", "/workspace"], config["runcmd"])
+        self.assertIn(["systemctl", "enable", "--now", "gaoji-project-workspace.service"], config["runcmd"])
+        with self.assertRaises(SandboxError):
+            VmSandboxManager._cloud_config(initialize_project=True)
+
+    async def test_project_commands_stop_before_user_code_when_mount_is_missing(self):
+        manager = VmSandboxManager(image="/base.qcow2", root="/vm")
+        config = binding().guest_config()
+        config.pop("initialize")
+        manager._metadata = AsyncMock(return_value={"purpose": "project", "project": config})
+        manager._running = AsyncMock(return_value=True)
+        manager._guest_exec = AsyncMock(return_value=(1, b"", b"not mounted"))
+        with self.assertRaisesRegex(SandboxError, "项目盘"):
+            await manager.exec("scope", "s123456", "echo should-not-run")
+        self.assertEqual(manager._guest_exec.await_count, 1)
+        self.assertIn(HELPER_PATH, manager._guest_exec.await_args.args[2])
+        self.assertEqual(manager._active_execs, {})
+
+    async def test_project_guard_checks_identity_and_rejects_false_success(self):
+        manager = VmSandboxManager(image="/base.qcow2", root="/vm")
+        config = binding().guest_config()
+        config.pop("initialize")
+        metadata = {"purpose": "project", "project": config}
+        observed = {**config, "verified": True, "mounted": True, "used_bytes": 1234}
+        manager._guest_exec = AsyncMock(return_value=(0, json.dumps(observed).encode(), b""))
+        self.assertEqual(await manager._verify_project_mount("s123456", metadata), observed)
+        for change in ({"project_id": 10}, {"generation": 1}, {"generation": True}, {"mounted": False},
+                       {"filesystem_uuid": "wrong"}, {"used_bytes": -1}, {"verified": 1}):
+            manager._guest_exec.return_value = (0, json.dumps({**observed, **change}).encode(), b"")
+            with self.subTest(change=change), self.assertRaises(SandboxError):
+                await manager._verify_project_mount("s123456", metadata)
+
+    async def test_generic_lifecycle_does_not_reclaim_or_restart_projects(self):
+        manager = VmSandboxManager(image="/base.qcow2", root="/vm")
+        manager._metadata = AsyncMock(return_value={"purpose": "project"})
+        manager._running = AsyncMock(return_value=False)
+        manager._virsh = AsyncMock()
+        for method in (manager.start_owned, manager.stop_owned, manager.destroy):
+            with self.subTest(method=method.__name__), self.assertRaises(SandboxError):
+                await method("scope", "s123456")
+        manager._virsh.assert_not_awaited()
+
     async def test_project_creation_cannot_fall_back_to_ephemeral_task(self):
         manager = VmSandboxManager(image="/unused/image", root="/unused/root")
         manager._all_metadata = AsyncMock()
