@@ -24,9 +24,9 @@ acceptance are not implied by this roadmap.
   milestones. Reuse the routine/recovery and preview foundations; do not create
   competing implementations for the overlapping 9.2 and 9.4 requirements.
 - Project quotas, version storage, member workbench and watch routines are not
-  implemented by the Phase 9.2 foundation. The new plan has not started and its
-  user-authored file remains unchanged. Mark superseded roadmap items explicitly
-  when implementation of that plan starts, as the new plan requests.
+  implemented by the Phase 9.2 foundation. M0 technical validation started on
+  2026-10-27 after the old roadmap's local completion commit `9cfab47`. The new
+  user-authored plan remains unchanged and outside these implementation commits.
 
 ## Progress
 
@@ -132,6 +132,8 @@ acceptance are not implied by this roadmap.
       Local regression/build pass; real QQ feedback acceptance remains pending.
 - [x] 9.2 Durable cron routines: tools, command, creator ownership, budgets,
       ordinary Agent runs and durable Outbox delivery.
+      Superseded by the new project-workspace plan (由新计划取代): reuse this
+      foundation in M1/M4 rather than create a second scheduler.
       Local implementation and final regression complete. Includes shared model
       budgets, child takeover, member checks, quiet completion, original-account
       delivery and atomic result/journal settlement. Keep disabled until live
@@ -142,6 +144,8 @@ acceptance are not implied by this roadmap.
       durable delivery and fresh membership checks. Disabled by default; real
       generation quality and QQ private-message acceptance remain pending.
 - [x] 9.4 Sandbox web artifacts to expiring preview links in chat.
+      Superseded by the new project-workspace plan (由新计划取代): M6 adds
+      version-backed previews and mandatory independent-origin boundaries.
       Scoped publication and receipt recovery, full PostgreSQL regression,
       admin build and responsive browser checks pass locally. HTTP links remain
       network-reachable capabilities; real QQ and recipient access gates pending.
@@ -1424,3 +1428,77 @@ sampling is once per second; the benchmark uses 5 ms to expose short blocking ca
   local implementation, not the still-pending real QQ/provider/live-network
   acceptance gates. Nothing pushed, rebuilt or deployed; no SSH connection.
   The newer plan document is unchanged and excluded from this phase's commit.
+
+## Project workspace plan: M0-M7
+
+The earlier roadmap's local implementation is committed as `9cfab47`. Starting
+2026-10-27, the newer project-workspace plan owns the overlapping 9.2/9.4 work.
+Its original file remains unmodified and unstaged. The following checklist is
+implementation evidence, not a claim that the production App has these features.
+
+- [ ] M0: technical validation and ADR 006 (in progress).
+- [ ] M1: scoped stores, migration and content-addressed versions.
+- [ ] M2: project quota helper, lifecycle, snapshots and metrics.
+- [ ] M3: project tools/commands, Sub-Agent integration and admin page.
+- [ ] M4: confirmed routines and bounded, private-network-safe watch sources.
+- [ ] M5: independently authenticated member workbench.
+- [ ] M6: version-backed static previews on a separate origin.
+- [ ] M7: operator/App configuration, documentation and acceptance records.
+
+### M0 first local experiments
+
+- Added `tools/verify_project_storage.py`, an opt-in local Docker experiment
+  using an explicit Unix socket and existing image. No pulls/builds, host data,
+  network, production access or product changes. Only a temporary loop helper
+  runs privileged; independent writers are unprivileged and resource-limited.
+- Docker Desktop 29.6.1 / LinuxKit 6.12.76 / aarch64: helper-owned sparse ext4
+  with Docker local device mounts works. At a 96 MiB image limit, project A
+  returned ENOSPC after 86,536,192 bytes; project B then wrote 16 MiB and retained
+  its original sentinel hash. Trim reduced A's allocated bytes from 91,078,656
+  to 4,571,136. Candidate B's direct-image `o=loop` mount failed with EINVAL.
+- Three short fsynced 32 MiB sequential writes measured medians of 973.6 MiB/s
+  for an ordinary volume and 608.2 MiB/s for the quota volume. These are local
+  microbenchmark samples, not a general performance promise. Evidence:
+  `.cache/roadmap/m0-storage-desktop-device.json`.
+- Failed probes are preserved: the first inherited the image's non-root user;
+  the second attempted an unsupported proc-path bind mount. The final probe
+  selects root only for the helper and uses Docker's supported device mount
+  mechanism. All attempts verified removal of their newly created resources.
+- Host QEMU 10.2.2: a 128 MiB QCOW2 allocated 67,436,544 bytes after a 64 MiB
+  write, then 327,680 bytes after discard; image check reported zero errors.
+  This initial host-only test is NOT guest-fstrim or production VM acceptance.
+- Follow-up real guest experiment: `tools/verify_project_guest_discard.py` boots
+  an offline ARM64 LinuxKit guest from installed vendor assets, with a private
+  read-only root clone, one TCG CPU and 768 MiB RAM. Only its new 128 MiB test
+  disk is formatted, after capacity/serial checks. Fixed PCI slots and explicit
+  shell readiness resolved the early probe's boot/console assumptions; a
+  private clone avoids interfering with Docker's existing root-image lock.
+- With a read-only QCOW2 base plus overlay, 48 MiB of random guest file data
+  allocated 51,838,976 host bytes. Delete+sync did not reduce it; guest fstrim
+  with virtio discard=unmap reduced it to 1,638,400. A retained sentinel survived
+  unmount/remount, the base SHA-256 was unchanged and image check passed. Every
+  guest process and temporary root/base/overlay was removed. Evidence:
+  `.cache/roadmap/m0-guest-discard-backing.json`. This does not prove production
+  libvirt wiring or integrity after a guest restart.
+- Added a PostgreSQL acceptance test through the existing routine dispatcher,
+  ordinary tool executor, real Agent loop and Outbox. QQ/model boundaries are
+  simulated; a real tool prepares an expression and final reply. Original
+  canonical messages remain unchanged and takeover returns the same delivery.
+  Passed one test in 0.981 seconds (.cache/roadmap/m0-synthetic-accepted.log).
+  Early fixture assertions assumed nullable reply IDs, raw JSON tool messages
+  and native OneBot names instead of the actual Message IR; corrected the test,
+  not product behavior. An early full run was cancelled immediately after a
+  fixture failure was noticed; it is not counted as a passing regression.
+- ADR 006 records evidence and provisional choices. Native Ubuntu/NixOS host
+  checks, Windows Desktop and production backend behavior are NOT inferred
+  from this LinuxKit guest or mocks. M0 remains incomplete; no project features
+  or production quota claims enabled.
+- Current checkpoint full PostgreSQL regression: 2168 tests, OK (12 skipped),
+  358.407 seconds, ResourceWarning promoted to errors
+  (.cache/roadmap/m0-final-full.log). Ruff and compileall across CI paths and
+  whitespace checks pass. No product/frontend/helper/Nix module changed, so
+  M0 does not introduce a new UI build or Nix gate.
+- Nothing pushed, deployed or changed in nix-config. No SSH or real QQ/model
+  request. Native-host gates remain open; real local guest and Docker results
+  are recorded separately from unit tests. This is a local M0 checkpoint, not
+  the completion of M0-M7.
