@@ -1675,3 +1675,46 @@ implementation evidence, not a claim that the production App has these features.
   do: Docker/VM adapters, native mount/reboot tests, soft quotas, rebuildable-data
   policy, idle scheduler, retention/accounting, compensation and user controls.
   M2 and subsequent milestones remain incomplete. The approved plan is unchanged.
+
+### M2 Docker project-workspace checkpoint
+
+- Added a default-disabled Docker project adapter and fixed Unix operations for
+  start/stop/remove/status. The RPC requires an explicit workspace generation
+  and mutation fence; it cannot accept host paths, images or arbitrary mounts.
+- The helper reserves the container ID, creation token, immutable image and
+  root identity before Docker admission. Pending creation protects the volume
+  even before a container exists. Lost acknowledgements and runner-process
+  interruption reconcile the same container rather than allocating another.
+- Project containers use the private quota bind, not temporary task volumes.
+  Startup and live exec probes compare root device/inode; inspect verifies
+  ownership, generation, token, mounts, readonly cache, resource limits and
+  confinement. Wrong namespaces, missing containers and altered bindings fail
+  closed. Public status omits private paths/tokens; creation errors are redacted.
+- Existing Docker IDs, not mutable names, are used for stop/start/remove.
+  Removal refuses running containers, never forces deletion and preserves
+  project files. Generic task/shell lifecycle and reclaim cannot remove projects.
+  File transfers share execution locks, and project admission uses existing
+  owner/global capacity limits. The default installed runner is unchanged.
+- Focused final regression: 141 tests, OK in 1.465 seconds
+  (.cache/roadmap/m2-workspaces-final-focused.log). Tests use real private
+  journals and Unix sockets with explicitly simulated Docker/kernel state.
+  Initial fixture failures were an unawaited async mock and trying to simulate
+  remount preservation without a real kernel; corrected the fixtures rather
+  than weakening product checks. No native quota claim is based on those tests.
+- Full isolated PostgreSQL regression: 2257 tests, OK (12 skipped), 385.290
+  seconds (.cache/roadmap/m2-workspaces-full.log), ResourceWarning as errors.
+  That run began before the final creation-error redaction and its additional
+  regression were added; the 141-test focused run above covers the final code.
+  No real model/QQ requests or production services were used.
+- CI-path Ruff, compileall and whitespace checks passed. Local `nix flake check
+  --no-update-lock-file` passed aarch64-darwin imports/package checks for the
+  final product code (.cache/roadmap/m2-workspaces-final-nix.log). Incompatible
+  Linux systems were omitted, not validated. No frontend changed.
+- The approved plan is still unchanged and unstaged. Disposable test files are
+  cleaned automatically; only small ignored diagnostic logs remain. This
+  checkpoint is for the existing work branch, not main or a server deployment.
+- M2 is still incomplete. Runner-process recovery with intact mounts is covered;
+  host reboot can lose/change loop mounts and currently quarantines the old
+  binding. Native remount/rebind recovery, Ubuntu/NixOS acceptance, lifecycle
+  worker dispatch, VM integration, Desktop soft quotas, idle scheduling,
+  rebuildable-data policy, retention/accounting and compensation remain.

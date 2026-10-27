@@ -34,6 +34,10 @@ class SandboxRunner:
                 or project_volumes.root != (state_directory / 'project-volumes').resolve()):
             raise ValueError("Project volumes must belong to this runner's private state")
         self.project_volumes = project_volumes
+        manager.project_workspaces = None
+        if project_volumes is not None:
+            from .project_workspaces import ProjectWorkspaces
+            manager.project_workspaces = ProjectWorkspaces(manager, project_volumes)
         self.server = self.receipts = self.lock = None
         self.inflight: dict[str, tuple[str, asyncio.Task]] = {}
         self.connections: set[asyncio.Task] = set()
@@ -173,7 +177,8 @@ class SandboxRunner:
         output = b""
         try:
             if self.capacity_check is not None and method in {"create", "ensure_default", "exec", "write_file", "install_readonly_file", "start_owned",
-                                                              "project_volume_create", "project_volume_mount", "project_volume_resize"}:
+                                                              "project_volume_create", "project_volume_mount", "project_volume_resize",
+                                                              "project_workspace_start"}:
                 from src.storage_admission import CapacityError, MIB
                 try:
                     self.capacity_check(max(len(payload), 256 * MIB))
@@ -184,6 +189,15 @@ class SandboxRunner:
                         "image": self.manager.image,
                         "max_file_bytes": self.manager.max_file_bytes, "active_operations": len(self.inflight)}
                 data['project_volumes_enabled'] = self.project_volumes is not None
+                data['project_workspaces_enabled'] = self.manager.project_workspaces is not None
+            elif method.startswith('project_workspace_'):
+                if self.manager.project_workspaces is None:
+                    raise ProtocolError("此沙盒通道尚未配置项目工作区。")
+                operation = method.removeprefix('project_workspace_')
+                if operation == 'status':
+                    data = await self.manager.project_workspaces.status(**args)
+                else:
+                    data = await self.manager.project_workspaces.operate(operation, **args)
             elif method.startswith('project_volume_'):
                 if self.project_volumes is None:
                     raise ProtocolError("此沙盒通道尚未配置项目配额卷。")

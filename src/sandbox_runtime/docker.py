@@ -131,6 +131,7 @@ class DockerSandboxManager:
         self._nix_volume_ready = False
         self._allocation_lock = asyncio.Lock()
         self._helper_lock = asyncio.Lock()
+        self.project_workspaces = None
 
     @property
     def _sandbox_label(self) -> str:
@@ -158,13 +159,15 @@ class DockerSandboxManager:
         async with self._allocation_lock:
             return await self._create(owner, runtime, purpose=purpose)
 
-    async def _create(self, owner: str, runtime: str, *, purpose: str) -> dict[str, str]:
+    async def _create(self, owner: str, runtime: str, *, purpose: str, project=None) -> dict[str, str]:
+        if purpose == "project" and project is None:
+            raise SandboxError("项目工作区必须通过项目生命周期创建。")
         if self.namespace and runtime not in RUNTIME_IMAGES:
             raise SandboxError("不支持的运行环境。")
-        image = self.image or RUNTIME_IMAGES.get(runtime)
+        image = project["workspace"]["image"] if project else self.image or RUNTIME_IMAGES.get(runtime)
         if image is None:
             raise SandboxError("不支持的运行环境。")
-        normalized_purpose = "shell" if purpose == "shell" else "task"
+        normalized_purpose = "project" if project else "shell" if purpose == "shell" else "task"
 
         owner_hash = self._owner_hash(owner)
         owner_sandboxes = await self.list(owner)
@@ -180,12 +183,13 @@ class DockerSandboxManager:
         if sum(self._status_is_running(item) for item in all_sandboxes) >= self.max_total:
             raise SandboxError("机器人沙盒总数已达到上限。")
 
-        sandbox_id = "s" + secrets.token_hex(3)
+        sandbox_id = project["workspace"]["sandbox_id"] if project else "s" + secrets.token_hex(3)
         name = self._container_name(sandbox_id)
         workspace_volume = self._workspace_volume_name(sandbox_id)
         if self.image:
             await self._ensure_nix_volume(image)
-            await self._prepare_workspace_volume(image, workspace_volume, owner=owner, sandbox_id=sandbox_id)
+            if project is None:
+                await self._prepare_workspace_volume(image, workspace_volume, owner=owner, sandbox_id=sandbox_id)
         command = [
             "docker",
             "run",
@@ -234,7 +238,8 @@ class DockerSandboxManager:
                     "--tmpfs",
                     "/home/sandbox:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=700",
                     "--mount",
-                    f"type=volume,source={workspace_volume},target=/workspace",
+                    (self.project_workspaces.mount_spec(project) if project else
+                     f"type=volume,source={workspace_volume},target=/workspace"),
                     "--mount",
                     (
                         "type=volume,source="
@@ -242,17 +247,24 @@ class DockerSandboxManager:
                     ),
                 ]
             )
+        if project:
+            command.extend(("--entrypoint", "sh"))
+            for key, value in self.project_workspaces.labels(project).items():
+                command.extend(("--label", f"{key}={value}"))
         command.extend(
             [
                 image,
-                "sh",
+                *([] if project else ["sh"]),
                 "-lc",
-                "mkdir -p /workspace && exec sleep infinity",
+                (self.project_workspaces.startup_command(project) if project else
+                 "mkdir -p /workspace && exec sleep infinity"),
             ]
         )
         result = await self._run(*command, timeout=300)
         if result.returncode != 0:
-            if self.image:
+            if project is not None:
+                raise SandboxError("Project container creation was not confirmed; reconcile its existing operation")
+            if self.image and project is None:
                 await self._remove_volume(workspace_volume, owner=owner, sandbox_id=sandbox_id)
             detail = result.stderr or result.stdout
             raise SandboxError(self._docker_error(detail))
@@ -392,6 +404,7 @@ class DockerSandboxManager:
                 owner,
                 sandbox_id,
                 require_running=False,
+                allow_project=False,
             )
             workspace_volume = None
             if self.image:
@@ -913,6 +926,10 @@ class DockerSandboxManager:
         *,
         allow_large: bool = False,
     ) -> int:
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+            return await self._write_file(owner, sandbox_id, path, content, allow_large=allow_large)
+
+    async def _write_file(self, owner, sandbox_id, path, content, *, allow_large=False):
         limit = self._file_limit(
             None
             if allow_large or self.max_file_bytes == 0
@@ -950,6 +967,10 @@ class DockerSandboxManager:
         return len(content)
 
     async def install_readonly_file(self, owner: str, sandbox_id: str, path: str, content: bytes) -> None:
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+            await self._install_readonly_file(owner, sandbox_id, path, content)
+
+    async def _install_readonly_file(self, owner, sandbox_id, path, content):
         name = await self._owned_container(owner, sandbox_id)
         target = self._workspace_path(path)
         if not target.startswith("/workspace/upstream/") or not self.image:
@@ -988,9 +1009,16 @@ else:
 os.close(fd)
 """
         if self.namespace:
+            project = (await self.project_workspaces.for_sandbox(owner, sandbox_id)
+                       if self.project_workspaces else None)
             volume = self._workspace_volume_name(sandbox_id)
-            if not await self._check_volume(volume, kind="workspace", owner=owner, sandbox_id=sandbox_id):
+            if project is None and not await self._check_volume(volume, kind="workspace", owner=owner, sandbox_id=sandbox_id):
                 raise SandboxError("工作区已不存在，无法导入只读产物。")
+            if project:
+                identity = project["workspace"]["root_identity"]
+                script = ("import os\nroot=os.stat('/workspace')\n"
+                          f"if str(root.st_dev)+':'+str(root.st_ino)!={identity!r}:\n"
+                          "    raise RuntimeError('Project mount mismatch')\n" + script)
             # The running worker keeps zero capabilities. A short-lived helper
             # gets only this workspace, never the host filesystem or Docker socket.
             command = ("docker", "run", "--pull=never", "--rm", "-i", "--network", "none",
@@ -998,9 +1026,12 @@ os.close(fd)
                 "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
                 "--security-opt", "no-new-privileges", "--read-only",
                 "--memory", "256m", "--memory-swap", "256m",
-                "--mount", f"type=volume,source={volume},target=/workspace",
+                "--mount", (self.project_workspaces.mount_spec(project) if project else
+                            f"type=volume,source={volume},target=/workspace"),
                 "--mount", f"type=volume,source={self.nix_cache_volume},target=/nix,readonly",
-                self.image, "python", "-c", script, target)
+                *(("--entrypoint", "python") if project else ()),
+                (project["workspace"]["image"] if project else self.image),
+                *(() if project else ("python",)), "-c", script, target)
         else:
             command = ("docker", "exec", "-i", "--user", "0", name, "python", "-c", script, target)
         result = await self._run(*command, input_bytes=content, timeout=60)
@@ -1009,6 +1040,10 @@ os.close(fd)
 
     async def export_artifact(self, owner: str, sandbox_id: str, path: str) -> tuple[bytes, bool]:
         """Export a file or a ZIP snapshot of a directory without following links."""
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+            return await self._export_artifact(owner, sandbox_id, path)
+
+    async def _export_artifact(self, owner, sandbox_id, path):
         name = await self._owned_container(owner, sandbox_id)
         target = self._workspace_path(path)
         kind = await self._run("docker", "exec", name, "sh", "-lc",
@@ -1018,7 +1053,7 @@ os.close(fd)
         if kind.returncode:
             raise SandboxError(f"产物不存在、不可读取或为符号链接：{path}")
         if kind.stdout.strip() == "file":
-            return await self.read_file(owner, sandbox_id, path, max_bytes=None), False
+            return await self._read_file(owner, sandbox_id, path, max_bytes=None), False
         if kind.stdout.strip() != "directory":
             raise SandboxError(f"不支持的产物类型：{path}")
         script = """
@@ -1058,6 +1093,10 @@ with tempfile.TemporaryFile() as output:
         path: str,
         max_bytes: int | None = 64 * 1024,
     ) -> bytes:
+        async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+            return await self._read_file(owner, sandbox_id, path, max_bytes)
+
+    async def _read_file(self, owner, sandbox_id, path, max_bytes=64 * 1024):
         name = await self._owned_container(owner, sandbox_id)
         container_path = self._workspace_path(path)
         size_result = await self._run(
@@ -1106,7 +1145,7 @@ with tempfile.TemporaryFile() as output:
             await self._start_owned(owner, sandbox_id)
 
     async def _start_owned(self, owner: str, sandbox_id: str) -> None:
-        name = await self._owned_container(owner, sandbox_id, require_running=False)
+        name = await self._owned_container(owner, sandbox_id, require_running=False, allow_project=False)
         owned = await self.list(owner)
         target = next(
             (
@@ -1135,7 +1174,7 @@ with tempfile.TemporaryFile() as output:
         lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
         async with lock:
             self._ensure_idle(sandbox_id)
-            name = await self._owned_container(owner, sandbox_id, require_running=False)
+            name = await self._owned_container(owner, sandbox_id, require_running=False, allow_project=False)
             owned = await self.list(owner)
             target = next(
                 (
@@ -1170,6 +1209,7 @@ with tempfile.TemporaryFile() as output:
         sandbox_id: str,
         *,
         require_running: bool = True,
+        allow_project: bool = True,
     ) -> str:
         if not SANDBOX_ID_PATTERN.fullmatch(sandbox_id):
             raise SandboxError("沙盒 ID 格式错误。")
@@ -1202,6 +1242,10 @@ with tempfile.TemporaryFile() as output:
             raise SandboxError("你无权访问这个沙盒。")
         if require_running and running.lower() != "true":
             raise SandboxError("沙盒没有运行。")
+        if self.namespace and labels.get("qqbot.purpose") == "project":
+            if not allow_project or self.project_workspaces is None:
+                raise SandboxError("项目工作区必须通过项目生命周期管理。")
+            return await self.project_workspaces.authorize(owner, sandbox_id, labels, require_running=require_running)
         return name
 
     async def _network_mode(self, name: str) -> str:

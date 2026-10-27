@@ -20,7 +20,8 @@ TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 MUTATIONS = frozenset({"create", "ensure_default", "destroy", "exec", "write_file",
                       "install_readonly_file", "start_owned", "stop_owned", "reclaim_stopped",
                       "project_volume_create", "project_volume_mount", "project_volume_unmount",
-                      "project_volume_resize", "project_volume_fsck", "project_volume_trim", "project_volume_delete"})
+                      "project_volume_resize", "project_volume_fsck", "project_volume_trim", "project_volume_delete",
+                      "project_workspace_start", "project_workspace_stop", "project_workspace_remove"})
 FIELDS = {
     "health": (set(), set()), "admin_snapshot": (set(), set()),
     "cancel": ({"request_id"}, set()),
@@ -45,6 +46,10 @@ FIELDS = {
     "project_volume_fsck": ({"owner", "project_id", "fence"}, {"generation"}),
     "project_volume_trim": ({"owner", "project_id", "fence"}, {"generation"}),
     "project_volume_delete": ({"owner", "project_id", "fence"}, {"generation"}),
+    "project_workspace_status": ({"owner", "project_id", "generation"}, set()),
+    "project_workspace_start": ({"owner", "project_id", "generation", "fence"}, set()),
+    "project_workspace_stop": ({"owner", "project_id", "generation", "fence"}, set()),
+    "project_workspace_remove": ({"owner", "project_id", "generation", "fence"}, set()),
 }
 UPLOADS = {"write_file", "install_readonly_file"}
 

@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -409,6 +410,7 @@ class ProjectVolumes:
             "pending_operation": record["intent"]["operation"]
             if record["pending"]
             else None,
+            "sandbox_id": (record.get("workspace") or {}).get("sandbox_id"),
         }
         if mount:
             usage = os.statvfs(target)
@@ -552,6 +554,10 @@ class ProjectVolumes:
                 if operation == "delete" and fence == record["fence"]:
                     return self._status(directory, record)
                 raise ProjectVolumeError("Deleted volume cannot be reused")
+            if record.get("workspace"):
+                raise ProjectVolumeError(
+                    "Remove the project workspace before volume maintenance"
+                )
             if record["pending"] and record["intent"]["operation"] == "delete":
                 self._begin(directory, record, operation, fence, arguments)
                 self._delete(directory, record)
@@ -673,3 +679,103 @@ class ProjectVolumes:
             if mount is None:
                 raise ProjectVolumeError("Project volume is not mounted")
             return target
+
+    def workspace(self, owner, project_id, *, generation, allow_pending=False):
+        """Private local driver data. Never send this binding over the RPC socket."""
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            if record is None or record.get("deleted"):
+                raise ProjectVolumeError("Project workspace is unavailable")
+            if record["pending"] and not allow_pending:
+                raise ProjectVolumeError("Project workspace is undergoing maintenance")
+            return self._workspace_binding(directory, record)
+
+    def _workspace_binding(self, directory, record):
+        _, target, _, _, mount = self._observed(directory, record)
+        workspace = record.get("workspace")
+        if workspace:
+            if mount is None:
+                raise ProjectVolumeError("Referenced project workspace is not mounted")
+            identity = target.stat()
+            if workspace["root_identity"] != f"{identity.st_dev}:{identity.st_ino}":
+                raise ProjectVolumeError("Project workspace mount identity changed")
+        return {
+            "workspace": workspace,
+            "path": str(target),
+            "project_id": record["project_id"],
+            "generation": record.get("generation", 1),
+            "fence": record["fence"],
+            "pending": record["pending"],
+            "mounted": mount is not None,
+        }
+
+    def begin_workspace(self, owner, project_id, *, generation, fence, action, image):
+        if type(fence) is not int or not 1 <= fence < 2**53:
+            raise ProjectVolumeError("Invalid project operation fence")
+        if action not in {"start", "stop", "remove"}:
+            raise ProjectVolumeError("Unsupported project workspace operation")
+        if not isinstance(image, str) or not re.fullmatch(
+            r"(?:gaoji-app-sandbox:[a-f0-9]{64}|[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64})",
+            image,
+        ):
+            raise ProjectVolumeError("A pinned project image is required")
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            if record is None or record.get("deleted"):
+                raise ProjectVolumeError("Project volume does not exist")
+            binding = self._workspace_binding(directory, record)
+            if action == "start" and not binding["mounted"]:
+                raise ProjectVolumeError(
+                    "Mount the project before starting a workspace"
+                )
+            operation = "workspace_" + action
+            if fence == record["fence"]:
+                intent = record["intent"]
+                if intent["operation"] != operation:
+                    raise ProjectVolumeError("Project fence was already used")
+                # A restart may have a newer configured image; the persisted
+                # operation still reconciles its original immutable image.
+                self._begin(directory, record, operation, fence, intent["arguments"])
+                return self._workspace_binding(directory, record)
+            if record["pending"] or fence < record["fence"]:
+                raise ProjectVolumeError(
+                    "Previous project operation must be reconciled first"
+                )
+            if action == "start" and not record.get("workspace"):
+                info = Path(binding["path"]).stat()
+                record["workspace"] = {
+                    "sandbox_id": "s" + secrets.token_hex(3),
+                    "token": secrets.token_hex(16),
+                    "image": image,
+                    "root_identity": f"{info.st_dev}:{info.st_ino}",
+                }
+            self._begin(
+                directory,
+                record,
+                operation,
+                fence,
+                {"workspace": record.get("workspace")},
+            )
+            return self._workspace_binding(directory, record)
+
+    def finish_workspace(self, owner, project_id, *, generation, fence, action):
+        if (
+            action not in {"start", "stop", "remove"}
+            or type(fence) is not int
+            or not 1 <= fence < 2**53
+        ):
+            raise ProjectVolumeError("Invalid workspace completion")
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            if record is None or record.get("deleted") or record["fence"] != fence:
+                raise ProjectVolumeError("Workspace operation was superseded")
+            if record["intent"]["operation"] != "workspace_" + action:
+                raise ProjectVolumeError("Workspace operation does not match journal")
+            if not record["pending"]:
+                return self._status(directory, record)
+            if action == "remove":
+                # The driver independently verified container absence. Also
+                # reject any remaining (including stopped) external consumer.
+                self._idle(self._paths(directory, record)[1])
+                record["workspace"] = None
+            return self._finish(directory, record)

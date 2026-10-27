@@ -93,6 +93,14 @@ class SandboxClient:
     async def create(self, owner, runtime="python", *, purpose="task"):
         return (await self.request("create", {"owner": owner, "runtime": runtime, "purpose": purpose}))[0]
 
+    async def project_workspace(self, operation, owner, project_id, *, generation, fence=None, request_id=None):
+        if operation not in {"start", "stop", "remove", "status"}:
+            raise ProtocolError("Unsupported project-workspace operation")
+        args = {"owner": owner, "project_id": project_id, "generation": generation}
+        if fence is not None:
+            args["fence"] = fence
+        return (await self.request("project_workspace_" + operation, args, request_id=request_id))[0]
+
     async def ensure_default(self, owner, runtime="debian"):
         return (await self.request("ensure_default", {"owner": owner, "runtime": runtime}))[0]
 

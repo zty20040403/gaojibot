@@ -2,7 +2,8 @@
 
 M2 work in progress. This is a private helper primitive, not a public project
 feature. `serve()` does not construct `ProjectVolumes`, so an ordinary installed
-runner continues to reject every `project_volume_*` request. Desktop isolation,
+runner continues to reject every `project_volume_*` and `project_workspace_*`
+request. Desktop isolation,
 existing task/shell sandboxes and production configuration are unchanged.
 
 ## Ownership and disk identity
@@ -22,8 +23,9 @@ existing task/shell sandboxes and production configuration are unchanged.
   ext4 and `rw,nosuid,nodev`. A remembered `/dev/loopN` is not sufficient.
 - Docker consumers include stopped containers. Their references must be removed
   before filesystem maintenance; restarting one with an old bind is not safe.
-  The later project driver must serialize container start/binding with volume
-  maintenance. Returning a verified path alone does NOT close that race.
+  The project driver now reserves its binding in the helper journal before
+  Docker admission. Maintenance rejects even a pending creation with no
+  container yet. Returning a verified path alone does NOT close that race.
 
 ## Fixed RPC operations
 
@@ -57,8 +59,10 @@ not report cancellation as proof that no filesystem change occurred.
   checked, not formatted again, when the helper resumes.
 - Mount can resume after loop attachment, mount or ownership initialization.
   A new mount never hides unexpected files in the underlying directory.
-- Online expansion extends the file, refreshes loop capacity, resizes ext4 and
-  verifies actual size before committing the new quota.
+- Expansion extends the file, refreshes loop capacity, resizes ext4 and verifies
+  actual size before committing the new quota. The helper can resize a mounted
+  volume, but an attached project workspace must first be stopped and removed;
+  a live application resize is not exposed by this checkpoint.
 - Shrink requires no container references, no mount and no loop attachment.
   It checks the filesystem, shrinks ext4 and verifies size before truncating the
   backing file. A failed/ambiguous resize remains pending, never silently accepted.
@@ -90,6 +94,54 @@ Reads, bindings and mutations reject a superseded generation even if its caller
 supplies a higher fence. This prevents delayed old work from deleting the new
 workspace after restore. The application still distinguishes archive/restore
 from permanent project deletion; the helper does not authorize either policy.
+
+## Docker project-workspace adapter
+
+`ProjectWorkspaces` adds fixed `project_workspace_start`, `stop`, `remove` and
+`status` Unix operations. They require an explicit generation; mutations also
+require a fence. No caller chooses an image, path, mount option or host command.
+The ordinary `create` RPC still accepts only task/shell purposes.
+
+- Before creating Docker resources, the helper persists the sandbox ID,
+  random creation token, pinned image and mounted root device/inode. Interrupted
+  calls retain this reservation. Reconciliation uses the same container name;
+  a new transport receipt does not allocate another workspace.
+- The per-instance allocation lock covers project and task capacity admission.
+  Project containers share the existing per-owner and global running limits.
+  File transfers now hold the same lock as commands; project stop/remove cannot
+  interrupt an admitted transfer. A pending physical operation blocks new I/O.
+- The project workspace is a bind of the private quota mount with `rprivate`,
+  not a temporary named volume. Container startup checks its root identity
+  before admitting application commands. A separate Docker exec probe verifies
+  the running container sees the same root as the helper.
+- Inspection checks instance/owner/project/generation/token labels, pinned
+  image, mount source/type/access, readonly Nix cache, user, entrypoint, resource
+  limits, network and confinement. Changed mount identity, daemon observation
+  failure or altered isolation cannot be reported as ready.
+- Stop/start/remove of an existing container uses its full immutable Docker
+  ID. Removal refuses a running container and never uses force. Ordinary
+  destroy/start/stop and task reclamation cannot manage a project container.
+  Removing the container retains project files and permits later maintenance.
+- A new transport request replaying an acknowledged fence observes the result instead of re-executing
+  side effects. An externally stopped container needs a new start fence; a
+  missing referenced container is reported as `missing`, not verified success.
+- Readonly imports use only the current project bind and cache, with an
+  independent root-identity check before the short-lived helper can write.
+  Public responses never contain host paths or the private creation token.
+
+Both filesystem and Docker observations must use the same local daemon. A
+namespace or isolation mismatch deliberately retains the journal for recovery,
+rather than deleting a possibly useful workspace. A change to configured
+resource limits can also quarantine an older container until reconciliation;
+automatic compensation/reconfiguration is not implemented yet. This adapter
+does not turn fixture evidence into native acceptance and is not enabled by
+the default runner configuration.
+
+Recovery covered here is runner-process interruption with the original host
+mount intact. A full host reboot can lose loop mounts or change their device
+numbers. This checkpoint intentionally rejects the old binding in that state;
+it does not yet remount/rebind a retained Docker container automatically. That
+native reboot recovery must be implemented and tested before product enablement.
 
 ## Durable lifecycle journal
 
@@ -158,7 +210,10 @@ Before enabling this helper, M2 still needs:
 - A host mount-namespace design that makes the mount visible to Docker without
   weakening the existing runner sandbox; systemd `PrivateTmp`/`ProtectSystem`
   must not accidentally make a successful mount private to the helper.
-- Atomic project-container binding/start and maintenance coordination.
+- Product-container binding/start and maintenance now have journal/Unix RPC
+  regression coverage, including cancellation, lost acknowledgements, file
+  transfers, quota admission and identity mismatch. Real Linux acceptance of
+  these operations, including reboot and delayed Docker completion, remains.
 - PostgreSQL lifecycle jobs/fences, active-task/delivery protection, snapshots,
   and incarnation journaling now have local PostgreSQL/Unix RPC coverage.
   Their concrete backend execution, cross-process admission coordination,
