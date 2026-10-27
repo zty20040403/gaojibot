@@ -23,7 +23,7 @@ TARGETS = {
 }
 
 
-def transition_plan(project, action, baseline):
+def transition_plan(project, action, baseline, *, rebuild=None):
     source = project["status"]
     allowed = {
         "wake": {"stopped", "hibernated", "archived"},
@@ -40,6 +40,11 @@ def transition_plan(project, action, baseline):
         raise ProjectConflict("Pinned projects cannot be archived")
     if source == "archived" and baseline is None:
         raise ProjectConflict("Archived project has no retained version")
+    command = (
+        rebuild["command"]
+        if rebuild and action in {"wake", "archive"}
+        else project["rebuild_command"]
+    )
     if action == "wake":
         fresh = generation == 0 or source == "archived"
         generation += int(fresh)
@@ -49,7 +54,7 @@ def transition_plan(project, action, baseline):
         if fresh and baseline is not None:
             steps += ["restore_version"]
         steps += ["start_workspace"]
-        if source in {"hibernated", "archived"} and project["rebuild_command"]:
+        if (source in {"hibernated", "archived"} and command) or (fresh and rebuild):
             steps += ["rebuild_dependencies"]
     else:
         # Quiesce must stop writers before exporting a consistent snapshot.
@@ -76,7 +81,8 @@ def transition_plan(project, action, baseline):
         "steps": steps,
         "backend": project["backend"],
         "quota_bytes": project["quota_bytes"],
-        "rebuild_command": project["rebuild_command"],
+        "rebuild_command": command,
+        "rebuild_spec": rebuild,
         "baseline": baseline,
     }
 
@@ -160,8 +166,16 @@ class ProjectLifecycle:
                 cursor, access, project_id, edit=True, expected=expected_version
             )
             self._idle(cursor, project)
+            baseline = self._baseline(cursor, project_id)
+            rebuild = (
+                self.projects._manifest(
+                    cursor, access, project_id, baseline["version_no"]
+                ).get("rebuild")
+                if baseline
+                else None
+            )
             generation, plan = transition_plan(
-                project, action, self._baseline(cursor, project_id)
+                project, action, baseline, rebuild=rebuild
             )
             if generation >= 2**53:
                 raise ProjectConflict("Workspace generation exhausted")
@@ -277,9 +291,27 @@ class ProjectLifecycle:
                     "backend": plan["backend"],
                     "quota_bytes": plan["quota_bytes"],
                     "rebuild_command": plan["rebuild_command"],
+                    "rebuild_spec": plan.get("rebuild_spec"),
                     "baseline": plan["baseline"],
                     "reservation": plan.get("reservation"),
                 }
+                if plan["steps"][index] == "prune_rebuildable":
+                    source = cursor.execute(
+                        """SELECT fence,evidence FROM project_lifecycle_steps WHERE job_id=?
+                        AND operation='snapshot_workspace' AND status='succeeded' AND step_index<?
+                        ORDER BY step_index DESC LIMIT 1""",
+                        (job.job_id, index),
+                    ).fetchone()
+                    if source is None or source["evidence"].get(
+                        "snapshot"
+                    ) != self._baseline(cursor, project["project_id"]):
+                        raise ProjectConflict(
+                            "Cleanup requires a published current snapshot"
+                        )
+                    arguments.update(
+                        snapshot=source["evidence"]["snapshot"],
+                        snapshot_fence=source["fence"],
+                    )
                 row = cursor.execute(
                     """INSERT INTO project_lifecycle_steps(job_id,step_index,project_id,fence,request_id,
                     dispatch_lease,operation,arguments,created_at,updated_at)
@@ -339,6 +371,15 @@ class ProjectLifecycle:
             if baseline is None or evidence.get("snapshot") != baseline:
                 raise ProjectConflict(
                     "Lifecycle snapshot was not published as the latest retained version"
+                )
+        if step["operation"] == "prune_rebuildable":
+            if evidence.get("snapshot") != step["arguments"].get(
+                "snapshot"
+            ) or evidence.get("snapshot") != ProjectLifecycle._baseline(
+                cursor, run["project_id"]
+            ):
+                raise ProjectConflict(
+                    "Cleanup evidence does not reference its published snapshot"
                 )
         if step["operation"].startswith("verify_"):
             if evidence.get("state") != run["target_state"]:

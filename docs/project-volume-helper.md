@@ -219,9 +219,10 @@ mandatory before enabling a production worker. Generic queue retries alone must
 not be mistaken for a complete compensator.
 
 Remaining lifecycle integration includes physical adapters, automatic idle
-scheduling, rebuild/lockfile rules, retention sampling, trash/purge, and recovery
-UI. Hibernated snapshots now have a private offline export path without
-starting an application writer; dependency pruning/rebuild remains unavailable.
+scheduling, dependency reconstruction, retention sampling, trash/purge, and
+recovery UI. Hibernated snapshots now have a private offline export path without
+starting an application writer. Locked classification and pruning are available
+through the explicit file adapter; dependency reconstruction remains unavailable.
 Do not register `project.lifecycle` as a worker
 kind until these adapters honor every persisted step and independently verify
 the resulting state.
@@ -266,8 +267,9 @@ including durable takeover. Stop/remove/trim/unmount/delete primitives are wired
 but a whole plan is preflighted before its first mutation. The explicit file
 adapter below enables stopped-workspace snapshots and retained-version restore.
 Without it, plans needing files are refused before touching containers.
-Dependency pruning and reconstruction remain unavailable, so hibernate and
-archive plans needing those steps still fail preflight. VM plans,
+The file adapter also enables locked dependency pruning for hibernate. Any wake
+plan requiring dependency reconstruction still fails preflight before mutation;
+an incomplete recovery cannot be reported as active. VM plans,
 old protocol-1 plans and malformed reservations also fail preflight; old pending
 plans must be explicitly reconciled, not silently rewritten or unlocked.
 
@@ -279,14 +281,16 @@ native reboot evidence covers the helper before this reservation addition.
 ## Offline retained-file checkpoint
 
 `DockerProjectFiles` is an explicitly supplied adapter, not a registered tool or
-startup handler. It implements only `snapshot_workspace` and `restore_version`.
+startup handler. It implements `snapshot_workspace`, `restore_version` and
+`prune_rebuildable`.
 The private `project_files_*` RPCs require the current owner, generation, fence
 and maintenance reservation; they accept file indexes, never host paths.
 
 - Snapshot requires a stopped, identity-verified container or no container at
   all. The helper enumerates the mounted tree with descriptor-relative access,
-  rejects symlinks, hard links, special files and nested filesystems, and records
-  hashes plus file identities. It ignores only an empty root `lost+found`.
+  rejects symlinks, hard links, special files and nested filesystems in retained
+  data, and records hashes plus file identities. It ignores an empty root
+  `lost+found` and the explicitly classified rebuildable roots described below.
 - Manifests are canonical and paginated (128 entries); binary payloads are at
   most 1 MiB and obey the smaller configured transfer limit. Limits remain
   256 MiB per file, 20,000 files and the project quota. No archive extraction,
@@ -312,11 +316,56 @@ and maintenance reservation; they accept file indexes, never host paths.
   files are refused before truncation. Failure does not delete source files,
   discard reservations or pretend a version was published.
 
-This checkpoint retains all ordinary files; it does not yet classify rebuildable
-dependencies or handle their symlinks. Such a tree currently blocks the snapshot
-rather than losing files. The local file/RPC/PostgreSQL tests use simulated
-mounts and Docker; they are not native Linux acceptance. No project tools, UI or
-production worker are enabled by these changes.
+The local file/RPC/PostgreSQL tests use simulated mounts and Docker; they are not
+native Linux acceptance. No project tools, UI or production worker are enabled
+by these changes.
+
+## Locked classification and cleanup
+
+The helper recognizes these bounded, root-project recipes:
+
+| Recipe | Required inputs | Dependency directory |
+| --- | --- | --- |
+| `npm ci` | `package.json`, `package-lock.json` (lockfileVersion 1-3) | `node_modules` |
+| `uv sync --frozen` | `pyproject.toml`, `uv.lock` | `.venv` |
+| `cargo build --locked` | `Cargo.toml`, `Cargo.lock` | `target` |
+
+Only explicitly supported flags are accepted. The helper parses JSON/TOML and
+pins input hashes; it does not claim that installation has succeeded. It never
+executes the command on the host. Arbitrary shell commands, missing or malformed
+inputs keep dependency files as retained data and attach a warning to snapshot
+evidence. Retained symlinks/special files still stop the snapshot without deleting
+anything. Monorepo command routing and other package-manager recipes are not yet
+supported. Default dependency directories apply only at the project root;
+nested projects keep their dependencies unless explicitly declared rebuildable.
+
+- With a recognized recipe, ordinary cache directory names and the three exact
+  `.gaoji/browser/{Cache,Code Cache,GPUCache}` paths are rebuildable. Browser
+  cookies, notes, Git metadata and source files remain retained.
+- `.gaoji/rebuildable` may add up to 64 exact relative directory paths, one per
+  line; blank lines and `#` comments are ignored. Traversal, wildcards, protected
+  metadata, overlapping roots and paths hiding locked inputs are rejected. The
+  control file itself is retained and hash-pinned. Only observed real directories
+  are excluded; the helper records their filesystem/inode identities.
+- Format-2 version manifests bind retained hashes, recipe and observed excluded
+  paths together. Format-1 manifests remain readable and byte-compatible.
+  Rollback preserves the specification. Wake/archive use the retained version's
+  recipe even if mutable project metadata was subsequently changed.
+- Hibernate requires an acknowledged, published current snapshot. The lifecycle
+  step freezes its digest and source fence. The helper rechecks retained content
+  and writes a private cleanup journal before beginning deletion. No glob, model
+  path or host shell is accepted by the cleanup RPC.
+- Cleanup is descriptor-relative and refuses replaced roots, nested filesystems
+  and special files. Symlinks inside excluded directories are unlinked, never
+  followed. Traversal is bounded by count, depth and time. A crash preserves the
+  same fence/reservation, manifest and remaining roots for takeover.
+- A separate uncached `prune_check` confirms retained content still matches and
+  all selected roots are absent before container removal/hibernate completion.
+  Missing acknowledgements do not cause another snapshot or uncontrolled delete.
+
+The private executor can test hibernation with this adapter, but a production
+worker must remain disabled until isolated dependency rebuilding and native
+full-lifecycle acceptance are complete. No automatic scheduler is installed.
 
 ## Evidence and remaining gates
 
@@ -347,8 +396,8 @@ Before enabling this helper, M2 still needs:
 - PostgreSQL lifecycle jobs/fences, active-task/delivery protection, snapshot
   publication, generation journals and reserved OCI dispatch have local
   PostgreSQL/Unix RPC coverage. Offline retained-file snapshot/restore now has
-  local coverage too. Complete task admission, rebuildable-data cleanup,
-  compensation and version retention still need
+  local coverage too, including locked classification and cleanup. Complete task
+  admission, dependency reconstruction, compensation and version retention need
   integration and native acceptance. Do not clear a tombstone or reset a fence
   to work around a failed restore.
 - Desktop soft-quota monitoring and cancellation, plus VM project-disk/discard

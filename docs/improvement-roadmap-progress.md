@@ -1873,3 +1873,48 @@ implementation evidence, not a claim that the production App has these features.
   all supported regular files and fails closed on unsupported entries. Hibernate
   and archive plans needing missing adapters are rejected before mutation.
   M2-M7 remain incomplete; the approved plan is unchanged and unstaged.
+
+### M2 locked dependency cleanup checkpoint
+
+- Added bounded root npm/uv/cargo recipe classification. Validated lock inputs,
+  command and optional exact `.gaoji/rebuildable` paths are bound into canonical
+  format-2 manifests; old format-1 versions remain readable. Missing/unsupported
+  recipes retain files and record warnings. No command executes on the host.
+- Snapshot omits only observed classified directories, without deleting them.
+  Git metadata, notes, browser login state and locked inputs are protected.
+  Version rollback preserves the recipe; wake/archive cannot silently substitute
+  changed mutable project configuration for a retained version's recipe.
+- Hibernate cleanup requires the acknowledged current snapshot and freezes its
+  digest/fence. A private journal persists exact root identities before deletion.
+  Descriptor-relative cleanup never follows links or crosses filesystems; changed
+  retained inputs/replaced roots stop processing. Interrupted cleanup can resume
+  at the same fence after lease takeover. Uncached completion verification checks
+  both retained bytes and absent rebuildable roots before continuing hibernation.
+- Focused helper/file/lifecycle/store regression: 94 tests, OK in 26.229 seconds
+  (.cache/roadmap/m2-prune-focused.log). Includes real local PostgreSQL and Unix
+  RPC with explicit simulated Docker/kernel observations: no-lock retention,
+  publication-before-cleanup, changed lock/root, symlink target preservation,
+  mid-deletion restart, lost acknowledgement takeover, fresh completion checks,
+  rollback recipe retention and rebuild preflight after metadata changes. Review
+  also restricted default dependency-directory matches to the project root:
+  a root lockfile cannot justify cleaning an unrelated nested project's files.
+  Generic caches and explicit declarations remain separately classified.
+- Full isolated PostgreSQL regression: 2323 tests, OK (12 skipped), 393.766
+  seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-prune-full.log). This run loaded the code before the final
+  nested-directory restriction; the final classifier was separately verified by
+  the 94-test focused suite above, including the additional nested-project case.
+- Final CI-path Ruff, compileall and whitespace checks passed. `nix flake check
+  --no-update-lock-file` passed current aarch64-darwin package/import checks
+  (.cache/roadmap/m2-prune-nix.log); incompatible systems were omitted, not tested.
+  Test workspaces and temporary schemas are removed by their fixtures. Only small
+  ignored diagnostics remain; no frontend/App build or live acceptance was run.
+- M2 remains incomplete: isolated dependency reconstruction, VM project disks,
+  Desktop soft quotas, idle/retention/usage policies, complete task admission and
+  compensation, and native full-lifecycle acceptance are still required. A wake
+  requiring the missing rebuild adapter fails preflight; ordinary startup does
+  not register the private project worker. No production services were changed.
+- Current authorization permits verified checkpoint pushes to GitHub
+  `wip/desktop-app` using the existing SSH key. It does not permit a main merge,
+  production SSH, server deployment, QQ/model calls or nix-config changes. The
+  user's new plan remains unchanged, untracked and excluded from commits.

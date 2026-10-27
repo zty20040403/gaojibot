@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import os
 import time
 import unittest
@@ -15,6 +16,7 @@ from src.bot_storage import open_store_connection
 from src.project_content import CHUNK_BYTES
 from src.plugins.ai_chat.project_blobs import ProjectFile
 from src.plugins.ai_chat.project_file_executor import DockerProjectFiles
+from src.plugins.ai_chat.project_executor import ProjectBackendUnavailable
 from src.plugins.ai_chat.projects import ProjectQuotaExceeded
 from src.sandbox_runtime.docker import SandboxError
 from tests import test_project_executor as fixture
@@ -39,6 +41,155 @@ class ProjectFileExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.request()
         await self.executor(self.claim())
         return self.volumes.binding(self.scope.key, self.pid)
+
+    def configure_rebuild(self, command="npm ci"):
+        project = self.projects.get(self.access, self.pid)
+        return self.projects.update(
+            self.access,
+            self.pid,
+            expected_version=project["version"],
+            rebuild_command=command,
+        )
+
+    async def dependency_project(self, *, locked=True):
+        root = await self.wake()
+        self.configure_rebuild()
+        (root / "package.json").write_bytes(b'{"name":"fixture"}')
+        if locked:
+            (root / "package-lock.json").write_bytes(b'{"lockfileVersion":3}')
+        (root / "source.js").write_bytes(b"retained source")
+        (root / "node_modules/pkg").mkdir(parents=True)
+        (root / "node_modules/pkg/data").write_bytes(b"dependency bytes")
+        self.request("stop")
+        await self.executor(self.claim())
+        return root
+
+    async def test_hibernate_prunes_only_after_real_snapshot_publication(self):
+        root = await self.dependency_project()
+        self.assertTrue((root / "node_modules/pkg/data").exists())
+        self.request("hibernate")
+        result = await self.executor(self.claim())
+        self.assertEqual(result["state"], "hibernated")
+        self.assertFalse((root / "node_modules").exists())
+        self.assertEqual((root / "source.js").read_bytes(), b"retained source")
+        versions = self.projects.versions(self.access, self.pid)
+        self.assertEqual(len(versions), 1)
+        manifest = json.loads(self.projects.blobs.read(versions[0]["manifest_sha256"]))
+        self.assertEqual(manifest["rebuild"]["excluded"], ["node_modules"])
+        self.assertEqual(manifest["rebuild"]["command"], "npm ci")
+        self.assertEqual(len(manifest["rebuild"]["locks"]), 2)
+        evidence = self.sql.execute(
+            "SELECT evidence FROM project_lifecycle_steps WHERE operation='prune_rebuildable'"
+        ).fetchone()["evidence"]
+        self.assertEqual(
+            evidence["snapshot"]["manifest_sha256"], versions[0]["manifest_sha256"]
+        )
+        self.assertEqual(evidence["pruned_roots"], 1)
+
+    async def test_hibernate_without_lock_keeps_dependencies(self):
+        root = await self.dependency_project(locked=False)
+        self.request("hibernate")
+        await self.executor(self.claim())
+        self.assertEqual(
+            (root / "node_modules/pkg/data").read_bytes(), b"dependency bytes"
+        )
+        self.assertEqual(
+            self.projects.read_file(self.access, self.pid, 1, "node_modules/pkg/data"),
+            b"dependency bytes",
+        )
+        evidence = self.sql.execute(
+            "SELECT evidence FROM project_lifecycle_steps WHERE operation='snapshot_workspace' LIMIT 1"
+        ).fetchone()["evidence"]
+        self.assertIn("Missing package-lock.json", evidence["warnings"][0])
+
+    async def test_prune_lost_ack_takeover_reconciles_before_removal(self):
+        root = await self.dependency_project()
+        self.request("hibernate")
+        job = self.claim()
+        call = self.client.project_files
+
+        async def uncertain(operation, *args, **kwargs):
+            result = await call(operation, *args, **kwargs)
+            if operation == "prune":
+                raise SandboxError("fixture lost cleanup acknowledgement")
+            return result
+
+        with patch.object(self.client, "project_files", side_effect=uncertain):
+            with self.assertRaises(SandboxError):
+                await self.executor(job)
+        self.assertFalse((root / "node_modules").exists())
+        self.assertTrue(self.docker.containers)
+        self.assertTrue(
+            self.volumes.status(self.scope.key, self.pid)["maintenance_active"]
+        )
+        successor = self.claim(now=int(time.time()) + 61)
+        await self.executor(successor)
+        self.assertEqual(
+            self.projects.get(self.access, self.pid)["status"], "hibernated"
+        )
+        self.assertEqual(len(self.projects.versions(self.access, self.pid)), 1)
+        self.assertEqual(
+            self.projects.read_file(self.access, self.pid, 1, "source.js"),
+            b"retained source",
+        )
+
+    async def test_changed_tree_after_prune_receipt_blocks_hibernate_completion(self):
+        root = await self.dependency_project()
+        self.request("hibernate")
+        call = self.client.project_files
+
+        async def changed(operation, *args, **kwargs):
+            result = await call(operation, *args, **kwargs)
+            if operation == "prune":
+                (root / "source.js").write_bytes(b"changed retained content")
+            return result
+
+        with patch.object(self.client, "project_files", side_effect=changed):
+            with self.assertRaises(SandboxError):
+                await self.executor(self.claim())
+        self.assertEqual(self.projects.get(self.access, self.pid)["status"], "stopped")
+        self.assertTrue(self.docker.containers)
+        self.assertEqual((root / "source.js").read_bytes(), b"changed retained content")
+
+    async def test_hibernated_wake_keeps_version_recipe_when_metadata_is_cleared(self):
+        await self.dependency_project()
+        self.request("hibernate")
+        await self.executor(self.claim())
+        project = self.configure_rebuild("")
+        run = self.lifecycle.request(
+            self.access,
+            self.pid,
+            "wake",
+            expected_version=project["version"],
+            request_key="wake-with-pinned-recipe",
+        )
+        self.assertEqual(run["plan"]["rebuild_command"], "npm ci")
+        self.assertIn("rebuild_dependencies", run["plan"]["steps"])
+        commands, calls = list(self.docker.commands), list(self.host.calls)
+        with self.assertRaises(ProjectBackendUnavailable):
+            await self.executor(self.claim())
+        self.assertEqual(self.docker.commands, commands)
+        self.assertEqual(self.host.calls, calls)
+
+    async def test_version_rollback_preserves_locked_recipe_and_digest(self):
+        await self.dependency_project()
+        original = self.projects.versions(self.access, self.pid)[0]
+        project = self.projects.get(self.access, self.pid)
+        self.projects.snapshot(
+            self.access,
+            self.pid,
+            [ProjectFile("different", b"new version")],
+            expected_version=project["version"],
+        )
+        project = self.projects.get(self.access, self.pid)
+        restored = self.projects.restore(
+            self.access,
+            self.pid,
+            1,
+            expected_version=project["version"],
+        )
+        self.assertEqual(restored["version_no"], 3)
+        self.assertEqual(restored["manifest_sha256"], original["manifest_sha256"])
 
     async def test_stop_snapshots_real_bytes_without_restarting_a_writer(self):
         root = await self.wake()

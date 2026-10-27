@@ -12,6 +12,60 @@ MAX_MANIFEST_BYTES = 32 * 1024 * 1024
 CHUNK_BYTES = 1024 * 1024
 
 
+def rebuild_spec(value):
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"command", "locks", "excluded"}
+        or not isinstance(value["command"], str)
+        or not 1 <= len(value["command"]) <= 4000
+        or any(ord(c) < 32 for c in value["command"])
+        or not isinstance(value["locks"], list)
+        or not 2 <= len(value["locks"]) <= 8
+        or not isinstance(value["excluded"], list)
+        or len(value["excluded"]) > 512
+    ):
+        raise ValueError("Invalid project rebuild specification")
+    locked = []
+    for item in value["locks"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"path", "sha256"}
+            or not isinstance(item["path"], str)
+            or project_path(item["path"]) != item["path"]
+            or not isinstance(item["sha256"], str)
+            or not re.fullmatch(r"[a-f0-9]{64}", item["sha256"])
+        ):
+            raise ValueError("Invalid rebuild input")
+        locked.append(item["path"])
+    if locked != sorted(set(locked)):
+        raise ValueError("Rebuild inputs must be unique and sorted")
+    paths = value["excluded"]
+    for path in paths:
+        if not isinstance(path, str) or project_path(path) != path:
+            raise ValueError("Invalid rebuildable path")
+        if (
+            ".git" in path.split("/")
+            or path.split("/")[0] == "lost+found"
+            or any(p == path or p.startswith(path + "/") for p in locked)
+            or path == ".gaoji"
+            or (
+                path.startswith(".gaoji/")
+                and path
+                not in {
+                    ".gaoji/browser/Cache",
+                    ".gaoji/browser/Code Cache",
+                    ".gaoji/browser/GPUCache",
+                }
+            )
+        ):
+            raise ValueError("Rebuildable path hides retained metadata")
+    if paths != sorted(set(paths)) or len({p.casefold() for p in paths}) != len(paths):
+        raise ValueError("Rebuildable paths must be unique and sorted")
+    if any(any(p.startswith(q + "/") for q in paths if p != q) for p in paths):
+        raise ValueError("Rebuildable roots must not overlap")
+    return value
+
+
 def project_path(value: str) -> str:
     value = unicodedata.normalize("NFC", value)
     parts = value.split("/")
@@ -37,9 +91,14 @@ def project_path(value: str) -> str:
 def manifest_bytes(manifest, *, quota_bytes):
     if (
         not isinstance(manifest, dict)
-        or set(manifest) != {"format", "files"}
+        or set(manifest)
+        != (
+            {"format", "files", "rebuild"}
+            if manifest.get("format") == 2
+            else {"format", "files"}
+        )
         or type(manifest["format"]) is not int
-        or manifest["format"] != 1
+        or manifest["format"] not in (1, 2)
         or not isinstance(manifest["files"], list)
         or len(manifest["files"]) > MAX_VERSION_FILES
     ):
@@ -64,6 +123,17 @@ def manifest_bytes(manifest, *, quota_bytes):
         total += item["size"]
     if total > quota_bytes:
         raise ValueError("Retained files exceed project capacity")
+    if manifest["format"] == 2:
+        spec = rebuild_spec(manifest["rebuild"])
+        files = {item["path"]: item["sha256"] for item in manifest["files"]}
+        if any(files.get(item["path"]) != item["sha256"] for item in spec["locks"]):
+            raise ValueError("Rebuild inputs are not retained at their pinned hashes")
+        if any(
+            path == root or path.startswith(root + "/")
+            for path in files
+            for root in spec["excluded"]
+        ):
+            raise ValueError("Rebuildable data cannot also be retained")
     for name in names:
         if any(
             "/".join(name.split("/")[:i]) in names

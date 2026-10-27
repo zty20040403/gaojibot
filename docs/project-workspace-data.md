@@ -87,6 +87,21 @@ Unchanged content returns the existing latest version. Supplying a new label
 updates that version's metadata with a revision check and audit event. Explicit
 restore always creates a new history entry, even for identical content.
 
+Format-2 manifests also retain a rebuild specification: the exact recipe,
+required input hashes and excluded directory roots. Required inputs must be
+present in retained files at those hashes; excluded roots cannot overlap retained
+files or protected project metadata. The specification participates in the
+manifest digest and is preserved by version rollback. Format-1 manifests remain
+supported without changes to their canonical representation. No schema migration
+is needed because the specification resides in the immutable manifest object.
+
+The private OCI adapter currently classifies locked npm/uv/cargo recipes and
+can clean only their observed rebuildable roots after version publication.
+Missing locks or unsupported commands preserve dependency files and emit a
+warning, not permission to delete. Reconstruction is a separate, still-pending
+adapter; a wake needing it is refused before starting any physical operation.
+See [the helper contract](project-volume-helper.md#locked-classification-and-cleanup).
+
 A failed transaction may leave unreferenced files, never a partially published
 version. Collection waits at least 24 hours after the last reference disappears;
 filesystem-only orphans and interrupted staging uploads also get that grace

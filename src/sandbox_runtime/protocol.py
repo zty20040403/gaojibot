@@ -57,7 +57,7 @@ FIELDS = {
 }
 PROJECT_FILE_FIELDS = {"owner", "project_id", "generation", "fence", "reservation"}
 for _action, _fields, _optional in (
-    ("snapshot", set(), set()),
+    ("snapshot", set(), {"rebuild_command"}),
     ("page", {"manifest_sha256", "index"}, set()),
     ("read", {"manifest_sha256", "index", "offset"}, {"max_bytes"}),
     ("check", {"manifest_sha256"}, set()),
@@ -66,10 +66,12 @@ for _action, _fields, _optional in (
     ("restore_file", {"manifest_sha256", "index", "offset"}, set()),
     ("restore_finish", {"manifest_sha256"}, set()),
     ("restore_check", {"manifest_sha256"}, set()),
+    ("prune", {"manifest_sha256", "snapshot_fence"}, set()),
+    ("prune_check", {"manifest_sha256", "snapshot_fence"}, set()),
 ):
     FIELDS["project_files_" + _action] = (PROJECT_FILE_FIELDS | _fields, _optional)
 MUTATIONS |= frozenset("project_files_" + action for action in (
-    "snapshot", "restore_begin", "restore_manifest", "restore_file", "restore_finish"
+    "snapshot", "restore_begin", "restore_manifest", "restore_file", "restore_finish", "prune"
 ))
 UPLOADS = {"write_file", "install_readonly_file", "project_files_restore_manifest", "project_files_restore_file"}
 
@@ -153,12 +155,14 @@ def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
         raise ProtocolError("沙盒文件大小不正确或超过传输上限。")
     if "owner" in args and not _text(args["owner"], 200):
         raise ProtocolError("沙盒所属会话无效。")
-    for field in ("project_id", "fence", "generation"):
+    for field in ("project_id", "fence", "generation", "snapshot_fence"):
         if field in args and (type(args[field]) is not int or not 1 <= args[field] < 2**53):
             raise ProtocolError("项目编号或操作代次无效。")
     if "reservation" in args and (not isinstance(args["reservation"], str) or not ID_PATTERN.fullmatch(args["reservation"])):
         raise ProtocolError("项目维护凭据无效。")
     if method.startswith("project_files_"):
+        if "rebuild_command" in args and not _text(args["rebuild_command"], 4000, blank=True):
+            raise ProtocolError("项目重建命令不正确。")
         if size > CHUNK_BYTES:
             raise ProtocolError("项目文件分块超过传输上限。")
         for field, lower, upper in (("index", 0, MAX_VERSION_FILES), ("offset", 0, MAX_FILE_BYTES),

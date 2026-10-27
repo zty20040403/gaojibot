@@ -88,6 +88,8 @@ class ProjectLifecycleTests(unittest.TestCase):
             evidence["snapshot"] = {
                 key: version[key] for key in ("version_no", "manifest_sha256")
             }
+        if step["operation"] == "prune_rebuildable":
+            evidence["snapshot"] = step["arguments"]["snapshot"]
         return evidence
 
     def complete(self, job, now=None):

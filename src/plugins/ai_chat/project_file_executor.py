@@ -39,7 +39,9 @@ class _RemoteFile:
 
 
 class DockerProjectFiles:
-    operations = frozenset({"snapshot_workspace", "restore_version"})
+    operations = frozenset(
+        {"snapshot_workspace", "restore_version", "prune_rebuildable"}
+    )
 
     def __init__(self, lifecycle, client, *, resolve_access):
         self.lifecycle, self.client = lifecycle, client
@@ -87,11 +89,15 @@ class DockerProjectFiles:
             return await self._snapshot(job, step)
         if step["operation"] == "restore_version":
             return await self._restore(job, step)
+        if step["operation"] == "prune_rebuildable":
+            return await self._prune(job, step)
         raise ValueError("Unsupported project file operation")
 
     async def _snapshot(self, job, step):
         access, project = await self._context(job)
-        observed, _ = await self._call(step, "snapshot")
+        observed, _ = await self._call(
+            step, "snapshot", rebuild_command=step["arguments"]["rebuild_command"]
+        )
         digest, count = observed.get("manifest_sha256"), observed.get("file_count")
         if (
             observed.get("pending") is not False
@@ -120,9 +126,10 @@ class DockerProjectFiles:
             ):
                 raise ProjectConflict("Snapshot pagination is inconsistent")
             entries.extend(items)
-        encoded = manifest_bytes(
-            {"format": 1, "files": entries}, quota_bytes=project["quota_bytes"]
-        )
+        document = {"format": observed.get("format"), "files": entries}
+        if document["format"] == 2:
+            document["rebuild"] = observed.get("rebuild")
+        encoded = manifest_bytes(document, quota_bytes=project["quota_bytes"])
         if hashlib.sha256(encoded).hexdigest() != digest:
             raise ProjectConflict("Snapshot manifest checksum failed")
         staged = []
@@ -180,11 +187,33 @@ class DockerProjectFiles:
             expected_version=project["version"],
             lifecycle_job=job,
             staged_manifest_sha256=digest,
+            rebuild=document.get("rebuild"),
         )
         return DockerProjectBackend._evidence(
             step,
             checked,
             snapshot={key: version[key] for key in ("version_no", "manifest_sha256")},
+            warnings=observed.get("warnings", []),
+        )
+
+    async def _prune(self, job, step):
+        await self._context(job)
+        snapshot = step["arguments"]["snapshot"]
+        options = {
+            "manifest_sha256": snapshot["manifest_sha256"],
+            "snapshot_fence": step["arguments"]["snapshot_fence"],
+        }
+        await self._call(step, "prune", **options)
+        observed, _ = await self._call(
+            step, "prune_check", key="prune-check", **options
+        )
+        if (
+            observed.get("pending") is not False
+            or type(observed.get("pruned_roots")) is not int
+        ):
+            raise ProjectConflict("Rebuildable cleanup was not verified")
+        return DockerProjectBackend._evidence(
+            step, observed, snapshot=snapshot, pruned_roots=observed["pruned_roots"]
         )
 
     async def _restore(self, job, step):

@@ -23,6 +23,7 @@ from src.project_content import (
     project_path,
 )
 from .project_volumes import ProjectVolumeError
+from .project_rebuild import BROWSER, GENERIC, classify, prune
 
 
 def signature(info):
@@ -110,7 +111,7 @@ class ProjectFiles:
             offset += len(data)
         return digest.hexdigest()
 
-    def scan(self, root, quota):
+    def scan(self, root, quota, *, excluded=(), select=None, excluded_identities=None):
         files, identities, seen = [], [], set()
         nodes, total, deadline = 0, 0, time.monotonic() + 300
 
@@ -131,6 +132,19 @@ class ProjectFiles:
                     )
                 seen.add(path.casefold())
                 info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if path in excluded or (select is not None and select(path)):
+                    if (
+                        not stat.S_ISDIR(info.st_mode)
+                        or info.st_dev != os.fstat(root).st_dev
+                    ):
+                        raise ProjectVolumeError(
+                            "Rebuildable roots must be real directories on the project filesystem"
+                        )
+                    if excluded_identities is not None:
+                        if len(excluded_identities) >= 512:
+                            raise ProjectVolumeError("Too many rebuildable roots")
+                        excluded_identities[path] = [info.st_dev, info.st_ino]
+                    continue
                 if stat.S_ISDIR(info.st_mode):
                     child = os.open(
                         name,
@@ -197,6 +211,17 @@ class ProjectFiles:
         manifest_bytes(manifest, quota_bytes=quota)
         return manifest, [pair[1] for pair in ordered]
 
+    def check_tree(self, root, quota, expected, *, exclude=False):
+        spec = expected.get("rebuild")
+        actual, _ = self.scan(
+            root, quota, excluded=spec["excluded"] if spec and exclude else ()
+        )
+        if spec is not None:
+            actual.update(format=2, rebuild=spec)
+        manifest_bytes(actual, quota_bytes=quota)
+        if actual != expected:
+            raise ProjectVolumeError("Retained project tree is incomplete or changed")
+
     @staticmethod
     def _document(directory, record):
         path = directory / "files.json"
@@ -247,6 +272,8 @@ class ProjectFiles:
         manifest_sha256=None,
         manifest_size=None,
         max_bytes=CHUNK_BYTES,
+        rebuild_command="",
+        snapshot_fence=None,
     ):
         with self.volumes._locked(owner, project_id) as (directory, record):
             self.volumes._generation(record, generation)
@@ -263,11 +290,53 @@ class ProjectFiles:
                     "Project mount is not ready for offline transfer"
                 )
             with self.root(binding["path"]) as root:
+                if action in {"prune", "prune_check"}:
+                    return prune(
+                        self,
+                        directory,
+                        record,
+                        root,
+                        fence,
+                        manifest_sha256,
+                        snapshot_fence,
+                        check=action == "prune_check",
+                    ), b""
                 if action == "snapshot":
                     if self.volumes._begin(
-                        directory, record, "files_snapshot", fence, {}
+                        directory,
+                        record,
+                        "files_snapshot",
+                        fence,
+                        {"rebuild_command": rebuild_command} if rebuild_command else {},
                     ):
-                        manifest, identities = self.scan(root, record["quota_bytes"])
+                        spec, defaults, warnings = classify(self, root, rebuild_command)
+                        excluded_identities = {}
+                        select = (
+                            (
+                                lambda path: (
+                                    path in spec["excluded"]
+                                    or path in defaults
+                                    or path.split("/")[-1] in GENERIC
+                                    or path in BROWSER
+                                )
+                            )
+                            if spec
+                            else None
+                        )
+                        manifest, identities = self.scan(
+                            root,
+                            record["quota_bytes"],
+                            select=select,
+                            excluded_identities=excluded_identities,
+                        )
+                        if spec:
+                            manifest.update(
+                                format=2,
+                                rebuild={
+                                    **spec,
+                                    "excluded": sorted(excluded_identities),
+                                },
+                            )
                         self.volumes._admit(MAX_MANIFEST_BYTES * 2)
                         digest = manifest_digest(
                             manifest, quota_bytes=record["quota_bytes"]
@@ -279,13 +348,19 @@ class ProjectFiles:
                                 "generation": generation,
                                 "manifest": manifest,
                                 "identities": identities,
+                                "excluded_identities": excluded_identities,
+                                "warnings": warnings,
                             },
                         )
                         record["files"] = {"sha256": digest, "fence": fence}
                         self.volumes._finish(directory, record)
                     document = self._document(directory, record)
                     return self._reply(
-                        record, file_count=len(document["manifest"]["files"])
+                        record,
+                        file_count=len(document["manifest"]["files"]),
+                        format=document["manifest"]["format"],
+                        rebuild=document["manifest"].get("rebuild"),
+                        warnings=document.get("warnings", []),
                     ), b""
                 if action == "restore_begin":
                     if (
@@ -333,11 +408,9 @@ class ProjectFiles:
                         )
                     else:
                         document = self._document(directory, record)
-                        actual, _ = self.scan(root, record["quota_bytes"])
-                        if actual != document["manifest"]:
-                            raise ProjectVolumeError(
-                                "Restored tree is incomplete or changed"
-                            )
+                        self.check_tree(
+                            root, record["quota_bytes"], document["manifest"]
+                        )
                         if action == "restore_finish":
                             self.volumes._finish(directory, record)
                             (directory / "manifest.upload").unlink(missing_ok=True)
@@ -361,9 +434,9 @@ class ProjectFiles:
                         file_count=len(files),
                     ), b""
                 if action == "check":
-                    actual, _ = self.scan(root, record["quota_bytes"])
-                    if actual != document["manifest"]:
-                        raise ProjectVolumeError("Project changed after its snapshot")
+                    self.check_tree(
+                        root, record["quota_bytes"], document["manifest"], exclude=True
+                    )
                     return self._reply(record), b""
                 if action != "read":
                     raise ProjectVolumeError("Unknown project file operation")

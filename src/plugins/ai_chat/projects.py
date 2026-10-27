@@ -457,6 +457,7 @@ class ProjectStore:
         force_version=False,
         lifecycle_job=None,
         staged_manifest_sha256=None,
+        rebuild=None,
     ):
         supplied_now = now
         now = int(time.time()) if now is None else now
@@ -558,9 +559,10 @@ class ProjectStore:
                 ):
                     raise ValueError("A file cannot also be a directory")
             manifest.sort(key=lambda item: item["path"])
-            encoded = json.dumps(
-                {"format": 1, "files": manifest}, sort_keys=True, separators=(",", ":")
-            ).encode()
+            document = {"format": 1, "files": manifest}
+            if rebuild is not None:
+                document.update(format=2, rebuild=rebuild)
+            encoded = manifest_bytes(document, quota_bytes=row["quota_bytes"])
             blob = self.blobs.put(encoded)
             if (
                 staged_manifest_sha256 is not None
@@ -810,6 +812,7 @@ class ProjectStore:
             files,
             expected_version=expected_version,
             force_version=True,
+            rebuild=manifest.get("rebuild"),
             now=now,
         )
 
