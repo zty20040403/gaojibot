@@ -52,6 +52,22 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.gate.activate(2)["epoch"], 2)
         self.assertEqual(self.gate.state_path.stat().st_mode & 0o777, 0o600)
 
+    def test_inspection_is_read_only_and_requires_exact_active_epoch(self):
+        self.workspace.verify.return_value = {"used_bytes": 1234}
+        with self.assertRaises(GuestDiskError):
+            self.gate.inspect(2)
+        self.gate.activate(2)
+        before = self.gate.state_path.read_bytes()
+        observed = self.gate.inspect(2)
+        self.assertEqual(observed["used_bytes"], 1234)
+        self.assertFalse(observed["busy"])
+        self.commands.empty.return_value = False
+        self.assertTrue(self.gate.inspect(2)["busy"])
+        for epoch in (1, 3, True):
+            with self.assertRaises(GuestDiskError):
+                self.gate.inspect(epoch)
+        self.assertEqual(self.gate.state_path.read_bytes(), before)
+
     def test_quiescence_revokes_old_requests_even_after_reactivation(self):
         self.gate.activate(2)
         self.assertEqual(self.gate.quiesce(3)["mode"], "quiesced")

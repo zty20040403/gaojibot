@@ -44,8 +44,9 @@ class VmProjectMounts:
                     binding, domain_uuid = await self._binding(owner, actual, metadata, reservation=reservation)
                     if type(fence) is not int or fence <= status["fence"]:
                         raise SandboxError("Execution admission requires a new release fence")
-                    if await self.manager._running(actual):
-                        await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
+                    state = await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"),
+                                               states=("running", "shut off"))
+                    if state == "running":
                         await self._control(actual, binding, "activate", fence)
                         await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
                 return await _journal(self.disks.reserve, owner, project_id, generation=generation,
@@ -83,7 +84,7 @@ class VmProjectMounts:
             await self._binding(owner, sandbox_id, metadata, reservation=reservation)
             return receipt
 
-    async def _domain(self, binding, domain_uuid, *, spec=None):
+    async def _domain(self, binding, domain_uuid, *, spec=None, states=("running",)):
         identifiers = (await self.manager._virsh("list", "--all", "--uuid")).split()
         try:
             if (len(identifiers) > 256 or len(set(identifiers)) != len(identifiers)
@@ -94,10 +95,11 @@ class VmProjectMounts:
                 xml = await self.manager._virsh("dumpxml", domain_uuid, *options)
                 self._validate_domain(ElementTree.fromstring(xml), binding, domain_uuid, spec=spec)
             state = await self.manager._virsh("domstate", domain_uuid)
-            if state.strip() != "running":
+            if state.strip() not in states:
                 raise ValueError()
         except (ValueError, TypeError, AttributeError, ElementTree.ParseError):
             raise SandboxError("Live and persistent VM definitions did not verify the project disk") from None
+        return state.strip()
 
     def _validate_domain(self, root, binding, domain_uuid, *, spec=None):
         config = binding.guest_config()

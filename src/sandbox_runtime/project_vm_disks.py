@@ -240,6 +240,29 @@ class VmProjectDisks(ProjectVolumeJournal):
             self._generation(record, generation)
             return self._status(directory, record)
 
+    def inspection_record(self, owner, project_id, *, generation):
+        """Private immutable observation contract, including retired VM identity."""
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            if record is None or record["pending"] or record.get("maintenance"):
+                raise ProjectVolumeError("Project observation requires settled, released maintenance")
+            status = self._status(directory, record)
+            boot = None
+            if record.get("workspace"):
+                boot = self._boot_binding(directory, record)
+                if boot["workspace"]["stage"] != "ready" or not record.get("guest_initialized"):
+                    raise ProjectVolumeError("Project VM boot has not been verified")
+            elif record.get("vm_maintenance"):
+                retired = record["vm_maintenance"]
+                if retired["action"] != "remove" or retired["stage"] != "deleted":
+                    raise ProjectVolumeError("Project VM retirement has not been verified")
+                boot = {"workspace": copy.deepcopy(retired["workspace"]), "binding": VmProjectDiskBinding(
+                    project_id, generation, retired["workspace"]["sandbox_id"],
+                    self._path(directory, record), record["fs_uuid"], record["quota_bytes"])}
+            if not record.get("workspace") and record.get("sandbox_id"):
+                raise ProjectVolumeError("Unjournalled project VM claim")
+            return {"status": status, "boot": boot, "retired": bool(boot and not record.get("workspace"))}
+
     def create(self, owner, project_id, *, quota_bytes, fence, generation=1):
         quota_bytes = self._quota(quota_bytes)
         self._generation(None, generation)

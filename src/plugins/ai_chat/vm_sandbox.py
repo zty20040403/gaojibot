@@ -459,8 +459,11 @@ class VmSandboxManager:
         ElementTree.SubElement(channel, "target", {
             "type": "virtio", "name": "org.qemu.guest_agent.0",
         })
-        serial = ElementTree.SubElement(devices, "serial", {"type": "file"})
-        ElementTree.SubElement(serial, "source", {"path": str(directory / "console.log")})
+        # Persistent projects must not accumulate an unbounded, unjournalled
+        # host log which also prevents retirement's exact-file cleanup.
+        serial = ElementTree.SubElement(devices, "serial", {"type": "pty" if project_disk is not None else "file"})
+        if project_disk is None:
+            ElementTree.SubElement(serial, "source", {"path": str(directory / "console.log")})
         ElementTree.SubElement(serial, "target", {"port": "0"})
         return ElementTree.tostring(domain, encoding="unicode")
 

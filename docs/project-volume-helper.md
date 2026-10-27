@@ -646,7 +646,45 @@ identities and interrupted effects, including shutdown intent without delivery,
 lost QGA replies, partial deletion and reboot with the same data. Guest disk
 receipts also run through `ProjectGuestWorkspace` and `ProjectGuestGate` rather
 than only hand-built JSON. OS mount, cgroup and libvirt effects are still fixtures;
-native lifecycle acceptance and the assembled VM executor are not claimed.
+native lifecycle acceptance is not claimed.
+
+## Private VM lifecycle composition
+
+`VmProjectRuntime` combines disk creation/deletion, reservation, boot and guest
+maintenance. `VmProjectBackend` connects it and `ProjectFileExecutor` to the
+existing PostgreSQL `ProjectLifecycleExecutor`; it accepts only protocol 3 and
+valid ordered transition plans. No import registers a production worker or
+exposes these operations to model calls. Host composition must supply the
+current-membership resolver, the VM manager/disks, and the VM file transport.
+
+Each step uses its persisted effect fence. A replacement job lease changes the
+transport identity, not the effect identity. Snapshot publication must precede
+pruning/retirement; dependency and restore retries preserve the same generation
+and frozen manifest. Errors keep the lifecycle job and maintenance reservation
+available for reconciliation rather than deleting the workspace.
+
+Final verification is a fresh external observation, not just the previous
+command's success flag. The private host reader holds allocation and IO locks,
+checks the immutable domain, pinned bootstrap files, data-disk consumers and
+unchanged journal before/after inspection. Running projects additionally require
+a read-only guest receipt proving mounted data, the exact active admission
+epoch and no writers. Stopped projects require the original stopped domain;
+retired projects require the original domain and system directory to be absent.
+Archive additionally requires the data disk to be gone. A stale fence, changed
+guest epoch, revived retired VM or replacement directory prevents completion.
+Reservation release validates stopped domains too, not only running ones.
+
+Project VM serial output uses a PTY rather than creating an unbounded host-side
+`console.log` outside the retirement journal. Nonproject VMs retain their
+existing console-log configuration. Guest task output still uses QGA.
+
+`tests/test_project_vm_executor.py` exercises PostgreSQL leases and CAS versions
+with real retained files and guest journals, including stop, retained-volume
+hibernation, dependency reconstruction, archive and restore into a new disk
+generation. Lost snapshot/chunk/activation/retirement/dependency acknowledgements,
+lease takeover, revoked membership and contradictory final observations are
+covered. Libvirt, mounts and systemd remain explicit fixtures: this is local
+composition evidence, not native KVM or production acceptance.
 
 ## Evidence and remaining gates
 

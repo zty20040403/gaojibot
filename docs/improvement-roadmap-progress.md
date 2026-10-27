@@ -2412,3 +2412,43 @@ implementation evidence, not a claim that the production App has these features.
   acceptance, desktop soft quotas and remaining product integration are pending.
   M3-M7 are pending. No production SSH, nix-config change, deployment or App
   publication is included; the user-authored plan remains unchanged/untracked.
+
+### M2 assembled VM lifecycle checkpoint
+
+- Added private `VmProjectRuntime` and protocol-3 `VmProjectBackend`, composed
+  with the existing PostgreSQL lifecycle/file executors. Ordered whole-plan
+  validation happens before effects; this does not register a production worker
+  or expose a model-facing host command API.
+- Real PostgreSQL leases, CAS versions, retained files and guest journals now
+  exercise complete stop, hibernate, wake, archive and restore transitions.
+  Hibernation preserves the data disk while removing dependencies/system VM;
+  archive recovery restores a new disk generation and the pinned dependencies.
+- Lost boot, snapshot, restore-chunk, activation, retirement and dependency
+  completion acknowledgements resume their original effect identities. Lease
+  takeover does not duplicate VMs/installers. Revoked membership, failed recipes
+  and unpublished snapshots cannot silently release admission or retire data.
+- Completion freshly verifies immutable domains, bootstrap files, disk claims,
+  retired paths, exact host/guest admission epochs and guest writer state.
+  Stopped-domain validation now also runs before reservation release. Reappearing
+  domains/directories and superseded journals reject completion.
+- Inspection exposed a pre-existing mismatch: project VM XML created an
+  unbounded host `console.log` absent from retirement's exact file allowlist.
+  New project VMs use PTY serial output; ordinary VMs keep their existing file
+  console. Guest command output continues to use QGA.
+- Final relevant regression: 426 project tests, OK in 84.020 seconds
+  (`.cache/roadmap/m2-vm-lifecycle-regression.log`), plus 10 VM artifact tests,
+  OK in 0.036 seconds (`.cache/roadmap/m2-vm-lifecycle-artifacts.log`), all with
+  ResourceWarning as errors. Initial fixture counters included inherited setup
+  operations and an assertion expected the wrong exception base; these harness
+  defects were corrected without relaxing the tested product invariants.
+- Whole-CI Ruff, compileall and whitespace checks passed. Nix package/import
+  checks passed on aarch64-darwin (`.cache/roadmap/m2-vm-lifecycle-nix.log`);
+  other systems were omitted, not tested. Byte comparisons verified packaged
+  VM runtime, lifecycle backend and VM manager match the tested source. The
+  unrelated full repository suite was not rerun for this checkpoint.
+- OS mounts, systemd and libvirt remain explicit fixtures, not native KVM
+  acceptance. M2 remains incomplete: native full lifecycle/power-loss and large
+  transfer validation, VM usage/scheduler integration, desktop soft quotas and
+  remaining product task integration are still required. M3-M7 are pending.
+  No production connection, shared nix-config edit, rebuild or release occurred.
+  The user-authored plan is unchanged and excluded; fixture cleanup is automatic.

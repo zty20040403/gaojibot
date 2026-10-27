@@ -35,10 +35,21 @@ class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.find("source").get("file"), str(binding().path))
         self.assertEqual(data.findtext("serial"), binding().guest_config()["serial"])
         self.assertEqual(root.find("./metadata/{urn:gaoji:project:1}workspace").get("generation"), "2")
+        serial = root.find("./devices/serial")
+        self.assertEqual(serial.get("type"), "pty")
+        self.assertIsNone(serial.find("source"))
         with patch("shutil.which", return_value="/test/qemu"), self.assertRaises(SandboxError):
             manager._domain_xml("s654321", Path("/vm/s654321"), project_disk=binding(), project_domain_uuid=DOMAIN_UUID)
         with patch("shutil.which", return_value="/test/qemu"), self.assertRaises(SandboxError):
             manager._domain_xml("s123456", Path("/vm/s123456"), project_disk=binding())
+
+    def test_nonproject_vm_keeps_existing_console_log(self):
+        manager = VmSandboxManager(image="/base.qcow2", root="/vm")
+        with patch("shutil.which", return_value="/test/qemu"):
+            root = ElementTree.fromstring(manager._domain_xml("s123456", Path("/vm/s123456")))
+        serial = root.find("./devices/serial")
+        self.assertEqual(serial.get("type"), "file")
+        self.assertEqual(serial.find("source").get("path"), "/vm/s123456/console.log")
 
     def test_project_cloud_init_mounts_with_readonly_root_owned_helper(self):
         config = json.loads(VmSandboxManager._cloud_config(project_disk=binding(), initialize_project=True).split("\n", 1)[1])

@@ -189,6 +189,19 @@ class ProjectGuestGate:
     def _receipt(self, state):
         return {**state, "verified": True}
 
+    def inspect(self, epoch):
+        """Observe admission and the mounted disk without changing either."""
+        self._epoch(epoch)
+        with self._lock("control"), self._lock("io", timeout=0):
+            state = self._state()
+            if state["epoch"] != epoch or state["mode"] != "active":
+                raise GuestDiskError("Project admission is not active at the host epoch")
+            mounted = self.workspace.verify()
+            self.commands.require_cgroups()
+            return {**self._receipt(state), "mounted": True,
+                    "used_bytes": mounted["used_bytes"], "quota_bytes": self.config["quota_bytes"],
+                    "busy": not self.commands.empty() or self.commands.sandbox_processes()}
+
     def activate(self, epoch):
         self._epoch(epoch)
         with self._lock("control"), self._lock("io"):
@@ -292,7 +305,7 @@ def main():
         raise GuestDiskError("Invalid project request")
     gate = ProjectGuestGate(load_config())
     action = request.get("action")
-    if action in {"activate", "quiesce"} and set(request) == {"action", "epoch"}:
+    if action in {"activate", "quiesce", "inspect"} and set(request) == {"action", "epoch"}:
         print(json.dumps(getattr(gate, action)(request["epoch"]), sort_keys=True))
     elif action in {"trim", "unmount"} and set(request) == {"action", "epoch"}:
         print(json.dumps(gate.disk_operation(action, request["epoch"]), sort_keys=True))
