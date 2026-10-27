@@ -1436,7 +1436,7 @@ The earlier roadmap's local implementation is committed as `9cfab47`. Starting
 Its original file remains unmodified and unstaged. The following checklist is
 implementation evidence, not a claim that the production App has these features.
 
-- [ ] M0: technical validation and ADR 006 (in progress).
+- [x] M0: technical validation and ADR 006 (local experiments complete).
 - [ ] M1: scoped stores, migration and content-addressed versions.
 - [ ] M2: project quota helper, lifecycle, snapshots and metrics.
 - [ ] M3: project tools/commands, Sub-Agent integration and admin page.
@@ -1502,3 +1502,45 @@ implementation evidence, not a claim that the production App has these features.
   request. Native-host gates remain open; real local guest and Docker results
   are recorded separately from unit tests. This is a local M0 checkpoint, not
   the completion of M0-M7.
+
+### M0 native-host completion
+
+- Added a test-only native-host probe, local QEMU runner, disposable NixOS
+  fixture and Ubuntu cloud-init seed. Ubuntu and NixOS run their own guest
+  kernel/systemd/Docker; no distribution-container substitution. Both use
+  two vCPUs and 2 GiB RAM, a read-only fixture ISO, no host mounts, credentials,
+  SSH or forwarded ports. NixOS is offline; Ubuntu uses public apt repositories.
+- Ubuntu 24.04.5 / kernel 6.8.0-147 / Docker 29.1.3: candidate A's host loop mount
+  plus ordinary Docker bind mount returned ENOSPC after 88,076,288 bytes on a
+  96 MiB image. Another project's 16 MiB write and sentinel survived. Physical
+  allocation fell from 94,380,032 to 4,288,512 bytes after delete+trim. Candidate
+  B's direct-image Docker local mount failed with EINVAL.
+- NixOS 26.05 / kernel 6.18.43 / Docker 29.6.2: the same A check returned ENOSPC
+  after 85,983,232 bytes, with the second project unaffected. Allocation fell
+  from 93,081,600 to 4,599,808 bytes. Candidate B failed with EINVAL here too.
+  The fixture used the repo's existing pinned nixpkgs, with no lock-file change.
+- Short, noisy ordinary/quota write medians were 973.5/578.4 MiB/s on Ubuntu,
+  1841.7/1020.0 MiB/s on NixOS. The ADR preserves the outlier and limitations;
+  these do not establish production throughput or a universal overhead ratio.
+- Both guests passed clean shutdown/reboot, active Docker, retained root-file
+  sentinel, no returning owned containers/volumes and QCOW2 integrity checks.
+  Project mounts were removed before reboot: this is NOT durable project-loop
+  reconciliation or libvirt acceptance. Those are explicit M2 product gates.
+- The first NixOS harness missed its ANSI-coloured shell prompt. The test VM
+  was stopped, its log retained, and the prompt parser corrected. A separate
+  builder's emulated syscall-filter error was confined to that disposable
+  builder; no host or product security settings changed.
+- Evidence: `.cache/roadmap/m0-native-ubuntu.json`,
+  `.cache/roadmap/m0-native-nixos.json`, corresponding console logs and the
+  updated ADR 006. All test VMs, loop devices, containers and volumes removed.
+  Downloaded Ubuntu image, exported worker tar, fixture ISOs and built NixOS
+  images removed; the native fixture directory is now 52 KiB. No global prune.
+- Final full PostgreSQL regression: 2168 tests, OK (12 skipped), 368.366 seconds,
+  ResourceWarning promoted to errors (.cache/roadmap/m0-native-final-full.log).
+  Ruff across CI paths, compileall, Nix expression parsing and whitespace checks
+  pass. The actual NixOS fixture build and boot passed. No product Nix module,
+  helper or frontend changed; no new UI build/production flake check required.
+- M0's requested experiments and regression are complete. M1-M7 are not
+  implemented yet; nothing pushed or deployed. Next is M1's data layer, extending
+  the existing RoutineStore rather than creating a competing scheduler. Its new
+  migration must follow current head 0042, not the plan's historical 0030 note.

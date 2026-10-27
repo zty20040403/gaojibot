@@ -1,7 +1,7 @@
 # ADR 006: Project quota volumes and retained versions
 
 Date: 2026-10-27. Owner: Kenneth.
-Status: **M0 validation in progress, not a production capability announcement.**
+Status: **Accepted for M1/M2 implementation. M0 complete; not a production capability announcement.**
 Plan: `docs/project-workspace-v1-plan.md`. This ADR supplements that unchanged
 plan. It does not enable projects, alter current sandbox retention or deploy a
 helper to any server.
@@ -20,9 +20,10 @@ file space, nor that total instance capacity is reserved in advance.
 ## Current Evidence
 
 All experiments below used local throwaway resources, not h610, h310 or tank.
-No product code was changed in M0. The runtime image was already installed; no
-image was pulled, built or committed. Every created container, named volume,
-loop mapping and temporary QCOW2 image was cleaned up.
+No product code was changed in M0. The Docker worker images were already
+installed. The later native-host tests used an official Ubuntu cloud image and
+a locally built NixOS guest, described below. Every created worker container,
+named volume, loop mapping and temporary writable QCOW2 image was cleaned up.
 
 ### Docker Desktop on Apple Silicon
 
@@ -125,6 +126,85 @@ This is real guest/filesystem/virtio/backing-chain evidence, **not** acceptance 
 the project's production KVM/libvirt XML, crash recovery, native Ubuntu/NixOS or
 VM restart behavior. Only an unmount/remount, not a guest restart, was tested.
 
+### Native Ubuntu and NixOS Hosts
+
+These are independent ARM64 guests with their own kernels, systemd and Docker
+daemons, not distribution-labelled containers on LinuxKit. QEMU 10.2.2 with
+Apple HVF, two vCPUs and 2 GiB RAM per guest; no SSH, forwarded ports, credentials
+or host-directory mounts. Fixtures enter on a read-only ISO. NixOS has no
+network adapter. Ubuntu uses QEMU NAT for its public cloud-init packages only.
+
+Ubuntu provenance: the [official dated Noble image directory](https://cloud-images.ubuntu.com/noble/20261017/),
+`noble-server-cloudimg-arm64.img`, SHA-256 verified against its `SHA256SUMS`:
+`50e24e1fb79e89116e939d90aa7738f7af48c442fa1bc2510131e0b39c50348e`.
+The guest reported Ubuntu 24.04.5 LTS, kernel 6.8.0-147-generic, Docker 29.1.3.
+
+NixOS provenance: `tools/project_m0_native_vm.nix` evaluated against the repo's
+existing pinned nixpkgs, revision `8b8c811c7c2541c30382c5de7ed26be055569c60`.
+The guest reported NixOS 26.05 (`BUILD_ID=26.05pre-git`), kernel 6.18.43, Docker
+29.6.2. Building in a disposable Docker container was only image preparation;
+the actual tests ran after booting that image in independent QEMU. No product
+flake/module or lock file was changed.
+
+`tools/verify_project_native_host.py` requires a disposable-guest marker, root,
+a non-container VM identity and an explicit local Docker socket. The guest host
+creates two separate 96 MiB sparse ext4 files and loop mounts. Docker workers
+receive ordinary bind mounts, run as UID 65534 with no capabilities/network,
+read-only root, one CPU, 128 MiB RAM and 32 PIDs. This is candidate A exactly,
+without a helper-container mount-namespace workaround.
+
+| Check | Ubuntu | NixOS |
+| --- | ---: | ---: |
+| Project A bytes written before ENOSPC | 88,076,288 | 85,983,232 |
+| Project B write after A exhausted | 16,777,216, pass | 16,777,216, pass |
+| B sentinel after unmount/remount | unchanged | unchanged |
+| A physically allocated when full | 94,380,032 | 93,081,600 |
+| A physically allocated after delete + trim | 4,288,512 | 4,599,808 |
+| B: direct image filename, Docker local `o=loop` | EINVAL | EINVAL |
+| Owned Docker/loop/mount cleanup | pass | pass |
+
+Three short fsynced 32 MiB writes measured ordinary-directory/quota medians of
+973.5/578.4 MiB/s on Ubuntu (ratio 0.594), and 1841.7/1020.0 MiB/s on NixOS
+(ratio 0.554). There is a 6.8 MiB/s outlier in Ubuntu's quota samples. These
+cache-sensitive, resource-limited samples show potential overhead, not a
+production throughput guarantee or cross-platform performance ranking.
+
+Both guests then shut down cleanly and booted the same writable root again.
+Docker was active, a retained root-filesystem sentinel survived, and no owned
+test container/volume reappeared. QCOW2 checks returned zero errors; temporary
+roots were deleted. **This host reboot check is not project-volume recovery:**
+project loop mounts were deliberately removed before shutdown. Durable helper
+reconciliation and production libvirt integration remain M2 acceptance gates.
+
+Evidence: `.cache/roadmap/m0-native-ubuntu.json` and
+`.cache/roadmap/m0-native-nixos.json`, with corresponding serial-console logs.
+The first NixOS attempt reached a healthy shell but its coloured prompt was not
+recognized; the test VM was stopped and the harness fixed to ignore ANSI colour
+sequences. The failed attempt is retained as `m0-native-nixos-prompt.json`.
+This was a harness failure, not a quota or guest boot failure.
+
+Reproduction pieces:
+
+1. Build the NixOS fixture with `nix-build tools/project_m0_native_vm.nix --arg
+   nixpkgs /path/to/pinned/nixpkgs`. Its output contains kernel, initrd, immutable
+   store image, root filesystem and kernel parameters. This is test-only.
+2. For Ubuntu, create a `cidata` ISO containing `user-data` from
+   `tools/project_m0_ubuntu_cloud_init.yaml` and `meta-data` with a unique
+   `instance-id` and `local-hostname: gaoji-m0-ubuntu`. Keep it beside the verified
+   cloud image as `seed.iso`. Never reuse this console-autologin seed on a server.
+3. Create an ISO labelled `M0FIXTURES`, containing the two host probe files
+   (`verify_project_native_host.py`, `verify_project_storage.py`) and
+   `python-worker.tar`, exported from an existing ARM64 `python:3.12-slim` image.
+   The measured worker ID was
+   `sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf`.
+4. Run `tools/verify_project_native_vm.py --kind ubuntu` or `--kind nixos`, with
+   explicit `--assets`, `--fixtures`, `--qemu`, `--qemu-img`, and `--output`.
+   Ubuntu additionally needs `--firmware` pointing to QEMU's EDK2 directory.
+   Use `--accel hvf` on compatible macOS, or the slower default TCG.
+5. Retain the JSON/log evidence, then remove the owned build container, downloaded
+   cloud image, exported tar, fixture ISO and built guest images. No global
+   Docker prune, Nix GC or unrelated cleanup is part of this probe.
+
 ### Synthetic Scheduled Turn
 
 `tests/test_project_m0.py` exercises the existing `RoutineDispatcher`, restored
@@ -138,15 +218,16 @@ the original group identity, an actual prepared expression plus final text in
 Outbox, and takeover returning the same delivery without more model requests.
 Actual QQ receipt and live model quality are deliberately outside this check.
 
-## Provisional Decision
+## M0 Decision
 
 1. Keep project features off by default. A backend may advertise hard quota only
    after its mount/ENOSPC/isolation checks pass on that deployment's platform.
    An unavailable helper is not silently replaced with an unbounded volume.
 2. Prefer candidate A's fixed-size sparse ext4 plus a constrained loop manager
    for OCI hosts. The Desktop experiment demonstrates a possible Docker-device
-   mount variant, not a universal implementation. Candidate B is rejected on the
-   measured Desktop environment; native Linux results are still pending.
+   mount variant, not a universal implementation. Native Ubuntu and NixOS
+   validate the host-loop-plus-bind approach. Candidate B is rejected on all
+   three measured environments; it does not allocate the needed loop device.
 3. Keep Desktop soft quota as the documented fallback when hard quota is not
    verified. Label it explicitly; stop new writes and active writers on excess,
    but do not promise the sampling interval prevents every overshoot. Preserve
@@ -178,25 +259,35 @@ Actual QQ receipt and live model quality are deliberately outside this check.
 - Product API must report backend and `quota_mode` honestly. Enabling a GUI
   switch cannot upgrade soft enforcement into a filesystem guarantee.
 
-## Outstanding M0 Gates
+## M0 Gates
 
 - [x] Docker Desktop Mac: filesystem ENOSPC and independent second writer.
 - [x] Docker Desktop Mac: A-variant and B comparison, sample performance, cleanup.
 - [x] Host QCOW2 discard smoke check (partial VM evidence only).
-- [ ] Disposable native Ubuntu host: A/B, concurrent writers and performance.
-- [ ] Disposable native NixOS host: A/B, concurrent writers and performance.
+- [x] Disposable native Ubuntu host: A/B, isolated writers and performance.
+- [x] Disposable native NixOS host: A/B, isolated writers and performance.
 - [x] Real local guest: ext4 delete + `fstrim` + virtio `discard=unmap`, measured
       backing-chain allocation, unchanged base and integrity after remount.
-- [ ] Native backend/libvirt integration and integrity after VM restart.
 - [x] Synthetic turn, tool, immutable original ledger and Outbox takeover:
       `tests.test_project_m0`, one test, OK in 0.981 seconds. Log:
       `.cache/roadmap/m0-synthetic-accepted.log`.
 - [x] Local checkpoint full regression: 2168 tests, OK (12 skipped), 358.407
       seconds; `.cache/roadmap/m0-final-full.log`. Ruff, compileall and whitespace
-      checks pass. This does not close the native-host/guest gates above.
+      checks pass. This checkpoint preceded the native-host scripts above.
+- [x] Final full PostgreSQL regression: 2168 tests, OK (12 skipped), 368.366
+      seconds, ResourceWarning promoted to errors;
+      `.cache/roadmap/m0-native-final-full.log`. Ruff, compileall, Nix expression
+      parse, actual fixture build/boot and whitespace checks pass.
 
-No native Ubuntu/NixOS test VM was available in the local workspace during this
-checkpoint. The LinuxKit guest closes a different gate. Do not substitute
-containers with those distribution names for a native-host test: they share
-the Desktop kernel and Docker daemon. M0 remains open; native/backend gates must
-be recorded before a production hard-quota claim or automatic project enablement.
+## M2 Integration Gates, Still Required
+
+- Native helper lifecycle/reconciliation, project-volume integrity after restart,
+  fencing, online expansion, offline shrink and fsck under failure conditions.
+- Wire the production VM backend's discard configuration and validate project
+  data after restart/crash. A standalone QEMU experiment is not libvirt acceptance.
+- Capability checks on each deployment platform. Windows Desktop remains
+  untested and must not inherit a hard-quota claim from the Mac experiment.
+- Instance/session accounting, cleanup protection and user-visible quota mode.
+
+These are product implementation gates, not claims fulfilled by M0's experiments.
+Projects stay disabled until their backend has passed its own acceptance checks.
