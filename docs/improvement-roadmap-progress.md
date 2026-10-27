@@ -2211,3 +2211,40 @@ implementation evidence, not a claim that the production App has these features.
   (.cache/roadmap/m2-vm-bootstrap-nix.log); incompatible platforms were omitted,
   not tested. No product code changed after this run. Fixture-owned temporary
   files were cleaned automatically; only small ignored diagnostics remain.
+
+### M2 resumable VM provisioning
+
+- Added a private provisioning driver with one durable reservation/effect fence
+  from allocation through guest verification. It freezes the domain UUID, sandbox
+  ID, base-image checksum and resource contract, and journals each phase before
+  creating, defining or starting anything. Live and persistent domain inspection
+  is required; command return values alone cannot complete a boot.
+- Pre-boot retries can regenerate only known system/seed files after proving no
+  VM exists. Once prepared, file identities are immutable except guest writes to
+  the system overlay. Missing or replaced files fail closed. The project data
+  disk is never regenerated. Lost define/start acknowledgements resume the same
+  VM; a host restart can restart that stopped VM with fresh capacity admission.
+- Ordinary VM allocation and project provisioning share a host file lock.
+  Cancellation waits for synchronous writes before releasing it, and host
+  subprocesses are reaped even when cancellation races PID acquisition. These
+  checks do not yet provide cross-process guest IO leases or detached-writer
+  quiescence, which remain prerequisites for lifecycle composition.
+- Project cloud-init no longer also creates a distribution-default user.
+  Mount/usage verification checks both the sandbox name and exclusive UID/GID
+  1000 mapping. Existing workspaces retain their frozen memory/CPU/PID limits
+  when host defaults change. Temporary task/shell cloud-init is unchanged.
+- Focused checks: 149 passed in 2.925 seconds with ResourceWarning as errors
+  (.cache/roadmap/m2-vm-provision-focused.log). This includes real local sparse
+  QEMU system/data images, backing/quota checks and writes that preserve the
+  independent project disk. Libvirt, guest execution and cloud-localds seed
+  output are fixtures; no native VM boot is claimed by this checkpoint.
+- Full isolated PostgreSQL regression: 2496 tests, OK (12 skipped), 431.948
+  seconds with ResourceWarning as errors
+  (.cache/roadmap/m2-vm-provision-full.log). Ruff, compileall and whitespace
+  checks passed. Nix package/import checks passed on aarch64-darwin
+  (.cache/roadmap/m2-vm-provision-nix.log); incompatible platforms were omitted,
+  not tested. No product code changed after the regression. Temporary test
+  directories and images were cleaned automatically; only ignored logs remain.
+- M2-M7 remain incomplete. No production registration, server SSH, nix-config
+  update, rebuild, live QQ/model request or App release is included. The approved
+  input plan is unchanged and excluded from commits.

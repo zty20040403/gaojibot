@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import base64
 import hashlib
 import json
@@ -132,6 +133,8 @@ class VmSandboxManager:
             from src.sandbox_runtime import project_vm_guest
 
             project = project_disk.guest_config(initialize=initialize_project)
+            config["users"] = [{"name": "sandbox", "uid": 1000, "shell": "/bin/bash",
+                                "lock_passwd": True, "sudo": False}]
             config["packages"].extend(["e2fsprogs", "util-linux"])
             config["write_files"].extend([
                 {"path": str(project_vm_guest.CONFIG_PATH), "permissions": "0600", "owner": "root:root",
@@ -191,6 +194,15 @@ class VmSandboxManager:
         self._last_execs: dict[str, SandboxExecutionActivity] = {}
         self.project_mounts = None
 
+    @asynccontextmanager
+    async def allocation_lock(self):
+        from src.sandbox_runtime.project_vm_provision import _host_lock
+
+        async with self._create_lock:
+            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            async with _host_lock(self.root / ".vm-allocation.lock"):
+                yield
+
     @staticmethod
     def _owner_hash(owner: str) -> str:
         return hashlib.sha256(owner.encode()).hexdigest()[:16]
@@ -232,15 +244,47 @@ class VmSandboxManager:
             raise SandboxError("文件路径无效。")
         return str(PurePosixPath("/workspace") / source)
 
+    @staticmethod
+    async def _reap_host_process(process):
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        finishing = asyncio.create_task(process.communicate())
+        while not finishing.done():
+            try:
+                await asyncio.shield(finishing)
+            except asyncio.CancelledError:
+                continue
+        finishing.result()
+
     async def _run(self, *args: str, timeout: int = 60) -> tuple[int, bytes, bytes]:
+        starting = asyncio.create_task(asyncio.create_subprocess_exec(
+            *args, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "LC_ALL": "C"},
+        ))
         try:
-            process = await asyncio.create_subprocess_exec(
-                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
+            process = await asyncio.shield(starting)
+        except asyncio.CancelledError:
+            # Cancellation can race process creation, before a PID is returned.
+            while not starting.done():
+                try:
+                    await asyncio.shield(starting)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not starting.cancelled() and starting.exception() is None:
+                await self._reap_host_process(starting.result())
+            raise
+        try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
-        except asyncio.TimeoutError as exc:
-            process.kill()
-            await process.wait()
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            await self._reap_host_process(process)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise SandboxError(f"主机命令超时：{args[0]}") from exc
         return process.returncode, stdout, stderr
 
@@ -408,7 +452,7 @@ class VmSandboxManager:
             raise SandboxError("持久项目必须通过项目生命周期创建，不能降级为临时 VM 沙盒。")
         if runtime not in {"python", "node", "debian"}:
             raise SandboxError("不支持的运行环境。")
-        async with self._create_lock:
+        async with self.allocation_lock():
             existing = await self._all_metadata()
             running = [item for item in existing if await self._running(str(item["id"]))]
             if len(running) >= self.max_total:
@@ -541,7 +585,8 @@ class VmSandboxManager:
             raise SandboxError("命令不能为空。")
         lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
         async with lock:
-            await self._owned_running(owner, sandbox_id)
+            metadata = await self._owned_running(owner, sandbox_id)
+            pids_limit = metadata["project_spec"]["pids_limit"] if metadata.get("project_spec") else self.pids_limit
             timeout = min(max(timeout_seconds or self.default_timeout_seconds, 1), 300)
             requested = list(packages or [])
             if len(requested) > 16 or any(not PACKAGE_PATTERN.fullmatch(item) for item in requested):
@@ -571,7 +616,7 @@ class VmSandboxManager:
                 code, out, err = await self._guest_exec(
                     sandbox_id, "/usr/sbin/runuser", [
                         "-u", "sandbox", "--", "/usr/bin/prlimit",
-                        f"--nproc={self.pids_limit}:{self.pids_limit}", "--",
+                        f"--nproc={pids_limit}:{pids_limit}", "--",
                         "/usr/bin/timeout", "--signal=TERM",
                         "--kill-after=5s", str(timeout), "/bin/sh", "-lc",
                         "cd /workspace && " + command,
@@ -776,7 +821,10 @@ class VmSandboxManager:
         raise SandboxError("VM 使用 Debian 软件包；请用 sandbox_exec 的 packages 参数安装具体包名。")
 
     async def start_owned(self, owner: str, sandbox_id: str) -> None:
-        async with self._create_lock:
+        metadata = await self._metadata(owner, sandbox_id)
+        if metadata.get("purpose") == "project":
+            raise SandboxError("持久项目必须通过项目生命周期启动。")
+        async with self.allocation_lock():
             metadata = await self._metadata(owner, sandbox_id)
             if metadata.get("purpose") == "project":
                 raise SandboxError("持久项目必须通过项目生命周期启动。")

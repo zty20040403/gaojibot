@@ -5,11 +5,13 @@ check live project membership, tasks and undelivered artifacts before mutation.
 """
 
 from dataclasses import dataclass
+import copy
 import hashlib
 import json
 import os
 from pathlib import Path
 import stat
+import secrets
 import subprocess
 import uuid
 from xml.etree import ElementTree
@@ -211,6 +213,7 @@ class VmProjectDisks(ProjectVolumeJournal):
             "sandbox_id": record.get("sandbox_id"),
             "maintenance_active": bool(record.get("maintenance")),
             "guest_initialized": record.get("guest_initialized") is True,
+            "workspace_present": bool(record.get("workspace")),
         }
         if record.get("deleted"):
             if (
@@ -517,7 +520,7 @@ class VmProjectDisks(ProjectVolumeJournal):
 
     def guest_binding(self, owner, project_id, sandbox_id, domain_uuid, *,
                       generation, reservation=None, require_initialized=True,
-                      acknowledge_fence=None):
+                      acknowledge_fence=None, spec=None):
         """Revalidate the host claim immediately before each guest operation."""
         self._domain_uuid(domain_uuid)
         with self._locked(owner, project_id) as (directory, record):
@@ -531,6 +534,12 @@ class VmProjectDisks(ProjectVolumeJournal):
             binding = self._guest_binding(directory, record, sandbox_id, allow_pending=retry)
             if record.get("guest_domain_uuid") != domain_uuid:
                 raise ProjectVolumeError("VM identity differs from its project claim")
+            workspace = record.get("workspace")
+            if workspace:
+                if self._boot_spec(spec) != workspace["spec"]:
+                    raise ProjectVolumeError("VM metadata differs from its frozen resource contract")
+            elif spec is not None:
+                raise ProjectVolumeError("Unjournalled VM resource contract")
             if require_initialized and record.get("guest_initialized") is not True:
                 raise ProjectVolumeError("Project guest initialization is not acknowledged")
             return binding
@@ -550,15 +559,150 @@ class VmProjectDisks(ProjectVolumeJournal):
             binding = self._guest_binding(directory, record, sandbox_id, allow_pending=replay)
             if record.get("guest_domain_uuid") != domain_uuid or self.host.consumers(binding.path) != {"gaoji-vm-" + sandbox_id}:
                 raise ProjectVolumeError("Cannot acknowledge an absent or different project VM")
-            expected = binding.guest_config()
-            expected.pop("initialize")
-            if (not isinstance(receipt, dict)
-                    or any(type(receipt.get(key)) is not type(value) or receipt[key] != value for key, value in expected.items())
-                    or any(receipt.get(key) is not True for key in ("mounted", "verified", "initialization_sealed"))
-                    or type(receipt.get("used_bytes")) is not int
-                    or not 0 <= receipt["used_bytes"] <= binding.quota_bytes):
-                raise ProjectVolumeError("Guest mount receipt does not prove sealed initialization")
+            self._check_guest_receipt(binding, receipt)
             if self._begin(directory, record, "guest_acknowledge", fence, intent["arguments"]):
                 record["guest_initialized"] = True
                 return self._finish(directory, record)
             return self._status(directory, record)
+
+    @staticmethod
+    def _check_guest_receipt(binding, receipt):
+        expected = binding.guest_config()
+        expected.pop("initialize")
+        if (not isinstance(receipt, dict)
+                or any(type(receipt.get(key)) is not type(value) or receipt[key] != value for key, value in expected.items())
+                or any(receipt.get(key) is not True for key in ("mounted", "verified", "initialization_sealed"))
+                or type(receipt.get("used_bytes")) is not int
+                or not 0 <= receipt["used_bytes"] <= binding.quota_bytes):
+            raise ProjectVolumeError("Guest mount receipt does not prove sealed initialization")
+
+    @staticmethod
+    def _boot_spec(spec):
+        fields = {"image", "image_identity", "image_sha256", "memory_mib", "vcpus", "pids_limit", "disk_gib"}
+        if not isinstance(spec, dict) or set(spec) != fields:
+            raise ProjectVolumeError("Incomplete immutable VM boot specification")
+        if (not isinstance(spec["image"], str) or not Path(spec["image"]).is_absolute()
+                or any(c in spec["image"] for c in "\0\r\n")
+                or not isinstance(spec["image_identity"], list) or len(spec["image_identity"]) != 5
+                or any(type(value) is not int or value < 0 for value in spec["image_identity"])
+                or not isinstance(spec["image_sha256"], str) or len(spec["image_sha256"]) != 64
+                or any(c not in "0123456789abcdef" for c in spec["image_sha256"])):
+            raise ProjectVolumeError("VM base image is not pinned")
+        for key, low, high in (("memory_mib", 512, 8192), ("vcpus", 1, 4),
+                               ("pids_limit", 32, 4096), ("disk_gib", 4, 100)):
+            if type(spec[key]) is not int or not low <= spec[key] <= high:
+                raise ProjectVolumeError("VM resource contract is invalid")
+        return copy.deepcopy(spec)
+
+    def _boot_binding(self, directory, record):
+        workspace = record.get("workspace") if record else None
+        if not workspace or record.get("guest_domain_uuid") != workspace["domain_uuid"]:
+            raise ProjectVolumeError("VM provisioning identity is unavailable")
+        binding = self._guest_binding(directory, record, workspace["sandbox_id"], allow_pending=True)
+        return {"binding": binding, "workspace": copy.deepcopy(workspace),
+                "pending": record["pending"], "fence": record["fence"]}
+
+    def boot_record(self, owner, project_id, *, generation, reservation, fence=None):
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            self._require_reservation(record, reservation)
+            if record and record["pending"] and (
+                    type(fence) is not int or record["fence"] != fence
+                    or record["intent"]["operation"] != "vm_boot"):
+                raise ProjectVolumeError("VM boot is reserved by another pending operation")
+            return self._boot_binding(directory, record)
+
+    def begin_boot(self, owner, project_id, *, generation, fence, reservation, spec):
+        """Freeze one resumable boot under a single lifecycle effect fence."""
+        self._reservation_hash(reservation)
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            self._require_reservation(record, reservation)
+            if record is None or record.get("deleted"):
+                raise ProjectVolumeError("Project disk does not exist")
+            if record["pending"] or fence == record["fence"]:
+                if (record["fence"] != fence or record["intent"]["operation"] != "vm_boot"):
+                    raise ProjectVolumeError("Reconcile the current project operation first")
+                self._begin(directory, record, "vm_boot", fence, record["intent"]["arguments"])
+                return self._boot_binding(directory, record)
+            workspace = record.get("workspace")
+            if workspace is None:
+                path, _ = self._inspect(directory, record)
+                self._idle(path, record)
+                workspace = {
+                    "sandbox_id": "s" + secrets.token_hex(3), "domain_uuid": str(uuid.uuid4()),
+                    "spec": self._boot_spec(spec), "stage": "allocated",
+                    "directory_identity": None, "artifacts": {},
+                }
+                record["workspace"] = workspace
+                record["sandbox_id"] = workspace["sandbox_id"]
+                record["guest_domain_uuid"] = workspace["domain_uuid"]
+                if not record.get("bootstrap_domain_uuid") and not record.get("guest_initialized"):
+                    record["bootstrap_domain_uuid"] = workspace["domain_uuid"]
+                    record["bootstrap_sandbox_id"] = workspace["sandbox_id"]
+                workspace["initialize"] = (record.get("guest_initialized") is not True
+                    and record.get("bootstrap_domain_uuid") == workspace["domain_uuid"]
+                    and record.get("bootstrap_sandbox_id") == workspace["sandbox_id"])
+            else:
+                if workspace["stage"] != "ready":
+                    raise ProjectVolumeError("Incomplete VM boot cannot be replaced by a new fence")
+                self._boot_binding(directory, record)
+                workspace["stage"] = "resuming"
+            self._begin(directory, record, "vm_boot", fence, {
+                "sandbox_id": workspace["sandbox_id"], "domain_uuid": workspace["domain_uuid"],
+                "spec": workspace["spec"],
+            })
+            return self._boot_binding(directory, record)
+
+    def checkpoint_boot(self, owner, project_id, *, generation, fence, reservation,
+                        stage, directory_identity=None, artifacts=None):
+        transitions = {
+            "allocated": {"preparing"}, "preparing": {"preparing", "prepared"},
+            "prepared": {"defining"}, "defining": {"defined"},
+            "defined": {"starting"}, "starting": {"started"},
+            "resuming": {"defined"},
+        }
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            self._require_reservation(record, reservation)
+            if (record is None or not record["pending"] or record["fence"] != fence
+                    or record["intent"]["operation"] != "vm_boot"):
+                raise ProjectVolumeError("VM boot checkpoint is stale")
+            current = self._boot_binding(directory, record)["workspace"]
+            if stage not in transitions.get(current["stage"], set()):
+                raise ProjectVolumeError("VM boot checkpoint would skip or rewind a stage")
+            if directory_identity is not None:
+                if (current["directory_identity"] is not None
+                        or stage != "preparing" or not isinstance(directory_identity, list)
+                        or len(directory_identity) != 2
+                        or any(type(value) is not int or value < 0 for value in directory_identity)):
+                    raise ProjectVolumeError("VM boot directory identity cannot be replaced")
+                current["directory_identity"] = list(directory_identity)
+            if artifacts is not None:
+                if stage != "prepared" or not isinstance(artifacts, dict) or not artifacts:
+                    raise ProjectVolumeError("VM boot artifacts must be frozen before definition")
+                current["artifacts"] = copy.deepcopy(artifacts)
+            if current["directory_identity"] is None or (stage != "preparing" and not current["artifacts"]):
+                raise ProjectVolumeError("VM boot checkpoint lacks its owned files")
+            current["stage"] = stage
+            record["workspace"] = current
+            self._save(directory, record)
+            return self._boot_binding(directory, record)
+
+    def finish_boot(self, owner, project_id, receipt, *, generation, fence, reservation):
+        with self._locked(owner, project_id) as (directory, record):
+            self._generation(record, generation)
+            self._require_reservation(record, reservation)
+            if (record is None or record["fence"] != fence
+                    or record["intent"]["operation"] != "vm_boot"):
+                raise ProjectVolumeError("VM boot completion is stale")
+            boot = self._boot_binding(directory, record)
+            if boot["workspace"]["stage"] not in {"started", "ready"}:
+                raise ProjectVolumeError("VM boot has not reached guest verification")
+            binding = boot["binding"]
+            if self.host.consumers(binding.path) != {"gaoji-vm-" + binding.sandbox_id}:
+                raise ProjectVolumeError("VM boot consumer is not verified")
+            self._check_guest_receipt(binding, receipt)
+            record["guest_initialized"] = True
+            record["workspace"]["stage"] = "ready"
+            return self._finish(directory, record)

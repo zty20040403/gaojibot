@@ -177,10 +177,27 @@ class LinuxGuestDisk:
         )
 
     def initialize_owner(self):
+        self.sandbox_identity()
         os.chown(WORKSPACE, 1000, 1000)
         os.chmod(WORKSPACE, 0o700)
 
+    @staticmethod
+    def sandbox_identity():
+        import grp
+        import pwd
+
+        try:
+            user = pwd.getpwnam("sandbox")
+            valid = (user.pw_uid == 1000 and user.pw_gid == 1000
+                     and pwd.getpwuid(1000).pw_name == "sandbox"
+                     and grp.getgrgid(1000).gr_name == "sandbox")
+        except KeyError:
+            valid = False
+        if not valid:
+            raise GuestDiskError("Project sandbox account must exclusively own UID/GID 1000")
+
     def usage(self):
+        self.sandbox_identity()
         fd = os.open(WORKSPACE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             info, usage = os.fstat(fd), os.fstatvfs(fd)

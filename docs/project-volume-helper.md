@@ -403,6 +403,56 @@ The private executor has PostgreSQL/Unix RPC coverage for this path with explici
 Docker/kernel fixtures. A production worker remains disabled pending native
 full-lifecycle acceptance. No automatic scheduler is installed.
 
+## Private VM provisioning
+
+`VmProjectProvisioner` constructs an independent system overlay and cloud-init
+seed around a claimed `VmProjectDisks` data disk. It remains a private host API;
+normal temporary-sandbox creation still rejects `purpose="project"`. A completed
+boot does not enable project tools or register a lifecycle worker.
+
+One maintenance reservation and one effect fence cover the entire boot. The
+host journal freezes the sandbox ID, libvirt UUID, base-image path/hash/identity,
+resource limits and generated-file identities before the corresponding effects:
+
+```text
+allocated -> preparing -> prepared -> defining -> defined -> starting
+          -> started -> ready
+ready -> resuming -> defined -> starting -> started -> ready
+```
+
+- Only `preparing`, with a fresh libvirt inventory proving domain absence, may
+  regenerate known pre-boot system files. Unknown files, replaced directories
+  or prepared artifacts stop recovery. The independent project disk is never
+  removed by provisioning. A missing previously defined/booted workspace needs
+  explicit recovery, not a silent empty replacement.
+- A lost define/start acknowledgement reconciles the same immutable domain.
+  If the host restarted after VM startup, retry may restart that exact stopped
+  VM after checking capacity again. An already running VM is not started twice.
+  Invalid, absent or conflicting domain definitions cannot count as success.
+- Every start shares the VM allocation file lock, including ordinary temporary
+  VMs. Different manager instances cannot both pass admission at once. This is
+  allocation serialization, not the still-pending cross-process guest IO lease.
+- Project cloud-init creates only the unprivileged `sandbox` account, avoiding
+  competition with a distribution's default user. The guest helper also verifies
+  that `sandbox` exclusively owns UID/GID 1000 before changing ownership or
+  reporting workspace usage; an incompatible image is rejected, not rewritten.
+- Completion requires finished cloud-init, matching live and inactive libvirt
+  definitions, the expected project mount and a sealed initialization receipt.
+  Updating host defaults does not silently change a retained workspace's resource
+  contract. Normal IO remains blocked until maintenance is explicitly released.
+- Cancellation waits for local image/seed writes to finish before unlocking.
+  Host subprocess cancellation, including cancellation during process creation,
+  kills and reaps the child. It does not claim to undo an already dispatched
+  libvirt effect; replay inspects the journal and actual domain instead.
+
+`tests/test_project_vm_provision.py` covers boot recovery and failure boundaries
+with explicit libvirt/guest fixtures, plus real local QEMU overlay creation and
+read/write checks. The latter uses a fixture seed and does **not** boot Linux.
+Native cloud-init, guest-agent, quota, discard and reboot acceptance remain
+required, alongside the VM-specific database lifecycle, guest writer quiescence,
+retained-file adapters and hibernate/archive retirement path. Do not substitute
+the OCI lifecycle order: a stopped VM cannot run guest file/trim commands.
+
 ## Evidence and remaining gates
 
 `tests/test_project_volumes.py` uses actual private files and Unix RPC but an

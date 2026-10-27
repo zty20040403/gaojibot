@@ -47,6 +47,7 @@ class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(files[HELPER_PATH]["owner"], "root:root")
         compile(files[HELPER_PATH]["content"], HELPER_PATH, "exec")
         self.assertEqual(json.loads(files["/etc/gaoji-project.json"]["content"]), binding().guest_config(initialize=True))
+        self.assertEqual(config["users"], [{"name": "sandbox", "uid": 1000, "shell": "/bin/bash", "lock_passwd": True, "sudo": False}])
         self.assertNotIn(["chown", "sandbox:sandbox", "/workspace"], config["runcmd"])
         self.assertIn(["systemctl", "enable", "--now", "gaoji-project-workspace.service"], config["runcmd"])
         with self.assertRaises(SandboxError):

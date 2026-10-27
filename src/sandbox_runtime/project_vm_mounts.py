@@ -52,7 +52,7 @@ class VmProjectMounts:
                 return await _journal(self.disks.reserve, owner, project_id, generation=generation,
                                       fence=fence, action=action, reservation=reservation)
 
-    async def _domain(self, binding, domain_uuid):
+    async def _domain(self, binding, domain_uuid, *, spec=None):
         identifiers = (await self.manager._virsh("list", "--all", "--uuid")).split()
         try:
             if (len(identifiers) > 256 or len(set(identifiers)) != len(identifiers)
@@ -61,14 +61,14 @@ class VmProjectMounts:
                 raise ValueError()
             for options in ((), ("--inactive",)):
                 xml = await self.manager._virsh("dumpxml", domain_uuid, *options)
-                self._validate_domain(ElementTree.fromstring(xml), binding, domain_uuid)
+                self._validate_domain(ElementTree.fromstring(xml), binding, domain_uuid, spec=spec)
             state = await self.manager._virsh("domstate", domain_uuid)
             if state.strip() != "running":
                 raise ValueError()
         except (ValueError, TypeError, AttributeError, ElementTree.ParseError):
             raise SandboxError("Live and persistent VM definitions did not verify the project disk") from None
 
-    def _validate_domain(self, root, binding, domain_uuid):
+    def _validate_domain(self, root, binding, domain_uuid, *, spec=None):
         config = binding.guest_config()
         config.pop("initialize")
         metadata = root.findall("./metadata/{urn:gaoji:project:1}workspace")
@@ -78,10 +78,12 @@ class VmProjectMounts:
                 or len(metadata) != 1 or metadata[0].attrib != {key: str(value) for key, value in config.items()}):
             raise ValueError("Domain identity mismatch")
         memory = root.find("memory")
+        memory_mib = spec["memory_mib"] if spec else self.manager.memory_mib
+        vcpus = spec["vcpus"] if spec else self.manager.vcpus
         scale = {"KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "bytes": 1}
         if (memory is None or memory.get("unit", "KiB") not in scale
-                or int(memory.text) * scale[memory.get("unit", "KiB")] != self.manager.memory_mib * 1024**2
-                or int(root.findtext("vcpu")) != self.manager.vcpus
+                or int(memory.text) * scale[memory.get("unit", "KiB")] != memory_mib * 1024**2
+                or int(root.findtext("vcpu")) != vcpus
                 or root.find("./os/type").get("arch") != "x86_64"
                 or root.findtext("./os/type") != "hvm"):
             raise ValueError("Project VM resource limits or guest architecture changed")
@@ -138,6 +140,7 @@ class VmProjectMounts:
             self.disks.guest_binding, owner, config["project_id"], sandbox_id, domain_uuid,
             generation=config["generation"], reservation=reservation, require_initialized=require_initialized,
             acknowledge_fence=acknowledge_fence,
+            spec=metadata.get("project_spec"),
         )
         if binding.guest_config() != config:
             raise SandboxError("Project VM metadata differs from the host disk claim")
@@ -149,7 +152,7 @@ class VmProjectMounts:
                 owner, sandbox_id, metadata, reservation=reservation, require_initialized=False,
                 acknowledge_fence=fence,
             )
-            await self._domain(binding, domain_uuid)
+            await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
             code, out, _ = await self.manager._guest_exec(
                 sandbox_id, "/usr/bin/timeout",
                 ["--kill-after=5s", "300s", "/usr/bin/python3", HELPER_PATH, "mount"], timeout=310,
@@ -161,7 +164,7 @@ class VmProjectMounts:
             except ValueError:
                 raise SandboxError("Guest mount returned an invalid receipt") from None
             # Do not acknowledge stale receipts after a concurrent domain replacement.
-            await self._domain(binding, domain_uuid)
+            await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
             return await _journal(
                 self.disks.acknowledge_guest, owner, binding.project_id, sandbox_id, domain_uuid, receipt,
                 generation=binding.generation, fence=fence, reservation=reservation,
@@ -170,7 +173,7 @@ class VmProjectMounts:
     async def authorize(self, owner, sandbox_id, metadata):
         """Caller holds the shared IO lock; membership is checked by the executor."""
         binding, domain_uuid = await self._binding(owner, sandbox_id, metadata)
-        await self._domain(binding, domain_uuid)
+        await self._domain(binding, domain_uuid, spec=metadata.get("project_spec"))
         observed = await self.manager._verify_project_mount(sandbox_id, metadata)
         after, after_uuid = await self._binding(owner, sandbox_id, metadata)
         if after != binding or after_uuid != domain_uuid:

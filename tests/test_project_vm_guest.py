@@ -7,6 +7,7 @@ import stat
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from src.sandbox_runtime import project_vm_guest as guest
 from src.sandbox_runtime.project_vm_disks import VmProjectDiskBinding
@@ -322,6 +323,30 @@ class GuestLinuxAdapterTests(unittest.TestCase):
             )
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             self.assertEqual(list(Path(temporary).iterdir()), [path])
+
+    def test_sandbox_account_identity_is_verified_before_assigning_files(self):
+        import pwd
+        import grp
+
+        correct = SimpleNamespace(pw_uid=1000, pw_gid=1000, pw_name="sandbox")
+        with (patch.object(pwd, "getpwnam", return_value=correct) as named,
+              patch.object(pwd, "getpwuid", return_value=correct) as numbered,
+              patch.object(grp, "getgrgid", return_value=SimpleNamespace(gr_name="sandbox")),
+              patch.object(guest.os, "chown") as chown, patch.object(guest.os, "chmod")):
+            guest.LinuxGuestDisk().initialize_owner()
+            chown.assert_called_once_with(guest.WORKSPACE, 1000, 1000)
+            chown.reset_mock()
+            numbered.return_value = SimpleNamespace(pw_name="debian")
+            with self.assertRaises(guest.GuestDiskError):
+                guest.LinuxGuestDisk().initialize_owner()
+            numbered.return_value = correct
+            named.return_value = SimpleNamespace(pw_uid=1001, pw_gid=1000)
+            with self.assertRaises(guest.GuestDiskError):
+                guest.LinuxGuestDisk().initialize_owner()
+            named.side_effect = KeyError("missing")
+            with self.assertRaises(guest.GuestDiskError):
+                guest.LinuxGuestDisk().initialize_owner()
+            chown.assert_not_called()
 
     def test_failed_config_replace_keeps_original_and_removes_temp(self):
         with tempfile.TemporaryDirectory() as temporary:
