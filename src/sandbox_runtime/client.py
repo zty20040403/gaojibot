@@ -80,6 +80,15 @@ class SandboxClient:
     async def health(self):
         return (await self.request("health", {}))[0]
 
+    async def project_rebuild(self, operation, owner, project_id, *, generation,
+                              fence, reservation, manifest_sha256, request_id=None):
+        if operation not in {"run", "status"}:
+            raise ProtocolError("Unsupported project rebuild operation")
+        return (await self.request("project_rebuild_" + operation, {
+            "owner": owner, "project_id": project_id, "generation": generation,
+            "fence": fence, "reservation": reservation, "manifest_sha256": manifest_sha256,
+        }, request_id=request_id))[0]
+
     async def project_volume(self, operation, owner, project_id, *, fence=None, quota_bytes=None, request_id=None, generation=1, reservation=None):
         if operation not in {'create', 'status', 'mount', 'unmount', 'resize', 'fsck', 'trim', 'delete'}:
             raise ProtocolError('Unsupported project-volume operation')

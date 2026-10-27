@@ -363,9 +363,45 @@ nested projects keep their dependencies unless explicitly declared rebuildable.
   all selected roots are absent before container removal/hibernate completion.
   Missing acknowledgements do not cause another snapshot or uncontrolled delete.
 
-The private executor can test hibernation with this adapter, but a production
-worker must remain disabled until isolated dependency rebuilding and native
-full-lifecycle acceptance are complete. No automatic scheduler is installed.
+### Isolated dependency reconstruction
+
+Wake from hibernation, or restoration of a version carrying a locked recipe,
+uses `rebuild_dependencies` before `start_workspace`. A plain stopped workspace
+keeps its dependencies and is not reinstalled. Versions without a supported
+recipe retain their dependency files; mutable metadata alone does not authorize
+an installer. Old frozen plans with an unsafe ordering fail whole-plan preflight.
+
+- Private `project_rebuild_run/status` RPC accepts only project/generation/fence,
+  reservation and manifest digest. The recipe comes from the retained manifest,
+  never from an RPC shell argument, and is classified again before execution.
+- One named Docker container uses a pinned image, non-root user, read-only root
+  and Nix store, bounded CPU/memory/PIDs/logs, the existing network policy and
+  exactly the reserved project bind. Root identity is checked inside the
+  container before running. npm uses the image toolchain; uv/cargo toolchains
+  are resolved through the existing isolated package preparation mechanism.
+- A private journal records immutable container identity, recipe, original
+  deadline and outcomes. `docker create` and `docker start` are separate:
+  a lost creation acknowledgement can recover a never-started container,
+  while a missing already-dispatched container is not recreated. There is no
+  automatic container restart or auto-remove that could erase the exit result.
+- The installer has a fixed 900-second deadline, including toolchain preparation,
+  enforced by in-container timeout and later reconciliation. Worker cancellation
+  or runner restart does not silently replay it or extend the deadline. Host
+  reboot/mount identity changes require inspection rather than guessed recovery.
+- Completion requires zero exit, no OOM, unchanged retained files/input hashes,
+  removal of the observed stopped container and a completed volume journal.
+  A separate uncached status rechecks the retained tree before acknowledgement.
+  Failed installation preserves project files, version and maintenance reservation
+  with durable failure evidence. Compensation/retry UX is a remaining M2 gate.
+- The database stores running/failure progress without advancing the step. Only
+  its current lease may publish; takeover keeps the same effect fence. The
+  ordinary workspace starts only after verified reconstruction. A completed
+  archive removes validated same-generation internal journals, so a new volume
+  generation is not blocked by stale manifests; unknown files are never swept.
+
+The private executor has PostgreSQL/Unix RPC coverage for this path with explicit
+Docker/kernel fixtures. A production worker remains disabled pending native
+full-lifecycle acceptance. No automatic scheduler is installed.
 
 ## Evidence and remaining gates
 
@@ -396,9 +432,10 @@ Before enabling this helper, M2 still needs:
 - PostgreSQL lifecycle jobs/fences, active-task/delivery protection, snapshot
   publication, generation journals and reserved OCI dispatch have local
   PostgreSQL/Unix RPC coverage. Offline retained-file snapshot/restore now has
-  local coverage too, including locked classification and cleanup. Complete task
-  admission, dependency reconstruction, compensation and version retention need
-  integration and native acceptance. Do not clear a tombstone or reset a fence
+  local coverage too, including locked classification, cleanup and reconstruction.
+  Complete task admission, compensation and version retention need integration;
+  the assembled reconstruction path still needs native acceptance. Do not clear
+  a tombstone or reset a fence
   to work around a failed restore.
 - Desktop soft-quota monitoring and cancellation, plus VM project-disk/discard
   integration, metrics and user-facing usage reporting.

@@ -166,8 +166,13 @@ class ProjectFileExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run["plan"]["rebuild_command"], "npm ci")
         self.assertIn("rebuild_dependencies", run["plan"]["steps"])
         commands, calls = list(self.docker.commands), list(self.host.calls)
-        with self.assertRaises(ProjectBackendUnavailable):
-            await self.executor(self.claim())
+        with patch.object(
+            self.backend.files,
+            "operations",
+            self.backend.files.operations - {"rebuild_dependencies"},
+        ):
+            with self.assertRaises(ProjectBackendUnavailable):
+                await self.executor(self.claim())
         self.assertEqual(self.docker.commands, commands)
         self.assertEqual(self.host.calls, calls)
 

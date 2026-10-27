@@ -346,7 +346,6 @@ class ProjectLifecycleTests(unittest.TestCase):
                 "mount_volume",
                 "restore_version",
                 "start_workspace",
-                "rebuild_dependencies",
                 "release_workspace",
                 "verify_active",
             ],

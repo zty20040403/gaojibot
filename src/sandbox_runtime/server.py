@@ -190,6 +190,12 @@ class SandboxRunner:
                         "max_file_bytes": self.manager.max_file_bytes, "active_operations": len(self.inflight)}
                 data['project_volumes_enabled'] = self.project_volumes is not None
                 data['project_workspaces_enabled'] = self.manager.project_workspaces is not None
+            elif method.startswith('project_rebuild_'):
+                if self.manager.project_workspaces is None:
+                    raise ProtocolError("此沙盒通道尚未配置项目重建。")
+                from .project_dependencies import ProjectDependencies
+                data = await ProjectDependencies(self.manager.project_workspaces).operate(
+                    method.removeprefix('project_rebuild_'), **args)
             elif method.startswith('project_files_'):
                 if self.manager.project_workspaces is None:
                     raise ProtocolError("此沙盒通道尚未配置项目文件维护。")

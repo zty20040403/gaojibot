@@ -87,6 +87,16 @@ class DockerProjectBackend:
             raise ProjectBackendUnavailable(
                 "Lifecycle adapters are unavailable: " + ", ".join(sorted(missing))
             )
+        if "rebuild_dependencies" in plan["steps"] and (
+            not plan.get("rebuild_spec")
+            or not plan.get("baseline")
+            or "start_workspace" not in plan["steps"]
+            or plan["steps"].index("rebuild_dependencies")
+            > plan["steps"].index("start_workspace")
+        ):
+            raise ProjectBackendUnavailable(
+                "Dependency rebuilding requires a pinned version before workspace startup"
+            )
 
     @staticmethod
     def _identity(step, observed):

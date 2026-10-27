@@ -90,7 +90,7 @@ class ProjectWorkspaces:
         except (TypeError, ValueError):
             raise SandboxError("Malformed project container observation") from None
 
-    def _validate(self, owner, binding, container):
+    def _validate(self, owner, binding, container, *, command=None):
         workspace = binding["workspace"]
         try:
             config, host, state = (
@@ -118,7 +118,7 @@ class ProjectWorkspaces:
                 or config["Image"] != workspace["image"]
                 or config["User"] != "1000:1000"
                 or config["Entrypoint"] != ["sh"]
-                or config["Cmd"] != ["-lc", self.startup_command(binding)]
+                or config["Cmd"] != ["-lc", command or self.startup_command(binding)]
                 or host["ReadonlyRootfs"] is not True
                 or host["Privileged"] is not False
                 or host.get("CapAdd")

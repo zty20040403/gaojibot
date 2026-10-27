@@ -98,8 +98,13 @@ is needed because the specification resides in the immutable manifest object.
 The private OCI adapter currently classifies locked npm/uv/cargo recipes and
 can clean only their observed rebuildable roots after version publication.
 Missing locks or unsupported commands preserve dependency files and emit a
-warning, not permission to delete. Reconstruction is a separate, still-pending
-adapter; a wake needing it is refused before starting any physical operation.
+warning, not permission to delete. The private reconstruction adapter restores
+retained files and runs the frozen recipe in an isolated dependency container
+before starting the ordinary workspace. Completion requires a verified container
+exit plus a fresh retained-content check, not a cached successful RPC. Pending
+progress is persisted separately from completion evidence; takeover reconciles
+the same container rather than repeating an uncertain installation. This remains
+opt-in local infrastructure, pending native full-lifecycle acceptance.
 See [the helper contract](project-volume-helper.md#locked-classification-and-cleanup).
 
 A failed transaction may leave unreferenced files, never a partially published

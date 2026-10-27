@@ -1,4 +1,4 @@
-"""Host-only snapshot/restore adapter; no running application or archive extraction."""
+"""Host-only retained files and fenced dependency runs; never host shell commands."""
 
 import asyncio
 import hashlib
@@ -40,7 +40,12 @@ class _RemoteFile:
 
 class DockerProjectFiles:
     operations = frozenset(
-        {"snapshot_workspace", "restore_version", "prune_rebuildable"}
+        {
+            "snapshot_workspace",
+            "restore_version",
+            "prune_rebuildable",
+            "rebuild_dependencies",
+        }
     )
 
     def __init__(self, lifecycle, client, *, resolve_access):
@@ -91,7 +96,77 @@ class DockerProjectFiles:
             return await self._restore(job, step)
         if step["operation"] == "prune_rebuildable":
             return await self._prune(job, step)
+        if step["operation"] == "rebuild_dependencies":
+            return await self._rebuild(job, step)
         raise ValueError("Unsupported project file operation")
+
+    async def _rebuild(self, job, step):
+        args = step["arguments"]
+        baseline = args["baseline"]
+        spec = args["rebuild_spec"]
+        if not baseline or not spec or spec["command"] != args["rebuild_command"]:
+            raise ProjectConflict("Dependency rebuild has no frozen recipe")
+
+        async def observe(operation):
+            await self._context(job)
+            result = await self.client.project_rebuild(
+                operation,
+                args["owner"],
+                args["project_id"],
+                generation=args["generation"],
+                fence=args["fence"],
+                reservation=args["reservation"],
+                manifest_sha256=baseline["manifest_sha256"],
+            )
+            if (
+                not isinstance(result, dict)
+                or any(
+                    type(result.get(k)) is not int or result[k] != args[k]
+                    for k in ("project_id", "generation", "fence")
+                )
+                or result.get("manifest_sha256") != baseline["manifest_sha256"]
+                or result.get("command") != spec["command"]
+                or result.get("state")
+                not in {
+                    "prepared",
+                    "created",
+                    "starting",
+                    "running",
+                    "failed",
+                    "completed",
+                }
+            ):
+                raise ProjectConflict(
+                    "Dependency receipt does not match the frozen operation"
+                )
+            await self._context(job)
+            return result
+
+        while True:
+            observed = await observe("run")
+            await _store(self.lifecycle.record_progress, job, step, observed)
+            if observed["state"] == "failed":
+                raise ProjectConflict(
+                    observed.get("error") or "Dependency reconstruction failed"
+                )
+            if observed["state"] == "completed":
+                checked = await observe("status")
+                if (
+                    checked.get("state") != "completed"
+                    or checked.get("pending") is not False
+                    or type(checked.get("exit_code")) is not int
+                    or checked["exit_code"] != 0
+                ):
+                    raise ProjectConflict("Dependency completion was not verified")
+                return DockerProjectBackend._evidence(
+                    step,
+                    checked,
+                    rebuilt_version=baseline,
+                    command=spec["command"],
+                    exit_code=0,
+                    finished_at=checked.get("finished_at"),
+                )
+            await asyncio.sleep(2)
 
     async def _snapshot(self, job, step):
         access, project = await self._context(job)

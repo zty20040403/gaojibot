@@ -20,6 +20,7 @@ import sys
 import uuid
 
 from src.local_runtime.files import file_lock, read_json, write_json
+from src.project_content import MAX_MANIFEST_BYTES
 from .docker import SandboxError
 
 MIB = 1024**2
@@ -673,10 +674,40 @@ class ProjectVolumes:
             raise ProjectVolumeError(
                 "Deleted image is still attached; manual inspection required"
             )
+        journals = []
+        for name, limit in (
+            ("files.json", MAX_MANIFEST_BYTES * 2),
+            ("prune.json", MAX_MANIFEST_BYTES * 2),
+            ("dependency-run.json", 32768),
+        ):
+            path = directory / name
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or info.st_mode & 0o077
+                or info.st_size > limit
+            ):
+                raise ProjectVolumeError("Unsafe retired project journal")
+            document = read_json(path)
+            if (
+                not isinstance(document, dict)
+                or document.get("generation") != record["generation"]
+                or type(document.get("fence")) is not int
+                or not 0 < document["fence"] < record["fence"]
+            ):
+                raise ProjectVolumeError("Retired journal belongs to another operation")
+            journals.append(path)
         if target.exists():
             self._private_directory(target)
             target.rmdir()
         image.unlink(missing_ok=True)
+        for path in journals:
+            path.unlink()
         record["deleted"] = True
 
     def _resize(self, directory, record, observed, quota):

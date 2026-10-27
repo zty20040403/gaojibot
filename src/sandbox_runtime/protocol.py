@@ -56,6 +56,9 @@ FIELDS = {
     "project_workspace_release": ({"owner", "project_id", "generation", "fence", "reservation"}, set()),
 }
 PROJECT_FILE_FIELDS = {"owner", "project_id", "generation", "fence", "reservation"}
+for _action in ("run", "status"):
+    FIELDS["project_rebuild_" + _action] = (PROJECT_FILE_FIELDS | {"manifest_sha256"}, set())
+MUTATIONS |= {"project_rebuild_run"}
 for _action, _fields, _optional in (
     ("snapshot", set(), {"rebuild_command"}),
     ("page", {"manifest_sha256", "index"}, set()),
@@ -160,7 +163,7 @@ def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
             raise ProtocolError("项目编号或操作代次无效。")
     if "reservation" in args and (not isinstance(args["reservation"], str) or not ID_PATTERN.fullmatch(args["reservation"])):
         raise ProtocolError("项目维护凭据无效。")
-    if method.startswith("project_files_"):
+    if method.startswith(("project_files_", "project_rebuild_")):
         if "rebuild_command" in args and not _text(args["rebuild_command"], 4000, blank=True):
             raise ProtocolError("项目重建命令不正确。")
         if size > CHUNK_BYTES:

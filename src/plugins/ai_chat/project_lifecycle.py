@@ -53,9 +53,9 @@ def transition_plan(project, action, baseline, *, rebuild=None):
             steps += ["mount_volume"]
         if fresh and baseline is not None:
             steps += ["restore_version"]
-        steps += ["start_workspace"]
-        if (source in {"hibernated", "archived"} and command) or (fresh and rebuild):
+        if rebuild and (source == "hibernated" or fresh):
             steps += ["rebuild_dependencies"]
+        steps += ["start_workspace"]
     else:
         # Quiesce must stop writers before exporting a consistent snapshot.
         steps = [
@@ -381,6 +381,15 @@ class ProjectLifecycle:
                 raise ProjectConflict(
                     "Cleanup evidence does not reference its published snapshot"
                 )
+        if step["operation"] == "rebuild_dependencies" and (
+            evidence.get("rebuilt_version") != step["arguments"]["baseline"]
+            or evidence.get("command") != step["arguments"]["rebuild_command"]
+            or type(evidence.get("exit_code")) is not int
+            or evidence["exit_code"] != 0
+        ):
+            raise ProjectConflict(
+                "Rebuild evidence does not prove the pinned recipe completed"
+            )
         if step["operation"].startswith("verify_"):
             if evidence.get("state") != run["target_state"]:
                 raise ProjectConflict(
@@ -391,6 +400,49 @@ class ProjectLifecycle:
                     r"[A-Za-z0-9_.:-]{1,160}", evidence["sandbox_id"]
                 ):
                     raise ValueError("Verified workspace identity is required")
+
+    def record_progress(self, job, step, observation):
+        """Trusted adapter observations are progress, never a completion receipt."""
+        fields = {
+            "state",
+            "command",
+            "exit_code",
+            "error",
+            "created_at",
+            "deadline",
+            "finished_at",
+        }
+        progress = {key: observation.get(key) for key in fields}
+        if len(json.dumps(progress)) > 8192:
+            raise ValueError("Project progress is too large")
+        with self.projects._transaction() as cursor:
+            project, run = self._owned(cursor, job, None)
+            row = cursor.execute(
+                "SELECT * FROM project_lifecycle_steps WHERE job_id=? AND step_index=?",
+                (job.job_id, step["step_index"]),
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != "pending"
+                or row["step_index"] != run["next_step"]
+                or row["operation"] != "rebuild_dependencies"
+                or any(
+                    row[key] != step[key]
+                    for key in ("request_id", "dispatch_lease", "arguments", "fence")
+                )
+                or row["dispatch_lease"] != job.lease_generation
+            ):
+                raise ProjectConflict("Progress dispatch was superseded")
+            require_project_lease(cursor, project, job, None)
+            cursor.execute(
+                "UPDATE project_lifecycle_steps SET evidence=?::jsonb,updated_at=? WHERE job_id=? AND step_index=?",
+                (
+                    json.dumps({"progress": progress}),
+                    int(time.time()),
+                    job.job_id,
+                    row["step_index"],
+                ),
+            )
 
     def acknowledge(self, job, step, evidence, *, now=None):
         lease_now = now

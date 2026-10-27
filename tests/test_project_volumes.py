@@ -16,7 +16,7 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from src.local_runtime.files import read_json
+from src.local_runtime.files import read_json, write_json
 from src.sandbox_runtime.client import SandboxClient
 from src.sandbox_runtime.docker import DockerSandboxManager, SandboxError
 from src.sandbox_runtime.project_volumes import (
@@ -379,6 +379,37 @@ class ProjectVolumeTests(unittest.TestCase):
         self.assertEqual(self.host.calls.count("trim"), 1)
         with self.assertRaises(ProjectVolumeError):
             self.store.mutate("scope", 1, "fsck", fence=5)
+
+    def test_retired_private_journals_do_not_block_next_generation(self):
+        self.create()
+        for name in ("files.json", "prune.json", "dependency-run.json"):
+            write_json(self.root / "p1" / name, {"generation": 1, "fence": 1})
+        self.store.mutate("scope", 1, "delete", fence=2)
+        self.assertEqual(
+            {p.name for p in (self.root / "p1").iterdir()}, {"volume.json"}
+        )
+        result = self.store.create(
+            "scope", 1, quota_bytes=64 * MIB, fence=3, generation=2
+        )
+        self.assertEqual(result["generation"], 2)
+
+    def test_foreign_or_linked_retired_journals_block_delete(self):
+        self.create()
+        journal = self.root / "p1/dependency-run.json"
+        for document in ({"generation": 2, "fence": 1}, {"generation": 1, "fence": 2}):
+            write_json(journal, document)
+            with self.assertRaises(ProjectVolumeError):
+                self.store.mutate("scope", 1, "delete", fence=2)
+            self.assertTrue(self.image().exists())
+            self.assertEqual(read_json(journal), document)
+        journal.unlink()
+        outside = self.root / "protected"
+        outside.write_bytes(b"must remain")
+        journal.symlink_to(outside)
+        with self.assertRaises(ProjectVolumeError):
+            self.store.mutate("scope", 1, "delete", fence=2)
+        self.assertTrue(self.image().exists())
+        self.assertEqual(outside.read_bytes(), b"must remain")
 
     def test_restore_uses_next_generation_and_preserves_fence(self):
         self.create()

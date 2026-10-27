@@ -1918,3 +1918,45 @@ implementation evidence, not a claim that the production App has these features.
   `wip/desktop-app` using the existing SSH key. It does not permit a main merge,
   production SSH, server deployment, QQ/model calls or nix-config changes. The
   user's new plan remains unchanged, untracked and excluded from commits.
+
+### M2 isolated dependency reconstruction checkpoint
+
+- Added private reconstruction after retained-file restoration and before the
+  ordinary workspace starts. Only a retained, hash-bound npm/uv/cargo recipe can
+  authorize it; missing-lock versions preserve dependencies without inventing an
+  installer. Unsupported old frozen execution order fails preflight.
+- A named isolated dependency container has a pinned image, no automatic restart
+  or auto-remove, a fixed 900-second deadline and a private operation journal.
+  Lost create/start/remove acknowledgements reconcile its immutable identity and
+  Docker state. A missing already-dispatched container is never silently rerun.
+  Worker lease takeover preserves the original effect fence and deadline.
+- Zero exit alone is insufficient: OOM, changed input hashes or changed retained
+  files fail reconstruction. Completion removes only the observed stopped helper
+  container, commits the volume outcome and obtains a fresh uncached check. A
+  crash between completion journals cannot be reported as success. Failed builds
+  preserve files, retained versions and the maintenance reservation for recovery.
+- Progress is persisted in the current pending lifecycle step under its live
+  lease. It is not a completion receipt and cannot be written by a stale worker.
+  The runtime remains explicitly opt-in; normal startup registers no project job.
+- The full simulated lifecycle exposed stale private journals blocking a new
+  generation after archive. Deletion now validates and removes only recognized,
+  same-generation internal journals; foreign or linked journals stop deletion,
+  and unknown files remain protected rather than being swept.
+- Focused regression: 177 tests, OK in 33.951 seconds
+  (.cache/roadmap/m2-rebuild-focused.log), using actual local PostgreSQL and private
+  Unix RPC with explicit Docker/kernel fixtures. Coverage includes two wake paths,
+  full stop/hibernate/wake/archive/restore, failure progress, cancellation/lease
+  takeover, lost acknowledgements, fresh verification and retired-journal safety.
+- Full isolated PostgreSQL regression: 2348 tests, OK (12 skipped), 400.284
+  seconds with ResourceWarning promoted to errors
+  (.cache/roadmap/m2-rebuild-full.log). No product changes followed this run.
+  CI-path Ruff, compileall and whitespace checks passed. `nix flake check
+  --no-update-lock-file` passed aarch64-darwin package/import checks
+  (.cache/roadmap/m2-rebuild-nix.log); incompatible systems were omitted, not
+  tested. No frontend changed. Temporary workspaces and test schemas are removed
+  by their fixtures; ignored diagnostics are small and contain no live credentials.
+- Remaining M2 gates: native full-lifecycle/host-reboot acceptance, VM project
+  disks, Desktop soft quotas, automatic idle/retention/usage policies, complete
+  task admission and compensation/retry UX. No production switch, QQ/model call,
+  App release, nix-config change or main merge is part of this checkpoint.
+  The approved plan remains unchanged, untracked and excluded from commits.
