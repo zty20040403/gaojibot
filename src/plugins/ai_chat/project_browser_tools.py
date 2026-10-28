@@ -3,7 +3,6 @@
 import json
 
 from src.bot_storage import DatabaseError
-from src.sandbox_runtime.client import SandboxClient
 from src.sandbox_runtime.docker import SandboxError
 from src.sandbox_runtime.project_browser_worker import METHODS, arguments as browser_arguments
 from src.sandbox_runtime.wire import ProtocolError
@@ -45,9 +44,7 @@ def project_browser_definition(definition, context):
 
 async def _bind(context, access, grant, project):
     runtime = context.app.project_runtime
-    client = context.app.sandbox_manager
-    if project["backend"] != "oci" or not isinstance(client, SandboxClient):
-        raise ProjectBackendUnavailable("This backend has no isolated project browser adapter")
+    client = runtime.browser._client(project)
     health = await client.health()
     if (health.get("channel_ready") is not True
             or type(health.get("project_browser_protocol")) is not int

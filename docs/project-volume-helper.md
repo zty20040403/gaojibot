@@ -1337,9 +1337,9 @@ before binding/launch can recover its original project after focus changes.
 Existing calls recover receipts before looking at current project focus.
 
 With no selected/replay-bound project, the existing conversation browser is
-unchanged. A project error, unready project service, unsupported KVM backend or
+unchanged. A project error, unready project service, unsupported VM bootstrap or
 unknown click never falls through to that legacy browser. KVM project browsing
-still needs its dedicated transport; do not substitute a host browser.
+uses its dedicated transport described below, never a host browser.
 The registry tests combine real PostgreSQL and private Unix RPC with explicit
 page/process fixtures, and are not native backend acceptance.
 
@@ -1354,7 +1354,7 @@ browser enablement must not edit their immutable bootstrap files in place.
 Both sockets are journalled and inode-checked during retirement, including
 recovery of the former single-socket journal format.
 
-`project_browser_control.pyz` accepts only root `start`, `status` and `stop`
+`project_browser_control.pyz` accepts only root `prepare`, `start`, `status` and `stop`
 requests with a session ID, epoch and process limit. An fsynced start intent is
 never submitted to systemd again on retry, even if no unit is now present.
 The root-owned transient unit has a bounded lifetime/resources, no restart,
@@ -1370,12 +1370,35 @@ unit activation alone is not browser readiness. The worker archive contains no
 root lifecycle module or Bot credentials. Toolchain files must be root-owned
 and non-user-writable, including the isolated Python environment's dependencies.
 
-This is guest-side infrastructure, not enabled KVM project browsing. The host
-driver, lazy pinned Chromium/Playwright preparation, application routing and
-native KVM acceptance are still required. Dependency preparation is deliberately
-not added to every cloud-init boot. Local tests use real journals/locks and an
-isolated Python archive, with explicit systemd, device and libvirt fixtures;
-they do not claim to have booted a Linux VM.
+`VmProjectBrowser` now connects the application controller and existing tools
+to the private socket. Start/status/stop and their QGA polling address the frozen
+libvirt domain UUID, not a reusable VM name. Before effects, the driver checks
+the frozen boot files, active/inactive channel definitions, project fence and
+guest admission. A timeout retains the original framed reader; a restarted
+driver can recover a saved result but cannot reconnect and repeat a click.
+The same PostgreSQL commit-then-ACK contract applies to OCI and KVM.
+
+Both host and guest keep consumed launch IDs after the current session advances.
+A stop that arrives before its delayed start records a guest tombstone; even
+after a later session closes, the original start cannot create another worker.
+Shutdown stops only the matching browser unit, independently verifies its
+cgroup is empty, and leaves the parent VM and project disk intact. An unknown
+result remains fenced rather than being converted into successful delivery.
+
+New Debian 13 project boot artifacts include a root-owned requirements manifest
+exported from `uv.lock`, limited to Playwright and its transitive wheel hashes.
+The first browser use prepares a root-owned Python environment on the VM system
+disk, with binary-only, hash-verified dependencies. The signed apt repository's
+Chromium candidate is recorded before installation and reused on interrupted
+preparation; a verified ready toolchain is reused without package downloads.
+Preparation checks free space and idle guest writers, runs in a time-bounded
+systemd cgroup and is not added to every boot. Existing frozen bootstrap files
+are never edited to inject the new helper or dependencies.
+
+Native KVM acceptance is still required. Local coverage uses real PostgreSQL,
+private journals/locks, Unix frames and isolated archives, with explicit apt,
+systemd, device and libvirt fixtures. It does not prove native package-manager,
+virtio or Linux VM behavior. General lifecycle drain/cache cleanup is also open.
 
 Implementation references: [libvirt private channels](https://libvirt.org/formatdomain.html#channel)
 and [systemd execution controls](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).

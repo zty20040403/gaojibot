@@ -48,11 +48,15 @@ def validate(method, args, identifier):
 async def dispatch(workspaces, method, args, *, capacity_check=None):
     if workspaces is None:
         raise ProtocolError("Project browser runtime is unavailable")
-    identity = binding({"instance_id": workspaces.manager.namespace,
+    return await dispatch_browser(workspaces.browser, workspaces.manager.namespace, method, args,
+                                  capacity_check=capacity_check)
+
+
+async def dispatch_browser(browser, instance_id, method, args, *, capacity_check=None):
+    identity = binding({"instance_id": instance_id,
                         **{key: args[key] for key in TARGET}})
     if args.get("expected_instance_id", identity["instance_id"]) != identity["instance_id"]:
         raise ProtocolError("Browser runner instance changed; original receipt recovery is required")
-    browser = workspaces.browser
     sid = args.get("session_id")
 
     def admission():

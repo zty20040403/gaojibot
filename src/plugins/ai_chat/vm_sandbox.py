@@ -133,7 +133,7 @@ class VmSandboxManager:
         }
         if project_disk is not None:
             from src.sandbox_runtime import project_vm_browser_guest, project_vm_gate, project_vm_guest
-            from src.sandbox_runtime.project_browser_bundle import build_bundle as browser_bundle
+            from src.sandbox_runtime.project_browser_bundle import build_bundle as browser_bundle, guest_requirements
             from src.sandbox_runtime.project_vm_file_bundle import build_bundle
             from src.sandbox_runtime.project_vm_file_guest import HELPER_PATH as FILE_HELPER_PATH
 
@@ -154,6 +154,8 @@ class VmSandboxManager:
                  "encoding": "b64", "content": base64.b64encode(browser_bundle(guest_control=True)).decode("ascii")},
                 {"path": project_vm_browser_guest.WORKER_PATH, "permissions": "0755", "owner": "root:root",
                  "encoding": "b64", "content": base64.b64encode(browser_bundle()).decode("ascii")},
+                {"path": project_vm_browser_guest.REQUIREMENTS_PATH, "permissions": "0644", "owner": "root:root",
+                 "content": guest_requirements()},
                 {"path": "/etc/udev/rules.d/70-gaoji-browser.rules", "permissions": "0644", "owner": "root:root",
                  "content": 'SUBSYSTEM=="virtio-ports", ATTR{name}=="' + project_vm_browser_guest.CHANNEL_NAME +
                             '", OWNER="root", GROUP="root", MODE="0600"\n'},
@@ -343,9 +345,18 @@ class VmSandboxManager:
     async def _virsh(self, *args: str, timeout: int = 30) -> str:
         return await self._checked("virsh", "-c", "qemu:///session", *args, timeout=timeout)
 
-    async def _agent(self, sandbox_id: str, request: dict[str, object], *, timeout: int = 20) -> object:
+    async def _agent(self, sandbox_id: str, request: dict[str, object], *, timeout: int = 20,
+                     domain_uuid: str | None = None) -> object:
+        target = self._name(sandbox_id)
+        if domain_uuid is not None:
+            try:
+                if not isinstance(domain_uuid, str) or str(uuid.UUID(domain_uuid)) != domain_uuid:
+                    raise ValueError()
+            except ValueError:
+                raise SandboxError("Invalid immutable VM domain identity") from None
+            target = domain_uuid
         answer = await self._virsh(
-            "qemu-agent-command", self._name(sandbox_id),
+            "qemu-agent-command", target,
             json.dumps(request, separators=(",", ":")), "--timeout", str(timeout),
             timeout=timeout + 5,
         )
@@ -378,12 +389,13 @@ class VmSandboxManager:
 
     async def _guest_exec_raw(
         self, sandbox_id: str, path: str, args: list[str], *, timeout: int = 60,
-        input_bytes: bytes | None = None,
+        input_bytes: bytes | None = None, domain_uuid: str | None = None,
     ) -> tuple[int, bytes, bytes]:
         arguments: dict[str, object] = {"path": path, "arg": args, "capture-output": True}
         if input_bytes is not None:
             arguments["input-data"] = base64.b64encode(input_bytes).decode("ascii")
-        started = await self._agent(sandbox_id, {"execute": "guest-exec", "arguments": arguments})
+        target = {"domain_uuid": domain_uuid} if domain_uuid is not None else {}
+        started = await self._agent(sandbox_id, {"execute": "guest-exec", "arguments": arguments}, **target)
         if not isinstance(started, dict):
             raise SandboxError("VM 没有返回命令状态。")
         pid = started.get("pid")
@@ -393,7 +405,7 @@ class VmSandboxManager:
         while time.monotonic() < deadline:
             status = await self._agent(sandbox_id, {
                 "execute": "guest-exec-status", "arguments": {"pid": pid},
-            })
+            }, **target)
             if not isinstance(status, dict):
                 raise SandboxError("VM 命令状态无效。")
             if status.get("exited"):

@@ -18,6 +18,14 @@ class VmProjectRuntime:
         self.mounts = VmProjectMounts(manager, disks)
         self.provisioner = VmProjectProvisioner(manager, disks, host=host)
         self.maintenance = VmProjectMaintenance(manager, disks, host=host)
+        self._browser = None
+
+    @property
+    def browser(self):
+        if self._browser is None:
+            from .project_browser_vm import VmProjectBrowser
+            self._browser = VmProjectBrowser(self)
+        return self._browser
 
     async def operate(
         self, action, owner, project_id, *, generation, fence, reservation, quota_bytes

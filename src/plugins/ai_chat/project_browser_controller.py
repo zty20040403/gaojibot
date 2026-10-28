@@ -20,6 +20,11 @@ class ProjectBrowserController:
         return current, project
 
     def _client(self, project):
+        if project["backend"] == "vm":
+            from .project_vm_executor import VmProjectBackend
+            backend = self.runtime.backends.get("vm")
+            if isinstance(backend, VmProjectBackend):
+                return backend.runtime.browser
         client = self.runtime.app.sandbox_manager
         if project["backend"] != "oci" or not isinstance(client, SandboxClient):
             raise ProjectBackendUnavailable("This backend has no isolated project browser adapter")

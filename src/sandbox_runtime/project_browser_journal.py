@@ -166,6 +166,16 @@ class ProjectBrowserJournal:
                       "state": "starting", "worker_id": None, "sequence": 0, "last": None}
             if launch_id is not None:
                 record["launch_id"] = launch_id
+                # A new session replaces pN.json, but never this consumed launch
+                # identity. This also protects direct VM callers without RPC.
+                launches = self.root / "launches"
+                _private_directory(launches)
+                marker = launches / (launch_id + ".json")
+                if marker.exists() or marker.is_symlink():
+                    self._private_file(marker)
+                    raise ProtocolError("Browser launch was already consumed; do not restart it")
+                write_json(marker, {"session_id": record["session_id"],
+                    "intent_sha256": _digest({"binding": identity, "runtime": runtime, "config": digest})}, compact=True)
             self._save(path, record)
             return deepcopy(record)
 

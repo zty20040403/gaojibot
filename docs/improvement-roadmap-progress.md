@@ -3227,3 +3227,40 @@ implementation evidence, not a claim that the production App has these features.
   and cache cleanup. Other M3 requirements, native M2 gates and M4-M7 remain
   incomplete. No production SSH, QQ/model calls, shared nix-config edit,
   rebuild, App release or supplied-plan modification occurred.
+
+### M3 KVM browser host transport and application routing
+
+- Added `VmProjectBrowser` and connected it to the existing controller and
+  `browser_*` registry path. New project VMs use root QGA only for lifecycle
+  controls and a private virtio socket for framed browser requests/results.
+  QGA dispatch and polling use the frozen domain UUID. Each effect checks
+  project admission, boot artifacts, live/inactive channels and guest process
+  ownership; unsupported old bootstraps fail without rewriting or falling back.
+- Reused the host browser intent/receipt journal and PostgreSQL commit-before-ACK
+  flow. Result publication can recover after application/driver loss without
+  repeating clicks. Both host and guest now retain consumed launch IDs beyond
+  the current session, including cancellation before delayed guest startup.
+  Drain independently checks the original unit and empty cgroup; it does not
+  stop the parent VM. Graceful application shutdown drains its own VM browsers,
+  preserving unknown outcomes rather than claiming completion.
+- Added lazy, bounded toolchain preparation on the Debian 13 system disk.
+  Cloud-init freezes only Playwright's recursive wheel versions/hashes from
+  `uv.lock`; it does not download browsers at boot. The installer records the
+  signed apt candidate before Chromium installation, reconciles interrupted
+  package configuration and verifies installed versions. Ready installations
+  are checked and reused without downloads. Package commands are fixed and
+  root-only, never taken from project files or model text.
+- Verification: 189 relevant guest/host/controller/RPC/registry/lifecycle tests
+  passed in 61.630 seconds with ResourceWarnings as errors
+  (`.cache/roadmap/m3-vm-browser-verified.log`). Six standalone archive/bootstrap
+  contract tests also passed (`.cache/roadmap/m3-vm-browser-packaging.log`).
+  Tests use real disposable PostgreSQL, private journals/locks, Unix frames and
+  isolated archive imports, with local Chromium in the host-worker smoke test.
+  QGA/libvirt/systemd/apt effects are explicit fixtures, not native KVM evidence.
+  Whole-CI Ruff, compileall and whitespace checks passed. Nix package/import
+  checks passed on aarch64-darwin (`.cache/roadmap/m3-vm-browser-nix.log`);
+  incompatible architectures were omitted.
+- Still open: native KVM installation/channel acceptance, general lifecycle
+  browser drain/cache cleanup and remaining M3 requirements. Native M2 gates
+  and M4-M7 remain incomplete. No production SSH, QQ/model call, shared
+  nix-config change, rebuild, App release or supplied-plan modification occurred.

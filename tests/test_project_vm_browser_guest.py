@@ -13,9 +13,9 @@ import unittest
 from unittest.mock import Mock, patch
 import zipfile
 
-from src.sandbox_runtime.project_browser_bundle import build_bundle
+from src.sandbox_runtime.project_browser_bundle import build_bundle, guest_requirements
 from src.sandbox_runtime.project_vm_browser_guest import (
-    CHANNEL_NAME, HELPER_PATH, WORKER_PATH, LinuxGuestBrowser, ProjectGuestBrowser, _unit,
+    CHANNEL_NAME, HELPER_PATH, REQUIREMENTS_PATH, WORKER_PATH, LinuxGuestBrowser, ProjectGuestBrowser, _unit,
 )
 from src.sandbox_runtime.project_vm_gate import GuestDiskError, LinuxGuestCommands, ProjectGuestGate, guest_lock
 from tests.test_project_vm_guest import binding
@@ -69,6 +69,40 @@ class GuestBrowserTests(unittest.TestCase):
         self.commands.start.assert_called_once_with(SESSION, 128)
         self.assertEqual((self.browser.root / "state.json").stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.browser.root.stat().st_mode & 0o777, 0o700)
+
+    def test_lazy_preparation_is_bounded_and_cannot_run_beside_other_writers(self):
+        self.guest.run.return_value = 0
+        result = self.browser.provision(2)
+        self.assertTrue(result["toolchain_ready"])
+        self.guest.run.assert_called_once_with(
+            ["/usr/bin/python3", "-I", HELPER_PATH, "--install-worker"], 360, 128)
+        self.commands.prepare.assert_called_once()
+        self.start()
+        with self.assertRaises(GuestDiskError):
+            self.browser.provision(2)
+        self.guest.run.assert_called_once()
+
+    def test_stop_before_delayed_start_consumes_that_exact_session(self):
+        closed = self.browser.stop(2, SESSION, 128)
+        self.assertEqual(closed["state"], "closed")
+        self.assertEqual(self.start()["state"], "closed")
+        self.commands.start.assert_not_called()
+        with self.assertRaises(GuestDiskError):
+            self.browser.worker(SESSION)
+        self.start(session=OTHER)
+        with self.assertRaises(GuestDiskError):
+            self.browser.stop(2, SESSION, 128)
+        self.browser.stop(2, OTHER)
+        with self.assertRaisesRegex(GuestDiskError, "consumed"):
+            self.start()
+        self.commands.start.assert_called_once_with(OTHER, 128)
+
+    def test_status_reports_revocation_without_claiming_processes_stopped(self):
+        self.start()
+        self.gate._save({**self.gate.identity, "epoch": 3, "mode": "closing"})
+        observed = self.browser.status(2, SESSION)
+        self.assertFalse(observed["admission_active"])
+        self.assertTrue(observed["unit_active"])
 
     def test_crash_after_intent_before_systemd_never_relaunches(self):
         save = self.browser._save
@@ -292,11 +326,15 @@ class GuestBrowserContractTests(unittest.TestCase):
             run({}, 1)
 
     def test_cloud_init_contains_separate_root_control_and_unprivileged_worker_archives(self):
+        import nonebot
+        nonebot.init()
         from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
         config = json.loads(VmSandboxManager._cloud_config(project_disk=binding()).split("\n", 1)[1])
         files = {item["path"]: item for item in config["write_files"]}
         self.assertEqual(files[HELPER_PATH]["permissions"], "0700")
         self.assertEqual(files[WORKER_PATH]["permissions"], "0755")
+        self.assertEqual(files[REQUIREMENTS_PATH]["content"], guest_requirements())
+        self.assertEqual(files[REQUIREMENTS_PATH]["owner"], "root:root")
         for control, path in ((True, HELPER_PATH), (False, WORKER_PATH)):
             data = base64.b64decode(files[path]["content"])
             self.assertEqual(data, build_bundle(guest_control=control))
@@ -312,7 +350,10 @@ class GuestBrowserContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="gaoji-browser-bundle-") as temporary:
             path = Path(temporary) / "control.pyz"
             path.write_bytes(build_bundle(guest_control=True))
-            script = "import sys; sys.path.insert(0, sys.argv[1]); from src.sandbox_runtime.project_vm_browser_guest import ProjectGuestBrowser; print(ProjectGuestBrowser.__name__)"
+            script = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                "from src.sandbox_runtime.project_vm_browser_guest import ProjectGuestBrowser; "
+                "from src.sandbox_runtime.project_vm_browser_install import install; "
+                "assert callable(install); print(ProjectGuestBrowser.__name__)")
             result = subprocess.run([sys.executable, "-I", "-c", script, str(path)],
                                     capture_output=True, check=True, timeout=10, cwd=temporary)
             self.assertEqual(result.stdout.strip(), b"ProjectGuestBrowser")

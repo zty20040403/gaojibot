@@ -308,6 +308,9 @@ class ProjectRuntime:
     async def close(self):
         self.ready, self.closed = False, True
         self._stop.set()
+        backend = self.backends.get("vm")
+        if backend is not None and backend.runtime._browser is not None:
+            await backend.runtime._browser.close()
         self.io = None
         self.browser = None
         if self.store is not None:

@@ -23,6 +23,7 @@ else:
 
 HELPER_PATH = "/usr/local/lib/gaoji/project_browser_control.pyz"
 WORKER_PATH = "/usr/local/lib/gaoji/project_browser.pyz"
+REQUIREMENTS_PATH = "/usr/local/lib/gaoji/project_browser_requirements.txt"
 PYTHON_PATH = "/opt/gaoji-project-browser/bin/python"
 CHROMIUM_PATH = "/usr/bin/chromium"
 CHANNEL_NAME = "org.gaoji.project-browser.0"
@@ -60,6 +61,24 @@ def _trusted_file(path, *, executable=False):
     if executable and not os.access(path, os.X_OK):
         raise GuestDiskError("Guest browser executable is unavailable")
     return path
+
+
+def _write_private(path, value):
+    fd, name = tempfile.mkstemp(prefix=".state-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(value, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
 
 
 class LinuxGuestBrowser:
@@ -104,6 +123,9 @@ class LinuxGuestBrowser:
         for path in (HELPER_PATH, WORKER_PATH):
             _trusted_file(path)
         _trusted_file(Path(PYTHON_PATH).parents[1] / "pyvenv.cfg")
+        self.check_dependencies()
+
+    def check_dependencies(self):
         root = Path(PYTHON_PATH).parents[1].resolve(strict=True)
         count = 0
         def failed(error):
@@ -184,21 +206,19 @@ class ProjectGuestBrowser:
         return state
 
     def _save(self, state):
-        fd, name = tempfile.mkstemp(prefix=".state-", dir=self.root)
+        _write_private(self.root / "state.json", state)
+
+    def _consume(self, epoch, session, tasks, *, cancel=False):
+        path = self.root / ("session-" + _session(session) + ".json")
+        intent = {**self.gate.identity, "epoch": epoch, "tasks": tasks, "session_id": session}
         try:
-            with os.fdopen(fd, "w") as stream:
-                json.dump(state, stream, sort_keys=True)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(name, self.root / "state.json")
-            directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        finally:
-            if os.path.exists(name):
-                os.unlink(name)
+            old = _read_private(path)
+        except FileNotFoundError:
+            _write_private(path, intent)
+        else:
+            if (not cancel or not isinstance(old, dict) or old != intent
+                    or any(type(old.get(k)) is not type(v) for k, v in intent.items())):
+                raise GuestDiskError("Guest browser launch was already consumed")
 
     def _matching(self, epoch, session):
         self.gate._epoch(epoch)
@@ -212,8 +232,29 @@ class ProjectGuestBrowser:
         session = state["session_id"]
         unit = self.commands.inspect(session)
         empty = self.gate.commands.empty(_unit(session))
+        gate = self.gate._state()
+        admitted = gate["epoch"] == state["epoch"] and gate["mode"] == "active"
+        if admitted:
+            self.gate.workspace.verify()
         return {**state, "unit": _unit(session), "unit_present": unit["present"],
-                "unit_active": unit["active"], "cgroup_empty": empty, "verified": True}
+                "unit_active": unit["active"], "cgroup_empty": empty,
+                "admission_active": admitted, "verified": True}
+
+    def provision(self, epoch):
+        self.gate._epoch(epoch)
+        with self.gate._lock("control"), self._lock(), self.gate._lock("io", timeout=0):
+            gate, state = self.gate._state(), self._state()
+            if gate["epoch"] != epoch or gate["mode"] != "active" or (state and state["state"] != "closed"):
+                raise GuestDiskError("Browser preparation requires an idle active project epoch")
+            self.gate.workspace.verify()
+            if not self.gate.commands.empty() or self.gate.commands.sandbox_processes():
+                raise GuestDiskError("Other guest writers prevent browser preparation")
+            code = self.gate.commands.run(
+                ["/usr/bin/python3", "-I", HELPER_PATH, "--install-worker"], 360, 128)
+            if code:
+                raise GuestDiskError("Guest browser toolchain preparation failed")
+            self.commands.prepare()
+            return {**self.gate.identity, "epoch": epoch, "toolchain_ready": True, "verified": True}
 
     def start(self, epoch, session, tasks):
         self.gate._epoch(epoch)
@@ -245,6 +286,7 @@ class ProjectGuestBrowser:
                 self.commands.prepare()
                 state = {**self.gate.identity, "epoch": epoch, "session_id": session,
                          "tasks": tasks, "state": "starting"}
+                self._consume(epoch, session, tasks)
                 self._save(state)
                 self.commands.start(session, tasks)
                 # The worker takes the same locks after systemd has exec'd its
@@ -255,9 +297,30 @@ class ProjectGuestBrowser:
         with self.gate._lock("control"), self._lock():
             return self._observe(self._matching(epoch, session))
 
-    def stop(self, epoch, session):
+    def stop(self, epoch, session, tasks=None):
+        self.gate._epoch(epoch)
+        _session(session)
+        if tasks is not None and (type(tasks) is not int or not 32 <= tasks <= 4096):
+            raise GuestDiskError("Invalid guest browser process quota")
         with self.gate._lock("control"), self._lock():
-            state = self._matching(epoch, session)
+            state = self._state()
+            if (state is None or state["session_id"] != session) and tasks is not None:
+                if state:
+                    observed = self._observe(state)
+                    if state["state"] != "closed" or observed["unit_active"] or not observed["cgroup_empty"]:
+                        raise GuestDiskError("Another guest browser still owns this workspace")
+                if self.commands.inspect(session)["present"] or not self.gate.commands.empty(_unit(session)):
+                    raise GuestDiskError("Refusing to adopt an unjournalled guest browser unit")
+                # A stop before the delayed start must consume that start, not
+                # merely observe absence while QGA still has a queued request.
+                state = {**self.gate.identity, "epoch": epoch, "session_id": session,
+                         "tasks": tasks, "state": "closing"}
+                self._consume(epoch, session, tasks, cancel=True)
+                self._save(state)
+            else:
+                state = self._matching(epoch, session)
+                if tasks is not None and state["tasks"] != tasks:
+                    raise GuestDiskError("Guest browser stop changed its quota")
             self.commands.inspect(session)
             state["state"] = "closing"
             self._save(state)
@@ -295,6 +358,10 @@ def main():
     if os.geteuid() != 0:
         raise GuestDiskError("Guest browser lifecycle requires the administrator")
     browser = ProjectGuestBrowser(ProjectGuestGate(load_config()))
+    if sys.argv[1:] == ["--install-worker"]:
+        from src.sandbox_runtime.project_vm_browser_install import install
+        install()
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--worker":
         sys.exit(browser.worker(sys.argv[2]))
     if len(sys.argv) != 1:
@@ -306,8 +373,12 @@ def main():
     if not isinstance(request, dict):
         raise GuestDiskError("Invalid guest browser request")
     action = request.get("action")
-    if action == "start" and set(request) == {"action", "epoch", "session_id", "tasks"}:
+    if action == "prepare" and set(request) == {"action", "epoch"}:
+        result = browser.provision(request["epoch"])
+    elif action == "start" and set(request) == {"action", "epoch", "session_id", "tasks"}:
         result = browser.start(request["epoch"], request["session_id"], request["tasks"])
+    elif action == "stop" and set(request) == {"action", "epoch", "session_id", "tasks"}:
+        result = browser.stop(request["epoch"], request["session_id"], request["tasks"])
     elif action in {"status", "stop"} and set(request) == {"action", "epoch", "session_id"}:
         result = getattr(browser, action)(request["epoch"], request["session_id"])
     else:
