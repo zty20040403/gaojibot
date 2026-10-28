@@ -290,6 +290,9 @@ def _policy_registry() -> dict[str, ToolPolicy]:
     policies["project_set_rebuild"] = ToolPolicy(
         risk="medium", idempotency="non-idempotent", side_effects=("write:project",), timeout_seconds=30,
     )
+    policies["project_snapshot"] = ToolPolicy(
+        risk="medium", idempotency="keyed", side_effects=("write:project-version",), timeout_seconds=30,
+    )
     policies["routine_set"] = ToolPolicy(
         risk="medium", idempotency="keyed", side_effects=("write:routine", "schedule:model"),
         timeout_seconds=15.0, max_identical_calls=1,

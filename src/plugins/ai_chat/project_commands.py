@@ -12,6 +12,7 @@ from .tools.state import ToolContext, TurnState
 
 HELP = (
     "/项目\n/项目 新建 名称\n/项目 切换 prj#3\n/项目 状态 [prj#3]\n/项目 版本 [prj#3]"
+    "\n/项目 保存 [标签]\n/项目 保存 prj#3 [标签]"
 )
 STATES = {
     "active": "运行中",
@@ -54,8 +55,11 @@ async def command_result(services, event, text):
         "open": "切换",
         "status": "状态",
         "versions": "版本",
+        "save": "保存",
+        "snapshot": "保存",
+        "快照": "保存",
     }.get(action, action)
-    if action not in {"列表", "新建", "切换", "状态", "版本"}:
+    if action not in {"列表", "新建", "切换", "状态", "版本", "保存"}:
         return HELP
     if action == "列表" and rest or action in {"新建", "切换"} and not rest:
         return HELP
@@ -65,12 +69,21 @@ async def command_result(services, event, text):
         "切换": "project_open",
         "状态": "project_status",
         "版本": "project_versions",
+        "保存": "project_snapshot",
     }
     arguments = (
         {"title": rest}
         if action == "新建"
         else ({"project_handle": rest} if rest else {})
     )
+    if action == "保存":
+        save_parts = rest.split(maxsplit=1)
+        target = save_parts[0] if save_parts else ""
+        label = save_parts[1] if len(save_parts) > 1 else ""
+        arguments = (
+            {"project_handle": target, "label": label}
+            if target.startswith("prj#") else {"label": rest}
+        )
     turn = TurnState(ToolContext(services, event, frozenset({"projects"})))
     result = json.loads(await domain_registry.execute(turn, names[action], arguments))
     if not result["ok"]:
@@ -97,6 +110,14 @@ async def command_result(services, event, text):
         lines.append(
             "已切换；你只有查看权限。" if result["readonly"] else "已切换当前项目。"
         )
+    if action in {"保存", "状态"} and result.get("snapshot"):
+        snapshot = result["snapshot"]
+        if snapshot["saved"]:
+            lines.append("最近保存已完成：" + snapshot["version"])
+        elif snapshot["status"] in {"failed", "needs_attention", "cancelled"}:
+            lines.append("版本保存未完成，需要处理；不能当作已保存。")
+        else:
+            lines.append("版本保存已排队或执行中，完成后可通过 /项目 状态 查看版本号。")
     if action == "状态":
         usage = result["usage"]
         lines.append(

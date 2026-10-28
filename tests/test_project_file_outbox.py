@@ -209,14 +209,15 @@ class ProjectFileOutboxTests(unittest.IsolatedAsyncioTestCase):
                     self.claim().delivery_id, "failed", retryable=False
                 )
             project = self.runtime.store.get(self.access, self.pid)
-            with self.assertRaises(ProjectConflict):
-                self.runtime.lifecycle.request(
-                    self.access,
-                    self.pid,
-                    "stop",
-                    expected_version=project["version"],
-                    request_key="stop",
-                )
+            for action in ("stop", "snapshot"):
+                with self.assertRaises(ProjectConflict):
+                    self.runtime.lifecycle.request(
+                        self.access,
+                        self.pid,
+                        action,
+                        expected_version=project["version"],
+                        request_key=action,
+                    )
             self.runtime.store.collect_blobs(now=int(time.time()) + 2 * 86400)
             self.assertEqual(
                 self.runtime.files.prepare(self.access, delivery), b"hello"

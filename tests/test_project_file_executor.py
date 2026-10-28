@@ -42,6 +42,81 @@ class ProjectFileExecutorTests(unittest.IsolatedAsyncioTestCase):
         await self.executor(self.claim())
         return self.volumes.binding(self.scope.key, self.pid)
 
+    def save(self, label=""):
+        project = self.projects.get(self.access, self.pid)
+        return self.lifecycle.request(
+            self.access, self.pid, "snapshot", expected_version=project["version"],
+            request_key=f"save-{len(self.lifecycle.journal(self.access, self.pid))}", label=label,
+        )
+
+    async def test_snapshot_preserves_active_workspace_and_labels_unchanged_content(self):
+        root = await self.wake()
+        (root / "report.txt").write_bytes(b"retained report")
+        original = self.projects.get(self.access, self.pid)
+        run = self.save("Release")
+        self.assertFalse(self.lifecycle.snapshot_status(self.access, self.pid)["saved"])
+        result = await self.executor(self.claim())
+        current = self.projects.get(self.access, self.pid)
+        for key in ("status", "sandbox_id", "workspace_generation", "state_changed_at", "last_active_at"):
+            self.assertEqual(current[key], original[key], key)
+        self.assertEqual(self.docker.serial, 1)
+        self.assertEqual(result["snapshot"]["version_no"], 1)
+        self.assertEqual(self.projects.read_file(self.access, self.pid, 1, "report.txt"), b"retained report")
+        status = self.lifecycle.snapshot_status(self.access, self.pid, job_id=run["job_id"])
+        self.assertTrue(status["saved"])
+        self.assertEqual(status["version"], "v1")
+        self.assertEqual(status["label"], "Release")
+        await self.backend.io_evidence(current)
+        self.save("Milestone")
+        await self.executor(self.claim())
+        versions = self.projects.versions(self.access, self.pid)
+        self.assertEqual(len(versions), 1)
+        self.assertEqual(versions[0]["label"], "Milestone")
+
+    async def test_snapshot_stopped_workspace_does_not_start_it(self):
+        root = await self.wake()
+        (root / "report.txt").write_bytes(b"before stop")
+        self.request("stop")
+        await self.executor(self.claim())
+        original = self.projects.get(self.access, self.pid)
+        (root / "report.txt").write_bytes(b"after stop")
+        command_count = len(self.docker.commands)
+        self.save()
+        result = await self.executor(self.claim())
+        self.assertEqual(result["state"], "stopped")
+        self.assertEqual(result["snapshot"]["version_no"], 2)
+        self.assertEqual(self.projects.get(self.access, self.pid)["state_changed_at"], original["state_changed_at"])
+        self.assertFalse(any(c[0] == "start" for c in self.docker.commands[command_count:]))
+        self.assertEqual(self.projects.read_file(self.access, self.pid, 2, "report.txt"), b"after stop")
+
+    async def test_snapshot_published_before_lost_ack_resumes_without_duplicate_version(self):
+        root = await self.wake()
+        (root / "report.txt").write_bytes(b"recover after restart")
+        self.save("Restart safe")
+        job = self.claim()
+        snapshot = self.backend.files._snapshot
+
+        async def lost_ack(*args):
+            await snapshot(*args)
+            raise SandboxError("fixture lost snapshot response")
+
+        with patch.object(self.backend.files, "_snapshot", side_effect=lost_ack):
+            with self.assertRaises(SandboxError):
+                await self.executor(job)
+        self.assertEqual(len(self.projects.versions(self.access, self.pid)), 1)
+        status = self.lifecycle.snapshot_status(self.access, self.pid)
+        self.assertEqual(status["status"], "needs_attention")
+        self.assertFalse(status["saved"])
+        self.assertIsNone(status["version"])
+        self.assertIsNotNone(self.projects.get(self.access, self.pid)["lifecycle_job_id"])
+        successor = self.claim(now=int(time.time()) + 61)
+        with self.assertRaises(ProjectConflict):
+            await self.executor(job)
+        await self.executor(successor)
+        self.assertEqual(len(self.projects.versions(self.access, self.pid)), 1)
+        self.assertTrue(self.lifecycle.snapshot_status(self.access, self.pid)["saved"])
+        await self.backend.io_evidence(self.projects.get(self.access, self.pid))
+
     def configure_rebuild(self, command="npm ci"):
         project = self.projects.get(self.access, self.pid)
         return self.projects.update(

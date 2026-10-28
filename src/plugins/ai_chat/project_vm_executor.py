@@ -137,6 +137,14 @@ class VmProjectBackend:
             raise ProjectBackendUnavailable("VM lifecycle adapters are incomplete")
         candidates = [
             [
+                "reserve_workspace", "quiesce_workspace", "snapshot_workspace",
+                "release_workspace", "verify_active",
+            ],
+            [
+                "reserve_workspace", "boot_workspace", "snapshot_workspace",
+                "stop_workspace", "release_workspace", "verify_stopped",
+            ],
+            [
                 "reserve_workspace",
                 "quiesce_workspace",
                 "snapshot_workspace",

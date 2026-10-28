@@ -139,6 +139,10 @@ class ProjectIOTests(UsageFixture, unittest.TestCase):
         grant = self.admit("sandbox_read_file")
         for action in (
             lambda: self.lifecycle.request(
+                self.access, self.pid, "snapshot", request_key="save",
+                expected_version=self.project()["version"], now=self.now,
+            ),
+            lambda: self.lifecycle.request(
                 self.access,
                 self.pid,
                 "stop",

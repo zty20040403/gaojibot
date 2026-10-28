@@ -48,6 +48,11 @@ PROJECT_TOOLS = (
         TARGET,
     ),
     _definition(
+        "project_snapshot",
+        "保存项目工作区版本，可附标签；省略句柄使用当前项目。后台完成后 saved=true 才代表保存成功，排队不等于完成；用 project_status 查询。不覆盖历史，不停止未结束的任务。",
+        {**TARGET, "label": {"type": "string", "maxLength": 120}},
+    ),
+    _definition(
         "project_set_rebuild",
         "记录项目下次唤醒时的依赖重建命令，不立即执行。需要编辑权限和最新配置修订号；实际执行仍要求受支持的锁文件配方。",
         {

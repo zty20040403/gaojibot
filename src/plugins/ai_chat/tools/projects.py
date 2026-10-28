@@ -12,6 +12,7 @@ from ..project_executor import _store
 from ..project_tool_definitions import PROJECT_TOOLS
 from ..projects import ProjectConflict, ProjectQuotaExceeded
 from ..workers.durable_jobs import JobDeferred
+from ..tool_invocation import active_tool_call_id
 from .registry import FunctionTool
 
 
@@ -153,6 +154,24 @@ async def execute(turn, arguments, *, name):
                 "current": current is not None
                 and current["project_id"] == project["project_id"],
             }
+        elif name == "project_snapshot":
+            _execution_allowed(context)
+            run = await _store(
+                runtime.lifecycle.request,
+                access,
+                int(arguments["project_handle"][4:]) if "project_handle" in arguments else None,
+                "snapshot",
+                expected_version=None,
+                request_key=_key(context, name, active_tool_call_id.get() or "command"),
+                label=arguments.get("label", ""),
+            )
+            project = await _store(store.get, access, run["project_id"])
+            result = {
+                "project": _project(project),
+                "snapshot": await _store(
+                    runtime.lifecycle.snapshot_status, access, run["project_id"], job_id=run["job_id"],
+                ),
+            }
         else:
             project = await _target(runtime, access, arguments)
             pid = project["project_id"]
@@ -205,6 +224,7 @@ async def execute(turn, arguments, *, name):
                     "usage": usage,
                     "tool_operation": await _store(runtime.io.status, access, pid),
                     "file_deliveries": await _store(runtime.files.status, access, pid),
+                    "snapshot": await _store(runtime.lifecycle.snapshot_status, access, pid),
                     "versions": [
                         _version(v)
                         for v in (await _store(store.versions, access, pid))[:3]

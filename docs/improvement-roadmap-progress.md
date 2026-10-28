@@ -2763,3 +2763,42 @@ implementation evidence, not a claim that the production App has these features.
   shared platform identity and console integration remain. Native M2 acceptance
   and M4-M7 remain open. No production connection, live QQ/model call, shared
   nix-config edit, deployment, App release or user-plan edit occurred.
+
+### M3 explicit recoverable project snapshots
+
+- Added `project_snapshot` to the registered project tools and `/项目 保存
+  [标签]` / `/项目 保存 prj#N [标签]` commands. Migration
+  `0051_project_snapshot` extends the durable lifecycle journal, not a separate
+  in-memory save path. Original event/tool-call identity is resolved before
+  current focus; retries retain their original project and frozen label.
+  Fresh membership, bot binding, editor rights and sandbox admission still
+  apply, including after a completed request is replayed.
+- Saving exports actual retained files through the private helper and CAS,
+  preserving the final active/stopped state and lifecycle idle clocks. OCI
+  stops and restarts only an originally active container; VM closes/reopens
+  guest admission or boots/returns to stopped as appropriate. Dependencies
+  are neither pruned nor reinstalled. Identical content reuses the last version
+  and can update its label. Unmaterialized/hibernated/archived workspaces must
+  be opened first. Active or unknown IO, task locks and unconfirmed file
+  deliveries block admission.
+- `project_status.snapshot` reports pending, running, needs-attention or a
+  completed saved version. Publication alone is not a success receipt: final
+  workspace verification and job completion commit together. A lost snapshot
+  acknowledgement retains the durable reservation and resumes under the next
+  lease without duplicate versions; stale workers cannot release it. Ordinary
+  member read access does not grant snapshot permissions. Downgrade refuses
+  to discard retained snapshot journals.
+- Verification: 89 lifecycle/file/VM/tool/registry tests and 107
+  IO/delivery/maintenance/runtime/store regressions passed, with ResourceWarnings
+  treated as errors (`.cache/roadmap/m3-snapshot-test.log` and
+  `.cache/roadmap/m3-snapshot-regression.log`). These use real local PostgreSQL,
+  CAS and Unix RPC with fixture Docker/libvirt and QQ membership. Whole-CI
+  Ruff, compileall and whitespace checks passed. Nix package/import checks
+  passed on aarch64-darwin (`.cache/roadmap/m3-snapshot-nix.log`); incompatible
+  Linux/other architectures were omitted, not verified.
+- This completes the explicit-save slice, not all M3: automatic turn-end
+  snapshots still need persisted turn/IO association and reconciliation.
+  Image/browser defaults, live notes, Sub-Agent baseline/lock/publication,
+  restore/delete/preview commands, shared-platform identity, console integration,
+  native M2 acceptance and M4-M7 remain open. No production connection, shared
+  nix-config edit, deployment, App release or user-plan edit occurred.

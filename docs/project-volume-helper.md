@@ -806,7 +806,7 @@ in these tests is a fixture, not a production validation.
 
 With the opt-in application runtime ready, the tool registry exposes
 `project_create`, `project_list`, `project_open`, `project_status`,
-`project_versions` and `project_set_rebuild`. The same handlers serve these QQ
+`project_versions`, `project_snapshot` and `project_set_rebuild`. The same handlers serve these QQ
 commands; a disabled tool cannot be bypassed through its command:
 
 ```text
@@ -816,6 +816,9 @@ commands; a disabled tool cannot be bypassed through its command:
 /项目 状态
 /项目 状态 prj#3
 /项目 版本 prj#3
+/项目 保存
+/项目 保存 Release one
+/项目 保存 prj#3 Release one
 ```
 
 Creation stores the project and current-user focus, then enqueues a durable
@@ -837,6 +840,28 @@ pending lifecycle progress. Failure details and helper reservations are not
 exposed. Labels/titles are sent as QQ text, never interpreted as CQ actions.
 `project_set_rebuild` records metadata only; the physical adapter still checks
 locked recipes before executing a reconstruction.
+
+`project_snapshot` queues a reserved, fenced lifecycle job without changing the
+final active/stopped state. The host exports and hashes actual retained files;
+the model cannot supply a fictional manifest. OCI briefly stops its idle
+container, saves, then restarts it only if it was active. An active VM closes
+guest execution admission without rebooting; a stopped VM temporarily boots for
+file export and returns to stopped. Neither path prunes dependencies or deletes
+workspace data. Active/unknown project IO, task locks and unresolved delivery
+still block admission. Unmaterialized, hibernated and archived workspaces must
+be opened and prepared before explicitly saving another version.
+
+Migration `0051_project_snapshot` adds this action to the lifecycle journal.
+The host event/tool-call identity is resolved before current-project focus, so
+retries cannot save a different project. Changed arguments and revoked editor
+rights reject replay. Labels are frozen in the plan and propagated to version
+publication. Equal content reuses the latest version, optionally updating its
+label. `project_status.snapshot` distinguishes pending/running/needs-attention
+from `saved=true` with a verified `vN`; only publication plus final workspace
+verification completes the receipt. A crash after publication retains the lock
+and staging for the next lease, rather than publishing again or claiming success.
+This manual-save path is the base for automatic turn-end saves; the automatic
+turn association and reconciler are not wired yet.
 
 The ordinary chat prompt now includes the requesting user's current project,
 its configuration revision, state, viewer/editor role, pending task and latest

@@ -229,6 +229,44 @@ class VmExecutorFixture(provision.VmProvisionFixture):
         )
 
 class VmExecutorTests(VmExecutorFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_snapshot_active_vm_keeps_domain_and_reopens_guest_gate(self):
+        await self.transition("wake")
+        original = self.project()
+        guest = self.guests[original["sandbox_id"]]
+        (guest.workspace / "report.txt").write_bytes(b"VM snapshot")
+        starts = self.effects.count("start")
+        result = await self.transition("snapshot")
+        self.assertEqual(result["snapshot"]["version_no"], 1)
+        self.assertEqual(self.effects.count("start"), starts)
+        for key in ("status", "sandbox_id", "workspace_generation", "state_changed_at"):
+            self.assertEqual(self.project()[key], original[key], key)
+        await self.backend.io_evidence(self.project())
+        self.assertEqual(self.projects.read_file(self.access, self.pid, 1, "report.txt"), b"VM snapshot")
+
+    async def test_snapshot_stopped_vm_exports_then_restores_stopped_state(self):
+        await self.transition("wake")
+        guest = self.guests[self.project()["sandbox_id"]]
+        (guest.workspace / "report.txt").write_bytes(b"VM snapshot")
+        await self.transition("stop")
+        original = self.project()
+        (guest.workspace / "report.txt").write_bytes(b"VM new snapshot")
+        result = await self.transition("snapshot")
+        self.assertEqual(result["snapshot"]["version_no"], 2)
+        self.assertEqual((await self.inspect())["state"], "stopped")
+        self.assertEqual(self.project()["sandbox_id"], original["sandbox_id"])
+        self.assertEqual(self.project()["state_changed_at"], original["state_changed_at"])
+        self.assertEqual(self.projects.read_file(self.access, self.pid, 2, "report.txt"), b"VM new snapshot")
+        await self.transition("wake")
+        await self.backend.io_evidence(self.project())
+
+    async def test_snapshot_plan_requires_quiescence_and_release_order(self):
+        await self.transition("wake")
+        _, plan = transition_plan(self.project(), "snapshot", None)
+        self.backend.preflight(plan)
+        plan["steps"].remove("quiesce_workspace")
+        with self.assertRaises(ProjectBackendUnavailable):
+            self.backend.preflight(plan)
+
     async def test_tool_evidence_requires_current_epoch_and_no_guest_writers(self):
         await self.transition("wake")
         project = self.project()

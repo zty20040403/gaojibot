@@ -280,6 +280,7 @@ class ProjectFileExecutor:
             staged,
             expected_version=project["version"],
             lifecycle_job=job,
+            label=step["arguments"].get("label", ""),
             staged_manifest_sha256=digest,
             rebuild=document.get("rebuild"),
         )

@@ -51,6 +51,115 @@ class ProjectToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"], result)
         return result
 
+    async def test_save_command_reports_queued_then_verified_version_and_label(self):
+        created = await self.create()
+        await self.worker.run_once()
+        pid = int(created["project"]["handle"][4:])
+        root = self.volumes.binding(self.scope.key, pid)
+        (root / "notes.txt").write_bytes(b"saved via command")
+        output = await command_result(self.handlers, self.context.event, "保存 Release one")
+        self.assertIn("排队", output)
+        self.assertNotIn("保存已完成", output)
+        await self.worker.run_once()
+        status = await self.call("project_status")
+        self.assertTrue(status["snapshot"]["saved"], status)
+        self.assertEqual(status["snapshot"]["version"], "v1")
+        self.assertEqual(status["versions"][0]["label"], "Release one")
+        output = await command_result(self.handlers, self.context.event, "状态")
+        self.assertIn("最近保存已完成：v1", output)
+        self.assertEqual(self.runtime.store.read_file(self.access, pid, 1, "notes.txt"), b"saved via command")
+        second = event()
+        second.message_id += 1
+        output = await command_result(self.handlers, second, f"保存 prj#{pid}\t第二版标签")
+        self.assertIn("排队", output)
+        await self.worker.run_once()
+        versions = self.runtime.store.versions(self.access, pid)
+        self.assertEqual(len(versions), 1)
+        self.assertEqual(versions[0]["label"], "第二版标签")
+
+    async def test_snapshot_replay_keeps_original_project_after_focus_changes(self):
+        first = await self.create()
+        await self.worker.run_once()
+        handle = first["project"]["handle"]
+        result = await self.call("project_snapshot", {"label": "Milestone"})
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["snapshot"]["saved"])
+        self.runtime.store.open(self.access, self.pid)
+        replay = await self.call("project_snapshot", {"label": "Milestone"})
+        self.assertEqual(replay["project"]["handle"], handle)
+        self.assertEqual(len(self.runtime.lifecycle.journal(self.access, int(handle[4:]))), 2)
+        self.assertEqual(self.runtime.lifecycle.journal(self.access, self.pid), [])
+        changed = await self.call("project_snapshot", {"label": "Different"})
+        self.assertEqual(changed["code"], "project_conflict")
+        await self.worker.run_once()
+        replay = await self.call("project_snapshot", {"label": "Milestone"})
+        self.assertTrue(replay["snapshot"]["saved"], replay)
+        self.assertEqual(self.runtime.store.current(self.access)["project_id"], self.pid)
+
+    async def test_snapshot_permission_account_binding_and_arguments(self):
+        created = await self.create()
+        await self.worker.run_once()
+        handle = created["project"]["handle"]
+        self.bot.get_group_member_list.return_value.append({"user_id": 202})
+        for changed in (event(actor=202), event(group=102), event(bot=302), event(group=None)):
+            result = await self.call("project_snapshot", {"project_handle": handle}, replace(self.context, event=changed))
+            self.assertFalse(result["ok"], result)
+        result = await self.call("project_snapshot", {"label": "x" * 121})
+        self.assertEqual(result["code"], "project_invalid_arguments")
+        result = await self.call("project_snapshot", {"source_turn_id": 1})
+        self.assertEqual(result["code"], "project_invalid_arguments")
+        self.app.settings = replace(self.app.settings, sandbox_allowed_users=set())
+        self.assertEqual((await self.call("project_snapshot"))["code"], "project_forbidden")
+
+    async def test_snapshot_cannot_wake_unmaterialized_project_or_replay_after_revocation(self):
+        self.assertEqual((await self.call("project_snapshot"))["code"], "project_conflict")
+        created = await self.create()
+        await self.worker.run_once()
+        pid = int(created["project"]["handle"][4:])
+        principal = self.app.message_ledger.ensure_principal_identity("onebot-v11", "202", "Editor")
+        project = self.runtime.store.get(self.access, pid)
+        self.runtime.store.set_member(
+            self.access, pid, principal, "editor", expected_version=project["version"],
+        )
+        self.bot.get_group_member_list.return_value.append({"user_id": 202})
+        self.app.settings = replace(self.app.settings, sandbox_allowed_users={201, 202})
+        context = replace(self.context, event=event(actor=202))
+        args = {"project_handle": created["project"]["handle"]}
+        result = await self.call("project_snapshot", args, context)
+        self.assertTrue(result["ok"], result)
+        await self.worker.run_once()
+        project = self.runtime.store.get(self.access, pid)
+        self.runtime.store.set_member(
+            self.access, pid, principal, "viewer", expected_version=project["version"],
+        )
+        self.assertEqual((await self.call("project_snapshot", args, context))["code"], "project_forbidden")
+
+    async def test_snapshot_failure_does_not_claim_save_completed(self):
+        await self.create()
+        await self.worker.run_once()
+        await self.call("project_snapshot")
+        with patch.object(self.runtime.backends["oci"], "execute", side_effect=RuntimeError("fixture failure")):
+            await self.worker.run_once()
+        output = await command_result(self.handlers, self.context.event, "状态")
+        self.assertIn("版本保存未完成", output)
+        self.assertNotIn("最近保存已完成", output)
+        self.assertNotIn("fixture failure", output)
+
+    async def test_snapshot_empty_migration_reversible_and_retained_journal_protected(self):
+        with patch.dict(os.environ, {
+            "AI_POSTGRES_DSN": self.app.database.dsn,
+            "AI_POSTGRES_SCHEMA": self.app.database.schema,
+        }):
+            command.downgrade(Config("alembic.ini"), "0050_project_files")
+            command.upgrade(Config("alembic.ini"), HEAD_REVISION)
+            await self.create()
+            await self.worker.run_once()
+            result = await self.call("project_snapshot")
+            self.assertTrue(result["ok"], result)
+            with self.assertRaisesRegex(RuntimeError, "snapshot journals"):
+                command.downgrade(Config("alembic.ini"), "0050_project_files")
+        self.app.database.require_revision(HEAD_REVISION)
+
     async def test_create_duplicate_delivery_wake_status_and_versions(self):
         created = await self.create()
         handle = created["project"]["handle"]

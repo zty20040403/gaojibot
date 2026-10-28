@@ -31,6 +31,7 @@ def transition_plan(project, action, baseline, *, rebuild=None):
         "stop": {"active"},
         "hibernate": {"stopped"},
         "archive": {"hibernated"},
+        "snapshot": {"active", "stopped"},
     }
     if action not in allowed or source not in allowed[action]:
         raise ProjectConflict("Project transition is not valid from its current state")
@@ -64,7 +65,10 @@ def transition_plan(project, action, baseline, *, rebuild=None):
             "mount_volume" if action == "archive" else "quiesce_workspace",
             "snapshot_workspace",
         ]
-        if action == "stop":
+        if action == "snapshot":
+            if source == "active":
+                steps += ["start_workspace"]
+        elif action == "stop":
             steps += ["stop_workspace"]
         elif action == "hibernate":
             steps += [
@@ -83,6 +87,12 @@ def transition_plan(project, action, baseline, *, rebuild=None):
                 steps += ["restore_version"]
             if rebuild and (source == "hibernated" or fresh):
                 steps += ["rebuild_dependencies"]
+        elif action == "snapshot":
+            steps = ["reserve_workspace",
+                     "quiesce_workspace" if source == "active" else "boot_workspace",
+                     "snapshot_workspace"]
+            if source == "stopped":
+                steps += ["stop_workspace"]
         elif action == "stop":
             steps = ["reserve_workspace", "quiesce_workspace", "snapshot_workspace", "stop_workspace"]
         else:
@@ -92,7 +102,8 @@ def transition_plan(project, action, baseline, *, rebuild=None):
             steps += ["unmount_volume", "remove_workspace"]
             if action == "archive":
                 steps += ["delete_volume"]
-    steps += ["release_workspace", "verify_" + TARGETS[action]]
+    target = source if action == "snapshot" else TARGETS[action]
+    steps += ["release_workspace", "verify_" + target]
     return generation, {
         "protocol": 3 if project["backend"] == "vm" else 2,
         "reservation": uuid.uuid4().hex,
@@ -165,8 +176,12 @@ class ProjectLifecycle:
 
     def request(
         self, access, project_id, action, *, expected_version, request_key, now=None,
-        idle_policy=None, preflight=None,
+        idle_policy=None, preflight=None, label="",
     ):
+        if not isinstance(label, str) or len(label) > 120 or (label and action != "snapshot"):
+            raise ValueError("Invalid snapshot label")
+        if project_id is None and action != "snapshot":
+            raise ValueError("A lifecycle target is required")
         if idle_policy is not None and (
             not isinstance(idle_policy, ProjectPolicy) or not callable(preflight)
         ):
@@ -178,6 +193,27 @@ class ProjectLifecycle:
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
             self.projects._scope_lock(cursor, access)
+            if action == "snapshot":
+                # Resolve the persisted request before the user's mutable focus.
+                prior = cursor.execute(
+                    """SELECT r.* FROM project_lifecycle_runs r JOIN projects p USING(project_id)
+                    WHERE p.scope_key=? AND p.bot_native_user_id=?
+                    AND r.actor_principal_id=? AND r.request_key=? LIMIT 2""",
+                    (access.scope.key, access.scope.bot_native_user_id, access.principal_id, request_key),
+                ).fetchall()
+                if prior:
+                    if (len(prior) != 1 or prior[0]["action"] != "snapshot"
+                        or prior[0]["plan"].get("label", "") != label
+                        or (project_id is not None and project_id != prior[0]["project_id"])):
+                        raise ProjectConflict("Snapshot request identity was reused")
+                    project = self.projects._get(cursor, access, prior[0]["project_id"])
+                    self.projects._editor(cursor, access, project)
+                    return self._public_run(prior[0])
+                if project_id is None:
+                    current = self.projects._current(cursor, access, now)
+                    if current is None:
+                        raise LookupError("No current project")
+                    project_id = current["project_id"]
             project = self.projects._get(cursor, access, project_id)
             previous = cursor.execute(
                 "SELECT * FROM project_lifecycle_runs WHERE project_id=? AND request_key=?",
@@ -208,6 +244,8 @@ class ProjectLifecycle:
             generation, plan = transition_plan(
                 project, action, baseline, rebuild=rebuild
             )
+            if action == "snapshot":
+                plan["label"] = label
             if generation >= 2**53:
                 raise ProjectConflict("Workspace generation exhausted")
             if idle_policy is not None:
@@ -237,7 +275,7 @@ class ProjectLifecycle:
                     request_key,
                     action,
                     project["status"],
-                    TARGETS[action],
+                    project["status"] if action == "snapshot" else TARGETS[action],
                     generation,
                     json.dumps(plan),
                     now,
@@ -329,6 +367,8 @@ class ProjectLifecycle:
                     "baseline": plan["baseline"],
                     "reservation": plan.get("reservation"),
                 }
+                if run["action"] == "snapshot":
+                    arguments["label"] = plan.get("label", "")
                 if plan["steps"][index] == "prune_rebuildable":
                     source = cursor.execute(
                         """SELECT fence,evidence FROM project_lifecycle_steps WHERE job_id=?
@@ -545,6 +585,11 @@ class ProjectLifecycle:
                 "state": run["target_state"],
                 "generation": run["generation"],
             }
+            if run["action"] == "snapshot":
+                result["snapshot"] = next(
+                    row["evidence"]["snapshot"] for row in rows
+                    if row["operation"] == "snapshot_workspace"
+                )
             require_project_lease(cursor, project, job, lease_now)
             cursor.execute(
                 """UPDATE projects SET status=?,sandbox_id=?,lifecycle_job_id=NULL,
@@ -552,7 +597,7 @@ class ProjectLifecycle:
                 (
                     run["target_state"],
                     rows[-1]["evidence"].get("sandbox_id"),
-                    now,
+                    project["state_changed_at"] if run["action"] == "snapshot" else now,
                     now,
                     now if run["action"] == "wake" else project["last_active_at"],
                     project["project_id"],
@@ -584,6 +629,34 @@ class ProjectLifecycle:
                 ),
             )
             return result
+
+    def snapshot_status(self, access, project_id, *, job_id=None):
+        """Public save receipt: queued work is never represented as a saved version."""
+        with self.projects._transaction() as cursor:
+            self.projects._get(cursor, access, project_id)
+            row = cursor.execute(
+                """SELECT r.*,j.status AS job_status,j.result_json FROM project_lifecycle_runs r
+                JOIN durable_jobs j USING(job_id) WHERE r.project_id=? AND r.action='snapshot'
+                AND (?::bigint IS NULL OR r.job_id=?) ORDER BY r.job_id DESC LIMIT 1""",
+                (project_id, job_id, job_id),
+            ).fetchone()
+            if row is None:
+                return None
+            saved = row["status"] == "completed" and row["job_status"] == "succeeded"
+            result = json.loads(row["result_json"]) if saved else {}
+            snapshot = result.get("snapshot", {})
+            saved = saved and type(snapshot.get("version_no")) is int
+            return {
+                "status": "completed" if saved else (
+                    "needs_attention" if row["status"] == "needs_attention" else row["job_status"]
+                ),
+                "saved": saved,
+                "version": f"v{snapshot['version_no']}" if saved else None,
+                "label": row["plan"].get("label", ""),
+                "completed_steps": row["next_step"],
+                "total_steps": len(row["plan"]["steps"]),
+                "updated_at": row["updated_at"],
+            }
 
     def maintenance_candidates(self, *, after=0, limit=50):
         """Private host inventory, not a cross-conversation API."""
