@@ -61,6 +61,9 @@ class ArtifactDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gate["owner"], "root:root")
         self.assertEqual(gate["permissions"], "0755")
         compile(gate["content"], gate["path"], "exec")
+        resize = files["/usr/local/lib/gaoji/project_resize.py"]
+        self.assertEqual((resize["owner"], resize["permissions"]), ("root:root", "0700"))
+        compile(resize["content"], resize["path"], "exec")
         self.assertEqual(json.loads(files["/etc/gaoji-project.json"]["content"]), binding().guest_config(initialize=True))
         self.assertEqual(config["users"], [{"name": "sandbox", "uid": 1000, "shell": "/bin/bash", "lock_passwd": True, "sudo": False}])
         self.assertNotIn(["chown", "sandbox:sandbox", "/workspace"], config["runcmd"])

@@ -7,6 +7,21 @@ authorization. Production deployment, App releases and real QQ acceptance
 remain separate from source publication. Earlier entries retain their original
 local-only verification boundaries.
 
+## Current status
+
+- Earlier roadmap phases 0-9: local implementation completed; the explicitly
+  listed production, real QQ/provider and performance acceptance is still open.
+- Project workspace milestones: M0 and M1 complete locally; M2 and M3 in
+  progress; M4-M7 incomplete. These milestones are not equal-sized work units.
+- Implemented locally: retained project storage and versions, lifecycle jobs,
+  project tools/chat/task integration, receipt-backed reports and admin console.
+  Current work closes physical quota resizing and remaining lifecycle and
+  shared-platform verification. A private guest resize helper is not yet an
+  end-to-end admin quota operation.
+- Completed source checkpoints are published to `zty20040403/gaojibot` main.
+  This work has not updated shared `imdomestic/nix-config`, rebuilt production
+  servers or released a new Desktop App. Source publication is not deployment.
+
 ## Completion rules
 
 - Preserve the existing Desktop App, deployment platform and local runtime.
@@ -3749,3 +3764,44 @@ implementation evidence, not a claim that the production App has these features.
   ownership acceptance also remains. Native M2/KVM full-lifecycle, restart and
   large-transfer acceptance and M4-M7 remain incomplete. No shared nix-config
   changes, server deployment, rebuild or App release occurred.
+
+### M3 journalled guest filesystem resize checkpoint
+
+- Added a private root-owned guest resize protocol with durable prepare, apply
+  and commit receipts. Growth verifies host device enlargement before resizing
+  ext4; shrink unmounts and verifies filesystem reduction before a separate host
+  truncation. Original mount state, project identity, epoch, filesystem UUID and
+  both capacities are retained. Configuration is committed only after actual
+  device/filesystem geometry agrees. This does not format an existing disk.
+- Pending resize closes command, browser/file maintenance and disk admission.
+  Lost resize, unmount or configuration acknowledgements recover from private
+  records rather than repeating a completed mutation or reopening writers.
+  Receipts recheck current geometry, and a remounted shrinking filesystem cannot
+  authorize host truncation. Conflicting intents and stale epochs fail closed.
+- Packaged the helper in new VM bootstraps and the existing browser/file helper
+  bundles. The old host raw-image growth method now rejects initialized project
+  filesystems. ProjectStore metadata updates also reject quota changes after a
+  physical workspace has existed. The admin API/UI project maximum now matches
+  the helpers' 100 GiB limit; aggregate scope limits remain separate.
+- Verification: the focused guest/disk/file/browser/bootstrap/admin regression
+  passed 143 tests in 23.754 seconds. After the final store and shrink-receipt
+  guards, 82 guest/store/IO/admin tests passed in 42.076 seconds
+  (`.cache/roadmap/m3-project-resize-final.log`). Whole-CI Ruff, touched-file
+  compileall, whitespace checks and the TypeScript/Vite production build pass.
+  `nix flake check --no-build --no-update-lock-file` passed for aarch64-darwin;
+  it did not build packages or check incompatible systems.
+- A disposable Linux container ran real ext4 creation, 64 -> 96 -> 64 MiB
+  resizing, a lost acknowledgement replay, retained-content/UUID comparison
+  and a final read-only e2fsck (exit 0). An initial probe exposed resize2fs's
+  regular-file truncation behavior; the fixture now preserves simulated device
+  capacity until the explicit host step. Production checks were not weakened.
+  The probe uses regular files and simulated mount/cgroup boundaries, not KVM,
+  libvirt, real block-device resizing or power-loss acceptance. Temporary disks
+  and the container were removed after execution.
+- Still required: host qcow2/libvirt resize orchestration and its durable job,
+  backend-specific quota integration, actual admin resize receipts, shared
+  Matrix/iMessage ownership checks, native M2 full-lifecycle/restart/large-file
+  acceptance and M4-M7. Existing-workspace quota editing remains unavailable;
+  this checkpoint does not claim that changing a number resizes a disk. No
+  production connection, shared nix-config change, rebuild, App release, live
+  model/QQ call or supplied-plan modification occurred.

@@ -328,6 +328,16 @@ class VmProjectDiskTests(unittest.TestCase):
         with self.assertRaises(ProjectVolumeError):
             self.store.grow("scope", 1, quota_bytes=64 * MIB, fence=3)
 
+    def test_initialized_filesystem_cannot_use_raw_image_growth(self):
+        self.create()
+        record = self.record()
+        record["guest_initialized"] = True
+        write_json(self.root / "p1/volume.json", record)
+        with self.assertRaisesRegex(ProjectVolumeError, "filesystem resize protocol"):
+            self.store.grow("scope", 1, quota_bytes=96 * MIB, fence=2)
+        self.assertEqual(self.record(), record)
+        self.assertNotIn("grow", self.host.calls)
+
     def test_unjournalled_missing_disk_cannot_be_declared_deleted(self):
         self.create()
         self.image().unlink()

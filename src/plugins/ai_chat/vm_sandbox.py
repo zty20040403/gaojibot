@@ -132,7 +132,7 @@ class VmSandboxManager:
                 ["mkdir", "-p", "/workspace"], ["chown", "sandbox:sandbox", "/workspace"]],
         }
         if project_disk is not None:
-            from src.sandbox_runtime import project_vm_browser_guest, project_vm_gate, project_vm_guest
+            from src.sandbox_runtime import project_vm_browser_guest, project_vm_gate, project_vm_guest, project_vm_resize_guest
             from src.sandbox_runtime.project_browser_bundle import build_bundle as browser_bundle, guest_requirements
             from src.sandbox_runtime.project_vm_file_bundle import build_bundle
             from src.sandbox_runtime.project_vm_file_guest import HELPER_PATH as FILE_HELPER_PATH
@@ -148,6 +148,8 @@ class VmSandboxManager:
                  "content": Path(project_vm_guest.__file__).read_text(encoding="utf-8")},
                 {"path": project_vm_gate.HELPER_PATH, "permissions": "0755", "owner": "root:root",
                  "content": Path(project_vm_gate.__file__).read_text(encoding="utf-8")},
+                {"path": project_vm_resize_guest.HELPER_PATH, "permissions": "0700", "owner": "root:root",
+                 "content": Path(project_vm_resize_guest.__file__).read_text(encoding="utf-8")},
                 {"path": FILE_HELPER_PATH, "permissions": "0700", "owner": "root:root",
                  "encoding": "b64", "content": base64.b64encode(build_bundle()).decode("ascii")},
                 {"path": project_vm_browser_guest.HELPER_PATH, "permissions": "0700", "owner": "root:root",

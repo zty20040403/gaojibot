@@ -23,10 +23,11 @@ class Pin(Revision):
 
 
 class Quota(Revision):
-    quota_bytes: int = Field(ge=64 * 1024**2, le=100 * 1024**4, multiple_of=1024**2)
+    quota_bytes: int = Field(ge=64 * 1024**2, le=100 * 1024**3, multiple_of=1024**2)
 
 
 class ScopeLimits(Quota):
+    quota_bytes: int = Field(ge=64 * 1024**2, le=100 * 1024**4, multiple_of=1024**2)
     scope_version: int = Field(ge=1)
     max_projects: int = Field(ge=1, le=1000)
 

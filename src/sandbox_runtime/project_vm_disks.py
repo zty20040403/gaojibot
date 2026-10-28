@@ -457,6 +457,8 @@ class VmProjectDisks(ProjectHostVolumeJournal):
                 raise ProjectVolumeError("Project disk does not exist")
             self._generation(record, generation)
             self._require_reservation(record, reservation)
+            if record.get("guest_initialized"):
+                raise ProjectVolumeError("Initialized projects require the guest filesystem resize protocol")
             if quota_bytes < record["quota_bytes"]:
                 raise ProjectVolumeError(
                     "VM disk shrinking requires a separate offline filesystem migration"

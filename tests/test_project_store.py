@@ -106,6 +106,22 @@ class ProjectStoreTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.store.update(self.b, pid, expected_version=3, quota_bytes=10000)
 
+    def test_initial_quota_can_change_but_materialized_quota_requires_resize(self):
+        pid = self.create()
+        admin = replace(self.access, admin=True)
+        original = self.store.get(admin, pid)
+        target = original["quota_bytes"] + 64 * 1024**2
+        updated = self.store.update(admin, pid, expected_version=original["version"], quota_bytes=target)
+        self.assertEqual(updated["quota_bytes"], target)
+        self.sql.execute("UPDATE projects SET workspace_generation=1 WHERE project_id=?", (pid,))
+        self.sql.commit()
+        with self.assertRaisesRegex(ProjectConflict, "verified disk resize"):
+            self.store.update(admin, pid, expected_version=updated["version"], quota_bytes=target * 2)
+        unchanged = self.store.get(admin, pid)
+        self.assertEqual((unchanged["quota_bytes"], unchanged["version"]), (target, updated["version"]))
+        renamed = self.store.update(admin, pid, expected_version=updated["version"], title="Renamed", quota_bytes=target)
+        self.assertEqual((renamed["title"], renamed["quota_bytes"]), ("Renamed", target))
+
     def test_cross_group_even_admin_and_private_identity_are_denied(self):
         pid = self.create()
         another = replace(

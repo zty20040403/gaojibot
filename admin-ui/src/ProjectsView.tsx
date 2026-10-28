@@ -96,7 +96,7 @@ export function ProjectsView({ plane }: { plane: ReturnType<typeof useControlPla
   const project = detail?.project.project_id === selected ? detail.project : null
   const changed = Boolean(dirty.current.size && project && draft &&
     (draft.version !== project.version || draft.scopeVersion !== detail?.scope_limits.version))
-  const validQuota = (value: string) => /^\d+$/.test(value) && Number(value) >= 64 && Number(value) <= 100 * 1024 ** 2
+  const validQuota = (value: string, scope = false) => /^\d+$/.test(value) && Number(value) >= 64 && Number(value) <= 100 * 1024 ** (scope ? 2 : 1)
 
   return <div className="projects-view" aria-busy={loading}>
     {error && <p className="project-error" role="alert">{error}</p>}
@@ -146,7 +146,7 @@ export function ProjectsView({ plane }: { plane: ReturnType<typeof useControlPla
           <div className="project-capacity">
             <label>会话总额度（MiB）<input aria-label="会话总额度 MiB" type="number" min="64" step="1" disabled={Boolean(busy)} value={draft.scopeQuota} onChange={(event) => edit('scopeQuota', event.target.value)} /></label>
             <label>最多项目数<input aria-label="最多项目数" type="number" min="1" max="1000" step="1" disabled={Boolean(busy)} value={draft.maxProjects} onChange={(event) => edit('maxProjects', event.target.value)} /></label>
-            <button className="text-button" disabled={Boolean(busy) || changed || !validQuota(draft.scopeQuota) || !/^\d+$/.test(draft.maxProjects) || Number(draft.maxProjects) < 1 || Number(draft.maxProjects) > 1000}
+            <button className="text-button" disabled={Boolean(busy) || changed || !validQuota(draft.scopeQuota, true) || !/^\d+$/.test(draft.maxProjects) || Number(draft.maxProjects) < 1 || Number(draft.maxProjects) > 1000}
               onClick={() => void change('scope', `/projects/${selected}/scope-limits`, { expected_version: draft.version, scope_version: draft.scopeVersion, quota_bytes: Number(draft.scopeQuota) * MiB, max_projects: Number(draft.maxProjects) }, 'PUT', 'scope')}><Check size={16} />保存会话额度</button>
           </div>
           <div className="project-meta"><span>最近计量 {fmtBytes(detail.scope_limits.accounted_bytes)}</span><span>预留 {fmtBytes(detail.scope_limits.reserved_bytes)}</span><span>项目 {detail.scope_limits.project_count}/{detail.scope_limits.max_projects}</span><span>会话配置 v{detail.scope_limits.version}</span></div>

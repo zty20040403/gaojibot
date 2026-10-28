@@ -507,6 +507,14 @@ class ProjectStore:
                 or values["quota_bytes"] < row["used_bytes"]
             ):
                 raise ValueError("Invalid metadata or quota below current usage")
+            if values["quota_bytes"] != row["quota_bytes"] and (
+                row["workspace_generation"] != 0
+                or row["sandbox_id"] is not None
+                or row["status"] != "stopped"
+            ):
+                raise ProjectConflict(
+                    "Materialized project quotas require verified disk resize"
+                )
             updated = cursor.execute(
                 """UPDATE projects SET title=?,rebuild_command=?,pinned=?,quota_bytes=?,
                 version=version+1,updated_at=? WHERE project_id=? RETURNING *""",

@@ -9,6 +9,7 @@ MODULES = (
     "src/sandbox_runtime/errors.py", "src/sandbox_runtime/project_volume_journal.py",
     "src/sandbox_runtime/project_files.py", "src/sandbox_runtime/project_rebuild.py",
     "src/sandbox_runtime/project_vm_guest.py", "src/sandbox_runtime/project_vm_gate.py",
+    "src/sandbox_runtime/project_vm_resize_guest.py",
     "src/sandbox_runtime/project_vm_file_guest.py",
     "src/sandbox_runtime/project_vm_dependency_guest.py",
     "src/sandbox_runtime/project_usage.py", "src/sandbox_runtime/project_vm_usage_guest.py",

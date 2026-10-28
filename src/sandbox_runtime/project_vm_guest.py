@@ -126,6 +126,18 @@ class LinuxGuestDisk:
             raise GuestDiskError("Invalid project filesystem geometry")
         return blocks * size
 
+    def filesystem_used_bytes(self):
+        output = self.run("dumpe2fs", "-h", str(DEVICE))
+        values = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
+        try:
+            total, free, reserved, block = (int(values[key]) for key in
+                ("Block count", "Free blocks", "Reserved block count", "Block size"))
+        except (KeyError, ValueError):
+            raise GuestDiskError("Cannot verify offline project usage") from None
+        if block <= 0 or total <= 0 or not 0 <= free <= total or not 0 <= reserved <= total:
+            raise GuestDiskError("Invalid offline project block counters")
+        return (total - max(0, free - reserved)) * block
+
     def require_blank(self, quota):
         deadline = time.monotonic() + 60
         fd = os.open(DEVICE, os.O_RDONLY | os.O_NOFOLLOW)
@@ -223,6 +235,12 @@ class LinuxGuestDisk:
     def unmount(self):
         self.run("sync", "-f", str(WORKSPACE))
         self.run("umount", str(WORKSPACE))
+
+    def check(self):
+        self.run("e2fsck", "-p", "-f", str(DEVICE), accepted=(0, 1), timeout=180)
+
+    def resize(self, quota):
+        self.run("resize2fs", str(DEVICE), f"{quota // 1024}K", timeout=300)
 
 
 class ProjectGuestWorkspace:
@@ -408,14 +426,19 @@ def main():
 
 def seal_initialization(config):
     """Consume first-boot format permission before acknowledging a mounted disk."""
-    fd, temporary = tempfile.mkstemp(prefix=".gaoji-project-", dir=CONFIG_PATH.parent)
+    write_private_json(CONFIG_PATH, {**config, "initialize": False})
+
+
+def write_private_json(path, value):
+    """Commit a root-owned guest record, including its directory entry."""
+    fd, temporary = tempfile.mkstemp(prefix=".gaoji-project-", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as stream:
-            json.dump({**config, "initialize": False}, stream)
+            json.dump(value, stream)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, CONFIG_PATH)
-        directory = os.open(CONFIG_PATH.parent, os.O_RDONLY | os.O_DIRECTORY)
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(directory)
         finally:

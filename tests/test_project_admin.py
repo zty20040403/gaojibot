@@ -144,7 +144,7 @@ class ProjectAdminTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_limits_and_shrink_below_retained_or_unverified_work_rejected(self):
         await self.login()
-        for value in (-1, 0, True, "123", 2**60, 67108865):
+        for value in (-1, 0, True, "123", 2**60, 67108865, 101 * 1024**3):
             self.assertEqual((await self.change("quota", {"expected_version": 1, "quota_bytes": value})).status_code, 422)
         self.assertEqual((await self.change("quota", {"expected_version": 1, "quota_bytes": 6 * 1024**3})).status_code, 409)
         self.materialized(sampled_at=self.now - 3600, used=1024**3)

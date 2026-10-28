@@ -150,6 +150,13 @@ class ProjectGuestGate:
     def _lock(self, name, **kwargs):
         return guest_lock(self.lock_root / f"gaoji-project-{name}.lock", **kwargs)
 
+    def _require_settled_disk(self):
+        if __package__:
+            from .project_vm_resize_guest import require_settled
+        else:
+            from project_resize import require_settled
+        require_settled(self)
+
     def _state(self):
         try:
             value = _read_private(self.state_path)
@@ -194,6 +201,7 @@ class ProjectGuestGate:
         """Keep admission stable while a trusted read observes the project."""
         self._epoch(epoch)
         with self._lock("control"), self._lock("io", timeout=0):
+            self._require_settled_disk()
             state = self._state()
             if state["epoch"] != epoch or state["mode"] != "active":
                 raise GuestDiskError("Project admission is not active at the host epoch")
@@ -211,6 +219,7 @@ class ProjectGuestGate:
     def activate(self, epoch):
         self._epoch(epoch)
         with self._lock("control"), self._lock("io"):
+            self._require_settled_disk()
             state = self._state()
             if epoch == state["epoch"] and state["mode"] == "active":
                 self.workspace.verify()
@@ -259,6 +268,7 @@ class ProjectGuestGate:
                 or type(tasks) is not int or not 32 <= tasks <= 4096):
             raise GuestDiskError("Invalid project command contract")
         with self._lock("io"):
+            self._require_settled_disk()
             state = self._state()
             if state["mode"] != "active" or state["epoch"] != epoch:
                 raise GuestDiskError("Project command belongs to a closed or stale epoch")
@@ -270,6 +280,7 @@ class ProjectGuestGate:
         """Serialize trusted file operations without reopening user execution."""
         self._epoch(epoch)
         with self._lock("control"), self._lock("io"):
+            self._require_settled_disk()
             state = self._state()
             if state["mode"] != "quiesced" or not 0 < state["epoch"] <= epoch:
                 raise GuestDiskError("File maintenance requires completed writer quiescence")
@@ -288,6 +299,7 @@ class ProjectGuestGate:
         if action not in {"trim", "unmount"}:
             raise GuestDiskError("Unsupported project disk maintenance")
         with self._lock("control"), self._lock("io"), self._lock("disk"):
+            self._require_settled_disk()
             state = self._state()
             if state["mode"] != "quiesced" or not 0 < state["epoch"] <= epoch:
                 raise GuestDiskError("Disk maintenance requires completed writer quiescence")
@@ -315,6 +327,13 @@ def main():
         print(json.dumps(getattr(gate, action)(request["epoch"]), sort_keys=True))
     elif action in {"trim", "unmount"} and set(request) == {"action", "epoch"}:
         print(json.dumps(gate.disk_operation(action, request["epoch"]), sort_keys=True))
+    elif action == "resize" and set(request) == {"action", "phase", "epoch", "from_quota_bytes", "quota_bytes"}:
+        if __package__:
+            from .project_vm_resize_guest import ProjectGuestResize
+        else:
+            from project_resize import ProjectGuestResize
+        print(json.dumps(ProjectGuestResize(gate).operate(request["phase"], request["epoch"],
+            request["from_quota_bytes"], request["quota_bytes"]), sort_keys=True))
     elif action == "run" and set(request) == {"action", "epoch", "argv", "timeout", "tasks"}:
         sys.exit(gate.run(request["epoch"], request["argv"], request["timeout"], request["tasks"]))
     else:

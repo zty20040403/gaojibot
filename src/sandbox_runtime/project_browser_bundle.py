@@ -42,7 +42,7 @@ def guest_requirements():
 def build_bundle(*, guest_control=False):
     root = Path(__file__).resolve().parents[2]
     modules = MODULES if not guest_control else tuple("src/sandbox_runtime/" + name + ".py" for name in (
-        "project_vm_browser_guest", "project_vm_browser_install", "project_vm_gate", "project_vm_guest"))
+        "project_vm_browser_guest", "project_vm_browser_install", "project_vm_gate", "project_vm_guest", "project_vm_resize_guest"))
     main = "project_vm_browser_guest" if guest_control else "project_browser_worker"
     sources = {name: (root / name).read_bytes() for name in modules}
     sources.update({"src/__init__.py": b"", "src/sandbox_runtime/__init__.py": b"",
