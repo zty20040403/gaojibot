@@ -875,7 +875,8 @@ class RoutineNormalPipelineTests(
         )
         config = replace(self.app_context.settings, subagent_entry_enabled=False,
                          tool_intent_enabled=False, search_enabled=False, voice_enabled=False, ocr_enabled=False)
-        task_store = SimpleNamespace(revisable_tasks=Mock(return_value=[]))
+        task_store = SimpleNamespace(revisable_tasks=Mock(return_value=[]),
+                                     get=Mock(return_value=SimpleNamespace(project_id=None)))
         for name, arguments in (("delegate_agent", {"role": "coder", "objective": "work"}),
                                 ("run_subagents", {"goal": "work"}), ("resume_subagent", {"task_id": 7}),
                                 ("auto-delegate", {}), ("auto-workflow", {})):

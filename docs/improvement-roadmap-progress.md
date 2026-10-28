@@ -3480,3 +3480,50 @@ implementation evidence, not a claim that the production App has these features.
   general browser drain, native M2/KVM acceptance and M4-M7 remain open. No
   production connection, shared nix-config update, rebuild, App release, live
   QQ/model request or supplied-plan edit occurred.
+
+### M3 bound-task recovery and automatic accepted bundle publication
+
+- Background and explicit task recovery now construct project input hooks from
+  the persisted task binding, not the caller's current project. The original
+  scope, account, actor, live membership, editor permission and sandbox allowlist
+  remain required. Ordinary tasks need no project runtime. Background recovery
+  does not inject another project's current notes. A temporarily unavailable
+  project runtime raises `JobDeferred` through the normal chat assembly, so the
+  durable worker waits instead of treating it as an LLM failure and consuming
+  its failure retries.
+- Bound workers receive a concrete delta-archive contract: one explicitly named
+  `gaoji-project-update.zip`, checksum-bound descriptor, changed retained files,
+  explicit deletions and optional dependency rebuild specification. Intermediate
+  agents hand results to the integrating step rather than each publishing an
+  update. The independent reviewer imports the exact snapshot and baseline and
+  checks the assembled project. Existing host acceptance evidence remains the
+  authority; neither a filename nor a model's success claim grants publication.
+- The supervised reconciler now selects the sole explicit update from completed
+  or partial tasks, verifies its independent acceptance, reads only the task's
+  immutable snapshot and rechecks live access before publication. Snapshot IO
+  rejects malformed identities, excessive or incorrect sizes, symlink files and
+  directories, special files and changed bytes. It never guesses among ordinary
+  ZIP attachments or two competing update bundles. Missing or unaccepted output
+  leaves the original project and its lock intact.
+- Publication feeds the existing durable materialization job. Once publication
+  commits, takeover no longer needs the expiring task artifact: project CAS owns
+  the bytes. An integrated local check drives artifact selection, publication,
+  replacement-worker recovery, physical file restore, deletion of an explicitly
+  removed path and final verification/unlock. Prior-version files remain
+  readable. No separate project overwrite or changed task-retention policy was
+  introduced.
+- Verification: 77 focused completion/recovery/reconciliation/input/context/
+  materialization/tool-dispatch/routine tests passed in 53.560 seconds
+  (`.cache/roadmap/m3-task-completion-final.log`). PostgreSQL transactions,
+  immutable artifact bytes, CAS, private Unix file RPC and restored fixture
+  files are real and disposable. Models, QQ membership, kernel/container/VM
+  execution and reviewer outputs are fixtures, not live acceptance. The actual
+  chat assembler is exercised for original-bound recovery and deferred runtime
+  availability. Whole-CI Ruff, focused compileall and whitespace checks passed.
+- Still incomplete: automatic chat admission must save/quiesce active projects
+  and bind the new task without a focus race; planning and final result/outbox
+  presentation must include project integration status. Automatic project-bound
+  admission is not yet connected to the chat entry. M3 console/shared-
+  conversation checks, general browser drain, native M2/KVM acceptance and
+  M4-M7 remain open. No production connection, shared nix-config edit, rebuild,
+  App release, live QQ/model call or supplied-plan edit occurred.

@@ -151,6 +151,8 @@ class ProjectTaskInputTests(unittest.IsolatedAsyncioTestCase):
         async def model(text, history, tools, execute, **kwargs):
             self.assertIn("import_project_baseline", {t["function"]["name"] for t in tools})
             self.assertIn(self.binding.baseline(self.access, self.task.task_id)["manifest_sha256"], text)
+            self.assertIn("gaoji-project-update.zip", text)
+            self.assertIn("独立验收人必须导入这一个精确快照和项目基线", text)
             imported = json.loads(await execute("import_project_baseline", {"sandbox_id": "s123abc"}))
             self.assertTrue(imported["ok"])
             return json.dumps({"status": "success", "summary": "read baseline", "artifacts": [], "findings": [], "risks": []})

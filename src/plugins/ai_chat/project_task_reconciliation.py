@@ -11,6 +11,7 @@ from .project_lifecycle import ProjectLifecycle
 from .project_materialization import ProjectMaterializations
 from .project_publication import ProjectPublications
 from .project_tasks import ProjectTaskStore
+from .project_task_artifacts import read_update_artifact
 from .projects import ProjectConflict, require_project_io_idle
 
 logger = logging.getLogger(__name__)
@@ -89,12 +90,12 @@ class ProjectTaskReleases:
             raise ValueError("Invalid project task reconciliation page")
         with self.tasks._transaction() as cursor:
             return [dict(row) for row in cursor.execute("""SELECT p.*,b.task_id,b.actor_principal_id,
-                (v.task_id IS NOT NULL) AS published
+                (v.task_id IS NOT NULL) AS published,t.status AS task_status
                 FROM project_task_bindings b JOIN projects p USING(project_id)
                 JOIN subagent_tasks t USING(task_id)
                 LEFT JOIN project_task_publications v USING(task_id)
                 WHERE b.task_id>? AND p.locked_task_id=b.task_id AND p.lifecycle_job_id IS NULL
-                AND (v.task_id IS NOT NULL OR t.status IN ('failed','cancelled'))
+                AND (v.task_id IS NOT NULL OR t.status IN ('completed','partial','failed','cancelled'))
                 AND NOT EXISTS (SELECT 1 FROM project_task_releases r WHERE r.task_id=b.task_id)
                 ORDER BY b.task_id LIMIT ?""", (after, limit)).fetchall()]
 
@@ -115,7 +116,16 @@ class ProjectTaskReconciler:
                 try:
                     async with asyncio.timeout(30):
                         access = await self.runtime._execution_access(candidate, candidate["actor_principal_id"])
-                        if candidate["published"]:
+                        if candidate["published"] or candidate["task_status"] in {"completed", "partial"}:
+                            if not candidate["published"]:
+                                output = await _store(self.materializations.publications.output, access, candidate["task_id"])
+                                if "publication" not in output:
+                                    artifact = output["artifact"]
+                                    content = await asyncio.to_thread(read_update_artifact, self.runtime.app.state_dir,
+                                        candidate["task_id"], artifact)
+                                    access = await self.runtime._execution_access(candidate, candidate["actor_principal_id"])
+                                    await _store(self.materializations.publications.publish, access, candidate["task_id"],
+                                        artifact["snapshot"], content)
                             backend = self.runtime.backends[candidate["backend"]]
                             await _store(self.materializations.request, access, candidate["task_id"], preflight=backend.preflight)
                         else:

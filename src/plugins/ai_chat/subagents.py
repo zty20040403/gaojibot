@@ -3068,11 +3068,14 @@ class SubAgentCoordinator:
             worker_input = _worker_input(task.objective, step, agent_context)
         worker_input += f"\n[本步骤工作目录]\n/workspace/tasks/{task.task_id}/steps/{step.key}\n"
         if project_input is not None:
+            from .project_task_inputs import project_output_contract
+
             worker_input += (
                 "\n[宿主固定的项目基线]\n" + json.dumps(project_input, ensure_ascii=False)
                 + "\n这是本任务唯一基线，不跟随当前项目的切换。先创建本步骤沙盒，调用 import_project_baseline。"
                 "导入原件只读；复制到本步骤工作目录后再修改。产物交给宿主验收，不要尝试直接修改项目卷。"
             )
+            worker_input += project_output_contract()
         worker_input += "\n[宿主证据索引，必要时用 read_task_evidence 读取]\n" + json.dumps(evidence_index(allowed_evidence()), ensure_ascii=False)
         worker_input += "\n报告中每个 evidence# 必须使用本轮工具返回或当前索引中的完整编号；不要复制上一修订的编号。来源观测时间以证据原文为准，不把收取时间当作采样时间。"
 

@@ -9,7 +9,7 @@ import json
 import re
 import time
 
-from src.project_update import ProjectUpdate
+from src.project_update import ARTIFACT_NAME, ProjectUpdate
 from .agent.artifact_acceptance import artifact_verdicts
 from .agent.control import assert_job_owned
 from .projects import ProjectConflict, ProjectQuotaExceeded, require_project_io_idle
@@ -27,6 +27,34 @@ class ProjectPublications:
     def __init__(self, bindings):
         self.bindings = bindings
         self.projects, self.tasks = bindings.projects, bindings.tasks
+
+    def output(self, access, task_id):
+        """Select one explicit accepted bundle, never guess among task ZIPs."""
+        with self.tasks._transaction() as cursor:
+            self.projects._scope_lock(cursor, access)
+            control = cursor.execute("SELECT revision FROM subagent_controls WHERE task_id=? FOR UPDATE", (task_id,)).fetchone()
+            project, _, task = self.bindings._owned(cursor, access, task_id)
+            prior = cursor.execute("SELECT * FROM project_task_publications WHERE task_id=?", (task_id,)).fetchone()
+            if prior is not None:
+                self._authority(cursor, access, task_id, prior["artifact_sha256"])
+                return {"publication": dict(prior)}
+            if control is None or task["status"] not in {"completed", "partial"}:
+                raise ProjectConflict("Project task has not finished producing its update")
+            candidates = []
+            for row in cursor.execute("SELECT result_json FROM subagent_runs WHERE task_id=? AND status='succeeded'",
+                                      (task_id,)).fetchall():
+                artifacts = _object(row["result_json"]).get("artifacts", [])
+                if isinstance(artifacts, list):
+                    candidates += [a for a in artifacts if isinstance(a, dict) and a.get("name") == ARTIFACT_NAME]
+            if len(candidates) != 1:
+                raise ProjectConflict("Project requires one explicit accepted update bundle")
+            artifact = candidates[0]
+            digest = artifact.get("snapshot")
+            if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+                raise ProjectConflict("Project update has no immutable artifact snapshot")
+            self._authority(cursor, access, task_id, digest)
+            return {"artifact": {"snapshot": digest, "size": artifact["size"], "name": ARTIFACT_NAME},
+                    "project_id": project["project_id"], "revision": control["revision"]}
 
     def _authority(self, cursor, access, task_id, digest):
         # Revisions take this row before the task row, so use the same ordering.

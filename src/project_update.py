@@ -20,6 +20,7 @@ from src.project_content import MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_VERSION_
 from src.project_content import manifest_bytes, project_path, retained_manifest
 
 DESCRIPTOR = "gaoji-project-update.json"
+ARTIFACT_NAME = "gaoji-project-update.zip"
 
 
 def _unique_object(pairs):

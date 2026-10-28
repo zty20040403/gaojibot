@@ -12,6 +12,7 @@ from typing import (
     TYPE_CHECKING,
 )
 from .model_budget import ModelBudgetExceeded
+from .workers.durable_jobs import JobDeferred
 
 if TYPE_CHECKING:
     from .routine_worker import RoutineExecution
@@ -1466,6 +1467,11 @@ class ToolExecutor(HandlerService):
                 if self.context.subagent_coordinator is None:
                     return "Sub-Agent 任务模式暂时没有开启。"
 
+                from dataclasses import replace
+                from .project_task_inputs import inputs_for_task
+
+                task_hooks = replace(subagent_hooks, project_inputs=await inputs_for_task(turn.context, task_id))
+
                 async def report_subagent_progress(text: str) -> None:
                     if agent_executor is not None:
                         await execute_tool(SAY_TOOL_NAME, {"text": text[:200]})
@@ -1474,7 +1480,7 @@ class ToolExecutor(HandlerService):
                     from .routine_subagents import resume_child
                     return await resume_child(routine_execution, task_id,
                         selected_profile=selected_profile, tools=tools, execute_tool=execute_tool,
-                        parent_trace=turn_trace, progress=report_subagent_progress, hooks=subagent_hooks)
+                        parent_trace=turn_trace, progress=report_subagent_progress, hooks=task_hooks)
                 if resume_task_id is None:
                     store = self.context.subagent_store
                     control = await self.context.db_call(store.control, task_id)
@@ -1496,7 +1502,7 @@ class ToolExecutor(HandlerService):
                     execute_tool=execute_tool,
                     parent_trace=turn_trace,
                     progress=report_subagent_progress,
-                    hooks=subagent_hooks,
+                    hooks=task_hooks,
                 )
 
             turn.subagent_actions = SubAgentActions(
@@ -1511,7 +1517,6 @@ class ToolExecutor(HandlerService):
                 for task in own_tasks:
                     if task.requester_user_id != event.user_id:
                         from .collaboration_handlers import collaboration_access
-                        from .workers.durable_jobs import JobDeferred
                         try:
                             await collaboration_access(self.services, bot, event, task.task_id)
                         except (ValueError, PermissionError, JobDeferred):
@@ -1539,7 +1544,7 @@ class ToolExecutor(HandlerService):
                     "task#编号时调用 resume_subagent。"
                 )
 
-            project_context = await current_project_context(turn.context)
+            project_context = await current_project_context(turn.context) if resume_task_id is None else ""
             if project_context:
                 context_parts.append(project_context)
 
@@ -1628,6 +1633,8 @@ class ToolExecutor(HandlerService):
             turn.voice_reply_segment = turn.visual_reply_segment = None
             turn.voice_reply_text = ""
         except ModelBudgetExceeded:
+            raise
+        except JobDeferred:
             raise
         except ChatFailure:
             raise
