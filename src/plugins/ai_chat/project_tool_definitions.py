@@ -53,6 +53,12 @@ PROJECT_TOOLS = (
         {**TARGET, "label": {"type": "string", "maxLength": 120}},
     ),
     _definition(
+        "project_restore",
+        "仅在用户要求回滚时恢复指定项目版本。先保存当前文件，再重建工作区，保留历史并生成新版本；将唤醒项目。返回 restored=true 才表示已核实完成，排队不等于完成，用 project_status 查询。",
+        {**TARGET, "version_handle": {"type": "string", "pattern": "^v[1-9][0-9]{0,14}$"}},
+        ("version_handle",),
+    ),
+    _definition(
         "project_set_rebuild",
         "记录项目下次唤醒时的依赖重建命令，不立即执行。需要编辑权限和最新配置修订号；实际执行仍要求受支持的锁文件配方。",
         {

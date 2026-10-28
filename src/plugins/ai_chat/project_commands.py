@@ -13,6 +13,7 @@ from .tools.state import ToolContext, TurnState
 HELP = (
     "/项目\n/项目 新建 名称\n/项目 切换 prj#3\n/项目 状态 [prj#3]\n/项目 版本 [prj#3]"
     "\n/项目 保存 [标签]\n/项目 保存 prj#3 [标签]"
+    "\n/项目 回滚 v2\n/项目 回滚 prj#3 v2"
 )
 STATES = {
     "active": "运行中",
@@ -58,8 +59,9 @@ async def command_result(services, event, text):
         "save": "保存",
         "snapshot": "保存",
         "快照": "保存",
+        "restore": "回滚",
     }.get(action, action)
-    if action not in {"列表", "新建", "切换", "状态", "版本", "保存"}:
+    if action not in {"列表", "新建", "切换", "状态", "版本", "保存", "回滚"}:
         return HELP
     if action == "列表" and rest or action in {"新建", "切换"} and not rest:
         return HELP
@@ -70,6 +72,7 @@ async def command_result(services, event, text):
         "状态": "project_status",
         "版本": "project_versions",
         "保存": "project_snapshot",
+        "回滚": "project_restore",
     }
     arguments = (
         {"title": rest}
@@ -84,6 +87,14 @@ async def command_result(services, event, text):
             {"project_handle": target, "label": label}
             if target.startswith("prj#") else {"label": rest}
         )
+    if action == "回滚":
+        targets = rest.split()
+        if len(targets) == 1:
+            arguments = {"version_handle": targets[0]}
+        elif len(targets) == 2:
+            arguments = {"project_handle": targets[0], "version_handle": targets[1]}
+        else:
+            return HELP
     turn = TurnState(ToolContext(services, event, frozenset({"projects"})))
     result = json.loads(await domain_registry.execute(turn, names[action], arguments))
     if not result["ok"]:
@@ -135,6 +146,14 @@ async def command_result(services, event, text):
             lines.append("版本保存未完成，需要处理；不能当作已保存。")
         else:
             lines.append("版本保存已排队或执行中，完成后可通过 /项目 状态 查看版本号。")
+    if action in {"回滚", "状态"} and result.get("restore"):
+        restore = result["restore"]
+        if restore["restored"]:
+            lines.append(f"最近回滚已核实：{restore['source_version']} 的内容恢复为 {restore['version']}，历史版本保留。")
+        elif restore["status"] in {"failed", "needs_attention", "cancelled"}:
+            lines.append("回滚尚未完成，需要处理；保留恢复任务，不能当作已恢复。")
+        else:
+            lines.append("回滚已排队或执行中；先保存当前内容，再恢复目标版本，通过 /项目 状态 查看结果。")
     if action == "状态":
         usage = result["usage"]
         lines.append(

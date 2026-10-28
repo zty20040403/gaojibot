@@ -72,6 +72,8 @@ class DockerProjectBackend:
             "snapshot_workspace",
             "prune_rebuildable",
             "rebuild_dependencies",
+            "check_restore_source",
+            "publish_restore",
         }
     )
     VERIFICATIONS = frozenset(
@@ -168,6 +170,10 @@ class DockerProjectBackend:
             raise ProjectBackendUnavailable(
                 "Lifecycle adapters are unavailable: " + ", ".join(sorted(missing))
             )
+        if "restore" in plan:
+            from .project_restore import valid_restore_plan
+            if not valid_restore_plan(plan):
+                raise ProjectBackendUnavailable("Rollback operations are out of order")
         if "rebuild_dependencies" in plan["steps"] and (
             not plan.get("rebuild_spec")
             or not plan.get("baseline")

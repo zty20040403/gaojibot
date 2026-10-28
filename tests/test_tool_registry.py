@@ -97,6 +97,7 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "project_status",
                 "project_versions",
                 "project_snapshot",
+                "project_restore",
                 "project_set_rebuild",
                 "ops_catalog",
                 "ops_call",

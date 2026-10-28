@@ -9,6 +9,7 @@ from ..onebot_codec import scope_from_event
 from ..project_access import project_access as _access, projects_available as enabled
 from ..project_context import current_project_payload
 from ..project_executor import _store
+from ..project_restore import ProjectRestores
 from ..project_tool_definitions import PROJECT_TOOLS
 from ..projects import ProjectConflict, ProjectQuotaExceeded
 from ..workers.durable_jobs import JobDeferred
@@ -154,22 +155,24 @@ async def execute(turn, arguments, *, name):
                 "current": current is not None
                 and current["project_id"] == project["project_id"],
             }
-        elif name == "project_snapshot":
+        elif name in {"project_snapshot", "project_restore"}:
             _execution_allowed(context)
             run = await _store(
                 runtime.lifecycle.request,
                 access,
                 int(arguments["project_handle"][4:]) if "project_handle" in arguments else None,
-                "snapshot",
+                "restore" if name == "project_restore" else "snapshot",
                 expected_version=None,
                 request_key=_key(context, name, active_tool_call_id.get() or "command"),
                 label=arguments.get("label", ""),
+                restore_version=int(arguments["version_handle"][1:]) if name == "project_restore" else None,
             )
             project = await _store(store.get, access, run["project_id"])
             result = {
                 "project": _project(project),
-                "snapshot": await _store(
-                    runtime.lifecycle.snapshot_status, access, run["project_id"], job_id=run["job_id"],
+                "restore" if name == "project_restore" else "snapshot": await _store(
+                    ProjectRestores(store).status if name == "project_restore" else runtime.lifecycle.snapshot_status,
+                    access, run["project_id"], job_id=run["job_id"],
                 ),
             }
         else:
@@ -225,6 +228,7 @@ async def execute(turn, arguments, *, name):
                     "tool_operation": await _store(runtime.io.status, access, pid),
                     "file_deliveries": await _store(runtime.files.status, access, pid),
                     "snapshot": await _store(runtime.lifecycle.snapshot_status, access, pid),
+                    "restore": await _store(ProjectRestores(store).status, access, pid),
                     "autosaves": await _store(runtime.autosave.saves.status, access, pid),
                     "versions": [
                         _version(v)

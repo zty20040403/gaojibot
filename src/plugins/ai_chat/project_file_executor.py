@@ -45,6 +45,8 @@ class ProjectFileExecutor:
             "restore_version",
             "prune_rebuildable",
             "rebuild_dependencies",
+            "check_restore_source",
+            "publish_restore",
         }
     )
 
@@ -97,6 +99,27 @@ class ProjectFileExecutor:
         return result, body
 
     async def execute(self, job, step, access):
+        if step["operation"] == "check_restore_source":
+            access, project = await self._context(job)
+            baseline = step["arguments"]["baseline"]
+            manifest = await _store(self.projects.manifest, access, project["project_id"], baseline["version_no"])
+            encoded = manifest_bytes(manifest, quota_bytes=project["quota_bytes"])
+            if hashlib.sha256(encoded).hexdigest() != baseline["manifest_sha256"]:
+                raise ProjectConflict("Rollback source manifest changed")
+            for item in manifest["files"]:
+                await self._context(job)
+                await _store(self.projects.blobs.reference, item["sha256"], item["size"])
+                await _store(self.projects.blobs.read, item["sha256"], max_bytes=0)
+            return {**self._evidence(step, step["arguments"], restored_version=baseline),
+                    "observation": "Host verified the requested manifest and every retained object checksum before replacement"}
+        if step["operation"] == "publish_restore":
+            from .project_restore import ProjectRestores
+            access, _ = await self._context(job)
+            version = await _store(ProjectRestores(self.projects).publish, access, job, step)
+            return {**self._evidence(step, step["arguments"],
+                                    snapshot={k: version[k] for k in ("version_no", "manifest_sha256")},
+                                    restored_version=step["arguments"]["baseline"]),
+                    "observation": "Host atomically published one new version after the helper verified the imported tree"}
         if step["operation"] == "snapshot_workspace":
             return await self._snapshot(job, step)
         if step["operation"] == "restore_version":

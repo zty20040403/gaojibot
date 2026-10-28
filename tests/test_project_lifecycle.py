@@ -91,6 +91,8 @@ class ProjectLifecycleTests(unittest.TestCase):
             }
         if step["operation"] == "prune_rebuildable":
             evidence["snapshot"] = step["arguments"]["snapshot"]
+        if step["operation"] == "restore_version":
+            evidence["restored_version"] = step["arguments"]["baseline"]
         return evidence
 
     def complete(self, job, now=None):

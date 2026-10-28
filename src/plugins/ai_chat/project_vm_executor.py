@@ -195,7 +195,11 @@ class VmProjectBackend:
                         + (["rebuild_dependencies"] if rebuild else [])
                         + ["release_workspace", "verify_active"]
                     )
-        if steps not in candidates:
+        if "restore" in plan:
+            from .project_restore import valid_restore_plan
+            if not valid_restore_plan(plan):
+                raise ProjectBackendUnavailable("VM rollback operations are out of order")
+        elif steps not in candidates:
             raise ProjectBackendUnavailable("VM lifecycle operations are out of order")
         if "restore_version" in steps and not plan.get("baseline"):
             raise ProjectBackendUnavailable("VM restore requires a retained version")

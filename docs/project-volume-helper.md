@@ -968,7 +968,7 @@ PostgreSQL, RPC, registry and loop tests use fixture Docker/libvirt/QQ effects.
 They do not prove native command cancellation, full helper-loss reconciliation
 or actual QQ file delivery. Projects remain default-disabled.
 
-This is not the complete M3 interface. Restore/delete/preview tools,
+This is not the complete M3 interface. Delete/preview tools,
 project routing of browser tools, Sub-Agent baselines and accepted-version publication, shared
 Matrix/iMessage ownership, and console management remain pending. Routine and
 Sub-Agent contexts do not receive these management tools until their project
@@ -1019,6 +1019,43 @@ These paths have local PostgreSQL/RPC tests with fake QQ uploads, including
 process-loss boundaries and immutable-byte checks. No live QQ delivery, native
 Linux/KVM acceptance, or production enablement is implied. Sending a file here
 verifies its bytes and transport, not its semantic correctness or PDF typography.
+
+### Recoverable project rollback
+
+`project_restore` accepts a required `version_handle` (for example `v2`) and an
+optional `project_handle`. `/项目 回滚 v2` uses the current project;
+`/项目 回滚 prj#3 v2` selects it explicitly. The caller must still be an editor
+with current membership and sandbox admission. An active task, unfinished
+automatic save, active/uncertain IO or unconfirmed delivery blocks rollback.
+Replay resolves the original project and version before consulting current focus.
+
+Migration `0053_project_restore` adds a durable lifecycle action, not an in-place
+overwrite command. The host verifies the target manifest and every retained blob
+checksum first. It then reserves the old workspace and saves its current retained
+files, including unsaved edits, before removing its volume. Failed verification
+or backup cannot authorize deletion. A new workspace generation receives the
+target version through the existing empty-workspace, chunked, checksummed import.
+This also supports stopped, hibernated and archived projects, and saved projects
+that have never had a materialized workspace. Successful rollback wakes the project.
+
+After the helper verifies the imported tree, one transaction publishes a new
+version referencing the target's immutable objects. Old versions are not rewritten
+or removed. The target version's frozen dependency recipe is then rebuilt, if
+present; the current project's newer recipe is not substituted. Completion requires
+the actual workspace to pass active-state verification. Only then do the lifecycle
+journal and durable job complete together, and `project_status.restore.restored`
+become true. Publication before a failed dependency rebuild is not completion.
+
+Lost replies after volume deletion, version publication or dependency installation
+resume through the persisted step receipts under a new worker lease. They do not
+create another rollback version or rerun already-confirmed installs. Failed jobs
+keep their reservation, recovery journal and retained versions; they are not
+unlocked by a timeout. Schema downgrade refuses to discard rollback journals.
+`/项目 状态` distinguishes queued/running, attention-needed and verified results.
+
+Local tests inspect actual fixture workspace files, PostgreSQL records and CAS
+objects through the product adapters. Kernel mount/libvirt and QQ effects remain
+fixtures. This is not native OCI/KVM acceptance or production enablement.
 
 ### Remaining acceptance
 

@@ -21,6 +21,7 @@ TARGETS = {
     "stop": "stopped",
     "hibernate": "hibernated",
     "archive": "archived",
+    "restore": "active",
 }
 
 
@@ -32,11 +33,12 @@ def transition_plan(project, action, baseline, *, rebuild=None):
         "hibernate": {"stopped"},
         "archive": {"hibernated"},
         "snapshot": {"active", "stopped"},
+        "restore": {"active", "stopped", "hibernated", "archived"},
     }
     if action not in allowed or source not in allowed[action]:
         raise ProjectConflict("Project transition is not valid from its current state")
     generation = project["workspace_generation"]
-    if action != "wake" and generation == 0:
+    if action not in {"wake", "restore"} and generation == 0:
         raise ProjectConflict("Project has no materialized workspace")
     if action == "archive" and project["pinned"]:
         raise ProjectConflict("Pinned projects cannot be archived")
@@ -44,9 +46,24 @@ def transition_plan(project, action, baseline, *, rebuild=None):
         raise ProjectConflict("Archived project has no retained version")
     command = (
         rebuild["command"]
-        if rebuild and action in {"wake", "archive"}
+        if rebuild and action in {"wake", "archive", "restore"}
         else project["rebuild_command"]
     )
+    if action == "restore":
+        from .project_restore import restore_steps
+
+        if baseline is None:
+            raise ProjectConflict("Restore requires a retained version")
+        steps, replace_at = restore_steps(project["backend"], source, generation, bool(rebuild))
+        return generation + 1, {
+            "protocol": 3 if project["backend"] == "vm" else 2,
+            "reservation": uuid.uuid4().hex, "steps": steps,
+            "backend": project["backend"], "quota_bytes": project["quota_bytes"],
+            "rebuild_command": rebuild["command"] if rebuild else "",
+            "rebuild_spec": rebuild, "baseline": baseline,
+            "restore": {"source_state": source, "source_generation": generation,
+                        "replace_at": replace_at, "original_rebuild_command": project["rebuild_command"]},
+        }
     if action == "wake":
         fresh = generation == 0 or source == "archived"
         generation += int(fresh)
@@ -177,16 +194,20 @@ class ProjectLifecycle:
     def request(
         self, access, project_id, action, *, expected_version, request_key, now=None,
         idle_policy=None, preflight=None, label="", source_turn_id=None,
+        restore_version=None,
     ):
         from .project_turn_saves import require_finished_save
 
+        if ((action == "restore" and (type(restore_version) is not int or not 1 <= restore_version < 2**53))
+                or (action != "restore" and restore_version is not None)):
+            raise ValueError("Invalid restore version")
         if source_turn_id is not None and (
             type(source_turn_id) is not int or source_turn_id <= 0 or action != "snapshot" or label
         ):
             raise ValueError("Invalid automatic snapshot trigger")
         if not isinstance(label, str) or len(label) > 120 or (label and action != "snapshot"):
             raise ValueError("Invalid snapshot label")
-        if project_id is None and action != "snapshot":
+        if project_id is None and action not in {"snapshot", "restore"}:
             raise ValueError("A lifecycle target is required")
         if idle_policy is not None and (
             not isinstance(idle_policy, ProjectPolicy) or not callable(preflight)
@@ -199,7 +220,7 @@ class ProjectLifecycle:
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
             self.projects._scope_lock(cursor, access)
-            if action == "snapshot":
+            if action in {"snapshot", "restore"}:
                 # Resolve the persisted request before the user's mutable focus.
                 prior = cursor.execute(
                     """SELECT r.* FROM project_lifecycle_runs r JOIN projects p USING(project_id)
@@ -208,11 +229,12 @@ class ProjectLifecycle:
                     (access.scope.key, access.scope.bot_native_user_id, access.principal_id, request_key),
                 ).fetchall()
                 if prior:
-                    if (len(prior) != 1 or prior[0]["action"] != "snapshot"
+                    if (len(prior) != 1 or prior[0]["action"] != action
                         or prior[0]["plan"].get("label", "") != label
                         or prior[0]["plan"].get("source_turn_id") != source_turn_id
+                        or (action == "restore" and prior[0]["plan"]["baseline"]["version_no"] != restore_version)
                         or (project_id is not None and project_id != prior[0]["project_id"])):
-                        raise ProjectConflict("Snapshot request identity was reused")
+                        raise ProjectConflict("Project request identity was reused")
                     project = self.projects._get(cursor, access, prior[0]["project_id"])
                     self.projects._editor(cursor, access, project)
                     return self._public_run(prior[0])
@@ -248,6 +270,14 @@ class ProjectLifecycle:
                 raise ProjectConflict("Project has an unfinished automatic save")
             self._idle(cursor, project)
             baseline = self._baseline(cursor, project_id)
+            if action == "restore":
+                target = cursor.execute(
+                    "SELECT version_no,manifest_sha256 FROM project_versions WHERE project_id=? AND version_no=?",
+                    (project_id, restore_version),
+                ).fetchone()
+                if target is None:
+                    raise ValueError("Project version does not exist")
+                baseline = dict(target)
             rebuild = (
                 self.projects._manifest(
                     cursor, access, project_id, baseline["version_no"]
@@ -389,6 +419,19 @@ class ProjectLifecycle:
                     "baseline": plan["baseline"],
                     "reservation": plan.get("reservation"),
                 }
+                if run["action"] == "restore":
+                    restore = plan["restore"]
+                    if 0 < index < restore["replace_at"]:
+                        arguments["generation"] = restore["source_generation"]
+                        arguments["rebuild_command"] = restore["original_rebuild_command"]
+                    if plan["steps"][index] == "delete_volume":
+                        backup = cursor.execute(
+                            """SELECT evidence FROM project_lifecycle_steps WHERE job_id=?
+                            AND operation='snapshot_workspace' AND status='succeeded' AND step_index<?""",
+                            (job.job_id, index),
+                        ).fetchone()
+                        if backup is None or backup["evidence"].get("snapshot") != self._baseline(cursor, project["project_id"]):
+                            raise ProjectConflict("Rollback must preserve current files before replacing the workspace")
                 if run["action"] == "snapshot":
                     arguments["label"] = plan.get("label", "")
                     if "source_turn_id" in plan:
@@ -470,6 +513,15 @@ class ProjectLifecycle:
                 raise ProjectConflict(
                     "Lifecycle snapshot was not published as the latest retained version"
                 )
+        if step["operation"] in {"check_restore_source", "restore_version"}:
+            if evidence.get("restored_version") != step["arguments"]["baseline"]:
+                raise ProjectConflict("Restore evidence does not match the requested version")
+        if step["operation"] == "publish_restore":
+            latest = ProjectLifecycle._baseline(cursor, run["project_id"])
+            if (latest is None or evidence.get("snapshot") != latest
+                    or latest["manifest_sha256"] != run["plan"]["baseline"]["manifest_sha256"]
+                    or evidence.get("restored_version") != run["plan"]["baseline"]):
+                raise ProjectConflict("Rollback version was not published with the requested content")
         if step["operation"] == "prune_rebuildable":
             if evidence.get("snapshot") != step["arguments"].get(
                 "snapshot"
@@ -614,6 +666,9 @@ class ProjectLifecycle:
                     row["evidence"]["snapshot"] for row in rows
                     if row["operation"] == "snapshot_workspace"
                 )
+            if run["action"] == "restore":
+                result["snapshot"] = next(row["evidence"]["snapshot"] for row in rows if row["operation"] == "publish_restore")
+                result["restored_version"] = run["plan"]["baseline"]
             require_project_lease(cursor, project, job, lease_now)
             cursor.execute(
                 """UPDATE projects SET status=?,sandbox_id=?,lifecycle_job_id=NULL,
@@ -623,10 +678,15 @@ class ProjectLifecycle:
                     rows[-1]["evidence"].get("sandbox_id"),
                     project["state_changed_at"] if run["action"] == "snapshot" else now,
                     now,
-                    now if run["action"] == "wake" else project["last_active_at"],
+                    now if run["action"] in {"wake", "restore"} else project["last_active_at"],
                     project["project_id"],
                 ),
             )
+            if run["action"] == "restore":
+                cursor.execute(
+                    "UPDATE projects SET rebuild_command=?,sampled_at=NULL WHERE project_id=?",
+                    (run["plan"]["rebuild_command"], project["project_id"]),
+                )
             if run["target_state"] == "archived":
                 cursor.execute(
                     "UPDATE projects SET used_bytes=0,rebuildable_bytes=0,sampled_at=? WHERE project_id=?",

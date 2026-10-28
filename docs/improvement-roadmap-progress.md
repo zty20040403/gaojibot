@@ -2880,3 +2880,44 @@ implementation evidence, not a claim that the production App has these features.
   integration remain. Native M2 acceptance and M4-M7 remain open. No production
   connection, live QQ/model call, shared nix-config edit, deployment, App release
   or user-plan modification occurred.
+
+### M3 recoverable project rollback
+
+- Added registered `project_restore` and `/项目 回滚 vN` (or `/项目 回滚
+  prj#N vN`). Migration `0053_project_restore` extends the existing durable
+  lifecycle journal. Requests freeze the target version and original actor,
+  resolve replays before mutable focus, and recheck current membership/editor
+  rights. Tasks, unfinished autosaves, active/uncertain IO and unconfirmed
+  deliveries block rollback rather than racing it.
+- The host verifies the requested manifest and every retained object checksum
+  before touching the current workspace. Materialized workspaces save their
+  current retained files before removal, including unsaved edits. A fresh
+  generation then imports the target into an empty tree. Active, stopped,
+  hibernated, archived and nonmaterialized saved projects are supported; a
+  completed rollback leaves the project active. Existing versions are retained.
+- After verified import, an atomic publication clones the immutable references
+  into one new version. The target's own frozen lockfile recipe is rebuilt,
+  not the current project's newer recipe. Final physical verification and job
+  completion must commit before `project_status.restore.restored=true` or
+  `/项目 状态` claims success. A published version alone is not completion.
+- Lost old-volume deletion, publication and dependency-installation replies
+  resume the original journal under a new lease. Confirmed effects are not
+  repeated; rollback history is not duplicated. Failed backups never delete
+  current files; failed publication rolls its transaction back. Unresolved
+  failures keep the recovery lock and retained data. Downgrade refuses to erase
+  restore journals.
+- Verification: 102 affected lifecycle/file/VM/tool/registry tests passed in
+  82.119 seconds (`.cache/roadmap/m3-restore-verified.log`); an additional VM
+  target-recipe/lost-install-ack test passed in 5.021 seconds
+  (`.cache/roadmap/m3-restore-rebuild-test.log`). ResourceWarnings were errors.
+  Tests use real local PostgreSQL, CAS, fixture filesystem content and private
+  RPC; Docker/kernel/libvirt/QQ effects are fixtures. Whole-CI Ruff, compileall
+  and whitespace checks passed. Nix package/import checks passed on
+  aarch64-darwin (`.cache/roadmap/m3-restore-nix.log`); other architectures were
+  omitted, not verified.
+- M3 remains incomplete: project browser routing, Sub-Agent baseline/lock/
+  publication, delete/preview commands, shared-platform identity and console
+  integration remain. Native M2 acceptance and M4-M7 remain open. No production
+  connection, live QQ/model call, shared nix-config edit, deployment, App release
+  or user-plan modification occurred. Source publication does not update the
+  deployment repository's pinned bot revision.
