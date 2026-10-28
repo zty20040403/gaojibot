@@ -146,18 +146,28 @@ class ProjectLifecycle:
         return result
 
     @staticmethod
-    def _idle(cursor, project):
+    def _idle(cursor, project, *, lifecycle_job=None):
         require_project_io_idle(cursor, project["project_id"])
         if cursor.execute("""SELECT 1 FROM project_file_deliveries f JOIN deliveries d USING(delivery_id)
                 WHERE f.project_id=? AND NOT (d.status='committed'
                 OR (d.status='cancelled' AND f.upload_started_at IS NULL)) LIMIT 1""", (project["project_id"],)).fetchone():
             raise ProjectConflict("Project file deliveries are unresolved")
+        materializing_task = None
         if project["locked_task_id"] is not None:
-            raise ProjectConflict("Project has an attached task")
+            from .project_materialization import require_task_materialization
+
+            materializing_task = require_task_materialization(cursor, project, lifecycle_job)["task_id"]
         # A failed task is not proof its files are disposable. The task adapter
         # must explicitly release its project reference after reconciliation.
         busy = cursor.execute(
-            """SELECT 1 FROM subagent_tasks t WHERE t.project_id=? AND (
+            """SELECT 1 FROM subagent_tasks t WHERE t.project_id=?
+            AND (?::bigint IS NULL OR t.task_id<>?)
+            AND NOT EXISTS (SELECT 1 FROM project_task_materializations m
+                JOIN project_task_publications p USING(task_id)
+                JOIN subagent_controls c USING(task_id)
+                WHERE m.task_id=t.task_id AND m.status='completed'
+                AND p.project_id=t.project_id AND p.revision=c.revision)
+            AND (
             t.status<>'completed' OR EXISTS (
                 SELECT 1 FROM subagent_deliveries d
                 WHERE d.task_id=t.task_id AND d.state<>'acknowledged')
@@ -177,7 +187,7 @@ class ProjectLifecycle:
                     WHERE d.task_id=t.task_id AND d.state='acknowledged'
                     AND d.delivery_key=coalesce(nullif(a->>'snapshot',''),a->>'handle')))
             ) LIMIT 1""",
-            (project["project_id"],),
+            (project["project_id"], materializing_task, materializing_task),
         ).fetchone()
         if busy:
             raise ProjectConflict("Project tasks or artifact deliveries are unresolved")
@@ -298,56 +308,46 @@ class ProjectLifecycle:
             if idle_policy is not None:
                 plan["trigger"] = {"kind": "idle", "last_active_at": project["last_active_at"]}
                 preflight(plan)
-            job, created = self.jobs.enqueue(
-                kind=KIND,
-                idempotency_key=f"project:{project_id}:lifecycle:{request_key}",
-                payload={"project_id": project_id},
-                scope_key=access.scope.key,
-                resume_on_lease_loss=True,
-                now=now,
-                transaction_cursor=cursor,
-            )
-            if not created:
-                raise ProjectConflict(
-                    "Lifecycle queue identity already exists without its journal"
-                )
-            row = cursor.execute(
-                """INSERT INTO project_lifecycle_runs(job_id,project_id,actor_principal_id,request_key,
-                action,source_state,target_state,generation,plan,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?::jsonb,?,?) RETURNING *""",
-                (
-                    job.job_id,
-                    project_id,
-                    access.principal_id,
-                    request_key,
-                    action,
-                    project["status"],
-                    project["status"] if action == "snapshot" else TARGETS[action],
-                    generation,
-                    json.dumps(plan),
-                    now,
-                    now,
-                ),
-            ).fetchone()
+            _, run = self._enqueue(cursor, access, project, action, generation, plan, request_key, now)
+            return self._public_run(run)
+
+    def _enqueue(self, cursor, access, project, action, generation, plan, request_key, now):
+        """Caller owns admission checks and the transaction including its journal."""
+        project_id = project["project_id"]
+        job, created = self.jobs.enqueue(
+            kind=KIND,
+            idempotency_key=f"project:{project_id}:lifecycle:{request_key}",
+            payload={"project_id": project_id},
+            scope_key=access.scope.key,
+            resume_on_lease_loss=True,
+            now=now,
+            transaction_cursor=cursor,
+        )
+        if not created:
+            raise ProjectConflict("Lifecycle queue identity already exists without its journal")
+        row = cursor.execute(
+            """INSERT INTO project_lifecycle_runs(job_id,project_id,actor_principal_id,request_key,
+            action,source_state,target_state,generation,plan,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?::jsonb,?,?) RETURNING *""",
+            (job.job_id, project_id, access.principal_id, request_key, action,
+             project["status"], project["status"] if action == "snapshot" else TARGETS[action],
+             generation, json.dumps(plan), now, now),
+        ).fetchone()
+        cursor.execute(
+            """UPDATE projects SET lifecycle_job_id=?,workspace_generation=?,
+            version=version+1,updated_at=? WHERE project_id=?""",
+            (job.job_id, generation, now, project_id),
+        )
+        if (source_turn_id := plan.get("source_turn_id")) is not None:
             cursor.execute(
-                """UPDATE projects SET lifecycle_job_id=?,workspace_generation=?,
-                version=version+1,updated_at=? WHERE project_id=?""",
-                (job.job_id, generation, now, project_id),
+                """UPDATE project_turn_saves SET state='queued',job_id=?,error_code='',updated_at=?
+                WHERE project_id=? AND turn_id=?""", (job.job_id, now, project_id, source_turn_id),
             )
-            if source_turn_id is not None:
-                cursor.execute(
-                    """UPDATE project_turn_saves SET state='queued',job_id=?,error_code='',updated_at=?
-                    WHERE project_id=? AND turn_id=?""", (job.job_id, now, project_id, source_turn_id),
-                )
-            self.projects._event(
-                cursor,
-                project_id,
-                access,
-                "lifecycle_requested",
-                {"job_id": job.job_id, "action": action, "generation": generation},
-                now,
-            )
-            return self._public_run(row)
+        self.projects._event(
+            cursor, project_id, access, "lifecycle_requested",
+            {"job_id": job.job_id, "action": action, "generation": generation}, now,
+        )
+        return job, row
 
     def context(self, job, *, access=None, now=None):
         """Private worker context; never expose its reservation in tools or HTTP."""
@@ -388,7 +388,7 @@ class ProjectLifecycle:
             raise ProjectConflict(
                 "Project lifecycle journal no longer matches the workspace"
             )
-        self._idle(cursor, project)
+        self._idle(cursor, project, lifecycle_job=job)
         return dict(project), dict(run)
 
     def next_step(self, job, *, now=None):
@@ -430,7 +430,7 @@ class ProjectLifecycle:
                             AND operation='snapshot_workspace' AND status='succeeded' AND step_index<?""",
                             (job.job_id, index),
                         ).fetchone()
-                        if backup is None or backup["evidence"].get("snapshot") != self._baseline(cursor, project["project_id"]):
+                        if backup is None or backup["evidence"].get("snapshot") != self._source_snapshot(cursor, run):
                             raise ProjectConflict("Rollback must preserve current files before replacing the workspace")
                 if run["action"] == "snapshot":
                     arguments["label"] = plan.get("label", "")
@@ -490,6 +490,14 @@ class ProjectLifecycle:
             return dict(row)
 
     @staticmethod
+    def _source_snapshot(cursor, run):
+        publication = run["plan"].get("task_publication")
+        if publication is not None:
+            return {"version_no": publication["base_version"],
+                    "manifest_sha256": publication["base_manifest_sha256"]}
+        return ProjectLifecycle._baseline(cursor, run["project_id"])
+
+    @staticmethod
     def _validate_evidence(cursor, run, step, evidence):
         if (
             not isinstance(evidence, dict)
@@ -508,7 +516,7 @@ class ProjectLifecycle:
             ):
                 raise ProjectConflict("Evidence belongs to another project operation")
         if step["operation"] == "snapshot_workspace":
-            baseline = ProjectLifecycle._baseline(cursor, run["project_id"])
+            baseline = ProjectLifecycle._source_snapshot(cursor, run)
             if baseline is None or evidence.get("snapshot") != baseline:
                 raise ProjectConflict(
                     "Lifecycle snapshot was not published as the latest retained version"
@@ -670,6 +678,18 @@ class ProjectLifecycle:
                 result["snapshot"] = next(row["evidence"]["snapshot"] for row in rows if row["operation"] == "publish_restore")
                 result["restored_version"] = run["plan"]["baseline"]
             require_project_lease(cursor, project, job, lease_now)
+            publication = run["plan"].get("task_publication")
+            if publication is not None:
+                # Completion, task unlock and the durable receipt must commit together.
+                from .project_materialization import require_task_materialization
+
+                require_task_materialization(cursor, project, job)
+                cursor.execute("""UPDATE project_task_materializations SET status='completed',completed_at=?
+                    WHERE task_id=? AND job_id=? AND status='pending'""",
+                    (now, publication["task_id"], job.job_id))
+                cursor.execute("UPDATE projects SET locked_task_id=NULL WHERE project_id=?",
+                               (project["project_id"],))
+                result.update(task_id=publication["task_id"], materialized=True)
             cursor.execute(
                 """UPDATE projects SET status=?,sandbox_id=?,lifecycle_job_id=NULL,
                 version=version+1,state_changed_at=?,updated_at=?,last_active_at=? WHERE project_id=?""",

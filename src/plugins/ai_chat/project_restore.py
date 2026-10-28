@@ -139,6 +139,18 @@ class ProjectRestores:
                 ):
                     raise ProjectConflict("Restore publication receipt changed")
                 return dict(restored)
+            if "task_publication" in run["plan"]:
+                # Task publication already created the immutable version. Record
+                # its physical import, not a second copy of the same version.
+                from .project_materialization import require_task_materialization
+
+                require_task_materialization(cursor, project, job)
+                cursor.execute(
+                    "UPDATE project_lifecycle_steps SET evidence=?::jsonb,updated_at=? WHERE job_id=? AND step_index=?",
+                    (json.dumps({"publication": baseline}), now, job.job_id, step["step_index"]),
+                )
+                require_project_lease(cursor, project, job, None)
+                return dict(version)
             number = cursor.execute(
                 "SELECT coalesce(max(version_no),0)+1 FROM project_versions WHERE project_id=?",
                 (pid,),

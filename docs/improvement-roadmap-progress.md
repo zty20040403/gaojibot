@@ -3394,3 +3394,45 @@ implementation evidence, not a claim that the production App has these features.
   general browser drain, native M2/KVM gates and M4-M7 remain open. No production
   connection, shared nix-config change, rebuild, App release, QQ/model call or
   supplied-plan edit occurred.
+
+### M3 recoverable accepted-version materialization
+
+- Added `0057_project_materialize` and a host-only materialization adapter.
+  One accepted task/revision binds to one durable restore job. Queue insertion,
+  restore plan, project generation, task binding and checkpoint commit together.
+  Repeated requests return that same job. Its narrow task-lock authority checks
+  the persisted publication, original actor, project, baseline and generation;
+  it is not a general lock-bypass option. Live membership/editor checks and
+  existing physical-operation leases/fences still apply throughout execution.
+- Reused the existing OCI/VM restore sequence and dependency rebuild rather
+  than a separate file-copy path. Before deleting the old volume, the private
+  helper verifies retained paths, bytes and modes against the task's original
+  version. Unexpected edits preserve the volume and leave the job needing
+  attention. Hibernate-pruned cache/dependency directories do not count as
+  changed retained data, but lockfiles and the rebuild recipe must still match.
+  Old workspace data is not published over the accepted version, and importing
+  the accepted version does not create a redundant third version.
+- Project unlock, materialization completion, final lifecycle receipt and
+  durable-job completion commit together, only after all physical steps and
+  final verification have succeeded. Lost import/deletion responses and lost
+  leases resume the original job. Failed dependency rebuilds or final database
+  commits retain the lock and accepted CAS version. Completed materializations
+  detach project lifecycle from task-artifact delivery, whose immutable copies
+  remain separately governed. Published tasks cannot be revised against their
+  obsolete baseline; further edits require a new task from the current version.
+- Verification: 87 focused materialization/restore/lifecycle/publication/task/
+  revision tests passed in 74.087 seconds
+  (`.cache/roadmap/m3-project-materialization-verified.log`). Six migration tests
+  passed separately in 4.962 seconds
+  (`.cache/roadmap/m3-project-materialization-migration.log`). Evidence includes
+  real disposable PostgreSQL transactions, CAS bytes, restored fixture files,
+  Unix RPC, lease takeover and schema constraints. Container/kernel/libvirt,
+  dependency execution and reviewer outputs are explicit fixtures, not native
+  KVM or live model acceptance. Whole-CI Ruff, focused compileall and whitespace
+  checks passed.
+- Still open before automatic chat admission: save/quiesce entry, bound recovery
+  hooks, completion orchestration and cancellation/failure reconciliation. The
+  new adapter is not yet registered as an automatic project task workflow. M3
+  console/shared-conversation checks, general browser drain, native M2/KVM
+  acceptance and M4-M7 remain open. No production connection, shared nix-config
+  update, rebuild, App release, QQ/model request or supplied-plan edit occurred.

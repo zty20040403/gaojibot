@@ -119,7 +119,7 @@ class ProjectFileExecutor:
             return {**self._evidence(step, step["arguments"],
                                     snapshot={k: version[k] for k in ("version_no", "manifest_sha256")},
                                     restored_version=step["arguments"]["baseline"]),
-                    "observation": "Host atomically published one new version after the helper verified the imported tree"}
+                    "observation": "Host recorded the retained version after the helper verified the imported tree"}
         if step["operation"] == "snapshot_workspace":
             return await self._snapshot(job, step)
         if step["operation"] == "restore_version":
@@ -251,6 +251,27 @@ class ProjectFileExecutor:
         encoded = manifest_bytes(document, quota_bytes=project["quota_bytes"])
         if hashlib.sha256(encoded).hexdigest() != digest:
             raise ProjectConflict("Snapshot manifest checksum failed")
+        _, run = await _store(self.lifecycle.context, job, access=access)
+        publication = run["plan"].get("task_publication")
+        if publication is not None:
+            # The accepted version already exists; never publish old files over it.
+            source = await _store(self.projects.manifest, access, project["project_id"], publication["base_version"])
+            source_bytes = manifest_bytes(source, quota_bytes=project["quota_bytes"])
+            source_recipe, observed_recipe = source.get("rebuild") or {}, document.get("rebuild") or {}
+            # Hibernate removes excluded directories, so their observed list may
+            # shrink. Retained paths/bytes/modes and the pinned recipe must not.
+            if (hashlib.sha256(source_bytes).hexdigest() != publication["base_manifest_sha256"]
+                    or document["files"] != source["files"]
+                    or any(source_recipe.get(k) != observed_recipe.get(k) for k in ("command", "locks"))):
+                raise ProjectConflict("Task baseline workspace changed; preserve it for reconciliation")
+            checked, _ = await self._call(step, "check", key="snapshot-check", manifest_sha256=digest)
+            if checked.get("pending") is not False:
+                raise ProjectConflict("Task baseline consistency was not confirmed")
+            await self._context(job)
+            return {**self._evidence(step, checked,
+                snapshot={"version_no": publication["base_version"], "manifest_sha256": publication["base_manifest_sha256"]},
+                observed_manifest_sha256=digest),
+                "observation": "Reserved old workspace still matches the task's immutable input version"}
         staged = []
         for index, item in enumerate(entries):
             access, _ = await self._context(job)

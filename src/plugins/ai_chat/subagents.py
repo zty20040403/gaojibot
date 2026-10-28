@@ -1348,6 +1348,8 @@ class SubAgentCoordinator:
                 (updated["version"], updated["revision"], json.dumps(updated["dispatch"]), int(time.time()), task_id, expected_version))
             if cursor.rowcount != 1:
                 raise ValueError("Task version changed; refresh before revising")
+            if cursor.execute("SELECT 1 FROM project_task_publications WHERE task_id=?", (task_id,)).fetchone():
+                raise ValueError("Project version already published; start a new task from its latest version")
             self.store.consume_revision_feedback(cursor, task_id, feedback,
                 revision=updated["revision"], timestamp=int(time.time()))
             cursor.execute("UPDATE subagent_tasks SET status='revising' WHERE task_id=? AND status IN ('completed','partial','failed','cancelled','interrupted')", (task_id,))

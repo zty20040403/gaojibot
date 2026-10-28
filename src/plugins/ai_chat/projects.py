@@ -187,7 +187,11 @@ class ProjectStore:
         if expected is not None and row["version"] != expected:
             raise ProjectConflict("Project changed; reload its current version")
         if edit and row["locked_task_id"] is not None:
-            raise ProjectConflict(f"Project is locked by task#{row['locked_task_id']}")
+            if lifecycle_job is None:
+                raise ProjectConflict(f"Project is locked by task#{row['locked_task_id']}")
+            from .project_materialization import require_task_materialization
+
+            require_task_materialization(cursor, row, lifecycle_job)
         if edit and (row["lifecycle_job_id"] is not None or lifecycle_job is not None):
             require_project_lease(cursor, row, lifecycle_job, now)
         return dict(row)
