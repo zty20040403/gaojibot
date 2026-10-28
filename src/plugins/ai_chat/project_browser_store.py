@@ -229,6 +229,25 @@ class ProjectBrowserStore:
             self.projects._scope_lock(cursor, access)
             return self._prior(cursor, access, request_key, method, hashed)
 
+    def current(self, access, project_id, turn_id, native_message_id):
+        """Reuse only this actor's browser in this exact, still-running turn."""
+        with self.projects._transaction() as cursor:
+            self.projects._scope_lock(cursor, access)
+            self.projects._get(cursor, access, project_id)
+            require_running_turn(cursor, access, turn_id, native_message_id)
+            row = cursor.execute(
+                """SELECT * FROM project_io WHERE project_id=? AND actor_principal_id=?
+                AND tool_name=? AND state IN ('reserved','dispatched','needs_attention')""",
+                (project_id, access.principal_id, BROWSER_SESSION_TOOL),
+            ).fetchone()
+            if row is None:
+                return None
+            grant = self.io._grant(row)
+            self._access(cursor, access, grant, effect=True)
+            if row["journal_turn_id"] != turn_id:
+                raise ProjectConflict("Browser belongs to another turn; await its save and drain")
+            return grant
+
     def admit(self, access, grant, request_key, method, args, *, now=None):
         if not _hex(request_key, 64):
             raise ValueError("Invalid browser request identity")
@@ -243,7 +262,12 @@ class ProjectBrowserStore:
                 return prior
             self._access(cursor, access, grant, effect=True)
             focus = self.projects._current(cursor, access, now)
-            if focus is None or focus["project_id"] != grant.project_id:
+            # The initial action was already admitted with the session. A crash
+            # before launch must not retarget it to a subsequently selected project.
+            first_admitted = (session is not None and session["sequence"] == 0
+                              and operation["request_key"] == request_key
+                              and operation["arguments_sha256"] == hashed)
+            if not first_admitted and (focus is None or focus["project_id"] != grant.project_id):
                 raise ProjectConflict("Current project changed or expired")
             if (session is None or session["state"] != "ready"
                     or operation["state"] not in {"dispatched", "needs_attention"}

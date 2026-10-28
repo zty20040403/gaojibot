@@ -1314,9 +1314,34 @@ the turn is terminal; recovery never starts a replacement browser for them.
 
 Tests combine real disposable PostgreSQL, private Unix RPC and durable runner
 journals. Docker/kernel/browser effects in this application suite are explicit
-fixtures, not native host acceptance. Public registry routing, KVM browser
-launch, maintenance policy integration and profile-cache cleanup remain open.
+fixtures, not native host acceptance. KVM browser launch, maintenance policy
+integration and profile-cache cleanup remain open.
 Projects remain opt-in; these changes do not enable them on production servers.
+
+### Ordinary project browser tools
+
+`tools/executor.py` routes the nine existing browser tools through
+`project_browser_tools.py` when a project is selected. The tool names and page
+result fields are unchanged. `browser_close` and `browser_clear` additionally
+drain the isolated worker and verify quiescence before releasing its IO grant.
+Clearing a project profile affects that project's editors, not another
+conversation profile or the project's other files. An operation ID and project
+handle are returned; runner/session tokens are not model-facing parameters.
+
+Admission requires `AI_BROWSER_ENABLED`, the browser capability, sandbox
+allowlist membership and current project editor access, including for snapshots.
+Group and private projects share this path. A session can be reused only within
+the original durable running turn. New calls cannot take over another turn's
+browser. The first action is hash-bound with session admission, so interruption
+before binding/launch can recover its original project after focus changes.
+Existing calls recover receipts before looking at current project focus.
+
+With no selected/replay-bound project, the existing conversation browser is
+unchanged. A project error, unready project service, unsupported KVM backend or
+unknown click never falls through to that legacy browser. KVM project browsing
+still needs its dedicated transport; do not substitute a host browser.
+The registry tests combine real PostgreSQL and private Unix RPC with explicit
+page/process fixtures, and are not native backend acceptance.
 
 ### Remaining acceptance
 

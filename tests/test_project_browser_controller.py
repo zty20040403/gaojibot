@@ -19,7 +19,7 @@ from tests.test_project_io import IOFixture
 from tests import test_project_browser_rpc as rpc_fixture
 
 
-class ProjectBrowserControllerTests(IOFixture, unittest.IsolatedAsyncioTestCase):
+class BrowserControllerFixture(IOFixture):
     desktop = False
     volume_directory = "state/project-volumes"
     spawn = rpc_fixture.BrowserRpcTests.spawn
@@ -59,6 +59,8 @@ class ProjectBrowserControllerTests(IOFixture, unittest.IsolatedAsyncioTestCase)
     def call(self):
         return self.controller.store.find(self.access, key("click"), "browser_click", {"ref": "b1"})
 
+
+class ProjectBrowserControllerTests(BrowserControllerFixture, unittest.IsolatedAsyncioTestCase):
     async def test_real_rpc_commit_ack_recovery_and_drain_preserve_parent(self):
         await self.controller.open(self.access, self.grant)
         self.assertEqual(await self.execute(), {"text": "clicked"})

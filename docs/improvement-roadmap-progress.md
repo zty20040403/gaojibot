@@ -3156,3 +3156,38 @@ implementation evidence, not a claim that the production App has these features.
   acceptance. Other M3 requirements, native M2 gates and M4-M7 remain incomplete.
   Source publication is not deployment: no shared nix-config edit, production
   SSH, rebuild, App release or supplied-plan modification occurred.
+
+### M3 registry routing for project browsers
+
+- The nine existing `browser_*` tools now select the current project browser
+  in ordinary group/private turns. There is no second model-visible browser
+  tool family and no model-supplied runner/session identity. Without a selected
+  or replay-bound project, the existing conversation executor remains in use.
+  Private project browsing does not require the group-only legacy executor.
+- The first action's exact identity and argument hash are admitted with its
+  session before launch. A retry finds that reservation or the action receipt
+  before consulting mutable focus, including an interruption before binding.
+  Changing projects cannot redirect that old click. Later calls reuse only the
+  same actor's session in the same durable running turn; another turn cannot
+  take over or close a still-owned browser.
+- Browser snapshots also require editor and sandbox permission. Current group,
+  account and membership checks precede effects and disclosure. Unsupported
+  backends, wrong runner instance/protocol, unready project services and unknown
+  effects return explicit errors without falling back to another browser.
+  Browser close/clear actions drain and independently verify the session before
+  releasing its workspace reservation; the parent project stays running.
+- Verification: 74 focused registry, project browser, sandbox adapter and
+  recovery tests passed in 35.401 seconds
+  (`.cache/roadmap/m3-browser-tools-verified.log`), with ResourceWarnings treated
+  as errors. They use real disposable PostgreSQL and Unix RPC, with explicit
+  QQ/Docker/kernel/page fixtures. Tests cover all nine tools, private projects,
+  first-launch interruption, lost result plus application/runner restart,
+  uncertainty, focus changes, revocation, account/scope isolation, quota, and
+  unchanged non-project routing. Whole-CI Ruff and compileall passed.
+  Nix package/import checks passed on aarch64-darwin
+  (`.cache/roadmap/m3-browser-tools-nix.log`); incompatible architectures were
+  omitted, so this is not Linux/KVM deployment acceptance.
+- Still open: KVM browser transport, general lifecycle drain/cache cleanup and
+  native acceptance. Other M3 requirements, native M2 gates and M4-M7 remain
+  incomplete. No production host, QQ account, live model, shared nix-config,
+  rebuild, App release or supplied plan was changed.

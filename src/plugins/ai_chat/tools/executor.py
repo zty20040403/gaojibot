@@ -20,13 +20,20 @@ from ..ai_tools import (
 )
 from .registry import FunctionTool
 from .state import ToolContext, TurnState
-from ..project_access import projects_available
+from ..project_access import projects_available, projects_configured
+from ..project_browser_tools import (
+    execute_project_browser, project_browser_available, project_browser_definition,
+)
 from ..project_tool_executor import (
     PROJECT_IO_TOOLS, execute_project_tool, project_parameters, routes_to_project,
 )
 
 
 def enabled(context: ToolContext, *, capability: str, name: str) -> bool:
+    if capability == "browser" and projects_configured(context) and not context.app.settings.browser_enabled:
+        return False
+    if capability == "browser" and project_browser_available(context):
+        return True
     if name in PROJECT_IO_TOOLS and projects_available(context):
         return True
     if capability not in context.capabilities or context.agent_executor is None:
@@ -83,6 +90,9 @@ def project_sandbox(definition: ToolDefinition, context: ToolContext) -> None:
 async def execute(turn: TurnState, arguments: dict[str, object], *, name: str) -> str:
     if routes_to_project(turn.context, name, arguments):
         return await execute_project_tool(turn.context, name, arguments)
+    result = await execute_project_browser(turn.context, name, arguments)
+    if result is not None:
+        return result
     executor = turn.agent_executor
     if executor is not None:
         result = await executor.execute(name, arguments)
@@ -103,7 +113,8 @@ HANDLERS = tuple(
         definition,
         partial(enabled, capability=capability, name=definition["function"]["name"]),
         partial(execute, name=definition["function"]["name"]),
-        project_sandbox if capability == "sandbox" else None,
+        project_sandbox if capability == "sandbox" else
+        project_browser_definition if capability == "browser" else None,
     )
     for capability, definitions in (
         ("sandbox", SANDBOX_TOOLS),

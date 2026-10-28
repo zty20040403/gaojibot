@@ -6,17 +6,23 @@ from .agent.execution import active_agent_step
 from .onebot_codec import scope_from_event
 
 
-def projects_available(context):
+def projects_configured(context):
     runtime = getattr(context.app, "project_runtime", None)
     return bool(
         "projects" in context.capabilities
         and runtime is not None
-        and runtime.ready
-        and not runtime.closed
         and context.app.settings.projects_enabled
         and not context.routine_run_id
         and active_agent_step.get() is None
         and isinstance(context.event, (GroupMessageEvent, PrivateMessageEvent))
+    )
+
+
+def projects_available(context):
+    return bool(
+        projects_configured(context)
+        and context.app.project_runtime.ready
+        and not context.app.project_runtime.closed
     )
 
 
