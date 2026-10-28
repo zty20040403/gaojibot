@@ -191,7 +191,8 @@ class MessageReferenceGraph:
             sender_key = (
                 f"principal:{message.sender_principal_id}"
                 if message.sender_principal_id is not None
-                else f"native:{message.sender_native_user_id}"
+                else message.sender_actor_key
+                or f"native:{message.source_endpoint_key}:{message.sender_native_user_id}"
             )
             previous_sender = previous_by_sender.get(sender_key)
             if (
@@ -261,8 +262,9 @@ class MessageReferenceGraph:
                 if (
                     self._is_question(candidate.prompt_text)
                     and not self._is_question(message.prompt_text)
-                    and message.sender_native_user_id
-                    != candidate.sender_native_user_id
+                    and not candidate.is_from_actor(
+                        message.sender_actor_key, message.sender_native_user_id,
+                    )
                     and gap <= 300
                     and (
                         similarity >= 0.1

@@ -1,0 +1,528 @@
+{
+  "baseline_commit": "af0fba687adf782286d52725f364b942b1efc952",
+  "cases": {
+    "reminders": [
+      {
+        "api": "send_group_msg",
+        "params": {
+          "group_id": 789,
+          "message": [
+            {
+              "type": "at",
+              "data": {
+                "qq": "123"
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": " "
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": "提醒：测试提醒。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_private_msg",
+        "params": {
+          "user_id": 123,
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "提醒：测试提醒。"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "image": [
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": true
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "reply",
+              "data": {
+                "id": "456"
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "123"
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": " "
+              }
+            },
+            {
+              "type": "image",
+              "data": {
+                "file": "base64://VEVTVF9JTUFHRV9CWVRFUw==",
+                "type": null,
+                "cache": "true",
+                "proxy": "true",
+                "timeout": null
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": false
+        }
+      }
+    ],
+    "long_reply": [
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": true
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "reply",
+              "data": {
+                "id": "456"
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "123"
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": " "
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": "第 1 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第 2 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第 3 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第 4 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第 5 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第 6 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第 7 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第 8 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第 9 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第 10 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。\n\n第 11 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。\n\n第 12 段：测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。测试长回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": false
+        }
+      }
+    ],
+    "mention": [
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": true
+        }
+      },
+      {
+        "api": "get_group_member_list",
+        "params": {
+          "group_id": 789
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "reply",
+              "data": {
+                "id": "456"
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "123"
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": " "
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "88"
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": " 看这里。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": false
+        }
+      }
+    ],
+    "ordinary_group": [
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": true
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "reply",
+              "data": {
+                "id": "456"
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "123"
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": " "
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": "你好，测试完成。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": false
+        }
+      }
+    ],
+    "private": [
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "message_type": "private",
+          "message": [
+            {
+              "type": "reply",
+              "data": {
+                "id": "456"
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": "这是私聊回复。"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "quote": [
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": true
+        }
+      },
+      {
+        "api": "send_msg",
+        "params": {
+          "user_id": 123,
+          "group_id": 789,
+          "message_type": "group",
+          "message": [
+            {
+              "type": "reply",
+              "data": {
+                "id": "777"
+              }
+            },
+            {
+              "type": "at",
+              "data": {
+                "qq": "88"
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": " "
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": "对这条消息的回复。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "api": "set_msg_emoji_like",
+        "params": {
+          "message_id": 456,
+          "emoji_id": 212,
+          "set": false
+        }
+      }
+    ],
+    "subagent": [
+      {
+        "api": "send_group_msg",
+        "params": {
+          "group_id": 789,
+          "message": [
+            {
+              "type": "reply",
+              "data": {
+                "id": "456"
+              }
+            },
+            {
+              "type": "text",
+              "data": {
+                "text": "task#1\n后台任务已完成。"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "project_file": [
+      {
+        "api": "upload_group_file",
+        "params": {
+          "group_id": 101,
+          "file": "base64://VEVTVF9GSUxFX0JZVEVT",
+          "name": "prj-1-2-702e9f97f0-snapshot.txt"
+        }
+      },
+      {
+        "api": "get_group_root_files",
+        "params": {
+          "group_id": 101
+        }
+      }
+    ]
+  }
+}

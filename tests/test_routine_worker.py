@@ -812,15 +812,17 @@ class RoutineWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(hasattr(event, "group_id"))
 
     async def test_cached_reply_preparation_restores_images_and_voice(self):
+        from src.plugins.ai_chat.tools.onebot_checkpoint import OneBotReplyCheckpointCodec
+
         _, run, _ = self.running()
         context = ToolContext(self.services, routine_event(run), frozenset())
-        turn = TurnState(context)
+        turn = TurnState(context, reply_checkpoint_codec=OneBotReplyCheckpointCodec())
         turn.visual_reply_segment = MessageSegment.image("base64://aGVsbG8=")
         turn.voice_reply_segment = MessageSegment.record("voice-file")
         turn.voice_reply_text = "prepared"
         turn.subagent_task_started = True
         turn.subagent_delegations = 2
-        restored = TurnState(context)
+        restored = TurnState(context, reply_checkpoint_codec=OneBotReplyCheckpointCodec())
         restored.restore_reply_checkpoint(
             json.loads(json.dumps(turn.reply_checkpoint()))
         )

@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from ..model_catalog import SUPPORTED_REASONING_EFFORTS
+from .scoped_model_views import scoped_model_rows
 
 
 def _model_overview(
@@ -400,7 +401,7 @@ def _group_model_overview(
             }
         )
 
-    return {
+    result = {
         "default": {
             "profile": default_profile.name,
             "provider": default_profile.provider,
@@ -410,3 +411,7 @@ def _group_model_overview(
         "items": rows,
         "configured": True,
     }
+    scoped = scoped_model_rows(catalog, preferences, reasoning_preferences, message_ledger)
+    if scoped:
+        result["scoped_items"] = scoped
+    return result

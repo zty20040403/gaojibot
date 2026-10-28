@@ -138,7 +138,7 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
 
 
 HANDLERS = (
-    FunctionTool(USE_SKILL_TOOL, self_tools_enabled, use_skill),
-    FunctionTool(INSPECT_SOURCE_TOOL, self_tools_enabled, inspect_source),
-    FunctionTool(WEB_SEARCH_TOOL, search_enabled, web_search),
+    FunctionTool(USE_SKILL_TOOL, self_tools_enabled, use_skill, platform_neutral=True),
+    FunctionTool(INSPECT_SOURCE_TOOL, self_tools_enabled, inspect_source, platform_neutral=True),
+    FunctionTool(WEB_SEARCH_TOOL, search_enabled, web_search, platform_neutral=True),
 )

@@ -5,15 +5,19 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Iterable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Protocol
 
 from ..ai_tools import ToolDefinition
+from ..platform_types import PlatformFeatures
 from ..tool_policy import ToolPolicy, policy_for_tool, tool_enabled
 from .state import ToolContext, TurnState
 
 
 class ToolHandler(Protocol):
+    platform_neutral: bool
+    required_features: frozenset[str]
+
     @property
     def definition(self) -> ToolDefinition: ...
 
@@ -27,19 +31,54 @@ class ToolHandler(Protocol):
     async def run(self, turn: TurnState, arguments: dict[str, object]) -> str: ...
 
 
+_FEATURE_NAMES = frozenset(field.name for field in fields(PlatformFeatures))
+
+
+def platform_enabled(handler: ToolHandler, context: ToolContext) -> bool:
+    """Check the actual transport before any legacy availability callback runs.
+
+    Old callers with only a legacy event keep their existing behavior. Structured
+    callers require both account-bound inputs; history aliases grant no access.
+    Unknown/custom handlers must opt in explicitly to non-OneBot execution.
+    """
+    inbound, platform = context.inbound, context.platform
+    neutral = getattr(handler, "platform_neutral", False) is True
+    required = getattr(handler, "required_features", frozenset())
+    if inbound is None and platform is None:
+        return context.event is not None or (neutral and required == frozenset())
+    if inbound is None or platform is None or platform.account != inbound.endpoint.account:
+        return False
+    if inbound.endpoint.account.platform != "onebot-v11":
+        if not neutral:
+            return False
+    elif not neutral and context.event is None:
+        return False
+    if not isinstance(required, frozenset) or not required <= _FEATURE_NAMES:
+        return False
+    return all(getattr(platform.features, feature, False) is True for feature in required)
+
+
 @dataclass(frozen=True)
 class FunctionTool:
     definition: ToolDefinition
     available: Callable[[ToolContext], bool]
     implementation: Callable[[TurnState, dict[str, object]], Awaitable[str]]
     project: Callable[[ToolDefinition, ToolContext], None] | None = None
+    platform_neutral: bool = False
+    required_features: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        if type(self.platform_neutral) is not bool:
+            raise TypeError("platform_neutral must be a bool")
+        if not isinstance(self.required_features, frozenset) or not self.required_features <= _FEATURE_NAMES:
+            raise ValueError("required_features must contain known platform features")
 
     @property
     def policy(self) -> ToolPolicy:
         return policy_for_tool(self.definition["function"]["name"])
 
     def enabled(self, context: ToolContext) -> bool:
-        return self.available(context)
+        return platform_enabled(self, context) and self.available(context)
 
     def definition_for(self, context: ToolContext) -> ToolDefinition:
         definition = deepcopy(self.definition)
@@ -82,8 +121,13 @@ class ToolRegistry:
         return [
             handler.definition_for(context)
             for name, handler in self._handlers.items()
-            if tool_enabled(name) and handler.enabled(context)
+            if self._enabled(handler, context)
         ]
+
+    @staticmethod
+    def _enabled(handler: ToolHandler, context: ToolContext) -> bool:
+        return (tool_enabled(handler.definition["function"]["name"])
+                and platform_enabled(handler, context) and handler.enabled(context))
 
     async def execute(
         self, turn: TurnState, name: str, arguments: dict[str, object]
@@ -91,8 +135,8 @@ class ToolRegistry:
         handler = self._handlers.get(name)
         if handler is None:
             return None
-        if not tool_enabled(name) or not await turn.context.app.db_call(
-            handler.enabled, turn.context
+        if not await turn.context.app.db_call(
+            self._enabled, handler, turn.context
         ):
             return json.dumps(
                 {

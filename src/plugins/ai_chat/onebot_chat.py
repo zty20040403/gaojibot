@@ -55,14 +55,12 @@ from .application import (
     ChatPorts,
     ChatTurnResult,
 )
-from .turn_journal import (
-    tool_effect_labels,
-)
 from .voice import (
     contains_voice,
 )
 from .handler_services import HandlerService
 from .handler_constants import (EMPTY_MENTION_FOLLOW_UP, TURN_PROMPT_VERSION, GROUP_CONVERSATION_ID_PATTERN)
+from .adapters.onebot_turn import OneBotTurnPlatform
 
 
 class OneBotChatService(HandlerService):
@@ -361,70 +359,9 @@ class OneBotChatService(HandlerService):
     async def _drain_task_feedback(self, task_id: str) -> list[str]:
         return self.context.running_tasks.drain_feedback(task_id)
 
-    async def _record_turn_loop_event(self,
-        turn_id: int,
-        event: AgentLoopEvent,
-    ) -> None:
-        if self.context.turn_journal is None:
-            return
-        labels = event.side_effects or tool_effect_labels(event.tool_name)
-        metadata = {
-            "call_id": event.call_id,
-            "fingerprint": event.fingerprint,
-            "risk": event.risk,
-            "idempotency": event.idempotency,
-            "execution_mode": event.execution_mode,
-            "approval": event.approval,
-            "duration_ms": event.duration_ms,
-        }
-        metadata = {key: value for key, value in metadata.items() if value not in {"", 0}}
-        if event.kind == "model_note":
-            (
-                await self.context.db_call(
-                    self.context.turn_journal.record_model_note,
-                    turn_id,
-                    event.sequence,
-                    event.note,
-                )
-            )
-        elif event.kind == "tool_started":
-            (
-                await self.context.db_call(
-                    self.context.turn_journal.record_tool_started,
-                    turn_id,
-                    event.sequence,
-                    event.tool_name,
-                    event.arguments,
-                    labels,
-                    metadata,
-                )
-            )
-        elif event.kind == "tool_rejected":
-            (
-                await self.context.db_call(
-                    self.context.turn_journal.record_tool_rejected,
-                    turn_id,
-                    event.sequence,
-                    event.tool_name,
-                    event.arguments,
-                    event.result,
-                    labels,
-                    metadata,
-                )
-            )
-        elif event.kind in {"tool_finished", "tool_compensated"}:
-            (
-                await self.context.db_call(
-                    self.context.turn_journal.record_tool_finished,
-                    turn_id,
-                    event.sequence,
-                    event.tool_name,
-                    event.state,  # type: ignore[arg-type]
-                    event.result,
-                    labels,
-                    metadata,
-                )
-            )
+    async def _record_turn_loop_event(self, turn_id: int, event: AgentLoopEvent) -> None:
+        from .application.shared_agent_turn import record_shared_loop_event
+        await record_shared_loop_event(self.context, turn_id, event)
 
     def _conversation_id(self, event: MessageEvent) -> str:
         if isinstance(event, GroupMessageEvent):
@@ -527,27 +464,32 @@ class OneBotChatService(HandlerService):
             scope=scope,
         ).canonical_message_id
 
-    def _build_chat_orchestrator(self) -> ChatOrchestrator:
+    def _build_chat_orchestrator(self, bot: Bot, event: MessageEvent) -> ChatOrchestrator:
         """Assemble use-case ports from this service instance and its collaborators."""
+        async def ask_agent(inbound, platform, user_text, **kwargs):
+            # This compatibility closure is private to the OneBot adapter.
+            # The shared application never receives or inspects the SDK event.
+            return await self.services.tools._ask_ai(bot, event, user_text, **kwargs)
+
         return ChatOrchestrator(
             ports=ChatPorts(
-                conversation_id=self._conversation_id,
-                conversation_scope=self._conversation_scope,
-                is_group_event=lambda event: isinstance(event, GroupMessageEvent),
-                group_id=lambda event: (
-                    event.group_id if isinstance(event, GroupMessageEvent) else None
+                conversation_id=lambda inbound: self._conversation_id(event),
+                endpoint_enabled=lambda endpoint: (
+                    self.services.group_enabled(event.group_id)
+                    if isinstance(event, GroupMessageEvent) else True
                 ),
-                group_enabled=self.services.group_enabled,
-                group_default_profile=self._group_default_model_preference,
-                reply_target_turn=self._reply_target_turn,
-                record_trigger=self._record_turn_trigger,
-                current_turn_context=lambda event, turn_id: self._current_turn_context(
+                group_default_profile=lambda inbound: self._group_default_model_preference(
+                    self._conversation_id(event)
+                ),
+                reply_target_turn=lambda inbound: self._reply_target_turn(event),
+                record_trigger=lambda inbound, scope: self._record_turn_trigger(event, scope),
+                current_turn_context=lambda inbound, turn_id: self._current_turn_context(
                     event,
                     turn_id,
                     include_recent=False,
                 ),
                 drain_feedback=self._drain_task_feedback,
-                ask_agent=self.services.tools._ask_ai,
+                ask_agent=ask_agent,
                 is_silence_reply=lambda reply: (
                     isinstance(reply, str) and plan_reply(reply).silence
                 ),
@@ -573,9 +515,11 @@ class OneBotChatService(HandlerService):
         user_text: str,
         **kwargs: Any,
     ) -> ChatTurnResult | None:
-        return await self._build_chat_orchestrator().run(
-            bot,
-            event,
+        platform = OneBotTurnPlatform(bot, event, canonical_scope=self._conversation_scope(event))
+        return await self._build_chat_orchestrator(bot, event).run(
+            platform.inbound,
+            platform,
             user_text,
+            legacy_task_identity=platform.legacy_task_identity,
             **kwargs,
         )

@@ -139,6 +139,7 @@ async def build_hybrid_recall(
     media_library: Any = None,
     recall_decision: RecallDecision | None = None,
     current_native_user_id: str | int = "",
+    current_actor_key: str = "",
     include_group_memory: bool = True,
     include_user_memory: bool = True,
     fallback_group_memory: bool = False,
@@ -237,6 +238,7 @@ async def build_hybrid_recall(
                     "relation_graph",
                     current_time,
                     current_native_user_id=current_native_user_id,
+                    current_actor_key=current_actor_key,
                     relation_score=1.0 if is_focus else 0.78,
                     reason=("selected_focus" if is_focus else "topic_graph_neighbor"),
                 )
@@ -259,6 +261,7 @@ async def build_hybrid_recall(
                     "group_timeline",
                     current_time,
                     current_native_user_id=current_native_user_id,
+                    current_actor_key=current_actor_key,
                     relation_score=_plan_relation(plan, message.canonical_message_id),
                     reason="recent_group_timeline",
                 )
@@ -278,6 +281,7 @@ async def build_hybrid_recall(
                 current_message_id=plan.current_message_id if plan is not None else 0,
                 excluded_ids=focused_ids,
                 current_native_user_id=current_native_user_id,
+                current_actor_key=current_actor_key,
             )
         )
 
@@ -308,6 +312,7 @@ async def build_hybrid_recall(
                     "pinned_message",
                     current_time,
                     current_native_user_id=current_native_user_id,
+                    current_actor_key=current_actor_key,
                     relation_score=0.65,
                     importance_score=0.95,
                     reason="pinned_in_current_scope",
@@ -384,6 +389,7 @@ async def build_hybrid_recall(
             group_memory_scope=group_memory_scope,
             user_memory_scope=user_memory_scope,
             current_native_user_id=current_native_user_id,
+            current_actor_key=current_actor_key,
         )
         if candidate is None:
             continue
@@ -588,7 +594,8 @@ def _memory_candidate(
         ),
         metadata={
             "memory_id": int(entry.id),
-            "creator_user_id": int(getattr(entry, "creator_user_id", 0) or 0),
+            "creator_user_id": getattr(entry, "creator_user_id", None),
+            "creator_actor_key": str(getattr(entry, "creator_actor_key", "")),
             "creator_principal_id": int(
                 getattr(entry, "creator_principal_id", 0) or 0
             ),
@@ -603,6 +610,7 @@ def _message_candidate(
     now: int,
     *,
     current_native_user_id: str | int,
+    current_actor_key: str = "",
     relation_score: float = 0.0,
     importance_score: float = 0.45,
     reason: str,
@@ -620,12 +628,13 @@ def _message_candidate(
         importance_score=importance_score,
         actor_score=(
             0.8
-            if str(message.sender_native_user_id) == str(current_native_user_id)
+            if message.is_from_actor(current_actor_key, current_native_user_id)
             else 0.5
         ),
         reason_codes=(reason, "same_conversation_scope"),
         metadata={
             "sender_native_user_id": str(message.sender_native_user_id),
+            "sender_actor_key": message.sender_actor_key,
             "sender_principal_id": message.sender_principal_id,
             "occurred_at": message.occurred_at,
             "evidence_ids": [message.canonical_message_id],
@@ -643,6 +652,7 @@ def _lexical_history_candidates(
     current_message_id: int,
     excluded_ids: set[int],
     current_native_user_id: str | int,
+    current_actor_key: str = "",
 ) -> list[RecallCandidate]:
     terms = topic_terms(query)
     if not terms:
@@ -669,6 +679,7 @@ def _lexical_history_candidates(
             "raw_history",
             now,
             current_native_user_id=current_native_user_id,
+            current_actor_key=current_actor_key,
             reason="lexical_history",
         )
         result.append(
@@ -791,6 +802,7 @@ def _semantic_candidate(
     group_memory_scope: str | None,
     user_memory_scope: str,
     current_native_user_id: str | int,
+    current_actor_key: str = "",
 ) -> RecallCandidate | None:
     handle = str(hit.source_handle)
     if hit.source_type == "message":
@@ -805,6 +817,7 @@ def _semantic_candidate(
             "raw_history",
             now,
             current_native_user_id=current_native_user_id,
+            current_actor_key=current_actor_key,
             reason="semantic_history",
         )
         return RecallCandidate(

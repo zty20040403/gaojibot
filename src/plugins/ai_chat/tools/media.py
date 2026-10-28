@@ -389,9 +389,11 @@ async def reply_voice(turn: TurnState, arguments: dict[str, object]) -> str:
 
 
 HANDLERS = (
-    FunctionTool(READ_IMAGE_TEXT_TOOL, ocr_enabled, read_image_text),
+    FunctionTool(READ_IMAGE_TEXT_TOOL, ocr_enabled, read_image_text,
+                 required_features=frozenset({"native_ocr"})),
     FunctionTool(VIEW_IMAGE_TOOL, image_enabled, view_image),
     FunctionTool(VIEW_VIDEO_TOOL, video_enabled, view_video),
-    FunctionTool(TRANSCRIBE_VOICE_TOOL, transcription_enabled, transcribe),
+    FunctionTool(TRANSCRIBE_VOICE_TOOL, transcription_enabled, transcribe,
+                 required_features=frozenset({"inline_voice_text"})),
     FunctionTool(REPLY_WITH_VOICE_TOOL, voice_enabled, reply_voice),
 )

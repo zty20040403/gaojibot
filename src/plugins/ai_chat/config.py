@@ -4,6 +4,10 @@ import json
 import math
 import os
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .conversation_scope import ConversationScope
 
 
 def _get_int(name: str, default: int) -> int:
@@ -1038,6 +1042,19 @@ class Settings:
             (not self.enabled_groups and not self.groups_require_allowlist)
             or group_id in self.enabled_groups
         )
+
+    def is_scope_enabled(self, scope: ConversationScope) -> bool:
+        """Deployment default only; official admission additionally requires binding."""
+        if scope.kind != "group":
+            raise ValueError("group settings require a group scope")
+        if scope.platform != "onebot-v11":
+            return False
+        return self.is_group_enabled(int(scope.native_conversation_id))
+
+    def model_profile_for_scope(self, scope: ConversationScope) -> str | None:
+        if scope.kind != "group" or scope.platform != "onebot-v11":
+            return None
+        return self.group_model_profiles.get(int(scope.native_conversation_id))
 
     def is_sandbox_user_allowed(self, user_id: int) -> bool:
         return self.sandbox_enabled and (

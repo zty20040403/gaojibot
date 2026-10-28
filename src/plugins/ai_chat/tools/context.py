@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import partial
 
 import httpx
-from nonebot.adapters.onebot.v11 import GroupMessageEvent
-from nonebot.adapters.onebot.v11.exception import ActionFailed
-from nonebot.exception import NetworkError
 
 from ..ai_tools import (
     CONTEXT_EXPAND_TOOL,
@@ -18,14 +16,56 @@ from ..ai_tools import (
     UNPIN_MESSAGE_TOOL,
     UNPIN_MESSAGE_TOOL_NAME,
 )
-from ..onebot_codec import scope_from_event
-from ..onebot_model_output import decode_group_members
 from .registry import FunctionTool
 from .state import ToolContext, TurnState
+from .memory import memory_entry_payload, memory_scope_keys, official_inbound, supports_context
 
 
 def history_enabled(context: ToolContext) -> bool:
-    return "context" in context.capabilities
+    return supports_context(context) and "context" in context.capabilities
+
+
+def _history_scope(context: ToolContext):
+    inbound = official_inbound(context)
+    if inbound is not None:
+        return inbound.scope
+    from ..onebot_codec import scope_from_event
+
+    return scope_from_event(context.event)
+
+
+def _official_semantic_payload(context: ToolContext, hits, lexical_handles, limit):
+    """Resolve index hits again in trusted stores; scope labels are not evidence."""
+    if not hits:
+        return []
+    scope = _history_scope(context)
+    memories = ({f"memory#{entry.id}": entry for entry in context.app.long_term_memory.list_entries(
+        memory_scope_keys(context))} if context.app.long_term_memory is not None else {})
+    allowed_scopes = {scope.key, *memory_scope_keys(context)}
+    results = []
+    for hit in hits:
+        handle, kind = str(hit.source_handle), str(hit.source_type)
+        if handle in lexical_handles or str(hit.scope_key) not in allowed_scopes:
+            continue
+        text = None
+        if kind == "message" and hit.scope_key == scope.key and re.fullmatch(r"msg#[1-9][0-9]*", handle):
+            message = context.app.message_ledger.get_in_scope(scope, int(handle[4:]))
+            if message is not None:
+                text = message.rendered_text
+        elif kind == "memory":
+            entry = memories.get(handle)
+            if entry is not None and hit.scope_key == entry.scope_key:
+                text = entry.content
+        elif kind == "episode" and hit.scope_key == scope.key and handle.startswith("episode#"):
+            if context.app.context_store is not None:
+                text = context.app.context_store.expand(context.app.message_ledger, scope, handle[8:], max_chars=500)
+        if text is None:
+            continue
+        results.append({"handle": handle, "type": kind, "text": text[:500],
+                        "score": round(hit.score, 4), "metadata": {}})
+        if len(results) >= limit:
+            break
+    return results
 
 
 def pins_enabled(context: ToolContext) -> bool:
@@ -37,6 +77,8 @@ def pins_enabled(context: ToolContext) -> bool:
 
 
 def members_enabled(context: ToolContext) -> bool:
+    from nonebot.adapters.onebot.v11 import GroupMessageEvent
+
     return "members" in context.capabilities and isinstance(
         context.event, GroupMessageEvent
     )
@@ -45,6 +87,8 @@ def members_enabled(context: ToolContext) -> bool:
 async def change_pin(
     turn: TurnState, arguments: dict[str, object], *, name: str
 ) -> str:
+    from ..onebot_codec import scope_from_event
+
     if turn.context.app.pin_store is None or turn.context.app.message_ledger is None:
         return json.dumps(
             {"ok": False, "error": "固定消息存储暂时不可用。"},
@@ -101,6 +145,11 @@ async def change_pin(
 
 
 async def group_members(turn: TurnState, arguments: dict[str, object]) -> str:
+    from nonebot.adapters.onebot.v11 import GroupMessageEvent
+    from nonebot.adapters.onebot.v11.exception import ActionFailed
+    from nonebot.exception import NetworkError
+    from ..onebot_model_output import decode_group_members
+
     if not isinstance(turn.context.event, GroupMessageEvent):
         return json.dumps(
             {"ok": False, "error": "私聊中没有群成员名单。"},
@@ -161,6 +210,8 @@ async def group_members(turn: TurnState, arguments: dict[str, object]) -> str:
 
 
 async def expand(turn: TurnState, arguments: dict[str, object]) -> str:
+    if official_inbound(turn.context) is not None and set(arguments) - {"target", "turn_id"}:
+        return json.dumps({"ok": False, "error": "不能指定其他会话的上下文地址。"}, ensure_ascii=False)
     target = str(arguments.get("target") or "").strip()
     if target.startswith("episode#"):
         if (
@@ -175,7 +226,7 @@ async def expand(turn: TurnState, arguments: dict[str, object]) -> str:
         expanded_episode = await turn.context.app.db_call(
             turn.context.app.context_store.expand,
             turn.context.app.message_ledger,
-            scope_from_event(turn.context.event),
+            _history_scope(turn.context),
             handle,
             max_chars=turn.context.app.settings.turn_expand_max_chars,
         )
@@ -210,7 +261,7 @@ async def expand(turn: TurnState, arguments: dict[str, object]) -> str:
         requested_turn = 0
     expanded = await turn.context.app.db_call(
         turn.context.app.turn_journal.render_turn,
-        scope_from_event(turn.context.event),
+        _history_scope(turn.context),
         requested_turn,
         max_chars=turn.context.app.settings.turn_expand_max_chars,
     )
@@ -229,6 +280,9 @@ async def expand(turn: TurnState, arguments: dict[str, object]) -> str:
 
 
 async def search(turn: TurnState, arguments: dict[str, object]) -> str:
+    official = official_inbound(turn.context) is not None
+    if official and set(arguments) - {"query", "limit"}:
+        return json.dumps({"ok": False, "error": "不能指定其他会话的上下文地址。"}, ensure_ascii=False)
     if turn.context.app.message_ledger is None:
         return json.dumps(
             {"ok": False, "error": "规范消息账本暂时没有开启。"},
@@ -244,7 +298,7 @@ async def search(turn: TurnState, arguments: dict[str, object]) -> str:
             {"ok": False, "error": "检索词不能为空。"},
             ensure_ascii=False,
         )
-    scope = scope_from_event(turn.context.event)
+    scope = _history_scope(turn.context)
     messages = await turn.context.app.db_call(
         turn.context.app.message_ledger.search_in_scope, scope, query, limit
     )
@@ -271,20 +325,18 @@ async def search(turn: TurnState, arguments: dict[str, object]) -> str:
         else []
     )
     folded_query = query.casefold()
+    memory_entries = (await turn.context.app.db_call(
+        turn.context.app.long_term_memory.list_entries, memory_scope_keys(turn.context),
+    )) if turn.context.app.long_term_memory is not None else []
     memory_matches = [
         entry
-        for entry in (
-            await turn.context.app.db_call(
-                turn.context.app.long_term_memory.list_entries,
-                turn.context.services.commands._memory_scope_keys(turn.context.event),
-            )
-        )
+        for entry in memory_entries
         if folded_query in entry.content.casefold()
     ][:limit]
     semantic_hits = []
     allowed_context_scopes = {
         scope.key,
-        *turn.context.services.commands._memory_scope_keys(turn.context.event),
+        *memory_scope_keys(turn.context),
     }
     if turn.context.app.semantic_recall is not None:
         try:
@@ -307,6 +359,9 @@ async def search(turn: TurnState, arguments: dict[str, object]) -> str:
         *(f"msg#{message.canonical_message_id}" for _pin, message in pinned_matches),
         *(f"memory#{entry.id}" for entry in memory_matches),
     }
+    official_semantic = (await turn.context.app.db_call(
+        _official_semantic_payload, turn.context, semantic_hits, lexical_handles, limit,
+    )) if official else None
     return json.dumps(
         {
             "ok": True,
@@ -345,10 +400,10 @@ async def search(turn: TurnState, arguments: dict[str, object]) -> str:
                 for _pin, message in pinned_matches
             ],
             "memories": [
-                turn.context.services.commands._memory_entry_payload(entry)
+                memory_entry_payload(turn.context, entry)
                 for entry in memory_matches
             ],
-            "semantic": [
+            "semantic": official_semantic if official else [
                 {
                     "handle": hit.source_handle,
                     "type": hit.source_type,
@@ -366,9 +421,10 @@ async def search(turn: TurnState, arguments: dict[str, object]) -> str:
 
 
 HANDLERS = (
-    FunctionTool(CONTEXT_EXPAND_TOOL, history_enabled, expand),
-    FunctionTool(CONTEXT_SEARCH_TOOL, history_enabled, search),
-    FunctionTool(GROUP_MEMBERS_TOOL, members_enabled, group_members),
+    FunctionTool(CONTEXT_EXPAND_TOOL, history_enabled, expand, platform_neutral=True),
+    FunctionTool(CONTEXT_SEARCH_TOOL, history_enabled, search, platform_neutral=True),
+    FunctionTool(GROUP_MEMBERS_TOOL, members_enabled, group_members,
+                 required_features=frozenset({"member_list"})),
     FunctionTool(
         PIN_MESSAGE_TOOL,
         pins_enabled,

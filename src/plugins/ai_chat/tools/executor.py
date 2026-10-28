@@ -108,6 +108,14 @@ async def execute(turn: TurnState, arguments: dict[str, object], *, name: str) -
     )
 
 
+_REQUIRED_FEATURES = {
+    "view_forward": frozenset({"forward_messages"}),
+    "list_recent_files": frozenset({"group_files"}),
+    "import_file_to_sandbox": frozenset({"group_files"}),
+    "send_file_from_sandbox": frozenset({"native_files"}),
+}
+
+
 HANDLERS = tuple(
     FunctionTool(
         definition,
@@ -115,6 +123,7 @@ HANDLERS = tuple(
         partial(execute, name=definition["function"]["name"]),
         project_sandbox if capability == "sandbox" else
         project_browser_definition if capability == "browser" else None,
+        required_features=_REQUIRED_FEATURES.get(definition["function"]["name"], frozenset()),
     )
     for capability, definitions in (
         ("sandbox", SANDBOX_TOOLS),

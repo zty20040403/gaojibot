@@ -12,6 +12,7 @@ from typing import Any, Iterable, Iterator, Literal
 from src.bot_storage import DatabaseSource, StoreCursor, StoreRow, open_store_connection
 
 from .conversation_scope import ConversationScope
+from .platform_types import ActorKey, EndpointKey
 from .message_ir import (
     MessageBody,
     body_from_json,
@@ -41,6 +42,29 @@ class CanonicalMessage:
     occurred_at: int
     reply_to_native_message_id: str | None
     reply_to_canonical_message_id: int | None
+    sender_actor_key: str = ""
+    source_endpoint_key: str = ""
+
+    def is_from_actor(self, actor_key: str = "", native_user_id: str | int = "") -> bool:
+        """Compare identity domains, allowing the explicit legacy OneBot bridge."""
+        if actor_key:
+            actor = ActorKey.parse(actor_key)
+            if self.sender_actor_key:
+                return self.sender_actor_key == actor.key
+            return (
+                actor.account.platform == "onebot-v11"
+                and ConversationScope.from_key(self.scope_key).platform == "onebot-v11"
+                and not self.source_endpoint_key
+                and self.sender_native_user_id == actor.native_user_id
+            )
+        if self.sender_actor_key:
+            actor = ActorKey.parse(self.sender_actor_key)
+            return actor.account.platform == "onebot-v11" and actor.native_user_id == str(native_user_id)
+        return (
+            ConversationScope.from_key(self.scope_key).platform == "onebot-v11"
+            and not self.source_endpoint_key
+            and self.sender_native_user_id == str(native_user_id)
+        )
 
     @property
     def prompt_text(self) -> str:
@@ -69,16 +93,12 @@ class MessageLedger:
         with self._lock:
             rows = self._connection.execute(
                 """
-                SELECT platform, kind, native_conversation_id
+                SELECT scope_key
                 FROM conversations ORDER BY conversation_id ASC
                 """
             ).fetchall()
         return [
-            ConversationScope(
-                str(row["platform"]),
-                str(row["kind"]),  # type: ignore[arg-type]
-                str(row["native_conversation_id"]),
-            )
+            ConversationScope.from_key(str(row["scope_key"]))
             for row in rows
         ]
 
@@ -116,19 +136,42 @@ class MessageLedger:
         reply_to_native_message_id: str | None = None,
         raw_event: dict[str, Any] | None = None,
         identity_platform: str | None = None,
+        actor: ActorKey | None = None,
+        source_endpoint: EndpointKey | None = None,
     ) -> CanonicalMessage:
         if direction not in {"inbound", "outbound", "system"}:
             raise ValueError("unsupported message direction")
         if message_kind not in {"chat", "command", "system"}:
             raise ValueError("unsupported message kind")
-        native_message_id = str(native_message_id).strip()
-        sender_native_user_id = str(sender_native_user_id).strip()
+        if actor is None and identity_platform is not None:
+            self._require_legacy_platform(identity_platform.strip())
+        if actor is not None:
+            if source_endpoint is None or not actor.matches_endpoint(source_endpoint):
+                raise ValueError("message actor requires its matching source endpoint")
+            if str(sender_native_user_id) != actor.native_user_id:
+                raise ValueError("message sender differs from its actor")
+            if identity_platform is not None and identity_platform != actor.account.platform:
+                raise ValueError("message actor differs from identity platform")
+        official = (
+            source_endpoint.account.platform == "qq-official"
+            if source_endpoint is not None else scope.platform == "qq-official"
+        )
+        if official and (actor is None or source_endpoint is None):
+            raise ValueError("official messages require actor and source endpoint")
+        if official:
+            if actor.identity_kind == "bot" and direction != "outbound":
+                raise ValueError("official bot authors are only valid for outbound messages")
+            if direction == "outbound" and actor.identity_kind != "bot":
+                raise ValueError("official outbound messages require the actual bot author")
+        source_key = self._source_key(scope, source_endpoint)
+        native_message_id = str(native_message_id) if official else str(native_message_id).strip()
+        sender_native_user_id = str(sender_native_user_id) if official else str(sender_native_user_id).strip()
         sender_display = sender_display.strip() or (
             "群成员" if sender_native_user_id else "未知用户"
         )
         occurred_at = int(occurred_at or time.time())
         reply_to_native_message_id = (
-            str(reply_to_native_message_id).strip()
+            (str(reply_to_native_message_id) if official else str(reply_to_native_message_id).strip())
             if reply_to_native_message_id
             else None
         )
@@ -139,7 +182,7 @@ class MessageLedger:
                 (f"ledger:{scope.key}",),
             )
             conversation_id = self._ensure_conversation(cursor, scope)
-            identity_platform = (identity_platform or scope.platform).strip()
+            identity_platform = actor.account.platform if actor is not None else (identity_platform or scope.platform).strip()
             identity_id: int | None = None
             principal_id: int | None = None
             if sender_native_user_id:
@@ -149,6 +192,7 @@ class MessageLedger:
                     sender_native_user_id,
                     sender_display,
                     occurred_at,
+                    actor=actor,
                 )
 
             resolved_body = resolve_mentions(
@@ -159,12 +203,15 @@ class MessageLedger:
                     native_id,
                     display,
                     occurred_at,
+                    actor=actor,
+                    source_endpoint=source_endpoint,
                 ),
             )
             reply_to_canonical_id = self._canonical_for_native(
                 cursor,
                 conversation_id,
                 reply_to_native_message_id,
+                source_key,
             )
             existing = None
             if native_message_id:
@@ -172,9 +219,9 @@ class MessageLedger:
                     """
                     SELECT canonical_message_id
                     FROM messages
-                    WHERE conversation_id = ? AND native_message_id = ?
+                    WHERE conversation_id = ? AND native_message_id = ? AND source_endpoint_key = ?
                     """,
-                    (conversation_id, native_message_id),
+                    (conversation_id, native_message_id, source_key),
                 ).fetchone()
 
             if existing is None:
@@ -194,8 +241,8 @@ class MessageLedger:
                         occurred_at,
                         reply_to_native_message_id,
                         reply_to_canonical_message_id,
-                        raw_event_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
+                        raw_event_json, sender_actor_key, source_endpoint_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         conversation_id,
@@ -211,6 +258,8 @@ class MessageLedger:
                         reply_to_native_message_id,
                         reply_to_canonical_id,
                         _json_dump(raw_event or {}),
+                        actor.key if actor is not None else "",
+                        source_key,
                     ),
                 )
                 canonical_message_id = int(cursor.lastrowid)
@@ -235,11 +284,13 @@ class MessageLedger:
                     SET reply_to_canonical_message_id = ?
                     WHERE conversation_id = ?
                       AND reply_to_native_message_id = ?
+                      AND source_endpoint_key = ?
                     """,
                     (
                         canonical_message_id,
                         conversation_id,
                         native_message_id,
+                        source_key,
                     ),
                 )
             cursor.execute(
@@ -305,7 +356,10 @@ class MessageLedger:
         self,
         scope: ConversationScope,
         native_message_id: str | int,
+        *,
+        endpoint: EndpointKey | None = None,
     ) -> int | None:
+        source_key = self._source_key(scope, endpoint)
         with self._lock:
             row = self._connection.execute(
                 """
@@ -317,9 +371,10 @@ class MessageLedger:
                   ON v.conversation_id = m.conversation_id
                 WHERE c.scope_key = ?
                   AND m.native_message_id = ?
+                  AND m.source_endpoint_key = ?
                   AND m.canonical_message_id >= v.min_canonical_message_id
                 """,
-                (scope.key, str(native_message_id)),
+                (scope.key, str(native_message_id), source_key),
             ).fetchone()
         return int(row[0]) if row is not None else None
 
@@ -484,6 +539,7 @@ class MessageLedger:
         max_chars: int = 4000,
         exclude_native_message_id: str | int | None = None,
         exclude_canonical_message_ids: tuple[int, ...] = (),
+        exclude_endpoint: EndpointKey | None = None,
     ) -> str:
         messages = self.recent_in_scope(scope, max_messages)
         excluded_canonical_ids = set(
@@ -497,10 +553,11 @@ class MessageLedger:
             ]
         if exclude_native_message_id is not None:
             excluded = str(exclude_native_message_id)
+            source_key = self._source_key(scope, exclude_endpoint)
             messages = [
                 message
                 for message in messages
-                if message.native_message_id != excluded
+                if message.native_message_id != excluded or message.source_endpoint_key != source_key
             ]
         lines: list[str] = []
         used_chars = 0
@@ -589,6 +646,7 @@ class MessageLedger:
         platform: str,
         native_user_id: str | int,
     ) -> str | None:
+        self._require_legacy_platform(platform)
         with self._lock:
             row = self._connection.execute(
                 """
@@ -596,6 +654,7 @@ class MessageLedger:
                 FROM principal_identities AS i
                 JOIN principals AS p ON p.principal_id = i.principal_id
                 WHERE i.platform = ? AND i.native_user_id = ?
+                  AND i.account_key = '' AND i.identity_kind = '' AND i.identity_namespace = ''
                 """,
                 (platform, str(native_user_id)),
             ).fetchone()
@@ -608,11 +667,13 @@ class MessageLedger:
         platform: str,
         native_user_id: str | int,
     ) -> int | None:
+        self._require_legacy_platform(platform)
         with self._lock:
             row = self._connection.execute(
                 """
                 SELECT principal_id FROM principal_identities
                 WHERE platform = ? AND native_user_id = ?
+                  AND account_key = '' AND identity_kind = '' AND identity_namespace = ''
                 """,
                 (platform, str(native_user_id)),
             ).fetchone()
@@ -644,6 +705,7 @@ class MessageLedger:
         seen_at: int | None = None,
     ) -> dict[str, int]:
         normalized_platform = platform.strip()
+        self._require_legacy_platform(normalized_platform)
         if not normalized_platform:
             raise ValueError("invalid principal identity platform")
         normalized: dict[str, str] = {}
@@ -674,6 +736,7 @@ class MessageLedger:
         platform: str,
         principal_id: int,
     ) -> tuple[str, str] | None:
+        self._require_legacy_platform(platform)
         if int(principal_id) <= 0:
             return None
         with self._lock:
@@ -682,6 +745,7 @@ class MessageLedger:
                 SELECT native_user_id, display_name
                 FROM principal_identities
                 WHERE platform = ? AND principal_id = ?
+                  AND account_key = '' AND identity_kind = '' AND identity_namespace = ''
                 ORDER BY last_seen_at DESC, identity_id DESC
                 LIMIT 1
                 """,
@@ -691,6 +755,94 @@ class MessageLedger:
             return None
         return str(row["native_user_id"]), str(row["display_name"])
 
+    def ensure_actor_identity(
+        self, actor: ActorKey, display: str, *, seen_at: int | None = None,
+    ) -> int:
+        with self._transaction() as cursor:
+            _, principal = self._ensure_identity(
+                cursor, actor.account.platform, actor.native_user_id,
+                display, int(time.time() if seen_at is None else seen_at), actor=actor,
+            )
+        return principal
+
+    def principal_id_for_actor(self, actor: ActorKey) -> int | None:
+        row = self._principal_for_actor(actor)
+        return int(row["principal_id"]) if row is not None else None
+
+    def principal_label_for_actor(self, actor: ActorKey) -> str | None:
+        row = self._principal_for_actor(actor)
+        if row is None:
+            return None
+        return f"[mention#{int(row['principal_id'])}] {row['display_name']}"
+
+    def _principal_for_actor(self, actor: ActorKey) -> StoreRow | None:
+        account, kind, namespace = self._identity_domain(actor)
+        with self._lock:
+            return self._connection.execute(
+                """SELECT p.principal_id, p.display_name FROM principal_identities AS i
+                   JOIN principals AS p ON p.principal_id=i.principal_id
+                   WHERE i.platform=? AND i.native_user_id=? AND i.account_key=?
+                     AND i.identity_kind=? AND i.identity_namespace=?""",
+                (actor.account.platform, actor.native_user_id, account, kind, namespace),
+            ).fetchone()
+
+    def actor_identity_for_principal(
+        self, endpoint: EndpointKey, principal_id: int,
+    ) -> tuple[ActorKey, str] | None:
+        if int(principal_id) <= 0:
+            return None
+        if endpoint.account.platform == "onebot-v11":
+            identity = self.native_identity_for_principal(endpoint.account.platform, principal_id)
+            if identity is None:
+                return None
+            actor = ActorKey(endpoint.account, "user", "", identity[0])
+            return (actor, identity[1]) if actor.matches_endpoint(endpoint) else None
+        kind = "group_member" if endpoint.kind == "group" else "c2c_user"
+        namespace = endpoint.native_conversation_id if endpoint.kind == "group" else ""
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT native_user_id, display_name FROM principal_identities
+                   WHERE platform=? AND account_key=? AND identity_kind=?
+                     AND identity_namespace=? AND principal_id=?""",
+                (endpoint.account.platform, endpoint.account.key, kind, namespace, int(principal_id)),
+            ).fetchall()
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        actor = ActorKey(endpoint.account, kind, namespace, str(row["native_user_id"]))
+        return (actor, str(row["display_name"])) if actor.matches_endpoint(endpoint) else None
+
+    @staticmethod
+    def _require_legacy_platform(platform: str) -> None:
+        if platform == "qq-official":
+            raise ValueError("official identities require an ActorKey")
+
+    @staticmethod
+    def _identity_domain(actor: ActorKey | None) -> tuple[str, str, str]:
+        # OneBot's existing global QQ principals deliberately retain their IDs.
+        if actor is None or actor.account.platform == "onebot-v11":
+            return "", "", ""
+        return actor.account.key, actor.identity_kind, actor.identity_namespace
+
+    @staticmethod
+    def _source_key(scope: ConversationScope, endpoint: EndpointKey | None) -> str:
+        if endpoint is None:
+            if scope.platform == "qq-official":
+                raise ValueError("official native message lookup requires its source endpoint")
+            return ""
+        # Only the matching legacy lane used the empty source namespace. A
+        # differently routed OneBot source must keep its endpoint just as an
+        # official source does; history binding is not transport equivalence.
+        if (
+            endpoint.account.platform == "onebot-v11"
+            and scope.platform == "onebot-v11"
+            and scope.kind == endpoint.kind
+            and scope.native_conversation_id == endpoint.native_conversation_id
+            and scope.account is None
+        ):
+            return ""
+        return endpoint.key
+
     def activity_since(
         self,
         scope: ConversationScope,
@@ -698,13 +850,14 @@ class MessageLedger:
         *,
         limit: int = 3,
         exclude_native_message_id: str | int | None = None,
+        exclude_endpoint: EndpointKey | None = None,
     ) -> tuple[int, list[CanonicalMessage]]:
         limit = min(max(int(limit), 1), 20)
         parameters: list[Any] = [scope.key, int(since_timestamp)]
         exclusion = ""
         if exclude_native_message_id is not None:
-            exclusion = "AND m.native_message_id != ?"
-            parameters.append(str(exclude_native_message_id))
+            exclusion = "AND (m.native_message_id != ? OR m.source_endpoint_key != ?)"
+            parameters.extend((str(exclude_native_message_id), self._source_key(scope, exclude_endpoint)))
         with self._lock:
             count_row = self._connection.execute(
                 f"""
@@ -849,19 +1002,26 @@ class MessageLedger:
         native_user_id: str,
         display: str,
         seen_at: int,
+        *,
+        actor: ActorKey | None = None,
     ) -> tuple[int, int]:
+        if actor is None:
+            self._require_legacy_platform(platform)
+        account, kind, namespace = self._identity_domain(actor)
         display = display.strip()
         cursor.execute(
             "SELECT pg_advisory_xact_lock(hashtext(?))",
-            (f"identity:{platform}:{native_user_id}",),
+            (_json_dump({"platform": platform, "account": account, "kind": kind,
+                         "namespace": namespace, "native": native_user_id}),),
         )
         row = cursor.execute(
             """
             SELECT identity_id, principal_id
             FROM principal_identities
             WHERE platform = ? AND native_user_id = ?
+              AND account_key = ? AND identity_kind = ? AND identity_namespace = ?
             """,
-            (platform, native_user_id),
+            (platform, native_user_id, account, kind, namespace),
         ).fetchone()
         if row is None:
             stored_display = display or "群成员"
@@ -877,8 +1037,8 @@ class MessageLedger:
                 """
                 INSERT INTO principal_identities (
                     principal_id, platform, native_user_id,
-                    display_name, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    display_name, last_seen_at, account_key, identity_kind, identity_namespace
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     principal_id,
@@ -886,6 +1046,7 @@ class MessageLedger:
                     native_user_id,
                     stored_display,
                     seen_at,
+                    account, kind, namespace,
                 ),
             )
             return int(cursor.lastrowid), principal_id
@@ -925,15 +1086,37 @@ class MessageLedger:
         native_user_id: str,
         display: str,
         seen_at: int,
+        *,
+        actor: ActorKey | None = None,
+        source_endpoint: EndpointKey | None = None,
     ) -> int | None:
         if not native_user_id or native_user_id == "all":
             return None
+        mention_actor = None
+        if actor is not None:
+            if actor.account.platform == "qq-official" and actor.identity_kind == "bot":
+                if source_endpoint is None or source_endpoint.account != actor.account:
+                    raise ValueError("bot mention resolution requires its source endpoint")
+                if source_endpoint.kind == "private" and native_user_id != source_endpoint.native_conversation_id:
+                    return None
+                mention_actor = ActorKey(
+                    actor.account, "group_member" if source_endpoint.kind == "group" else "c2c_user",
+                    source_endpoint.native_conversation_id if source_endpoint.kind == "group" else "",
+                    native_user_id,
+                )
+            else:
+                if actor.identity_kind == "c2c_user" and native_user_id != actor.native_user_id:
+                    return None
+                mention_actor = ActorKey(
+                    actor.account, actor.identity_kind, actor.identity_namespace, native_user_id,
+                )
         _, principal_id = self._ensure_identity(
             cursor,
             platform,
             native_user_id,
             display,
             seen_at,
+            actor=mention_actor,
         )
         return principal_id
 
@@ -942,15 +1125,16 @@ class MessageLedger:
         cursor: StoreCursor,
         conversation_id: int,
         native_message_id: str | None,
+        source_key: str = "",
     ) -> int | None:
         if not native_message_id:
             return None
         row = cursor.execute(
             """
             SELECT canonical_message_id FROM messages
-            WHERE conversation_id = ? AND native_message_id = ?
+            WHERE conversation_id = ? AND native_message_id = ? AND source_endpoint_key = ?
             """,
-            (conversation_id, native_message_id),
+            (conversation_id, native_message_id, source_key),
         ).fetchone()
         return int(row[0]) if row is not None else None
 
@@ -1002,6 +1186,8 @@ class MessageLedger:
                 if row["reply_to_canonical_message_id"] is not None
                 else None
             ),
+            sender_actor_key=str(row["sender_actor_key"]),
+            source_endpoint_key=str(row["source_endpoint_key"]),
         )
 
 

@@ -88,6 +88,7 @@ class ReferenceResolver:
         current_message_id: int,
         current_text: str,
         current_native_user_id: str | int,
+        current_actor_key: str = "",
         now: int | None = None,
         prefer_latest: bool = False,
     ) -> TurnContextPlan:
@@ -287,6 +288,7 @@ class ReferenceResolver:
                 distance=distance,
                 now=timestamp,
                 current_native_user_id=str(current_native_user_id),
+                current_actor_key=current_actor_key,
                 query_terms=query_terms,
                 deictic_follow_up=deictic_follow_up,
                 reply_count=len(graph.children.get(message.canonical_message_id, ())),
@@ -421,6 +423,7 @@ class ReferenceResolver:
         distance: int,
         now: int,
         current_native_user_id: str,
+        current_actor_key: str = "",
         query_terms: tuple[str, ...],
         deictic_follow_up: bool,
         reply_count: int,
@@ -447,7 +450,7 @@ class ReferenceResolver:
         else:
             score -= 12
             reasons.append("bot_message_penalty")
-        if message.sender_native_user_id != current_native_user_id:
+        if not message.is_from_actor(current_actor_key, current_native_user_id):
             score += 8
             reasons.append("other_participant")
         if _LOW_INFORMATION.fullmatch(text):

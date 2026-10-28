@@ -6,6 +6,8 @@ from nonebot.adapters.onebot.v11 import Bot, GroupIncreaseNoticeEvent, Message, 
 from nonebot.params import CommandArg
 
 from . import matchers
+from .adapters.onebot_commands import dispatch_onebot_command
+from .application.commands import parse_command
 from .onebot_runtime import OneBotRuntime
 
 
@@ -38,7 +40,9 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
     async def handle_model_command(
         event: MessageEvent, args: Message = CommandArg()
     ) -> None:
-        await runtime.handlers.commands.handle_model_command(event, args)
+        await dispatch_onebot_command(
+            "model", lambda: runtime.handlers.commands.handle_model_command(event, args),
+        )
 
     async def handle_memory_command(
         event: MessageEvent, args: Message = CommandArg()
@@ -46,12 +50,20 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
         await runtime.handlers.commands.handle_memory_command(event, args)
 
     async def handle_control_command(bot: Bot, event: MessageEvent) -> None:
-        await runtime.handlers.commands.handle_control_command(bot, event)
+        request = parse_command(event.message.extract_plain_text())
+        if request is not None and request.name == "help":
+            await dispatch_onebot_command(
+                "help", lambda: runtime.handlers.commands.handle_control_command(bot, event),
+            )
+        else:
+            await runtime.handlers.commands.handle_control_command(bot, event)
 
     async def handle_effort_command(
         event: MessageEvent, args: Message = CommandArg()
     ) -> None:
-        await runtime.handlers.commands.handle_effort_command(event, args)
+        await dispatch_onebot_command(
+            "effort", lambda: runtime.handlers.commands.handle_effort_command(event, args),
+        )
 
     async def handle_shell_command(
         event: MessageEvent, args: Message = CommandArg()
@@ -74,10 +86,14 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
     async def handle_task_status(
         bot: Bot, event: MessageEvent, args: Message = CommandArg()
     ) -> None:
-        await runtime.handlers.commands.handle_task_status(bot, event, args)
+        await dispatch_onebot_command(
+            "task", lambda: runtime.handlers.commands.handle_task_status(bot, event, args),
+        )
 
     async def handle_usage_command(event: MessageEvent) -> None:
-        await runtime.handlers.commands.handle_usage_command(event)
+        await dispatch_onebot_command(
+            "usage", lambda: runtime.handlers.commands.handle_usage_command(event),
+        )
 
     async def handle_routine_command(event: MessageEvent, args: Message = CommandArg()) -> None:
         await runtime.handlers.commands.handle_routine_command(event, args)
@@ -94,7 +110,9 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
     async def handle_task_stop(
         event: MessageEvent, args: Message = CommandArg()
     ) -> None:
-        await runtime.handlers.commands.handle_task_stop(event, args)
+        await dispatch_onebot_command(
+            "cancel", lambda: runtime.handlers.commands.handle_task_stop(event, args),
+        )
 
     async def handle_mention_ai(bot: Bot, event: MessageEvent) -> None:
         await runtime.handlers.commands.handle_mention_ai(bot, event)
