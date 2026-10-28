@@ -79,7 +79,7 @@ class OfficialInboxTests(unittest.TestCase):
                 'qq_official_accounts', 'qq_official_endpoints', 'qq_official_binding_challenges',
                 'qq_official_binding_candidates', 'qq_official_owner_grants', 'qq_official_owner_actor_links',
                 'qq_official_binding_rate_limits', 'qq_official_reply_windows', 'qq_official_messages',
-                'qq_official_message_indexes', 'admin_security_audit', 'durable_jobs', 'messages')
+                'qq_official_message_indexes', 'qq_official_control_decisions', 'admin_security_audit', 'durable_jobs', 'messages')
 
     def persisted_text(self):
         return repr({table: self.query(f'SELECT * FROM {table}') for table in self.persisted_tables()})
@@ -292,7 +292,8 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertIsNotNone(padded_private_submit.binding)
         self.assertNotIn('483729', self.persisted_text())
         self.assertNotIn('483729', repr(created))
-        self.assertEqual(self.count('durable_jobs'), 0)
+        self.assertEqual(len(self.query('SELECT job_id FROM durable_jobs WHERE kind IN (?,?)',
+            (account_job_kind('ingest', self.account.key), account_job_kind('turn', self.account.key)))), 0)
         rows = self.query('SELECT payload_json,ingest_job_id,reason_code FROM qq_official_inbound_events')
         self.assertTrue(all(row == {'payload_json': None, 'ingest_job_id': None, 'reason_code': 'binding_control'} for row in rows))
         preview = self.accept(private=True, content=f'/bind status {created.binding.challenge_id}')
@@ -505,7 +506,8 @@ class OfficialInboxTests(unittest.TestCase):
             member = ActorKey(self.account, 'group_member', self.group.native_conversation_id, 'TEST_MEMBER')
             self.assertTrue(self.store.admitted(cursor, self.group, member))
             self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, member))
-        self.assertEqual(self.count('durable_jobs'), 1)
+        self.assertEqual(len(self.query('SELECT job_id FROM durable_jobs WHERE kind IN (?,?)',
+            (account_job_kind('ingest', self.account.key), account_job_kind('turn', self.account.key)))), 1)
         self.assertEqual(self.count('messages'), 0)
 
     def test_explicit_del_binding_stays_revoked_after_gap_and_fresh_human_message(self):
@@ -536,7 +538,8 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertEqual({table: self.query(f'SELECT * FROM {table} ORDER BY 1') for table in tables}, before)
         self.assertIsNone(self.store.checkpoint(self.token))
         self.assertEqual(before['qq_official_accounts'][0]['fencing_epoch'], self.token.epoch)
-        self.assertEqual(self.count('durable_jobs'), 0)
+        self.assertEqual(len(self.query('SELECT job_id FROM durable_jobs WHERE kind IN (?,?)',
+            (account_job_kind('ingest', self.account.key), account_job_kind('turn', self.account.key)))), 0)
 
     def ingest(self, inbox_id):
         ledger = MessageLedger(self.database)

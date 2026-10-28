@@ -13,6 +13,9 @@ import time
 import weakref
 
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
+from .control_receipts import (
+    ControlEvidenceError, control_id_for_delivery, delivery_authorized, claim_control_attempt, sync_control_terminal,
+)
 from .identity_store import snapshot
 from .lease import assert_epoch
 from .outbox_types import (
@@ -86,7 +89,7 @@ class OfficialOutbox:
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
-                transaction_cursor=None, binding_preview=None):
+                transaction_cursor=None, binding_preview=None, control_reply_id=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -94,7 +97,7 @@ class OfficialOutbox:
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
                 admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if challenge_id is not None else None, binding_preview=binding_preview,
+                pepper=self.pepper if challenge_id is not None else None, binding_preview=binding_preview, control_reply_id=control_reply_id,
                 max_wait_seconds=self.max_wait_seconds)
         if purpose == "binding_otp" and ref.created:
             for delivery_id in ref.delivery_ids:
@@ -111,6 +114,10 @@ class OfficialOutbox:
                 WHERE d.account_key=? AND d.status='pending' AND EXISTS (
                     SELECT 1 FROM deliveries earlier WHERE earlier.plan_id=d.plan_id
                     AND earlier.part_index<d.part_index AND earlier.status IN ('failed','cancelled'))""", (now, token.account_key))
+            cursor.execute("""UPDATE qq_official_control_decisions c SET state='terminal',updated_at=?
+                FROM deliveries d WHERE c.delivery_id=d.delivery_id AND c.account_key=d.account_key
+                  AND c.account_key=? AND c.state<>'terminal'
+                  AND d.status IN ('committed','failed','cancelled','ambiguous')""", (now, token.account_key))
             # Bounded aging helps older work without turning one blocked plan
             # into a global endpoint head. A plan's physical order stays strict.
             rows = cursor.execute("""SELECT d.delivery_id FROM deliveries d
@@ -143,7 +150,7 @@ class OfficialOutbox:
                 or endpoint_row["route_epoch"] != row["route_epoch"]):
             reason = "route_changed"
         elif (not actor.matches_endpoint(endpoint) or actor.identity_kind == "bot"
-                or not self.admission(cursor, endpoint, actor)):
+                or not self._authorized(cursor, token, row, endpoint, actor, now)):
             reason = "authorization_revoked"
         elif row["payload_mode"] == "ephemeral" and delivery_id not in self._ephemeral:
             reason = "ephemeral_payload_lost"
@@ -152,6 +159,7 @@ class OfficialOutbox:
         if reason:
             cursor.execute("""UPDATE deliveries SET status='cancelled',wait_reason=?,updated_at=?
                 WHERE delivery_id=? AND status='pending'""", (reason, now, delivery_id))
+            sync_control_terminal(cursor, token, delivery_id, now)
             return SendOutcome("cancelled", reason, delivery_id)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", endpoint.native_conversation_id):
             return self._wait(cursor, row, "unsupported_endpoint_contract", now + 30, now)
@@ -174,6 +182,14 @@ class OfficialOutbox:
                 return SendOutcome("cancelled", "binding_grant_expired", delivery_id)
         return row, endpoint, endpoint_row
 
+    def _authorized(self, cursor, token, row, endpoint, actor, now):
+        if control_id_for_delivery(cursor, row) is None:
+            return self.admission(cursor, endpoint, actor)
+        try:
+            return delivery_authorized(cursor, token, row, now)
+        except ControlEvidenceError:
+            return False
+
     @staticmethod
     def _control_current(cursor, row, endpoint, actor, now):
         if row["payload_mode"] == "ephemeral":
@@ -184,6 +200,9 @@ class OfficialOutbox:
         control = json.loads(stored["manifest_json"]).get("control")
         if control is None:
             return True
+        if isinstance(control, dict) and control.get("kind") == "authenticated_control":
+            # _authorized rechecks the source/body/window/first-attempt authority.
+            return set(control) == {"kind", "control_id"}
         if not isinstance(control, dict) or set(control) != {"kind", "candidate_id", "version"} or control["kind"] != "binding_preview":
             raise OutboxInvariantError("invalid_control_manifest")
         return binding_preview_deadline(cursor, endpoint, actor, (control["candidate_id"], control["version"]), now) is not None
@@ -205,7 +224,7 @@ class OfficialOutbox:
             source_native_id=row["reply_to_native_message_id"] or None, purpose=row["purpose"],
             deadline=row["expires_at"], now=now, rate_permit=permit, certification=self.certification,
             allow_newer_windows=self.allow_newer_windows, allow_proactive_probe=self.allow_proactive_probe,
-            verified_boundary=self.verified_boundary)
+            verified_boundary=self.verified_boundary, control_reply_id=control_id_for_delivery(cursor, row))
 
     def candidate(self, token, delivery_id):
         now = int(self.clock())
@@ -288,7 +307,11 @@ class OfficialOutbox:
                 transaction_cursor=cursor, official_context=context)
             if delivery is None:
                 raise OutboxInvariantError("delivery_claim_conflict")
-            reserve_send_policy(cursor, token=token, choice=choice, attempt_id=delivery.current_attempt_id, now=now)
+            reserve_send_policy(cursor, token=token, choice=choice, attempt_id=delivery.current_attempt_id, now=now,
+                control_reply_id=control_id_for_delivery(cursor, row))
+            control_id = control_id_for_delivery(cursor, row)
+            if control_id is not None:
+                claim_control_attempt(cursor, token, control_id=control_id, attempt_id=delivery.current_attempt_id, now=now)
             fields = dict(delivery_id=delivery_id, attempt_id=delivery.current_attempt_id,
                 attempt_number=delivery.attempts, fencing_epoch=token.epoch, endpoint=endpoint,
                 wire_json=wire, payload_digest=wire_digest, send_by_at=choice.send_by_at, payload_mode=row["payload_mode"])
@@ -320,7 +343,7 @@ class OfficialOutbox:
             endpoint = reservation.endpoint
             route = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=? FOR UPDATE", (endpoint.key,)).fetchone()
             if (route is None or route["generation"] != row["endpoint_generation"] or route["route_epoch"] != row["route_epoch"]
-                    or not self.admission(cursor, endpoint, ActorKey.parse(row["requester_actor_key"]))
+                    or not self._authorized(cursor, token, row, endpoint, ActorKey.parse(row["requester_actor_key"]), now)
                     or snapshot(cursor, endpoint.account) is None):
                 return False
             if not self._control_current(cursor, row, endpoint, ActorKey.parse(row["requester_actor_key"]), now):
@@ -419,8 +442,11 @@ class OfficialOutbox:
     def finalize(self, token, receipt_id, *, ledger, journal=None):
         from .receipts import finalize_receipt
         with self.deliveries.transaction() as cursor:
-            return finalize_receipt(cursor, token=token, receipt_id=receipt_id,
-                                    ledger=ledger, journal=journal, now=int(self.clock()))
+            now = int(self.clock())
+            result = finalize_receipt(cursor, token=token, receipt_id=receipt_id,
+                                    ledger=ledger, journal=journal, now=now)
+            sync_control_terminal(cursor, token, result.delivery_id, now)
+            return result
 
     def recover(self, token):
         from .settlements import recover_account_sends

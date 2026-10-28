@@ -33,6 +33,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, reference_resolver=None, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
+        subagent_actions_factory=None, memory_writer=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -44,6 +45,8 @@ class PlatformChatService:
         self.scope_enabled = scope_enabled or self._scope_enabled
         self.registry_factory = registry_factory
         self.llm = llm
+        self.subagent_actions_factory = subagent_actions_factory
+        self.memory_writer = memory_writer
 
     def _scope_enabled(self, scope) -> bool:
         override = self.context.model_preferences.get_scope_enabled_override(scope)
@@ -64,9 +67,9 @@ class PlatformChatService:
     ) -> str:
         """Prepare a structured text turn for the same context and agent core.
 
-        Durable Sub-Agent, host/project, media and continuation adapters have not
-        established platform authorization yet; they cannot be enabled here by
-        a model-selected tool name or by the sender's platform role.
+        Text delegation is available only through the trusted runtime factory.
+        Automatic task routing, host/project, media and revision continuations
+        still lack platform authorization and remain unavailable here.
         """
         if platform.account != inbound.endpoint.account:
             raise ValueError("turn platform does not own inbound endpoint")
@@ -74,7 +77,7 @@ class PlatformChatService:
             raise ValueError("structured preparation currently supports qq-official only")
         if any((task_mode, resume_task_id is not None, routine_execution is not None,
                 _mcp_execution is not None, _approved_call is not None)):
-            raise ChatFailure("当前平台尚未开放持久任务和宿主操作。", code="platform_capability")
+            raise ChatFailure("当前平台尚未开放此任务续接入口和宿主操作。", code="platform_capability")
         if any((force_ocr, force_voice_reply, force_voice_transcription,
                 available_image_sources, available_voice_message_id is not None)):
             raise ChatFailure("当前平台尚未开放这项媒体能力。", code="platform_capability")
@@ -130,6 +133,8 @@ class PlatformChatService:
             capabilities.add("context")
         if self.context.settings.search_enabled and (force_search or self.context.settings.search_auto_enabled):
             capabilities.add("web")
+        if self.subagent_actions_factory is not None:
+            capabilities.add("subagents")
         turn = TurnState(
             context=ToolContext(
                 self.services, event=None, capabilities=frozenset(capabilities),
@@ -145,6 +150,9 @@ class PlatformChatService:
         )
         if prepared.blocked_reply:
             return prepared.blocked_reply
+        if self.subagent_actions_factory is not None:
+            turn.subagent_actions = self.subagent_actions_factory(
+                turn, ports, selected_profile, prepared, turn_trace)
 
         async def execute_tool(name, arguments):
             from src.storage_admission import CapacityError, require_tool_capacity
@@ -204,7 +212,11 @@ class PlatformChatService:
             raise ChatFailure("我这边处理消息时出错了。", code="internal") from exc
         if not answer:
             raise ChatFailure("模型没有返回内容。", code="empty_response")
-        await shared_core.append_shared_turn_memory(self.context, ports, user_text, answer)
+        assert_job_owned()
+        if self.memory_writer is None:
+            await shared_core.append_shared_turn_memory(self.context, ports, user_text, answer)
+        else:
+            await self.memory_writer(inbound, platform, ports, user_text, answer)
         visible = answer
         if final_stream_state is not None and final_stream_state.sent_prefix:
             prefix = final_stream_state.sent_prefix.rstrip()

@@ -27,6 +27,13 @@ _logger = logging.getLogger(__name__)
 _profile_scope: ContextVar[frozenset[str] | None] = ContextVar("completion_profile_scope", default=None)
 
 
+def _assert_model_job_owned() -> None:
+    # agent.__init__ exports agent_loop, which imports this gateway.
+    from .agent.control import assert_job_owned
+
+    assert_job_owned()
+
+
 @contextmanager
 def completion_profile_scope(names: frozenset[str]):
     """Nested callers may narrow routing, never widen their parent's scope."""
@@ -394,13 +401,17 @@ class OpenAIChatProvider:
         profile: ModelProfile,
         **kwargs: Any,
     ) -> Any:
+        from .agent.control import active_job_fence
+
         client = self._client(profile)
-        if active_model_budget() is not None:
+        if active_model_budget() is not None or active_job_fence.get() is not None:
+            # SDK retries cannot revalidate our durable execution authority.
             client = client.with_options(max_retries=0)
         request = {key: value for key, value in kwargs.items() if value is not None}
         if profile.max_output_tokens > 0 and not {"max_tokens", "max_completion_tokens"} & request.keys():
             request["max_tokens"] = profile.max_output_tokens
         try:
+            _assert_model_job_owned()
             return await client.chat.completions.create(**request)
         except RateLimitError as exc:
             raise LLMRateLimitError(
@@ -418,8 +429,13 @@ class OpenAIChatProvider:
             ) from exc
 
     async def list_models(self, profile: ModelProfile) -> list[str]:
+        from .agent.control import active_job_fence
+
         client = self._client(profile)
+        if active_job_fence.get() is not None:
+            client = client.with_options(max_retries=0)
         try:
+            _assert_model_job_owned()
             response = await client.models.list()
         except RateLimitError as exc:
             raise LLMRateLimitError(
@@ -478,6 +494,7 @@ class AnthropicMessagesProvider:
         if profile.api_key:
             headers["x-api-key"] = profile.api_key
         try:
+            _assert_model_job_owned()
             response = await self._client(profile).post(
                 _anthropic_messages_url(profile.base_url),
                 headers=headers,
@@ -818,14 +835,17 @@ class LLMGateway:
                 f"model profile {profile.name!r} does not support native JSON mode"
             )
         budget = active_model_budget()
+        _assert_model_job_owned()
         if budget is None:
             return await provider.create_completion(profile, **kwargs)
         if budget.before_request is not None:
             await budget.before_request()
+        _assert_model_job_owned()
         request, reservation = budget.prepare(profile, kwargs)
         try:
             if budget.reserve_request is not None:
                 await budget.reserve_request(reservation)
+            _assert_model_job_owned()
             response = await provider.create_completion(profile, **request)
             if request.get("stream"):
                 return BudgetedStream(response, reservation)
@@ -889,6 +909,7 @@ class LLMGateway:
             raise LLMConfigError(
                 f"model listing is not enabled for profile {profile.name!r}"
             )
+        _assert_model_job_owned()
         return await self._provider(profile).list_models(profile)
 
     async def close(self) -> None:

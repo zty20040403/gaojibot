@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Sequence
 from .sessions import upstream_index
+from ..platform_types import EndpointKey, ActorKey
+from .task_identity import make_owner, object_owner, owner_fields, owner_from_payload
 
 
 SubAgentRole = Literal[
@@ -82,7 +84,7 @@ class ContextPacket:
 
     scope_key: str
     conversation_id: str
-    requester_user_id: int
+    requester_user_id: int | None
     trigger_message_id: int | None
     objective: str
     conversation_context: str = ""
@@ -91,6 +93,11 @@ class ContextPacket:
     evidence_handles: tuple[str, ...] = ()
     artifact_handles: tuple[str, ...] = ()
     constraints: tuple[str, ...] = ()
+    endpoint: EndpointKey | None = field(default=None, repr=False)
+    requester_actor: ActorKey | None = field(default=None, repr=False)
+
+    def __post_init__(self):
+        make_owner(self.requester_user_id, self.endpoint, self.requester_actor)
 
     @classmethod
     def from_legacy(
@@ -120,7 +127,7 @@ class ContextPacket:
         return {
             "scope_key": self.scope_key,
             "conversation_id": self.conversation_id,
-            "requester_user_id": self.requester_user_id,
+            **object_owner(self).as_payload(),
             "trigger_message_id": self.trigger_message_id,
             "objective": self.objective,
             "conversation_context": self.conversation_context,
@@ -136,7 +143,7 @@ class ContextPacket:
         return cls(
             scope_key=str(payload.get("scope_key") or ""),
             conversation_id=str(payload.get("conversation_id") or ""),
-            requester_user_id=int(payload.get("requester_user_id") or 0),
+            **owner_fields(owner_from_payload(payload)),
             trigger_message_id=(
                 int(payload["trigger_message_id"])
                 if payload.get("trigger_message_id") is not None
@@ -196,11 +203,13 @@ class ContextPacket:
             sections,
             max_chars=max(int(spec.context_budget_chars) - len(handoff), 1000),
         ) + handoff
-        digest = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+        hash_input = rendered if self.endpoint is None else json.dumps(
+            [rendered, object_owner(self).as_payload()], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()
         return AgentContext(
             scope_key=self.scope_key,
             conversation_id=self.conversation_id,
-            requester_user_id=self.requester_user_id,
+            **owner_fields(object_owner(self)),
             trigger_message_id=self.trigger_message_id,
             role=spec.role,
             agent_definition_version=spec.version,
@@ -230,7 +239,7 @@ class AgentContext:
 
     scope_key: str
     conversation_id: str
-    requester_user_id: int
+    requester_user_id: int | None
     trigger_message_id: int | None
     role: SubAgentRole
     agent_definition_version: int
@@ -239,12 +248,17 @@ class AgentContext:
     context_hash: str
     evidence_handles: tuple[str, ...] = ()
     artifact_handles: tuple[str, ...] = ()
+    endpoint: EndpointKey | None = field(default=None, repr=False)
+    requester_actor: ActorKey | None = field(default=None, repr=False)
+
+    def __post_init__(self):
+        make_owner(self.requester_user_id, self.endpoint, self.requester_actor)
 
     def as_payload(self) -> dict[str, object]:
         return {
             "scope_key": self.scope_key,
             "conversation_id": self.conversation_id,
-            "requester_user_id": self.requester_user_id,
+            **object_owner(self).as_payload(),
             "trigger_message_id": self.trigger_message_id,
             "role": self.role,
             "agent_definition_version": self.agent_definition_version,
@@ -261,7 +275,7 @@ class AgentContext:
         return cls(
             scope_key=str(payload.get("scope_key") or ""),
             conversation_id=str(payload.get("conversation_id") or ""),
-            requester_user_id=int(payload.get("requester_user_id") or 0),
+            **owner_fields(owner_from_payload(payload)),
             trigger_message_id=(
                 int(payload["trigger_message_id"])
                 if payload.get("trigger_message_id") is not None

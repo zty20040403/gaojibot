@@ -743,7 +743,7 @@ class DeliveryStore:
             try:
                 cursor.execute("BEGIN")
                 yield cursor
-            except Exception:
+            except BaseException:
                 self._connection.rollback()
                 raise
             else:

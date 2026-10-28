@@ -64,6 +64,8 @@ class SubAgentDispatcher:
             return None
         if task.project_id is not None:
             return enqueue_project_report(self, task_id)
+        if getattr(task, "endpoint", None) is not None:
+            raise PermissionError("Official task requires its account dispatcher")
         event = self.restore_event(control["dispatch"])
         if scope_from_event(event).key != task.scope_key or event.user_id != task.requester_user_id:
             raise ValueError("Final delivery envelope does not match the task owner")
@@ -108,6 +110,9 @@ class SubAgentDispatcher:
             active_job_fence.reset(token)
 
     def enqueue(self, task_id: int):
+        task = self.store.get(task_id)
+        if task is not None and getattr(task, "endpoint", None) is not None:
+            raise PermissionError("Official task requires its account dispatcher")
         if self.store.routine_parent(task_id) is not None:
             return None
         task = self.store.get(task_id)
@@ -279,6 +284,8 @@ class SubAgentDispatcher:
         task = self.store.get(task_id)
         if task is None or not control["dispatch"] or self.context.delivery_store is None:
             return
+        if getattr(task, "endpoint", None) is not None:
+            raise PermissionError("Official task requires its account dispatcher")
         event = self.restore_event(control["dispatch"])
         if scope_from_event(event).key != task.scope_key or event.user_id != task.requester_user_id:
             raise ValueError("File failure notice does not match task owner")
@@ -304,6 +311,8 @@ class SubAgentDispatcher:
         control = self.store.control(task_id)
         if task is None or task.cancel_requested or not control["dispatch"] or not tool_enabled("send_file_from_sandbox"):
             return
+        if getattr(task, "endpoint", None) is not None:
+            raise PermissionError("Official task requires its account dispatcher")
         event = self.restore_event(control["dispatch"])
         if scope_from_event(event).key != task.scope_key or event.user_id != task.requester_user_id:
             raise ValueError("File outbox does not match the original task owner")
@@ -413,6 +422,8 @@ class SubAgentDispatcher:
     def settle_file_receipts(self, task_id: int):
         control = self.store.control(task_id)
         task = self.store.get(task_id)
+        if getattr(task, "endpoint", None) is not None:
+            raise PermissionError("Official task requires its account dispatcher")
         event = self.restore_event(control["dispatch"])
         if scope_from_event(event).key != task.scope_key or event.user_id != task.requester_user_id:
             raise ValueError("File receipt envelope does not match the task owner")
@@ -454,6 +465,8 @@ class SubAgentDispatcher:
         if task is None or job.scope_key != task.scope_key or control["revision"] != int(job.payload["revision"]):
             return {"state": "obsolete"}
         dispatch = control["dispatch"]
+        if getattr(task, "endpoint", None) is not None:
+            raise PermissionError("Official task requires its account dispatcher")
         event = self.restore_event(dispatch)
         if scope_from_event(event).key != task.scope_key or event.user_id != task.requester_user_id:
             raise ValueError("Task dispatch envelope does not match its owner")

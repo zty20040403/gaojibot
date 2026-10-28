@@ -93,7 +93,9 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             "project_completion": project_report,
             "control": {key: control[key] for key in ("version", "revision", "policy")},
             "background": bool(control["dispatch"]),
-            "revision_allowed": str(task.requester_user_id) == str(principal().get("qq_id")),
+            "revision_allowed": (getattr(task, "endpoint", None) is None
+                and task.requester_user_id is not None and principal().get("qq_id") is not None
+                and str(task.requester_user_id) == str(principal().get("qq_id"))),
             "collaboration": services.subagent_store.collaboration_snapshot(task_id),
             "final_delivery": {"delivery_id": final.delivery_id, "status": final.status, "attempts": final.attempts,
                 "updated_at": final.updated_at, "last_error": final.last_error} if final else None,

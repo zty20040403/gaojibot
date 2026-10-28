@@ -5,17 +5,23 @@ import re
 import time
 from collections.abc import Mapping
 from typing import Any
+from .task_identity import make_owner, object_owner, require_same_owner
 
 
 class AgentSessionStoreMixin:
     """A session belongs to one task step, not to a reusable role template."""
 
-    def agent_session(self, task_id: int, run_id: int, *, scope_key: str, requester_user_id: int) -> dict[str, Any]:
+    def agent_session(self, task_id: int, run_id: int, *, scope_key: str, requester_user_id: int | None, endpoint=None, requester_actor=None) -> dict[str, Any]:
+        expected = make_owner(requester_user_id, endpoint, requester_actor)
+        task = self.get(task_id)
+        if task is None or task.scope_key != scope_key:
+            raise PermissionError("Agent session is outside the current task/owner scope")
+        require_same_owner(object_owner(task), expected)
         with self._lock:
             owner = self._connection.execute(
                 """SELECT r.run_id FROM subagent_runs r JOIN subagent_tasks t ON t.task_id = r.task_id
-                   WHERE r.run_id = ? AND t.task_id = ? AND t.scope_key = ? AND t.requester_user_id = ?""",
-                (run_id, task_id, scope_key, requester_user_id),
+                   WHERE r.run_id = ? AND t.task_id = ? AND t.scope_key = ?""",
+                (run_id, task_id, scope_key),
             ).fetchone()
             if owner is None:
                 raise PermissionError("Agent session is outside the current task/owner scope")
@@ -30,9 +36,9 @@ class AgentSessionStoreMixin:
 
     def save_agent_session(
         self, task_id: int, run_id: int, messages: list[dict[str, Any]], *,
-        scope_key: str, requester_user_id: int, model_profile: str, expected_version: int,
+        scope_key: str, requester_user_id: int | None, model_profile: str, expected_version: int, endpoint=None, requester_actor=None,
     ) -> int:
-        self.agent_session(task_id, run_id, scope_key=scope_key, requester_user_id=requester_user_id)
+        self.agent_session(task_id, run_id, scope_key=scope_key, requester_user_id=requester_user_id, endpoint=endpoint, requester_actor=requester_actor)
         if any(item.get("role") not in {"user", "assistant", "tool"} for item in messages):
             raise ValueError("Agent transcripts must not persist host system instructions")
         payload = json.dumps(messages, ensure_ascii=False)

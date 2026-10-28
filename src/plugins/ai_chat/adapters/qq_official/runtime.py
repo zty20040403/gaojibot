@@ -1,7 +1,4 @@
-"""Default-off official ingress and durable sender, independent of OneBot.
-
-Turn intents remain durable until the shared application consumer is connected.
-"""
+"""Default-off official ingress, shared turns and sender, independent of OneBot."""
 from __future__ import annotations
 
 import asyncio
@@ -99,13 +96,17 @@ class OfficialRuntime:
     def __init__(self, config: OfficialConfig, database, *, logger, ledger=None, journal=None,
                  protocol_factory=open_official_protocol, binding_sender=None,
                  lease_factory=DedicatedAccountLease, probe_seconds: float = 1,
-                 retry_seconds: float = 2, allow_test_server: bool = False):
+                 retry_seconds: float = 2, allow_test_server: bool = False,
+                 application=None, turn_consumer_factory=None):
         self.config, self.database, self.logger = config, database, logger
         self.protocol_factory, self.binding_sender = protocol_factory, binding_sender
         self.lease_factory = lease_factory
         self.probe_seconds = min(max(probe_seconds, 0.01), 5)
         self.retry_seconds = min(max(retry_seconds, 0.01), 60)
         self.allow_test_server = allow_test_server
+        self.application, self.turn_consumer_factory = application, turn_consumer_factory
+        self.turn_consumer = None
+        self.subagent_service = None
         self.ledger = ledger
         self._owns_ledger = ledger is None
         self.journal = journal
@@ -188,7 +189,8 @@ class OfficialRuntime:
     def status(self) -> dict:
         # No raw account, session, URL, credential, binding effect or DB exception.
         return {"state": self.state, "reason": self.reason, "started": self._started,
-                "turn_execution_connected": False,
+                "turn_execution_connected": self.turn_consumer is not None,
+                "subagent_execution_connected": self.subagent_service is not None,
                 "binding_transport_connected": self.binding_sender is not None or self.sender is not None,
                 "durable_sender_connected": self.sender is not None}
 
@@ -238,6 +240,10 @@ class OfficialRuntime:
                             pass
                 finally:
                     self._token = None
+                    self._gateway = None
+                    self.sender = None
+                    self.turn_consumer = None
+                    self.subagent_service = None
                     # DatabaseCalls drains non-cancellable transaction threads
                     # before this close or any later account acquisition.
                     try:
@@ -323,6 +329,7 @@ class OfficialRuntime:
         async def monitor():
             loop = asyncio.get_running_loop()
             next_purge = 0.0
+            next_result_scan = 0.0
             while not self._stopping:
                 if not await self._calls(lease.probe):
                     raise LeaseLost("Official account lease was lost")
@@ -330,6 +337,9 @@ class OfficialRuntime:
                     await self._calls(self.store.check_pending_ingest, token)
                     await self._calls(self.store.purge_terminal_payloads, token)
                     next_purge = loop.time() + 60
+                if self.subagent_service is not None and loop.time() >= next_result_scan:
+                    await self.subagent_service.reconcile()
+                    next_result_scan = loop.time() + 5
                 await asyncio.sleep(self.probe_seconds)
 
         async def failure():
@@ -349,11 +359,39 @@ class OfficialRuntime:
                     journal=self.journal, database_calls=self._calls,
                     ensure_current=lambda: self._ensure_current(token))
                 await self.sender.recover()
+                from .control_handler import ControlJobHandler
+                from .control_receipts import control_job_kind
+                worker.register(control_job_kind(self.loaded.account.key), ControlJobHandler(
+                    token=token, outbox=self.outbox, sender=self.sender, database_calls=self._calls,
+                    ensure_current=lambda: self._ensure_current(token), clock=self.store.clock))
+            factory = self.turn_consumer_factory
+            subagent_worker = None
+            if (self.application is not None and getattr(self.application, "subagent_store", None) is not None
+                    and getattr(self.application, "subagent_coordinator", None) is not None
+                    and self.application.settings.subagents_enabled):
+                from .subagent_composition import OfficialSubAgentService
+                self.subagent_service = OfficialSubAgentService(self, token, self.application)
+                subagent_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
+                    concurrency=2, per_scope_limit=1, database_calls=self._calls)
+                subagent_worker.register(account_job_kind("subagent", self.loaded.account.key), self.subagent_service.execute)
+            if factory is None and self.application is not None:
+                from .turn_runtime import build_turn_consumer
+                factory = lambda current, lease_token: build_turn_consumer(current, lease_token, self.application)
+            turns = None
+            if factory is not None:
+                self.turn_consumer = factory(self, token)
+                turns = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
+                    concurrency=2, per_scope_limit=1, database_calls=self._calls)
+                turns.register(account_job_kind("turn", self.loaded.account.key), self.turn_consumer)
             self.state, self.reason = "running", "receiving_durable_events"
             tasks = [asyncio.create_task(gateway.run(on_dispatch)), asyncio.create_task(worker.run_forever()),
                      asyncio.create_task(monitor()), asyncio.create_task(failure())]
             if self.sender is not None:
                 tasks.append(asyncio.create_task(self.sender.run()))
+            if turns is not None:
+                tasks.append(asyncio.create_task(turns.run_forever()))
+            if subagent_worker is not None:
+                tasks.append(asyncio.create_task(subagent_worker.run_forever()))
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for finished in done:
@@ -374,6 +412,8 @@ class OfficialRuntime:
                             task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
                     self.sender = None
+                    self.turn_consumer = None
+                    self.subagent_service = None
 
     async def _deliver_binding(self, token, effect):
         outcome = "failed"

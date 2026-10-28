@@ -8,6 +8,7 @@ import time
 from contextvars import ContextVar
 
 from .control import assert_job_owned
+from .task_identity import make_owner, owner_fields
 
 
 class ExternalPending(BaseException):
@@ -96,7 +97,11 @@ class ExternalStoreMixin:
     def hydrate_external_session(self, task_id, run_id):
         """Repair a crash between the durable remote receipt and transcript commit."""
         task = self.get(task_id)
-        session = self.agent_session(task_id, run_id, scope_key=task.scope_key, requester_user_id=task.requester_user_id)
+        if getattr(task, "endpoint", None) is not None and self.external_calls(task_id):
+            raise PermissionError("Official external operations are unavailable")
+        identity = owner_fields(make_owner(task.requester_user_id,
+            getattr(task, "endpoint", None), getattr(task, "requester_actor", None)))
+        session = self.agent_session(task_id, run_id, scope_key=task.scope_key, **identity)
         calls = {c["call_id"]: c for c in self.external_calls(task_id, run_id=run_id)}
         if not session["messages"]:
             return session
@@ -123,8 +128,8 @@ class ExternalStoreMixin:
                     "content": '{"ok":false,"error":"Process interrupted before this tool returned; do not assume it ran."}'})
         if messages != source:
             self.save_agent_session(task_id, run_id, messages, scope_key=task.scope_key,
-                requester_user_id=task.requester_user_id, model_profile=session["model_profile"], expected_version=session["version"])
-        return self.agent_session(task_id, run_id, scope_key=task.scope_key, requester_user_id=task.requester_user_id)
+                **identity, model_profile=session["model_profile"], expected_version=session["version"])
+        return self.agent_session(task_id, run_id, scope_key=task.scope_key, **identity)
 
 
 class ExternalCalls:
@@ -141,6 +146,8 @@ class ExternalCalls:
 
     async def request(self, method, path, body, *, actor, origin, perform):
         task = self.store.get(self.task_id)
+        if getattr(task, "endpoint", None) is not None:
+            raise PermissionError("Official external operations are unavailable")
         if not self.call_id or not ((method == "POST" and path in SUBMISSIONS)
                                    or (method == "GET" and READ_PATH.fullmatch(path))):
             return await perform(body)
@@ -173,6 +180,8 @@ class ExternalCalls:
 
 async def poll_external(store, task, client):
     """Called only by the task lease holder; never runs an LLM."""
+    if getattr(task, "endpoint", None) is not None:
+        raise PermissionError("Official external operations are unavailable")
     from ..server_task_authorization import server_task
     control = store.control(task.task_id)
     actual_user = store.revision_actor(task.task_id)

@@ -25,6 +25,11 @@ class TaskCollaborationStoreMixin:
 
     def execution_model_policy(self, task_id):
         task = self.get(task_id)
+        if task and task.endpoint is not None:
+            control = self.control(task_id)
+            if control["revision"] != 1 or control["policy"] != {"mode": "auto"}:
+                raise PermissionError("Official task policy is unavailable")
+            return {"mode": "auto"}
         # Per-task overrides selected by the owner do not transfer to a collaborator.
         return self.control(task_id)["policy"] if task and self.revision_actor(task_id) == task.requester_user_id else {"mode": "auto"}
 
@@ -33,6 +38,11 @@ class TaskCollaborationStoreMixin:
         task = self.get(task_id)
         if task is None:
             raise ValueError("Task no longer exists")
+        if task.endpoint is not None:
+            return {"creator_user_id": None, "execution_user_id": None,
+                    "creator_actor_key": task.requester_actor.key,
+                    "endpoint_key": task.endpoint.key, "supported": False,
+                    "members": [], "feedback": []}
         with self._lock:
             members = self._connection.execute("""SELECT a.principal_id,a.enabled,a.grant_version,
                     a.updated_at,i.native_user_id
@@ -215,6 +225,8 @@ class TaskCollaborationStoreMixin:
         task = self.get(task_id)
         if task is None:
             raise ValueError("Task no longer exists")
+        if task.endpoint is not None:
+            raise PermissionError("Official actor cannot use numeric revision identity")
         control = self.control(task_id)
         revision = control["revision"] if revision is None else revision
         if not 1 <= revision <= control["revision"]:

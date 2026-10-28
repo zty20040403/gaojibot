@@ -14,6 +14,8 @@ class JobFence:
     owner: str
     attempt: int
     check: Callable[[], bool]
+    lease_generation: int | None = None
+    transaction_guard: Callable[[Any], None] | None = None
 
     def assert_owned(self) -> None:
         if not self.check():
@@ -263,7 +265,7 @@ class TaskControlStoreMixin:
     def dispatchable_tasks(self) -> list[int]:
         with self._lock:
             rows = self._connection.execute("""SELECT t.task_id FROM subagent_tasks t JOIN subagent_controls c ON t.task_id=c.task_id
-                WHERE t.status IN ('queued', 'interrupted', 'waiting_external') AND t.cancel_requested=?
+                WHERE t.account_key IS NULL AND t.status IN ('queued', 'interrupted', 'waiting_external') AND t.cancel_requested=?
                 AND NOT EXISTS (SELECT 1 FROM routine_children r WHERE r.task_id=t.task_id)
                 ORDER BY t.created_at LIMIT 100""", (False,)).fetchall()
         return [int(row["task_id"]) for row in rows]
@@ -272,14 +274,15 @@ class TaskControlStoreMixin:
         with self._lock:
             rows = self._connection.execute("""SELECT t.task_id FROM subagent_tasks t
                 JOIN subagent_controls c ON t.task_id=c.task_id
-                WHERE t.status IN ('completed','partial','failed','cancelled')
+                WHERE t.account_key IS NULL AND t.status IN ('completed','partial','failed','cancelled')
                   AND c.dispatch_json <> '{}' AND c.final_queued_revision <> c.revision
                   AND NOT EXISTS (SELECT 1 FROM routine_children r WHERE r.task_id=t.task_id)
                 ORDER BY t.finished_at, t.task_id LIMIT 100""").fetchall()
         return [int(row["task_id"]) for row in rows]
 
-    def mark_final_queued(self, task_id, revision):
-        with self._transaction() as cursor:
+    def mark_final_queued(self, task_id, revision, *, transaction_cursor=None):
+        from contextlib import nullcontext
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             cursor.execute("UPDATE subagent_controls SET final_queued_revision=? WHERE task_id=? AND revision=?",
                 (revision, task_id, revision))
 
@@ -292,7 +295,7 @@ class TaskControlStoreMixin:
         with self._lock:
             rows = self._connection.execute("""SELECT t.task_id FROM subagent_tasks t
                 JOIN subagent_controls c ON c.task_id=t.task_id
-                WHERE t.status IN ('completed','partial','failed','cancelled') AND c.dispatch_json <> '{}'
+                WHERE t.account_key IS NULL AND t.status IN ('completed','partial','failed','cancelled') AND c.dispatch_json <> '{}'
                   AND EXISTS (SELECT 1 FROM subagent_deliveries d WHERE d.task_id=t.task_id
                     AND d.revision=c.revision AND d.state='acknowledged')
                   AND NOT EXISTS (SELECT 1 FROM subagent_deliveries d WHERE d.task_id=t.task_id

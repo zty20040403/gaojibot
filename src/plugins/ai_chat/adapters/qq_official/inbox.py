@@ -21,7 +21,9 @@ from src.qq_official.events import EventParseError, LIFECYCLE_EVENTS, MESSAGE_EV
 from src.qq_official.gateway import GatewayCheckpoint
 
 from .authority import OwnerAuthority
-from .binding import BindingContext, BindingDecision, BindingReducer, parse_binding_command
+from .binding import BindingContext, BindingDecision, BindingReducer
+from .input_normalization import normalize_input
+from .control_receipts import record_decision, enqueue_control_job
 from .codec import DecodedMessage, decode_message
 from .lease import assert_epoch
 from .keys import account_job_kind
@@ -211,6 +213,10 @@ class OfficialInboxStore:
             cursor.execute("""INSERT INTO qq_official_gateway_receipts
                 (account_key,session_id,seq,event_type,disposition,inbox_id,received_at) VALUES (?,?,?,?,?,?,?)""",
                 (account.key, session_id, seq, event_type, result.disposition, result.inbox_id, now))
+            if result.binding is not None and result.inbox_id is not None:
+                control_id = record_decision(cursor, token, inbox_id=result.inbox_id,
+                    source_session_id=session_id, source_seq=seq, now=now)
+                enqueue_control_job(cursor, token, control_id, self.jobs, now)
             cursor.execute("""UPDATE qq_official_accounts SET session_id=?,durable_seq=?,gateway_state='active',updated_at=?
                 WHERE account_key=?""", (session_id, seq, now, account.key))
             return result
@@ -333,16 +339,22 @@ class OfficialInboxStore:
             sent = cursor.execute("""SELECT 1 FROM qq_official_messages
                 WHERE account_key=? AND endpoint_key=? AND native_message_id=? AND direction='outbound'""",
                 (account.key, endpoint.key, native_id)).fetchone()
-            command = parse_binding_command(dispatch.message.content)
+            prepared_input = normalize_input(dispatch)
+            command = prepared_input.command
             if sent is not None:
                 reason, echo = "self_echo", "confirmed_self"
+            elif prepared_input.kind == "quarantine":
+                status, reason = "quarantined", prepared_input.reason
             elif command is not None:
                 decision = self.binding.apply(cursor,
                     context=BindingContext(endpoint, decoded.actor,
                         durable_key("binding-receipt", account.key, str(dispatch.seq), event_id or "", native_id), now),
                     command=command, lease_token=token)
                 status, reason = "processed", "binding_control"
-                if decision.effect is not None:
+                # A reducer can change this source route. Freeze the actual
+                # post-decision route and observe ONLY the original event time.
+                endpoint_row = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,)).fetchone()
+                if decision.status != "limited":
                     from .ingest import observe_reply_window
                     observe_reply_window(cursor, decoded, endpoint_row, now)
             elif self.admitted(cursor, endpoint, decoded.actor):
@@ -355,6 +367,10 @@ class OfficialInboxStore:
         inbox_id = self._insert(cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=endpoint_row,
             native_id=native_id, event_id=event_id, status=status, reason=reason, payload=payload, echo=echo,
             trigger=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending")
+        if decision is not None:
+            cursor.execute("""UPDATE qq_official_inbound_events
+                SET control_actor_key=?,control_action=?,control_decision_code=? WHERE inbox_id=?""",
+                (decoded.actor.key, command.action, decision.status, inbox_id))
         self._save_aliases(cursor, account, aliases, inbox_id, now)
         if status == "pending":
             kind = account_job_kind("ingest", account.key)
