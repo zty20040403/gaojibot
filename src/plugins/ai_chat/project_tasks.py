@@ -129,28 +129,37 @@ class ProjectTaskStore:
                 raise ProjectConflict("Project task requires its latest saved version")
             self._clean_baseline(cursor, project, baseline)
             self._manifest(cursor, access, project_id, baseline)
-            task = self.tasks.prepare_task(packet=packet, decision=decision, dispatch=dispatch,
-                max_parallelism=max_parallelism, max_steps=max_steps, transaction_cursor=cursor)
-            task_row = cursor.execute(
-                "UPDATE subagent_tasks SET project_id=?,project_base_version=? WHERE task_id=? RETURNING *",
-                (project_id, base_version, task.task_id),
-            ).fetchone()
-            cursor.execute(
-                """INSERT INTO project_task_bindings(task_id,project_id,actor_principal_id,request_key,
-                intent_sha256,base_version,manifest_sha256,generation,fence,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (task.task_id, project_id, access.principal_id, request_key, intent, base_version,
-                 baseline["manifest_sha256"], project["workspace_generation"], project["lifecycle_fence"], now),
-            )
-            cursor.execute("UPDATE projects SET locked_task_id=?,version=version+1,updated_at=?,last_active_at=? WHERE project_id=?",
-                           (task.task_id, now, now, project_id))
-            self.projects._touch_focus(cursor, access, project_id, now)
-            evidence = {"task_id": task.task_id, "project_id": project_id, **baseline}
-            self.projects._event(cursor, project_id, access, "task_bound", evidence, now)
-            self.tasks.append_event(task.task_id, "task.project_bound", evidence, transaction_cursor=cursor)
-            self.tasks.append_checkpoint(task.task_id, "project_bound", evidence, transaction_cursor=cursor)
-        self.tasks._notify_changed(task.task_id)
+            task_row = self._bind(cursor, access, project, baseline, request_key=request_key,
+                intent=intent, packet=packet, decision=decision, dispatch=dispatch,
+                max_parallelism=max_parallelism, max_steps=max_steps, now=now)
+        self.tasks._notify_changed(task_row["task_id"])
         return self.tasks._task_row(task_row)
+
+    def _bind(self, cursor, access, project, baseline, *, request_key, intent,
+              packet, decision, dispatch, max_parallelism, max_steps, now):
+        """Caller owns admission, the project row lock and the outer transaction."""
+        project_id, base_version = project["project_id"], baseline["version_no"]
+        task = self.tasks.prepare_task(packet=packet, decision=decision, dispatch=dispatch,
+            max_parallelism=max_parallelism, max_steps=max_steps, transaction_cursor=cursor)
+        task_row = cursor.execute(
+            "UPDATE subagent_tasks SET project_id=?,project_base_version=? WHERE task_id=? RETURNING *",
+            (project_id, base_version, task.task_id),
+        ).fetchone()
+        cursor.execute(
+            """INSERT INTO project_task_bindings(task_id,project_id,actor_principal_id,request_key,
+            intent_sha256,base_version,manifest_sha256,generation,fence,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (task.task_id, project_id, access.principal_id, request_key, intent, base_version,
+             baseline["manifest_sha256"], project["workspace_generation"], project["lifecycle_fence"], now),
+        )
+        cursor.execute("UPDATE projects SET locked_task_id=?,version=version+1,updated_at=?,last_active_at=? WHERE project_id=?",
+                           (task.task_id, now, now, project_id))
+        self.projects._touch_focus(cursor, access, project_id, now)
+        evidence = {"task_id": task.task_id, "project_id": project_id, **baseline}
+        self.projects._event(cursor, project_id, access, "task_bound", evidence, now)
+        self.tasks.append_event(task.task_id, "task.project_bound", evidence, transaction_cursor=cursor)
+        self.tasks.append_checkpoint(task.task_id, "project_bound", evidence, transaction_cursor=cursor)
+        return task_row
 
     def _manifest(self, cursor, access, project_id, baseline):
         project = self.projects._get(cursor, access, project_id)

@@ -195,7 +195,9 @@ class ProjectIOStore:
             if mutating:
                 cursor.execute(
                     """INSERT INTO project_turn_saves(project_id,turn_id,actor_principal_id,created_at,updated_at)
-                    VALUES (?,?,?,?,?) ON CONFLICT(project_id,turn_id) DO NOTHING""",
+                    VALUES (?,?,?,?,?) ON CONFLICT(project_id,turn_id) DO UPDATE
+                    SET state='pending',job_id=NULL,error_code='',next_attempt_at=0,
+                    updated_at=EXCLUDED.updated_at WHERE project_turn_saves.state<>'pending'""",
                     (project_id, journal_turn_id, access.principal_id, now, now),
                 )
             self.projects._touch_focus(cursor, access, project_id, now)

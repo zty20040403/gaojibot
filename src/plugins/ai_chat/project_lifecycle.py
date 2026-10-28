@@ -22,11 +22,25 @@ TARGETS = {
     "hibernate": "hibernated",
     "archive": "archived",
     "restore": "active",
+    "task_prepare": "stopped",
 }
 
 
 def transition_plan(project, action, baseline, *, rebuild=None):
     source = project["status"]
+    if action == "task_prepare":
+        if source == "active":
+            return transition_plan(project, "stop", baseline, rebuild=rebuild)
+        if source == "stopped" and project["workspace_generation"] > 0:
+            return transition_plan(project, "snapshot", baseline, rebuild=rebuild)
+        generation, plan = transition_plan(project, "wake", baseline, rebuild=rebuild)
+        # Keep the same physical reservation through restoration and snapshot.
+        # No user-visible active interval may precede the task binding.
+        plan["steps"] = plan["steps"][:-2] + [
+            "quiesce_workspace", "snapshot_workspace", "stop_workspace",
+            "release_workspace", "verify_stopped",
+        ]
+        return generation, plan
     allowed = {
         "wake": {"stopped", "hibernated", "archived"},
         "stop": {"active"},
@@ -136,12 +150,14 @@ def transition_plan(project, action, baseline, *, rebuild=None):
 class ProjectLifecycle:
     def __init__(self, projects, jobs):
         self.projects, self.jobs = projects, jobs
+        self.task_admission = None
 
     @staticmethod
     def _public_run(run):
         result = dict(run)
         result["plan"] = {
-            key: value for key, value in result["plan"].items() if key != "reservation"
+            key: value for key, value in result["plan"].items()
+            if key not in {"reservation", "task_admission"}
         }
         return result
 
@@ -211,6 +227,8 @@ class ProjectLifecycle:
     ):
         from .project_turn_saves import require_finished_save
 
+        if action == "task_prepare":
+            raise ValueError("Task preparation requires the host admission adapter")
         if ((action == "restore" and (type(restore_version) is not int or not 1 <= restore_version < 2**53))
                 or (action != "restore" and restore_version is not None)):
             raise ValueError("Invalid restore version")
@@ -648,11 +666,20 @@ class ProjectLifecycle:
                 (now, job.job_id),
             )
 
-    def finish(self, job, *, now=None):
+    def finish(self, job, *, access=None, now=None):
         lease_now = now
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
             project, run = self._owned(cursor, job, lease_now)
+            if run["action"] == "task_prepare":
+                from .workers.durable_jobs import JobDeferred
+
+                if self.task_admission is None:
+                    raise JobDeferred("Project task admission is temporarily unavailable", 30)
+                if access is None or access.principal_id != run["actor_principal_id"]:
+                    raise PermissionError("Task preparation requires its current execution identity")
+                self.projects._get(cursor, access, project["project_id"], edit=True,
+                                   lifecycle_job=job, now=lease_now)
             rows = cursor.execute(
                 "SELECT * FROM project_lifecycle_steps WHERE job_id=? ORDER BY step_index",
                 (job.job_id,),
@@ -672,7 +699,7 @@ class ProjectLifecycle:
                 "state": run["target_state"],
                 "generation": run["generation"],
             }
-            if run["action"] == "snapshot":
+            if run["action"] in {"snapshot", "task_prepare"}:
                 result["snapshot"] = next(
                     row["evidence"]["snapshot"] for row in rows
                     if row["operation"] == "snapshot_workspace"
@@ -719,6 +746,12 @@ class ProjectLifecycle:
                 "UPDATE project_lifecycle_runs SET status='completed',updated_at=? WHERE job_id=?",
                 (now, job.job_id),
             )
+            if run["action"] == "task_prepare":
+                result["task_id"] = self.task_admission._bind_saved(
+                    cursor, access, run, result["snapshot"], now=now
+                )
+                result["task_bound"] = True
+                require_project_lease(cursor, project, job, lease_now)
             # Same transaction as releasing the project lock; no completion gap.
             cursor.execute(
                 """UPDATE durable_jobs SET status='succeeded',result_json=?,lease_owner='',lease_until=NULL,

@@ -1,9 +1,11 @@
 # Gaojibot improvement roadmap
 
 Implementation of the user-approved `async-frolicking-widget.md` plan, started
-2026-10-26. Work stays in the existing local checkout, on `wip/desktop-app`.
-Phase commits are local only. Publishing, production deployment and real QQ
-acceptance are not implied by this roadmap.
+2026-10-26. The original local-only branch has since been merged into `main`;
+completed implementation checkpoints are now pushed under the user's later
+authorization. Production deployment, App releases and real QQ acceptance
+remain separate from source publication. Earlier entries retain their original
+local-only verification boundaries.
 
 ## Completion rules
 
@@ -15,7 +17,8 @@ acceptance are not implied by this roadmap.
 - Live QQ, firewall and performance checks remain explicit pending acceptance
   until actually exercised. Unit tests alone do not prove those outcomes.
 - Do not publish private chat data, feedback exports, credentials or ops notes.
-- Do not push, rebuild or connect to production hosts as part of local work.
+- Push completed source checkpoints as subsequently authorized; do not rebuild,
+  release the App or connect to production hosts as part of local work.
 
 ## New-plan sequencing
 
@@ -3527,3 +3530,48 @@ implementation evidence, not a claim that the production App has these features.
   conversation checks, general browser drain, native M2/KVM acceptance and
   M4-M7 remain open. No production connection, shared nix-config edit, rebuild,
   App release, live QQ/model call or supplied-plan edit occurred.
+
+### M3 durable save-to-task admission
+
+- Added `0059_project_task_prepare` and a host-only admission adapter composed
+  with the opt-in project runtime. A preparation request binds the original
+  account, actor, durable chat turn, triggering message, project and immutable
+  task envelope. Identical retries resolve the stored request before mutable
+  focus or a now-finished chat turn. Context and dispatch data stay private;
+  project journals expose progress without the personal-memory envelope.
+- Reused the leased lifecycle queue rather than adding a second scheduler.
+  Admission freezes project writes and absorbs settled pending saves. Another
+  running turn's unsaved work, unresolved IO or file delivery still blocks
+  admission. Active/stopped projects save before execution; fresh, hibernated
+  and archived workspaces restore/rebuild as needed under one reservation,
+  save actual files and finish stopped. An empty new project receives a real
+  physical snapshot, not an invented database-only baseline.
+- Only after physical verification does one transaction complete the lifecycle,
+  create the queued task and recovery checkpoint, bind the exact saved manifest,
+  and exchange the lifecycle lock for the task lock. The task deadline starts
+  then, not while waiting for preparation. Existing dispatcher scans recover
+  queued tasks without depending on an in-process notification. Missing runtime
+  adapters defer before physical effects; revoked access and expired leases
+  prevent binding. Failed commits leave the preparation lock and saved files
+  intact for takeover. Downgrade cannot discard preparation journals.
+- Fixed turn-save tracking when a turn writes again after an early preparation
+  snapshot and settled task release: a new admitted mutation returns the save
+  tracker to pending. It cannot incorrectly reuse the preceding saved receipt.
+  Existing IO identity and task/lifecycle locks still gate every new mutation.
+- Verification: 98 focused admission/task/recovery/runtime/autosave/completion/
+  materialization tests passed in 89.542 seconds
+  (`.cache/roadmap/m3-task-admission-final.log`). A separate VM sequence batch
+  passed 28 tests in 47.470 seconds (`.cache/roadmap/m3-task-prepare-vm.log`).
+  Two schema round-trip/downgrade-protection tests passed in 1.934 seconds
+  (`.cache/roadmap/m3-task-admission-migration.log`).
+  PostgreSQL, CAS bytes, private Unix file RPC, actual registry-dispatched file
+  writes and restored fixture files are exercised. Kernel/container/libvirt,
+  model and QQ effects remain explicit fixtures, not native/live acceptance.
+  Whole-CI Ruff, focused compileall and whitespace checks passed.
+- Still open: connect this host adapter to automatic chat admission, drain
+  existing browser sessions safely, require an integrating project-output step
+  in planning and show verified integration status in the final Outbox result.
+  This checkpoint does not enable the unfinished project-bound chat workflow.
+  M3 console/shared-conversation gates, native M2/KVM acceptance and M4-M7 remain
+  incomplete. No production connection, shared nix-config update, rebuild, App
+  release, live QQ/model request or supplied-plan modification occurred.

@@ -91,6 +91,7 @@ class ProjectRuntime:
         self.io = None
         self.browser = None
         self.task_reconciler = None
+        self.task_admission = None
         self.backends = {}
         self.ready = False
         self.closed = False
@@ -241,8 +242,11 @@ class ProjectRuntime:
                 self.autosave = ProjectAutosave(self)
                 tasks = getattr(self.app, "subagent_store", None)
                 if tasks is not None:
+                    from .project_task_admission import ProjectTaskAdmission
                     from .project_task_reconciliation import ProjectTaskReconciler
 
+                    self.task_admission = ProjectTaskAdmission(self.lifecycle, tasks)
+                    self.lifecycle.task_admission = self.task_admission
                     self.task_reconciler = ProjectTaskReconciler(self, tasks)
                 self.files = ProjectFileOutbox(self.io, self.app.delivery_store)
                 self.executor = ProjectLifecycleExecutor(

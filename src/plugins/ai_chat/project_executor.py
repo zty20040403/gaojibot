@@ -329,6 +329,8 @@ class ProjectLifecycleExecutor:
     async def __call__(self, job):
         try:
             project, run = await _store(self.lifecycle.context, job)
+            if run["action"] == "task_prepare" and self.lifecycle.task_admission is None:
+                raise JobDeferred("Project task admission is temporarily unavailable", 30)
             backend = self.backends.get(run["plan"]["backend"])
             if backend is None:
                 raise ProjectBackendUnavailable(
@@ -340,7 +342,7 @@ class ProjectLifecycleExecutor:
                 project, run = await _store(self.lifecycle.context, job, access=access)
                 step = await _store(self.lifecycle.next_step, job)
                 if step is None:
-                    return await _store(self.lifecycle.finish, job)
+                    return await _store(self.lifecycle.finish, job, access=access)
                 evidence = await backend.execute(job, step, access)
                 # Membership can be revoked while a long helper operation runs.
                 await _store(

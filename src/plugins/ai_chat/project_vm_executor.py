@@ -188,13 +188,18 @@ class VmProjectBackend:
                 for rebuild in (False, True):
                     if restore and not create:
                         continue
-                    candidates.append(
+                    startup = (
                         (["create_volume"] if create else [])
                         + ["reserve_workspace", "boot_workspace"]
                         + (["restore_version"] if restore else [])
                         + (["rebuild_dependencies"] if rebuild else [])
-                        + ["release_workspace", "verify_active"]
                     )
+                    candidates.append(startup + ["release_workspace", "verify_active"])
+                    if "task_admission" in plan:
+                        candidates.append(startup + [
+                            "quiesce_workspace", "snapshot_workspace", "stop_workspace",
+                            "release_workspace", "verify_stopped",
+                        ])
         if "restore" in plan:
             from .project_restore import valid_restore_plan
             if not valid_restore_plan(plan):
