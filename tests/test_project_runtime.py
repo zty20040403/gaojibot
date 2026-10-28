@@ -15,6 +15,7 @@ nonebot.init()
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.config import Settings, settings
 from src.plugins.ai_chat.ledger import MessageLedger
+from src.plugins.ai_chat.turn_journal import TurnJournal
 from src.plugins.ai_chat.project_lifecycle import KIND
 from src.plugins.ai_chat.project_runtime import (
     ProjectRuntime,
@@ -32,6 +33,8 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await executor_fixture.ProjectExecutorTests.asyncSetUp(self)
         self.ledger = MessageLedger(postgres_for_test(self))
         self.addCleanup(self.ledger.close)
+        self.journal = TurnJournal(postgres_for_test(self))
+        self.addCleanup(self.journal.close)
         self.app = SimpleNamespace(
             settings=replace(
                 settings,
@@ -39,6 +42,7 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 sandbox_enabled=True,
                 sandbox_backend="oci",
                 ledger_enabled=True,
+                turn_journal_enabled=True,
                 outbox_enabled=True,
                 durable_jobs_enabled=True,
                 sandbox_runner_socket="/fixture/runner.sock",
@@ -51,6 +55,7 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
             database=postgres_for_test(self),
             state_dir=self.root / "application",
             message_ledger=self.ledger,
+            turn_journal=self.journal,
             job_store=self.jobs,
             job_worker=self.worker,
             delivery_store=Mock(),
@@ -100,7 +105,7 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.worker._timeouts[KIND], 3600)
         self.assertEqual(
             [item.args[0] for item in self.app.background_tasks.start.call_args_list],
-            ["project-usage", "project-maintenance", "project-files"],
+            ["project-usage", "project-maintenance", "project-files", "project-autosave"],
         )
         self.assertEqual(self.runtime.backends["oci"].quota_mode, "hard")
         self.assertEqual(
@@ -390,6 +395,7 @@ class ProjectRuntimeConfigurationTests(unittest.TestCase):
             projects_enabled=True,
             sandbox_enabled=True,
             ledger_enabled=True,
+            turn_journal_enabled=True,
             outbox_enabled=True,
             durable_jobs_enabled=True,
             sandbox_backend="vm",
@@ -399,6 +405,7 @@ class ProjectRuntimeConfigurationTests(unittest.TestCase):
         for field in (
             "sandbox_enabled",
             "ledger_enabled",
+            "turn_journal_enabled",
             "outbox_enabled",
             "durable_jobs_enabled",
         ):

@@ -12,6 +12,7 @@ import time
 import uuid
 
 from .projects import ProjectConflict, require_project_io_idle
+from .project_turn_saves import require_running_turn
 
 
 READ_TOOLS = frozenset(
@@ -92,6 +93,8 @@ class ProjectIOStore:
         expected_version,
         expected_bytes=0,
         installing_dependencies=False,
+        journal_turn_id=None,
+        native_message_id=None,
         now=None,
     ):
         if (
@@ -132,6 +135,10 @@ class ProjectIOStore:
                 raise ProjectConflict("Project operation belongs to another actor")
             if mutating:
                 self.projects._editor(cursor, access, project)
+            if mutating or journal_turn_id is not None:
+                if native_message_id is None:
+                    raise ProjectConflict("Project turn requires its trigger message")
+                require_running_turn(cursor, access, journal_turn_id, native_message_id)
             require_project_io_idle(cursor, project_id)
             focus = self.projects._current(cursor, access, now)
             if focus is None or focus["project_id"] != project_id:
@@ -164,8 +171,8 @@ class ProjectIOStore:
                 )
             row = cursor.execute(
                 """INSERT INTO project_io(project_id,actor_principal_id,request_key,token,
-                tool_name,arguments_sha256,sandbox_id,generation,fence,mutating,reserved_bytes,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+                tool_name,arguments_sha256,sandbox_id,generation,fence,mutating,reserved_bytes,created_at,updated_at,journal_turn_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
                 (
                     project_id,
                     access.principal_id,
@@ -180,8 +187,15 @@ class ProjectIOStore:
                     reserved,
                     now,
                     now,
+                    journal_turn_id,
                 ),
             ).fetchone()
+            if mutating:
+                cursor.execute(
+                    """INSERT INTO project_turn_saves(project_id,turn_id,actor_principal_id,created_at,updated_at)
+                    VALUES (?,?,?,?,?) ON CONFLICT(project_id,turn_id) DO NOTHING""",
+                    (project_id, journal_turn_id, access.principal_id, now, now),
+                )
             self.projects._touch_focus(cursor, access, project_id, now)
             cursor.execute(
                 "UPDATE projects SET last_active_at=? WHERE project_id=?",
@@ -238,6 +252,8 @@ class ProjectIOStore:
                 raise PermissionError("Project operation belongs to another actor")
             if row["mutating"]:
                 self.projects._editor(cursor, access, project)
+            if row["journal_turn_id"] is not None:
+                require_running_turn(cursor, access, row["journal_turn_id"])
             if (
                 row["state"] != "reserved"
                 or project["status"] != "active"

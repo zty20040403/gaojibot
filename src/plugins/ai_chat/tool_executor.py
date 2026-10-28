@@ -453,6 +453,7 @@ class ToolExecutor(HandlerService):
             context=ToolContext(
                 self.services, event, frozenset(tool_capabilities), agent_executor,
                 routine_run_id=routine_execution.run.run_id if routine_execution else "",
+                journal_turn_id=journal_turn_id,
             ),
             bot=bot,
             user_text=user_text,

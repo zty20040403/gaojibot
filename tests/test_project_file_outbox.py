@@ -23,6 +23,7 @@ from src.plugins.ai_chat.tools.state import ToolContext
 from tests.postgres_fixture import postgres_for_test
 from tests import test_project_tool_executor as fixture
 from tests.test_routine_tools import event
+from tests.project_turn_fixture import start_project_turn
 
 
 class ProjectFileOutboxTests(unittest.IsolatedAsyncioTestCase):
@@ -366,6 +367,11 @@ class ProjectFileOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.deliveries.cancel(delivery.delivery_id))
         self.runtime.store.collect_blobs()
         self.assertIsNone(self.runtime.files.identity(delivery)["blob_sha256"])
+        (self.volumes.binding(self.scope.key, self.pid) / "report.txt").write_bytes(b"hello")
+        self.journal.finish_turn(self.context.journal_turn_id, status="succeeded")
+        await self.runtime.autosave.run_once()
+        await self.worker.run_once()
+        self.assertTrue(self.runtime.autosave.saves.status(self.access, self.pid)[0]["saved"])
         project = self.runtime.store.get(self.access, self.pid)
         self.runtime.lifecycle.request(
             self.access,
@@ -391,7 +397,8 @@ class ProjectFileOutboxTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.worker.run_once()
         await self.runtime.sampler.run_once()
-        context = ToolContext(self.handlers, event(group=None), frozenset({"projects"}))
+        turn = start_project_turn(self.ledger, self.journal, scope)
+        context = ToolContext(self.handlers, event(group=None), frozenset({"projects"}), journal_turn_id=turn.turn_id)
         written = await self.call(
             "sandbox_write_file",
             {"path": "mine.txt", "content": "private"},

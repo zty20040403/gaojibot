@@ -110,6 +110,23 @@ async def command_result(services, event, text):
         lines.append(
             "已切换；你只有查看权限。" if result["readonly"] else "已切换当前项目。"
         )
+    if action == "状态" and result.get("autosaves"):
+        save = result["autosaves"][0]
+        if save["saved"]:
+            description = "已保存为 " + save["version"]
+        elif save["status"] == "skipped":
+            description = "未发生已确认的修改，无需保存"
+        elif save["reason"] == "unknown_execution":
+            description = "执行结果待核实，不会重复执行命令"
+        elif save["reason"] == "permission_unavailable":
+            description = "权限暂不可用，保留数据等待恢复"
+        elif save["status"] in {"failed", "needs_attention", "cancelled"}:
+            description = "保存未完成，需要处理"
+        elif save["status"] == "pending":
+            description = "等待本轮结束、工作区空闲和文件投递确认"
+        else:
+            description = "已排队或正在保存，尚未完成"
+        lines.append("自动保存 " + save["turn"] + "：" + description)
     if action in {"保存", "状态"} and result.get("snapshot"):
         snapshot = result["snapshot"]
         if snapshot["saved"]:

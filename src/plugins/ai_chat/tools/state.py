@@ -23,6 +23,7 @@ class ToolContext:
     capabilities: frozenset[str]
     agent_executor: AgentToolExecutor | None = None
     routine_run_id: str = ""
+    journal_turn_id: int | None = None
 
     @property
     def app(self) -> AppContext:

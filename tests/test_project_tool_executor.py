@@ -13,12 +13,14 @@ nonebot.init()
 from src.sandbox_runtime.docker import SandboxError, SandboxResult
 from src.plugins.ai_chat.agent.execution import active_agent_step, EntryDecision
 from src.plugins.ai_chat.project_access import project_access
+from src.plugins.ai_chat.onebot_codec import scope_from_event
 from src.plugins.ai_chat.project_io import ProjectIOStore
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id
 from src.plugins.ai_chat.tools import domain_registry
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from tests import test_project_runtime as fixture
 from tests.test_routine_tools import event
+from tests.project_turn_fixture import start_project_turn
 
 
 class ProjectToolExecutorTests(unittest.IsolatedAsyncioTestCase):
@@ -26,7 +28,8 @@ class ProjectToolExecutorTests(unittest.IsolatedAsyncioTestCase):
         await fixture.ProjectRuntimeTests.asyncSetUp(self)
         await self.runtime.start()
         self.app.project_runtime = self.runtime
-        self.context = ToolContext(self.handlers, event(), frozenset({"projects"}))
+        self.turn = start_project_turn(self.ledger, self.journal, self.scope)
+        self.context = ToolContext(self.handlers, event(), frozenset({"projects"}), journal_turn_id=self.turn.turn_id)
         self.counter, self.effects = 0, []
         self.runtime.store.open(self.access, self.pid)
         project = self.runtime.store.get(self.access, self.pid)
@@ -226,7 +229,9 @@ class ProjectToolExecutorTests(unittest.IsolatedAsyncioTestCase):
     async def test_group_viewer_can_read_but_cannot_write_or_execute(self):
         await self.call("sandbox_write_file", {"path": "visible", "content": "group"})
         self.bot.get_group_member_list.return_value.append({"user_id": 202})
-        context = replace(self.context, event=event(actor=202))
+        viewer_event = event(actor=202).model_copy(update={"message_id": 6})
+        viewer_turn = start_project_turn(self.ledger, self.journal, scope_from_event(viewer_event), message_id=6)
+        context = replace(self.context, event=viewer_event, journal_turn_id=viewer_turn.turn_id)
         access = await project_access(context)
         self.runtime.store.open(access, self.pid)
         self.assertEqual(
@@ -264,6 +269,8 @@ class ProjectToolExecutorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_private_project_tools_need_no_group_executor(self):
         context = replace(self.context, event=event(group=None))
+        private_turn = start_project_turn(self.ledger, self.journal, scope_from_event(context.event))
+        context = replace(context, journal_turn_id=private_turn.turn_id)
         created = await self.call(
             "project_create", {"title": "Private"}, context=context
         )

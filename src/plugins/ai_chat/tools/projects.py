@@ -225,6 +225,7 @@ async def execute(turn, arguments, *, name):
                     "tool_operation": await _store(runtime.io.status, access, pid),
                     "file_deliveries": await _store(runtime.files.status, access, pid),
                     "snapshot": await _store(runtime.lifecycle.snapshot_status, access, pid),
+                    "autosaves": await _store(runtime.autosave.saves.status, access, pid),
                     "versions": [
                         _version(v)
                         for v in (await _store(store.versions, access, pid))[:3]

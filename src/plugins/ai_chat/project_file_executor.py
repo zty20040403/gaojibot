@@ -281,6 +281,7 @@ class ProjectFileExecutor:
             expected_version=project["version"],
             lifecycle_job=job,
             label=step["arguments"].get("label", ""),
+            source_turn_id=step["arguments"].get("source_turn_id"),
             staged_manifest_sha256=digest,
             rebuild=document.get("rebuild"),
         )

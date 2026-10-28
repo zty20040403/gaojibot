@@ -18,6 +18,8 @@ from src.bot_storage import DatabaseError
 from src.bot_storage.schema import HEAD_REVISION
 from src.plugins.ai_chat.project_blobs import ProjectFile
 from src.plugins.ai_chat.project_io import ProjectIOStore
+from src.plugins.ai_chat.ledger import MessageLedger
+from src.plugins.ai_chat.turn_journal import TurnJournal
 from src.plugins.ai_chat.project_lifecycle import ProjectLifecycle
 from src.plugins.ai_chat.project_usage import ProjectQuotaRejected, ProjectUsageStore
 from src.plugins.ai_chat.projects import (
@@ -27,6 +29,7 @@ from src.plugins.ai_chat.projects import (
 )
 from tests import test_project_lifecycle as lifecycle_fixture
 from tests.test_project_usage import UsageFixture
+from tests.project_turn_fixture import start_project_turn
 
 
 class ProjectIOTests(UsageFixture, unittest.TestCase):
@@ -53,6 +56,13 @@ class ProjectIOTests(UsageFixture, unittest.TestCase):
         self.lifecycle.finish(job, now=self.now)
         self.io = ProjectIOStore(self.projects, self.usage)
         self.record(self.sample(100))
+        self.ledger = self.owned(MessageLedger(self.db))
+        self.journal = self.owned(TurnJournal(self.db))
+        self.turns = {
+            access.principal_id: start_project_turn(
+                self.ledger, self.journal, access.scope, message_id=access.principal_id,
+            ) for access in (self.access, self.b)
+        }
 
     def admit(
         self,
@@ -64,6 +74,10 @@ class ProjectIOTests(UsageFixture, unittest.TestCase):
         io=None,
         **kwargs,
     ):
+        actor = access or self.access
+        if tool in {"sandbox_exec", "sandbox_write_file"}:
+            kwargs.setdefault("journal_turn_id", self.turns[actor.principal_id].turn_id)
+            kwargs.setdefault("native_message_id", actor.principal_id)
         return (io or self.io).admit(
             access or self.access,
             pid or self.pid,
@@ -427,7 +441,7 @@ class ProjectIOTests(UsageFixture, unittest.TestCase):
                 "AI_POSTGRES_SCHEMA": self.db.schema,
             },
         ):
-            with self.assertRaisesRegex(RuntimeError, "operation receipts"):
+            with self.assertRaisesRegex(RuntimeError, "turn associations"):
                 command.downgrade(Config("alembic.ini"), "0048_project_creation_key")
         self.db.require_revision(HEAD_REVISION)
         self.assertEqual(self.io.receipt(self.access, grant)["state"], "aborted")

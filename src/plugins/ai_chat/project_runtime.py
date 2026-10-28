@@ -19,6 +19,7 @@ from .project_lifecycle import KIND, ProjectLifecycle
 from .project_io import ProjectIOStore
 from .project_file_outbox import ProjectFileOutbox
 from .project_file_transport import reconcile_files
+from .project_autosave import ProjectAutosave
 from .project_maintenance import ProjectMaintenance
 from .project_policy import DAY, ProjectPolicy
 from .project_usage import ProjectUsageSampler, ProjectUsageStore
@@ -37,10 +38,11 @@ def validate_project_settings(settings):
             settings.ledger_enabled,
             settings.durable_jobs_enabled,
             settings.outbox_enabled,
+            settings.turn_journal_enabled,
         )
     ):
         raise RuntimeError(
-            "AI_PROJECTS_ENABLED requires sandbox, ledger, durable jobs and Outbox"
+            "AI_PROJECTS_ENABLED requires sandbox, ledger, turn journal, durable jobs and Outbox"
         )
     ProjectPolicy(
         idle_stop_seconds=settings.project_idle_stop_minutes * 60,
@@ -78,10 +80,11 @@ class ProjectRuntime:
                 "job_store",
                 "job_worker",
                 "delivery_store",
+                "turn_journal",
             )
         ):
             raise RuntimeError(
-                "Projects require available database, ledger, jobs and Outbox stores"
+                "Projects require available database, ledger, turn journal, jobs and Outbox stores"
             )
         self.store = None
         self.io = None
@@ -231,6 +234,7 @@ class ProjectRuntime:
                     self.store, self.app.delivery_store, telemetry=telemetry
                 )
                 self.io = ProjectIOStore(self.store, self.usage)
+                self.autosave = ProjectAutosave(self)
                 self.files = ProjectFileOutbox(self.io, self.app.delivery_store)
                 self.executor = ProjectLifecycleExecutor(
                     self.lifecycle,
@@ -263,6 +267,7 @@ class ProjectRuntime:
                     "project-maintenance", self.maintain_forever
                 )
                 self.app.background_tasks.start("project-files", self.reconcile_files_forever)
+                self.app.background_tasks.start("project-autosave", self.save_turns_forever)
             except BaseException:
                 await self.close()
                 raise
@@ -284,6 +289,9 @@ class ProjectRuntime:
 
     async def maintain_forever(self):
         await self.maintenance.run(self._stop)
+
+    async def save_turns_forever(self):
+        await self.autosave.run(self._stop)
 
     async def reconcile_files_forever(self):
         while not self._stop.is_set():

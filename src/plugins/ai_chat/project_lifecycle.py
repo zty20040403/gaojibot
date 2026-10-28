@@ -176,8 +176,14 @@ class ProjectLifecycle:
 
     def request(
         self, access, project_id, action, *, expected_version, request_key, now=None,
-        idle_policy=None, preflight=None, label="",
+        idle_policy=None, preflight=None, label="", source_turn_id=None,
     ):
+        from .project_turn_saves import require_finished_save
+
+        if source_turn_id is not None and (
+            type(source_turn_id) is not int or source_turn_id <= 0 or action != "snapshot" or label
+        ):
+            raise ValueError("Invalid automatic snapshot trigger")
         if not isinstance(label, str) or len(label) > 120 or (label and action != "snapshot"):
             raise ValueError("Invalid snapshot label")
         if project_id is None and action != "snapshot":
@@ -204,6 +210,7 @@ class ProjectLifecycle:
                 if prior:
                     if (len(prior) != 1 or prior[0]["action"] != "snapshot"
                         or prior[0]["plan"].get("label", "") != label
+                        or prior[0]["plan"].get("source_turn_id") != source_turn_id
                         or (project_id is not None and project_id != prior[0]["project_id"])):
                         raise ProjectConflict("Snapshot request identity was reused")
                     project = self.projects._get(cursor, access, prior[0]["project_id"])
@@ -232,6 +239,13 @@ class ProjectLifecycle:
             )
             if idle_policy is not None and idle_policy.idle_action(project, now=now) != action:
                 raise ProjectConflict("Project is no longer eligible for this idle transition")
+            if source_turn_id is not None and not require_finished_save(cursor, access, project_id, source_turn_id):
+                raise ProjectConflict("Finished turn has no confirmed mutation to save")
+            if action != "snapshot" and cursor.execute(
+                "SELECT 1 FROM project_turn_saves WHERE project_id=? AND state='pending' LIMIT 1",
+                (project_id,),
+            ).fetchone():
+                raise ProjectConflict("Project has an unfinished automatic save")
             self._idle(cursor, project)
             baseline = self._baseline(cursor, project_id)
             rebuild = (
@@ -246,6 +260,9 @@ class ProjectLifecycle:
             )
             if action == "snapshot":
                 plan["label"] = label
+                if source_turn_id is not None:
+                    plan["source_turn_id"] = source_turn_id
+                    plan["trigger"] = {"kind": "turn", "turn_id": source_turn_id}
             if generation >= 2**53:
                 raise ProjectConflict("Workspace generation exhausted")
             if idle_policy is not None:
@@ -287,6 +304,11 @@ class ProjectLifecycle:
                 version=version+1,updated_at=? WHERE project_id=?""",
                 (job.job_id, generation, now, project_id),
             )
+            if source_turn_id is not None:
+                cursor.execute(
+                    """UPDATE project_turn_saves SET state='queued',job_id=?,error_code='',updated_at=?
+                    WHERE project_id=? AND turn_id=?""", (job.job_id, now, project_id, source_turn_id),
+                )
             self.projects._event(
                 cursor,
                 project_id,
@@ -369,6 +391,8 @@ class ProjectLifecycle:
                 }
                 if run["action"] == "snapshot":
                     arguments["label"] = plan.get("label", "")
+                    if "source_turn_id" in plan:
+                        arguments["source_turn_id"] = plan["source_turn_id"]
                 if plan["steps"][index] == "prune_rebuildable":
                     source = cursor.execute(
                         """SELECT fence,evidence FROM project_lifecycle_steps WHERE job_id=?

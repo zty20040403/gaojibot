@@ -178,6 +178,8 @@ async def _execute(context, name, args):
             if name == "sandbox_write_file"
             else 0,
             installing_dependencies=bool(args.get("packages")),
+            journal_turn_id=context.journal_turn_id,
+            native_message_id=context.event.message_id,
         )
     try:
         await runtime.backends[project["backend"]].io_evidence(project)

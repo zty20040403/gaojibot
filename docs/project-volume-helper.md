@@ -769,8 +769,8 @@ durable worker. It composes the actual file adapter, lifecycle executor,
 the application's workers before closing the project store. Cancelled startup
 does not leak a database connection or install a half-ready executor.
 
-The application requires sandbox permission controls, the ledger, durable jobs
-and Outbox. OCI must use the private runner: its authenticated health response
+The application requires sandbox permission controls, the ledger, turn journal,
+durable jobs and Outbox. OCI must use the private runner: its authenticated health response
 must report project volumes, workspace support and hard/soft quota mode. Direct
 host Docker is not an unlimited fallback. Native runner mount-namespace
 activation is still gated on the acceptance work below. Desktop's directory
@@ -860,8 +860,34 @@ label. `project_status.snapshot` distinguishes pending/running/needs-attention
 from `saved=true` with a verified `vN`; only publication plus final workspace
 verification completes the receipt. A crash after publication retains the lock
 and staging for the next lease, rather than publishing again or claiming success.
-This manual-save path is the base for automatic turn-end saves; the automatic
-turn association and reconciler are not wired yet.
+Migration `0052_project_autosave` associates each new project mutation with its
+host-owned journal turn and atomically records a pending save at admission.
+Writes require a running turn with an inbound trigger belonging to the same
+scope, actor and current message; model arguments cannot supply that identity.
+Existing receipts remain replayable without fabricating historical turn links.
+
+The supervised automatic-save worker scans terminal turns every ten seconds.
+Startup journal recovery makes interrupted turns eligible. Reserved-but-never-
+dispatched operations are safely aborted; recorded execution results can settle
+only after observing quiescence of the exact workspace generation and fence.
+An unknown result is never rerun or unlocked on a timeout. Completed commands
+with nonzero exit codes may still have changed files and therefore trigger saves.
+Only-aborted admissions are recorded as skipped, without making an empty version.
+
+Live membership, original account, original editor and execution permission are
+rechecked. Running project turns, unresolved IO, task locks and unconfirmed file
+deliveries delay the save. Idle lifecycle transitions wait for pending automatic
+saves. The snapshot job and its turn association commit together; lost replies
+and repeated scans cannot enqueue another job. The existing fenced lifecycle
+worker owns export, publication and restart recovery.
+
+`project_status.autosaves` exposes the latest five turn/save receipts with safe
+reason codes and exact update timestamps. `/项目 状态` summarizes the latest one.
+Queued work is not saved; `saved=true` requires final workspace verification and
+successful job completion. Closely spaced edits can share the same content-
+deduplicated version once all writers finish: a turn link identifies the save
+trigger, not an assertion that the snapshot contains exclusively that turn's
+changes. No background LLM call or group notification is needed for saving.
 
 The ordinary chat prompt now includes the requesting user's current project,
 its configuration revision, state, viewer/editor role, pending task and latest

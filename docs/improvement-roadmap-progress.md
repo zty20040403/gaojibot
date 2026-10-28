@@ -2802,3 +2802,48 @@ implementation evidence, not a claim that the production App has these features.
   restore/delete/preview commands, shared-platform identity, console integration,
   native M2 acceptance and M4-M7 remain open. No production connection, shared
   nix-config edit, deployment, App release or user-plan edit occurred.
+
+### M3 durable automatic turn-end snapshots
+
+- Migration `0052_project_autosave` links admitted project IO to its host-owned
+  journal turn and creates an automatic-save request in the same transaction
+  as each first mutation. The host passes `journal_turn_id` through ToolContext;
+  writes require a running, inbound trigger matching the original scope,
+  principal and native message. Dispatch rechecks that the turn is still live.
+  Legacy receipts remain nullable, not assigned guessed turns. Projects now
+  require an enabled and available turn journal at application startup.
+- A supervised ten-second reconciler discovers terminal turns, including those
+  marked interrupted by startup recovery. Never-dispatched reservations can
+  abort; known results settle only with matching physical quiescence evidence.
+  Unknown effects remain blocked, without timeout unlock or command replay.
+  Nonzero-exit commands still trigger a snapshot of any retained changes;
+  all-aborted turns are skipped. Other running project turns, active commands,
+  task locks and unconfirmed file deliveries defer automatic saving.
+- The original actor's live membership, editor role, bot account and sandbox
+  allowlist are checked again. Revoked editors cannot borrow owner authority.
+  Save requests and durable lifecycle jobs commit atomically, with deterministic
+  turn keys. Lost enqueue responses, concurrent scans and worker replacement
+  cannot duplicate jobs. Idle transitions wait for outstanding turn saves.
+  The existing OCI/VM exporters publish actual files and preserve the final
+  workspace state; active VM automatic saves do not reboot the guest.
+- `project_status.autosaves` exposes the latest five bounded receipts, turn
+  handles, safe retry reasons and update timestamps; `/项目 状态` distinguishes
+  waiting, queued, skipped, attention-needed and verified saved versions. Only
+  successful final lifecycle verification marks a save complete. Closely spaced
+  edits may share a deduplicated version after writers finish; the durable turn
+  link records a save trigger, not a claim of isolated per-turn file contents.
+- Verification: all 150 affected autosave, IO, runtime, tool, delivery,
+  lifecycle and VM tests passed in 94.799 seconds with ResourceWarnings treated
+  as errors (`.cache/roadmap/m3-autosave-verified.log`). They use real local
+  PostgreSQL/CAS/private RPC with fixture QQ, Docker, libvirt and guest mounts.
+  Recovery, unknown effects, partial failed-command output, permission revocation,
+  transaction rollback, lost enqueue replies, deduplication and command status
+  are covered. Whole-CI Ruff, compileall and whitespace checks passed. Nix
+  package/import checks passed on aarch64-darwin
+  (`.cache/roadmap/m3-autosave-nix.log`); Linux/other architectures were omitted.
+- This completes the direct-chat autosave slice, not all M3. Image/browser
+  defaults, live notes, Sub-Agent baseline/lock/publication, remaining project
+  commands, shared-platform identity and console integration still remain;
+  native M2 acceptance and M4-M7 are open. No production connection, live
+  QQ/model call, shared nix-config edit, deployment, App release or user-plan
+  edit occurred. Source push is separate from updating the deployment input.
