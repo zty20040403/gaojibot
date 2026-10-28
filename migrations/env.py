@@ -11,7 +11,9 @@ from sqlalchemy import create_engine, pool, text
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Upgrades also run in a live controller/test process. Keep its worker and
+    # security loggers enabled after Alembic has configured its own output.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = None
 

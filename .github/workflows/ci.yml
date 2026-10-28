@@ -40,9 +40,10 @@ jobs:
       TEST_OPS_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/gaoji_acceptance
       TEST_SECURITY_POSTGRES_DSN: postgresql://qq_bot:ci-password@127.0.0.1:5432/gaoji_acceptance
       PYTHON_DOTENV_DISABLED: "1"
-      AI_STATE_DIR: ${{ runner.temp }}/gaoji-ci-state
     steps:
       - uses: actions/checkout@v5
+      - name: Isolate runtime state
+        run: echo "AI_STATE_DIR=$RUNNER_TEMP/gaoji-ci-state" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
