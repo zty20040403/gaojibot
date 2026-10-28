@@ -51,7 +51,7 @@ from .ai_tools import (
     force_tool,
 )
 from .agent import ContextPacket
-from .agent.execution import EntryDecision, active_agent_step
+from .agent.execution import EntryDecision, ExecutionEntryError, active_agent_step
 from .agent.control import assert_job_owned
 from .agent.collaboration_runtime import guard_collaboration
 from .agent.workspaces import StepWorkspaces
@@ -1307,9 +1307,23 @@ class ToolExecutor(HandlerService):
                     supporting_context=supporting,
                 )
 
+            async def run_project_goal(objective, role, decision):
+                from .project_task_entry import submit_project_task
+
+                try:
+                    return await submit_project_task(turn.context, objective=objective, role=role,
+                        packet_factory=subagent_context_packet, selected_profile=selected_profile,
+                        available_tools={item["function"]["name"] for item in tools},
+                        decision=decision, parent_trace=turn_trace)
+                except (PermissionError, ValueError, ExecutionEntryError) as exc:
+                    raise ChatFailure(f"这次项目任务请求未接受：{exc}", code="project_task_request") from exc
+
             async def run_delegate_goal(role: str, objective: str, decision: EntryDecision | None = None) -> dict[str, Any]:
                 if self.context.subagent_coordinator is None:
                     raise ValueError("Sub-Agent 任务模式暂时没有开启。")
+                project_result = await run_project_goal(objective, role, decision)
+                if project_result is not None:
+                    return project_result
                 packet = await subagent_context_packet(objective)
                 if decision is None:
                     decision = await self.context.subagent_coordinator.prepare_entry(
@@ -1358,6 +1372,9 @@ class ToolExecutor(HandlerService):
             async def run_subagent_goal(goal: str, decision: EntryDecision | None = None) -> str:
                 if self.context.subagent_coordinator is None:
                     return "Sub-Agent 任务模式暂时没有开启。"
+                project_result = await run_project_goal(goal, None, decision)
+                if project_result is not None:
+                    return project_result["message"]
 
                 async def report_subagent_progress(text: str) -> None:
                     if agent_executor is not None:
@@ -1455,11 +1472,11 @@ class ToolExecutor(HandlerService):
                     return await run_subagent_goal(user_text, decision)
                 turn.subagent_delegations += 1
                 role = decision.steps[0]["agent"]
-                if agent_executor is not None:
+                if agent_executor is not None and not project_context:
                     title = self.context.subagent_coordinator.registry.worker(role).title
                     await execute_tool(SAY_TOOL_NAME, {"text": f"{title} Agent 正在处理：{decision.steps[0]['objective'][:120]}"})
                 result = await run_delegate_goal(role, user_text, decision)
-                if result.get("status") == "queued":
+                if result.get("status") == "queued" or "project_id" in result:
                     return str(result["message"])
                 return json.dumps(result, ensure_ascii=False)
 
@@ -1614,7 +1631,7 @@ class ToolExecutor(HandlerService):
                     entry_handler=handle_entry if semantic_entry_enabled else None,
                     project_execution=bool(project_context),
                     entry_max_steps=(
-                        self.context.subagent_coordinator.max_steps
+                        max(1, self.context.subagent_coordinator.max_steps - bool(project_context))
                         if semantic_entry_enabled
                         else 8
                     ),

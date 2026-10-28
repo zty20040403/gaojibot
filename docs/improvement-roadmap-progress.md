@@ -3575,3 +3575,52 @@ implementation evidence, not a claim that the production App has these features.
   M3 console/shared-conversation gates, native M2/KVM acceptance and M4-M7 remain
   incomplete. No production connection, shared nix-config update, rebuild, App
   release, live QQ/model request or supplied-plan modification occurred.
+
+### M3 chat admission and host-owned project integration
+
+- Connected automatic execution decisions, explicit `/task` execution and the
+  `run_subagents`/`delegate_agent` callbacks to the existing project preparation
+  adapter. With a current project, a new task is created only after the durable
+  physical save completes. No current project keeps the ordinary task route;
+  routine children and active workers do not resolve mutable project focus.
+  Missing runtime/dispatcher, missing turn identity, revoked sandbox access,
+  unavailable required tools and conflicting project state do not fall back to
+  an unrelated temporary task. Chat errors identify project admission failures
+  rather than claiming the model provider is down.
+- Planning reserves one step for the host-owned, required `project_integrate`
+  coder. The original business steps, dependency graph, optional flags,
+  acceptance checks and attachment requirement are preserved. This sink depends
+  on every business step and must assemble the full baseline plus upstream
+  files, run checks and return one `gaoji-project-update.zip`. Its contract also
+  preserves separately requested end-user attachments. Insufficient step or
+  contract capacity is rejected instead of truncating requirements. Explicit
+  planning uses a per-call limit, never mutates the shared coordinator, and
+  accepts one business worker plus integration with a two-step configuration.
+- Per-turn submission identity is host-derived. Retries verify the original
+  objective/role and return the persisted preparation before resolving focus or
+  invoking a planner. They work after focus changes and the original turn ends.
+  Concurrent planners retain the first committed envelope; a second model plan
+  cannot replace it or create a duplicate task. Existing recovery restores the
+  complete integrating plan from its checkpoint without another planning call.
+- Preparation receipts distinguish saving from task binding and retain failed
+  preparation status. Automatic delegate entry no longer says a worker is
+  running before the project's save is verified. Actual final project
+  materialization/delivery remains a separate, unfinished reporting gate.
+- Verification: the final focused PostgreSQL task-entry, execution-entry,
+  coordinator, registry-handler, project-recovery and admission batch passed
+  125 tests in 42.900 seconds
+  (`.cache/roadmap/m3-chat-admission-final.log`). The added cases exercise real
+  chat assembly, registry dispatch, SQL journals, CAS baseline bytes, concurrent
+  requests, permission/focus changes and restart plan restoration. Early runs
+  exposed test-fixture wiring mistakes (missing fixture methods and inspecting
+  a task's runtime plan before its persisted entry checkpoint is consumed);
+  those were corrected and the final suite is green. Model responses, QQ and
+  kernel/container effects remain fixtures, not live acceptance. Whole-CI Ruff,
+  touched-file compileall and whitespace checks pass.
+- Remaining: safely drain browsers before general lifecycle/task transitions;
+  include verified project publication/materialization in durable final replies
+  and distinguish internal update bundles from user-facing attachments; complete
+  the M3 console and shared-platform checks. Native M2/KVM acceptance and M4-M7
+  remain incomplete. Projects remain opt-in. No production SSH, shared
+  nix-config edit, rebuild, App release, live QQ/model request or supplied-plan
+  modification occurred.

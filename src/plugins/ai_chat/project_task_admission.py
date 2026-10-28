@@ -166,7 +166,12 @@ class ProjectTaskAdmission:
             max_parallelism=envelope["max_parallelism"], max_steps=envelope["max_steps"], now=now)
         return row["task_id"]
 
-    def status(self, access, request_key):
+    def status(self, access, request_key, *, entry=None, turn_id=None):
         with self.projects._transaction() as cursor:
             run = self._prior(cursor, access, request_key)
+            if run is not None and entry is not None:
+                envelope = run["plan"].get("task_admission", {}).get("envelope", {})
+                if (envelope.get("turn_id") != turn_id
+                        or envelope.get("dispatch", {}).get("project_entry") != entry):
+                    raise ProjectConflict("本轮已登记另一个项目任务，请使用原任务或另发一条消息。")
             return self._receipt(cursor, access, run) if run is not None else None

@@ -625,6 +625,9 @@ async def ask_deepseek_with_tools(
                 "允许 task_type=execution、mode=direct、answer 留空，随后调用省略 sandbox_id 的"
                 "sandbox_read_file/write_file/exec。权限和实际项目由宿主核验。"
                 "这不豁免临时沙盒或服务器命令的限制；完整新项目和多项交付仍走工作流。"
+                "项目任务由宿主另加最终合并步骤；上面的步骤上限只用于业务分工，"
+                "不要自己使用 project_integrate 编号。交付物、约束和验收各最多 15 条，"
+                "为项目更新包的宿主验收条款预留一个名额；不能遗漏用户要求。"
             )
         try:
             decision, decision_message = await _execution_entry(

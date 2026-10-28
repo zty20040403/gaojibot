@@ -1556,17 +1556,30 @@ class SubAgentCoordinator:
             return await ask_deepseek(*args, profile=profile, **kwargs)
 
     async def prepare_entry(self, packet: ContextPacket, selected_profile: ModelProfile, *,
-                            role: str | None = None, parent_trace: AgentTrace | None = None) -> EntryDecision:
+                            role: str | None = None, parent_trace: AgentTrace | None = None,
+                            project_task: bool = False) -> EntryDecision:
         """Give explicit task tools the same contract as automatic routing."""
         if role is not None and role not in WORKER_ROLES:
             raise ValueError("Unknown explicit task role")
         mode = "delegate" if role else "workflow"
+        step_limit = self.max_steps
+        project_instruction = ""
+        if project_task:
+            from .project_task_plan import planning_instruction
+
+            project_instruction = planning_instruction(self.max_steps)
+            step_limit -= 1
+            # One business worker plus the host integrator is still a workflow.
+            if step_limit == 1:
+                mode = "delegate"
+                project_instruction += "\n本次只规划一个业务执行步骤，task_type=execution；整体项目工作流由宿主组装。"
         prompt = (
             ENTRY_PROMPT + f"\n这是用户已明确提交的执行任务，mode 必须为 {mode}。"
             + "\n子 Agent 的工具范围（shared_tools 与各角色 role_tools 的并集）："
             + json.dumps(self.registry.planning_tools(), ensure_ascii=False)
             + (f"恰好一个步骤，agent 必须为 {role}。" if role else "")
-            + f"步骤最多 {self.max_steps} 个。answer 必须是空字符串，不能遗漏或写 null。"
+            + f"步骤最多 {step_limit} 个。answer 必须是空字符串，不能遗漏或写 null。"
+            + project_instruction
             + "直接返回 decide_execution 的参数 JSON，不再调用工具。完整结构如下：\n"
             + json.dumps(DECISION_TOOL["function"]["parameters"], ensure_ascii=False)
         )
@@ -1579,7 +1592,7 @@ class SubAgentCoordinator:
             finally:
                 _merge_trace(parent_trace, trace)
             try:
-                decision = EntryDecision.parse(payload, max_steps=self.max_steps,
+                decision = EntryDecision.parse(payload, max_steps=step_limit,
                     worker_tools={name: self.registry.worker(name).allowed_tools for name in self.registry.worker_roles})
                 if decision.mode != mode or role and decision.steps[0]["agent"] != role:
                     raise ValueError("Explicit task planner returned a different execution mode or role")
