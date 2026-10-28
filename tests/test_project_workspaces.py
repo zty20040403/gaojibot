@@ -31,6 +31,7 @@ class DockerFixture:
         self.manager, self.volumes = manager, volumes
         self.containers, self.commands, self.after = {}, [], {}
         self.serial, self.identity_override = 0, None
+        self.processes = None
         self.tee_entered, self.tee_release = None, None
 
     async def listing(self, owner=None):
@@ -115,10 +116,15 @@ class DockerFixture:
                     "NanoCpus": int(command[command.index("--cpus") + 1]) * 10**9,
                     "PidsLimit": int(command[command.index("--pids-limit") + 1]),
                 },
-                "State": {"Running": True},
+                "State": {"Running": True, "Pid": 1000 + self.serial},
                 "Mounts": mounts,
             }
             result = SandboxResult(self.containers[name]["Id"], "", 0)
+        elif action == "top":
+            row = next(row for row in self.containers.values() if row["Id"] == command[2])
+            result = SandboxResult(
+                self.processes if self.processes is not None else f"PID\n{row['State']['Pid']}\n", "", 0
+            )
         elif action == "inspect":
             row = self.containers.get(command[-1])
             if row is None:

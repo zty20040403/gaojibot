@@ -357,4 +357,5 @@ class ProjectContextTurnTests(HandlerTestCaseMixin, unittest.IsolatedAsyncioTest
         self.assertNotIn("Actual selected project", kwargs["system_context"])
         self.assertNotIn("Actual saved notes", kwargs["system_context"])
         self.assertEqual(kwargs["tool_context"].count("[当前项目资料]"), 1)
+        self.assertTrue(kwargs["project_execution"])
         runtime.resolve_access.assert_awaited()

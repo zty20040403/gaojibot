@@ -203,6 +203,7 @@ async def execute(turn, arguments, *, name):
                 result = {
                     "project": _project(project),
                     "usage": usage,
+                    "tool_operation": await _store(runtime.io.status, access, pid),
                     "versions": [
                         _version(v)
                         for v in (await _store(store.versions, access, pid))[:3]

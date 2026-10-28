@@ -20,9 +20,15 @@ from ..ai_tools import (
 )
 from .registry import FunctionTool
 from .state import ToolContext, TurnState
+from ..project_access import projects_available
+from ..project_tool_executor import (
+    PROJECT_IO_TOOLS, execute_project_tool, project_parameters, routes_to_project,
+)
 
 
 def enabled(context: ToolContext, *, capability: str, name: str) -> bool:
+    if name in PROJECT_IO_TOOLS and projects_available(context):
+        return True
     if capability not in context.capabilities or context.agent_executor is None:
         return False
     if name == VIEW_BILIBILI_TOOL_NAME:
@@ -40,28 +46,38 @@ def enabled(context: ToolContext, *, capability: str, name: str) -> bool:
 
 
 def project_sandbox(definition: ToolDefinition, context: ToolContext) -> None:
-    if context.app.settings.sandbox_backend != "vm":
-        return
     function = definition["function"]
-    if function["name"] == SANDBOX_CREATE_TOOL_NAME:
-        function["description"] = (
-            "创建独立 Debian KVM 虚拟机沙盒，工作目录 /workspace。"
-            "文件保存在该沙盒的独立磁盘中，直到交付后按任务策略回收。"
+    if context.app.settings.sandbox_backend == "vm":
+        if function["name"] == SANDBOX_CREATE_TOOL_NAME:
+            function["description"] = (
+                "创建独立 Debian KVM 虚拟机沙盒，工作目录 /workspace。"
+                "文件保存在该沙盒的独立磁盘中，直到交付后按任务策略回收。"
+            )
+        elif function["name"] == SANDBOX_LIST_TOOL_NAME:
+            function["description"] = "列出当前用户拥有的 KVM 虚拟机沙盒及状态。"
+        elif function["name"] == SANDBOX_EXEC_TOOL_NAME:
+            function["description"] = (
+                "在 Debian 虚拟机的 /workspace 中运行 shell 命令。"
+                "缺少工具时可将 Debian apt 软件包名放进 packages，"
+                "会在该虚拟机内安装；不确定包名先运行 apt-cache search。"
+            )
+            function["parameters"]["properties"]["packages"]["description"] = (
+                "要在该虚拟机内安装的 Debian apt 软件包名。"
+            )
+    if function["name"] in PROJECT_IO_TOOLS and projects_available(context):
+        function["parameters"] = project_parameters(definition)
+        function["parameters"]["properties"]["sandbox_id"]["description"] = (
+            "省略时操作当前项目；提供时仍操作当前用户的临时沙盒，不会切换项目。"
         )
-    elif function["name"] == SANDBOX_LIST_TOOL_NAME:
-        function["description"] = "列出当前用户拥有的 KVM 虚拟机沙盒及状态。"
-    elif function["name"] == SANDBOX_EXEC_TOOL_NAME:
-        function["description"] = (
-            "在 Debian 虚拟机的 /workspace 中运行 shell 命令。"
-            "缺少工具时可将 Debian apt 软件包名放进 packages，"
-            "会在该虚拟机内安装；不确定包名先运行 apt-cache search。"
-        )
-        function["parameters"]["properties"]["packages"]["description"] = (
-            "要在该虚拟机内安装的 Debian apt 软件包名。"
+        function["description"] += (
+            " 省略 sandbox_id 时默认操作当前项目的持久工作区，回合结束不回收。"
+            "项目命令暂不支持 background=true；长任务请等待项目后台任务能力。"
         )
 
 
 async def execute(turn: TurnState, arguments: dict[str, object], *, name: str) -> str:
+    if routes_to_project(turn.context, name, arguments):
+        return await execute_project_tool(turn.context, name, arguments)
     executor = turn.agent_executor
     if executor is not None:
         result = await executor.execute(name, arguments)

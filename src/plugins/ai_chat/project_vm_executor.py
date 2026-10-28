@@ -3,7 +3,7 @@
 import re
 import time
 
-from .project_executor import DockerProjectBackend, ProjectBackendUnavailable
+from .project_executor import DockerProjectBackend, ProjectBackendUnavailable, project_io_evidence
 from .projects import ProjectConflict
 
 
@@ -105,6 +105,16 @@ class VmProjectBackend:
             generation=project["workspace_generation"],
         )
         return self._settled(project, observed) and observed.get("busy") is False
+
+    async def io_evidence(self, project):
+        observed = await self.runtime.inspect(
+            project["scope_key"], project["project_id"],
+            generation=project["workspace_generation"],
+        )
+        return project_io_evidence(project, (
+            project["status"] == "active" and self._settled(project, observed)
+            and observed.get("busy") is False
+        ))
 
     def preflight(self, plan):
         steps = plan.get("steps")

@@ -33,6 +33,7 @@ from .model_catalog import ModelCatalog, ModelProfile
 from .model_budget import ModelBudgetExceeded
 from .observability import current_trace_id, telemetry
 from .runtime_clock import runtime_clock_prompt
+from .tool_invocation import active_tool_call_id
 from .prompt_context import quote_evidence, quote_group_context
 from .tool_policy import (
     ToolApproval,
@@ -538,6 +539,7 @@ async def ask_deepseek_with_tools(
     entry_max_steps: int = 8,
     entry_profile: ModelProfile | None = None,
     entry_allowed_profiles: frozenset[str] | None = None,
+    project_execution: bool = False,
     transcript_sink: TranscriptSink | None = None,
     after_tool_round: Callable[[], None] | None = None,
     final_feedback: Callable[[str], str | None] | None = None,
@@ -617,6 +619,13 @@ async def ask_deepseek_with_tools(
         role_tools = DEFAULT_AGENT_REGISTRY.planning_tools(enabled_names)
         messages.insert(1, {"role": "system", "content": ENTRY_PROMPT + f"\n最多 {entry_max_steps} 个步骤。\n本轮提供的工具：" + main_tools
             + "\n子 Agent 的工具范围（shared_tools 与各角色 role_tools 的并集）：" + json.dumps(role_tools, ensure_ascii=False)})
+        if project_execution:
+            messages[1]["content"] += (
+                "\n当前会话启用了持久项目工具。针对当前项目的小范围读写、运行和验证，"
+                "允许 task_type=execution、mode=direct、answer 留空，随后调用省略 sandbox_id 的"
+                "sandbox_read_file/write_file/exec。权限和实际项目由宿主核验。"
+                "这不豁免临时沙盒或服务器命令的限制；完整新项目和多项交付仍走工作流。"
+            )
         try:
             decision, decision_message = await _execution_entry(
                 messages,
@@ -624,6 +633,7 @@ async def ask_deepseek_with_tools(
                 trace=trace,
                 max_steps=entry_max_steps,
                 allowed_profiles=entry_allowed_profiles,
+                project_execution=project_execution,
                 worker_tools={role: DEFAULT_AGENT_REGISTRY.worker(role).allowed_tools & enabled_names
                               for role in DEFAULT_AGENT_REGISTRY.worker_roles},
             )
@@ -647,6 +657,7 @@ async def ask_deepseek_with_tools(
                         "宿主执行入口未能生成有效合同。本轮继续使用普通工具循环回答。"
                         "不得声称已经创建文件、运行程序或完成项目；确实需要执行时，"
                         "必须调用现有的专业子任务工具。"
+                        + ("当前项目的小修改也可通过项目读写和执行工具完成，以工具回执为准。" if project_execution else "")
                     ),
                 }
             )
@@ -674,7 +685,8 @@ async def ask_deepseek_with_tools(
             messages.append(
                 {
                     "role": "system",
-                    "content": "执行入口已完成。不要再次调用 decide_execution；根据工具结果继续读取或回复，仍缺少执行工作时通过专业子任务完成。",
+                    "content": "执行入口已完成。不要再次调用 decide_execution；根据工具结果继续读取或回复，仍缺少执行工作时通过专业子任务完成。"
+                    + ("当前项目的小修改也可直接调用项目工具，不要只返回计划。" if project_execution else ""),
                 }
             )
             selected_profile = entry_profile or selected_profile
@@ -889,6 +901,7 @@ async def ask_deepseek_with_tools(
             )
             started_at = time.monotonic()
             completion_state = ""
+            invocation = active_tool_call_id.set(call_id)
             try:
                 if (
                     policy.execution_mode in {"durable-eligible", "durable-required"}
@@ -1002,6 +1015,8 @@ async def ask_deepseek_with_tools(
                     ensure_ascii=False,
                 )
                 completion_state = "failed"
+            finally:
+                active_tool_call_id.reset(invocation)
             remaining_context = max(
                 settings.tool_max_context_chars - tool_context_chars,
                 0,
@@ -1126,6 +1141,7 @@ async def _execution_entry(
     trace: AgentTrace | None, max_steps: int,
     allowed_profiles: frozenset[str] | None = None,
     worker_tools: Mapping[str, frozenset[str]] | None = None,
+    project_execution: bool = False,
 ) -> tuple[EntryDecision, ChatMessage]:
     from .agent.execution import (
         DECISION_TOOL,
@@ -1156,12 +1172,12 @@ async def _execution_entry(
             if error:
                 raise ValueError(error)
             try:
-                decision = EntryDecision.parse(arguments, max_steps=max_steps, worker_tools=worker_tools)
+                decision = EntryDecision.parse(arguments, max_steps=max_steps, worker_tools=worker_tools, project_execution=project_execution)
             except ValueError:
                 normalized = normalize_direct_entry_payload(arguments)
                 if normalized is None:
                     raise
-                decision = EntryDecision.parse(normalized, max_steps=max_steps, worker_tools=worker_tools)
+                decision = EntryDecision.parse(normalized, max_steps=max_steps, worker_tools=worker_tools, project_execution=project_execution)
         except (ValueError, AttributeError, TypeError) as exc:
             if attempt:
                 raise ExecutionEntryError(

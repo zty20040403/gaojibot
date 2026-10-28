@@ -18,6 +18,7 @@ from src.plugins.ai_chat.agent_loop import (
     ready_stream_prefix,
 )
 from src.plugins.ai_chat.config import settings
+from src.plugins.ai_chat.tool_invocation import active_tool_call_id
 
 
 class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
@@ -460,7 +461,9 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
                 )
             ]
         )
-        execute_tool = AsyncMock(return_value='{"ok": true}')
+        async def execute_tool(name, arguments):
+            self.assertEqual(active_tool_call_id.get(), "call-1")
+            return '{"ok": true}'
 
         with patch(
             "src.plugins.ai_chat.agent_loop._create_completion",
@@ -490,6 +493,7 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(answer, "任务完成。")
         self.assertEqual(create_completion.await_count, 3)
+        self.assertIsNone(active_tool_call_id.get())
 
     async def test_tool_limit_requests_a_final_answer_without_tools(self) -> None:
         tool_call = SimpleNamespace(

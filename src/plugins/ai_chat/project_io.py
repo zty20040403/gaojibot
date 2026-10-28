@@ -38,6 +38,49 @@ class ProjectIOStore:
     def _grant(row):
         return ProjectIOGrant(row["operation_id"], row["project_id"], row["token"])
 
+    def _prior(self, cursor, access, request_key, tool_name, arguments_sha256):
+        rows = cursor.execute(
+            """SELECT io.* FROM project_io io JOIN projects p USING(project_id)
+            WHERE p.scope_key=? AND p.bot_native_user_id=?
+            AND io.actor_principal_id=? AND io.request_key=? LIMIT 2""",
+            (access.scope.key, access.scope.bot_native_user_id, access.principal_id, request_key),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1 or rows[0]["tool_name"] != tool_name or rows[0]["arguments_sha256"] != arguments_sha256:
+            raise ProjectConflict("Project operation identity was reused")
+        self.projects._get(cursor, access, rows[0]["project_id"])
+        return rows[0]
+
+    def find(self, access, request_key, tool_name, arguments_sha256):
+        """Resolve a replay before consulting mutable current-project focus."""
+        with self.projects._transaction() as cursor:
+            self.projects._scope_lock(cursor, access)
+            prior = self._prior(cursor, access, request_key, tool_name, arguments_sha256)
+            return self._grant(prior) if prior else None
+
+    def pending(self, access, project_id):
+        with self.projects._transaction() as cursor:
+            self.projects._scope_lock(cursor, access)
+            self.projects._get(cursor, access, project_id)
+            row = cursor.execute(
+                """SELECT * FROM project_io WHERE project_id=? AND actor_principal_id=?
+                AND state IN ('dispatched','needs_attention')""",
+                (project_id, access.principal_id),
+            ).fetchone()
+            return self._grant(row) if row else None
+
+    def status(self, access, project_id):
+        with self.projects._transaction() as cursor:
+            self.projects._scope_lock(cursor, access)
+            self.projects._get(cursor, access, project_id)
+            row = cursor.execute(
+                """SELECT operation_id,tool_name,state,updated_at,result IS NOT NULL AS result_recorded
+                FROM project_io WHERE project_id=? AND state IN ('reserved','dispatched','needs_attention')""",
+                (project_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
     def admit(
         self,
         access,
@@ -77,18 +120,16 @@ class ProjectIOStore:
                 or project["bot_native_user_id"] != access.scope.bot_native_user_id
             ):
                 raise PermissionError("Project requires an account binding")
-            prior = cursor.execute(
-                "SELECT * FROM project_io WHERE project_id=? AND request_key=?",
-                (project_id, request_key),
-            ).fetchone()
+            prior = self._prior(cursor, access, request_key, tool_name, arguments_sha256)
             if prior:
-                if (
-                    prior["actor_principal_id"] != access.principal_id
-                    or prior["tool_name"] != tool_name
-                    or prior["arguments_sha256"] != arguments_sha256
-                ):
-                    raise ProjectConflict("Project operation identity was reused")
+                if prior["project_id"] != project_id:
+                    raise ProjectConflict("Project operation is bound to another workspace")
                 return self._grant(prior)
+            if cursor.execute(
+                "SELECT 1 FROM project_io WHERE project_id=? AND request_key=?",
+                (project_id, request_key),
+            ).fetchone():
+                raise ProjectConflict("Project operation belongs to another actor")
             if mutating:
                 self.projects._editor(cursor, access, project)
             require_project_io_idle(cursor, project_id)
@@ -248,16 +289,37 @@ class ProjectIOStore:
                 (now, grant.operation_id),
             )
 
-    def complete(self, grant, result, evidence, *, now=None):
-        """Only the runtime adapter may supply an actual, quiescent helper receipt."""
+    @staticmethod
+    def _validate_result(result):
         if (
             not isinstance(result, dict)
-            or len(json.dumps(result).encode()) > 512 * 1024
+            or len(json.dumps(result, allow_nan=False).encode()) > 512 * 1024
         ):
             raise ValueError("Project tool receipt exceeds its limit")
+
+    def observe_result(self, grant, result, *, now=None):
+        """Persist a returned result without claiming all processes have stopped."""
+        self._validate_result(result)
+        now = int(time.time()) if now is None else now
+        with self.projects._transaction() as cursor:
+            _, row = self._owned(cursor, grant)
+            if row["state"] not in {"dispatched", "needs_attention", "completed"}:
+                raise ProjectConflict("No dispatched operation to observe")
+            if row["result"] is not None and row["result"] != result:
+                raise ProjectConflict("Project result changed on replay")
+            cursor.execute(
+                "UPDATE project_io SET result=?::jsonb,updated_at=? WHERE operation_id=?",
+                (json.dumps(result), now, grant.operation_id),
+            )
+
+    def complete(self, grant, result, evidence, *, now=None):
+        """Only the runtime adapter may supply an actual, quiescent helper receipt."""
+        self._validate_result(result)
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
             project, row = self._owned(cursor, grant)
+            if row["result"] is not None and row["result"] != result:
+                raise ProjectConflict("Project result changed on replay")
             expected = {
                 "sandbox_id": row["sandbox_id"],
                 "project_id": grant.project_id,

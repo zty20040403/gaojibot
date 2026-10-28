@@ -879,13 +879,37 @@ effects require matching quiescent backend evidence to settle. Exact completion
 replay is harmless and cannot unlock a newer operation. Migration downgrade
 refuses to discard even completed/aborted operation receipts.
 
-This is a host-only store, not an execution adapter: ordinary sandbox tools do
-not use it yet, and physical receipt/recovery integration remains pending. The
-PostgreSQL tests supply explicit fixture observations; they do not prove real
-command cancellation, helper restart recovery or QQ file delivery.
+The registered `sandbox_read_file`, `sandbox_write_file` and `sandbox_exec`
+tools now use this store when `sandbox_id` is omitted in a project-enabled
+conversation. Explicit sandbox IDs keep their existing temporary-task behavior.
+Group and private callers resolve their current project through live account and
+membership checks. Sub-Agent/routine callers cannot inherit it implicitly.
+Small current-project edits can use the main loop; full new projects still use
+the existing execution entry. Project operations never enter task cleanup.
+
+The host binds each call to its transport event and tool-call ID. Replays find
+their original receipt before resolving current focus, so switching projects
+cannot redirect a previously admitted command. Same arguments with a different
+call ID are separate operations; a later read does not reuse a stale read result.
+Inputs and dependency names are checked before dispatch. Writes require editor
+rights, sandbox admission and current quota measurements.
+
+Returned results are persisted before testing quiescence. OCI observations also
+inspect the immutable container's process list, rather than trusting process-local
+locks after runner restart. VM observations verify the mounted generation, guest
+epoch and guest process/cgroup state. Known results can settle on subsequent
+project use without rerunning the command. A lost result or cancelled wait keeps
+its reservation and blocks new work; it is not unlocked merely because no
+process is visible. `project_status.tool_operation` exposes this state without
+commands, private grants or sandbox paths. Background project execution currently
+returns an explicit unsupported result instead of creating an unrelated sandbox.
+
+PostgreSQL, RPC, registry and loop tests use fixture Docker/libvirt/QQ effects.
+They do not prove native command cancellation, full helper-loss reconciliation
+or actual QQ file delivery. Projects remain default-disabled.
 
 This is not the complete M3 interface. Snapshot/restore/delete/preview tools,
-automatic project routing of existing sandbox/browser tools, live workspace
+project routing of attachment/browser tools, live workspace
 notes, Sub-Agent baselines and accepted-version publication, shared
 Matrix/iMessage ownership, and console management remain pending. Routine and
 Sub-Agent contexts do not receive these management tools until their project

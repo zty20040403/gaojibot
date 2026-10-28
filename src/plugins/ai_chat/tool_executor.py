@@ -114,6 +114,7 @@ from .handler_services import HandlerService
 from .handler_constants import (TURN_PROMPT_VERSION)
 from .prompt_context import quote_evidence
 from .project_context import current_project_context
+from .project_tool_executor import routes_to_project
 from .intent_routing import ToolIntent, classify_tool_intent
 from .tools import registry_for
 from .tools.state import SubAgentActions, ToolContext, TurnState
@@ -608,7 +609,7 @@ class ToolExecutor(HandlerService):
             except CapacityError as error:
                 return json.dumps({"ok": False, "error": str(error), "code": "capacity_blocked"}, ensure_ascii=False)
 
-            if semantic_entry_enabled and active_agent_step.get() is None and name in {
+            if semantic_entry_enabled and active_agent_step.get() is None and not routes_to_project(turn.context, name, arguments) and name in {
                 "sandbox_create", "sandbox_exec", "sandbox_write_file", "import_file_to_sandbox",
             }:
                 return json.dumps({"ok": False, "error": "此操作需要绑定专业子任务。单一任务调用 delegate_agent；多项交付调用 run_subagents。不要在主控直接执行或声称已完成。"}, ensure_ascii=False)
@@ -651,6 +652,8 @@ class ToolExecutor(HandlerService):
 
         async def handoff_tool(name, arguments, fingerprint):
             await guard_collaboration()
+            if routes_to_project(turn.context, name, arguments):
+                return await tool_registry.execute(turn, name, arguments)
             action = lambda: agent_executor.handoff_tool(name, arguments, fingerprint)
             if _mcp_execution is not None:
                 return await _mcp_execution.tool(name, arguments, action)
@@ -660,6 +663,8 @@ class ToolExecutor(HandlerService):
 
         async def compensate_tool(name, arguments, reason):
             await guard_collaboration()
+            if routes_to_project(turn.context, name, arguments):
+                return None
             if _mcp_execution is not None:
                 # Unknown external outcomes are handled by persisted receipts,
                 # not an unjournalled second mutation during cancellation.
@@ -1599,6 +1604,7 @@ class ToolExecutor(HandlerService):
                         else None
                     ),
                     entry_handler=handle_entry if semantic_entry_enabled else None,
+                    project_execution=bool(project_context),
                     entry_max_steps=(
                         self.context.subagent_coordinator.max_steps
                         if semantic_entry_enabled

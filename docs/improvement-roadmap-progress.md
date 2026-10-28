@@ -2695,3 +2695,35 @@ implementation evidence, not a claim that the production App has these features.
   followed by the other M3 interfaces. Projects stay default-disabled; M2
   native acceptance and M4-M7 remain incomplete. No production, shared
   nix-config, live QQ/model, App release or user-plan changes.
+
+### M3 current-project sandbox execution
+
+- Registered existing read/write/exec tools now default to the current project
+  when no sandbox ID is supplied. Explicit temporary sandbox IDs and ordinary
+  callers retain their previous routing. Private project use does not require
+  a group-only executor. Project workspaces never enter temporary-task cleanup.
+- The host tool-call identity is carried through the agent loop. Scoped lookup
+  precedes mutable focus lookup, so a replay remains bound to its original
+  project. Different read calls observe new data, and changed-argument replays
+  cannot reuse the original operation. Membership is checked before dispatch
+  and before returning stored results; writes also check editor rights/admission.
+- OCI readiness now checks actual container PIDs as well as host mutexes. VM
+  evidence checks the guest epoch and writers. Returned results persist before
+  quiescence; known results can settle on a later call. Unknown effects remain
+  blocked without blind retries. Writes are remeasured, retaining reservations
+  when sampling fails. Project status includes pending tool state.
+- Main-loop entry permits small project execution only through the scoped
+  tools, with no premature direct answer. Ordinary server/temporary mutations
+  retain their existing gates. Project background handoff is explicitly not
+  yet supported and cannot fall through to an unrelated task sandbox.
+- Regression uses real local PostgreSQL/Unix RPC with fixture Docker, libvirt,
+  QQ and model responses. Native platform acceptance, automatic reconciliation
+  of lost receipts, attachment/browser defaults, snapshots at turn end,
+  Sub-Agent baseline/lock/publication, other M3 interfaces and M4-M7 remain open.
+  Projects stay default-disabled. No shared nix-config edits, server connection,
+  live model/QQ calls, deployment, App release or user-plan modification.
+- Verification: 167 affected tests passed in 56.418 seconds with ResourceWarnings
+  treated as errors (`.cache/roadmap/m3-project-routing-verified.log`). Whole-CI
+  Ruff, compileall and whitespace checks passed. Nix package/import checks
+  passed on aarch64-darwin (`.cache/roadmap/m3-project-routing-nix.log`); Linux
+  and the other incompatible architectures were omitted, not verified.

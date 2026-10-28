@@ -229,6 +229,20 @@ class VmExecutorFixture(provision.VmProvisionFixture):
         )
 
 class VmExecutorTests(VmExecutorFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_tool_evidence_requires_current_epoch_and_no_guest_writers(self):
+        await self.transition("wake")
+        project = self.project()
+        evidence = await self.backend.io_evidence(project)
+        self.assertTrue(evidence["quiescent"])
+        self.assertEqual(evidence["fence"], project["lifecycle_fence"])
+        guest = self.guests[self.record()["sandbox_id"]]
+        guest.commands.sandbox_processes.return_value = True
+        with self.assertRaises(ProjectConflict):
+            await self.backend.io_evidence(project)
+        guest.commands.sandbox_processes.return_value = False
+        with self.assertRaises(ProjectConflict):
+            await self.backend.io_evidence({**project, "lifecycle_fence": project["lifecycle_fence"] + 1})
+
     async def test_full_stop_hibernate_archive_restore_and_dependency_lifecycle(self):
         f = await self.dependency_project()
         first = self.project()["sandbox_id"]

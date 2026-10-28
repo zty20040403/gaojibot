@@ -129,7 +129,7 @@ class EntryDecision:
     @classmethod
     def parse(cls, raw: Mapping[str, Any], *, max_steps: int = 8, contract_version: int = 3,
               worker_tools: Mapping[str, frozenset[str]] | None = None,
-              restoring: bool = False) -> "EntryDecision":
+              restoring: bool = False, project_execution: bool = False) -> "EntryDecision":
         import re
         from .registry import DEFAULT_AGENT_REGISTRY
 
@@ -151,9 +151,11 @@ class EntryDecision:
         task_type = string("task_type", 30)
         if task_type not in {"conversation", "explanation", "lookup", "code_example", "execution", "project", "research_delivery"}:
             raise ValueError("unknown task_type")
-        if (task_type in {"project", "research_delivery"} and mode not in {"workflow", "revise"}) or (task_type == "execution" and mode == "direct"):
+        if (task_type in {"project", "research_delivery"} and mode not in {"workflow", "revise"}) or (task_type == "execution" and mode == "direct" and not project_execution):
             raise ValueError("execution mode contradicts the work required by task_type")
         answer, objective = string("answer", 32000), string("objective", 6000)
+        if task_type == "execution" and mode == "direct" and answer:
+            raise ValueError("Project execution must call tools before answering")
         delivery_required = raw.get("delivery_required", False)
         if not isinstance(delivery_required, bool):
             raise ValueError("delivery_required must be a boolean")

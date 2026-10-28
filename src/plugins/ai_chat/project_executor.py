@@ -37,6 +37,19 @@ class ProjectBackendUnavailable(ValueError):
     pass
 
 
+def project_io_evidence(project, ready):
+    if not ready:
+        raise ProjectConflict("Project execution is not physically quiescent")
+    return {
+        "project_id": project["project_id"],
+        "sandbox_id": project["sandbox_id"],
+        "generation": project["workspace_generation"],
+        "fence": project["lifecycle_fence"],
+        "pending": False,
+        "quiescent": True,
+    }
+
+
 class DockerProjectBackend:
     VOLUMES = {
         "create_volume": "create",
@@ -80,6 +93,24 @@ class DockerProjectBackend:
             project["scope_key"], project["project_id"], generation=project["workspace_generation"],
             rebuild_command=project["rebuild_command"],
         )
+
+    async def io_evidence(self, project):
+        state = await self.client.project_workspace(
+            "status", project["scope_key"], project["project_id"],
+            generation=project["workspace_generation"],
+        )
+        return project_io_evidence(project, (
+            project["status"] == "active"
+            and state.get("verified") is True
+            and state.get("quiescent") is True and state.get("busy") is False
+            and state.get("state") == "running"
+            and state.get("sandbox_id") == project["sandbox_id"]
+            and state.get("project_id") == project["project_id"]
+            and state.get("generation") == project["workspace_generation"]
+            and state.get("fence") == project["lifecycle_fence"] - 1
+            and state.get("pending") is False
+            and state.get("maintenance_active") is False
+        ))
 
     async def maintenance_ready(self, project):
         if project["lifecycle_job_id"] is not None or project["locked_task_id"] is not None:

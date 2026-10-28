@@ -462,12 +462,27 @@ class ProjectWorkspaces:
                 self.manager._ensure_idle(sandbox_id)
             except SandboxError:
                 busy = True
+        if state == "running" and not busy:
+            # In-memory locks disappear on runner restart; detached docker-exec
+            # processes do not. Only the immutable container's idle PID 1 may remain.
+            result = await self.manager._run("docker", "top", container["Id"], "-eo", "pid", timeout=20)
+            lines = result.stdout.split()
+            pid = container["State"].get("Pid")
+            if result.returncode or not lines or lines[0] != "PID" or any(
+                not value.isdecimal() for value in lines[1:]
+            ) or type(pid) is not int or pid <= 0:
+                raise SandboxError("Project process inventory is unavailable")
+            busy = lines[1:] != [str(pid)]
+            current = await self._observe(owner, binding)
+            if current is None or current["Id"] != container["Id"] or current["State"] != container["State"]:
+                raise SandboxError("Project container changed during process inspection")
         return {
             "project_id": project_id,
             "generation": generation,
             "fence": binding["fence"],
             "sandbox_id": sandbox_id,
             "busy": busy,
+            "quiescent": not busy and state == "running",
             "state": state,
             "pending": binding["pending"],
             "verified": not binding["pending"]

@@ -360,6 +360,16 @@ class ProjectUsageSampler:
             raise PermissionError("Usage sampling needs the live project owner")
         return access
 
+    async def sample_one(self, project):
+        async with asyncio.timeout(30):
+            await self._access(project)
+            sample = await self.backends[project["backend"]].sample_usage(project)
+        access = await self._access(project)
+        await _store(
+            self.store.record, access, project["project_id"], sample,
+            expected_version=project["version"],
+        )
+
     async def run_once(self):
         if not self.enabled:
             return []
