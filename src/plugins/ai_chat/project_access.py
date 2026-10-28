@@ -7,13 +7,12 @@ from .onebot_codec import scope_from_event
 
 
 def projects_configured(context):
+    if "projects" not in context.capabilities or context.routine_run_id or active_agent_step.get() is not None:
+        return False
     runtime = getattr(context.app, "project_runtime", None)
     return bool(
-        "projects" in context.capabilities
-        and runtime is not None
+        runtime is not None
         and context.app.settings.projects_enabled
-        and not context.routine_run_id
-        and active_agent_step.get() is None
         and isinstance(context.event, (GroupMessageEvent, PrivateMessageEvent))
     )
 

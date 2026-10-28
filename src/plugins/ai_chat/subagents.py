@@ -211,6 +211,8 @@ class TaskRecord:
     created_at: int
     updated_at: int
     finished_at: int | None
+    project_id: int | None = None
+    project_base_version: int | None = None
 
     @property
     def handle(self) -> str:
@@ -250,6 +252,7 @@ class SubAgentStore(
     FileOutboxStoreMixin,
 ):
     def __init__(self, source: DatabaseSource) -> None:
+        self.database = source
         self.path, self._connection = open_store_connection(source)
         self._lock = threading.RLock()
         self._change_listener: Callable[[int], None] | None = None
@@ -1133,6 +1136,8 @@ class SubAgentStore(
             finished_at=(
                 int(row["finished_at"]) if row["finished_at"] is not None else None
             ),
+            project_id=row["project_id"],
+            project_base_version=row["project_base_version"],
         )
 
     @staticmethod
@@ -1174,6 +1179,7 @@ class AgentExecutionHooks:
         [str, dict[str, Any], str], Awaitable[str | None]
     ] | None = None
     operation_receipt: Callable[..., Awaitable[dict[str, Any]]] | None = None
+    project_inputs: Any = None
 
 
 @dataclass(frozen=True)
@@ -2944,6 +2950,16 @@ class SubAgentCoordinator:
             for name in sorted(spec.allowed_tools)
             if name in tools_by_name
         ]
+        project_input = None
+        if task.project_id is not None:
+            if hooks is None or hooks.project_inputs is None or hooks.workspaces is None:
+                raise ValueError("Project task input adapter is unavailable; refusing an unbound workspace")
+            from .project_task_inputs import IMPORT_PROJECT_BASELINE
+            project_input = await hooks.project_inputs.index(task.task_id)
+            if (project_input["project_id"] != task.project_id
+                    or project_input["version_no"] != task.project_base_version):
+                raise ValueError("Project task baseline changed")
+            allowed_tools.append(IMPORT_PROJECT_BASELINE)
         trace = AgentTrace(trace_id=task.trace_id)
         self.store.hydrate_external_session(task.task_id, run.run_id)
         session = self.store.agent_session(
@@ -2986,6 +3002,8 @@ class SubAgentCoordinator:
                 return read_evidence(allowed_evidence(), arguments)
             if name == "import_agent_artifact" and hooks and hooks.workspaces:
                 return await hooks.workspaces.import_artifact(task.task_id, dict(upstream), arguments)
+            if name == "import_project_baseline" and project_input is not None:
+                return await hooks.project_inputs.import_into(task.task_id, hooks.workspaces, arguments)
             raw = await execute_tool(name, arguments)
             if name != "say":
                 ref = self.store.record_evidence(task.task_id, run.run_id, name, arguments, raw,
@@ -3045,6 +3063,12 @@ class SubAgentCoordinator:
         else:
             worker_input = _worker_input(task.objective, step, agent_context)
         worker_input += f"\n[本步骤工作目录]\n/workspace/tasks/{task.task_id}/steps/{step.key}\n"
+        if project_input is not None:
+            worker_input += (
+                "\n[宿主固定的项目基线]\n" + json.dumps(project_input, ensure_ascii=False)
+                + "\n这是本任务唯一基线，不跟随当前项目的切换。先创建本步骤沙盒，调用 import_project_baseline。"
+                "导入原件只读；复制到本步骤工作目录后再修改。产物交给宿主验收，不要尝试直接修改项目卷。"
+            )
         worker_input += "\n[宿主证据索引，必要时用 read_task_evidence 读取]\n" + json.dumps(evidence_index(allowed_evidence()), ensure_ascii=False)
         worker_input += "\n报告中每个 evidence# 必须使用本轮工具返回或当前索引中的完整编号；不要复制上一修订的编号。来源观测时间以证据原文为准，不把收取时间当作采样时间。"
 

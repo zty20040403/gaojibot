@@ -3301,3 +3301,49 @@ implementation evidence, not a claim that the production App has these features.
   native M2 gates and M4-M7. Existing frozen guest bootstraps are not rewritten.
   No production SSH, QQ/model calls, shared nix-config changes, rebuild, App
   release or supplied-plan modification occurred.
+
+### M3 transactional project task inputs
+
+- Added `0055_project_tasks` and a host-only `ProjectTaskStore`. Task creation,
+  its durable dispatch/context checkpoint, exact project/base version/hash and
+  the project lock commit together. Scope/account/actor/editor and live focus
+  are checked on first admission. An identical retry resolves the original
+  binding before mutable focus; changed request contents cannot create a second
+  task. No queue/listener observes a half-prepared binding. Failed or cancelled
+  tasks do not silently release their project or erase their baseline.
+- Materialized workspaces require a completed, quiescent lifecycle with the
+  exact latest saved manifest, generation and final fence. An active workspace
+  or merely existing old version cannot stand in for a saved baseline. Existing
+  project edit/lifecycle guards block while the task owns the project. Retained
+  version foreign keys and downgrade protection preserve recovery evidence.
+- Added a pinned baseline input adapter and `import_project_baseline` to bound
+  specialist execution. Files are checksum-verified and copied through the
+  existing root-owned readonly installer into each step's own task sandbox;
+  the project volume is never mounted. Only `sandbox_id` is model-supplied.
+  Project, version, paths and owner come from host records. Membership, editor
+  access, task/run state and lease are checked again during import. Partial
+  imports can retry the same immutable files; a completion manifest is written
+  last. Parallel specialists receive separate copies of the same fixed input.
+  Missing adapters reject bound execution before the model runs.
+- Fixed project capability detection to short-circuit before accessing runtime
+  dependencies when projects are unavailable, including specialist execution.
+  Ordinary non-project tools retain their existing behavior.
+- Verification: 62 focused project/task/coordinator/revision tests passed in
+  18.451 seconds (`.cache/roadmap/m3-project-tasks-verified.log`); two migration
+  tests passed separately in 1.295 seconds
+  (`.cache/roadmap/m3-project-task-migration.log`). Tests use disposable real
+  PostgreSQL and real CAS/files/Unix RPC for lifecycle admission. Docker/kernel
+  operations, readonly sandbox installation and model output are explicit local
+  fixtures, not native Linux/KVM or live model evidence. Concurrency, rollback,
+  focus changes, corruption, revoked access, retry after lost import responses,
+  isolated parallel copies and schema rollback protection are covered.
+  Whole-CI Ruff, compileall and whitespace checks passed.
+- Not enabled end to end yet: the automatic entry/dispatcher still needs to
+  quiesce/save and invoke admission, bind recovery hooks, independently accept
+  artifacts, publish/materialize a project version and reconcile/release the
+  lock on completion or cancellation. These must be wired together before
+  exposing project task submission. This change does not claim that normal QQ
+  requests already perform that whole workflow. M3 console/shared-conversation
+  gates, general browser drain, native M2/KVM gates and M4-M7 remain open.
+  No production connection, shared nix-config change, deployment, App release,
+  QQ/model request or supplied-plan edit occurred.

@@ -322,6 +322,8 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         side_effects=("resume:agent", "write:task-ledger"), timeout_seconds=30, max_identical_calls=1)
     policies["import_agent_artifact"] = ToolPolicy(risk="low", idempotency="idempotent",
         side_effects=("write:sandbox",), timeout_seconds=90)
+    policies["import_project_baseline"] = ToolPolicy(risk="low", idempotency="idempotent",
+        side_effects=("write:sandbox",), timeout_seconds=120)
     policies["read_agent_result"] = ToolPolicy(risk="low", idempotency="pure", timeout_seconds=10)
     policies["read_task_evidence"] = ToolPolicy(risk="low", idempotency="pure", timeout_seconds=10)
     policies["read_task_evidence_batch"] = ToolPolicy(risk="low", idempotency="pure", timeout_seconds=10)

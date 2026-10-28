@@ -113,6 +113,7 @@ def validate_project_access(cursor, access: ProjectAccess):
 
 class ProjectStore:
     def __init__(self, source: DatabaseSource, root: Path):
+        self.database = source
         _, self._connection = open_store_connection(source)
         self._lock = threading.RLock()
         self.blobs = ProjectBlobStore(root)
