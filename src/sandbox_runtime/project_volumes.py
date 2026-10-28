@@ -20,13 +20,13 @@ import uuid
 
 from src.local_runtime.files import read_json
 from src.project_content import MAX_MANIFEST_BYTES
+from .project_browser_volume import ProjectHostVolumeJournal
 from .project_workspace_journal import ProjectWorkspaceJournal
 from .project_volume_journal import (
     MAX_QUOTA as MAX_QUOTA,
     MIN_QUOTA as MIN_QUOTA,
     MIB as MIB,
     ProjectVolumeError as ProjectVolumeError,
-    ProjectVolumeJournal,
 )
 
 _DEVICE = re.compile(r"/dev/loop[0-9]+")
@@ -216,7 +216,7 @@ class LinuxVolumeHost:
         self.run("fstrim", str(target))
 
 
-class ProjectVolumes(ProjectWorkspaceJournal, ProjectVolumeJournal):
+class ProjectVolumes(ProjectWorkspaceJournal, ProjectHostVolumeJournal):
     """Private runner journal and fixed-operation host filesystem adapter.
 
     Fence numbers increase per project *operation*, not per transient RPC retry.

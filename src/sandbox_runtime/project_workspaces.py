@@ -454,10 +454,13 @@ class ProjectWorkspaces:
         elif state == "running":
             await self._verify_running(binding, container)
         sandbox_id = (binding["workspace"] or {}).get("sandbox_id")
-        busy = False
+        busy = not await self._volume(self.volumes.browsers.maintenance_ready, {
+            "instance_id": self.volumes.instance_id, "owner": owner,
+            "project_id": project_id, "generation": generation, "fence": binding["fence"],
+        })
         if sandbox_id:
             lock = self.manager._exec_locks.get(sandbox_id)
-            busy = bool(lock and lock.locked())
+            busy = busy or bool(lock and lock.locked())
             try:
                 self.manager._ensure_idle(sandbox_id)
             except SandboxError:

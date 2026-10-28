@@ -221,7 +221,8 @@ class LocalPage(BaseHTTPRequestHandler):
         location.reload()">Save</button>
         <p id="value"></p><script>document.querySelector('#value').textContent =
         (localStorage.getItem('name') || 'No saved name') + ';' + document.cookie +
-        ';clicks=' + (localStorage.getItem('clicks') || '0');</script>"""
+        ';clicks=' + (localStorage.getItem('clicks') || '0');</script>
+        <input type="password" aria-label="Password">"""
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -272,6 +273,12 @@ class RealBrowserRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 saved = (await first.click("project-1", button))["text"]
                 self.assertIn("Alice", saved)
                 self.assertIn("session=local-only", saved)
+                snapshot = await first.snapshot("project-1")
+                password = next(item["ref"] for item in snapshot["elements"] if item["text"] == "Password")
+                secret = "fixture-secret-must-not-enter-receipts"
+                entered = await first.type_text("project-1", password, secret)
+                self.assertNotIn(secret, str(entered))
+                self.assertNotIn(secret, str(await first.snapshot("project-1")))
             finally:
                 await first.close()
             same, other = manager("project-1"), manager("project-2")

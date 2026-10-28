@@ -2997,3 +2997,40 @@ implementation evidence, not a claim that the production App has these features.
   This is worker-side transport, not full project browser activation. The rest of
   M3, native M2 acceptance and M4-M7 remain. No shared nix-config changes,
   production connections, deployment, App release or user-plan changes occurred.
+
+### M3 host browser receipts and project maintenance admission
+
+- Added host-private browser launch/action journals with frozen project,
+  generation, fence, session, worker and immutable runtime bindings. Atomic
+  bounded receipts survive controller restart. Application publication is a
+  separate idempotent callback: a lost acknowledgement republishes the saved
+  observation without another browser action. Missing channels and uncertain
+  effects remain blocked, never silently relaunched.
+- Added cross-process session locks covering launch, exchange and shutdown.
+  Ordinary drain refuses unfinished work; explicit cancellation still requires
+  independent driver process evidence and cannot acknowledge an unknown result.
+  A late launch cannot start after cancellation has confirmed absence. Closing
+  the process does not discard an unpublished receipt.
+- OCI, Desktop directory and VM disk journals now share browser admission with
+  their existing maintenance lock. Active/unacknowledged browsers prevent
+  lifecycle reservation, stop/removal and disk/file maintenance. Runtime
+  inspections include durable browser busy state, not just live process counts.
+  The guest file helper remains independent of host browser state. Browser
+  snapshots omit password input values before they can enter durable receipts.
+- Verification: 124 focused host, storage, Desktop, VM file and lifecycle tests
+  passed in 32.833 seconds (`.cache/roadmap/m3-browser-host-verified.log`), using
+  local PostgreSQL and fixture kernel/libvirt/Docker effects. Another 33 browser
+  engine/worker/host tests passed in 11.284 seconds
+  (`.cache/roadmap/m3-browser-host-engine.log`), including real local Chromium
+  private-pipe execution and lost-ack replay with a visible click count of one.
+  ResourceWarnings were errors; whole-CI Ruff, compileall and whitespace checks
+  passed. Nix package/import checks passed on aarch64-darwin
+  (`.cache/roadmap/m3-browser-host-nix.log`); other architectures were omitted.
+  Temporary profiles and loopback servers were closed and removed.
+- Still open: actual native OCI/KVM browser launcher and shutdown observers,
+  application-side durable session/sequence mapping and receipt publication,
+  project tool routing, browser-only cache cleanup and native acceptance. This
+  change does not activate project browsers in production or replace generic
+  IO quiescence with a worker's success flag. Remaining M3, native M2 acceptance
+  and M4-M7 are not complete. No shared nix-config edit, production connection,
+  deployment, App release or user-plan modification occurred.

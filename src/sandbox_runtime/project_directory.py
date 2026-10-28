@@ -19,7 +19,8 @@ from src.local_runtime.files import read_json
 from src.project_content import MAX_MANIFEST_BYTES
 from .project_files import ProjectFiles
 from .project_usage import rebuildable_bytes
-from .project_volume_journal import MIB, ProjectVolumeError, ProjectVolumeJournal
+from .project_volume_journal import MIB, ProjectVolumeError
+from .project_browser_volume import ProjectHostVolumeJournal
 from .project_workspace_journal import ProjectWorkspaceJournal
 from .project_volumes import LinuxVolumeHost
 
@@ -115,7 +116,7 @@ class DesktopVolumeHost(LinuxVolumeHost):
         return False
 
 
-class DirectoryProjectVolumes(ProjectWorkspaceJournal, ProjectVolumeJournal):
+class DirectoryProjectVolumes(ProjectWorkspaceJournal, ProjectHostVolumeJournal):
     storage_kind = "desktop-directory"
     quota_mode = "soft"
 

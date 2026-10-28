@@ -230,12 +230,16 @@ class VmProjectRuntime:
                     or observed["retired"] != final["retired"]
                 ):
                     raise SandboxError("Project observation was superseded")
+                browser_busy = not await _journal(self.disks.browsers.maintenance_ready, {
+                    "instance_id": self.disks.instance_id, "owner": owner,
+                    "project_id": project_id, "generation": generation, "fence": status["fence"],
+                })
                 return {
                     **final["status"],
                     "verified": True,
                     "state": state,
                     "retired": observed["retired"],
-                    "busy": guest.get("busy", False),
+                    "busy": guest.get("busy", False) or browser_busy,
                     **accounting,
                     **({"guest": guest} if guest else {}),
                 }

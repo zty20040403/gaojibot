@@ -32,7 +32,7 @@ def read_json(path: Path) -> dict:
     return value
 
 
-def write_json(path: Path, value: dict, *, mode: int = 0o600) -> None:
+def write_json(path: Path, value: dict, *, mode: int = 0o600, compact: bool = False) -> None:
     if mode not in {0o600, 0o644}:
         raise ValueError("Unsupported instance file permissions")
     if path.is_symlink():
@@ -40,7 +40,8 @@ def write_json(path: Path, value: dict, *, mode: int = 0o600) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=".write-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            json.dump(value, stream, ensure_ascii=False, indent=None if compact else 2,
+                      separators=(",", ":") if compact else None, allow_nan=False)
             stream.write("\n")
             os.chmod(temporary, mode)
             stream.flush()

@@ -109,6 +109,22 @@ class DirectoryVolumeTests(unittest.TestCase):
         )
         self.assertEqual(new["generation"], 2)
 
+    def test_browser_reservation_blocks_soft_volume_cleanup(self):
+        workspace = self.volumes.begin_workspace("scope", 1, generation=1, fence=3,
+            action="start", image=IMAGE)
+        self.volumes.finish_workspace("scope", 1, generation=1, fence=3, action="start")
+        identity = {"instance_id": INSTANCE, "owner": "scope", "project_id": 1,
+                    "generation": 1, "fence": 3}
+        self.volumes.browsers.begin({"schema": 1, "binding": identity, "workspace": "/workspace",
+            "executable_path": "", "allow_private_network": False,
+            "max_profile_bytes": 256 * MIB, "cache_bytes": 32 * MIB},
+            {"backend": "oci", "sandbox_id": workspace["workspace"]["sandbox_id"], "runtime_id": "c" * 64})
+        reopened = DirectoryProjectVolumes(self.root / "projects", INSTANCE, host=self.host)
+        with self.assertRaises(SandboxError):
+            reopened.reserve("scope", 1, generation=1, fence=4,
+                action="reserve", reservation="b" * 32)
+        self.assertEqual(reopened.status("scope", 1)["fence"], 3)
+
     def test_directory_substitution_and_symlink_are_rejected(self):
         original = self.target.with_name("saved")
         self.target.rename(original)

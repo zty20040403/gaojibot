@@ -229,6 +229,32 @@ class ProjectWorkspaceTests(unittest.IsolatedAsyncioTestCase):
     def container(self):
         return next(iter(self.docker.containers.values()))
 
+    async def test_browser_intent_blocks_idle_status_and_stop_before_native_launch(self):
+        initial = await self.operate("start", 3)
+        identity = {"instance_id": INSTANCE, "owner": "scope", "project_id": 1,
+                    "generation": 1, "fence": 3}
+        config = {"schema": 1, "binding": identity, "workspace": "/workspace",
+            "executable_path": "", "allow_private_network": False,
+            "max_profile_bytes": 256 * MIB, "cache_bytes": 32 * MIB}
+        runtime = {"backend": "oci", "sandbox_id": initial["sandbox_id"],
+                   "runtime_id": self.container()["Id"]}
+        journal = self.volumes.browsers
+        session = journal.begin(config, runtime)
+        state = await self.client.project_workspace("status", "scope", 1, generation=1)
+        self.assertTrue(state["busy"])
+        self.assertFalse(state["quiescent"])
+        with self.assertRaises(SandboxError):
+            await self.operate("stop", 4)
+        self.assertEqual(self.journal()["fence"], 3)
+        self.assertTrue(self.container()["State"]["Running"])
+        sid = session["session_id"]
+        journal.closing(identity, sid, cancel_pending=True)
+        journal.closed(identity, sid, {"binding": identity, "runtime": runtime,
+            "session_id": sid, "processes_stopped": True})
+        state = await self.client.project_workspace("status", "scope", 1, generation=1)
+        self.assertTrue(state["quiescent"])
+        self.assertEqual((await self.operate("stop", 4))["state"], "stopped")
+
     async def test_start_stop_remove_and_rebuild_preserve_project_data(self):
         sentinel = self.volumes.binding("scope", 1) / "report.txt"
         sentinel.write_text("retained project")

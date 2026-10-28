@@ -1132,11 +1132,55 @@ closes via EOF, restarts and recovers persistent cookie/localStorage, then
 checks a different project receives neither. It uses temporary loopback pages
 and profiles, not personal browser data or online accounts.
 
-Project `browser_*` routing, OCI/KVM launcher integration, durable host receipts,
-browser process admission/draining across snapshot and restore, standalone cache
-cleanup and native OCI/KVM acceptance remain open. This worker is not enabled in
+Project `browser_*` routing, OCI/KVM launcher integration, application-side receipt
+publication, physical browser draining across snapshot and restore, standalone
+cache cleanup and native OCI/KVM acceptance remain open. This worker is not enabled in
 production; ordinary browser tools retain their conversation owner until the
 full integration is complete.
+
+### Host browser receipts and maintenance exclusion
+
+`project_browser_journal.py` persists launch and action intent before dispatch in
+private host-owned files, outside the workspace. Each receipt freezes instance,
+owner, project, generation, fence, session, worker and immutable container/domain
+identity. Action arguments are not stored: only their digest, method and bounded
+observation. Password inputs no longer expose their value in browser snapshots.
+Other page observations may still be private and must not be treated as public
+logs. Atomic replacement, file/directory fsync and per-session process locks
+protect recovery; a timeout does not expire ownership.
+
+`project_browser_host.py` separates observation from application publication.
+Its idempotent `persist(session_id, sequence, response)` callback must commit to
+the application's durable store before the host acknowledges the receipt.
+Failure or lost acknowledgement repeats only publication, never the click.
+A late reply may be read from the original pipe, but a missing/truncated pipe
+does not authorize relaunch. An unconfirmed action remains blocked even after
+its process is stopped. Actual application mapping and callback integration
+remain to be implemented.
+
+Normal drain refuses an unfinished launch/action. Explicit cancellation can
+stop its processes but cannot manufacture a successful result. A live controller
+holds the cross-process session lock through launch and each exchange; another
+controller cannot race it with a false absence/close acknowledgement. The driver
+must stop the frozen runtime and independently verify its processes are gone.
+Worker stdout alone is never shutdown evidence. A closed session with an
+unpublished receipt still blocks reuse and maintenance.
+
+Native OCI, Desktop directory and VM disk stores now own a
+`ProjectVolumeBrowserJournal`. Browser admission and the existing maintenance
+intent share lock order `volume -> browser`; exact generation/fence, sandbox,
+backend and (for VM) initialized domain binding are checked. Lifecycle
+reservations, stop/remove, disk mutations and reserved file maintenance cannot
+pass an active/unacknowledged browser. Workspace inspections include this
+durable busy state even if no browser process has started or the control
+process restarted. Guest file bundles remain independent of the host receipt
+implementation and retain their own execution-gate checks.
+
+This is not a native browser launcher. The future driver must supply the actual
+isolated pipe, prove quota-backed `/workspace` placement, enforce resources, and
+provide physical shutdown evidence. The local Chromium test uses a temporary
+loopback page and real worker process, but its OCI identity is explicitly a
+fixture; it does not prove native container/KVM isolation.
 
 ### Remaining acceptance
 

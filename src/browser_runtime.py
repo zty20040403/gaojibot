@@ -410,7 +410,8 @@ class BrowserManager:
               return nodes.map((el, index) => {
                 const ref = `b${index + 1}`;
                 el.setAttribute('data-bot-ref', ref);
-                const text = (el.innerText || el.value || el.getAttribute('aria-label') ||
+                const value = el.matches('input[type="password"]') ? '' : el.value;
+                const text = (el.innerText || value || el.getAttribute('aria-label') ||
                   el.getAttribute('placeholder') || el.title || '').trim().slice(0, 200);
                 return {ref, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '', text};
               });

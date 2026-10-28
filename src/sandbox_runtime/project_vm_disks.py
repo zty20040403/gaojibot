@@ -17,7 +17,8 @@ import uuid
 from xml.etree import ElementTree
 
 from .docker import SANDBOX_ID_PATTERN
-from .project_volume_journal import MIB, ProjectVolumeError, ProjectVolumeJournal
+from .project_volume_journal import MIB, ProjectVolumeError
+from .project_browser_volume import ProjectHostVolumeJournal
 from .project_vm_guest import disk_serial, validate_config
 
 
@@ -133,7 +134,7 @@ class VmProjectDiskBinding:
         })
 
 
-class VmProjectDisks(ProjectVolumeJournal):
+class VmProjectDisks(ProjectHostVolumeJournal):
     storage_kind = "qcow2"
 
     def __init__(self, root: Path, instance_id: str, *, host=None, capacity_check=None):

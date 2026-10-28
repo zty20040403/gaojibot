@@ -229,6 +229,28 @@ class VmExecutorFixture(provision.VmProvisionFixture):
         )
 
 class VmExecutorTests(VmExecutorFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_browser_receipt_keeps_idle_guest_busy_and_blocks_lifecycle_reservation(self):
+        await self.transition("wake")
+        before = await self.inspect()
+        self.assertFalse(before["busy"])
+        identity = {"instance_id": self.store.instance_id, "owner": self.scope.key,
+            "project_id": self.pid, "generation": before["generation"], "fence": before["fence"]}
+        runtime = {"backend": "vm", "sandbox_id": before["sandbox_id"],
+                   "runtime_id": self.record()["guest_domain_uuid"]}
+        session = self.store.browsers.begin({"schema": 1, "binding": identity,
+            "workspace": "/workspace", "executable_path": "", "allow_private_network": False,
+            "max_profile_bytes": 256 * MIB, "cache_bytes": 32 * MIB}, runtime)
+        self.compose()
+        self.assertTrue((await self.inspect())["busy"])
+        with self.assertRaises(SandboxError):
+            await self.runtime.mounts.reserve("reserve", self.scope.key, self.pid,
+                generation=before["generation"], fence=before["fence"] + 1, reservation="b" * 32)
+        sid = session["session_id"]
+        self.store.browsers.closing(identity, sid, cancel_pending=True)
+        self.store.browsers.closed(identity, sid, {"binding": identity, "runtime": runtime,
+            "session_id": sid, "processes_stopped": True})
+        self.assertFalse((await self.inspect())["busy"])
+
     async def test_snapshot_active_vm_keeps_domain_and_reopens_guest_gate(self):
         await self.transition("wake")
         original = self.project()
