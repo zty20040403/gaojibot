@@ -61,7 +61,7 @@ M0 已推送并建立 [PR #1](https://github.com/zty20040403/gaojibot/pull/1)。
 
 修复提交 `23056c4` 的 Python 3.12、Nix package、Secret scan 全部通过。HTTPS OAuth 凭证缺少修改 workflow 的 scope，推送被 GitHub 拒绝；随后核对已有 SSH 认证同属当前用户，使用已有 GitHub SSH 凭证推送，没有修改凭证权限或远端配置。用户明确回复“我已审阅，授权你用 merge commit 合并”后，核对 PR head 与三项检查并完成合并：`7ea5ac09ec5a8102c0ff899b92e13700ca5133e6`。独立开发分支已 fetch 并同步该 main，没有推送 M1 未完成改动。
 
-## M1：共享回合与身份隔离（离线完成，待 CI 与审阅）
+## M1：共享回合与身份隔离（离线完成，已合并）
 
 - 在改业务前新增 9 项真实 OneBot 出站快照并纳入上述完整基线；固定平台 I/O、时钟和测试身份。
 - 引入结构化账号、端点、操作者、入站、能力与发送契约；旧 OneBot scope 和设置 key 保持原样。公共类型可在阻断 NoneBot 导入的真实子进程中加载。
@@ -81,20 +81,40 @@ M0 已推送并建立 [PR #1](https://github.com/zty20040403/gaojibot/pull/1)。
 - 干净子进程的真实 composition 验证了实际群模型默认、个人 effort、工具、记忆、历史、journal 与任务清理，全程禁止 NoneBot 导入。真实存储续接测试核对 actor principal、实际引用端点和刷新不重复建边。
 - 新传输端口的引用/撤回、并发消费和未知结果不重放测试通过。旧 OneBot 出站仍由原路径负责。
 
-本阶段达到离线完成标准，GitHub CI 与用户审阅另行记录。`Delivery.target_scope` 仍是旧三字段表示，官方持久投递在 M3 补齐前不得接通；项目/宿主授权、媒体和剩余业务仍按 M4/M5/M6/M7 分步实现。M1 不构成上线或真实 QQ 能力已验证的声明。
+本阶段达到离线完成标准。实现提交 `a3bc6a6` 的 [PR #2](https://github.com/zty20040403/gaojibot/pull/2) 已通过 Python 3.12、Nix package、Secret scan 三项 CI；用户完成审阅后，以 merge commit `e5425370161ad665d02bf0f98ea9047149f3f502` 合并。`Delivery.target_scope` 仍是旧三字段表示，官方持久投递在 M3 补齐前不得接通；项目/宿主授权、媒体和剩余业务仍按 M4/M5/M6/M7 分步实现。M1 不构成上线或真实 QQ 能力已验证的声明。
+
+## M2：持久入站与首次绑定（离线完成，待 CI 与审阅）
+
+- 已实现事件 codec、账号独占租约、双向新群绑定、持久 inbox、引用索引和回复窗口观察，使用扩展迁移 `0062_qq_official_inbound`。账号、环境、实际端点和群/C2C 身份分别校验；不迁移旧历史。
+- 接收和业务入账分为两个短事务。未绑定普通群消息不保存正文；已准入消息按端点顺序入账，并保存唯一回合意图。普通群事件后到达的同消息 @ 事件只升级触发证据，不替换正文、不刷新窗口。
+- 首次 owner 仅由受保护配置或可信控制台建立。群内提交绑定码只产生候选，必须由原 owner 在另一端确认；普通绑定不自动授予群内发令者 owner。群 owner/admin 角色、昵称和首次私聊都不是本地管理授权。
+- 独立 runtime 类不需要 Bot 实例；账号租约、失锁停止和 durable worker 使用本机假平台与隔离 PostgreSQL 验证。当前只保存回合意图，M3 平台发送和 M4 共享模型回合消费尚未接通，不能将唯一 job 声称为模型/工具的恰好执行一次。
+- `AppContext.start_official_ingress(env)` 已接入应用启动与 shutdown 收尾；OneBotRuntime 在应用生命周期中调用，官方启动不等待 Bot connect。开关默认关闭，不读取官方凭证、不连接官方网关。禁止 NoneBot 的独立部署入口及健康状态暴露仍属于 M8。
+- `.env.example` 和 `services.gaoji.qqOfficial` 按当前 `adapters/qq_official/config.py` 补齐配置。启用时必须提供 AppID、AppSecret 和独立 binding pepper 三个受保护文件；Nix 仅启用时加入官方环境变量和 `LoadCredential`，拒绝非绝对路径、Nix store 路径及带 Nix context 的文件值。现有 OneBot 的环境配置在未开启该选项时保持不变。
+- private policy 默认 `owner_only`，可显式选择 `allowlist` 或 `public`；这些准入不授予管理权限。群仅允许 `manual_bind`。原始 inbox payload TTL 默认 24 小时，范围 1–168 小时；清理不删除仍影响重放的去重墓碑、消息索引和派发唯一性。
+- durable job kind 按完整账号 key 的 SHA256 分开，防止一个账号的 worker 领取另一账号的消息。消息入账异常会保留可恢复任务并暂停该账号；启动和巡检发现待处理 inbox 对应已取消、失败或耗尽重试的 job 时也暂停，避免后续消息永久排队却显示健康。
+- 失去 Resume 连续性时，将成员状态标为未知并废止旧窗口、敏感群授权和绑定候选；保留普通手动绑定意图。只有新的真实人类消息能重新证明接收可达；旧消息重放不恢复在群状态，明确退群撤销的绑定也不会自动恢复。
+- `DatabaseCalls` 排空正在运行的数据库线程后再释放专用账号锁；DurableJobWorker 新增可选调用边界，未传入时仍使用原来的调度方式。初始化取消会等待资源构造结束再关闭，网关关闭异常也不会跳过 worker 排空和其余连接清理；暂停恢复先取得实际账号 advisory lock，不能仅凭残留 holder 字段判断占有状态。
+- 原始 payload 终态且关联任务均已结束后，每分钟清理已到期内容；迟到 @ 不提升已过 TTL 的消息。绑定码只在内存 effect 中存在，发送失败、结果不明及重启遗留 sending 均取消挑战，普通消息表和队列不保存码或命令正文。
+
+冻结前验证：158 项组合测试通过，覆盖新模块与 OneBot 启动/出站快照、SDK 导入边界、旧账本；另有 21 项 runtime 故障测试通过。默认 M0 协议栈连接真实本机 FakePlatform，完成 token/HTTP/WebSocket → inbox → durable worker → 账本/索引/窗口/唯一回合意图，假平台未收到业务发送请求。真实 PostgreSQL backend 终止、队列失败与线程阻塞均有回归；移除数据库排空注入的负对照会稳定复现停机过早的问题。
+
+全仓 ruff、compileall、两库 schema upgrade/check、18 项 Nix 配置求值检查和本机 aarch64-darwin `nix flake check --no-build --print-build-logs` 通过。官方关闭时 Nix 环境和 LoadCredential 与 HEAD 基线逐项一致。第一次全量运行因静态复查发现关闭异常路径缺少 finally 而主动中止，不计为验收结果；修复并补回归后重新冻结代码及哈希，完整运行 **3,626 项测试通过**（1,488.184 秒，19 项跳过）。运行后核对 27 个实现、测试及配置文件哈希全部一致，fresh fetch 后 main 无新增改动；CI 随里程碑 PR 验证。**M2 达到离线完成标准，仍待 CI 与用户审阅；没有使用真实 QQ 凭证或完成目标账号接入、生产启用验收。**
+
+TODO(qq-official)：M8 在目标 NixOS 上实测 `LoadCredential` 的文件系统、服务用户读取权限与有效 ACL 验证。配置可求值不代表凭证可以被运行时接受；不放宽 ACL 检查来绕过部署限制。
 
 ## 后续里程碑及门槛
 
 | 里程碑 | 状态 |
 | --- | --- |
-| M1 回合入口、OneBot 快照、平台身份 | 离线完成；3,479 项全量通过，待 CI 与用户审阅 |
-| M2 持久入站、owner、新群绑定、实例租约 | 未实现 |
+| M1 回合入口、OneBot 快照、平台身份 | 已合并；3,479 项本地全量通过，PR #2 三项 CI 通过，用户已审阅 |
+| M2 持久入站、owner、新群绑定、实例租约 | 离线完成；3,626 项全量通过，默认关闭，待 CI 与用户审阅 |
 | M3 持久发送计划、窗口、额度、回执 | 未实现 |
 | M4 新群/C2C 回合与首批命令 | 未实现 |
 | M6 文件出口和生命周期 | 未实现；须先于 M5 |
 | M5 项目授权、历史迁移与回退 | 未实现 |
 | M7 其余业务与可选能力 | 未实现 |
-| M8 配置、App、控制台、指标、文档 | 未实现 |
+| M8 配置、App、控制台、指标、文档 | 未完成；M2 所需配置与 App 启停已提前接线，部署/健康/ACL 验收待完成 |
 | M9 全面回归与交付 | 未完成 |
 
 按方案每个里程碑分别提交 PR；用户审阅并用 merge commit 合并。前一个 PR 未合并时，下一阶段可本地推进，但不把后续提交推入前一个 PR。真实账号/测试群报告尚未提供；目标能力、文件领取、迁移/回退与生产切换均未验收。

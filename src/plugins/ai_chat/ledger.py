@@ -4,7 +4,7 @@ import json
 import re
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Iterator, Literal
@@ -138,7 +138,13 @@ class MessageLedger:
         identity_platform: str | None = None,
         actor: ActorKey | None = None,
         source_endpoint: EndpointKey | None = None,
+        transaction_cursor: StoreCursor | None = None,
     ) -> CanonicalMessage:
+        """Record a message, optionally joining the caller's same-database transaction.
+
+        An external cursor remains owned by the caller: this method neither
+        commits, closes it, nor opens another transaction in that case.
+        """
         if direction not in {"inbound", "outbound", "system"}:
             raise ValueError("unsupported message direction")
         if message_kind not in {"chat", "command", "system"}:
@@ -176,7 +182,7 @@ class MessageLedger:
             else None
         )
 
-        with self._transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(?))",
                 (f"ledger:{scope.key}",),

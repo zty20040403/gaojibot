@@ -45,12 +45,17 @@ class DurableJobWorker:
         concurrency: int = 2,
         worker_id: str | None = None,
         per_scope_limit: int | None = None,
+        database_calls: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self.store = store
         self.logger = logger
         self.poll_seconds = max(float(poll_seconds), 0.1)
         self.concurrency = min(max(int(concurrency), 1), 32)
         self.per_scope_limit = per_scope_limit
+        # Account-scoped runtimes may need to drain non-cancellable database
+        # threads before releasing their outer lease. Existing workers retain
+        # their original scheduling unless they explicitly supply that boundary.
+        self._database_calls = database_calls or asyncio.to_thread
         self.worker_id = worker_id or (
             f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         )
@@ -83,7 +88,7 @@ class DurableJobWorker:
         return tuple(sorted(self._handlers))
 
     async def run_once(self) -> int:
-        jobs = await asyncio.to_thread(
+        jobs = await self._database_calls(
             self.store.claim_due,
             self.worker_id,
             limit=self.concurrency,
@@ -104,7 +109,7 @@ class DurableJobWorker:
             while True:
                 if len(pending) < self.concurrency and loop.time() >= next_claim:
                     try:
-                        jobs = await asyncio.to_thread(
+                        jobs = await self._database_calls(
                             self.store.claim_due,
                             self.worker_id,
                             limit=self.concurrency - len(pending),
@@ -158,7 +163,7 @@ class DurableJobWorker:
     async def _execute(self, job: DurableJob) -> None:
         handler = self._handlers.get(job.kind)
         if handler is None:
-            await asyncio.to_thread(
+            await self._database_calls(
                 self.store.mark_failed,
                 job.job_id,
                 self.worker_id,
@@ -186,10 +191,10 @@ class DurableJobWorker:
             )
             safe_result = dict(result or {})
         except JobDeferred as exc:
-            await asyncio.to_thread(self.store.defer, job, delay_seconds=exc.delay_seconds, reason=str(exc))
+            await self._database_calls(self.store.defer, job, delay_seconds=exc.delay_seconds, reason=str(exc))
         except TimeoutError:
             await self._compensate(job, "timeout")
-            changed = await asyncio.to_thread(
+            changed = await self._database_calls(
                 self.store.mark_failed,
                 job.job_id,
                 self.worker_id,
@@ -201,12 +206,12 @@ class DurableJobWorker:
                 self.logger.warning(f"Durable job {job.handle} timed out.")
         except asyncio.CancelledError:
             try:
-                current = await asyncio.to_thread(self.store.get, job.job_id)
+                current = await self._database_calls(self.store.get, job.job_id)
                 if current is not None and current.status == "cancelled":
                     await self._compensate(job, "cancelled")
                     self.logger.info(f"Durable job {job.handle} was cancelled.")
                     return
-                await asyncio.to_thread(
+                await self._database_calls(
                     self.store.defer, job, delay_seconds=0,
                     reason="worker stopped or could not confirm its lease",
                 )
@@ -220,7 +225,7 @@ class DurableJobWorker:
             retryable = job.attempts < job.max_attempts
             if not retryable:
                 await self._compensate(job, "failed")
-            changed = await asyncio.to_thread(
+            changed = await self._database_calls(
                 self.store.mark_failed,
                 job.job_id,
                 self.worker_id,
@@ -235,13 +240,13 @@ class DurableJobWorker:
                 )
         else:
             # A lost success acknowledgement is not proof that the handler failed.
-            changed = await asyncio.to_thread(
+            changed = await self._database_calls(
                 self.store.mark_succeeded, job.job_id, self.worker_id,
                 result=safe_result,
                 lease_generation=job.lease_generation,
             )
             if not changed:
-                current = await asyncio.to_thread(self.store.get, job.job_id)
+                current = await self._database_calls(self.store.get, job.job_id)
                 if not (current is not None and current.status == "succeeded"
                         and current.lease_generation == job.lease_generation
                         and current.result == safe_result):
@@ -288,7 +293,7 @@ class DurableJobWorker:
         while True:
             await asyncio.sleep(interval)
             try:
-                renewed = await asyncio.to_thread(
+                renewed = await self._database_calls(
                     self.store.renew_lease, job.job_id, self.worker_id,
                     lease_generation=job.lease_generation,
                 )
@@ -302,7 +307,7 @@ class DurableJobWorker:
                 # Some handlers atomically settle the queue alongside their
                 # domain state. That commit is not a lost lease.
                 try:
-                    current = await asyncio.to_thread(self.store.get, job.job_id)
+                    current = await self._database_calls(self.store.get, job.job_id)
                     if (current is not None and current.status == "succeeded"
                             and current.lease_generation == job.lease_generation):
                         return

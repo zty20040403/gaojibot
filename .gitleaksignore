@@ -1,0 +1,4 @@
+# Synthetic privacy-test sentinel, not a credential. The test verifies that
+# unbound message bodies, nicknames, URLs and their hashes are never persisted.
+# Scope this historical false positive to its exact commit, file, rule and line.
+c3d0420a4a7b85826dad6e8bb17ee15ed27cda5b:tests/test_qq_official_inbox.py:generic-api-key:234

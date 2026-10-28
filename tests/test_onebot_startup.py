@@ -53,6 +53,7 @@ class OneBotStartupTests(unittest.IsolatedAsyncioTestCase):
             state_dir=self.root,
             alert_store=None,
             alert_preferences=Mock(),
+            start_official_ingress=AsyncMock(return_value=False),
             shutdown=AsyncMock(),
             db_call=DatabaseCalls(),
         )
@@ -100,6 +101,7 @@ class OneBotStartupTests(unittest.IsolatedAsyncioTestCase):
         self.builder.assert_called_once()
         self.assembler.assert_called_once_with(self.context)
         self.routes.assert_called_once()
+        self.context.start_official_ingress.assert_awaited_once_with()
         self.workers.assert_awaited_once()
         self.assertTrue(self.runtime.ready)
         self.assertIs(self.runtime.context, self.context)
