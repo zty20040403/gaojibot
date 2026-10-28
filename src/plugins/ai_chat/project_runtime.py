@@ -20,6 +20,7 @@ from .project_io import ProjectIOStore
 from .project_file_outbox import ProjectFileOutbox
 from .project_file_transport import reconcile_files
 from .project_autosave import ProjectAutosave
+from .project_browser_controller import ProjectBrowserController
 from .project_maintenance import ProjectMaintenance
 from .project_policy import DAY, ProjectPolicy
 from .project_usage import ProjectUsageSampler, ProjectUsageStore
@@ -88,6 +89,7 @@ class ProjectRuntime:
             )
         self.store = None
         self.io = None
+        self.browser = None
         self.backends = {}
         self.ready = False
         self.closed = False
@@ -234,6 +236,7 @@ class ProjectRuntime:
                     self.store, self.app.delivery_store, telemetry=telemetry
                 )
                 self.io = ProjectIOStore(self.store, self.usage)
+                self.browser = ProjectBrowserController(self)
                 self.autosave = ProjectAutosave(self)
                 self.files = ProjectFileOutbox(self.io, self.app.delivery_store)
                 self.executor = ProjectLifecycleExecutor(
@@ -306,6 +309,7 @@ class ProjectRuntime:
         self.ready, self.closed = False, True
         self._stop.set()
         self.io = None
+        self.browser = None
         if self.store is not None:
             await _store(self.store.close)
             self.store = None

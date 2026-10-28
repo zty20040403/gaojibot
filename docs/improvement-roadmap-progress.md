@@ -3115,3 +3115,44 @@ implementation evidence, not a claim that the production App has these features.
   drain, browser-only cache cleanup and native acceptance. Other remaining M3,
   native M2 acceptance and M4-M7 are not complete. No production connection,
   shared nix-config edit, rebuild, App release or user-plan modification occurred.
+
+### M3 PostgreSQL browser sessions and application recovery
+
+- Migration `0054_project_browser` persists runner/launch/session ownership,
+  monotonic action identities, argument hashes and immutable receipts. Raw
+  typed input is not stored in this additional journal. One long-lived internal
+  project IO reservation retains writer exclusion and scope capacity until the
+  browser is independently verified stopped; a successful click cannot release
+  it. Database constraints also prevent two pending calls in the same session.
+- Added an application controller that commits observations before ACKing the
+  runner, recovers the original result after process/connection loss, replays
+  only ACKs when their replies are lost, and refuses to repeat unknown effects.
+  It freezes the runner instance before launch and checks it before effects.
+  The real RPC composition also verifies the physical helper epoch separately
+  from the final database lifecycle verification fence.
+- Every disclosure/effect uses current scope, original bot, actor and editor
+  checks. New effects require the original running turn and current project;
+  old receipts are found before mutable project focus. Revocation after an
+  effect preserves its receipt without revealing its page content. A stopped
+  runner session cannot silently become a new browser session.
+- Turn-end autosave and settlement before other sandbox IO now recover and
+  drain browser reservations before saving. Never-dispatched calls can be
+  abandoned with an explicit receipt and immediate session drain. Dispatched
+  unknowns remain fenced. Neither turn termination nor a timeout counts as
+  physical quiescence. Recovery of an unpublished launch uses its original ID
+  and does not start a replacement.
+- Verification: 145 focused tests passed in 51.162 seconds, recorded in
+  `.cache/roadmap/m3-browser-app-verified.log`;
+  real disposable PostgreSQL and Unix RPC are combined with explicit
+  Docker/kernel/browser fixtures. Coverage includes application/runner restart,
+  DB publication failure, lost ACK, scope/actor/account isolation, revoked
+  access, competing store connections, unsafe downgrade refusal and autosave
+  ordering. Whole-CI Ruff, compileall and whitespace checks passed; Nix package
+  and import checks passed on aarch64-darwin
+  (`.cache/roadmap/m3-browser-app-nix.log`), with other architectures omitted.
+  No live QQ/model/account or production host is used.
+- Still open: ordinary `browser_*` registry routing/current-session selection,
+  KVM browser transport, general lifecycle drain/cache cleanup and native
+  acceptance. Other M3 requirements, native M2 gates and M4-M7 remain incomplete.
+  Source publication is not deployment: no shared nix-config edit, production
+  SSH, rebuild, App release or supplied-plan modification occurred.

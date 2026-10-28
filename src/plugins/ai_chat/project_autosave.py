@@ -5,7 +5,7 @@ import logging
 import time
 
 from .project_executor import _store
-from .project_io import ProjectIOGrant
+from .project_io import BROWSER_SESSION_TOOL, ProjectIOGrant
 from .project_turn_saves import ProjectTurnSaves
 from .projects import ProjectConflict
 
@@ -30,6 +30,9 @@ class ProjectAutosave:
                 # The terminal turn cannot dispatch this admission any more.
                 await _store(runtime.io.abort, grant, now=now)
             elif row["state"] in {"dispatched", "needs_attention"}:
+                if row["tool_name"] == BROWSER_SESSION_TOOL:
+                    await runtime.browser.drain(access, grant)
+                    continue
                 if row["result"] is None:
                     await _store(
                         self.saves.defer, pid, turn_id, "unknown_execution", now

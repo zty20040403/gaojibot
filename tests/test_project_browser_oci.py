@@ -85,8 +85,11 @@ class BrowserOciTests(unittest.IsolatedAsyncioTestCase):
         self.host = DesktopHostFixture(self.root) if self.desktop else HostFixture()
         volume_type = DirectoryProjectVolumes if self.desktop else ProjectVolumes
         self.volumes = volume_type(self.root / self.volume_directory, INSTANCE, host=self.host)
-        self.volumes.create("scope", 1, quota_bytes=64 * MIB, fence=1)
-        self.volumes.mutate("scope", 1, "mount", fence=2)
+        owner = getattr(self, "browser_owner", "scope")
+        project_id = getattr(self, "browser_project_id", 1)
+        fence = getattr(self, "browser_fence", 3)
+        self.volumes.create(owner, project_id, quota_bytes=64 * MIB, fence=1)
+        self.volumes.mutate(owner, project_id, "mount", fence=2)
         self.manager = DockerSandboxManager(namespace=INSTANCE, image=IMAGE, network="none")
         fixture = BrowserDesktopFixture if self.desktop else BrowserDockerFixture
         self.docker = fixture(self.manager, self.volumes)
@@ -103,11 +106,11 @@ class BrowserOciTests(unittest.IsolatedAsyncioTestCase):
         workspace_type = DesktopProjectWorkspaces if self.desktop else ProjectWorkspaces
         self.workspaces = workspace_type(self.manager, self.volumes)
         self.manager.project_workspaces = self.workspaces
-        await self.workspaces.operate("start", "scope", 1, generation=1, fence=3)
+        await self.workspaces.operate("start", owner, project_id, generation=1, fence=fence)
         self.parent = next(iter(self.docker.containers.values()))
         self.browser = self.workspaces.browser
-        self.identity = dict(instance_id=INSTANCE, owner="scope", project_id=1, generation=1, fence=3)
-        self.engine = SimpleNamespace(bound_owner="scope", close=AsyncMock(),
+        self.identity = dict(instance_id=INSTANCE, owner=owner, project_id=project_id, generation=1, fence=fence)
+        self.engine = SimpleNamespace(bound_owner=owner, close=AsyncMock(),
                                       click=AsyncMock(return_value={"text": "clicked"}))
         self.channel = None
         self.browser._spawn = AsyncMock(side_effect=self.spawn)

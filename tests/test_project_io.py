@@ -32,7 +32,7 @@ from tests.test_project_usage import UsageFixture
 from tests.project_turn_fixture import start_project_turn
 
 
-class ProjectIOTests(UsageFixture, unittest.TestCase):
+class IOFixture(UsageFixture):
     def setUp(self):
         super().setUp()
         self.lifecycle.request(
@@ -104,6 +104,8 @@ class ProjectIOTests(UsageFixture, unittest.TestCase):
             "quiescent": True,
         }
 
+
+class ProjectIOTests(IOFixture, unittest.TestCase):
     def test_reserved_dispatched_receipted_write_invalidates_usage_not_files(self):
         version = self.project()["version"]
         grant = self.admit(expected_bytes=10)

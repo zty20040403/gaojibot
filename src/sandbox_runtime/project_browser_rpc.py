@@ -16,9 +16,15 @@ FIELDS = {
     "project_browser_ack": (TARGET | {"session_id", "sequence", "response_sha256"}, set()),
     "project_browser_drain": (TARGET | {"session_id"}, {"cancel_pending"}),
 }
+FIELDS = {method: (required, optional | {"expected_instance_id"})
+          for method, (required, optional) in FIELDS.items()}
 
 
 def validate(method, args, identifier):
+    if "expected_instance_id" in args and (
+            not isinstance(args["expected_instance_id"], str)
+            or HEX_ID.fullmatch(args["expected_instance_id"]) is None):
+        raise ProtocolError("Invalid expected browser runner identity")
     for key in ("session_id", "launch_id"):
         if key in args and (not isinstance(args[key], str) or HEX_ID.fullmatch(args[key]) is None):
             raise ProtocolError("Invalid project browser operation identity")
@@ -44,6 +50,8 @@ async def dispatch(workspaces, method, args, *, capacity_check=None):
         raise ProtocolError("Project browser runtime is unavailable")
     identity = binding({"instance_id": workspaces.manager.namespace,
                         **{key: args[key] for key in TARGET}})
+    if args.get("expected_instance_id", identity["instance_id"]) != identity["instance_id"]:
+        raise ProtocolError("Browser runner instance changed; original receipt recovery is required")
     browser = workspaces.browser
     sid = args.get("session_id")
 

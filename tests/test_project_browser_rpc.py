@@ -195,6 +195,21 @@ class BrowserRpcTests(unittest.IsolatedAsyncioTestCase):
             await self.rpc("status", launch_id="f" * 32)
         self.engine.click.assert_awaited_once()
 
+    async def test_expected_runner_is_checked_before_launch_or_action(self):
+        wrong = "f" * 32 if self.manager.namespace != "f" * 32 else "e" * 32
+        with self.assertRaisesRegex(SandboxError, "instance changed"):
+            await self.rpc("open", launch_id=uuid.uuid4().hex, expected_instance_id=wrong)
+        self.browser._spawn.assert_not_awaited()
+        await self.open()
+        with self.assertRaisesRegex(SandboxError, "instance changed"):
+            await self.rpc("execute", session_id=self.sid, sequence=1,
+                           action="browser_click", arguments={"ref": "b1"}, expected_instance_id=wrong)
+        self.engine.click.assert_not_awaited()
+        reply = await self.rpc("execute", session_id=self.sid, sequence=1,
+                              action="browser_click", arguments={"ref": "b1"},
+                              expected_instance_id=self.manager.namespace)
+        self.assertEqual(reply["state"], "completed")
+
     async def test_capacity_rejects_only_new_effect_not_receipt_recovery(self):
         await self.open()
         reply = await self.call()

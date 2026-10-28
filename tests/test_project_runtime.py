@@ -101,6 +101,7 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.runtime.ready)
         self.assertIs(self.runtime.io.projects, self.runtime.store)
         self.assertIs(self.runtime.io.usage, self.runtime.usage)
+        self.assertIs(self.runtime.browser.store.io, self.runtime.io)
         self.assertIn(KIND, self.worker.registered_kinds)
         self.assertEqual(self.worker._timeouts[KIND], 3600)
         self.assertEqual(
@@ -115,6 +116,8 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "restore_version",
                 "prune_rebuildable",
                 "rebuild_dependencies",
+                "check_restore_source",
+                "publish_restore",
             },
         )
         run = self.request()
@@ -129,6 +132,7 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.project()["bot_native_user_id"], "301")
         await self.runtime.close()
         self.assertIsNone(self.runtime.io)
+        self.assertIsNone(self.runtime.browser)
         self.app.job_worker = DurableJobWorker(
             self.jobs, logger=self.logger, worker_id="replacement"
         )

@@ -1272,10 +1272,51 @@ journal-based reconciliation; it is not an automatic acknowledgement. Launch,
 execution and drain all take session locks before allocation locks, with live
 workspace/parent/capacity rechecks immediately before creation.
 
-`SandboxClient.project_browser()` is the typed operation wrapper, not the
-application's durable publisher. PostgreSQL session mapping, tool selection and
-turn-end lifecycle integration are still required before activating these
-calls through ordinary project `browser_*` tools. KVM transport remains separate.
+`SandboxClient.project_browser()` is the typed operation wrapper. Calls can now
+include `expected_instance_id`; the runner rejects a different instance before
+launching or executing anything. The application controller always includes it.
+Tool selection still needs integration before activating these calls through
+ordinary project `browser_*` tools. KVM transport remains separate.
+
+### Application browser publication and recovery
+
+Migration `0054_project_browser` adds PostgreSQL session and action journals.
+`ProjectBrowserStore` binds a host-only `project_browser_session` IO reservation
+to a runner instance and launch ID before any RPC. The reservation keeps the
+existing project-wide exclusion and capacity accounting for the entire browser
+session, not merely for one click. It is not a new LLM tool. The settled helper
+fence is one behind the final lifecycle verification fence; browser RPCs use the
+physical epoch while IO completion continues to check the database epoch.
+
+Each action has a stable request identity, monotonically allocated sequence,
+argument digest and immutable response. Raw typed input is not duplicated into
+this journal. Scope, original bot, actor and current editor access are checked
+before receipt disclosure; effect admission additionally requires the original
+running turn and current project. Replays resolve the original action before
+consulting mutable project focus. A database unique index allows only one
+unpublished action per session.
+
+`ProjectBrowserController` commits the response in PostgreSQL before sending its
+hash-bound runner ACK. After connection loss it receives the original sequence;
+it does not click/type again. Lost ACK replies can be retried against the saved
+hash. Live identity is rechecked around RPCs, and already-closed runner sessions
+are rejected before admitting new actions. Uncertain outcomes remain fenced.
+
+Only a never-dispatched reservation can be abandoned. It retains an `aborted`
+receipt and forces session drain rather than skipping the worker's sequence.
+Turn-end autosave and settlement before another sandbox tool now drain browser
+sessions through this controller. Draining requires all dispatched actions to
+be durably acknowledged, then a runner-confirmed closed session, then the
+existing independently observed whole-workspace quiescence. A successful click
+or browser worker response is never used as workspace shutdown evidence.
+Interrupted launches are queried by their original launch ID, including after
+the turn is terminal; recovery never starts a replacement browser for them.
+
+Tests combine real disposable PostgreSQL, private Unix RPC and durable runner
+journals. Docker/kernel/browser effects in this application suite are explicit
+fixtures, not native host acceptance. Public registry routing, KVM browser
+launch, maintenance policy integration and profile-cache cleanup remain open.
+Projects remain opt-in; these changes do not enable them on production servers.
 
 ### Remaining acceptance
 

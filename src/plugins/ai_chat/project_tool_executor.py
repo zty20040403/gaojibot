@@ -13,7 +13,7 @@ from .ai_tools import SANDBOX_TOOLS
 from .onebot_codec import scope_from_event
 from .project_access import project_access, projects_available
 from .project_executor import _store
-from .project_io import WRITE_TOOLS
+from .project_io import BROWSER_SESSION_TOOL, WRITE_TOOLS
 from .project_file_outbox import ATTACHMENT_TOOLS, MAX_IMAGE_BYTES
 from .project_usage import ProjectQuotaRejected
 from .projects import ProjectConflict, ProjectQuotaExceeded
@@ -68,6 +68,8 @@ async def _settle(runtime, access, grant):
     receipt = await _store(runtime.io.receipt, access, grant)
     if receipt["state"] == "completed":
         return receipt["result"]
+    if receipt["tool"] == BROWSER_SESSION_TOOL:
+        return await runtime.browser.drain(access, grant)
     if (
         receipt["state"] not in {"dispatched", "needs_attention"}
         or receipt["result"] is None

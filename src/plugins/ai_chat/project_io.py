@@ -19,6 +19,8 @@ READ_TOOLS = frozenset(
     {"sandbox_read_file", "send_file_from_sandbox", "send_image_from_sandbox"}
 )
 WRITE_TOOLS = frozenset({"sandbox_exec", "sandbox_write_file"})
+BROWSER_SESSION_TOOL = "project_browser_session"
+MUTATING_TOOLS = WRITE_TOOLS | {BROWSER_SESSION_TOOL}
 ACTIVE_STATES = frozenset({"reserved", "dispatched", "needs_attention"})
 
 
@@ -99,7 +101,7 @@ class ProjectIOStore:
     ):
         if (
             not isinstance(tool_name, str)
-            or tool_name not in READ_TOOLS | WRITE_TOOLS
+            or tool_name not in READ_TOOLS | MUTATING_TOOLS
             or any(
                 not isinstance(v, str) or not re.fullmatch(r"[a-f0-9]{64}", v)
                 for v in (request_key, arguments_sha256)
@@ -114,7 +116,7 @@ class ProjectIOStore:
         ):
             raise ValueError("Invalid project tool admission")
         now = int(time.time()) if now is None else now
-        mutating = tool_name in WRITE_TOOLS
+        mutating = tool_name in MUTATING_TOOLS
         with self.projects._transaction() as cursor:
             self.projects._scope_lock(cursor, access)
             project = self.projects._get(cursor, access, project_id)
@@ -156,7 +158,7 @@ class ProjectIOStore:
             # project capacity at the scope level, not a made-up byte estimate.
             reserved = (
                 max(0, project["quota_bytes"] - project["used_bytes"])
-                if tool_name == "sandbox_exec"
+                if tool_name in {"sandbox_exec", BROWSER_SESSION_TOOL}
                 else expected_bytes
             )
             if mutating:
@@ -266,6 +268,11 @@ class ProjectIOStore:
                 raise ProjectConflict(
                     "Project operation cannot be dispatched again or to a changed workspace"
                 )
+            if row["tool_name"] == BROWSER_SESSION_TOOL and not cursor.execute(
+                "SELECT 1 FROM project_browser_sessions WHERE operation_id=? AND state='opening'",
+                (grant.operation_id,),
+            ).fetchone():
+                raise ProjectConflict("Bind the browser launch before dispatch")
             cursor.execute(
                 "UPDATE project_io SET state='dispatched',updated_at=? WHERE operation_id=?",
                 (now, grant.operation_id),
@@ -334,6 +341,19 @@ class ProjectIOStore:
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
             project, row = self._owned(cursor, grant)
+            if row["tool_name"] == BROWSER_SESSION_TOOL:
+                browser = cursor.execute(
+                    "SELECT state FROM project_browser_sessions WHERE operation_id=?",
+                    (grant.operation_id,),
+                ).fetchone()
+                if browser is None or browser["state"] != "closed":
+                    raise ProjectConflict("Browser shutdown has not been durably observed")
+                if cursor.execute(
+                    """SELECT 1 FROM project_browser_calls WHERE operation_id=?
+                    AND state NOT IN ('acknowledged','aborted') LIMIT 1""",
+                    (grant.operation_id,),
+                ).fetchone():
+                    raise ProjectConflict("Browser still has unpublished actions")
             if row["result"] is not None and row["result"] != result:
                 raise ProjectConflict("Project result changed on replay")
             expected = {
