@@ -3436,3 +3436,47 @@ implementation evidence, not a claim that the production App has these features.
   console/shared-conversation checks, general browser drain, native M2/KVM
   acceptance and M4-M7 remain open. No production connection, shared nix-config
   update, rebuild, App release, QQ/model request or supplied-plan edit occurred.
+
+### M3 failed-task detachment and background materialization recovery
+
+- Added `0058_project_task_release` and immutable detachment receipts. A failed
+  or cancelled task releases its project lock only while still owning its
+  original project, actor, account, baseline, generation and fence. The host
+  verifies a quiescent saved baseline, settled steps, no live workflow lease,
+  no unresolved project IO/save and no unconfirmed remote operation. A remote
+  receipt marked `resolved` with `needs_attention`, `timed_out`, a pending flag
+  or an unknown execution state is not treated as proof that the effect ended.
+  Calls from earlier task revisions are checked as well. This path never sends
+  a remote cancellation or claims that an unobserved operation was cancelled.
+- Detachment receipt, project unlock, project event and task checkpoint commit
+  together. Neither the original project version nor task status, independent
+  drafts, artifacts or delivery receipts are deleted or rewritten. Retries
+  after restart return the original receipt, even after a newer task owns the
+  project. Concurrent detachment commits once. The old task can no longer be
+  revised against a potentially changed project; a new task binds to the current
+  version. Project lifecycle and new admission can proceed independently of the
+  old task's file-delivery queue once this explicit receipt exists.
+- Registered a supervised `project-tasks` loop when both projects and the
+  Sub-Agent store are available. It scans bounded, rotating pages every 30
+  seconds, rechecks the original connected bot, current membership, editor and
+  sandbox execution access, and retries deferred work without an LLM call. An
+  already published version queues the existing durable materialization path,
+  never failed-task detachment. Once a lifecycle job exists, its leases and
+  recovery own execution; the scan does not enqueue duplicate jobs or unlock
+  failed restores. Ordinary project use without Sub-Agents stays supported.
+- Verification: 71 focused release/reconciliation/runtime/admission/
+  materialization/revision tests passed in 48.651 seconds
+  (`.cache/roadmap/m3-project-task-reconciliation-verified.log`). Six migration
+  tests passed separately in 4.958 seconds
+  (`.cache/roadmap/m3-project-task-release-migration.log`). PostgreSQL transactions,
+  version data, receipts, schema rollback protection, concurrent stores and
+  artifact files are real and disposable. QQ/account responses, remote effects,
+  reviewer outputs and kernel/container execution remain explicit fixtures.
+  Whole-CI Ruff, focused compileall and whitespace checks passed.
+- Still open: automatic chat admission must quiesce/save the active project,
+  bind task recovery hooks and select/accept/publish the task's update artifact.
+  This loop recovers existing publications; it does not invent accepted output
+  or enable that unfinished entry path. M3 console/shared-conversation gates,
+  general browser drain, native M2/KVM acceptance and M4-M7 remain open. No
+  production connection, shared nix-config update, rebuild, App release, live
+  QQ/model request or supplied-plan edit occurred.

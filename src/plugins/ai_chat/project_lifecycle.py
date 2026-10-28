@@ -167,6 +167,9 @@ class ProjectLifecycle:
                 JOIN subagent_controls c USING(task_id)
                 WHERE m.task_id=t.task_id AND m.status='completed'
                 AND p.project_id=t.project_id AND p.revision=c.revision)
+            AND NOT EXISTS (SELECT 1 FROM project_task_releases r
+                JOIN subagent_controls c USING(task_id)
+                WHERE r.task_id=t.task_id AND r.revision=c.revision)
             AND (
             t.status<>'completed' OR EXISTS (
                 SELECT 1 FROM subagent_deliveries d

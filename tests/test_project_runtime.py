@@ -152,6 +152,37 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             await runtime.resolve_access(private, other)
 
+    async def test_task_reconciler_is_supervised_and_checks_actual_account_membership(self):
+        from src.plugins.ai_chat.project_blobs import ProjectFile
+        from src.plugins.ai_chat.project_tasks import ProjectTaskStore
+        from src.plugins.ai_chat.subagents import SubAgentStore
+        from tests.test_project_tasks import key, task_packet
+
+        self.app.subagent_store = SubAgentStore(self.app.database)
+        self.addCleanup(self.app.subagent_store.close)
+        await asyncio.gather(self.runtime.start(), self.runtime.start())
+        names = [item.args[0] for item in self.app.background_tasks.start.call_args_list]
+        self.assertEqual(names.count("project-tasks"), 1)
+        self.runtime.store.snapshot(self.access, self.pid, [ProjectFile("index.html", b"first")],
+            expected_version=self.project()["version"])
+        self.runtime.store.open(self.access, self.pid)
+        task = ProjectTaskStore(self.runtime.store, self.app.subagent_store).prepare(
+            self.access, self.pid, expected_version=self.project()["version"], base_version=1,
+            request_key=key("runtime-reconcile"), packet=task_packet(self.access), decision=None,
+            dispatch={"bot_id": "301"}, max_parallelism=2, max_steps=4)
+        self.app.subagent_store.set_task_state(task.task_id, "failed")
+        self.bots.clear()
+        await self.runtime.task_reconciler.run_once()
+        self.assertEqual(self.project()["locked_task_id"], task.task_id)
+        self.bots["301"] = self.bot
+        self.bot.get_group_member_list.return_value = [{"user_id": 301}]
+        await self.runtime.task_reconciler.run_once()
+        self.assertEqual(self.project()["locked_task_id"], task.task_id)
+        self.bot.get_group_member_list.return_value = [{"user_id": 201}, {"user_id": 301}]
+        await self.runtime.task_reconciler.run_once()
+        self.assertIsNone(self.project()["locked_task_id"])
+        self.assertEqual(self.docker.serial, 0)
+
     async def test_no_fallback_to_different_online_bot(self):
         await self.runtime.start()
         self.bots.clear()

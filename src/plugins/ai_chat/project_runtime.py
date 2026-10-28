@@ -90,6 +90,7 @@ class ProjectRuntime:
         self.store = None
         self.io = None
         self.browser = None
+        self.task_reconciler = None
         self.backends = {}
         self.ready = False
         self.closed = False
@@ -238,6 +239,11 @@ class ProjectRuntime:
                 self.io = ProjectIOStore(self.store, self.usage)
                 self.browser = ProjectBrowserController(self)
                 self.autosave = ProjectAutosave(self)
+                tasks = getattr(self.app, "subagent_store", None)
+                if tasks is not None:
+                    from .project_task_reconciliation import ProjectTaskReconciler
+
+                    self.task_reconciler = ProjectTaskReconciler(self, tasks)
                 self.files = ProjectFileOutbox(self.io, self.app.delivery_store)
                 self.executor = ProjectLifecycleExecutor(
                     self.lifecycle,
@@ -271,6 +277,8 @@ class ProjectRuntime:
                 )
                 self.app.background_tasks.start("project-files", self.reconcile_files_forever)
                 self.app.background_tasks.start("project-autosave", self.save_turns_forever)
+                if self.task_reconciler is not None:
+                    self.app.background_tasks.start("project-tasks", self.reconcile_tasks_forever)
             except BaseException:
                 await self.close()
                 raise
@@ -295,6 +303,9 @@ class ProjectRuntime:
 
     async def save_turns_forever(self):
         await self.autosave.run(self._stop)
+
+    async def reconcile_tasks_forever(self):
+        await self.task_reconciler.run(self._stop)
 
     async def reconcile_files_forever(self):
         while not self._stop.is_set():
