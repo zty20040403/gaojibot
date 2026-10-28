@@ -300,11 +300,12 @@ class ProjectIOStore:
                 (now, grant.operation_id),
             )
 
-    def abort(self, grant, *, now=None):
+    def abort(self, grant, *, now=None, drain_job=None):
         """Safe only before dispatch intent; never cancels an already running command."""
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            _, row = self._owned(cursor, grant)
+            project, row = self._owned(cursor, grant)
+            self._drain_guard(cursor, project, row, grant, drain_job)
             if row["state"] not in {"reserved", "aborted"}:
                 raise ProjectConflict(
                     "Dispatched effects need reconciliation, not automatic unlock"
@@ -322,12 +323,19 @@ class ProjectIOStore:
         ):
             raise ValueError("Project tool receipt exceeds its limit")
 
-    def observe_result(self, grant, result, *, now=None):
+    @staticmethod
+    def _drain_guard(cursor, project, row, grant, job):
+        if job is not None or (row["tool_name"] == BROWSER_SESSION_TOOL and project["lifecycle_job_id"] is not None):
+            from .project_browser_drain import require_drain
+            require_drain(cursor, project, grant, job)
+
+    def observe_result(self, grant, result, *, now=None, drain_job=None):
         """Persist a returned result without claiming all processes have stopped."""
         self._validate_result(result)
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            _, row = self._owned(cursor, grant)
+            project, row = self._owned(cursor, grant)
+            self._drain_guard(cursor, project, row, grant, drain_job)
             if row["state"] not in {"dispatched", "needs_attention", "completed"}:
                 raise ProjectConflict("No dispatched operation to observe")
             if row["result"] is not None and row["result"] != result:
@@ -337,12 +345,13 @@ class ProjectIOStore:
                 (json.dumps(result), now, grant.operation_id),
             )
 
-    def complete(self, grant, result, evidence, *, now=None):
+    def complete(self, grant, result, evidence, *, now=None, drain_job=None):
         """Only the runtime adapter may supply an actual, quiescent helper receipt."""
         self._validate_result(result)
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
             project, row = self._owned(cursor, grant)
+            self._drain_guard(cursor, project, row, grant, drain_job)
             if row["tool_name"] == BROWSER_SESSION_TOOL:
                 browser = cursor.execute(
                     "SELECT state FROM project_browser_sessions WHERE operation_id=?",
@@ -402,7 +411,7 @@ class ProjectIOStore:
                     (grant.project_id,),
                 )
 
-    def receipt(self, access, grant):
+    def receipt(self, access, grant, *, drain_job=None):
         with self.projects._transaction() as cursor:
             self.projects._scope_lock(cursor, access)
             project = self.projects._get(cursor, access, grant.project_id)
@@ -412,7 +421,11 @@ class ProjectIOStore:
             ):
                 raise PermissionError("Project account binding changed")
             _, row = self._owned(cursor, grant)
-            if row["actor_principal_id"] != access.principal_id:
+            if drain_job is not None:
+                from .project_browser_drain import require_drain
+                require_drain(cursor, project, grant, drain_job, access=access)
+                self.projects._editor(cursor, access, project)
+            elif row["actor_principal_id"] != access.principal_id:
                 raise PermissionError("Project operation belongs to another actor")
             return {
                 "operation_id": row["operation_id"],

@@ -99,6 +99,7 @@ async def _pending(runtime, access, project_id):
     return {
         "status": status,
         "action": run["action"],
+        "phase": run["phase"],
         "completed_steps": run["next_step"],
         "total_steps": len(run["plan"]["steps"]),
     }
@@ -166,6 +167,7 @@ async def execute(turn, arguments, *, name):
                 request_key=_key(context, name, active_tool_call_id.get() or "command"),
                 label=arguments.get("label", ""),
                 restore_version=int(arguments["version_handle"][1:]) if name == "project_restore" else None,
+                browser_turn_id=context.journal_turn_id,
             )
             project = await _store(store.get, access, run["project_id"])
             result = {

@@ -253,6 +253,7 @@ class ProjectRuntime:
                     self.lifecycle,
                     self.backends,
                     resolve_access=self._execution_access,
+                    browser=self.browser,
                 )
                 self.sampler = ProjectUsageSampler(
                     self.usage,

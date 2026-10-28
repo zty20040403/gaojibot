@@ -75,6 +75,16 @@ class ProjectMaintenance:
         async with asyncio.timeout(30):
             access = await self._access(candidate)
             project = await _store(self.projects.get, access, candidate["project_id"])
+            action = self.policy.idle_action(project, now=now)
+            if action is not None and await _store(self.lifecycle.has_pending_browser, access, project["project_id"]):
+                # The leased prelude verifies shutdown before any physical change.
+                # Pruning must wait; a browser is not evidence that files are idle.
+                access = await self._access(project)
+                run = await _store(self.lifecycle.request, access, project["project_id"], action,
+                    expected_version=project["version"],
+                    request_key=f"idle:{action}:{project['version']}:{project['last_active_at']}",
+                    now=now, idle_policy=self.policy, preflight=backend.preflight)
+                return {"project_id": project["project_id"], "pruned": 0, "action": action, "job_id": run["job_id"]}
             if not await backend.maintenance_ready(project):
                 raise ProjectConflict(
                     "Project has active commands or unverified workspace state"

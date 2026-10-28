@@ -102,3 +102,18 @@ class VmBrowserControllerTests(BrowserVmWireFixture, VmExecutorFixture, unittest
         self.engine.click.assert_not_awaited()
         self.application._execution_access.return_value = self.access
         await self.controller.drain(self.access, self.grant)
+
+    async def test_lifecycle_drains_vm_browser_before_snapshot_and_guest_shutdown(self):
+        self.application.lifecycle = self.lifecycle
+        self.executor.browser = self.controller
+        await self.controller.open(self.access, self.grant)
+        await self.click()
+        run = self.lifecycle.request(self.access, self.pid, "stop",
+            expected_version=self.project()["version"], request_key="vm-browser-stop",
+            browser_turn_id=self.turn.turn_id)
+        self.assertEqual(run["phase"], "browser_drain")
+        result = await self.executor(self.claim())
+        self.assertEqual(result["state"], "stopped")
+        self.assertEqual(self.io.receipt(self.access, self.grant)["state"], "completed")
+        self.assertTrue(all(d["state"] == "shut off" for d in self.domains.values()))
+        self.engine.click.assert_awaited_once()

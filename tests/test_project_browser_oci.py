@@ -61,6 +61,9 @@ class BrowserFixtureMixin:
             if action == "stop":
                 row = next(row for row in self.containers.values() if row["Id"] == args[-1])
                 row["State"]["Pid"] = 0
+            elif action == "start":
+                row = next(row for row in self.containers.values() if row["Id"] == args[-1])
+                row["State"]["Pid"] = 1000 + int(row["Id"], 16)
         if action in self.after:
             raise self.after.pop(action)
         return result

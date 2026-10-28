@@ -3676,3 +3676,41 @@ implementation evidence, not a claim that the production App has these features.
   acceptance; M4-M7. Projects remain opt-in. No production connection, shared
   nix-config edit, rebuild, App release, live model/QQ call or supplied-plan
   change occurred.
+
+### M3 durable browser shutdown before lifecycle and task admission
+
+- General save/restore, task preparation and eligible idle maintenance now
+  persist a browser-shutdown prelude in the existing lifecycle journal. New
+  browser actions are blocked immediately. The original workspace generation
+  and fence remain unchanged until browser closure and whole-workspace
+  quiescence are verified; no snapshot or physical transition starts early.
+- Only the current browser-owning turn may hand off its running session.
+  A current project editor may settle a finished turn's session through the
+  exact leased lifecycle job, without receiving the other editor's page data.
+  Live membership, bot binding and lease ownership are rechecked. An unrelated
+  command, file delivery or task still blocks the transition.
+- Recovery reads existing launch/action/shutdown receipts. It never repeats an
+  uncertain click or launches a replacement browser. Undispatched actions may
+  be abandoned; ambiguous dispatched effects retain the project lock. Closure
+  publication and generation advancement are transactional, so a process loss,
+  lost acknowledgement or expired worker lease can be recovered safely.
+- Idle maintenance queues the same shutdown path before pruning or changing
+  the workspace. Tool and command progress distinguish browser shutdown from
+  saving. Lifecycle results retain the actual source-save receipt separately
+  from a rollback's restored version, so turn-save status names the right copy.
+- Verification: 23 browser-drain and VM-controller tests passed in 28.018
+  seconds (`.cache/roadmap/m3-browser-drain-final.log`). A separate lifecycle,
+  IO, restore, autosave, maintenance, runtime, task admission, browser/tool,
+  completion and final-report regression passed 214 tests in 143.069 seconds
+  (`.cache/roadmap/m3-browser-drain-regression.log`). Earlier fixture failures
+  were corrected: simulated Docker start now restores a PID, editor setup uses
+  the real membership API, and turn-save status no longer shadows its result
+  list. PostgreSQL, CAS bytes, private Unix RPC and fixture files are real;
+  browser engines, kernel/container/VM effects and QQ remain simulated. Ruff
+  across CI paths, touched-file compileall and whitespace checks passed.
+- Current milestone count: M0 and M1 complete locally; M2 and M3 still in
+  progress; M4-M7 incomplete. Remaining M3 work includes project-management UI
+  and shared-platform ownership acceptance. Native M2/KVM full-lifecycle,
+  restart and large-transfer acceptance remains separate. No production SSH,
+  shared nix-config change, rebuild, App release, real QQ/model call or change
+  to the supplied plan occurred.

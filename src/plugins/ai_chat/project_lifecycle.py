@@ -11,8 +11,9 @@ import re
 import time
 import uuid
 
-from .projects import ProjectConflict, require_project_lease, require_project_io_idle
+from .projects import ProjectConflict, require_project_lease
 from .project_policy import ProjectPolicy
+from . import project_browser_drain
 
 
 KIND = "project.lifecycle"
@@ -155,6 +156,7 @@ class ProjectLifecycle:
     @staticmethod
     def _public_run(run):
         result = dict(run)
+        result["phase"] = "browser_drain" if project_browser_drain.pending(run["plan"]) else "lifecycle"
         result["plan"] = {
             key: value for key, value in result["plan"].items()
             if key not in {"reservation", "task_admission"}
@@ -162,8 +164,8 @@ class ProjectLifecycle:
         return result
 
     @staticmethod
-    def _idle(cursor, project, *, lifecycle_job=None):
-        require_project_io_idle(cursor, project["project_id"])
+    def _idle(cursor, project, *, lifecycle_job=None, browser_drain=None):
+        project_browser_drain.idle(cursor, project, browser_drain)
         if cursor.execute("""SELECT 1 FROM project_file_deliveries f JOIN deliveries d USING(delivery_id)
                 WHERE f.project_id=? AND NOT (d.status='committed'
                 OR (d.status='cancelled' AND f.upload_started_at IS NULL)) LIMIT 1""", (project["project_id"],)).fetchone():
@@ -223,7 +225,7 @@ class ProjectLifecycle:
     def request(
         self, access, project_id, action, *, expected_version, request_key, now=None,
         idle_policy=None, preflight=None, label="", source_turn_id=None,
-        restore_version=None,
+        restore_version=None, browser_turn_id=None,
     ):
         from .project_turn_saves import require_finished_save
 
@@ -286,20 +288,22 @@ class ProjectLifecycle:
                 ):
                     raise ProjectConflict("Lifecycle request identity was reused")
                 return self._public_run(previous)
-            project = self.projects._get(
-                cursor, access, project_id, edit=True, expected=expected_version,
-                owner=idle_policy is not None,
+            project, drain = project_browser_drain.request_project(
+                self.projects, cursor, access, project_id, expected=expected_version,
+                owner=idle_policy is not None, turn_id=browser_turn_id,
             )
             if idle_policy is not None and idle_policy.idle_action(project, now=now) != action:
                 raise ProjectConflict("Project is no longer eligible for this idle transition")
             if source_turn_id is not None and not require_finished_save(cursor, access, project_id, source_turn_id):
                 raise ProjectConflict("Finished turn has no confirmed mutation to save")
             if action != "snapshot" and cursor.execute(
-                "SELECT 1 FROM project_turn_saves WHERE project_id=? AND state='pending' LIMIT 1",
-                (project_id,),
+                """SELECT 1 FROM project_turn_saves s WHERE project_id=? AND state='pending'
+                AND NOT EXISTS (SELECT 1 FROM project_io io WHERE io.operation_id=?
+                    AND io.project_id=s.project_id AND io.journal_turn_id=s.turn_id) LIMIT 1""",
+                (project_id, drain["operation_id"] if drain else None),
             ).fetchone():
                 raise ProjectConflict("Project has an unfinished automatic save")
-            self._idle(cursor, project)
+            self._idle(cursor, project, browser_drain=drain)
             baseline = self._baseline(cursor, project_id)
             if action == "restore":
                 target = cursor.execute(
@@ -319,6 +323,8 @@ class ProjectLifecycle:
             generation, plan = transition_plan(
                 project, action, baseline, rebuild=rebuild
             )
+            if drain:
+                plan["browser_drain"] = drain
             if action == "snapshot":
                 plan["label"] = label
                 if source_turn_id is not None:
@@ -357,13 +363,18 @@ class ProjectLifecycle:
         cursor.execute(
             """UPDATE projects SET lifecycle_job_id=?,workspace_generation=?,
             version=version+1,updated_at=? WHERE project_id=?""",
-            (job.job_id, generation, now, project_id),
+            (job.job_id, plan.get("browser_drain", {}).get("generation", generation), now, project_id),
         )
         if (source_turn_id := plan.get("source_turn_id")) is not None:
             cursor.execute(
                 """UPDATE project_turn_saves SET state='queued',job_id=?,error_code='',updated_at=?
                 WHERE project_id=? AND turn_id=?""", (job.job_id, now, project_id, source_turn_id),
             )
+        if drain := plan.get("browser_drain"):
+            cursor.execute("""UPDATE project_turn_saves SET state='queued',job_id=?,error_code='',updated_at=?
+                WHERE project_id=? AND state='pending' AND turn_id IN
+                (SELECT journal_turn_id FROM project_io WHERE operation_id=?)""",
+                (job.job_id, now, project_id, drain["operation_id"]))
         self.projects._event(
             cursor, project_id, access, "lifecycle_requested",
             {"job_id": job.job_id, "action": action, "generation": generation}, now,
@@ -381,10 +392,9 @@ class ProjectLifecycle:
                     cursor,
                     access,
                     project["project_id"],
-                    edit=True,
-                    lifecycle_job=job,
                     now=now,
                 )
+                self.projects._editor(cursor, access, project)
             return project, run
 
     def _owned(self, cursor, job, now):
@@ -399,17 +409,21 @@ class ProjectLifecycle:
             "SELECT * FROM project_lifecycle_runs WHERE job_id=? FOR UPDATE",
             (job.job_id,),
         ).fetchone()
+        drain = project_browser_drain.pending(run["plan"]) if run else None
         if (
             run is None
             or run["project_id"] != project["project_id"]
-            or run["generation"] != project["workspace_generation"]
+            or (drain["generation"] if drain else run["generation"]) != project["workspace_generation"]
             or run["source_state"] != project["status"]
             or run["status"] not in {"pending", "running", "needs_attention"}
         ):
             raise ProjectConflict(
                 "Project lifecycle journal no longer matches the workspace"
             )
-        self._idle(cursor, project, lifecycle_job=job)
+        if drain and (run["next_step"] != 0 or project["lifecycle_fence"] != drain["fence"]
+                      or project["sandbox_id"] != drain["sandbox_id"]):
+            raise ProjectConflict("Browser shutdown workspace changed")
+        self._idle(cursor, project, lifecycle_job=job, browser_drain=drain)
         return dict(project), dict(run)
 
     def next_step(self, job, *, now=None):
@@ -417,6 +431,8 @@ class ProjectLifecycle:
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
             project, run = self._owned(cursor, job, lease_now)
+            if project_browser_drain.pending(run["plan"]):
+                raise ProjectConflict("Drain the browser before dispatching any lifecycle step")
             index, plan = run["next_step"], run["plan"]
             if index == len(plan["steps"]):
                 return None
@@ -699,6 +715,10 @@ class ProjectLifecycle:
                 "state": run["target_state"],
                 "generation": run["generation"],
             }
+            saved = next((row["evidence"]["snapshot"] for row in rows
+                          if row["operation"] == "snapshot_workspace"), None)
+            if saved is not None:
+                result["saved_snapshot"] = saved
             if run["action"] in {"snapshot", "task_prepare"}:
                 result["snapshot"] = next(
                     row["evidence"]["snapshot"] for row in rows
@@ -809,6 +829,14 @@ class ProjectLifecycle:
                 AND locked_task_id IS NULL ORDER BY project_id LIMIT ?""",
                 (after, limit),
             ).fetchall()]
+
+    def has_pending_browser(self, access, project_id):
+        with self.projects._transaction() as cursor:
+            self.projects._get(cursor, access, project_id)
+            return cursor.execute("""SELECT 1 FROM project_io WHERE project_id=?
+                AND tool_name='project_browser_session'
+                AND state IN ('reserved','dispatched','needs_attention') LIMIT 1""",
+                (project_id,)).fetchone() is not None
 
     def needs_attention(self, job, *, now=None):
         """Never unlock or delete data just because an operation timed out."""

@@ -10,6 +10,7 @@ from .project_lifecycle import ProjectLifecycle, transition_plan
 from .project_tasks import ProjectTaskStore, _digest
 from .project_turn_saves import require_running_turn
 from .projects import ProjectConflict
+from . import project_browser_drain
 
 
 class ProjectTaskAdmission:
@@ -38,6 +39,7 @@ class ProjectTaskAdmission:
                              (run["job_id"],)).fetchone()
         result = json.loads(job["result_json"]) if job["status"] == "succeeded" else {}
         return {"project_id": run["project_id"], "job_id": run["job_id"],
+                "phase": "browser_drain" if project_browser_drain.pending(run["plan"]) else "lifecycle",
                 "status": "needs_attention" if run["status"] == "needs_attention" else job["status"],
                 "task_id": result.get("task_id"), "task_bound": result.get("task_bound") is True,
                 "completed_steps": run["next_step"], "total_steps": len(run["plan"]["steps"])}
@@ -98,12 +100,13 @@ class ProjectTaskAdmission:
             if focus is None or (project_id is not None and focus["project_id"] != project_id):
                 raise ProjectConflict("Current project changed or expired")
             project_id = focus["project_id"]
-            project = self.projects._get(cursor, access, project_id, edit=True, expected=expected_version)
+            project, drain = project_browser_drain.request_project(
+                self.projects, cursor, access, project_id, expected=expected_version, turn_id=turn_id)
             if not project["bot_native_user_id"]:
                 raise PermissionError("Project requires a bot account binding")
             if self.bindings._prior(cursor, access, request_key) is not None:
                 raise ProjectConflict("Task request already has a different admission")
-            ProjectLifecycle._idle(cursor, project)
+            ProjectLifecycle._idle(cursor, project, browser_drain=drain)
             if cursor.execute(
                 """SELECT 1 FROM project_turn_saves s JOIN agent_turns t USING(turn_id)
                 WHERE s.project_id=? AND s.state='pending' AND s.turn_id<>?
@@ -115,6 +118,8 @@ class ProjectTaskAdmission:
             rebuild = (self.projects._manifest(cursor, access, project_id, baseline["version_no"]).get("rebuild")
                        if baseline else None)
             generation, plan = transition_plan(project, "task_prepare", baseline, rebuild=rebuild)
+            if drain:
+                plan["browser_drain"] = drain
             if generation >= 2**53:
                 raise ProjectConflict("Workspace generation exhausted")
             plan["task_admission"] = {"envelope": envelope,
@@ -122,8 +127,8 @@ class ProjectTaskAdmission:
             preflight(plan)
             job, run = self.lifecycle._enqueue(cursor, access, project, "task_prepare", generation,
                                                plan, "task:" + request_key, now)
-            # All existing effects have settled and new IO is now locked out.
-            # This one snapshot includes the triggering turn's pending writes.
+            # New IO is locked out; the optional browser prelude settles its
+            # remaining effects before this snapshot includes pending writes.
             cursor.execute(
                 """UPDATE project_turn_saves SET state='queued',job_id=?,error_code='',updated_at=?
                 WHERE project_id=? AND state='pending'""", (job.job_id, now, project_id),

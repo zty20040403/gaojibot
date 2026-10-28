@@ -19,6 +19,7 @@ from src.sandbox_runtime.wire import encoded
 from .project_io import ACTIVE_STATES, BROWSER_SESSION_TOOL, ProjectIOGrant
 from .project_turn_saves import require_running_turn
 from .projects import ProjectConflict
+from .project_browser_drain import require_drain
 
 
 def digest(value):
@@ -43,8 +44,10 @@ class ProjectBrowserStore:
     def __init__(self, io):
         self.io, self.projects = io, io.projects
 
-    def _owned(self, cursor, grant):
+    def _owned(self, cursor, grant, drain_job=None):
         project, operation = self.io._owned(cursor, grant)
+        if drain_job is not None:
+            require_drain(cursor, project, grant, drain_job)
         if operation["tool_name"] != BROWSER_SESSION_TOOL or not operation["mutating"]:
             raise PermissionError("A browser session IO grant is required")
         session = cursor.execute(
@@ -53,11 +56,15 @@ class ProjectBrowserStore:
         ).fetchone()
         return project, operation, dict(session) if session else None
 
-    def _access(self, cursor, access, grant, *, effect=False):
+    def _access(self, cursor, access, grant, *, effect=False, drain_job=None):
         self.projects._scope_lock(cursor, access)
         self.projects._get(cursor, access, grant.project_id)
-        project, operation, session = self._owned(cursor, grant)
-        if (operation["actor_principal_id"] != access.principal_id
+        project, operation, session = self._owned(cursor, grant, drain_job)
+        if drain_job is not None:
+            require_drain(cursor, project, grant, drain_job, access=access)
+            if effect:
+                raise ProjectConflict("Lifecycle shutdown cannot perform browser actions")
+        if ((drain_job is None and operation["actor_principal_id"] != access.principal_id)
                 or not project["bot_native_user_id"]
                 or project["bot_native_user_id"] != access.scope.bot_native_user_id):
             raise PermissionError("Browser belongs to another actor or account")
@@ -70,13 +77,13 @@ class ProjectBrowserStore:
         return project, operation, session
 
     @staticmethod
-    def _live(project, operation):
+    def _live(project, operation, *, draining=False):
         if (operation["state"] not in ACTIVE_STATES
                 or project["status"] != "active"
                 or project["sandbox_id"] != operation["sandbox_id"]
                 or project["workspace_generation"] != operation["generation"]
                 or project["lifecycle_fence"] != operation["fence"]
-                or project["lifecycle_job_id"] is not None
+                or (project["lifecycle_job_id"] is not None and not draining)
                 or project["locked_task_id"] is not None):
             raise ProjectConflict("Browser workspace was replaced, fenced or is not active")
 
@@ -123,9 +130,9 @@ class ProjectBrowserStore:
                 (grant.operation_id, instance_id, uuid.uuid4().hex, now, now),
             ).fetchone())
 
-    def session(self, access, grant):
+    def session(self, access, grant, *, drain_job=None):
         with self.projects._transaction() as cursor:
-            project, operation, session = self._access(cursor, access, grant)
+            project, operation, session = self._access(cursor, access, grant, drain_job=drain_job)
             if session is None:
                 raise ProjectConflict("Browser session has not been bound")
             return {**session, "target": self._target(project, operation, session),
@@ -165,11 +172,11 @@ class ProjectBrowserStore:
         if record["state"] == "ready" and record["worker_id"] is None:
             raise ProjectConflict("Browser worker has not completed its handshake")
 
-    def opened(self, grant, record, *, now=None):
+    def opened(self, grant, record, *, now=None, drain_job=None):
         """Persist a runner handshake, including uncertain launches for recovery."""
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            project, operation, session = self._owned(cursor, grant)
+            project, operation, session = self._owned(cursor, grant, drain_job)
             if (session is None or session["sequence"] != 0
                     or operation["state"] not in {"dispatched", "needs_attention"}
                     or session["state"] not in {"opening", "ready", "needs_attention"}):
@@ -290,10 +297,10 @@ class ProjectBrowserStore:
             cursor.execute("UPDATE projects SET last_active_at=? WHERE project_id=?", (now, project["project_id"]))
             return ProjectBrowserCall(grant, sequence)
 
-    def _call(self, cursor, call):
+    def _call(self, cursor, call, drain_job=None):
         if not isinstance(call, ProjectBrowserCall) or type(call.sequence) is not int or call.sequence < 1:
             raise PermissionError("A host-owned browser call is required")
-        project, operation, session = self._owned(cursor, call.grant)
+        project, operation, session = self._owned(cursor, call.grant, drain_job)
         row = cursor.execute(
             "SELECT * FROM project_browser_calls WHERE operation_id=? AND sequence=? FOR UPDATE",
             (call.grant.operation_id, call.sequence),
@@ -319,10 +326,10 @@ class ProjectBrowserStore:
             return {**self._target(project, operation, session), "sequence": call.sequence,
                     "action": method, "arguments": arguments(method, args)}
 
-    def observe(self, call, response, *, now=None):
+    def observe(self, call, response, *, now=None, drain_job=None):
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            project, operation, session, row = self._call(cursor, call)
+            project, operation, session, row = self._call(cursor, call, drain_job)
             expected = {"schema": 1, "binding": self._binding(project, operation, session),
                         "worker_id": session["worker_id"], "sequence": call.sequence,
                         "arguments_sha256": row["arguments_sha256"]}
@@ -348,15 +355,15 @@ class ProjectBrowserStore:
                 (state, json.dumps(response, allow_nan=False), digest(response), now, call.grant.operation_id, call.sequence),
             )
 
-    def receipt(self, access, call):
+    def receipt(self, access, call, *, drain_job=None):
         with self.projects._transaction() as cursor:
-            self._access(cursor, access, call.grant)
-            _, _, _, row = self._call(cursor, call)
+            self._access(cursor, access, call.grant, drain_job=drain_job)
+            _, _, _, row = self._call(cursor, call, drain_job)
             return row
 
-    def pending(self, access, grant):
+    def pending(self, access, grant, *, drain_job=None):
         with self.projects._transaction() as cursor:
-            self._access(cursor, access, grant)
+            self._access(cursor, access, grant, drain_job=drain_job)
             row = cursor.execute(
                 """SELECT sequence FROM project_browser_calls WHERE operation_id=?
                 AND state NOT IN ('acknowledged','aborted')""",
@@ -364,12 +371,12 @@ class ProjectBrowserStore:
             ).fetchone()
             return ProjectBrowserCall(grant, row["sequence"]) if row else None
 
-    def abandon_reserved(self, access, call, *, now=None):
+    def abandon_reserved(self, access, call, *, now=None, drain_job=None):
         """A never-dispatched action may be abandoned only by draining its session."""
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            self._access(cursor, access, call.grant)
-            _, _, session, row = self._call(cursor, call)
+            self._access(cursor, access, call.grant, drain_job=drain_job)
+            _, _, session, row = self._call(cursor, call, drain_job)
             if row["state"] not in {"reserved", "aborted"} or session["sequence"] != call.sequence:
                 raise ProjectConflict("Dispatched browser effects cannot be abandoned")
             cursor.execute(
@@ -380,10 +387,10 @@ class ProjectBrowserStore:
                 cursor.execute("UPDATE project_browser_sessions SET state='draining',updated_at=? WHERE operation_id=?",
                                (now, call.grant.operation_id))
 
-    def ack_request(self, access, call):
+    def ack_request(self, access, call, *, drain_job=None):
         with self.projects._transaction() as cursor:
-            self._access(cursor, access, call.grant)
-            project, operation, session, row = self._call(cursor, call)
+            self._access(cursor, access, call.grant, drain_job=drain_job)
+            project, operation, session, row = self._call(cursor, call, drain_job)
             if row["state"] not in {"received", "acknowledged"} or session["sequence"] != call.sequence:
                 raise ProjectConflict("Commit a completed browser response before acknowledging it")
             return {**self._target(project, operation, session), "sequence": call.sequence,
@@ -400,10 +407,10 @@ class ProjectBrowserStore:
                 or row["response"] is None or digest(last["response"]) != row["response_sha256"]):
             raise ProjectConflict("Runner did not acknowledge the committed browser response")
 
-    def acknowledged(self, call, record, *, now=None):
+    def acknowledged(self, call, record, *, now=None, drain_job=None):
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            project, operation, session, row = self._call(cursor, call)
+            project, operation, session, row = self._call(cursor, call, drain_job)
             self._remote(project, operation, session, record)
             if record["sequence"] != call.sequence:
                 raise ProjectConflict("Browser ACK belongs to another action")
@@ -413,11 +420,11 @@ class ProjectBrowserStore:
                 (now, call.grant.operation_id, call.sequence),
             )
 
-    def start_drain(self, access, grant, *, now=None):
+    def start_drain(self, access, grant, *, now=None, drain_job=None):
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            project, operation, session = self._access(cursor, access, grant)
-            self._live(project, operation)
+            project, operation, session = self._access(cursor, access, grant, drain_job=drain_job)
+            self._live(project, operation, draining=drain_job is not None)
             if session is None or session["session_id"] is None:
                 raise ProjectConflict("Recover the browser launch before draining it")
             if cursor.execute(
@@ -430,10 +437,10 @@ class ProjectBrowserStore:
                                (now, grant.operation_id))
             return self._target(project, operation, session)
 
-    def drained(self, grant, record, *, now=None):
+    def drained(self, grant, record, *, now=None, drain_job=None):
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            project, operation, session = self._owned(cursor, grant)
+            project, operation, session = self._owned(cursor, grant, drain_job)
             if session is None or session["state"] not in {"draining", "closed"}:
                 raise ProjectConflict("No browser shutdown intent to observe")
             row = cursor.execute(

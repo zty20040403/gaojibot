@@ -15,6 +15,7 @@ import time
 from .project_lifecycle import KIND
 from .projects import ProjectAccess, ProjectConflict
 from .workers.durable_jobs import JobDeferred
+from . import project_browser_drain
 
 
 async def _store(method, *args, **kwargs):
@@ -318,9 +319,10 @@ class DockerProjectBackend:
 
 
 class ProjectLifecycleExecutor:
-    def __init__(self, lifecycle, backends, *, resolve_access):
+    def __init__(self, lifecycle, backends, *, resolve_access, browser=None):
         self.lifecycle, self.backends = lifecycle, dict(backends)
         self.resolve_access = resolve_access
+        self.browser = browser
 
     def register(self, worker):
         """Explicit host composition only; importing this file registers nothing."""
@@ -337,6 +339,10 @@ class ProjectLifecycleExecutor:
                     "Project backend is not available on this host"
                 )
             backend.preflight(run["plan"])
+            if project_browser_drain.pending(run["plan"]):
+                if self.browser is None:
+                    raise JobDeferred("Project browser shutdown adapter is unavailable", 30)
+                await self.browser.drain_lifecycle(job, await self._access(project, run))
             while True:
                 access = await self._access(project, run)
                 project, run = await _store(self.lifecycle.context, job, access=access)

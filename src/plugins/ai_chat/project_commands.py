@@ -110,6 +110,8 @@ async def command_result(services, event, text):
     lines = [_summary(result["project"])]
     if result.get("operation") and "completed_steps" in result["operation"]:
         operation = result["operation"]
+        if operation.get("phase") == "browser_drain":
+            lines.append("正在收取浏览器回执并确认关闭；尚未开始保存或切换工作区。")
         lines.append(
             f"后台操作进度：{operation['completed_steps']}/{operation['total_steps']} 步"
         )

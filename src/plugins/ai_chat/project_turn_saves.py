@@ -148,11 +148,8 @@ class ProjectTurnSaves:
                     row["run_status"] == "completed"
                     and row["job_status"] == "succeeded"
                 )
-                version = (
-                    json.loads(row["result_json"]).get("snapshot", {}).get("version_no")
-                    if saved
-                    else None
-                )
+                completion = json.loads(row["result_json"]) if saved else {}
+                version = completion.get("saved_snapshot", completion.get("snapshot", {})).get("version_no")
                 saved = saved and type(version) is int
                 state = row["state"]
                 if state == "queued":
