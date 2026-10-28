@@ -2964,3 +2964,36 @@ implementation evidence, not a claim that the production App has these features.
   baselines/locks/publication, delete/preview, shared-platform identity, console,
   native M2 acceptance and M4-M7 also remain open. No production connection,
   shared nix-config edit, deployment, App release or user-plan edit occurred.
+
+### M3 private browser process and bounded pipe protocol
+
+- Added a runnable project browser worker and deterministic source-only zipapp.
+  Host bootstrap binds instance/owner/project/generation/fence and the profile
+  beneath the supplied workspace. The worker opens no listening port and accepts
+  only the nine existing browser actions, not arbitrary commands or JavaScript.
+  Browser dependencies are not added to every sandbox image by this change.
+- Reused the existing private runner's framing through `sandbox_runtime/wire.py`,
+  with compatibility re-exports. Bounded JSON rejects duplicate fields, non-finite
+  values and oversized frames. Bootstrap remains a private host operation, not a
+  model-visible way to select a host path or change ownership/network policy.
+- A fresh worker ID and monotonic sequence fence requests to one incarnation.
+  Identical latest-request replay returns the same result without repeating the
+  action; changed arguments and old/skipped sequences are refused. An uncertain
+  effect blocks further actions. EOF, idle expiry, framing errors and timeout
+  close the browser; failed close does not become a success-shaped process exit.
+  Observations never claim filesystem/cgroup quiescence or durable completion.
+- Verification: 47 focused worker/browser/private-runner tests passed in 9.349
+  seconds (`.cache/roadmap/m3-browser-worker-verified.log`), ResourceWarnings as
+  errors. The real zipapp ran through private pipes with local Chromium; its
+  visible click counter remained one after replay, persistent login data survived
+  process restart, and another profile saw none. No external account or live
+  service was used. Fixtures also exercised cancellation, malformed frames,
+  identity/sequence mismatch, oversized replies and uncertain shutdown.
+  Whole-CI Ruff, compileall and whitespace checks passed. Nix package/import
+  checks passed on aarch64-darwin (`.cache/roadmap/m3-browser-worker-nix.log`);
+  other architectures were not evaluated by this local check.
+- Still open: host-persisted request/receipt registration, actual OCI/KVM worker
+  launch with quota/process ownership, project tool routing and lifecycle drain.
+  This is worker-side transport, not full project browser activation. The rest of
+  M3, native M2 acceptance and M4-M7 remain. No shared nix-config changes,
+  production connections, deployment, App release or user-plan changes occurred.

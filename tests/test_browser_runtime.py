@@ -215,10 +215,13 @@ class LocalPage(BaseHTTPRequestHandler):
     def do_GET(self):
         body = b"""<!doctype html><title>Project browser</title>
         <input placeholder="Display name"><button onclick="localStorage.setItem('name',
-        document.querySelector('input').value); document.cookie='session=local-only; Max-Age=3600; SameSite=Lax';
+        document.querySelector('input').value);
+        localStorage.setItem('clicks', (Number(localStorage.getItem('clicks')) || 0) + 1);
+        document.cookie='session=local-only; Max-Age=3600; SameSite=Lax';
         location.reload()">Save</button>
         <p id="value"></p><script>document.querySelector('#value').textContent =
-        (localStorage.getItem('name') || 'No saved name') + ';' + document.cookie;</script>"""
+        (localStorage.getItem('name') || 'No saved name') + ';' + document.cookie +
+        ';clicks=' + (localStorage.getItem('clicks') || '0');</script>"""
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

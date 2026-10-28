@@ -1088,11 +1088,55 @@ process restart, isolation between two profile directories, and explicit clearin
 It does not use personal browser data or a real online account. Session cookies
 and website-side login expiration retain their normal semantics.
 
-Project `browser_*` routing, private worker transport, persisted operation
-identity, browser process admission/draining across snapshot and restore,
-standalone cache cleanup and native OCI/KVM acceptance remain open. The core is
-not yet a deployed project-browser feature; ordinary browser tools still use
-their existing conversation owner until that integration is complete.
+### Private project browser worker (launcher integration pending)
+
+`src/sandbox_runtime/project_browser_worker.py` now runs the portable engine in a
+separate process using inherited input/output pipes. It opens no control port.
+The trusted launcher supplies a bounded bootstrap with instance, owner, project,
+generation and fence; the profile is always `.gaoji/browser` beneath that
+workspace. Bootstrap is not a model tool. Real workspace and metadata directory
+checks reject symlink redirection; the launcher must additionally prove that the
+workspace is the intended quota-backed mount and use the sandbox's unprivileged
+identity. The worker is not itself that isolation/authorization boundary.
+
+The wire format reuses the private runner's length-prefixed JSON framing, now
+factored into `sandbox_runtime/wire.py`; existing runner imports remain valid.
+Worker frames are capped at 256 KiB, reject duplicate JSON fields and non-finite
+numbers, and accept only the nine existing browser methods. Requests cannot
+supply JavaScript, shell commands, another profile path or owner.
+
+Every worker incarnation generates a fresh ID. Host-owned sequence numbers must
+advance by one; replaying the latest sequence with identical arguments returns
+the saved reply without another click. Changed arguments, stale/skipped
+sequences and another incarnation's requests are rejected. Only the latest
+reply is held in memory: this is deliberately not cross-restart deduplication.
+Once an action starts, cancellation, an exception or an oversized observation
+leaves it `needs_attention` and prevents subsequent actions in that worker.
+Exception text is not returned because it can contain entered credentials.
+
+EOF, malformed frames, idle expiry (30 minutes) and operation timeout lead to
+browser shutdown; failed or timed-out shutdown is a nonzero process exit. A
+successful close response still does not prove the container/cgroup has no
+remaining processes. The host must persist request/receipt ownership before
+dispatch, reconcile uncertainty and independently observe quiescence before
+snapshot, restore or reclamation. It must never relaunch an uncertain click in
+a fresh worker merely because the pipe broke.
+
+`project_browser_bundle.build_bundle()` produces a deterministic small zipapp of
+the worker, browser engine, framing and error type only. It carries no Bot
+configuration, database, API credentials or browser binaries. Playwright and
+Chromium still have to be supplied by the selected sandbox runtime. A local
+test actually runs this zipapp with installed Chromium through private pipes:
+it writes form data, checks a visible click counter stays at one on replay,
+closes via EOF, restarts and recovers persistent cookie/localStorage, then
+checks a different project receives neither. It uses temporary loopback pages
+and profiles, not personal browser data or online accounts.
+
+Project `browser_*` routing, OCI/KVM launcher integration, durable host receipts,
+browser process admission/draining across snapshot and restore, standalone cache
+cleanup and native OCI/KVM acceptance remain open. This worker is not enabled in
+production; ordinary browser tools retain their conversation owner until the
+full integration is complete.
 
 ### Remaining acceptance
 

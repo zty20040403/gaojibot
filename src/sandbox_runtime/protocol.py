@@ -1,20 +1,18 @@
 """Versioned, bounded sandbox RPC. Binary files are never JSON/base64 encoded."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import json
 from pathlib import PurePosixPath
 import re
-import struct
 
-from .docker import NIX_ATTRIBUTE_PATTERN, RUNTIME_IMAGES, SANDBOX_ID_PATTERN, SandboxError
+from .docker import NIX_ATTRIBUTE_PATTERN, RUNTIME_IMAGES, SANDBOX_ID_PATTERN
+from .wire import (HEADER_LIMIT as HEADER_LIMIT, ProtocolError as ProtocolError,
+                   encoded as encoded, read_header as read_header, write_frame as write_frame)
 from .project_volumes import MIN_QUOTA, MAX_QUOTA, MIB
 from src.project_content import CHUNK_BYTES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_VERSION_FILES
 
 
 VERSION = 1
-HEADER_LIMIT = 1024 * 1024
 REQUEST_LIMIT = 64 * 1024
 ID_PATTERN = re.compile(r"[a-f0-9]{32}")
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{32,128}")
@@ -79,62 +77,6 @@ MUTATIONS |= frozenset("project_files_" + action for action in (
     "snapshot", "restore_begin", "restore_manifest", "restore_file", "restore_finish", "prune"
 ))
 UPLOADS = {"write_file", "install_readonly_file", "project_files_restore_manifest", "project_files_restore_file"}
-
-
-class ProtocolError(SandboxError):
-    pass
-
-
-def encoded(value: dict) -> bytes:
-    try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    except (ValueError, TypeError):
-        raise ProtocolError("沙盒请求格式不正确。") from None
-
-
-def _unique_pairs(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("Duplicate field")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value):
-    raise ValueError(value)
-
-
-async def read_header(reader, *, limit: int = HEADER_LIMIT, timeout: float = 15) -> dict:
-    async def receive():
-        size = struct.unpack("!I", await reader.readexactly(4))[0]
-        if not 0 < size <= limit:
-            raise ProtocolError("沙盒消息头超过大小限制。")
-        try:
-            value = json.loads(await reader.readexactly(size), object_pairs_hook=_unique_pairs,
-                               parse_constant=_reject_constant)
-        except (ValueError, UnicodeError, RecursionError):
-            raise ProtocolError("沙盒消息格式不正确。") from None
-        if not isinstance(value, dict):
-            raise ProtocolError("沙盒消息必须为对象。")
-        return value
-    return await asyncio.wait_for(receive(), timeout)
-
-
-async def write_frame(writer, header: dict, payload: bytes = b"", *, timeout: float = 30) -> None:
-    if header.get("payload_size", 0) != len(payload):
-        raise ProtocolError("沙盒文件长度不一致。")
-    body = encoded(header)
-    if len(body) > HEADER_LIMIT:
-        raise ProtocolError("沙盒响应超过消息头限制。")
-
-    async def send():
-        writer.write(struct.pack("!I", len(body)) + body)
-        await writer.drain()
-        for offset in range(0, len(payload), 65536):
-            writer.write(payload[offset:offset + 65536])
-            await writer.drain()
-    await asyncio.wait_for(send(), timeout)
 
 
 def _text(value, maximum: int, *, blank: bool = False) -> bool:
