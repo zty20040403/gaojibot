@@ -17,6 +17,7 @@ from .admin_api import (
     models,
     observability,
     overview,
+    projects,
     sandboxes,
     subagents,
     tasks,
@@ -59,6 +60,7 @@ _PAGE_ROUTERS = (
     fleet,
     wiki,
     mcp,
+    projects,
 )
 
 

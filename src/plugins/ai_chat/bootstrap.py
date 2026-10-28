@@ -86,6 +86,7 @@ def register_http_surfaces(
                 message_ledger=context.message_ledger,
                 group_wiki_store=context.group_wiki_store,
                 mcp_runtime=mcp_runtime,
+                project_runtime=getattr(context, "project_runtime", None),
                 settings=context.settings,
                 sandbox_manager=context.sandbox_manager,
                 sticker_inventory=sticker_inventory,

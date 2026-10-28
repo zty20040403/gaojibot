@@ -154,6 +154,34 @@ class AdminControlStore:
             for row in rows
         ]
 
+    def mutate_transaction(
+        self, cursor, resource_key, *, expected_version, actor, action, target,
+        operation,
+    ) -> MutationResult:
+        """Use the caller's transaction for DB-only writes and their audit receipt.
+
+        The caller owns rollback. Do not perform network or filesystem effects
+        inside this operation; an audit failure must roll back the domain write.
+        """
+        if not self.persistent or expected_version is None:
+            raise ValueError("Persistent mutation requires an expected resource version")
+        key, now = _normalized_resource_key(resource_key), int(time.time())
+        cursor.execute("""INSERT INTO admin_resource_versions(resource_key,version,updated_at)
+            VALUES (?,0,?) ON CONFLICT(resource_key) DO NOTHING""", (key, now))
+        current = cursor.execute("SELECT version FROM admin_resource_versions WHERE resource_key=? FOR UPDATE",
+                                 (key,)).fetchone()[0]
+        if current != expected_version:
+            raise AdminVersionConflict(key, expected_version, current)
+        before, value = operation()
+        version = current + 1
+        cursor.execute("UPDATE admin_resource_versions SET version=?,updated_at=? WHERE resource_key=?",
+                       (version, now, key))
+        cursor.execute("""INSERT INTO admin_audit_log(resource_key,resource_version,actor,action,target,
+            status,before_json,after_json,error,created_at) VALUES (?,?,?,?,?,'succeeded',?,?,'',?)""",
+            (key, version, _safe_text(actor, 160), _safe_text(action, 120), _safe_text(target, 300),
+             _encode_json(before), _encode_json(value), now))
+        return MutationResult(value, key, version)
+
     def tool_overrides(self) -> dict[str, bool]:
         if self._database is None:
             return dict(self._memory_tools)

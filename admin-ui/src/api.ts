@@ -24,6 +24,7 @@ export type ResourceName =
   | 'contextPlans'
   | 'contextDebug'
   | 'wiki'
+  | 'projects'
   | 'mcp'
   | 'audit'
   | 'versions'
@@ -64,6 +65,7 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   contextPlans: '/context-plans',
   contextDebug: '/context-debug',
   wiki: '/wiki',
+  projects: '/projects',
   mcp: '/mcp',
   audit: '/audit',
   versions: '/resource-versions',
@@ -90,6 +92,7 @@ export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   traces: ['traces'],
   'context-debug': ['contextDebug', 'contextPlans'],
   wiki: ['wiki'],
+  projects: ['projects'],
   mcp: ['mcp'],
   audit: ['audit'],
 }

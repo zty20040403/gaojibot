@@ -26,6 +26,7 @@ import { LoginGate, MemberStatus, AccountsView, ApprovalNotice } from './Account
 import { StatusBadge } from './components'
 import { ContextDebugView } from './ContextDebugView'
 import { WikiView } from './WikiView'
+import { ProjectsView } from './ProjectsView'
 import { McpView } from './McpView'
 import { DETAIL_META, DetailView, type DetailViewId } from './detailViews'
 import { useControlPlane } from './useControlPlane'
@@ -52,7 +53,7 @@ const runtime = window.__GAOJI_ADMIN__ ?? {
   requiresLogin: true,
 }
 
-type ViewId = 'accounts' | 'overview' | 'observability' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'context-debug' | 'wiki' | 'mcp' | 'databases' | 'fleet' | 'sandboxes' | 'media' | 'audit' | 'help'
+type ViewId = 'accounts' | 'overview' | 'observability' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'context-debug' | 'wiki' | 'projects' | 'mcp' | 'databases' | 'fleet' | 'sandboxes' | 'media' | 'audit' | 'help'
 
 const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group: string; icon: ComponentType<{ size?: number }> }> = [
   { id: 'accounts', label: '账户与任务授权', description: '账户权限、服务器任务授权与操作记录', group: '配置', icon: Users },
@@ -63,6 +64,7 @@ const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group:
   { id: 'traces', label: 'Trace 与上下文', description: '回放回答链路与上下文选择过程', group: '运行', icon: BrainCircuit },
   { id: 'context-debug', label: '上下文调试', description: '查看话题、原消息、候选评分、Token 和人工反馈', group: '运行', icon: ScanSearch },
   { id: 'sandboxes', label: '沙盒', description: '隔离环境、命令和资源使用情况', group: '资源', icon: Boxes },
+  { id: 'projects', label: '项目空间', description: '项目状态、容量、版本与预览', group: '资源', icon: Boxes },
   { id: 'media', label: '媒体审核', description: '表情候选、识图和分享内容记录', group: '资源', icon: Image },
   { id: 'wiki', label: '群百科', description: '群知识、来源证据与新人简报', group: '资源', icon: BookOpen },
   { id: 'groups', label: '模型与群友', description: '配置群开关、统一模型和个人模型', group: '配置', icon: Users },
@@ -185,6 +187,7 @@ export function App() {
               {active === 'traces' && <TracesView plane={plane} onOpenDetail={openDetail} />}
               {active === 'context-debug' && <ContextDebugView plane={plane} />}
               {active === 'wiki' && <WikiView plane={plane} />}
+              {active === 'projects' && <ProjectsView plane={plane} />}
               {active === 'mcp' && <McpView plane={plane} />}
               {active === 'databases' && <DatabasesView plane={plane} />}
               {active === 'fleet' && <FleetView plane={plane} />}

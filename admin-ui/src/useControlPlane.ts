@@ -33,6 +33,7 @@ const INITIAL_RESOURCES: ResourceName[] = [
   'contextPlans',
   'contextDebug',
   'wiki',
+  'projects',
   'mcp',
   'audit',
   'versions',

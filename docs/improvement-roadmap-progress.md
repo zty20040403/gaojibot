@@ -3714,3 +3714,38 @@ implementation evidence, not a claim that the production App has these features.
   restart and large-transfer acceptance remains separate. No production SSH,
   shared nix-config change, rebuild, App release, real QQ/model call or change
   to the supplied plan occurred.
+
+### M3 project administration API and console checkpoint
+
+- The protected admin API now lists and searches projects with pagination and
+  returns measured usage, version storage, lifecycle progress and paginated
+  versions, previews and events. Stale measurements are explicitly unknown,
+  retaining their last known value and timestamp rather than displaying zero.
+  Files, browser profiles, lifecycle reservations and task envelopes are not
+  returned. This is host administration, not a fabricated chat membership.
+- Project/version pinning, initial project quotas, scope quotas and preview
+  revocation records use resource/project/scope revisions. Domain metadata,
+  project events and the authenticated administrator's audit receipt commit in
+  one PostgreSQL transaction. CSRF and Origin checks remain enforced; concurrent
+  administrators cannot silently overwrite the same revision. Scope reductions
+  reject unverified or active work and already-accounted/reserved data.
+- The React project page includes five-row lists, detail navigation, capacity
+  configuration, versions, previews and exact event times. SSE invalidates data
+  without replacing focused controls or unsaved drafts. Saving project quota
+  does not discard an independently edited scope quota. Conflicting drafts
+  remain visible until the administrator explicitly reloads the newer values.
+- Verification: 20 authenticated API, transaction and router-boundary tests
+  passed in 29.235 seconds (`.cache/roadmap/m3-project-admin-regression.log`).
+  The production TypeScript/Vite build passes. Intercepted-API Playwright checks
+  at 1280x900 and 390x844 passed pagination, revision headers, five mutation
+  types, SSE focus/draft preservation, conflict handling, escaped labels,
+  unavailable states and horizontal overflow checks. Screenshots were reviewed.
+  No real QQ, model or production service was contacted for these checks.
+- This is not all of M3: existing workspaces still require physical disk resize
+  and verification before their quota can be changed, so that UI control is
+  deliberately unavailable instead of changing only a database number. Preview
+  revocation here changes the durable record; isolated-origin serving and
+  end-to-end revocation acceptance belong to M6. Shared Matrix/iMessage project
+  ownership acceptance also remains. Native M2/KVM full-lifecycle, restart and
+  large-transfer acceptance and M4-M7 remain incomplete. No shared nix-config
+  changes, server deployment, rebuild or App release occurred.
