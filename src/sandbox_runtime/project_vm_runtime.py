@@ -10,6 +10,7 @@ from .project_vm_io import _journal
 from .project_vm_maintenance import VmProjectMaintenance
 from .project_vm_mounts import VmProjectMounts
 from .project_vm_provision import VmProjectProvisioner
+from .project_vm_resize import VmProjectResize
 
 
 class VmProjectRuntime:
@@ -18,6 +19,7 @@ class VmProjectRuntime:
         self.mounts = VmProjectMounts(manager, disks)
         self.provisioner = VmProjectProvisioner(manager, disks, host=host)
         self.maintenance = VmProjectMaintenance(manager, disks, host=host)
+        self.resizer = VmProjectResize(manager, disks, host=host)
         self._browser = None
 
     @property
@@ -46,6 +48,8 @@ class VmProjectRuntime:
             return await self.mounts.reserve(action, owner, project_id, **options)
         if action == "boot":
             return await self.provisioner.boot(owner, project_id, **options)
+        if action == "resize":
+            return await self.resizer.resize(owner, project_id, quota_bytes=quota_bytes, **options)
         if action in {"quiesce", "trim", "unmount", "stop", "remove"}:
             return await self.maintenance.operate(action, owner, project_id, **options)
         raise SandboxError("Unknown project VM operation")

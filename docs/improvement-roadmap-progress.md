@@ -16,8 +16,8 @@ local-only verification boundaries.
 - Implemented locally: retained project storage and versions, lifecycle jobs,
   project tools/chat/task integration, receipt-backed reports and admin console.
   Current work closes physical quota resizing and remaining lifecycle and
-  shared-platform verification. A private guest resize helper is not yet an
-  end-to-end admin quota operation.
+  shared-platform verification. Guest and private host VM resize adapters are
+  implemented; the administrator's durable quota job is not connected yet.
 - Completed source checkpoints are published to `zty20040403/gaojibot` main.
   This work has not updated shared `imdomestic/nix-config`, rebuilt production
   servers or released a new Desktop App. Source publication is not deployment.
@@ -3805,3 +3805,50 @@ implementation evidence, not a claim that the production App has these features.
   this checkpoint does not claim that changing a number resizes a disk. No
   production connection, shared nix-config change, rebuild, App release, live
   model/QQ call or supplied-plan modification occurred.
+
+### M3 recoverable host VM resize and metadata publication
+
+- Connected guest resizing to the private VM runtime under the existing
+  allocation, IO and volume-reservation locks. A matching host journal retains
+  the original VM identity, old/new capacities, mount intent and every
+  pre-effect stage. Live growth enlarges the device before ext4; shrink requires
+  a fresh unmounted, reduced-filesystem receipt before libvirt truncation.
+  Libvirt block capacity, qcow2 geometry and guest geometry must all agree.
+- Live and persistent domain metadata and the two owned host metadata files
+  are updated separately and reconciled after lost acknowledgements. Frozen
+  boot-file fingerprints advance only after verification. System overlays,
+  cloud-init seeds, project contents and domain UUIDs are not replaced.
+  The same stopped VM can be resumed while its gate remains closed; an absent
+  VM, foreign consumer or changed disk identity never authorizes recreation.
+- Replays retain the reservation, require the original fence/target and do not
+  repeat an already observed block resize. Guest receipts bind the original
+  mount state separately from the current mount state. Final replay rechecks
+  the guest and both domain definitions instead of trusting a stored success.
+  User execution is still reopened only by the existing separate release step.
+- Quota metadata publication uses an intent-owned staging directory with a
+  fixed file allowlist. Interrupted partial staging is recoverable; successful
+  publication removes its staging data. Unknown files or content are retained
+  and block recovery rather than being deleted as presumed temporary data.
+- Verification: 151 host/guest resize, disk, provisioning, maintenance, mount
+  and execution-gate tests passed in 8.905 seconds
+  (`.cache/roadmap/m3-project-host-resize-regression.log`). Another 91 real
+  PostgreSQL lifecycle/accounting, guest-file, browser and bootstrap regression
+  tests passed in 51.485 seconds
+  (`.cache/roadmap/m3-project-host-resize-runtime.log`). The new tests use real
+  private journal files and the actual guest protocol together, with explicit
+  libvirt, device, mount and cgroup fixtures. They cover partial metadata/file
+  publication, device/guest/final acknowledgement loss, wrong targets/fences,
+  concurrency, foreign definitions/consumers, insufficient space and false
+  shrink receipts. They do not prove native KVM or power-loss acceptance.
+- Whole-CI Ruff, touched-file compileall and whitespace checks passed.
+  `nix flake check --no-build --no-update-lock-file` passed for aarch64-darwin,
+  without package builds or incompatible-system evaluation. No frontend layout
+  changed. The blockresize and metadata argument contracts were checked
+  against the [libvirt manual](https://www.libvirt.org/manpages/virsh.html).
+- Remaining: administrator-authorized durable quota jobs and API integration
+  without impersonating a chat member, OCI/Desktop quota integration, native
+  VM resize/full-lifecycle/restart/large-file acceptance, shared-platform
+  ownership and M4-M7. The existing-workspace quota control remains disabled
+  until that end-to-end operation exists. No production connection, shared
+  nix-config change, rebuild, App release, real QQ/model call or modification of
+  the supplied plan occurred.

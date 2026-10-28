@@ -77,7 +77,8 @@ class ProjectGuestResize:
         if (state["phase"] == "filesystem_ready" and state["quota_bytes"] < state["from_quota_bytes"]
                 and device != state["quota_bytes"] and mounted):
             raise disk.GuestDiskError("Host truncation requires an unmounted project filesystem")
-        return {**state, "mounted": mounted, "device_bytes": device, "filesystem_bytes": filesystem,
+        return {**state, "was_mounted": state["mounted"], "mounted": mounted,
+                "device_bytes": device, "filesystem_bytes": filesystem,
                 "verified": True, "mode": "quiesced"}
 
     def operate(self, phase, epoch, from_quota_bytes, quota_bytes):
