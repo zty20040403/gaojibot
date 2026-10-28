@@ -20,6 +20,7 @@ class VmProjectBackend:
         "unmount_volume": "unmount",
         "stop_workspace": "stop",
         "remove_workspace": "remove",
+        "resize_volume": "resize",
     }
     FILES = DockerProjectBackend.FILES
     VERIFICATIONS = DockerProjectBackend.VERIFICATIONS
@@ -200,7 +201,11 @@ class VmProjectBackend:
                             "quiesce_workspace", "snapshot_workspace", "stop_workspace",
                             "release_workspace", "verify_stopped",
                         ])
-        if "restore" in plan:
+        if "resize" in plan:
+            from .project_quota import valid_resize_plan
+            if not valid_resize_plan(plan):
+                raise ProjectBackendUnavailable("VM resize operations are out of order")
+        elif "restore" in plan:
             from .project_restore import valid_restore_plan
             if not valid_restore_plan(plan):
                 raise ProjectBackendUnavailable("VM rollback operations are out of order")
@@ -273,6 +278,7 @@ class VmProjectBackend:
                         "unmount": "unmounted",
                         "stop": "stopped",
                         "remove": "absent",
+                        "resize": "resized",
                     }[action]
                 )
                 valid &= observed.get(
@@ -282,7 +288,11 @@ class VmProjectBackend:
                 raise ProjectConflict(
                     "VM lifecycle effect was not verified at its fence"
                 )
-            return self._evidence(step, observed, sandbox_id=observed.get("sandbox_id"))
+            if action == "resize" and observed.get("from_quota_bytes") != args.get("from_quota_bytes"):
+                raise ProjectConflict("VM resize source capacity changed")
+            return self._evidence(step, observed, sandbox_id=observed.get("sandbox_id"),
+                quota_bytes=observed.get("quota_bytes"), state=observed.get("state"),
+                from_quota_bytes=observed.get("from_quota_bytes"))
         if operation not in self.VERIFICATIONS:
             raise ProjectBackendUnavailable("Unknown VM lifecycle operation")
         target = operation.removeprefix("verify_")
@@ -318,5 +328,5 @@ class VmProjectBackend:
         if not valid:
             raise ProjectConflict("Final VM project state has not been verified")
         return self._evidence(
-            step, observed, state=target, sandbox_id=observed.get("sandbox_id")
+            step, observed, state=target, sandbox_id=observed.get("sandbox_id"), quota_bytes=observed.get("quota_bytes")
         )

@@ -32,8 +32,10 @@ async def verify(browser, root, output, width, height):
                  "expires_at": now + 604800, "created_at": now, "revoked_at": None} for index in range(7)]
     events = [{"event_id": index, "kind": "admin_pin", "actor_principal_id": None, "created_at": now} for index in range(7)]
     state = {"version": 0, "sequence": 0, "changed": False, "available": True}
+    operation = None
 
     async def route_handler(route):
+        nonlocal operation
         url = urlsplit(route.request.url)
         path, query = url.path, parse_qs(url.query)
         if path.startswith("/bot-admin/api/v1"):
@@ -62,7 +64,13 @@ async def verify(browser, root, output, width, height):
                         project["pinned"] = body["pinned"]
                     elif action == "quota":
                         assert project["quota_editable"]
-                        project["quota_bytes"] = body["quota_bytes"]
+                        if project.get("quota_requires_job"):
+                            operation = {"job_id": 501, "action": "resize", "job_status": "pending",
+                                "from_quota_bytes": project["quota_bytes"], "quota_bytes": body["quota_bytes"],
+                                "completed_steps": 0, "total_steps": 5, "phase": "lifecycle", "updated_at": now}
+                            project.update(quota_editable=False, lifecycle_job_id=501)
+                        else:
+                            project["quota_bytes"] = body["quota_bytes"]
                     elif action == "scope-limits":
                         assert body["scope_version"] == scope["version"]
                         scope.update(quota_bytes=body["quota_bytes"], max_projects=body["max_projects"], version=scope["version"] + 1)
@@ -77,7 +85,7 @@ async def verify(browser, root, output, width, height):
                 else:
                     section, offset = query.get("section", ["versions"])[0], int(query.get("offset", [0])[0])
                     rows = {"versions": versions, "previews": previews, "events": events}[section]
-                    payload = {"project": deepcopy(project), "scope_limits": deepcopy(scope), "operation": None,
+                    payload = {"project": deepcopy(project), "scope_limits": deepcopy(scope), "operation": deepcopy(operation),
                                "section": section, "total": len(rows), "items": deepcopy(rows[offset:offset + 5])}
             elif path == "/projects":
                 filtered = [item for item in projects if query.get("query", [""])[0] in item["title"]
@@ -148,11 +156,33 @@ async def verify(browser, root, output, width, height):
         await page.get_by_role("button", name="全部项目", exact=True).click()
         await page.get_by_title("打开 prj#2", exact=True).click()
         assert await page.get_by_label("项目配额 MiB", exact=True).is_disabled()
-        assert await page.get_by_text("已有工作区，磁盘扩缩容入口尚未开放", exact=True).is_visible()
+        assert await page.get_by_text("当前工作区暂不支持扩缩容", exact=True).is_visible()
+        projects[1].update(backend="vm", quota_mode="hard", quota_editable=True, quota_requires_job=True)
+        state["changed"] = True
+        field = page.get_by_label("项目配额 MiB", exact=True)
+        await field.fill("4096")
+        await page.get_by_role("button", name="提交容量调整", exact=True).click()
+        await page.get_by_text("调整磁盘容量", exact=False).wait_for()
+        assert projects[1]["quota_bytes"] == 2 * 1024**3, "queued job must not claim new capacity"
+        assert await field.is_disabled()
+        operation.update(job_status="running", completed_steps=3)
+        state["changed"] = True
+        await page.get_by_text("3/5 步", exact=True).wait_for()
+        scope_field = page.get_by_label("会话总额度 MiB", exact=True)
+        await scope_field.fill("12000")
+        await scope_field.focus()
+        await page.screenshot(path=str(output / f"projects-resize-{width}.png"), full_page=True)
+        assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), "resize overflow"
+        projects[1].update(quota_bytes=4 * 1024**3, quota_editable=True, lifecycle_job_id=None, version=projects[1]["version"] + 1)
+        operation = None
+        state["changed"] = True
+        await page.get_by_role("button", name="载入最新配置", exact=True).wait_for()
+        assert await scope_field.input_value() == "12000", "completion discarded another quota draft"
+        assert await scope_field.evaluate("el => el === document.activeElement"), "completion stole focus"
         state["available"], state["changed"] = False, True
         await page.get_by_text("项目运行环境尚未就绪", exact=True).wait_for()
         assert not errors, errors
-        assert len(writes) == 5, writes
+        assert len(writes) == 6, writes
         print(f"{width}x{height}: paging, metadata writes, SSE focus/drafts, conflict, stale usage, escaped labels, layout OK", flush=True)
     finally:
         await context.close()

@@ -50,6 +50,8 @@ class ProvisionHost(DiskFixture):
 
 
 class VmProvisionFixture:
+    owner = "scope"
+
     async def asyncSetUp(self):
         # Keep libvirt's Unix socket path below macOS/Linux sockaddr_un limits.
         temporary = tempfile.TemporaryDirectory(prefix="gaoji-vm-", dir="/tmp")
@@ -62,8 +64,8 @@ class VmProvisionFixture:
         self.host.images[str(self.base)] = {"format": "qcow2", "virtual-size": 4 * 1024**3,
                                            "format-specific": {"type": "qcow2", "data": {}}}
         self.store = VmProjectDisks(self.root / "data", INSTANCE, host=self.host)
-        self.store.create("scope", 1, quota_bytes=64 * MIB, fence=1)
-        self.store.reserve("scope", 1, generation=1, fence=2, action="reserve", reservation=RESERVATION)
+        self.store.create(self.owner, 1, quota_bytes=64 * MIB, fence=1)
+        self.store.reserve(self.owner, 1, generation=1, fence=2, action="reserve", reservation=RESERVATION)
         self.manager = VmSandboxManager(image=str(self.base), root=str(self.root / "vm"), disk_gib=4)
         self.manager.project_mounts = VmProjectMounts(self.manager, self.store)
         self.manager._virsh = AsyncMock(side_effect=self.virsh)
@@ -138,7 +140,7 @@ class VmProvisionFixture:
         return 0, json.dumps(receipt).encode(), b""
 
     async def boot(self, **changes):
-        return await self.provisioner.boot("scope", 1, **{
+        return await self.provisioner.boot(self.owner, 1, **{
             "generation": 1, "fence": 3, "reservation": RESERVATION, **changes,
         })
 

@@ -6,8 +6,10 @@ browser profiles, private lifecycle reservations or task envelopes are exposed.
 
 import json
 import time
+import uuid
 
 from .project_lifecycle import ProjectLifecycle
+from .admin_control import _safe_text
 from .project_usage import ProjectUsageStore
 from .projects import ProjectConflict, ProjectQuotaExceeded
 
@@ -18,8 +20,15 @@ FIELDS = ("project_id", "scope_key", "creator_principal_id", "bot_native_user_id
 
 
 class ProjectAdmin:
-    def __init__(self, store, control):
+    def __init__(self, store, control, *, lifecycle=None, backends=None):
         self.store, self.control = store, control
+        self.lifecycle, self.backends = lifecycle, backends or {}
+
+    def _resizable(self, project):
+        return (self.lifecycle is not None and "vm" in self.backends and project["backend"] == "vm"
+                and project["status"] in {"active", "stopped"} and project["workspace_generation"] > 0
+                and project["sandbox_id"] is not None and project["lifecycle_job_id"] is None
+                and project["locked_task_id"] is None)
 
     @staticmethod
     def _version(cursor):
@@ -46,9 +55,10 @@ class ProjectAdmin:
                 "sampled_at": project["sampled_at"], "usage_fresh": fresh,
                 "usage_error": usage["error"] if usage else "not_sampled",
                 "version_bytes": int(version_bytes),
-                "quota_editable": project["workspace_generation"] == 0 and project["status"] == "stopped"
+                "quota_editable": self._resizable(project) or (project["workspace_generation"] == 0 and project["status"] == "stopped"
                     and project["sandbox_id"] is None and project["lifecycle_job_id"] is None
-                    and project["locked_task_id"] is None}
+                    and project["locked_task_id"] is None),
+                "quota_requires_job": project["workspace_generation"] > 0}
 
     def list(self, *, query="", state="", scope="", offset=0, limit=5):
         with self.store._transaction() as cursor:
@@ -90,6 +100,9 @@ class ProjectAdmin:
                 operation = {key: run[key] for key in ("job_id", "action", "status", "job_status", "updated_at")}
                 operation.update(completed_steps=run["next_step"], total_steps=len(run["plan"]["steps"]),
                                  phase="browser_drain" if pending(run["plan"]) else "lifecycle")
+                if run["action"] == "resize":
+                    operation.update(from_quota_bytes=run["plan"]["quota_bytes"],
+                                     quota_bytes=run["plan"]["resize"]["quota_bytes"])
             return {"resource": "projects", "resource_version": self._version(cursor), "api_version": "v1",
                     "project": self._item(cursor, project, int(time.time())), "scope_limits": limits,
                     "operation": operation, "section": section, "items": [dict(row) for row in rows],
@@ -115,15 +128,32 @@ class ProjectAdmin:
                     cursor.execute("UPDATE projects SET pinned=? WHERE project_id=?", (values["pinned"], project_id))
                     result["pinned"] = values["pinned"]
                 elif action == "quota":
-                    if row["workspace_generation"] != 0 or row["sandbox_id"] is not None or row["status"] != "stopped":
-                        raise ProjectConflict("已有工作区需要真实磁盘扩缩容，不能只修改配额数字；此入口暂未开放")
                     quota = values["quota_bytes"]
+                    if type(quota) is not int or not 64 * 1024**2 <= quota <= 100 * 1024**3 or quota % 1024**2:
+                        raise ValueError("Invalid project quota")
                     limits = cursor.execute("SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?", (scope,)).fetchone()[0]
                     retained = cursor.execute("SELECT coalesce(max(total_bytes),0) FROM project_versions WHERE project_id=?", (project_id,)).fetchone()[0]
                     if quota > limits or quota < max(retained, row["used_bytes"]):
                         raise ProjectQuotaExceeded("项目配额超出会话额度，或小于已保留数据")
-                    cursor.execute("UPDATE projects SET quota_bytes=? WHERE project_id=?", (quota, project_id))
-                    result["quota_bytes"] = quota
+                    if row["workspace_generation"] or row["sandbox_id"] or row["status"] != "stopped":
+                        if not self._resizable(row):
+                            raise ProjectConflict("此工作区的磁盘扩缩容适配尚不可用")
+                        from .project_quota import resize_plan
+
+                        if not isinstance(actor, str) or not actor.strip() or len(actor) > 160:
+                            raise ValueError("Invalid administrator identity")
+                        plan = resize_plan(row, quota)
+                        self.backends[row["backend"]].preflight(plan)
+                        job, _ = self.lifecycle._enqueue(cursor, None, row, "resize", row["workspace_generation"],
+                            plan, "admin-quota-" + uuid.uuid4().hex, now)
+                        cursor.execute("""INSERT INTO project_quota_authorizations(job_id,project_id,scope_key,
+                            bot_native_user_id,generation,from_quota_bytes,quota_bytes,actor,resource_version,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?)""", (job.job_id, project_id, scope, row["bot_native_user_id"],
+                            row["workspace_generation"], row["quota_bytes"], quota, _safe_text(actor, 160), resource_version + 1, now))
+                        result.update(job_id=job.job_id, status="pending", from_quota_bytes=row["quota_bytes"], quota_bytes=quota)
+                    else:
+                        cursor.execute("UPDATE projects SET quota_bytes=? WHERE project_id=?", (quota, project_id))
+                        result["quota_bytes"] = quota
                 elif action == "scope_limits":
                     limits = cursor.execute("SELECT * FROM project_scope_limits WHERE scope_key=? FOR UPDATE", (scope,)).fetchone()
                     before = dict(limits)
@@ -163,7 +193,8 @@ class ProjectAdmin:
                     result.update(dict(updated))
                 else:
                     raise ValueError("Unsupported project administration action")
-                cursor.execute("UPDATE projects SET version=version+1,updated_at=? WHERE project_id=?", (now, project_id))
+                if "job_id" not in result:
+                    cursor.execute("UPDATE projects SET version=version+1,updated_at=? WHERE project_id=?", (now, project_id))
                 result["version"] = row["version"] + 1
                 cursor.execute("""INSERT INTO project_events(project_id,kind,payload,created_at)
                     VALUES (?,?,?::jsonb,?)""", (project_id, "admin_" + action,

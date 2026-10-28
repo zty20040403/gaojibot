@@ -17,7 +17,8 @@ local-only verification boundaries.
   project tools/chat/task integration, receipt-backed reports and admin console.
   Current work closes physical quota resizing and remaining lifecycle and
   shared-platform verification. Guest and private host VM resize adapters are
-  implemented; the administrator's durable quota job is not connected yet.
+  implemented and connected to audited administrator jobs for active/stopped
+  VM workspaces. OCI/Desktop and dormant-workspace quota paths remain pending.
 - Completed source checkpoints are published to `zty20040403/gaojibot` main.
   This work has not updated shared `imdomestic/nix-config`, rebuilt production
   servers or released a new Desktop App. Source publication is not deployment.
@@ -3852,3 +3853,47 @@ implementation evidence, not a claim that the production App has these features.
   until that end-to-end operation exists. No production connection, shared
   nix-config change, rebuild, App release, real QQ/model call or modification of
   the supplied plan occurred.
+
+### M3 audited administrator quota jobs and console integration
+
+- The protected quota API now queues active/stopped VM capacity changes in the
+  existing durable lifecycle worker. Migration 0060 binds a host administrator,
+  project, scope, bot identity, generation, old/new capacities and resource
+  revision to one job. Authorization, queue, project lock and admin audit commit
+  together. No QQ principal or group membership is invented for the worker.
+- A separate quota authority cannot read project files or call member tools.
+  Every leased transition validates its committed audit, unchanged target and
+  non-revoked authorization. The adapter accepts only the ordered resize plan,
+  retains the original VM and preserves its active/stopped state. Concurrent
+  submissions and stale workers cannot create a competing resize.
+- Before resizing, the VM is reserved and writers are quiesced. Growth keeps
+  ext4 mounted; shrink unmounts and checks actual filesystem use before device
+  reduction. Physical capacity and final workspace state must be verified
+  before the database quota changes and the project lock is released. An
+  uncertain/failed operation retains its journal and lock for recovery, and
+  restarting a worker reuses the original physical effect rather than applying
+  it again. Usage is marked stale after success, pending a new measurement.
+- The console displays current and requested capacities separately with job
+  status and step counts. Controls are locked while the job is pending; SSE
+  completion retains other unsaved capacity drafts and input focus. Existing
+  OCI/Desktop, hibernated/archived, busy or unsupported workspaces remain gated
+  rather than being changed through a database-only quota update.
+- Verification: 16 new authenticated HTTP/PostgreSQL/host/guest integration
+  tests passed in 29.461 seconds (`.cache/roadmap/m3-project-quota-jobs.log`).
+  Cases include lease takeover after lost resize acknowledgement, audit failure
+  rollback, competing administrators, revoked grants before/after physical
+  effects, changed identities/plans, false capacity evidence, insufficient
+  space, original stopped state and downgrade refusal with retained journals.
+  The tests execute real database transactions, private journals and guest
+  protocol logic; libvirt, devices, mounts and command groups remain fixtures.
+- Another 88 admin, lifecycle, OCI executor, VM executor, host-resize and
+  migration regressions passed in 74.963 seconds
+  (`.cache/roadmap/m3-project-quota-regression.log`). Whole-CI Ruff, whitespace
+  checks and TypeScript/Vite build passed. Intercepted-API Playwright checks
+  passed at 1280x900 and 390x844, including deferred capacity publication,
+  progress, draft/focus preservation and overflow; screenshots were reviewed.
+- Remaining: OCI/Desktop and dormant-workspace quota integration, native VM
+  full-lifecycle/resize/restart/large-file acceptance, shared-platform ownership
+  acceptance and M4-M7. This does not complete M2 or M3. No production SSH,
+  shared nix-config edit, rebuild, App release, real QQ/model call or change
+  to the supplied plan occurred.

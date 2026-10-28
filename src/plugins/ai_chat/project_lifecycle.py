@@ -229,8 +229,8 @@ class ProjectLifecycle:
     ):
         from .project_turn_saves import require_finished_save
 
-        if action == "task_prepare":
-            raise ValueError("Task preparation requires the host admission adapter")
+        if action in {"task_prepare", "resize"}:
+            raise ValueError("This transition requires its host admission adapter")
         if ((action == "restore" and (type(restore_version) is not int or not 1 <= restore_version < 2**53))
                 or (action != "restore" and restore_version is not None)):
             raise ValueError("Invalid restore version")
@@ -345,7 +345,7 @@ class ProjectLifecycle:
             kind=KIND,
             idempotency_key=f"project:{project_id}:lifecycle:{request_key}",
             payload={"project_id": project_id},
-            scope_key=access.scope.key,
+            scope_key=project["scope_key"],
             resume_on_lease_loss=True,
             now=now,
             transaction_cursor=cursor,
@@ -356,8 +356,8 @@ class ProjectLifecycle:
             """INSERT INTO project_lifecycle_runs(job_id,project_id,actor_principal_id,request_key,
             action,source_state,target_state,generation,plan,created_at,updated_at)
             VALUES (?,?,?,?,?,?,?,?,?::jsonb,?,?) RETURNING *""",
-            (job.job_id, project_id, access.principal_id, request_key, action,
-             project["status"], project["status"] if action == "snapshot" else TARGETS[action],
+            (job.job_id, project_id, access.principal_id if access is not None else None, request_key, action,
+             project["status"], project["status"] if action in {"snapshot", "resize"} else TARGETS[action],
              generation, json.dumps(plan), now, now),
         ).fetchone()
         cursor.execute(
@@ -375,10 +375,11 @@ class ProjectLifecycle:
                 WHERE project_id=? AND state='pending' AND turn_id IN
                 (SELECT journal_turn_id FROM project_io WHERE operation_id=?)""",
                 (job.job_id, now, project_id, drain["operation_id"]))
-        self.projects._event(
-            cursor, project_id, access, "lifecycle_requested",
-            {"job_id": job.job_id, "action": action, "generation": generation}, now,
-        )
+        if access is not None:
+            self.projects._event(
+                cursor, project_id, access, "lifecycle_requested",
+                {"job_id": job.job_id, "action": action, "generation": generation}, now,
+            )
         return job, row
 
     def context(self, job, *, access=None, now=None):
@@ -386,6 +387,11 @@ class ProjectLifecycle:
         with self.projects._transaction() as cursor:
             project, run = self._owned(cursor, job, now)
             if access is not None:
+                if run["action"] == "resize":
+                    from .project_quota import require_quota_authority
+                    if access != require_quota_authority(cursor, project, run):
+                        raise PermissionError("Lifecycle administrator authority changed")
+                    return project, run
                 if access.principal_id != run["actor_principal_id"]:
                     raise PermissionError("Lifecycle actor changed")
                 self.projects._get(
@@ -396,6 +402,14 @@ class ProjectLifecycle:
                 )
                 self.projects._editor(cursor, access, project)
             return project, run
+
+    def quota_authority(self, job):
+        from .project_quota import require_quota_authority
+        with self.projects._transaction() as cursor:
+            project, run = self._owned(cursor, job, None)
+            if run["action"] != "resize":
+                raise PermissionError("Host quota authority cannot run other lifecycle actions")
+            return require_quota_authority(cursor, project, run)
 
     def _owned(self, cursor, job, now):
         project = cursor.execute(
@@ -424,6 +438,9 @@ class ProjectLifecycle:
                       or project["sandbox_id"] != drain["sandbox_id"]):
             raise ProjectConflict("Browser shutdown workspace changed")
         self._idle(cursor, project, lifecycle_job=job, browser_drain=drain)
+        if run["action"] == "resize":
+            from .project_quota import require_quota_authority
+            require_quota_authority(cursor, project, run)
         return dict(project), dict(run)
 
     def next_step(self, job, *, now=None):
@@ -456,6 +473,10 @@ class ProjectLifecycle:
                     "baseline": plan["baseline"],
                     "reservation": plan.get("reservation"),
                 }
+                if run["action"] == "resize":
+                    arguments["from_quota_bytes"] = plan["quota_bytes"]
+                    if index >= plan["steps"].index("resize_volume"):
+                        arguments["quota_bytes"] = plan["resize"]["quota_bytes"]
                 if run["action"] == "restore":
                     restore = plan["restore"]
                     if 0 < index < restore["replace_at"]:
@@ -595,6 +616,16 @@ class ProjectLifecycle:
                     r"[A-Za-z0-9_.:-]{1,160}", evidence["sandbox_id"]
                 ):
                     raise ValueError("Verified workspace identity is required")
+        if run["action"] == "resize" and (step["operation"] == "resize_volume"
+                                           or step["operation"].startswith("verify_")):
+            if (type(evidence.get("quota_bytes")) is not int
+                    or evidence["quota_bytes"] != run["plan"]["resize"]["quota_bytes"]):
+                raise ProjectConflict("Resize receipt does not prove the requested physical capacity")
+            if step["operation"] == "resize_volume" and (
+                evidence.get("state") != "resized"
+                or evidence.get("from_quota_bytes") != run["plan"]["quota_bytes"]
+            ):
+                raise ProjectConflict("Resize receipt does not match its authorized source capacity")
 
     def record_progress(self, job, step, observation):
         """Trusted adapter observations are progress, never a completion receipt."""
@@ -746,7 +777,7 @@ class ProjectLifecycle:
                 (
                     run["target_state"],
                     rows[-1]["evidence"].get("sandbox_id"),
-                    project["state_changed_at"] if run["action"] == "snapshot" else now,
+                    project["state_changed_at"] if run["action"] in {"snapshot", "resize"} else now,
                     now,
                     now if run["action"] in {"wake", "restore"} else project["last_active_at"],
                     project["project_id"],
@@ -757,6 +788,11 @@ class ProjectLifecycle:
                     "UPDATE projects SET rebuild_command=?,sampled_at=NULL WHERE project_id=?",
                     (run["plan"]["rebuild_command"], project["project_id"]),
                 )
+            if run["action"] == "resize":
+                result.update(quota_bytes=run["plan"]["resize"]["quota_bytes"],
+                              from_quota_bytes=run["plan"]["quota_bytes"])
+                cursor.execute("UPDATE projects SET quota_bytes=?,sampled_at=NULL WHERE project_id=?",
+                               (result["quota_bytes"], project["project_id"]))
             if run["target_state"] == "archived":
                 cursor.execute(
                     "UPDATE projects SET used_bytes=0,rebuildable_bytes=0,sampled_at=? WHERE project_id=?",

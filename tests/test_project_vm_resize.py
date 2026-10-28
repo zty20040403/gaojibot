@@ -19,7 +19,7 @@ from tests.test_project_vm_provision import RESERVATION, VmProvisionFixture
 from tests.test_project_vm_resize_guest import ResizeDisk
 
 
-class VmResizeTests(VmProvisionFixture, unittest.IsolatedAsyncioTestCase):
+class VmResizeFixture(VmProvisionFixture):
     async def asyncSetUp(self):
         self.guest_disk = None
         self.persistent = {}
@@ -100,7 +100,7 @@ class VmResizeTests(VmProvisionFixture, unittest.IsolatedAsyncioTestCase):
         return await super().guest(sandbox_id, path, args, **kwargs)
 
     async def resize(self, target=96, fence=4, **extra):
-        return await self.resizer.resize("scope", 1, **{
+        return await self.resizer.resize(self.owner, 1, **{
             "generation": 1, "reservation": RESERVATION, "fence": fence,
             "quota_bytes": target * MIB, **extra})
 
@@ -108,6 +108,8 @@ class VmResizeTests(VmProvisionFixture, unittest.IsolatedAsyncioTestCase):
         self.reopen()
         self.resizer = VmProjectResize(self.manager, self.store, host=self.host)
 
+
+class VmResizeTests(VmResizeFixture, unittest.IsolatedAsyncioTestCase):
     async def test_growth_commits_device_guest_domain_and_frozen_files(self):
         system = (self.directory() / "disk.qcow2").read_bytes()
         seed = (self.directory() / "seed.iso").read_bytes()

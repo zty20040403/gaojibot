@@ -1413,6 +1413,37 @@ virtio or Linux VM behavior. General lifecycle drain/cache cleanup is also open.
 Implementation references: [libvirt private channels](https://libvirt.org/formatdomain.html#channel)
 and [systemd execution controls](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
 
+### Administrator VM quota changes
+
+With project runtime enabled and schema 0060 applied, the protected admin
+project page can queue a capacity change for an active or stopped VM workspace.
+The existing `PUT /api/projects/{project_id}/quota` requires the authenticated
+administrator, CSRF/Origin checks, resource `If-Match` and project revision.
+For a materialized workspace its response is acceptance, not completion:
+`change.status=pending`, `change.job_id`, `change.from_quota_bytes` and
+`change.quota_bytes`. The project itself keeps its original quota until verified
+completion. Initial, never-materialized quotas remain metadata-only changes.
+
+The existing lifecycle worker reserves and quiesces the workspace, performs the
+journalled host/guest resize, restores the original running/stopped state and
+verifies the result before updating PostgreSQL. Shrink unmounts the filesystem
+and rejects insufficient space before reducing the block device. The console
+shows the pending target and progress separately. Usage becomes unknown until
+remeasured after success. Existing task, transfer and browser activity must
+settle before submission; this operation does not discard pending work.
+
+`project_quota_authorizations` and the administrator audit are committed with
+the job. The authority is limited to its exact project/scope/bot/generation and
+capacities. It is not a conversation member and grants no file/tool access.
+Worker takeover reconciles the same journal, including a lost acknowledgement
+after a successful physical resize. A failed or revoked operation retains its
+lock; never reset the fence, change the quota directly or create a replacement
+VM to force it through. Schema downgrade refuses retained resize journals.
+
+OCI/Desktop and hibernated/archived VM quota changes are not connected yet.
+Their console controls stay unavailable. These local integration tests use
+fixture libvirt/devices; native resize and power-loss acceptance are still open.
+
 ### Remaining acceptance
 
 `tests/test_project_volumes.py` uses actual private files and Unix RPC but an

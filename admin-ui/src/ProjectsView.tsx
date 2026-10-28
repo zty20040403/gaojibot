@@ -133,15 +133,17 @@ export function ProjectsView({ plane }: { plane: ReturnType<typeof useControlPla
           onClick={() => void change('pin', `/projects/${selected}/pin`, { expected_version: project.version, pinned: !project.pinned })}>{project.pinned ? <PinOff size={17} /> : <Pin size={17} />}</button>}>
           <div className="project-meta"><span>prj#{selected}</span><StatusBadge value={project.status} label={states[project.status]} /><span>{project.backend.toUpperCase()}</span><span>配置 v{project.version}</span><span>{project.pinned ? '已固定' : '未固定'}</span><span>{project.scope_key}</span></div>
           <div className="project-metrics"><Usage item={project} /><Metric label="可重建数据" value={project.usage_fresh ? fmtBytes(project.rebuildable_bytes) : '未核实'} /><Metric label="版本库" value={fmtBytes(project.version_bytes)} /></div>
-          {detail.operation && <div className="project-operation"><StatusBadge value={detail.operation.job_status} /><span>job#{detail.operation.job_id} · {detail.operation.action}</span><span>{detail.operation.phase === 'browser_drain' ? '正在确认浏览器关闭' : `${detail.operation.completed_steps}/${detail.operation.total_steps} 步`}</span><time>{fmtTime(detail.operation.updated_at)}</time></div>}
+          {detail.operation && <div className="project-operation"><StatusBadge value={detail.operation.job_status} /><span>job#{detail.operation.job_id} · {detail.operation.action === 'resize' ? '调整磁盘容量' : detail.operation.action}</span>
+            {detail.operation.action === 'resize' && <span>{fmtBytes(detail.operation.from_quota_bytes)} → {fmtBytes(detail.operation.quota_bytes)}</span>}
+            <span>{detail.operation.phase === 'browser_drain' ? '正在确认浏览器关闭' : `${detail.operation.completed_steps}/${detail.operation.total_steps} 步`}</span><time>{fmtTime(detail.operation.updated_at)}</time></div>}
           {project.locked_task_id && <p>执行任务 task#{project.locked_task_id}</p>}
         </Section>
         <Section title="容量配置">
           {changed && <p className="project-error">配置已变更，未覆盖你的输入。<button className="text-button" disabled={Boolean(busy)} onClick={() => loadDraft(detail)}>载入最新配置</button></p>}
           <div className="project-capacity">
             <label>项目配额（MiB）<input aria-label="项目配额 MiB" type="number" min="64" step="1" value={draft.quota} disabled={!project.quota_editable || Boolean(busy)} onChange={(event) => edit('quota', event.target.value)} /></label>
-            <button className="text-button" disabled={!project.quota_editable || Boolean(busy) || changed || !validQuota(draft.quota)} onClick={() => void change('quota', `/projects/${selected}/quota`, { expected_version: draft.version, quota_bytes: Number(draft.quota) * MiB }, 'PUT', 'quota')}><Check size={16} />保存项目配额</button>
-            {!project.quota_editable && <span className="project-muted">已有工作区，磁盘扩缩容入口尚未开放</span>}
+            <button className="text-button" disabled={!project.quota_editable || Boolean(busy) || changed || !validQuota(draft.quota) || Number(draft.quota) * MiB === project.quota_bytes} onClick={() => void change('quota', `/projects/${selected}/quota`, { expected_version: draft.version, quota_bytes: Number(draft.quota) * MiB }, 'PUT', 'quota')}><Check size={16} />{project.quota_requires_job ? '提交容量调整' : '保存项目配额'}</button>
+            {!project.quota_editable && <span className="project-muted">{project.lifecycle_job_id ? '容量变更锁定中' : project.locked_task_id ? '任务执行中' : '当前工作区暂不支持扩缩容'}</span>}
           </div>
           <div className="project-capacity">
             <label>会话总额度（MiB）<input aria-label="会话总额度 MiB" type="number" min="64" step="1" disabled={Boolean(busy)} value={draft.scopeQuota} onChange={(event) => edit('scopeQuota', event.target.value)} /></label>

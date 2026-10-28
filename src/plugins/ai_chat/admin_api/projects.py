@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from ..admin_control import AdminVersionConflict
 from ..project_admin import ProjectAdmin
+from ..project_executor import ProjectBackendUnavailable
 from ..projects import ProjectConflict, ProjectQuotaExceeded
 from .context import authorize, mutation_context, mutation_payload
 from .contracts import AdminMutationContext
@@ -39,7 +40,8 @@ def create_router(context):
     def store():
         if runtime is None or not runtime.ready or runtime.closed or runtime.store is None:
             raise HTTPException(status_code=503, detail="项目运行环境尚未就绪")
-        return ProjectAdmin(runtime.store, context.control_store)
+        return ProjectAdmin(runtime.store, context.control_store,
+            lifecycle=getattr(runtime, "lifecycle", None), backends=getattr(runtime, "backends", None))
 
     async def read(method, *args, **kwargs):
         try:
@@ -77,7 +79,7 @@ def create_router(context):
         except AdminVersionConflict as exc:
             raise HTTPException(status_code=409, detail={"code": "resource_version_conflict",
                 "resource": exc.resource_key, "expected_version": exc.expected, "current_version": exc.current}) from None
-        except (ProjectConflict, ProjectQuotaExceeded) as exc:
+        except (ProjectConflict, ProjectQuotaExceeded, ProjectBackendUnavailable) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from None

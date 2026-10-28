@@ -342,9 +342,9 @@ class ProjectLifecycleExecutor:
             if project_browser_drain.pending(run["plan"]):
                 if self.browser is None:
                     raise JobDeferred("Project browser shutdown adapter is unavailable", 30)
-                await self.browser.drain_lifecycle(job, await self._access(project, run))
+                await self.browser.drain_lifecycle(job, await self._access(project, run, job))
             while True:
-                access = await self._access(project, run)
+                access = await self._access(project, run, job)
                 project, run = await _store(self.lifecycle.context, job, access=access)
                 step = await _store(self.lifecycle.next_step, job)
                 if step is None:
@@ -352,7 +352,7 @@ class ProjectLifecycleExecutor:
                 evidence = await backend.execute(job, step, access)
                 # Membership can be revoked while a long helper operation runs.
                 await _store(
-                    self.lifecycle.context, job, access=await self._access(project, run)
+                    self.lifecycle.context, job, access=await self._access(project, run, job)
                 )
                 await _store(self.lifecycle.acknowledge, job, step, evidence)
         except JobDeferred:
@@ -362,11 +362,13 @@ class ProjectLifecycleExecutor:
         except Exception:
             try:
                 await _store(self.lifecycle.needs_attention, job)
-            except ProjectConflict:
+            except (ProjectConflict, PermissionError):
                 pass
             raise
 
-    async def _access(self, project, run):
+    async def _access(self, project, run, job=None):
+        if run["action"] == "resize":
+            return await _store(self.lifecycle.quota_authority, job)
         access = self.resolve_access(project, run["actor_principal_id"])
         access = await access if inspect.isawaitable(access) else access
         if not isinstance(access, ProjectAccess):
