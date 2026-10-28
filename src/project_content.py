@@ -10,6 +10,11 @@ MAX_FILE_BYTES = 256 * 1024 * 1024
 MAX_VERSION_FILES = 20000
 MAX_MANIFEST_BYTES = 32 * 1024 * 1024
 CHUNK_BYTES = 1024 * 1024
+BROWSER_CACHE_DIRS = frozenset(
+    f".gaoji/browser/{profile}{cache}"
+    for profile in ("", "Default/")
+    for cache in ("Cache", "Code Cache", "GPUCache")
+)
 
 
 def rebuild_spec(value):
@@ -50,12 +55,7 @@ def rebuild_spec(value):
             or path == ".gaoji"
             or (
                 path.startswith(".gaoji/")
-                and path
-                not in {
-                    ".gaoji/browser/Cache",
-                    ".gaoji/browser/Code Cache",
-                    ".gaoji/browser/GPUCache",
-                }
+                and path not in BROWSER_CACHE_DIRS
             )
         ):
             raise ValueError("Rebuildable path hides retained metadata")

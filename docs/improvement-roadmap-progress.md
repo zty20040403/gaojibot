@@ -2921,3 +2921,46 @@ implementation evidence, not a claim that the production App has these features.
   connection, live QQ/model call, shared nix-config edit, deployment, App release
   or user-plan modification occurred. Source publication does not update the
   deployment repository's pinned bot revision.
+
+### M3 portable browser engine and profile lifecycle foundation
+
+- Extracted browser execution into `src/browser_runtime.py`, with no NoneBot,
+  configuration or database initialization. The existing plugin continues to
+  re-export its public browser classes, while rendering stays in the plugin.
+  A host-bound single-owner mode uses one exact profile directory and rejects
+  other owners; legacy conversation mode retains its hashed profile layout.
+- Active or queued operations prevent idle eviction. Close and clear wait for
+  the current operation; a lost close response keeps the context recorded and
+  refuses profile reuse/deletion. Shutdown rejects new operations. Failed
+  context setup closes the new context before releasing it. This is a portable
+  engine lifecycle, not a durable project worker or a new authorization boundary.
+- Added bounded non-following launch-time profile accounting, a default 256 MiB
+  startup admission limit, and 32 MiB Chromium cache hints. Unsafe profile links
+  and filesystem crossings are rejected; browser-owned singleton links are
+  counted, never followed or removed by accounting. Service workers/downloads
+  are disabled. These checks do not replace project filesystem quotas.
+- Centralized the browser cache allowlist and added Chromium's actual
+  `Default/Cache`, `Default/Code Cache` and `Default/GPUCache` paths. Existing
+  locked-recipe cleanup removes those caches but retains cookies, login files,
+  project notes and whole profiles. Browser-only cleanup without a dependency
+  recipe still needs integration rather than a permissive cleanup fallback.
+- Verification: 26 browser/core/registry tests passed in 10.239 seconds
+  (`.cache/roadmap/m3-browser-core-verified.log`), including real local Chromium
+  against a temporary loopback HTTP fixture. It exercised navigation, element
+  references, input/click, persistent cookies/localStorage across process
+  restart, separate profile isolation and clearing. No real account, external
+  site or personal browser profile was used; temporary profiles were removed.
+  Another 32 cache/rebuild/usage tests passed in 5.660 seconds
+  (`.cache/roadmap/m3-browser-cache-test.log`); kernel effects remain fixtures.
+  ResourceWarnings were errors. The old browser catalog fixture was updated to
+  supply the actual ToolContext services wrapper instead of weakening product
+  identity checks. Whole-CI Ruff, compileall and whitespace checks passed; Nix
+  package/import checks passed on aarch64-darwin
+  (`.cache/roadmap/m3-browser-core-nix.log`). Other architectures were omitted.
+- Browser integration is not complete: private project worker transport,
+  persisted request/receipt ownership, quota-backed profile placement,
+  snapshot/restore process draining and project tool routing remain. Ordinary
+  `browser_*` calls still use conversation-scoped profiles. Sub-Agent project
+  baselines/locks/publication, delete/preview, shared-platform identity, console,
+  native M2 acceptance and M4-M7 also remain open. No production connection,
+  shared nix-config edit, deployment, App release or user-plan edit occurred.

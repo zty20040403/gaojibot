@@ -1057,6 +1057,43 @@ Local tests inspect actual fixture workspace files, PostgreSQL records and CAS
 objects through the product adapters. Kernel mount/libvirt and QQ effects remain
 fixtures. This is not native OCI/KVM acceptance or production enablement.
 
+### Portable browser core (project transport pending)
+
+`src/browser_runtime.py` contains the existing browser engine without importing
+NoneBot, the bot configuration or a database. The plugin renderer continues to
+export its old browser class names. The optional host-supplied `bound_owner`
+restricts a worker to one owner and uses `profile_root` as the actual Chromium
+profile directory, suitable for a future `/workspace/.gaoji/browser` mount.
+It does not itself resolve project membership or provide a sandbox boundary.
+
+Pending/active page operations prevent idle eviction. Explicit close/clear waits
+for the operation lock; uncertain close results retain the context and prevent
+profile reuse or deletion until close is confirmed. Shutdown rejects new work.
+These are in-process lifecycle protections, not durable project receipts.
+
+Before launch, bounded non-following traversal checks the profile size (default
+256 MiB), rejects foreign filesystem boundaries and unsafe files, and passes
+32 MiB disk/media cache hints to Chromium. Service workers and downloads are
+disabled. Neither the scan nor Chromium's cache hints constitute a hard quota;
+the project quota volume and external process accounting remain necessary.
+
+The shared retained-manifest policy now recognizes `Default/Cache`, `Default/Code
+Cache` and `Default/GPUCache` beneath `.gaoji/browser`, in addition to the old
+top-level cache paths. Whole browser profiles, `Default`, cookies and login files
+are not rebuildable roots. Existing cleanup still requires a supported locked
+dependency recipe; browser-only cache cleanup without a recipe is not yet wired.
+
+A local real Chromium test checks persistent cookies and localStorage across
+process restart, isolation between two profile directories, and explicit clearing.
+It does not use personal browser data or a real online account. Session cookies
+and website-side login expiration retain their normal semantics.
+
+Project `browser_*` routing, private worker transport, persisted operation
+identity, browser process admission/draining across snapshot and restore,
+standalone cache cleanup and native OCI/KVM acceptance remain open. The core is
+not yet a deployed project-browser feature; ordinary browser tools still use
+their existing conversation owner until that integration is complete.
+
 ### Remaining acceptance
 
 `tests/test_project_volumes.py` uses actual private files and Unix RPC but an

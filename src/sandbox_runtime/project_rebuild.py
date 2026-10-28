@@ -10,13 +10,11 @@ import tomllib
 
 from src.local_runtime.files import read_json, write_json
 from src.project_content import manifest_bytes, manifest_digest, project_path, rebuild_spec
+from src.project_content import BROWSER_CACHE_DIRS as BROWSER
 from .project_volume_journal import ProjectVolumeError
 
 CONTROL = ".gaoji/rebuildable"
 GENERIC = frozenset({"__pycache__", ".cache", ".npm", ".pnpm-store"})
-BROWSER = frozenset(
-    {".gaoji/browser/Cache", ".gaoji/browser/Code Cache", ".gaoji/browser/GPUCache"}
-)
 
 
 def verify_dependency_tree(files, root, quota, source):

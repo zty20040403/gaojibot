@@ -139,11 +139,15 @@ class ProjectRebuildTests(unittest.IsolatedAsyncioTestCase):
             "generated",
             ".gaoji/browser/Cache",
             ".gaoji/browser/Code Cache",
+            ".gaoji/browser/Default/Cache",
+            ".gaoji/browser/Default/Code Cache",
+            ".gaoji/browser/Default/GPUCache",
         ):
             (self.path / folder).mkdir(parents=True)
             (self.path / folder / "data").write_bytes(b"cache")
         (self.path / ".gaoji/NOTES.md").write_text("important")
         (self.path / ".gaoji/browser/Cookies").write_bytes(b"private login")
+        (self.path / ".gaoji/browser/Default/Cookies").write_bytes(b"default login")
         (self.path / ".gaoji/rebuildable").write_text(
             "# generated outputs\ngenerated\n"
         )
@@ -156,6 +160,11 @@ class ProjectRebuildTests(unittest.IsolatedAsyncioTestCase):
             (self.path / ".gaoji/browser/Cookies").read_bytes(), b"private login"
         )
         self.assertEqual((self.path / ".gaoji/NOTES.md").read_text(), "important")
+        self.assertEqual(
+            (self.path / ".gaoji/browser/Default/Cookies").read_bytes(), b"default login"
+        )
+        for cache in ("Cache", "Code Cache", "GPUCache"):
+            self.assertFalse((self.path / ".gaoji/browser/Default" / cache).exists())
         self.assertFalse((self.path / "generated").exists())
 
     async def test_unsafe_custom_paths_refuse_snapshot_without_deleting(self):
@@ -166,6 +175,8 @@ class ProjectRebuildTests(unittest.IsolatedAsyncioTestCase):
             ".gaoji",
             ".gaoji/NOTES.md",
             ".gaoji/browser",
+            ".gaoji/browser/Default",
+            ".gaoji/browser/Default/Cookies",
             ".git",
             "package.json",
             "node_modules/*",

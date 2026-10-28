@@ -234,8 +234,9 @@ class BrowserAndMediaTests(unittest.TestCase):
 
     def test_tool_catalog_exposes_conversation_and_browser_tools_separately(self) -> None:
         executor = SimpleNamespace(browser_manager=object(), source_store=object())
+        services = SimpleNamespace(context=SimpleNamespace())
         tools = available_tools(ToolContext(
-            SimpleNamespace(), SimpleNamespace(),
+            services, SimpleNamespace(),
             frozenset({"conversation", "browser", "media"}), executor,
         ))
         names = {
@@ -251,7 +252,7 @@ class BrowserAndMediaTests(unittest.TestCase):
         self.assertIn("find_stickers", names)
 
         source_tools = available_tools(ToolContext(
-            SimpleNamespace(), SimpleNamespace(),
+            services, SimpleNamespace(),
             frozenset({"conversation", "shared_content"}), executor,
         ))
         source_names = {item["function"]["name"] for item in source_tools}
