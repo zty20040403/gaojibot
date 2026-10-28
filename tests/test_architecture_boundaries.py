@@ -13,7 +13,7 @@ PLUGIN_ROOT = Path(__file__).parents[1] / "src" / "plugins" / "ai_chat"
 
 class ArchitectureBoundaryTests(unittest.TestCase):
     def test_plugin_entrypoint_only_composes_and_registers(self) -> None:
-        entrypoint = PLUGIN_ROOT / "__init__.py"
+        entrypoint = PLUGIN_ROOT / "onebot_plugin.py"
         source = entrypoint.read_text(encoding="utf-8")
         self.assertLessEqual(len(source.splitlines()), 100)
         tree = ast.parse(source, filename=str(entrypoint))
@@ -33,6 +33,15 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("build_app_context", source)
         self.assertNotIn("app_context =", source)
         self.assertNotIn("handlers =", source)
+
+    def test_shared_package_entrypoint_has_no_platform_composition(self) -> None:
+        source = (PLUGIN_ROOT / "__init__.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        self.assertTrue(all(
+            isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            for node in tree.body
+        ), "shared package entrypoint must remain documentation-only")
 
     def test_split_responsibilities_have_single_owners(self) -> None:
         expected = {

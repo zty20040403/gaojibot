@@ -8,6 +8,8 @@ from typing import Any, Iterable, Literal
 
 from src.bot_storage import StateSource, open_json_state
 
+from .platform_types import ActorKey
+
 
 class LongTermMemoryError(ValueError):
     pass
@@ -19,12 +21,13 @@ class MemoryEntry:
     scope_key: str
     scope_type: str
     content: str
-    creator_user_id: int
+    creator_user_id: int | None
     created_at: int
     version: int = 1
     creator_principal_id: int = 0
     source_message_id: int | None = None
     updated_at: int = 0
+    creator_actor_key: str = ""
 
 
 MemoryMutationAction = Literal["create", "update", "remove", "clear", "evict"]
@@ -66,11 +69,12 @@ class MemoryMutation:
     action: MemoryMutationAction
     from_version: int
     to_version: int
-    actor_user_id: int
+    actor_user_id: int | None
     actor_principal_id: int
     source_message_id: int | None
     reason: str
     created_at: int
+    actor_key: str = ""
 
 
 class LongTermMemoryStore:
@@ -101,12 +105,14 @@ class LongTermMemoryStore:
         scope_type: str,
         content: str,
         *,
-        creator_user_id: int,
+        creator_user_id: int | None = None,
+        creator_actor_key: str = "",
         creator_principal_id: int = 0,
         source_message_id: int | None = None,
         reason: str = "explicit add",
     ) -> tuple[MemoryEntry, bool]:
         with self._lock:
+            creator_actor_key = _actor_provenance(creator_actor_key, creator_user_id)
             content = " ".join(content.split())
             if not content:
                 raise LongTermMemoryError("记忆内容不能为空。")
@@ -131,7 +137,8 @@ class LongTermMemoryStore:
                 scope_key=scope_key,
                 scope_type=scope_type,
                 content=content,
-                creator_user_id=max(int(creator_user_id), 0),
+                creator_user_id=_legacy_user_id(creator_user_id),
+                creator_actor_key=creator_actor_key,
                 created_at=now,
                 version=1,
                 creator_principal_id=max(int(creator_principal_id), 0),
@@ -150,6 +157,7 @@ class LongTermMemoryStore:
                 from_version=0,
                 to_version=1,
                 actor_user_id=creator_user_id,
+                actor_key=creator_actor_key,
                 actor_principal_id=creator_principal_id,
                 source_message_id=source_message_id,
                 reason=reason,
@@ -158,6 +166,7 @@ class LongTermMemoryStore:
             self._trim_scope(
                 scope_key,
                 actor_user_id=creator_user_id,
+                actor_key=creator_actor_key,
                 actor_principal_id=creator_principal_id,
                 source_message_id=source_message_id,
             )
@@ -187,13 +196,15 @@ class LongTermMemoryStore:
         scope_keys: Iterable[str],
         *,
         expected_version: int,
-        actor_user_id: int = 0,
+        actor_user_id: int | None = 0,
+        actor_key: str = "",
         actor_principal_id: int = 0,
         source_message_id: int | None = None,
         reason: str = "explicit update",
     ) -> MemoryEntry:
         with self._lock:
             allowed = set(scope_keys)
+            actor_key = _actor_provenance(actor_key, actor_user_id)
             normalized = " ".join(content.split())
             if not normalized:
                 raise LongTermMemoryError("记忆内容不能为空。")
@@ -224,6 +235,7 @@ class LongTermMemoryStore:
                     from_version=entry.version,
                     to_version=updated.version,
                     actor_user_id=actor_user_id,
+                    actor_key=actor_key,
                     actor_principal_id=actor_principal_id,
                     source_message_id=source_message_id,
                     reason=reason,
@@ -238,13 +250,15 @@ class LongTermMemoryStore:
         entry_id: int,
         scope_keys: Iterable[str],
         *,
-        actor_user_id: int = 0,
+        actor_user_id: int | None = 0,
+        actor_key: str = "",
         actor_principal_id: int = 0,
         source_message_id: int | None = None,
         reason: str = "explicit remove",
     ) -> bool:
         with self._lock:
             allowed = set(scope_keys)
+            actor_key = _actor_provenance(actor_key, actor_user_id)
             removed_entries = [
                 entry
                 for entry in self._entries
@@ -264,6 +278,7 @@ class LongTermMemoryStore:
                         from_version=entry.version,
                         to_version=entry.version,
                         actor_user_id=actor_user_id,
+                        actor_key=actor_key,
                         actor_principal_id=actor_principal_id,
                         source_message_id=source_message_id,
                         reason=reason,
@@ -276,13 +291,15 @@ class LongTermMemoryStore:
         self,
         scope_keys: Iterable[str],
         *,
-        actor_user_id: int = 0,
+        actor_user_id: int | None = 0,
+        actor_key: str = "",
         actor_principal_id: int = 0,
         source_message_id: int | None = None,
         reason: str = "explicit clear",
     ) -> int:
         with self._lock:
             allowed = set(scope_keys)
+            actor_key = _actor_provenance(actor_key, actor_user_id)
             removed_entries = [
                 entry for entry in self._entries if entry.scope_key in allowed
             ]
@@ -298,6 +315,7 @@ class LongTermMemoryStore:
                         from_version=entry.version,
                         to_version=entry.version,
                         actor_user_id=actor_user_id,
+                        actor_key=actor_key,
                         actor_principal_id=actor_principal_id,
                         source_message_id=source_message_id,
                         reason=reason,
@@ -443,7 +461,8 @@ class LongTermMemoryStore:
         self,
         scope_key: str,
         *,
-        actor_user_id: int,
+        actor_user_id: int | None,
+        actor_key: str = "",
         actor_principal_id: int,
         source_message_id: int | None,
     ) -> None:
@@ -466,6 +485,7 @@ class LongTermMemoryStore:
                 from_version=entry.version,
                 to_version=entry.version,
                 actor_user_id=actor_user_id,
+                actor_key=actor_key,
                 actor_principal_id=actor_principal_id,
                 source_message_id=source_message_id,
                 reason="scope entry limit",
@@ -521,7 +541,8 @@ class LongTermMemoryStore:
             return None
         try:
             entry_id = int(raw_entry.get("id"))
-            creator_user_id = int(raw_entry.get("creator_user_id") or 0)
+            creator_user_id = _legacy_user_id(raw_entry.get("creator_user_id", 0))
+            creator_actor_key = _actor_provenance(str(raw_entry.get("creator_actor_key") or ""), creator_user_id)
             created_at = int(raw_entry.get("created_at") or 0)
             version = int(raw_entry.get("version") or 1)
             creator_principal_id = int(
@@ -557,7 +578,8 @@ class LongTermMemoryStore:
             scope_key=scope_key,
             scope_type=scope_type,
             content=content[: self._max_content_chars],
-            creator_user_id=max(creator_user_id, 0),
+            creator_user_id=creator_user_id,
+            creator_actor_key=creator_actor_key,
             created_at=max(created_at, 0),
             version=max(version, 1),
             creator_principal_id=max(creator_principal_id, 0),
@@ -583,7 +605,8 @@ class LongTermMemoryStore:
                 action=action,
                 from_version=max(int(raw.get("from_version") or 0), 0),
                 to_version=max(int(raw.get("to_version") or 0), 0),
-                actor_user_id=max(int(raw.get("actor_user_id") or 0), 0),
+                actor_user_id=_legacy_user_id(raw.get("actor_user_id", 0)),
+                actor_key=_actor_provenance(str(raw.get("actor_key") or ""), raw.get("actor_user_id", 0)),
                 actor_principal_id=max(
                     int(raw.get("actor_principal_id") or 0),
                     0,
@@ -606,7 +629,8 @@ class LongTermMemoryStore:
         *,
         from_version: int,
         to_version: int,
-        actor_user_id: int,
+        actor_user_id: int | None,
+        actor_key: str = "",
         actor_principal_id: int,
         source_message_id: int | None,
         reason: str,
@@ -620,7 +644,8 @@ class LongTermMemoryStore:
                 action=action,
                 from_version=max(int(from_version), 0),
                 to_version=max(int(to_version), 0),
-                actor_user_id=max(int(actor_user_id), 0),
+                actor_user_id=_legacy_user_id(actor_user_id),
+                actor_key=_actor_provenance(actor_key, actor_user_id),
                 actor_principal_id=max(int(actor_principal_id), 0),
                 source_message_id=(
                     max(int(source_message_id), 1)
@@ -641,3 +666,16 @@ class LongTermMemoryStore:
             "mutations": [asdict(mutation) for mutation in self._mutations],
         }
         self._state.save(payload)
+
+
+def _legacy_user_id(value: int | None) -> int | None:
+    return None if value is None else max(int(value), 0)
+
+
+def _actor_provenance(key: str, legacy_user_id: int | None) -> str:
+    if not key:
+        return ""
+    actor = ActorKey.parse(key)
+    if actor.account.platform == "qq-official" and legacy_user_id is not None:
+        raise LongTermMemoryError("official provenance cannot contain a legacy QQ user ID")
+    return actor.key

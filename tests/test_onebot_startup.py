@@ -192,10 +192,14 @@ from unittest.mock import patch
 with patch("sqlite3.connect", side_effect=AssertionError("import opened SQLite")), patch(
     "src.bot_storage.PostgresDatabase.__init__", side_effect=AssertionError("import opened PostgreSQL")
 ):
-    import src.plugins.ai_chat as plugin
+    loaded = nonebot.load_plugin("src.plugins.ai_chat.onebot_plugin")
+    assert loaded is not None, "explicit OneBot plugin failed to load"
+    plugin = loaded.module
 assert not plugin._runtime.ready
 assert not hasattr(plugin, "app_context")
-assert isinstance(plugin.memory, ModuleType)
+import src.plugins.ai_chat as shared
+assert isinstance(shared.memory, ModuleType)
+assert not hasattr(shared, "_runtime")
 assert not hasattr(plugin, "handlers")
 assert not plugin._runtime.state_dir.exists()
 assert not plugin._runtime.cache_dir.exists()

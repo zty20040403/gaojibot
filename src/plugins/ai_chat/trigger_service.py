@@ -22,9 +22,6 @@ from .context_policy import (
 from .context_store import (
     CaptureCandidate,
 )
-from .conversation_scope import (
-    ConversationScope,
-)
 from .agent_loop import (
     AgentTrace,
     DeepSeekConfigError,
@@ -313,22 +310,8 @@ class TriggerService(HandlerService):
     def _dream_evidence(self, entry: MemoryEntry) -> str:
         if self.context.message_ledger is None or entry.source_message_id is None:
             return ""
-        scope_key = entry.scope_key
-        scope: ConversationScope | None = None
-        if scope_key.startswith("private:"):
-            scope = ConversationScope(
-                "onebot-v11",
-                "private",
-                scope_key.split(":", 1)[1],
-            )
-        elif scope_key.startswith("group:"):
-            remainder = scope_key.split(":", 1)[1]
-            first = remainder.split(":", 1)[0]
-            if first.isdigit():
-                scope = ConversationScope("onebot-v11", "group", first)
-            elif ":" in remainder:
-                platform, native_id = remainder.split(":", 1)
-                scope = ConversationScope(platform, "group", native_id)
+        from .conversation_keys import scope_from_context_key
+        scope = scope_from_context_key(entry.scope_key)
         if scope is None:
             return ""
         message = self.context.message_ledger.get_any_in_scope(scope, entry.source_message_id)

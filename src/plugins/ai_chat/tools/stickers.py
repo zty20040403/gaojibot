@@ -5,14 +5,23 @@ from __future__ import annotations
 import json
 import time
 
-from nonebot.adapters.onebot.v11 import MessageSegment
-
 from src.bot_storage import DatabaseError
 from ..ai_tools import FIND_STICKERS_TOOL, SEND_STICKER_TOOL, SEND_QQ_FACE_TOOL
 from ..media_library import choose_sticker_candidate, requests_sticker_variation
-from ..stickers import qq_face_message, random_sticker_message
 from .registry import FunctionTool
 from .state import ToolContext, TurnState
+
+
+def random_sticker_message():
+    from ..stickers import random_sticker_message as legacy_random_sticker_message
+
+    return legacy_random_sticker_message()
+
+
+def qq_face_message(expression):
+    from ..stickers import qq_face_message as legacy_qq_face_message
+
+    return legacy_qq_face_message(expression)
 
 
 def search_enabled(context: ToolContext) -> bool:
@@ -72,6 +81,8 @@ async def find_stickers(turn: TurnState, arguments: dict[str, object]) -> str:
 
 
 async def send_sticker(turn: TurnState, arguments: dict[str, object]) -> str:
+    from nonebot.adapters.onebot.v11 import MessageSegment
+
     if turn.visual_reply_segment is not None:
         return json.dumps(
             {"ok": True, "message": "本轮表情已经准备发送。"},
@@ -208,7 +219,8 @@ async def send_face(turn: TurnState, arguments: dict[str, object]) -> str:
 
 
 HANDLERS = (
-    FunctionTool(FIND_STICKERS_TOOL, search_enabled, find_stickers),
+    # This reads the curated global sticker library, never arbitrary chat media.
+    FunctionTool(FIND_STICKERS_TOOL, search_enabled, find_stickers, platform_neutral=True),
     FunctionTool(SEND_STICKER_TOOL, reply_enabled, send_sticker),
     FunctionTool(SEND_QQ_FACE_TOOL, reply_enabled, send_face),
 )

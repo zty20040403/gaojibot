@@ -126,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
             from nonebot.adapters.onebot.v11 import Adapter
             nonebot.init(_env_file=(os.devnull,))
             nonebot.get_driver().register_adapter(Adapter)
-            nonebot.load_plugin("src.plugins.ai_chat")
+            nonebot.load_plugin("src.plugins.ai_chat.onebot_plugin")
             from .runtime_health import install_health_writer
             install_health_writer()
             nonebot.run(timeout_graceful_shutdown=10)

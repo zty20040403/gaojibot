@@ -95,4 +95,5 @@ async def query(turn: TurnState, arguments: dict[str, object]) -> str:
         )
 
 
-HANDLERS = (FunctionTool(QUERY_ALERTS_TOOL, enabled, query),)
+# The host must grant "alerts" independently; transport support is not authority.
+HANDLERS = (FunctionTool(QUERY_ALERTS_TOOL, enabled, query, platform_neutral=True),)

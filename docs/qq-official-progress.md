@@ -23,7 +23,7 @@
 
 上述两个代码改动是使方案要求的完整回归可执行的最小前置修复，单独提交并说明偏离；不扩展项目空间功能。相关 39 项测试已分批验证通过，含真正进程中断但平台 I/O 为本机模拟的文件验收。完整里程碑回归另行记录。
 
-## M0：协议、假平台与探测工具（离线实现完成，待 PR/CI）
+## M0：协议、假平台与探测工具（离线完成，已合并）
 
 实现范围为 `src/qq_official/`，没有接入应用启动或改变 OneBot 路径。协议包不依赖应用存储、NoneBot 或 OneBot。
 
@@ -55,15 +55,39 @@ TODO(qq-official)：M8 核实目标 Nix 的 `/run` 凭证文件系统，补齐�
 - 完整 ruff、compileall、git diff 空白检查通过；两个隔离库的 upgrade/check 通过，单一 Alembic head 为 `0060_project_quota_jobs`，本阶段没有新增迁移。
 - 协议 import 边界、假平台网关/REST、探测 CLI 端到端检查均通过。真实 QQ 能力仍未验收。
 
-M0 代码已达到本阶段离线完成标准，PR/CI 与用户审阅合并仍待完成。整体方案、M1–M9 和生产启用均未完成。
+M0 代码已达到本阶段离线完成标准。整体方案、M1–M9 和生产启用均未完成。
 
 M0 已推送并建立 [PR #1](https://github.com/zty20040403/gaojibot/pull/1)。首次 GitHub Actions 在解析既有工作流时失败，尚未启动任何 job：job 级 `env` 使用了不允许的 `runner.temp` 上下文。最小修复是在 step 中通过 `$RUNNER_TEMP` / `$GITHUB_ENV` 设置同一隔离状态路径；没有放宽测试或切换数据库。修复后继续检查 CI。
+
+修复提交 `23056c4` 的 Python 3.12、Nix package、Secret scan 全部通过。HTTPS OAuth 凭证缺少修改 workflow 的 scope，推送被 GitHub 拒绝；随后核对已有 SSH 认证同属当前用户，使用已有 GitHub SSH 凭证推送，没有修改凭证权限或远端配置。用户明确回复“我已审阅，授权你用 merge commit 合并”后，核对 PR head 与三项检查并完成合并：`7ea5ac09ec5a8102c0ff899b92e13700ca5133e6`。独立开发分支已 fetch 并同步该 main，没有推送 M1 未完成改动。
+
+## M1：共享回合与身份隔离（离线完成，待 CI 与审阅）
+
+- 在改业务前新增 9 项真实 OneBot 出站快照并纳入上述完整基线；固定平台 I/O、时钟和测试身份。
+- 引入结构化账号、端点、操作者、入站、能力与发送契约；旧 OneBot scope 和设置 key 保持原样。公共类型可在阻断 NoneBot 导入的真实子进程中加载。
+- 原插件初始化移到显式 `onebot_plugin`，Bot、App 和 NoneBot 配置统一加载；公共包先导入后仍能正常注册原 matcher 与生命周期。
+- 公共 orchestrator 接收 InboundMessage/TurnPlatform；OneBot 包装真实事件，任务注册保留显式数字兼容元数据，官方任务不进入旧数字查询/取消路径。
+- 两种平台共用现有上下文、Historian、回放、工具循环和记忆写回；独立官方 composition 在禁止 NoneBot 导入的进程中，使用真实测试数据库与模拟模型完成工具、记忆、历史和 journal。未迁移工具默认隐藏且执行端拒绝。
+- 新增 `0061_platform_actor_identity`，保留旧 principal 与记录，扩展账号/身份命名空间；消息保留 actor/source endpoint，绑定历史后的同字面消息 ID 仍可区分。官方个人记忆按完整 actor 隔离。
+- 群级设置与后台读视图增加规范 scope key，旧 OneBot 设置仍可通过新入口读写。历史键解码集中处理，不再把官方 key 当数字群号解析。
+- 绑定、帮助、模型、effort、用量、任务状态和取消已抽出公共命令分发；配置策略默认拒绝，任务仅作用于当前 endpoint/actor。OneBot matcher 继续调用原处理器，保留原始参数及 finish 行为。
+- 交叉审查修复了 C2C bot 作者隔离、私聊显式引用遗漏、实际群模型默认与个人 effort 接线、后台多历史覆盖合并，以及新 OneBot 端口任意 ID 引用/撤回的边界。官方未知执行异常转换为不含原始错误信息的安全失败。
+
+最终离线验证：
+
+- 全量运行 3,479 项测试，1,401.134 秒，成功，19 项跳过。全部 9 项 OneBot 出站快照保留重构前的期待值，通过；未用更新快照掩盖变化。
+- 测试开始后冻结代码和测试文件，以哈希复核无变化。M2 准备仅在仓库外进行，没有进入此次回归或提交。
+- 完整 ruff、compileall、git diff 空白检查通过；两个隔离数据库 upgrade/check 通过，单一 Alembic head 为 `0061_platform_actor_identity`。
+- 干净子进程的真实 composition 验证了实际群模型默认、个人 effort、工具、记忆、历史、journal 与任务清理，全程禁止 NoneBot 导入。真实存储续接测试核对 actor principal、实际引用端点和刷新不重复建边。
+- 新传输端口的引用/撤回、并发消费和未知结果不重放测试通过。旧 OneBot 出站仍由原路径负责。
+
+本阶段达到离线完成标准，GitHub CI 与用户审阅另行记录。`Delivery.target_scope` 仍是旧三字段表示，官方持久投递在 M3 补齐前不得接通；项目/宿主授权、媒体和剩余业务仍按 M4/M5/M6/M7 分步实现。M1 不构成上线或真实 QQ 能力已验证的声明。
 
 ## 后续里程碑及门槛
 
 | 里程碑 | 状态 |
 | --- | --- |
-| M1 回合入口、OneBot 快照、平台身份 | 准备旧路径快照；尚未修改业务入口 |
+| M1 回合入口、OneBot 快照、平台身份 | 离线完成；3,479 项全量通过，待 CI 与用户审阅 |
 | M2 持久入站、owner、新群绑定、实例租约 | 未实现 |
 | M3 持久发送计划、窗口、额度、回执 | 未实现 |
 | M4 新群/C2C 回合与首批命令 | 未实现 |

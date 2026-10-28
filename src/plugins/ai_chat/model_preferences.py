@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 
 from src.bot_storage import StateSource, open_json_state
+from .conversation_keys import ScopeSettingAddress
+from .conversation_scope import ConversationScope
 
 
 class ModelPreferenceStore:
@@ -49,6 +51,53 @@ class ModelPreferenceStore:
 
     def clear_group_default(self, group_id: int) -> bool:
         return self.clear(self.group_default_key(group_id))
+
+    def get_scope_default(self, scope: ConversationScope) -> str | None:
+        return self.get_explicit(ScopeSettingAddress(scope, "default").key)
+
+    def set_scope_default(self, scope: ConversationScope, model: str) -> None:
+        self.set(ScopeSettingAddress(scope, "default").key, model)
+
+    def clear_scope_default(self, scope: ConversationScope) -> bool:
+        return self.clear(ScopeSettingAddress(scope, "default").key)
+
+    def get_scope_member_default(self, scope: ConversationScope) -> str | None:
+        return self.get_explicit(ScopeSettingAddress(scope, "member-default").key)
+
+    def set_scope_member_default(self, scope: ConversationScope, value: str) -> None:
+        self.set(ScopeSettingAddress(scope, "member-default").key, value)
+
+    def clear_scope_member_default(self, scope: ConversationScope) -> bool:
+        return self.clear(ScopeSettingAddress(scope, "member-default").key)
+
+    def get_scope_enabled_override(self, scope: ConversationScope) -> bool | None:
+        return self._get_scope_switch(scope, "enabled")
+
+    def set_scope_enabled(self, scope: ConversationScope, enabled: bool) -> None:
+        self.set(ScopeSettingAddress(scope, "enabled").key, "enabled" if enabled else "disabled")
+
+    def clear_scope_enabled_override(self, scope: ConversationScope) -> bool:
+        return self.clear(ScopeSettingAddress(scope, "enabled").key)
+
+    def get_scope_vision_auto_describe_override(self, scope: ConversationScope) -> bool | None:
+        return self._get_scope_switch(scope, "vision-auto-describe")
+
+    def set_scope_vision_auto_describe(self, scope: ConversationScope, enabled: bool) -> None:
+        self.set(ScopeSettingAddress(scope, "vision-auto-describe").key, "enabled" if enabled else "disabled")
+
+    def _get_scope_switch(self, scope: ConversationScope, name: str) -> bool | None:
+        stored = self.get_explicit(ScopeSettingAddress(scope, name).key)
+        return True if stored == "enabled" else False if stored == "disabled" else None
+
+    def scoped_items(self) -> list[tuple[ScopeSettingAddress, str]]:
+        """Typed settings for the control plane; unknown keys remain untouched."""
+        result = []
+        for key, value in self.items():
+            try:
+                result.append((ScopeSettingAddress.parse(key), value))
+            except ValueError:
+                continue
+        return result
 
     def get_group_member_default(self, group_id: int) -> str | None:
         return self.get_explicit(self.group_member_default_key(group_id))

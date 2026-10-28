@@ -11,6 +11,7 @@ from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
 
 from .context_store import CaptureCandidate, ContextStore
 from .conversation_scope import ConversationScope
+from .memory_scopes import group_memory_scope
 from .ledger import MessageLedger
 from .long_term_memory import LongTermMemoryError, LongTermMemoryStore, MemoryEntry
 from .storage.jobs import DurableJob, DurableJobStore
@@ -88,6 +89,7 @@ class HistorianService:
             if candidate is None:
                 continue
             payload = {
+                "scope_key": scope.key,
                 "scope": {
                     "platform": scope.platform,
                     "kind": scope.kind,
@@ -221,7 +223,7 @@ class HistorianService:
                     memory_scope,
                     "group",
                     proposal.content,
-                    creator_user_id=0,
+                    creator_user_id=0 if scope.platform == "onebot-v11" else None,
                     creator_principal_id=0,
                     source_message_id=proposal.source_message_id,
                     reason="historian proposal",
@@ -238,11 +240,22 @@ class HistorianService:
         raw_scope = job.payload.get("scope")
         if not isinstance(raw_scope, dict):
             raise ValueError("historian job has no conversation scope")
-        scope = ConversationScope(
-            str(raw_scope.get("platform") or ""),
-            str(raw_scope.get("kind") or ""),  # type: ignore[arg-type]
-            str(raw_scope.get("native_conversation_id") or ""),
-        )
+        encoded_scope = job.payload.get("scope_key")
+        if encoded_scope is not None:
+            scope = ConversationScope.from_key(str(encoded_scope))
+            if (
+                raw_scope.get("platform") != scope.platform
+                or raw_scope.get("kind") != scope.kind
+                or raw_scope.get("native_conversation_id") != scope.native_conversation_id
+            ):
+                raise ValueError("historian job scope metadata does not match its address")
+        else:
+            # Already queued legacy jobs predate account-aware history keys.
+            scope = ConversationScope(
+                str(raw_scope.get("platform") or ""),
+                str(raw_scope.get("kind") or ""),  # type: ignore[arg-type]
+                str(raw_scope.get("native_conversation_id") or ""),
+            )
         if scope.key != job.scope_key:
             raise ValueError("historian job scope does not match its lease")
         raw_ids = job.payload.get("source_message_ids")
@@ -551,9 +564,7 @@ def render_capture(candidate: CaptureCandidate) -> str:
 
 
 def _group_memory_scope(scope: ConversationScope) -> str:
-    if scope.platform == "onebot-v11":
-        return f"group:{scope.native_conversation_id}"
-    return f"group:{scope.platform}:{scope.native_conversation_id}"
+    return group_memory_scope(scope)
 
 
 def _looks_like_secret(content: str) -> bool:

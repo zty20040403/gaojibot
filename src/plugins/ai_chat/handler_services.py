@@ -10,6 +10,7 @@ from .proactive import ProactiveCheckGate
 from .runtime import AppContext
 
 if TYPE_CHECKING:
+    from .conversation_scope import ConversationScope
     from .adapters import OneBotIngestAdapter
     from .onebot_chat import OneBotChatService
     from .command_handlers import CommandHandlers
@@ -88,6 +89,10 @@ class HandlerServices:
     def group_enabled(self, group_id: int) -> bool:
         override = self.context.model_preferences.get_group_enabled_override(group_id)
         return override if override is not None else self.context.settings.is_group_enabled(group_id)
+
+    def scope_enabled(self, scope: ConversationScope) -> bool:
+        override = self.context.model_preferences.get_scope_enabled_override(scope)
+        return override if override is not None else self.context.settings.is_scope_enabled(scope)
 
     def auto_describe_enabled(self, group_id: int) -> bool:
         override = self.context.model_preferences.get_group_vision_auto_describe_override(group_id)

@@ -888,6 +888,7 @@ touch bot.py
 touch src/__init__.py
 touch src/plugins/__init__.py
 touch src/plugins/ai_chat/__init__.py
+touch src/plugins/ai_chat/onebot_plugin.py
 touch src/plugins/ai_chat/config.py
 touch src/plugins/ai_chat/deepseek.py</code></pre>
 
@@ -919,7 +920,8 @@ touch src/plugins/ai_chat/deepseek.py</code></pre>
     └── plugins/
         ├── __init__.py            # 让 plugins 成为 Python 包
         └── ai_chat/
-            ├── __init__.py        # QQ 消息处理器
+            ├── __init__.py        # 公共包入口，不注册平台
+            ├── onebot_plugin.py   # 显式 OneBot 插件入口
             ├── config.py          # 读取配置
             └── deepseek.py        # 调用大模型</code></pre>
 
@@ -927,8 +929,8 @@ touch src/plugins/ai_chat/deepseek.py</code></pre>
 
           <div class="callout">
             <strong><code>__init__.py</code> 为什么这么多？</strong>
-            它告诉 Python 这些目录可以被 <code>import</code>。其中前两个可以是空文件，
-            <code>ai_chat/__init__.py</code> 则会成为插件主入口。
+            它告诉 Python 这些目录可以被 <code>import</code>。这些文件保持无启动副作用，
+            <code>ai_chat/onebot_plugin.py</code> 才是显式加载的 OneBot 插件入口；这样导入公共类型不会顺带启动平台。
           </div>
         </section>
 
@@ -1103,7 +1105,7 @@ nonebot.init()
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)
 
-nonebot.load_plugin("src.plugins.ai_chat")
+nonebot.load_plugin("src.plugins.ai_chat.onebot_plugin")
 
 
 if __name__ == "__main__":
@@ -1123,7 +1125,7 @@ if __name__ == "__main__":
                     <tr><td><code>nonebot.init()</code></td><td>调用模块里的 <code>init</code> 函数。</td><td>读取 <code>DRIVER</code>、<code>HOST</code>、<code>PORT</code> 等配置，创建 NoneBot 的全局运行环境。</td></tr>
                     <tr><td><code>driver = nonebot.get_driver()</code></td><td><code>=</code> 把函数返回的对象保存到变量 <code>driver</code>。</td><td>拿到刚刚创建的 FastAPI 驱动，后面在它上面注册 QQ 协议适配器。</td></tr>
                     <tr><td><code>driver.register_adapter(OneBotV11Adapter)</code></td><td>调用对象的方法，并把适配器类作为参数传进去。</td><td>告诉 NoneBot 如何把 OneBot V11 的原始事件转换成 <code>MessageEvent</code>。</td></tr>
-                    <tr><td><code>nonebot.load_plugin("src.plugins.ai_chat")</code></td><td>字符串是 Python 模块路径，点号相当于逐层进入目录。</td><td>导入 <code>src/plugins/ai_chat/__init__.py</code>。导入时，里面的 Matcher 和处理函数就会完成注册。</td></tr>
+                    <tr><td><code>nonebot.load_plugin("src.plugins.ai_chat.onebot_plugin")</code></td><td>字符串是 Python 模块路径，点号相当于逐层进入目录。</td><td>由 NoneBot 加载 <code>src/plugins/ai_chat/onebot_plugin.py</code>，注册原有 Matcher 和生命周期钩子；公共包的导入不注册平台。</td></tr>
                     <tr><td><code>if __name__ == "__main__":</code></td><td>入口保护：只有直接运行这个文件时条件才成立。</td><td><code>python bot.py</code> 会进入下面一行；测试代码只是导入 <code>bot.py</code> 时不会意外启动服务器。</td></tr>
                     <tr><td><code>&nbsp;&nbsp;&nbsp;&nbsp;nonebot.run()</code></td><td>四个空格表示这一行属于上面的 <code>if</code>。Python 用缩进划分代码块。</td><td>启动 Uvicorn 事件循环并监听 8080；程序会一直运行，直到按 <code>Ctrl+C</code> 或服务被停止。</td></tr>
                   </tbody>
@@ -1281,7 +1283,7 @@ async def ask_deepseek(user_text: str) -&gt; str:
         <section id="plugin">
           <p class="section-kicker">第 7 步</p>
           <h2>编写第一个 QQ 消息处理器</h2>
-          <p>现在把下面的最小插件写进 <code>src/plugins/ai_chat/__init__.py</code>：</p>
+          <p>现在把下面的最小插件写进 <code>src/plugins/ai_chat/onebot_plugin.py</code>：</p>
           <pre><code>from nonebot import on_command, on_message
 from nonebot.adapters.onebot.v11 import Message, MessageEvent, MessageSegment
 from nonebot.params import CommandArg
@@ -1978,10 +1980,10 @@ handle_group_context_recorder()  把普通群消息写入群上下文</code></pr
 
         <section id="method-main">
           <p class="section-kicker">方法参考 · 主调度器</p>
-          <h2>ai_chat/__init__.py 的每个方法</h2>
+          <h2>OneBot 入口与业务方法</h2>
           <p>
-            <a href="../src/plugins/ai_chat/__init__.py"><code>ai_chat/__init__.py</code></a>
-            是总调度器。它自己不实现 Docker、OCR 算法或 TTS，但决定本轮应该开放什么能力、调用谁，以及最后如何回复。
+            <a href="../src/plugins/ai_chat/onebot_plugin.py"><code>ai_chat/onebot_plugin.py</code></a>
+            负责注册平台入口；实际业务由 OneBotRuntime、各 handler 和应用层负责。以下保留教程中的业务方法说明，具体位置以当前源码为准。
           </p>
 
           <h3>图片、语音、身份和上下文辅助方法</h3>
@@ -2470,7 +2472,7 @@ handle_group_context_recorder()  把普通群消息写入群上下文</code></pr
               <thead><tr><th>文件</th><th>职责</th></tr></thead>
               <tbody>
                 <tr><td><a href="../bot.py"><code>bot.py</code></a></td><td>加载环境、注册 OneBot 适配器、加载插件、启动服务。</td></tr>
-                <tr><td><a href="../src/plugins/ai_chat/__init__.py"><code>ai_chat/__init__.py</code></a></td><td>总调度器：消息入口、上下文组装、工具执行和回复发送。</td></tr>
+                <tr><td><a href="../src/plugins/ai_chat/onebot_plugin.py"><code>ai_chat/onebot_plugin.py</code></a></td><td>显式 OneBot 插件入口：注册消息处理器与启动/关闭钩子。</td></tr>
                 <tr><td><a href="../src/plugins/ai_chat/config.py"><code>config.py</code></a></td><td>把环境变量转换成带默认值和范围限制的配置。</td></tr>
                 <tr><td><a href="../src/plugins/ai_chat/deepseek.py"><code>deepseek.py</code></a></td><td>构造提示词、调用 DeepSeek、执行 Tool Call 循环。</td></tr>
                 <tr><td><a href="../src/plugins/ai_chat/ai_tools.py"><code>ai_tools.py</code></a></td><td>定义模型能够看到的工具名称、说明和参数。</td></tr>

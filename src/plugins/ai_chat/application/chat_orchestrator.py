@@ -7,6 +7,9 @@ from typing import Any, Protocol
 
 from src.bot_storage import DatabaseCalls
 from ..agent import AgentTrace
+from ..conversation_scope import ConversationScope
+from ..platform_types import EndpointKey, InboundMessage, TurnPlatform
+from ..tasks import LegacyTaskIdentity
 
 
 class ApplicationLogger(Protocol):
@@ -36,15 +39,12 @@ class ChatFailure(Exception):
 class ChatPorts:
     """Platform and presentation operations needed by the chat use case."""
 
-    conversation_id: Callable[[Any], str]
-    conversation_scope: Callable[[Any], Any]
-    is_group_event: Callable[[Any], bool]
-    group_id: Callable[[Any], int | None]
-    group_enabled: Callable[[int], bool]
-    group_default_profile: Callable[[str], str | None]
-    reply_target_turn: Callable[[Any], Any | None]
-    record_trigger: Callable[[Any, Any], int | None]
-    current_turn_context: Callable[[Any, int], Any]
+    conversation_id: Callable[[InboundMessage], str]
+    endpoint_enabled: Callable[[EndpointKey], bool]
+    group_default_profile: Callable[[InboundMessage], str | None]
+    reply_target_turn: Callable[[InboundMessage], Any | None]
+    record_trigger: Callable[[InboundMessage, ConversationScope], int | None]
+    current_turn_context: Callable[[InboundMessage, int], Any]
     drain_feedback: Callable[[str], Any]
     ask_agent: Callable[..., Any]
     is_silence_reply: Callable[[Any], bool]
@@ -83,13 +83,17 @@ class ChatOrchestrator:
 
     async def run(
         self,
-        bot: Any,
-        event: Any,
+        inbound: InboundMessage,
+        platform: TurnPlatform,
         user_text: str,
+        *,
+        legacy_task_identity: LegacyTaskIdentity | None = None,
         **kwargs: Any,
     ) -> ChatTurnResult | None:
-        conversation_id = self.ports.conversation_id(event)
-        scope = self.ports.conversation_scope(event)
+        if platform.account != inbound.endpoint.account:
+            raise ValueError("turn platform does not own the inbound endpoint")
+        conversation_id = self.ports.conversation_id(inbound)
+        scope = inbound.scope
         stream_context = kwargs.pop("_stream_context", None)
         if self.usage_store is not None:
             quota = await self.db_call(self.usage_store.status, scope.key)
@@ -102,12 +106,10 @@ class ChatOrchestrator:
                     turn_id=None,
                 )
 
-        group_id = self.ports.group_id(event)
-        task = self.running_tasks.register_current(
+        task = self.running_tasks.register_inbound(
             conversation_id=conversation_id,
-            user_id=int(event.user_id),
-            group_id=group_id,
-            message_id=int(event.message_id),
+            inbound=inbound,
+            legacy_identity=legacy_task_identity,
             summary=user_text,
         )
         kwargs.setdefault(
@@ -122,7 +124,7 @@ class ChatOrchestrator:
                 self.model_preferences.get_explicit, conversation_id
             )
             group_default_profile = await self.db_call(
-                self.ports.group_default_profile, conversation_id
+                self.ports.group_default_profile, inbound
             )
             selected_profile = self.model_catalog.resolve_preference(
                 explicit_profile or group_default_profile
@@ -133,7 +135,7 @@ class ChatOrchestrator:
                 and group_default_profile is None
             )
             if explicit_profile is None and group_default_profile is None:
-                previous_turn = await self.db_call(self.ports.reply_target_turn, event)
+                previous_turn = await self.db_call(self.ports.reply_target_turn, inbound)
                 if previous_turn is not None:
                     inherited_profile = self.model_catalog.find_runtime(
                         profile=previous_turn.profile,
@@ -157,8 +159,8 @@ class ChatOrchestrator:
                 )
                 kwargs.setdefault("turn_trace", trace)
 
-            journal_scope_enabled = group_id is None or (
-                await self.db_call(self.ports.group_enabled, group_id)
+            journal_scope_enabled = inbound.endpoint.kind == "private" or (
+                await self.db_call(self.ports.endpoint_enabled, inbound.endpoint)
             )
             if (
                 self.turn_journal is not None
@@ -168,12 +170,13 @@ class ChatOrchestrator:
                 trigger_message_id = await self.db_call(
                     self.message_ledger.canonical_id_for_native,
                     scope,
-                    int(event.message_id),
+                    inbound.native_message_id,
+                    endpoint=inbound.endpoint,
                 )
                 if trigger_message_id is None:
                     try:
                         trigger_message_id = await self.db_call(
-                            self.ports.record_trigger, event, scope
+                            self.ports.record_trigger, inbound, scope
                         )
                     except Exception as exc:
                         self.logger.warning(
@@ -208,7 +211,7 @@ class ChatOrchestrator:
                         "turn_context",
                         (
                             await self.db_call(
-                                self.ports.current_turn_context, event, journal_turn_id
+                                self.ports.current_turn_context, inbound, journal_turn_id
                             )
                         ),
                     )
@@ -217,7 +220,7 @@ class ChatOrchestrator:
 
             if isinstance(stream_context, dict):
                 stream_context["turn_id"] = journal_turn_id
-            reply = await self.ports.ask_agent(bot, event, user_text, **kwargs)
+            reply = await self.ports.ask_agent(inbound, platform, user_text, **kwargs)
             status = "silence" if self.ports.is_silence_reply(reply) else "succeeded"
             (
                 await self.db_call(
