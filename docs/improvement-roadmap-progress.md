@@ -2847,3 +2847,36 @@ implementation evidence, not a claim that the production App has these features.
   native M2 acceptance and M4-M7 are open. No production connection, live
   QQ/model call, shared nix-config edit, deployment, App release or user-plan
   edit occurred. Source push is separate from updating the deployment input.
+
+### M3 project images and current workspace notes
+
+- `send_image_from_sandbox` now follows the current-project route when the
+  sandbox ID is omitted. It shares scoped immutable CAS storage and durable
+  Outbox admission with project files; the original tool operation determines
+  the attachment kind. Images are sent as OneBot image segments to the original
+  group/private recipient, and only a valid nonzero signed message ID confirms
+  delivery. Invalid/lost responses retain the copy and prevent reclamation;
+  replay cannot resend. Generic self-echo matching explicitly excludes project
+  attachments. Image lost-ack reconciliation still requires platform evidence,
+  not content matching. Signature validation is not pixel decoding.
+- Active project context reads the current `.gaoji/NOTES.md` through the bound
+  OCI/Desktop helper volume or VM guest gate. It reads at most 8 KiB without
+  splitting UTF-8 characters, checks file identity and project generation/fence,
+  and rechecks membership, focus and the IO watermark before returning evidence.
+  Busy/changed/invalid/timed-out reads do not substitute old saved notes. Inactive
+  projects retain saved-version notes. Context polling neither wakes a workspace
+  nor updates focus, idle clocks or version history; notes remain untrusted user
+  evidence. Active projects no longer read the superseded saved-note blob first.
+- Verification: all 93 affected image, live-note, context, file, registry-tool
+  and delivery tests passed in 46.923 seconds with ResourceWarnings treated as
+  errors (`.cache/roadmap/m3-image-notes-verified.log`). Tests use real local
+  PostgreSQL/CAS/private RPC and fixture QQ/Docker/libvirt effects. Whole-CI Ruff,
+  compileall and whitespace checks passed. Nix package/import checks passed on
+  aarch64-darwin (`.cache/roadmap/m3-image-notes-nix.log`); other architectures
+  were omitted, not verified. The regression caught and fixed an unescaped SQL
+  LIKE wildcard by binding the pattern as a query parameter.
+- M3 remains incomplete: browser routing, Sub-Agent baselines/locks/publication,
+  restore/delete/preview commands, shared-platform identity and console
+  integration remain. Native M2 acceptance and M4-M7 remain open. No production
+  connection, live QQ/model call, shared nix-config edit, deployment, App release
+  or user-plan modification occurred.

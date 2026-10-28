@@ -112,6 +112,12 @@ class DockerProjectBackend:
             and state.get("maintenance_active") is False
         ))
 
+    async def current_notes(self, project):
+        return await self.client.project_notes(
+            project["scope_key"], project["project_id"],
+            generation=project["workspace_generation"], fence=project["lifecycle_fence"] - 1,
+        )
+
     async def maintenance_ready(self, project):
         if project["lifecycle_job_id"] is not None or project["locked_task_id"] is not None:
             return False

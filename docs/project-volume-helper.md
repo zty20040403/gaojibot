@@ -896,12 +896,21 @@ and notes are quoted evidence, never system instructions. The stable system and
 group-history prefix is unchanged. Switching/creating a project also returns
 the fresh current-project context for subsequent calls in that same turn.
 
-Notes come from `.gaoji/NOTES.md` in the latest **saved version**, with an 8 KiB
-UTF-8 prefix limit and full-object checksum validation using bounded memory.
-Their source/version and truncation are explicit: they are not a live reading
-of unsaved workspace changes. Missing, invalid or corrupt notes do not fall
-back to older versions. No workspace is started and no shell command is run
-just to assemble a prompt. Context reads do not extend the 24-hour focus TTL.
+Active projects read `.gaoji/NOTES.md` from the **current workspace** using a
+host-only, fixed-path reader. OCI and Desktop use the private helper's bound
+volume; VM uses the same stdlib reader through the owned guest execution gate.
+The read is limited to an 8 KiB UTF-8 prefix, refuses symlinks/hardlinks/special
+files and mount crossings, and detects replacement during reading. It checks
+the current generation, execution fence and quiescence. A fresh IO watermark
+and membership/focus checks discard evidence raced by another tool or task.
+The workspace read has a 1.5-second context budget; errors report unavailable
+notes, never substitute an old saved note as current. No workspace is woken,
+version saved, focus TTL renewed or idle clock reset just to build a prompt.
+
+Inactive projects use notes from the latest **saved version**, with the same
+8 KiB prefix limit plus full-object checksum validation using bounded memory.
+Their source/version and truncation are explicit. Missing, invalid or corrupt
+notes do not fall back to older versions.
 Without a focus, chat makes no extra membership API calls. With a focus,
 membership is checked before/after reading and concurrent focus/revision
 changes discard the stale result; unavailable membership reports unavailable
@@ -959,22 +968,22 @@ PostgreSQL, RPC, registry and loop tests use fixture Docker/libvirt/QQ effects.
 They do not prove native command cancellation, full helper-loss reconciliation
 or actual QQ file delivery. Projects remain default-disabled.
 
-This is not the complete M3 interface. Snapshot/restore/delete/preview tools,
-project routing of image/browser tools, live workspace
-notes, Sub-Agent baselines and accepted-version publication, shared
+This is not the complete M3 interface. Restore/delete/preview tools,
+project routing of browser tools, Sub-Agent baselines and accepted-version publication, shared
 Matrix/iMessage ownership, and console management remain pending. Routine and
 Sub-Agent contexts do not receive these management tools until their project
 ownership is wired explicitly. No production enablement is implied.
 
 ### Project file delivery
 
-`send_file_from_sandbox` without `sandbox_id` now reads the current project
+`send_file_from_sandbox` and `send_image_from_sandbox` without `sandbox_id` read the current project
 under its durable I/O grant. It does not activate a temporary task sandbox or
 schedule project cleanup. The exact bytes are hashed into the private CAS;
 `0050_project_files` atomically records their reference, Outbox entry and tool
 receipt. The returned `queued` flag is not a claim of delivery. Inspect
 `project_status.file_deliveries` for the latest five records; `committed` means
-there is a file receipt. Explicit temporary sandbox IDs keep their old route.
+there is a transport receipt. Each record includes `media_kind` to distinguish
+files from images. Explicit temporary sandbox IDs keep their old route.
 
 The existing Outbox dispatches through the original bot, after rechecking live
 membership, target scope, tool enablement, the read receipt and file checksum.
@@ -983,6 +992,18 @@ name, size, uploader, upload time and file ID. A successful upload API response
 without a file receipt remains ambiguous. Private uploads also require a file
 ID; an adapter returning only `{}` cannot be declared delivered, and private
 receipt recovery remains an unverified platform limitation.
+
+Images have a 10 MiB limit (or the lower configured transfer limit), and their
+bytes must have a recognized PNG/JPEG/GIF/WebP/BMP signature. They are sent as
+image message segments, not group-file uploads, including in private chats.
+Their authoritative kind comes from the persisted host tool operation, not a
+model-controlled delivery argument. A nonzero signed OneBot message ID confirms
+the send. A lost or invalid response remains ambiguous; matching an old image
+by content or the generic self-echo heuristic cannot prove this send occurred.
+There is no blind retry. Such images retain their immutable copy and block
+cleanup until the outcome is resolved; automatic image lost-ack reconciliation
+is not claimed. Image recognition here is a format signature check, not a
+pixel-decoding or content-quality guarantee.
 
 The independent `project-files` supervised loop settles saved read receipts,
 resumes claims that crashed before upload dispatch, and looks up uncertain group

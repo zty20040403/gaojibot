@@ -421,6 +421,7 @@ class DeliveryStore:
                 WHERE target_platform = ? AND target_kind = ?
                   AND target_native_conversation_id = ?
                   AND content_fingerprint = ?
+                  AND idempotency_key NOT LIKE ?
                   AND status IN ('sending', 'ambiguous', 'pending')
                   AND created_at BETWEEN ? AND ?
                 ORDER BY
@@ -433,6 +434,7 @@ class DeliveryStore:
                     target_scope.kind,
                     target_scope.native_conversation_id,
                     fingerprint,
+                    "project-file:%",
                     timestamp - max(int(window_seconds), 30),
                     timestamp + 60,
                 ),

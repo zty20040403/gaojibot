@@ -50,6 +50,7 @@ FIELDS = {
     "project_volume_delete": ({"owner", "project_id", "fence"}, {"generation", "reservation"}),
     "project_workspace_status": ({"owner", "project_id", "generation"}, set()),
     "project_usage": ({"owner", "project_id", "generation"}, {"rebuild_command"}),
+    "project_notes": ({"owner", "project_id", "generation", "fence"}, set()),
     "project_workspace_start": ({"owner", "project_id", "generation", "fence"}, {"reservation"}),
     "project_workspace_stop": ({"owner", "project_id", "generation", "fence"}, {"reservation"}),
     "project_workspace_remove": ({"owner", "project_id", "generation", "fence"}, {"reservation"}),

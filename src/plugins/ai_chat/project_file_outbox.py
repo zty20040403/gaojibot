@@ -8,11 +8,24 @@ import time
 
 from src.storage_admission import require_capacity
 from .message_ir import MediaNode, MessageBody
+from .media_library import MediaLibrary
 from .projects import ProjectConflict, ProjectQuotaExceeded
 from .project_io import ProjectIOGrant
 from .project_usage import ProjectQuotaRejected
 
 FILE_PREFIX = "project-file:"
+ATTACHMENT_TOOLS = {
+    "send_file_from_sandbox": "file",
+    "send_image_from_sandbox": "image",
+}
+MAX_IMAGE_BYTES = 10 * 1024**2
+
+
+def image_message_id(value):
+    # Some OneBot implementations use signed message IDs. Bool/zero are not receipts.
+    if type(value) not in {int, str} or not re.fullmatch(r"-?[1-9][0-9]{0,19}", str(value)):
+        raise ValueError("Image message receipt is missing")
+    return str(value)
 
 
 def delivery_name(value):
@@ -41,13 +54,19 @@ class ProjectFileOutbox:
             self.projects._scope_lock(cursor, access)
             self.projects._get(cursor, access, grant.project_id)
             _, operation = self.io._owned(cursor, grant)
+            kind = ATTACHMENT_TOOLS.get(operation["tool_name"])
             if (
                 operation["actor_principal_id"] != access.principal_id
-                or operation["tool_name"] != "send_file_from_sandbox"
+                or kind is None
             ):
                 raise PermissionError(
                     "Attachment does not belong to this tool invocation"
                 )
+            if kind == "image" and (
+                len(content) > MAX_IMAGE_BYTES
+                or MediaLibrary._sniff_mime(content) == "application/octet-stream"
+            ):
+                raise ValueError("Unsupported or oversized project image")
             prior = cursor.execute(
                 "SELECT * FROM project_file_deliveries WHERE operation_id=?",
                 (grant.operation_id,),
@@ -96,7 +115,7 @@ class ProjectFileOutbox:
             blob = self.projects.blobs.put(content)
             self.projects._register_blob(cursor, blob, now)
             body = MessageBody(
-                (MediaNode(0, "file", name=filename, source_type="project_attachment"),)
+                (MediaNode(0, kind, name=filename, source_type="project_attachment"),)
             )
             delivery, _ = self.deliveries.enqueue(
                 idempotency_key=FILE_PREFIX + str(grant.operation_id),
@@ -136,6 +155,7 @@ class ProjectFileOutbox:
                 "delivery_id": delivery.delivery_id,
                 "filename": filename,
                 "size": len(content),
+                "media_kind": kind,
                 "project_handle": f"prj#{grant.project_id}",
                 "operation_id": grant.operation_id,
                 "message": "文件已保存并排队，尚未确认送达；请勿声称已经发送成功。",
@@ -162,7 +182,7 @@ class ProjectFileOutbox:
         with self.projects._transaction() as cursor:
             row = cursor.execute(
                 """SELECT f.*,p.scope_key,p.bot_native_user_id,p.creator_principal_id,
-                io.actor_principal_id,io.state AS operation_state
+                io.actor_principal_id,io.tool_name,io.state AS operation_state
                 FROM project_file_deliveries f JOIN projects p USING(project_id)
                 JOIN project_io io ON io.operation_id=f.operation_id WHERE f.delivery_id=?""",
                 (delivery.delivery_id,),
@@ -172,9 +192,10 @@ class ProjectFileOutbox:
                 or delivery.idempotency_key != FILE_PREFIX + str(row["operation_id"])
                 or row["scope_key"] != delivery.source_scope_key
                 or row["scope_key"] != delivery.target_scope.key
+                or row["tool_name"] not in ATTACHMENT_TOOLS
             ):
                 raise PermissionError("Project attachment delivery identity mismatch")
-            return dict(row)
+            return {**dict(row), "media_kind": ATTACHMENT_TOOLS[row["tool_name"]]}
 
     def prepare(self, access, delivery):
         identity = self.identity(delivery)
@@ -217,9 +238,14 @@ class ProjectFileOutbox:
                 raise ProjectConflict("Attachment upload was already dispatched")
         return now
 
-    def confirm(self, delivery, file_id):
-        if not isinstance(file_id, str) or not file_id.strip():
+    def confirm(self, delivery, receipt_id):
+        identity = self.identity(delivery)
+        if identity["media_kind"] == "image":
+            native_id = image_message_id(receipt_id)
+        elif not isinstance(receipt_id, str) or not receipt_id.strip():
             raise ValueError("File receipt is missing")
+        else:
+            native_id = "file:" + receipt_id
         now = int(time.time())
         with self.projects._transaction() as cursor:
             if not cursor.execute(
@@ -230,14 +256,14 @@ class ProjectFileOutbox:
             cursor.execute(
                 """UPDATE deliveries SET status='committed',native_message_id=?,lease_until=NULL,
                 last_error='',updated_at=? WHERE delivery_id=? AND status IN ('sending','ambiguous','failed','cancelled')""",
-                ("file:" + file_id, now, delivery.delivery_id),
+                (native_id, now, delivery.delivery_id),
             )
             if cursor.rowcount:
                 self.deliveries._finish_attempt(
                     cursor,
                     delivery.delivery_id,
                     "committed",
-                    "project file receipt",
+                    "project attachment receipt",
                     now,
                 )
 
@@ -308,8 +334,10 @@ class ProjectFileOutbox:
             return [
                 dict(row)
                 for row in cursor.execute(
-                    """SELECT f.delivery_id,f.filename,f.byte_size,d.status,d.last_error,d.updated_at
+                    """SELECT f.delivery_id,f.filename,f.byte_size,d.status,d.last_error,d.updated_at,
+                CASE io.tool_name WHEN 'send_image_from_sandbox' THEN 'image' ELSE 'file' END AS media_kind
                 FROM project_file_deliveries f JOIN deliveries d USING(delivery_id)
+                JOIN project_io io USING(operation_id)
                 WHERE f.project_id=? ORDER BY f.delivery_id DESC LIMIT 5""",
                     (project_id,),
                 ).fetchall()

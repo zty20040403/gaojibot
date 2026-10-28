@@ -14,6 +14,7 @@ from .onebot_codec import scope_from_event
 from .project_access import project_access, projects_available
 from .project_executor import _store
 from .project_io import WRITE_TOOLS
+from .project_file_outbox import ATTACHMENT_TOOLS, MAX_IMAGE_BYTES
 from .project_usage import ProjectQuotaRejected
 from .projects import ProjectConflict, ProjectQuotaExceeded
 from .tool_invocation import active_tool_call_id
@@ -21,7 +22,7 @@ from .workers.durable_jobs import JobDeferred
 from .vm_sandbox import PACKAGE_PATTERN
 
 
-PROJECT_IO_TOOLS = frozenset({"sandbox_read_file", "send_file_from_sandbox", *WRITE_TOOLS})
+PROJECT_IO_TOOLS = frozenset({"sandbox_read_file", *ATTACHMENT_TOOLS, *WRITE_TOOLS})
 
 
 def routes_to_project(context, name, arguments):
@@ -185,11 +186,14 @@ async def _execute(context, name, args):
         await runtime.backends[project["backend"]].io_evidence(project)
         access = await project_access(context)
         target = await _store(runtime.io.dispatch, access, grant)
-        if name == "send_file_from_sandbox":
+        if name in ATTACHMENT_TOOLS:
+            limit = context.app.sandbox_manager.max_file_bytes or 256 * 1024**2
+            if name == "send_image_from_sandbox":
+                limit = min(limit, MAX_IMAGE_BYTES)
             try:
                 content = await context.app.sandbox_manager.read_file(
                     target["owner"], target["sandbox_id"], args["path"],
-                    max_bytes=context.app.sandbox_manager.max_file_bytes or 256 * 1024**2,
+                    max_bytes=limit,
                 )
             except SandboxError:
                 result = _error("project_read_failed", "文件不存在、不可读或超过传输限制。")

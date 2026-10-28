@@ -839,6 +839,30 @@ class VmSandboxManager:
             target = self._workspace_path(path)
             return await self._read_guest_file(sandbox_id, target, max_bytes)
 
+    async def read_project_notes(self, owner, sandbox_id, *, project_id, generation, fence):
+        from src.sandbox_runtime import project_note_reader
+
+        async with self.io_lock(sandbox_id, timeout=0):
+            metadata = await self._owned_running(owner, sandbox_id)
+            scope = self._io_scope.get()
+            project = metadata.get("project", {})
+            if (project.get("project_id") != project_id or project.get("generation") != generation
+                    or not scope or scope.get("epoch") != fence):
+                raise SandboxError("Current project notes identity changed")
+            source = Path(project_note_reader.__file__).read_text(encoding="utf-8")
+            code, output, _ = await self._guest_exec(
+                sandbox_id, "/usr/bin/python3", ["-I", "-c", source], timeout=10,
+            )
+            if code or len(output) > 100000:
+                raise SandboxError("Current project notes are unavailable")
+            await self._owned_running(owner, sandbox_id)
+            if self._io_scope.get().get("epoch") != fence:
+                raise SandboxError("Project changed while reading notes")
+            try:
+                return json.loads(output)
+            except ValueError:
+                raise SandboxError("Invalid current project notes receipt") from None
+
     async def install_readonly_file(self, owner: str, sandbox_id: str, path: str, content: bytes) -> None:
         target = self._workspace_path(path)
         if not target.startswith("/workspace/upstream/"):

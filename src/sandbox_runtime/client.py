@@ -108,6 +108,11 @@ class SandboxClient:
         return (await self.request("project_usage", {"owner": owner, "project_id": project_id,
             "generation": generation, "rebuild_command": rebuild_command}))[0]
 
+    async def project_notes(self, owner, project_id, *, generation, fence):
+        return (await self.request("project_notes", {
+            "owner": owner, "project_id": project_id, "generation": generation, "fence": fence,
+        }))[0]
+
     async def project_workspace(self, operation, owner, project_id, *, generation, fence=None, request_id=None, reservation=None):
         if operation not in {"start", "stop", "remove", "status", "reserve", "release"}:
             raise ProtocolError("Unsupported project-workspace operation")

@@ -405,8 +405,12 @@ class ProjectStore:
                     (pid, access.principal_id),
                 ).fetchone() is not None
             )
-            notes = {"source": "saved_version", "state": "no_saved_version"}
-            if versions:
+            notes = (
+                {"source": "workspace", "state": "unavailable"}
+                if row["status"] == "active"
+                else {"source": "saved_version", "state": "no_saved_version"}
+            )
+            if versions and row["status"] != "active":
                 number = versions[0]["version_no"]
                 notes.update(version=f"v{number}", state="absent_in_saved_version")
                 try:
@@ -442,6 +446,22 @@ class ProjectStore:
                 ],
                 "notes": notes,
             }
+
+    def notes_target(self, access, handle, revision):
+        """Read-only workspace identity and IO watermark; never renews focus."""
+        with self._transaction() as cursor:
+            row = self._current(cursor, access, int(time.time()))
+            if (row is None or f"prj#{row['project_id']}" != handle
+                    or row["version"] != revision or row["status"] != "active"
+                    or not row["sandbox_id"] or row["lifecycle_job_id"] is not None
+                    or row["locked_task_id"] is not None):
+                raise ProjectConflict("Project is not ready for current notes")
+            require_project_io_idle(cursor, row["project_id"])
+            row["notes_io_watermark"] = cursor.execute(
+                "SELECT coalesce(max(operation_id),0) FROM project_io WHERE project_id=?",
+                (row["project_id"],),
+            ).fetchone()[0]
+            return row
 
     def update(
         self,

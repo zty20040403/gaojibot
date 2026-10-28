@@ -116,6 +116,15 @@ class VmProjectBackend:
             and observed.get("busy") is False
         ))
 
+    async def current_notes(self, project):
+        await self.io_evidence(project)
+        result = await self.runtime.manager.read_project_notes(
+            project["scope_key"], project["sandbox_id"], project_id=project["project_id"],
+            generation=project["workspace_generation"], fence=project["lifecycle_fence"] - 1,
+        )
+        await self.io_evidence(project)
+        return result
+
     def preflight(self, plan):
         steps = plan.get("steps")
         if (

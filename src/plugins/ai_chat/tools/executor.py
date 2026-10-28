@@ -73,9 +73,9 @@ def project_sandbox(definition: ToolDefinition, context: ToolContext) -> None:
             " 省略 sandbox_id 时默认操作当前项目的持久工作区，回合结束不回收。"
             "项目命令暂不支持 background=true；长任务请等待项目后台任务能力。"
         )
-        if function["name"] == "send_file_from_sandbox":
+        if function["name"] in {"send_file_from_sandbox", "send_image_from_sandbox"}:
             function["description"] += (
-                " 项目文件由持久化队列发送；queued 只表示已排队，不等于送达。"
+                " 项目文件或图片由持久化队列发送；queued 只表示已排队，不等于送达。"
                 "通过 project_status 的 file_deliveries 检查状态，committed 才表示已确认；不要为轮询重复发文件。"
             )
 

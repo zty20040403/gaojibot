@@ -4,8 +4,11 @@ import asyncio
 import base64
 import time
 
+from nonebot.adapters.onebot.v11 import MessageSegment
+
 from .bridges import BridgeOutcomeUnknown, BridgePermanentError, BridgeRetryableError
 from .project_executor import _store
+from .project_file_outbox import image_message_id
 from .projects import ProjectConflict
 from .tool_policy import tool_enabled
 from .workers.durable_jobs import JobDeferred
@@ -66,7 +69,7 @@ async def deliver_file(app, bot, delivery):
     identity = await file_identity(app, delivery)
     if str(bot.self_id) != identity["bot_native_user_id"]:
         raise BridgePermanentError("项目附件必须由原机器人账号发送")
-    if not tool_enabled("send_file_from_sandbox"):
+    if not tool_enabled(identity["tool_name"]):
         await _store(app.delivery_store.defer_unsent, delivery, "文件发送工具已关闭")
         return
     access = await _access(runtime, identity)
@@ -92,6 +95,21 @@ async def deliver_file(app, bot, delivery):
     identity["upload_started_at"] = started
     try:
         async with asyncio.timeout(60):
+            if identity["media_kind"] == "image":
+                response = await bot.call_api(
+                    "send_group_msg" if delivery.target_kind == "group" else "send_private_msg",
+                    **(
+                        {"group_id": int(delivery.target_native_conversation_id)}
+                        if delivery.target_kind == "group"
+                        else {"user_id": int(delivery.target_native_conversation_id)}
+                    ),
+                    message=[MessageSegment.image(content)],
+                )
+                receipt_id = image_message_id(
+                    response.get("message_id") if isinstance(response, dict) else None
+                )
+                await _store(runtime.files.confirm, delivery, receipt_id)
+                return
             response = await bot.call_api(
                 "upload_group_file"
                 if delivery.target_kind == "group"
@@ -148,7 +166,10 @@ async def reconcile_files(app, bots):
                 (b for b in bots if str(b.self_id) == identity["bot_native_user_id"]),
                 None,
             )
-            if bot is None or delivery.target_kind != "group":
+            # A matching image in history is not proof of this particular send:
+            # two intentional sends can have identical bytes. Without the API's
+            # message receipt retain the copy and uncertainty, never guess/resend.
+            if bot is None or delivery.target_kind != "group" or identity["media_kind"] == "image":
                 continue
             await _access(runtime, identity)
             async with asyncio.timeout(10):

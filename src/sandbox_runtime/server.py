@@ -201,6 +201,10 @@ class SandboxRunner:
                 data['project_volumes_enabled'] = self.project_volumes is not None
                 data['project_workspaces_enabled'] = self.manager.project_workspaces is not None
                 data['project_quota_mode'] = self.project_volumes.quota_mode if self.project_volumes is not None else None
+            elif method == 'project_notes':
+                if self.manager.project_workspaces is None:
+                    raise SandboxError("Project workspaces are disabled")
+                data = await self.manager.project_workspaces.notes(**args)
             elif method == 'project_usage':
                 if self.manager.project_workspaces is None:
                     raise ProtocolError("Project accounting is unavailable")

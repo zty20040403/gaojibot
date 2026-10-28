@@ -491,6 +491,26 @@ class ProjectWorkspaces:
             "maintenance_active": binding["maintenance_active"],
         }
 
+    async def notes(self, owner, project_id, *, generation, fence):
+        from .project_note_reader import read_notes
+
+        async with self.manager._allocation_lock:
+            observed = await self.status(owner, project_id, generation=generation)
+            if (observed["fence"] != fence or not observed["verified"]
+                    or not observed["quiescent"] or observed["maintenance_active"]):
+                raise SandboxError("Project is not ready for a current notes read")
+            sandbox = observed["sandbox_id"]
+            async with self.manager._exec_locks.setdefault(sandbox, asyncio.Lock()):
+                before = await self.for_sandbox(owner, sandbox)
+                if (before["project_id"] != project_id or before["generation"] != generation
+                        or before["fence"] != fence):
+                    raise SandboxError("Project changed before notes read")
+                result = await self._volume(read_notes, before["path"])
+                after = await self.for_sandbox(owner, sandbox)
+                if after != before:
+                    raise SandboxError("Project changed during notes read")
+                return result
+
     async def for_sandbox(self, owner, sandbox_id):
         container = await self._inspect(sandbox_id)
         if container is None:
