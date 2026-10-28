@@ -18,7 +18,7 @@ import time
 from typing import Iterable
 
 from src.bot_storage import DatabaseSource, open_store_connection
-from src.project_content import manifest_bytes
+from src.project_content import manifest_bytes, retained_manifest
 from .conversation_scope import ConversationScope
 from .project_blobs import (
     GC_GRACE_SECONDS,
@@ -607,6 +607,7 @@ class ProjectStore:
         lifecycle_job=None,
         staged_manifest_sha256=None,
         rebuild=None,
+        browser_cache=None,
     ):
         supplied_now = now
         now = int(time.time()) if now is None else now
@@ -708,9 +709,7 @@ class ProjectStore:
                 ):
                     raise ValueError("A file cannot also be a directory")
             manifest.sort(key=lambda item: item["path"])
-            document = {"format": 1, "files": manifest}
-            if rebuild is not None:
-                document.update(format=2, rebuild=rebuild)
+            document = retained_manifest(manifest, rebuild=rebuild, browser_cache=browser_cache)
             encoded = manifest_bytes(document, quota_bytes=row["quota_bytes"])
             blob = self.blobs.put(encoded)
             if (
@@ -970,6 +969,7 @@ class ProjectStore:
             expected_version=expected_version,
             force_version=True,
             rebuild=manifest.get("rebuild"),
+            browser_cache=manifest.get("browser_cache"),
             now=now,
         )
 

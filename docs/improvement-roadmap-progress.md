@@ -3264,3 +3264,40 @@ implementation evidence, not a claim that the production App has these features.
   browser drain/cache cleanup and remaining M3 requirements. Native M2 gates
   and M4-M7 remain incomplete. No production SSH, QQ/model call, shared
   nix-config change, rebuild, App release or supplied-plan modification occurred.
+
+### M3 browser cache retention across project lifecycle
+
+- Browser-only projects now exclude the six fixed Chromium cache directories
+  without requiring an npm/uv/cargo rebuild recipe. Format-3 manifests separate
+  these observed cache roots from an optional hash-pinned dependency recipe;
+  legacy format-1/2 manifests remain readable and retain their original hashes.
+  Cookies, localStorage, notes and unlocked dependencies remain retained data.
+- Both OCI and KVM file adapters use the existing published snapshot, private
+  inode journal, maintenance reservation and uncached prune verification.
+  Changed roots and symlink roots are rejected; symlinks inside accepted cache
+  directories are unlinked without following them. Interrupted cleanup resumes
+  the same fence and does not discard the retained profile. Nothing bypasses
+  an active browser, unacknowledged result or unresolved project IO grant.
+- PostgreSQL/CAS publication, rollback, archive restoration and dependency
+  reinstallation carry the new metadata end to end. Pure-browser wakeups do not
+  invent install commands. Accounting measures browser cache without a recipe
+  and skips unrelated dependency subtrees; retained hard-link aliases are not
+  counted as reclaimable bytes. Estimates never authorize deletion.
+- Verification: 158 focused runtime/files/lifecycle/dependency tests passed
+  in 69.457 seconds (`.cache/roadmap/m3-browser-retention-verified.log`). A real
+  local Chromium profile retained its persistent cookie after snapshot, cache
+  deletion and reopen. Forty-two store/rollback/migration tests passed in a
+  separate process (`.cache/roadmap/m3-browser-retention-store.log`), keeping
+  Alembic's global logging configuration out of runner logging assertions.
+  After the accounting optimization, 24 usage and browser-maintenance boundary
+  tests passed (`.cache/roadmap/m3-browser-retention-accounting.log`). All used
+  ResourceWarnings as errors. Temporary profiles/files were fixture-owned and
+  removed. PostgreSQL was real; Docker/libvirt/mount/systemd effects were explicit
+  fixtures, not native Linux/KVM acceptance. Whole-CI Ruff, compileall and
+  whitespace checks passed; aarch64-darwin Nix package/import checks passed
+  (`.cache/roadmap/m3-browser-retention-nix.log`), other architectures omitted.
+- Still open: general lifecycle browser draining and native KVM channel/toolchain
+  acceptance, remaining M3 Sub-Agent/control-page/shared-session requirements,
+  native M2 gates and M4-M7. Existing frozen guest bootstraps are not rewritten.
+  No production SSH, QQ/model calls, shared nix-config changes, rebuild, App
+  release or supplied-plan modification occurred.

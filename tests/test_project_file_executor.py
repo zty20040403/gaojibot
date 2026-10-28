@@ -177,6 +177,42 @@ class ProjectFileExecutorTests(unittest.IsolatedAsyncioTestCase):
         ).fetchone()["evidence"]
         self.assertIn("Missing package-lock.json", evidence["warnings"][0])
 
+    async def test_browser_cache_hibernate_archive_and_restore_without_rebuild(self):
+        from tests.test_project_restore import fixture_mount_contents
+        fixture_mount_contents(self)
+        root = await self.wake()
+        cache = root / ".gaoji/browser/Default/Cache"
+        cache.mkdir(parents=True)
+        (cache / "data").write_bytes(b"rebuildable")
+        (cache.parent / "Cookies").write_bytes(b"persistent login")
+        (root / "page.html").write_bytes(b"retained webpage")
+        self.request("stop")
+        await self.executor(self.claim())
+        self.assertTrue(cache.exists())
+        manifest = self.projects.manifest(self.access, self.pid, 1)
+        self.assertEqual(manifest["format"], 3)
+        self.assertIsNone(manifest["rebuild"])
+        self.assertEqual(manifest["browser_cache"], [".gaoji/browser/Default/Cache"])
+        self.request("hibernate")
+        await self.executor(self.claim())
+        self.assertFalse(cache.exists())
+        self.assertEqual(self.projects.read_file(self.access, self.pid, 1,
+            ".gaoji/browser/Default/Cookies"), b"persistent login")
+        self.request("archive")
+        await self.executor(self.claim())
+        project = self.projects.get(self.access, self.pid)
+        self.lifecycle.request(self.access, self.pid, "wake",
+            expected_version=project["version"], request_key="wake-archived-browser")
+        await self.executor(self.claim())
+        restored = self.volumes.binding(self.scope.key, self.pid,
+            generation=self.projects.get(self.access, self.pid)["workspace_generation"])
+        self.assertEqual((restored / ".gaoji/browser/Default/Cookies").read_bytes(), b"persistent login")
+        self.assertEqual((restored / "page.html").read_bytes(), b"retained webpage")
+        self.assertFalse((restored / ".gaoji/browser/Default/Cache").exists())
+        self.assertFalse(self.sql.execute(
+            "SELECT 1 FROM project_lifecycle_steps WHERE operation='rebuild_dependencies'"
+        ).fetchone())
+
     async def test_prune_lost_ack_takeover_reconciles_before_removal(self):
         root = await self.dependency_project()
         self.request("hibernate")

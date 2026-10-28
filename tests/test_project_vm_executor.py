@@ -229,6 +229,51 @@ class VmExecutorFixture(provision.VmProvisionFixture):
         )
 
 class VmExecutorTests(VmExecutorFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_browser_cache_without_recipe_survives_full_vm_lifecycle(self):
+        await self.transition("wake")
+        guest = self.guests[self.project()["sandbox_id"]]
+        cache = guest.workspace / ".gaoji/browser/Default/Cache"
+        cache.mkdir(parents=True)
+        (cache / "data").write_bytes(b"rebuildable cache")
+        (cache.parent / "Cookies").write_bytes(b"persistent login")
+        (guest.workspace / "notes.txt").write_bytes(b"retained notes")
+        await self.transition("stop")
+        self.assertTrue(cache.exists())
+        manifest = self.projects.manifest(self.access, self.pid, 1)
+        self.assertEqual(manifest["format"], 3)
+        self.assertIsNone(manifest["rebuild"])
+        await self.transition("hibernate")
+        self.assertFalse(cache.exists())
+        self.assertEqual((cache.parent / "Cookies").read_bytes(), b"persistent login")
+        await self.transition("archive")
+        await self.transition("wake")
+        restored = self.guests[self.project()["sandbox_id"]]
+        self.assertNotEqual(guest.workspace, restored.workspace)
+        self.assertEqual((restored.workspace / ".gaoji/browser/Default/Cookies").read_bytes(), b"persistent login")
+        self.assertEqual((restored.workspace / "notes.txt").read_bytes(), b"retained notes")
+        self.assertFalse((restored.workspace / ".gaoji/browser/Default/Cache").exists())
+        self.assertEqual(restored.runtime.installs, 0)
+
+    async def test_browser_cache_manifest_keeps_locked_dependency_rebuild(self):
+        guest = await self.dependency_project()
+        await self.transition("wake")
+        cache = guest.workspace / ".gaoji/browser/Cache"
+        cache.mkdir(parents=True)
+        (cache / "data").write_bytes(b"cache")
+        (cache.parent / "Cookies").write_bytes(b"login")
+        await self.transition("stop")
+        await self.transition("hibernate")
+        latest = self.projects.versions(self.access, self.pid)[0]
+        manifest = self.projects.manifest(self.access, self.pid, latest["version_no"])
+        self.assertEqual(manifest["format"], 3)
+        self.assertEqual(manifest["rebuild"]["excluded"], ["node_modules"])
+        self.assertEqual(manifest["browser_cache"], [".gaoji/browser/Cache"])
+        await self.transition("wake")
+        restored = self.guests[self.project()["sandbox_id"]]
+        self.assertEqual(restored.runtime.installs, 1)
+        self.assertEqual((restored.workspace / "node_modules/dep").read_bytes(), b"installed")
+        self.assertEqual((restored.workspace / ".gaoji/browser/Cookies").read_bytes(), b"login")
+
     async def test_browser_receipt_keeps_idle_guest_busy_and_blocks_lifecycle_reservation(self):
         await self.transition("wake")
         before = await self.inspect()

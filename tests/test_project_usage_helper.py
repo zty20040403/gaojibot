@@ -71,6 +71,24 @@ class ProjectUsageHelperTests(unittest.TestCase):
         self.assertEqual(self.measure(rebuild_command="npm ci")["rebuildable_bytes"], 0)
         self.assertTrue((root / "node_modules/file").exists())
 
+    def test_browser_only_accounting_does_not_walk_unlocked_dependencies(self):
+        root = self.mounted()
+        (root / "node_modules").mkdir()
+        for index in range(40):
+            (root / "node_modules" / str(index)).write_bytes(b"dependency")
+        cache = root / ".gaoji/browser/Default/Cache"
+        cache.mkdir(parents=True)
+        (cache / "data").write_bytes(b"cache" * 16000)
+        (cache.parent / "Cookies").write_bytes(b"login" * 16000)
+        expected = (cache.stat().st_blocks + (cache / "data").stat().st_blocks) * 512
+        with ProjectFiles.root(root) as fd:
+            actual = rebuildable_bytes(fd, "", deadline=time.monotonic() + 5, max_nodes=15)
+        self.assertEqual(actual, expected)
+        os.link(cache / "data", root / "retained-alias")
+        with ProjectFiles.root(root) as fd:
+            self.assertEqual(rebuildable_bytes(fd, "", deadline=time.monotonic() + 5, max_nodes=15),
+                             cache.stat().st_blocks * 512)
+
     def test_scan_budget_or_race_does_not_hide_verified_total(self):
         self.mounted()
         self.host.measured_used_bytes = MIB

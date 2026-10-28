@@ -339,16 +339,21 @@ anything. Monorepo command routing and other package-manager recipes are not yet
 supported. Default dependency directories apply only at the project root;
 nested projects keep their dependencies unless explicitly declared rebuildable.
 
-- With a recognized recipe, ordinary cache directory names and the three exact
-  `.gaoji/browser/{Cache,Code Cache,GPUCache}` paths are rebuildable. Browser
-  cookies, notes, Git metadata and source files remain retained.
+- With a recognized recipe, ordinary dependency-cache directory names are
+  rebuildable. Browser caches are independent of that recipe: the six exact
+  `.gaoji/browser/{Cache,Code Cache,GPUCache}` and
+  `.gaoji/browser/Default/{Cache,Code Cache,GPUCache}` directories are excluded
+  even without a lockfile or rebuild command. Cookies, localStorage, notes,
+  Git metadata and source files remain retained.
 - `.gaoji/rebuildable` may add up to 64 exact relative directory paths, one per
   line; blank lines and `#` comments are ignored. Traversal, wildcards, protected
   metadata, overlapping roots and paths hiding locked inputs are rejected. The
   control file itself is retained and hash-pinned. Only observed real directories
   are excluded; the helper records their filesystem/inode identities.
 - Format-2 version manifests bind retained hashes, recipe and observed excluded
-  paths together. Format-1 manifests remain readable and byte-compatible.
+  paths together. Format-3 adds a separately validated `browser_cache` list and
+  permits `rebuild: null`; it never invents an install command for a browser-only
+  project. Format-1 and format-2 manifests remain readable and byte-compatible.
   Rollback preserves the specification. Wake/archive use the retained version's
   recipe even if mutable project metadata was subsequently changed.
 - Hibernate requires an acknowledged, published current snapshot. The lifecycle
@@ -1080,8 +1085,13 @@ the project quota volume and external process accounting remain necessary.
 The shared retained-manifest policy now recognizes `Default/Cache`, `Default/Code
 Cache` and `Default/GPUCache` beneath `.gaoji/browser`, in addition to the old
 top-level cache paths. Whole browser profiles, `Default`, cookies and login files
-are not rebuildable roots. Existing cleanup still requires a supported locked
-dependency recipe; browser-only cache cleanup without a recipe is not yet wired.
+are not rebuildable roots. Dependency cleanup still requires a supported locked
+recipe, but cleanup of these six browser-cache roots does not.
+Both OCI and guest file helpers snapshot their exact inode identities and use
+the existing reserved prune/recheck flow; a live or unresolved browser still
+blocks volume maintenance. Cache clearing is not `browser_clear`: it does not
+delete cookies or website storage. Read-only usage accounting includes these
+caches without a dependency recipe. No TTL or cache estimate authorizes deletion.
 
 A local real Chromium test checks persistent cookies and localStorage across
 process restart, isolation between two profile directories, and explicit clearing.

@@ -2,10 +2,14 @@
 
 import hashlib
 import json
+import os
+import time
 import unittest
 from unittest.mock import patch
 
-from src.project_content import manifest_bytes
+from src.project_content import BROWSER_CACHE_DIRS, manifest_bytes
+from src.sandbox_runtime.project_files import ProjectFiles
+from src.sandbox_runtime.project_usage import rebuildable_bytes
 from src.sandbox_runtime.docker import SandboxError
 from src.sandbox_runtime import project_rebuild
 from tests import test_project_file_transfer as fixture
@@ -33,12 +37,18 @@ class ProjectRebuildTests(unittest.IsolatedAsyncioTestCase):
 
     async def snapshot(self, command="npm ci"):
         result, _ = await self.call("snapshot", rebuild_command=command)
-        page, _ = await self.call(
-            "page", index=0, manifest_sha256=result["manifest_sha256"]
-        )
-        manifest = {"format": result["format"], "files": page["files"]}
-        if result["rebuild"]:
+        entries = []
+        while len(entries) < result["file_count"]:
+            page, _ = await self.call(
+                "page", index=len(entries), manifest_sha256=result["manifest_sha256"]
+            )
+            self.assertTrue(page["files"])
+            entries.extend(page["files"])
+        manifest = {"format": result["format"], "files": entries}
+        if result["format"] in (2, 3):
             manifest["rebuild"] = result["rebuild"]
+        if result["format"] == 3:
+            manifest["browser_cache"] = result["browser_cache"]
         self.assertEqual(
             hashlib.sha256(
                 manifest_bytes(manifest, quota_bytes=64 * 1024**2)
@@ -166,6 +176,139 @@ class ProjectRebuildTests(unittest.IsolatedAsyncioTestCase):
         for cache in ("Cache", "Code Cache", "GPUCache"):
             self.assertFalse((self.path / ".gaoji/browser/Default" / cache).exists())
         self.assertFalse((self.path / "generated").exists())
+
+    async def test_browser_only_project_prunes_cache_without_a_rebuild_recipe(self):
+        await self.reserve()
+        for path in BROWSER_CACHE_DIRS:
+            (self.path / path).mkdir(parents=True)
+            (self.path / path / "data").write_bytes(b"cache" * 1000)
+        retained = {".gaoji/browser/Default/Cookies": b"login",
+                    ".gaoji/browser/Default/Local Storage/data": b"site data",
+                    ".gaoji/NOTES.md": b"notes", "node_modules/manual": b"keep dependencies"}
+        for path, content in retained.items():
+            (self.path / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.path / path).write_bytes(content)
+        result, manifest = await self.snapshot("")
+        self.assertEqual(manifest["format"], 3)
+        self.assertIsNone(manifest["rebuild"])
+        self.assertEqual(manifest["browser_cache"], sorted(BROWSER_CACHE_DIRS))
+        self.assertEqual({row["path"] for row in manifest["files"]}, set(retained))
+        with ProjectFiles.root(self.path) as root:
+            self.assertGreater(rebuildable_bytes(root, "", deadline=time.monotonic() + 5), 0)
+        await self.prune(result["manifest_sha256"])
+        await self.prune(result["manifest_sha256"], "prune_check")
+        for path, content in retained.items():
+            self.assertEqual((self.path / path).read_bytes(), content)
+        for path in BROWSER_CACHE_DIRS:
+            self.assertFalse((self.path / path).exists())
+        with ProjectFiles.root(self.path) as root:
+            self.assertEqual(rebuildable_bytes(root, "", deadline=time.monotonic() + 5), 0)
+
+    async def test_missing_lock_still_cleans_browser_cache_but_not_dependencies(self):
+        await self.seed()
+        (self.path / "package-lock.json").unlink()
+        cache = self.path / ".gaoji/browser/Default/Cache"
+        cache.mkdir(parents=True)
+        (cache / "data").write_bytes(b"cache")
+        result, manifest = await self.snapshot()
+        self.assertIsNone(manifest["rebuild"])
+        self.assertIn("Missing package-lock.json", result["warnings"][0])
+        await self.prune(result["manifest_sha256"])
+        self.assertFalse(cache.exists())
+        self.assertEqual((self.path / "node_modules/pkg/a").read_bytes(), b"rebuildable dependency")
+
+    async def test_cache_manifest_cannot_hide_login_state_or_retained_files(self):
+        await self.reserve()
+        cache = self.path / ".gaoji/browser/Default/Cache"
+        cache.mkdir(parents=True)
+        (cache / "data").write_bytes(b"cache")
+        (cache.parent / "Cookies").write_bytes(b"login")
+        _, manifest = await self.snapshot("")
+        for paths in ([".gaoji/browser"], [".gaoji/browser/Default/Cookies"],
+                      ["node_modules"], ["../secret"], [None],
+                      [".gaoji/browser/Default/Cache"] * 2):
+            with self.subTest(paths=paths), self.assertRaises(ValueError):
+                manifest_bytes({**manifest, "browser_cache": paths}, quota_bytes=64 * 1024**2)
+        overlapping = json.loads(json.dumps(manifest))
+        overlapping["files"][0]["path"] = ".gaoji/browser/Default/Cache/data"
+        with self.assertRaises(ValueError):
+            manifest_bytes(overlapping, quota_bytes=64 * 1024**2)
+
+    async def test_replaced_browser_cache_root_is_never_deleted(self):
+        await self.reserve()
+        cache = self.path / ".gaoji/browser/Cache"
+        cache.mkdir(parents=True)
+        (cache / "data").write_bytes(b"cache")
+        result, _ = await self.snapshot("")
+        cache.rename(self.root / "old-cache")
+        cache.mkdir()
+        (cache / "new").write_bytes(b"keep replacement")
+        with self.assertRaises(SandboxError):
+            await self.prune(result["manifest_sha256"])
+        self.assertEqual((cache / "new").read_bytes(), b"keep replacement")
+
+    async def test_browser_cache_cleanup_recovers_interruption_and_rejects_symlink_root(self):
+        await self.reserve()
+        cache = self.path / ".gaoji/browser/Cache"
+        external = self.root / "external-cache"
+        external.mkdir()
+        (external / "data").write_bytes(b"keep external")
+        cache.parent.mkdir(parents=True)
+        cache.symlink_to(external, target_is_directory=True)
+        with self.assertRaises(SandboxError):
+            await self.snapshot("")
+        cache.unlink()
+        cache.mkdir()
+        (cache / "data").write_bytes(b"cache")
+        (cache / "link").symlink_to(external / "data")
+        (cache.parent / "Cookies").write_bytes(b"login")
+        result, _ = await self.snapshot("")
+        original = project_rebuild._delete_tree
+
+        def lost_after_delete(parent, name, device, budget, depth=0):
+            original(parent, name, device, budget, depth)
+            if depth == 0:
+                raise RuntimeError("fixture crash after cache deletion")
+
+        with patch.object(project_rebuild, "_delete_tree", side_effect=lost_after_delete):
+            with self.assertRaises(SandboxError):
+                await self.prune(result["manifest_sha256"])
+        self.assertTrue(self.journal()["pending"])
+        await self.stop_runner()
+        await self.start_runner()
+        await self.prune(result["manifest_sha256"])
+        await self.prune(result["manifest_sha256"], "prune_check")
+        self.assertEqual((external / "data").read_bytes(), b"keep external")
+        self.assertEqual((cache.parent / "Cookies").read_bytes(), b"login")
+        self.assertFalse(cache.exists())
+
+    @unittest.skipUnless(os.getenv("GAOJI_TEST_BROWSER_EXECUTABLE"), "explicit local Chromium required")
+    async def test_real_chromium_profile_survives_cache_prune_and_reopen(self):
+        from src.browser_runtime import BrowserManager
+
+        await self.reserve()
+        profile = self.path / ".gaoji/browser"
+
+        def browser():
+            manager = BrowserManager(profile, bound_owner="scope", allow_private_network=True,
+                executable_path=os.environ["GAOJI_TEST_BROWSER_EXECUTABLE"])
+            self.addAsyncCleanup(manager.close)
+            return manager
+
+        manager = browser()
+        # A temporary, non-personal profile; no QQ or remote website is contacted.
+        async with manager._use("scope", create=True) as session:
+            await session.context.add_cookies([{"name": "fixture", "value": "retained-login",
+                "domain": "example.invalid", "path": "/", "expires": time.time() + 3600}])
+        await manager.close()
+        result, manifest = await self.snapshot("")
+        self.assertEqual(manifest["format"], 3)
+        self.assertTrue(manifest["browser_cache"])
+        await self.prune(result["manifest_sha256"])
+        manager = browser()
+        async with manager._use("scope", create=True) as session:
+            cookies = await session.context.cookies()
+        self.assertTrue(any(c["name"] == "fixture" and c["value"] == "retained-login" for c in cookies))
 
     async def test_unsafe_custom_paths_refuse_snapshot_without_deleting(self):
         await self.seed()

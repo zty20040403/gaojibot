@@ -106,6 +106,31 @@ class ProjectDependencyExecutorTests(unittest.IsolatedAsyncioTestCase):
             "SELECT * FROM project_lifecycle_steps WHERE operation='rebuild_dependencies' ORDER BY job_id DESC LIMIT 1"
         ).fetchone()
 
+    async def test_browser_cache_manifest_preserves_dependency_rebuild_on_wake(self):
+        root = await self.wake()
+        self.configure_rebuild()
+        (root / "package.json").write_bytes(b'{"name":"fixture"}')
+        (root / "package-lock.json").write_bytes(b'{"lockfileVersion":3}')
+        (root / "node_modules").mkdir()
+        (root / "node_modules/manual").write_bytes(b"old dependency")
+        cache = root / ".gaoji/browser/Default/Cache"
+        cache.mkdir(parents=True)
+        (cache / "data").write_bytes(b"cache")
+        (cache.parent / "Cookies").write_bytes(b"login")
+        self.request("stop")
+        await self.executor(self.claim())
+        self.request("hibernate")
+        await self.executor(self.claim())
+        manifest = self.projects.manifest(self.access, self.pid, 1)
+        self.assertEqual(manifest["format"], 3)
+        self.assertEqual(manifest["rebuild"]["excluded"], ["node_modules"])
+        self.assertEqual(manifest["browser_cache"], [".gaoji/browser/Default/Cache"])
+        self.request("wake")
+        await self.executor(self.claim())
+        self.assertEqual(self.rebuild_step()["status"], "succeeded")
+        self.assertEqual((cache.parent / "Cookies").read_bytes(), b"login")
+        self.assertFalse(cache.exists())
+
     async def test_automatic_idle_cycle_uses_private_helper_and_restores_retained_files(self):
         root = await self.wake()
         (root / "source.txt").write_bytes(b"automatic retained content")

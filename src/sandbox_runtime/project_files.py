@@ -18,9 +18,11 @@ from src.project_content import (
     MAX_FILE_BYTES,
     MAX_MANIFEST_BYTES,
     MAX_VERSION_FILES,
+    excluded_paths,
     manifest_bytes,
     manifest_digest,
     project_path,
+    retained_manifest,
 )
 from .project_volume_journal import ProjectVolumeError
 from .project_rebuild import BROWSER, GENERIC, classify, prune
@@ -212,12 +214,10 @@ class ProjectFiles:
         return manifest, [pair[1] for pair in ordered]
 
     def check_tree(self, root, quota, expected, *, exclude=False):
-        spec = expected.get("rebuild")
         actual, _ = self.scan(
-            root, quota, excluded=spec["excluded"] if spec and exclude else ()
+            root, quota, excluded=excluded_paths(expected) if exclude else ()
         )
-        if spec is not None:
-            actual.update(format=2, rebuild=spec)
+        actual = {**expected, "files": actual["files"]}
         manifest_bytes(actual, quota_bytes=quota)
         if actual != expected:
             raise ProjectVolumeError("Retained project tree is incomplete or changed")
@@ -311,32 +311,25 @@ class ProjectFiles:
                     ):
                         spec, defaults, warnings = classify(self, root, rebuild_command)
                         excluded_identities = {}
-                        select = (
-                            (
-                                lambda path: (
-                                    path in spec["excluded"]
-                                    or path in defaults
-                                    or path.split("/")[-1] in GENERIC
-                                    or path in BROWSER
-                                )
-                            )
-                            if spec
-                            else None
-                        )
+
+                        def select(path):
+                            return path in BROWSER or bool(spec and (
+                                path in spec["excluded"]
+                                or path in defaults
+                                or path.split("/")[-1] in GENERIC
+                            ))
+
                         manifest, identities = self.scan(
                             root,
                             record["quota_bytes"],
                             select=select,
                             excluded_identities=excluded_identities,
                         )
+                        caches = sorted(set(excluded_identities) & BROWSER)
                         if spec:
-                            manifest.update(
-                                format=2,
-                                rebuild={
-                                    **spec,
-                                    "excluded": sorted(excluded_identities),
-                                },
-                            )
+                            spec = {**spec, "excluded": sorted(set(excluded_identities) - BROWSER)}
+                        manifest = retained_manifest(manifest["files"], rebuild=spec,
+                                                     browser_cache=caches or None)
                         self.volumes._admit(MAX_MANIFEST_BYTES * 2)
                         digest = manifest_digest(
                             manifest, quota_bytes=record["quota_bytes"]
@@ -360,6 +353,7 @@ class ProjectFiles:
                         file_count=len(document["manifest"]["files"]),
                         format=document["manifest"]["format"],
                         rebuild=document["manifest"].get("rebuild"),
+                        browser_cache=document["manifest"].get("browser_cache"),
                         warnings=document.get("warnings", []),
                     ), b""
                 if action == "restore_begin":

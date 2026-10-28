@@ -9,7 +9,7 @@ import time
 import tomllib
 
 from src.local_runtime.files import read_json, write_json
-from src.project_content import manifest_bytes, manifest_digest, project_path, rebuild_spec
+from src.project_content import excluded_paths, manifest_bytes, manifest_digest, project_path, rebuild_spec
 from src.project_content import BROWSER_CACHE_DIRS as BROWSER
 from .project_volume_journal import ProjectVolumeError
 
@@ -226,8 +226,7 @@ def prune(
         else files.volumes._begin(directory, record, "files_prune", fence, arguments)
     )
     files.check_tree(root, record["quota_bytes"], document["manifest"], exclude=True)
-    spec = document["manifest"].get("rebuild")
-    paths = spec["excluded"] if spec else []
+    paths = excluded_paths(document["manifest"])
     if set(paths) != set(document["roots"]):
         raise ProjectVolumeError(
             "Cleanup roots were not observed in the source snapshot"

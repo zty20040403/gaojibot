@@ -76,6 +76,18 @@ class ProjectStoreTests(unittest.TestCase):
             **kwargs,
         )
 
+    def test_browser_cache_metadata_round_trips_without_a_rebuild_recipe(self):
+        pid = self.create()
+        original = self.snapshot(pid, browser_cache=[".gaoji/browser/Cache"])
+        document = self.store.manifest(self.access, pid, 1)
+        self.assertEqual(document["format"], 3)
+        self.assertIsNone(document["rebuild"])
+        self.snapshot(pid, b"changed")
+        restored = self.store.restore(self.access, pid, 1,
+            expected_version=self.store.get(self.access, pid)["version"])
+        self.assertEqual(restored["manifest_sha256"], original["manifest_sha256"])
+        self.assertEqual(self.store.manifest(self.access, pid, restored["version_no"]), document)
+
     def test_group_members_view_but_only_editors_write_and_departure_revokes(self):
         pid = self.create()
         self.assertEqual(self.store.get(self.b, pid)["project_id"], pid)

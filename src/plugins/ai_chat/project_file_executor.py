@@ -244,8 +244,10 @@ class ProjectFileExecutor:
                 raise ProjectConflict("Snapshot pagination is inconsistent")
             entries.extend(items)
         document = {"format": observed.get("format"), "files": entries}
-        if document["format"] == 2:
+        if document["format"] in (2, 3):
             document["rebuild"] = observed.get("rebuild")
+        if document["format"] == 3:
+            document["browser_cache"] = observed.get("browser_cache")
         encoded = manifest_bytes(document, quota_bytes=project["quota_bytes"])
         if hashlib.sha256(encoded).hexdigest() != digest:
             raise ProjectConflict("Snapshot manifest checksum failed")
@@ -307,6 +309,7 @@ class ProjectFileExecutor:
             source_turn_id=step["arguments"].get("source_turn_id"),
             staged_manifest_sha256=digest,
             rebuild=document.get("rebuild"),
+            browser_cache=document.get("browser_cache"),
         )
         return self._evidence(
             step,

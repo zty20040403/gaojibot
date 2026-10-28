@@ -88,17 +88,33 @@ def project_path(value: str) -> str:
     return str(PurePosixPath(value))
 
 
+def retained_manifest(files, *, rebuild=None, browser_cache=None):
+    document = {"format": 1, "files": files}
+    if rebuild is not None:
+        document.update(format=2, rebuild=rebuild)
+    if browser_cache is not None:
+        document.update(format=3, rebuild=rebuild, browser_cache=browser_cache)
+    return document
+
+
+def excluded_paths(manifest):
+    spec = manifest.get("rebuild")
+    return sorted((spec["excluded"] if spec else []) + manifest.get("browser_cache", []))
+
+
 def manifest_bytes(manifest, *, quota_bytes):
     if (
         not isinstance(manifest, dict)
         or set(manifest)
         != (
-            {"format", "files", "rebuild"}
+            {"format", "files", "rebuild", "browser_cache"}
+            if manifest.get("format") == 3
+            else {"format", "files", "rebuild"}
             if manifest.get("format") == 2
             else {"format", "files"}
         )
         or type(manifest["format"]) is not int
-        or manifest["format"] not in (1, 2)
+        or manifest["format"] not in (1, 2, 3)
         or not isinstance(manifest["files"], list)
         or len(manifest["files"]) > MAX_VERSION_FILES
     ):
@@ -123,17 +139,27 @@ def manifest_bytes(manifest, *, quota_bytes):
         total += item["size"]
     if total > quota_bytes:
         raise ValueError("Retained files exceed project capacity")
-    if manifest["format"] == 2:
+    if manifest["format"] == 3:
+        caches = manifest["browser_cache"]
+        if (not isinstance(caches, list) or len(caches) > len(BROWSER_CACHE_DIRS)
+                or any(not isinstance(path, str) or path not in BROWSER_CACHE_DIRS for path in caches)
+                or caches != sorted(set(caches))):
+            raise ValueError("Invalid browser cache roots")
+    if manifest["format"] == 2 or manifest.get("rebuild") is not None:
         spec = rebuild_spec(manifest["rebuild"])
         files = {item["path"]: item["sha256"] for item in manifest["files"]}
         if any(files.get(item["path"]) != item["sha256"] for item in spec["locks"]):
             raise ValueError("Rebuild inputs are not retained at their pinned hashes")
-        if any(
-            path == root or path.startswith(root + "/")
-            for path in files
-            for root in spec["excluded"]
-        ):
-            raise ValueError("Rebuildable data cannot also be retained")
+    excluded = excluded_paths(manifest)
+    if len(excluded) != len(set(excluded)) or any(
+        p.startswith(q + "/") for p in excluded for q in excluded if p != q
+    ):
+        raise ValueError("Rebuildable and browser cache roots must not overlap")
+    if any(
+        item["path"] == root or item["path"].startswith(root + "/")
+        for item in manifest["files"] for root in excluded
+    ):
+        raise ValueError("Rebuildable data cannot also be retained")
     for name in names:
         if any(
             "/".join(name.split("/")[:i]) in names

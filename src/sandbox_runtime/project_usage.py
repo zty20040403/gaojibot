@@ -12,8 +12,6 @@ from .project_volume_journal import ProjectVolumeError
 def rebuildable_bytes(root, command, *, deadline, max_nodes=1000000):
     files = ProjectFiles(None)
     spec, selected, _ = classify(files, root, command)
-    if spec is None:
-        return 0
     nodes, inodes = 0, {}
     device = os.fstat(root).st_dev
 
@@ -28,6 +26,12 @@ def rebuildable_bytes(root, command, *, deadline, max_nodes=1000000):
                 if nodes > max_nodes or time.monotonic() > deadline:
                     raise ProjectVolumeError("Project usage scan exceeded its budget")
                 path = prefix + entry.name
+                # Without a locked recipe, only the fixed browser subtree can
+                # be reclaimed. Do not walk unrelated dependency directories.
+                if spec is None and not inherited and path not in BROWSER and not any(
+                    cache.startswith(path + "/") for cache in BROWSER
+                ):
+                    continue
                 info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
                 if info.st_dev != device:
                     raise ProjectVolumeError("Project usage crossed a mount boundary")
@@ -37,10 +41,12 @@ def rebuildable_bytes(root, command, *, deadline, max_nodes=1000000):
                     and not path.startswith("lost+found/")
                     and (not path.startswith(".gaoji/") or path in BROWSER)
                     and (
-                        path in spec["excluded"]
-                        or path in BROWSER
-                        or entry.name in GENERIC
-                        or (not prefix and entry.name in selected)
+                        path in BROWSER
+                        or (spec is not None and (
+                            path in spec["excluded"]
+                            or entry.name in GENERIC
+                            or (not prefix and entry.name in selected)
+                        ))
                     )
                 )
                 identity = (info.st_dev, info.st_ino)

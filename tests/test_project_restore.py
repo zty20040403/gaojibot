@@ -97,6 +97,24 @@ class OciRestoreTests(RestoreMixin, unittest.IsolatedAsyncioTestCase):
         (root / "extra.txt").write_text("not in version one")
         return root
 
+    async def test_browser_only_format_three_rollback_keeps_login_and_omits_cache(self):
+        root = await self.wake()
+        cache = root / ".gaoji/browser/Default/Cache"
+        cache.mkdir(parents=True)
+        (cache / "data").write_bytes(b"cache")
+        (cache.parent / "Cookies").write_bytes(b"original login")
+        self.save()
+        await self.executor(self.claim())
+        original = self.projects.versions(self.access, self.pid)[0]
+        (cache.parent / "Cookies").write_bytes(b"modified login")
+        self.restore()
+        await self.executor(self.claim())
+        current = self.projects.get(self.access, self.pid)
+        restored = self.volumes.binding(self.scope.key, self.pid, generation=current["workspace_generation"])
+        self.assertEqual((restored / ".gaoji/browser/Default/Cookies").read_bytes(), b"original login")
+        self.assertFalse((restored / ".gaoji/browser/Default/Cache").exists())
+        self.assertEqual(self.projects.versions(self.access, self.pid)[0]["manifest_sha256"], original["manifest_sha256"])
+
     async def test_active_rollback_saves_unsaved_work_and_creates_verified_new_version(
         self,
     ):
