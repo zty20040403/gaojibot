@@ -132,7 +132,8 @@ class VmSandboxManager:
                 ["mkdir", "-p", "/workspace"], ["chown", "sandbox:sandbox", "/workspace"]],
         }
         if project_disk is not None:
-            from src.sandbox_runtime import project_vm_gate, project_vm_guest
+            from src.sandbox_runtime import project_vm_browser_guest, project_vm_gate, project_vm_guest
+            from src.sandbox_runtime.project_browser_bundle import build_bundle as browser_bundle
             from src.sandbox_runtime.project_vm_file_bundle import build_bundle
             from src.sandbox_runtime.project_vm_file_guest import HELPER_PATH as FILE_HELPER_PATH
 
@@ -149,6 +150,13 @@ class VmSandboxManager:
                  "content": Path(project_vm_gate.__file__).read_text(encoding="utf-8")},
                 {"path": FILE_HELPER_PATH, "permissions": "0700", "owner": "root:root",
                  "encoding": "b64", "content": base64.b64encode(build_bundle()).decode("ascii")},
+                {"path": project_vm_browser_guest.HELPER_PATH, "permissions": "0700", "owner": "root:root",
+                 "encoding": "b64", "content": base64.b64encode(browser_bundle(guest_control=True)).decode("ascii")},
+                {"path": project_vm_browser_guest.WORKER_PATH, "permissions": "0755", "owner": "root:root",
+                 "encoding": "b64", "content": base64.b64encode(browser_bundle()).decode("ascii")},
+                {"path": "/etc/udev/rules.d/70-gaoji-browser.rules", "permissions": "0644", "owner": "root:root",
+                 "content": 'SUBSYSTEM=="virtio-ports", ATTR{name}=="' + project_vm_browser_guest.CHANNEL_NAME +
+                            '", OWNER="root", GROUP="root", MODE="0600"\n'},
                 {"path": "/etc/systemd/system/gaoji-project-workspace.service", "permissions": "0644", "owner": "root:root",
                  "content": "[Unit]\nDescription=Gaoji project workspace\nAfter=local-fs.target\n"
                             "[Service]\nType=oneshot\nRemainAfterExit=yes\nTimeoutStartSec=300\n"
@@ -158,6 +166,9 @@ class VmSandboxManager:
             config["runcmd"] = [
                 ["systemctl", "enable", "--now", "qemu-guest-agent"],
                 ["systemctl", "daemon-reload"],
+                ["udevadm", "control", "--reload"],
+                ["udevadm", "trigger", "--subsystem-match=virtio-ports"],
+                ["udevadm", "settle", "--timeout=10"],
                 ["systemctl", "enable", "--now", "gaoji-project-workspace.service"],
             ]
         elif initialize_project:
@@ -459,6 +470,12 @@ class VmSandboxManager:
         ElementTree.SubElement(channel, "target", {
             "type": "virtio", "name": "org.qemu.guest_agent.0",
         })
+        if project_disk is not None:
+            from src.sandbox_runtime.project_vm_browser_guest import CHANNEL_NAME, SOCKET_NAME
+
+            browser = ElementTree.SubElement(devices, "channel", {"type": "unix"})
+            ElementTree.SubElement(browser, "source", {"mode": "bind", "path": str(directory / SOCKET_NAME)})
+            ElementTree.SubElement(browser, "target", {"type": "virtio", "name": CHANNEL_NAME})
         # Persistent projects must not accumulate an unbounded, unjournalled
         # host log which also prevents retirement's exact-file cleanup.
         serial = ElementTree.SubElement(devices, "serial", {"type": "pty" if project_disk is not None else "file"})

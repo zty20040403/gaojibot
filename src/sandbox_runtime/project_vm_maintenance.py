@@ -15,6 +15,7 @@ import time
 from .errors import SandboxError
 from .project_vm_disks import VmProjectDiskBinding
 from .project_vm_gate import HELPER_PATH
+from .project_vm_browser_guest import SOCKET_NAME
 from .project_vm_io import _journal
 from .project_vm_mounts import VmProjectMounts
 from .project_vm_provision import FILES, VmProjectProvisioner
@@ -23,6 +24,20 @@ ACTIONS = frozenset({"quiesce", "trim", "unmount", "stop", "remove"})
 STAGES = {"prepared": {"shutdown_requested", "stopped"},
           "shutdown_requested": {"stopped"}, "stopped": {"undefining"},
           "undefining": {"undefined"}, "undefined": {"deleting"}, "deleting": {"deleted"}}
+SOCKETS = {"agent.sock", SOCKET_NAME}
+
+
+def _socket_identities(value):
+    # The original retirement journal stored only the QGA socket pair.
+    if isinstance(value, list):
+        value = {"agent.sock": value}
+    if value is None:
+        return {}
+    if (not isinstance(value, dict) or set(value) - SOCKETS
+            or any(not isinstance(pair, list) or len(pair) != 2
+                   or any(type(n) is not int or n < 0 for n in pair) for pair in value.values())):
+        raise SandboxError("Invalid retired VM socket identity")
+    return value
 
 
 class VmMaintenanceJournal:
@@ -86,10 +101,9 @@ class VmMaintenanceJournal:
                 raise SandboxError("VM maintenance checkpoint is stale or out of order")
             state["stage"] = stage
             if socket_identity is not None:
-                if (stage != "deleting" or not isinstance(socket_identity, list) or len(socket_identity) != 2
-                        or any(type(value) is not int or value < 0 for value in socket_identity)):
+                if stage != "deleting":
                     raise SandboxError("Invalid retired VM socket identity")
-                state["socket_identity"] = socket_identity
+                state["socket_identity"] = _socket_identities(socket_identity)
             d._save(directory, record)
             return self._view(directory, record)
 
@@ -192,15 +206,16 @@ class VmProjectMaintenance:
         artifacts = boot["workspace"]["artifacts"]
         paths = list(directory.iterdir())
         names = {p.name for p in paths}
-        if names - FILES - {"agent.sock"} or (not deleting and not FILES <= names):
+        if names - FILES - SOCKETS or (not deleting and not FILES <= names):
             raise SandboxError("Unknown or missing VM files prevent retirement")
-        socket_identity = None
+        socket_identity = {}
+        expected_sockets = _socket_identities(boot["maintenance"]["socket_identity"])
         for path in paths:
-            if path.name == "agent.sock":
+            if path.name in SOCKETS:
                 info = path.lstat()
-                socket_identity = [info.st_dev, info.st_ino]
+                socket_identity[path.name] = [info.st_dev, info.st_ino]
                 if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
-                        or (deleting and socket_identity != boot["maintenance"]["socket_identity"])):
+                        or (deleting and socket_identity[path.name] != expected_sockets.get(path.name))):
                     raise SandboxError("Retired guest socket identity changed")
             else:
                 observed = self.provisioner._file(path, digest=path.name != "disk.qcow2")
@@ -214,9 +229,9 @@ class VmProjectMaintenance:
             fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
                 for path in paths:
-                    if path.name == "agent.sock":
+                    if path.name in SOCKETS:
                         info = path.lstat()
-                        if not stat.S_ISSOCK(info.st_mode) or [info.st_dev, info.st_ino] != socket_identity:
+                        if not stat.S_ISSOCK(info.st_mode) or [info.st_dev, info.st_ino] != socket_identity[path.name]:
                             raise SandboxError("Guest socket changed before removal")
                     else:
                         observed = self.provisioner._file(path, digest=path.name != "disk.qcow2")

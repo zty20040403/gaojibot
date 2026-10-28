@@ -317,6 +317,38 @@ class MaintenanceTests(VmProvisionFixture, unittest.IsolatedAsyncioTestCase):
             await self.maintain("stop")
         self.assertNotIn("shutdown", self.effects)
 
+    async def test_both_private_sockets_retire_without_removing_project_disk(self):
+        await self.maintain("unmount")
+        directory = self.directory()
+        for name in ("agent.sock", "browser.sock"):
+            with socket.socket(socket.AF_UNIX) as channel:
+                channel.bind(str(directory / name))
+        await self.maintain("remove", fence=5)
+        self.assertFalse(directory.exists())
+        self.assertEqual(self.data_path.read_bytes(), self.data_before)
+
+    async def test_browser_socket_replacement_blocks_replayed_cleanup(self):
+        await self.maintain("unmount")
+        path = self.directory() / "browser.sock"
+        with socket.socket(socket.AF_UNIX) as channel:
+            channel.bind(str(path))
+        checkpoint = self.maintenance.journal.checkpoint
+        def lost(*args, **kwargs):
+            result = checkpoint(*args, **kwargs)
+            if kwargs["stage"] == "deleting":
+                raise OSError("lost cleanup acknowledgement")
+            return result
+        with patch.object(self.maintenance.journal, "checkpoint", side_effect=lost), self.assertRaises(OSError):
+            await self.maintain("remove", fence=5)
+        path.rename(path.with_name("old.sock"))
+        with socket.socket(socket.AF_UNIX) as channel:
+            channel.bind(str(path))
+        path.with_name("old.sock").unlink()
+        with self.assertRaisesRegex(SandboxError, "socket identity"):
+            await self.maintain("remove", fence=5)
+        self.assertTrue(path.exists())
+        self.assertEqual(self.data_path.read_bytes(), self.data_before)
+
     async def test_io_activity_and_wrong_reservations_prevent_effects(self):
         sid = self.record()["sandbox_id"]
         async with self.manager.io_lock(sid):

@@ -12,11 +12,14 @@ MODULES = (
 )
 
 
-def build_bundle():
+def build_bundle(*, guest_control=False):
     root = Path(__file__).resolve().parents[2]
-    sources = {name: (root / name).read_bytes() for name in MODULES}
+    modules = MODULES if not guest_control else tuple("src/sandbox_runtime/" + name + ".py" for name in (
+        "project_vm_browser_guest", "project_vm_gate", "project_vm_guest"))
+    main = "project_vm_browser_guest" if guest_control else "project_browser_worker"
+    sources = {name: (root / name).read_bytes() for name in modules}
     sources.update({"src/__init__.py": b"", "src/sandbox_runtime/__init__.py": b"",
-                    "__main__.py": b"from src.sandbox_runtime.project_browser_worker import main\nmain()\n"})
+                    "__main__.py": f"from src.sandbox_runtime.{main} import main\nmain()\n".encode()})
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, data in sorted(sources.items()):

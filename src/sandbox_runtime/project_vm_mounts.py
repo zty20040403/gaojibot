@@ -12,6 +12,7 @@ from xml.etree import ElementTree
 
 from .docker import SandboxError
 from .project_vm_guest import HELPER_PATH, validate_config
+from .project_vm_browser_guest import CHANNEL_NAME, SOCKET_NAME
 from .project_vm_io import _journal
 
 
@@ -155,9 +156,19 @@ class VmProjectMounts:
                 or networks[0].find("portForward") is not None):
             raise ValueError("Unexpected project network")
         channels = devices.findall("channel")
-        if (len(channels) != 1 or channels[0].get("type") != "unix"
-                or channels[0].find("source").get("path") != str(directory / "agent.sock")
-                or channels[0].find("target").get("name") != "org.qemu.guest_agent.0"):
+        # Existing frozen VMs may only have QGA. Browser launch must explicitly
+        # require the second channel; it cannot rewrite those boot artifacts.
+        allowed = {"org.qemu.guest_agent.0": "agent.sock", CHANNEL_NAME: SOCKET_NAME}
+        seen = set()
+        for channel in channels:
+            source, target = channel.find("source"), channel.find("target")
+            name = target.get("name") if target is not None else None
+            if (channel.get("type") != "unix" or source is None or target is None
+                    or name not in allowed or name in seen or target.get("type") != "virtio"
+                    or source.get("mode") != "bind" or source.get("path") != str(directory / allowed[name])):
+                raise ValueError("Guest communication channel differs from the owned VM")
+            seen.add(name)
+        if "org.qemu.guest_agent.0" not in seen:
             raise ValueError("Guest agent channel differs from the owned VM")
 
     async def _binding(self, owner, sandbox_id, metadata, *, reservation=None,

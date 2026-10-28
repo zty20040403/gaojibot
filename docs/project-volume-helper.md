@@ -1343,6 +1343,43 @@ still needs its dedicated transport; do not substitute a host browser.
 The registry tests combine real PostgreSQL and private Unix RPC with explicit
 page/process fixtures, and are not native backend acceptance.
 
+### KVM browser guest lifecycle
+
+New project VM boot artifacts include a second private virtio channel,
+`org.gaoji.project-browser.0`, backed by `browser.sock` in the owned VM directory.
+It is not a network listener. QGA remains the separate control channel.
+The domain validator rejects unknown, duplicate, redirected or network-style
+channels. Existing sealed VMs with only QGA remain valid for existing operations;
+browser enablement must not edit their immutable bootstrap files in place.
+Both sockets are journalled and inode-checked during retirement, including
+recovery of the former single-socket journal format.
+
+`project_browser_control.pyz` accepts only root `start`, `status` and `stop`
+requests with a session ID, epoch and process limit. An fsynced start intent is
+never submitted to systemd again on retry, even if no unit is now present.
+The root-owned transient unit has a bounded lifetime/resources, no restart,
+whole-cgroup termination, a read-only system and private temporary directory.
+Only the original session's observed inactive unit and empty cgroup can close
+the journal; another session cannot be adopted or stopped.
+
+The trusted wrapper retains the guest IO lock while the browser runs as UID/GID
+1000, with no supplementary groups or application environment. It opens only
+the root-private virtio device and gives the browser its inherited stdin/stdout.
+The existing framed worker still determines readiness and action receipts;
+unit activation alone is not browser readiness. The worker archive contains no
+root lifecycle module or Bot credentials. Toolchain files must be root-owned
+and non-user-writable, including the isolated Python environment's dependencies.
+
+This is guest-side infrastructure, not enabled KVM project browsing. The host
+driver, lazy pinned Chromium/Playwright preparation, application routing and
+native KVM acceptance are still required. Dependency preparation is deliberately
+not added to every cloud-init boot. Local tests use real journals/locks and an
+isolated Python archive, with explicit systemd, device and libvirt fixtures;
+they do not claim to have booted a Linux VM.
+
+Implementation references: [libvirt private channels](https://libvirt.org/formatdomain.html#channel)
+and [systemd execution controls](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
+
 ### Remaining acceptance
 
 `tests/test_project_volumes.py` uses actual private files and Unix RPC but an

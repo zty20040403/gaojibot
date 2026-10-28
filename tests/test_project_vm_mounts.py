@@ -287,6 +287,36 @@ class MountBridgeTests(unittest.IsolatedAsyncioTestCase):
                 await self.mount()
         self.manager._guest_exec.assert_not_awaited()
 
+    def test_browser_channel_is_private_and_old_frozen_domains_remain_valid(self):
+        from src.sandbox_runtime.project_vm_browser_guest import CHANNEL_NAME
+        original = ElementTree.fromstring(self.xml)
+        browser = original.find(f"./devices/channel/target[@name='{CHANNEL_NAME}']/..")
+        self.assertIsNotNone(browser)
+        self.assertEqual(browser.find("source").attrib,
+                         {"mode": "bind", "path": str(self.manager._directory(SID) / "browser.sock")})
+        legacy = copy.deepcopy(original)
+        legacy.find("devices").remove(legacy.findall("./devices/channel")[1])
+        self.bridge._validate_domain(legacy, self.fixture.binding, DOMAIN)
+        for kind in ("path", "mode", "type", "target", "duplicate", "missing", "network"):
+            root = copy.deepcopy(original)
+            channel = root.findall("./devices/channel")[1]
+            if kind == "path":
+                channel.find("source").set("path", "/tmp/foreign.sock")
+            elif kind == "mode":
+                channel.find("source").set("mode", "connect")
+            elif kind == "type":
+                channel.set("type", "tcp")
+            elif kind == "target":
+                channel.find("target").set("name", "foreign")
+            elif kind == "duplicate":
+                root.find("devices").append(copy.deepcopy(channel))
+            elif kind == "missing":
+                channel.remove(channel.find("source"))
+            else:
+                channel.find("target").set("type", "guestfwd")
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                self.bridge._validate_domain(root, self.fixture.binding, DOMAIN)
+
     async def test_file_transfer_holds_same_lock_and_blocks_maintenance(self):
         await self.ready()
         entered, release = asyncio.Event(), asyncio.Event()

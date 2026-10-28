@@ -3191,3 +3191,39 @@ implementation evidence, not a claim that the production App has these features.
   native acceptance. Other M3 requirements, native M2 gates and M4-M7 remain
   incomplete. No production host, QQ account, live model, shared nix-config,
   rebuild, App release or supplied plan was changed.
+
+### M3 KVM browser guest lifecycle and private channel
+
+- Added a private virtio browser channel to new project VM boot artifacts and
+  a root-only, isolated lifecycle archive. Existing frozen QGA-only VMs remain
+  valid; no bootstrap mutation or production migration is performed. Ordinary
+  task VMs do not gain the channel. Domain checks reject unexpected or duplicate
+  channels and wrong paths/types. Retirement now independently records and
+  verifies both sockets, preserving old single-socket journal recovery.
+- Guest start/status/stop are bound to the sealed project disk, current epoch
+  and unique browser session. Start intent is fsynced before the PID 1 request;
+  retry never launches a second worker, including interruption before creation.
+  Late workers are rejected after revocation or stop. Unknown termination stays
+  closing until the original unit is observed inactive and its cgroup empty.
+- The root wrapper owns the guest IO lock and private character-device handle.
+  Browser code runs as UID/GID 1000 without supplementary groups or inherited
+  application environment. The transient unit has no automatic restart,
+  bounded memory/CPU/tasks/lifetime, whole-cgroup termination, a read-only system
+  and private temporary directory. Trusted archives and Python dependencies are
+  checked for administrator ownership and user write access. Dependencies are
+  not downloaded during every project boot.
+- Verification: 140 focused guest, mount, provision, retirement, gate, worker and
+  VM-executor tests passed in 36.671 seconds with ResourceWarnings as errors
+  (`.cache/roadmap/m3-vm-browser-guest-verified.log`). Tests use real private
+  journals/locks, real disposable PostgreSQL and isolated archive imports.
+  The worker test uses local Chromium against a temporary loopback page;
+  systemd, virtio-device and libvirt effects are explicit fixtures, not native
+  KVM evidence. Test resources were removed. Whole-CI Ruff, compileall and
+  whitespace checks passed; Nix package/import checks passed on aarch64-darwin
+  (`.cache/roadmap/m3-vm-browser-guest-nix.log`), with incompatible architectures
+  omitted. This does not establish Linux/KVM deployment acceptance.
+- Still open: KVM host browser driver, lazy pinned toolchain preparation and
+  application transport/routing; native acceptance, general lifecycle drain
+  and cache cleanup. Other M3 requirements, native M2 gates and M4-M7 remain
+  incomplete. No production SSH, QQ/model calls, shared nix-config edit,
+  rebuild, App release or supplied-plan modification occurred.
