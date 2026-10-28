@@ -90,9 +90,10 @@ class ProjectTaskReleases:
             raise ValueError("Invalid project task reconciliation page")
         with self.tasks._transaction() as cursor:
             return [dict(row) for row in cursor.execute("""SELECT p.*,b.task_id,b.actor_principal_id,
-                (v.task_id IS NOT NULL) AS published,t.status AS task_status
+                (v.task_id IS NOT NULL) AS published,t.status AS task_status,c.revision
                 FROM project_task_bindings b JOIN projects p USING(project_id)
                 JOIN subagent_tasks t USING(task_id)
+                JOIN subagent_controls c USING(task_id)
                 LEFT JOIN project_task_publications v USING(task_id)
                 WHERE b.task_id>? AND p.locked_task_id=b.task_id AND p.lifecycle_job_id IS NULL
                 AND (v.task_id IS NOT NULL OR t.status IN ('completed','partial','failed','cancelled'))
@@ -131,6 +132,10 @@ class ProjectTaskReconciler:
                         else:
                             await _store(self.releases.release_failed, access, candidate["task_id"])
                 except Exception as exc:
+                    from .project_task_reporting import record_deferred
+
+                    await _store(record_deferred, self.releases.tasks, candidate["task_id"],
+                                 candidate.get("revision"), exc)
                     logger.info("Project task %s reconciliation deferred: %s", candidate["task_id"], type(exc).__name__)
             # Bounded scans must not let one revoked or uncertain task starve others.
             self._after = rows[-1]["task_id"] if len(rows) == 20 else 0

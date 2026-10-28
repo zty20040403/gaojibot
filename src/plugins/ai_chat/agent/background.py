@@ -23,6 +23,7 @@ from .collaboration_runtime import (
     active_collaboration_guard, execution_event,
 )
 from ..tool_policy import tool_enabled
+from ..project_task_reporting import enqueue_project_report, report_candidates
 
 
 class ContinuationCancelled(Exception):
@@ -42,6 +43,7 @@ class SubAgentDispatcher:
         self.worker.register(self.kind, self.execute, compensator=self.settle_failed_dispatch)
         self._next_artifact_prune = 0.0
         self._next_message_reconcile = 0.0
+        self._project_report_after = 0
 
     @staticmethod
     def restore_event(dispatch):
@@ -60,6 +62,8 @@ class SubAgentDispatcher:
             return None
         if task is None or task.status not in {"completed", "partial", "failed", "cancelled"}:
             return None
+        if task.project_id is not None:
+            return enqueue_project_report(self, task_id)
         event = self.restore_event(control["dispatch"])
         if scope_from_event(event).key != task.scope_key or event.user_id != task.requester_user_id:
             raise ValueError("Final delivery envelope does not match the task owner")
@@ -138,6 +142,7 @@ class SubAgentDispatcher:
                 await asyncio.to_thread(self.enqueue_final, task_id)
             except Exception as exc:
                 self.context.logger.warning(f"task#{task_id} final outbox reconciliation deferred: {type(exc).__name__}")
+        await self.reconcile_project_reports()
         for task_id in await asyncio.to_thread(self.store.queued_file_tasks):
             try:
                 await self.deliver_queued_files(task_id)
@@ -171,6 +176,56 @@ class SubAgentDispatcher:
             except Exception as exc:
                 self.context.logger.warning("Task workspace cleanup failed; retained for retry: %s", type(exc).__name__)
             self._next_artifact_prune = now + 30
+
+    async def reconcile_project_reports(self):
+        ids = await asyncio.to_thread(report_candidates, self.store, after=self._project_report_after)
+        for task_id in ids:
+            try:
+                await asyncio.to_thread(enqueue_project_report, self, task_id)
+                await self.schedule_project_cleanup(task_id)
+            except Exception as exc:
+                self.context.logger.warning("task#%s project report deferred: %s", task_id, type(exc).__name__)
+        self._project_report_after = ids[-1] if len(ids) == 20 else 0
+
+    def _project_cleanup_plan(self, task_id):
+        # Initial task completion predates CAS publication. Revisit cleanup once
+        # the internal update is durable and all requested attachments are safe.
+        task = self.store.get(task_id)
+        if task is None or task.project_id is None or task.status != "completed":
+            return
+        ready, digests = self.coordinator._artifact_retention_state(task)
+        if not ready:
+            return
+        revision = self.store.control(task_id)["revision"]
+        phase = f"project_cleanup_scheduled:{revision}"
+        with self.store._transaction() as cursor:
+            if cursor.execute("SELECT 1 FROM subagent_checkpoints WHERE task_id=? AND phase=?",
+                              (task_id, phase)).fetchone():
+                return
+        return task, revision, digests, phase, self.store.runs(task_id)
+
+    async def schedule_project_cleanup(self, task_id):
+        plan = await asyncio.to_thread(self._project_cleanup_plan, task_id)
+        if plan is None:
+            return
+        task, revision, digests, phase, runs = plan
+        executor = SimpleNamespace(owner=task.conversation_id, base_owner=task.conversation_id,
+                                   sandbox_manager=self.context.sandbox_manager)
+        workspaces = StepWorkspaces(self.context.state_dir, executor,
+            retention_seconds=self.context.settings.subagent_retention_seconds)
+        await workspaces.finalize_task(task_id, runs, artifact_digests=digests,
+                                      cleanup_revision=revision, finished_at=task.finished_at)
+        def settled():
+            with self.store._transaction() as cursor:
+                control = cursor.execute("SELECT revision FROM subagent_controls WHERE task_id=? FOR UPDATE",
+                                         (task_id,)).fetchone()
+                if control is None or control["revision"] != revision:
+                    return
+                if not cursor.execute("SELECT 1 FROM subagent_checkpoints WHERE task_id=? AND phase=?",
+                                      (task_id, phase)).fetchone():
+                    self.store.append_checkpoint(task_id, phase, {"revision": revision, "snapshots": list(digests)},
+                                                 transaction_cursor=cursor)
+        await asyncio.to_thread(settled)
 
     async def reconcile_final_messages(self):
         """Confirm lost receipts from matching self-messages, never resend on absence."""
@@ -365,7 +420,9 @@ class SubAgentDispatcher:
         if summary is None:
             return None
         delivery = None
-        if summary["notice_needed"]:
+        if summary["notice_needed"] and task.project_id is not None:
+            delivery = enqueue_project_report(self, task_id)
+        elif summary["notice_needed"]:
             outbox = getattr(self.context, "delivery_store", None)
             if outbox is None:
                 return None

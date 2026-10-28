@@ -9,7 +9,8 @@ from .receipt_links import RECEIPT_TOOL
 
 
 def task_progress(task: Any, runs: list, evidence: list[dict], external: list[dict],
-                  deliveries: list[dict], final: Any, *, revision: int) -> dict:
+                  deliveries: list[dict], final: Any, *, revision: int,
+                  project_completion: dict | None = None) -> dict:
     contract = task.plan.get("contract", {})
     validation = task.result.get("validation", {}).get("acceptance", {})
     matrix = validation.get("task_outcome", {}) if isinstance(validation, dict) else {}
@@ -76,6 +77,10 @@ def task_progress(task: Any, runs: list, evidence: list[dict], external: list[di
     active = task.status in {"running", "planning", "verifying", "waiting_external"}
     file_rows = [item for item in deliveries if item["revision"] == revision]
     files_confirmed = not contract.get("delivery_required") or bool(file_rows) and all(item["state"] == "acknowledged" for item in file_rows)
+    if getattr(task, "project_id", None) is not None and project_completion:
+        files = project_completion["files"]
+        files_confirmed = (bool(files["items"]) or not files["required"]) and all(
+            item["state"] == "acknowledged" and not item["draft"] for item in files["items"])
     final_state = final.status if final else "pending"
     delivered = files_confirmed and final_state == "committed"
     inspected = [row for row in matrix.get("criteria", []) if row.get("kind") == "host_inspection"]
@@ -94,6 +99,17 @@ def task_progress(task: Any, runs: list, evidence: list[dict], external: list[di
         {"key": "delivery", "label": "结果送达", "status": "committed" if delivered else "partial" if final_state == "committed" else final_state,
          "detail": "文字和要求的文件已确认送达" if delivered else "分别核对最终文字与文件回执"},
     ]
+    if getattr(task, "project_id", None) is not None:
+        state = (project_completion or {}).get("project", {})
+        code = state.get("code", "pending")
+        stages.insert(-1, {"key": "project", "label": "项目落地",
+            "status": "completed" if code == "materialized" else "failed" if code == "restore_failed"
+                      else "unverified" if code in {"access", "artifact", "invalid", "conflict", "released"} else "waiting",
+            "detail": f"prj#{task.project_id} 本任务版本 v{state.get('version')} 已恢复并核实"
+                      if code == "materialized" else "版本已保存，工作区恢复失败" if code == "restore_failed"
+                      else "版本已保存，尚未恢复到工作区" if code == "restoring"
+                      else "任务未更新项目，原版本保留" if code == "released"
+                      else "尚无项目更新完成回执，不能把子任务结束当作项目落地"})
     return {"revision": revision, "stages": stages, "acceptance": matrix,
         "findings": findings, "completed": finished, "authorization": authorization,
         "next_verification": next_verification, "operations": operations,

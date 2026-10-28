@@ -133,6 +133,11 @@ class OneBotDelivery(HandlerService):
         if delivery.idempotency_key.startswith(FILE_PREFIX):
             await deliver_file(self.context, bot, delivery)
             return
+        is_project_report = delivery.idempotency_key.startswith("subagent-final:") and ":project:" in delivery.idempotency_key
+        if is_project_report:
+            from .project_task_reporting import validate_report_delivery
+
+            await validate_report_delivery(self.context, bot, delivery)
         is_wiki_brief = delivery.idempotency_key.startswith(NEWCOMER_DELIVERY_PREFIX)
         is_mcp_reply = delivery.idempotency_key.startswith(MCP_DELIVERY_PREFIX)
         if is_mcp_reply:
@@ -171,7 +176,7 @@ class OneBotDelivery(HandlerService):
                     message=message,
                 )
         native_message_id = self.services.replies._sent_message_id(response)
-        if (is_wiki_brief or is_mcp_reply) and not native_message_id:
+        if (is_wiki_brief or is_mcp_reply or is_project_report) and not native_message_id:
             raise BridgeOutcomeUnknown("消息没有取得 QQ 回执，暂停自动重发")
         if self.context.delivery_store is not None:
             self.context.delivery_store.mark_committed(

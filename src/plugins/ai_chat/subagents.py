@@ -14,6 +14,7 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator, Literal
 
 from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
+from src.project_update import ARTIFACT_NAME
 
 from .agent import (
     AGENT_SPECS,
@@ -1519,8 +1520,21 @@ class SubAgentCoordinator:
         expected: set[str] = set()
         snapshots: set[str] = set()
         runs = self.store.runs(task.task_id)
-        selected = {outcome.run.run_id for outcome in _delivery_outcomes(
-            task, {run.step_key: _outcome_from_run(task, run) for run in runs})}
+        selected = _delivery_outcomes(task, {run.step_key: _outcome_from_run(task, run) for run in runs},
+                                      include_project_updates=False)
+        expected = {str(artifact.get("snapshot") or artifact.get("handle") or "")
+                    for outcome in selected for artifact in outcome.result.get("artifacts", [])
+                    if isinstance(artifact, Mapping)} - {""}
+        if task.project_id is not None:
+            if not delivery_required:
+                expected.clear()
+            # Internal bundles are consumed by CAS, not QQ. Delivery of a PDF
+            # cannot authorize deleting the still-unpublished project update.
+            with self.store._transaction() as cursor:
+                publication = cursor.execute("SELECT revision FROM project_task_publications WHERE task_id=?",
+                                             (task.task_id,)).fetchone()
+            if publication is None or publication["revision"] != self.store.control(task.task_id)["revision"]:
+                return (False, ())
         for run in runs:
             artifacts = run.result.get("artifacts")
             if not isinstance(artifacts, list):
@@ -1528,14 +1542,12 @@ class SubAgentCoordinator:
             for artifact in artifacts:
                 if not isinstance(artifact, Mapping):
                     continue
-                key = str(artifact.get("snapshot") or artifact.get("handle") or "")
-                if key and run.run_id in selected:
-                    expected.add(key)
                 snapshot = str(artifact.get("snapshot") or "")
                 if re.fullmatch(r"[a-f0-9]{64}", snapshot):
                     snapshots.add(snapshot)
         if not expected:
-            return (not delivery_required, ())
+            return (not delivery_required, tuple(sorted(snapshots))
+                    if not delivery_required and task.project_id is not None else ())
         if not expected.issubset(snapshots):
             return (False, ())
         acknowledged = {
@@ -2439,7 +2451,10 @@ class SubAgentCoordinator:
                 return {"status": "not_verified", "reason": f"Could not reserve an artifact verifier: {exc}"}
         checks = []
         checked_artifacts: set[str] = set()
-        for outcome in _delivery_outcomes(task, completed):
+        candidates = _delivery_outcomes(task, completed)
+        if task.project_id is not None:
+            candidates += _delivery_outcomes(task, completed, include_project_updates=False)
+        for outcome in candidates:
             for artifact in outcome.result.get("artifacts", []):
                 artifact_key = str(artifact.get("snapshot") or artifact.get("handle") or "")
                 if artifact_key and artifact_key in checked_artifacts:
@@ -2792,7 +2807,7 @@ class SubAgentCoordinator:
 
         deliveries: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for outcome in _delivery_outcomes(task, completed):
+        for outcome in _delivery_outcomes(task, completed, include_project_updates=False):
             if outcome.state == "failed":
                 continue
             artifacts = outcome.result.get("artifacts")
@@ -3931,8 +3946,18 @@ def _has_acceptance_execution(events: Sequence[Mapping[str, Any]], run_id: int) 
 def _delivery_outcomes(
     task: TaskRecord,
     completed: Mapping[str, StepOutcome],
+    *,
+    include_project_updates: bool = True,
 ) -> list[StepOutcome]:
     """Prefer final or repair artifacts over intermediate planning material."""
+    if task.project_id is not None and not include_project_updates:
+        # Filter before choosing leaves: an integration-only sink must not hide
+        # an upstream, separately requested PDF. Acceptance still checks both.
+        completed = {key: replace(outcome, result={**outcome.result, "artifacts": [
+            artifact for artifact in outcome.result.get("artifacts", [])
+            if not isinstance(artifact, Mapping) or artifact.get("name") != ARTIFACT_NAME
+        ]}) if isinstance(outcome.result.get("artifacts"), list) else outcome
+            for key, outcome in completed.items()}
     with_artifacts = [
         outcome for outcome in completed.values()
         if outcome.state != "failed" and isinstance(outcome.result.get("artifacts"), list)

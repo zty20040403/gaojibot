@@ -3624,3 +3624,55 @@ implementation evidence, not a claim that the production App has these features.
   remain incomplete. Projects remain opt-in. No production SSH, shared
   nix-config edit, rebuild, App release, live QQ/model request or supplied-plan
   modification occurred.
+
+### M3 receipt-backed project completion and attachment separation
+
+- Project-bound final notifications now use host receipts, not the model's
+  optimistic final prose. Execution, accepted version publication, physical
+  workspace restoration and user-file delivery are separate facts. A saved CAS
+  version is not described as an updated workspace. Missing/invalid bundles,
+  deferred access and failed restore jobs are reported without dropping the
+  original project lock or inventing successful work. A separately verified
+  failed-task release is described as retaining the original version.
+  Independently reviewed criteria and verified preview links remain available.
+- The existing dispatcher rotates bounded scans over terminal project tasks,
+  including tasks whose first status was already queued. The current revision,
+  completion checkpoint, final marker and Outbox enqueue commit together.
+  A restart, lost transaction acknowledgement or concurrent dispatcher does not
+  create duplicate reports. A real failed-to-retrying transition gets a new
+  receipt rather than reusing an earlier cancelled message. Only unsent old
+  reports are superseded; ambiguous/in-flight receipts remain reconcilable.
+  Deferred reconciliation diagnoses persist without secrets or polling spam.
+- Sending project reports rechecks the original account, scope, current report,
+  revision, live membership and project read access. Missing runtime waits;
+  revoked membership rejects the send. A QQ response without a native message
+  ID is ambiguous, not confirmed. These are local transport tests, not real QQ
+  acceptance. The admin task detail now returns the latest project completion
+  receipt and final delivery, and the progress read model adds a separate
+  project-materialization stage. This is not the full M3 project-management page.
+- The internal `gaoji-project-update.zip` is excluded before selecting user
+  attachment leaves, so an internal-only integration sink cannot hide an
+  upstream requested PDF. The independent validator still checks both the
+  project bundle and user-facing files. The file Outbox refuses to queue the
+  reserved internal bundle for project tasks; ordinary tasks are unchanged.
+- Cleanup cannot use a PDF receipt as permission to remove an unpublished
+  project update. After CAS publication and requested-file acknowledgement,
+  background recovery schedules the existing bounded cleanup tickets once,
+  without extending their one-hour ceiling after restart. Unrequested sidecars
+  do not require QQ delivery. Pending/unverified results retain the existing
+  conservative cleanup policy; no new indefinite successful-task retention or
+  production deletion was introduced.
+- Verification: 113 focused reporting, project completion/reconciliation,
+  Sub-Agent runtime, OneBot delivery and outcome tests passed in 37.942 seconds
+  (`.cache/roadmap/m3-project-report-final.log`). Twenty new cases include actual
+  PostgreSQL/Outbox transactions, concurrent stores, failed-commit rollback,
+  immutable artifact/CAS bytes, physical fixture restore and API responses.
+  Early tests incorrectly skipped delivery claim states; the fixtures were
+  corrected to exercise claim/settlement, not weaken production guards. Models,
+  QQ, container/kernel and reviewer effects remain explicit fixtures. Whole-CI
+  Ruff, touched-file compileall and whitespace checks passed.
+- Remaining: general lifecycle/browser draining, the M3 project-management
+  console and shared-platform ownership checks; native M2/KVM full-lifecycle
+  acceptance; M4-M7. Projects remain opt-in. No production connection, shared
+  nix-config edit, rebuild, App release, live model/QQ call or supplied-plan
+  change occurred.

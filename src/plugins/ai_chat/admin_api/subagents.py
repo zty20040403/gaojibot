@@ -77,12 +77,20 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             raise HTTPException(status_code=404, detail="Sub-Agent task not found")
         control = services.subagent_store.control(task_id)
         final = services.delivery_store.find_by_key(f"subagent-final:{task_id}:{control['revision']}") if services.delivery_store else None
+        project_report = None
+        if task.project_id is not None:
+            from ..project_task_reporting import latest_report
+
+            project_report = latest_report(services.subagent_store, task_id, control["revision"])
+            if project_report and services.delivery_store:
+                final = services.delivery_store.get(project_report["delivery_id"])
         from ..agent.progress import task_progress
         progress = task_progress(task, services.subagent_store.runs(task_id), services.subagent_store.task_evidence(task_id),
             services.subagent_store.external_calls(task_id), services.subagent_store.deliveries(task_id), final,
-            revision=control["revision"])
+            revision=control["revision"], project_completion=project_report)
         return {
             "progress": progress,
+            "project_completion": project_report,
             "control": {key: control[key] for key in ("version", "revision", "policy")},
             "background": bool(control["dispatch"]),
             "revision_allowed": str(task.requester_user_id) == str(principal().get("qq_id")),

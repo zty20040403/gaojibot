@@ -8,11 +8,15 @@ import time
 from typing import Any
 
 from .control import assert_job_owned
+from src.project_update import ARTIFACT_NAME
 
 
 class FileOutboxStoreMixin:
     def queue_file(self, task_id: int, artifact: dict, filename: str) -> dict:
         assert_job_owned()
+        task = self.get(task_id)
+        if task is not None and task.project_id is not None and artifact.get("name") == ARTIFACT_NAME:
+            raise ValueError("Internal project updates cannot be sent as user attachments")
         digest = str(artifact.get("snapshot", ""))
         if not re.fullmatch(r"[a-f0-9]{64}", digest) or not filename:
             raise ValueError("File outbox needs an immutable snapshot and delivery name")
