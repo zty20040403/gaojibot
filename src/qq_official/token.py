@@ -6,12 +6,48 @@ import math
 import random
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+import weakref
 
 import httpx
 
 from .credentials import Credentials, DEFAULT_API_BASE, validate_api_base
 from .errors import QQAPIError
 from .http import request_json
+
+
+@dataclass(frozen=True)
+class _TokenProof:
+    owner: object = field(repr=False)
+    value: str = field(repr=False)
+    expires_at: float
+    generation: int
+
+
+_prepared_tokens = weakref.WeakKeyDictionary()
+
+
+class PreparedToken:
+    """Locally issued, non-serializable token snapshot; never refreshes on use.
+
+    A copy/construction is not an issued proof. Validity includes the original
+    monotonic expiry and manager generation so invalidation/rotation cannot
+    revive an older snapshot even if the provider later returns the same text.
+    This is an internal transport capability, not a user authorization object.
+    """
+    __slots__ = ("__weakref__",)
+
+    def is_valid(self) -> bool:
+        proof = _prepared_tokens.get(self)
+        owner = proof.owner() if proof is not None else None
+        return bool(owner is not None and owner._generation == proof.generation
+                    and owner._token == proof.value and proof.value != owner._invalidated_token
+                    and owner._clock() < min(proof.expires_at, owner._expires_at))
+
+    def value_for_request(self) -> str:
+        if not self.is_valid():
+            raise QQAPIError("prepared_token_unavailable", accepted=False, stage="token")
+        return _prepared_tokens[self].value
 
 
 class TokenManager:
@@ -41,6 +77,7 @@ class TokenManager:
         self._refresh_at = 0.0
         self._retry_at = 0.0
         self._last_error: QQAPIError | None = None
+        self._generation = 0
 
     def __repr__(self) -> str:
         return f"TokenManager(cached={self._token is not None})"
@@ -53,9 +90,19 @@ class TokenManager:
     def invalidate(self, token: str | None = None) -> None:
         """A stale 401 must not invalidate a newer token obtained concurrently."""
         if token is None or token == self._token:
+            self._generation += 1
             self._invalidated_token = self._token
             self._refresh_at = 0.0
             self._retry_at = 0.0
+
+    async def prepare(self) -> PreparedToken:
+        """Fetch/refresh before rate admission; later use is entirely synchronous."""
+        value = await self.get()
+        prepared = PreparedToken()
+        _prepared_tokens[prepared] = _TokenProof(weakref.ref(self), value, self._expires_at, self._generation)
+        if not prepared.is_valid():
+            raise QQAPIError("prepared_token_unavailable", accepted=False, stage="token")
+        return prepared
 
     async def get(self) -> str:
         async with self._lock:
@@ -92,6 +139,8 @@ class TokenManager:
                     if token == self._invalidated_token or expires_at <= now:
                         raise QQAPIError("stale_token_response", accepted=False, stage="token")
                     same = token == self._token
+                    if not same:
+                        self._generation += 1
                     self._token, self._expires_at = token, expires_at
                     # Returned old tokens do not get another TTL. Avoid a stampede
                     # if the server still returns one during its overlap period.

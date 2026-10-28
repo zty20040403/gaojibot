@@ -1,21 +1,24 @@
-"""Default-off official ingress lifecycle, independent of OneBot connections.
+"""Default-off official ingress and durable sender, independent of OneBot.
 
-M2 persists turn intents; no model consumer or production binding sender is
-registered here. M3/M4 will connect those explicit ports after their checks.
+Turn intents remain durable until the shared application consumer is connected.
 """
 from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 import re
 
 from src.bot_storage import DatabaseCalls
+from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.lifecycle import BackgroundTaskSupervisor
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
+from src.plugins.ai_chat.turn_journal import TurnJournal
 from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker, JobDeferred
 from src.qq_official.gateway import GatewayConnection
 from src.qq_official.http import RestClient
+from src.qq_official.errors import QQAPIError
 from src.qq_official.token import TokenManager
 
 from .binding import BindingReducer
@@ -24,6 +27,8 @@ from .inbox import OfficialInboxStore
 from .ingest import process_inbox
 from .keys import account_job_kind
 from .lease import DedicatedAccountLease, LeaseLost, LeaseUnavailable, advisory_key_for
+from .identity_store import observe_ready, observe_self_api
+from .outbox import OfficialOutbox
 
 
 class _FencedToken:
@@ -34,6 +39,12 @@ class _FencedToken:
     async def get(self):
         await self._fence()
         value = await self._manager.get()
+        await self._fence()
+        return value
+
+    async def prepare(self):
+        await self._fence()
+        value = await self._manager.prepare()
         await self._fence()
         return value
 
@@ -85,7 +96,7 @@ async def open_official_protocol(loaded, *, checkpoint, on_checkpoint, ensure_cu
 
 
 class OfficialRuntime:
-    def __init__(self, config: OfficialConfig, database, *, logger, ledger=None,
+    def __init__(self, config: OfficialConfig, database, *, logger, ledger=None, journal=None,
                  protocol_factory=open_official_protocol, binding_sender=None,
                  lease_factory=DedicatedAccountLease, probe_seconds: float = 1,
                  retry_seconds: float = 2, allow_test_server: bool = False):
@@ -97,6 +108,11 @@ class OfficialRuntime:
         self.allow_test_server = allow_test_server
         self.ledger = ledger
         self._owns_ledger = ledger is None
+        self.journal = journal
+        self._owns_journal = journal is None
+        self.deliveries = None
+        self.outbox = None
+        self.sender = None
         self.loaded = None
         self.store = None
         self.jobs = None
@@ -139,15 +155,25 @@ class OfficialRuntime:
             return False
         try:
             self.loaded = await self._calls(self.config.load, allow_test_server=self.allow_test_server)
+            # HTTP dependency INFO/DEBUG messages include opaque endpoint URLs.
+            # Do not allow application log settings to expose official IDs.
+            for namespace in ("httpx", "httpcore"):
+                dependency_logger = logging.getLogger(namespace)
+                dependency_logger.setLevel(max(logging.WARNING, dependency_logger.level))
             self.jobs = await self._calls(DurableJobStore, self.database)
             if self.ledger is None:
                 self.ledger = await self._calls(MessageLedger, self.database)
+            self.deliveries = await self._calls(DeliveryStore, self.database, recover_interrupted=False)
+            if self.journal is None:
+                self.journal = await self._calls(TurnJournal, self.database)
             from .lease import assert_epoch
             binding = BindingReducer(self.loaded.binding_pepper, epoch_guard=assert_epoch)
             self.store = await self._calls(OfficialInboxStore, self.database, jobs=self.jobs, binding=binding,
                 private_policy=self.loaded.private_policy, private_allowed_openids=self.loaded.private_allowed_openids,
                 payload_retention_hours=self.loaded.payload_retention_hours)
             await self._calls(self.store.ensure_account, self.loaded.account)
+            self.outbox = OfficialOutbox(self.deliveries, admission=self.store.admitted,
+                                         pepper=self.loaded.binding_pepper)
         except Exception:
             await self._close_stores()
             self.state, self.reason = "failed", "configuration_or_storage_unavailable"
@@ -162,7 +188,9 @@ class OfficialRuntime:
     def status(self) -> dict:
         # No raw account, session, URL, credential, binding effect or DB exception.
         return {"state": self.state, "reason": self.reason, "started": self._started,
-                "turn_execution_connected": False, "binding_transport_connected": self.binding_sender is not None}
+                "turn_execution_connected": False,
+                "binding_transport_connected": self.binding_sender is not None or self.sender is not None,
+                "durable_sender_connected": self.sender is not None}
 
     async def _ensure_current(self, token):
         if self._stopping or self._token is not token:
@@ -231,17 +259,40 @@ class OfficialRuntime:
     async def _serve(self, lease, token, checkpoint):
         session_id = checkpoint.session_id if checkpoint is not None else None
         ingest_failed = asyncio.Event()
+        self_identity_attempted = False
 
         async def on_checkpoint(value):
             await self._calls(self.store.checkpoint_callback, token, value)
 
         async def on_dispatch(frame):
-            nonlocal session_id
+            nonlocal session_id, self_identity_attempted
             if frame.get("t") == "READY":
                 data = frame.get("d")
                 session_id = data.get("session_id") if isinstance(data, dict) else None
             await self._ensure_current(token)
             accepted = await self._calls(self.store.accept, frame, token=token, session_id=session_id)
+            if frame.get("t") == "READY":
+                def record_ready():
+                    with self.store.transaction() as cursor:
+                        return observe_ready(cursor, token, frame, int(self.store.clock()))
+                identity_result = await self._calls(record_ready)
+                if identity_result.status == "unknown" and not self_identity_attempted and self.sender is not None:
+                    self_identity_attempted = True
+                    # This authenticated account self-read is a fallback for a
+                    # READY without complete identity evidence. A rejection or
+                    # unsupported response leaves sending disabled, never guessed.
+                    try:
+                        async with asyncio.timeout(5):
+                            own = await self.sender.rest.request("GET", "/users/@me")
+                    except (QQAPIError, TimeoutError):
+                        pass
+                    else:
+                        def record_self():
+                            with self.store.transaction() as cursor:
+                                return observe_self_api(cursor, token, own, int(self.store.clock()))
+                        await self._calls(record_self)
+            if self.sender is not None:
+                self.sender.wake()
             if accepted.binding is not None and accepted.binding.effect is not None:
                 await self._deliver_binding(token, accepted.binding.effect)
 
@@ -291,9 +342,18 @@ class OfficialRuntime:
         async with self.protocol_factory(self.loaded, checkpoint=checkpoint, on_checkpoint=on_checkpoint,
                                          ensure_current=lambda: self._ensure_current(token)) as gateway:
             self._gateway = gateway
+            rest = getattr(gateway, "rest_client", None)
+            if isinstance(rest, RestClient):
+                from .sender import OfficialSender
+                self.sender = OfficialSender(self.loaded.account, token, self.outbox, rest, self.ledger,
+                    journal=self.journal, database_calls=self._calls,
+                    ensure_current=lambda: self._ensure_current(token))
+                await self.sender.recover()
             self.state, self.reason = "running", "receiving_durable_events"
             tasks = [asyncio.create_task(gateway.run(on_dispatch)), asyncio.create_task(worker.run_forever()),
                      asyncio.create_task(monitor()), asyncio.create_task(failure())]
+            if self.sender is not None:
+                tasks.append(asyncio.create_task(self.sender.run()))
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for finished in done:
@@ -313,6 +373,7 @@ class OfficialRuntime:
                         if not task.done():
                             task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
+                    self.sender = None
 
     async def _deliver_binding(self, token, effect):
         outcome = "failed"
@@ -320,12 +381,13 @@ class OfficialRuntime:
             await self._ensure_current(token)
             if effect.expires_at and effect.expires_at <= int(self.store.clock()):
                 outcome = "failed"
-            elif self.binding_sender is not None:
+            elif self.binding_sender is not None or self.sender is not None:
                 # Only an explicit caller-supplied transport receives the secret
                 # effect. The runtime never logs, serializes or retries this call.
                 timeout = min(30, max(0.01, effect.expires_at - self.store.clock())) if effect.expires_at else 30
                 async with asyncio.timeout(timeout):
-                    outcome = await self.binding_sender(effect)
+                    target = self.binding_sender if self.binding_sender is not None else self.sender.emit_binding
+                    outcome = await target(effect)
                 if outcome not in {"success", "failed", "unknown"}:
                     outcome = "unknown"
         except asyncio.CancelledError:
@@ -389,10 +451,14 @@ class OfficialRuntime:
         self.state, self.reason = "stopped", "stopped"
 
     async def _close_stores(self):
-        stores = [self.store, self.jobs, self.ledger if self._owns_ledger else None]
+        stores = [self.store, self.jobs, self.deliveries, self.ledger if self._owns_ledger else None,
+                  self.journal if self._owns_journal else None]
         for store in stores:
             if store is not None:
                 await asyncio.to_thread(store.close)
         self.store = self.jobs = None
+        self.deliveries = self.outbox = self.sender = None
         if self._owns_ledger:
             self.ledger = None
+        if self._owns_journal:
+            self.journal = None

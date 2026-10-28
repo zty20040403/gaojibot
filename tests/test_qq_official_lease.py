@@ -4,19 +4,18 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
-import importlib.util
 import os
 from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
+from alembic import command
+from alembic.config import Config
 import psycopg
 from psycopg import sql
-from sqlalchemy import create_engine, pool
 
 from src.bot_storage.database import DatabaseError
+from src.bot_storage.schema import HEAD_REVISION
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
 from tests.postgres_fixture import postgres_for_test
 
@@ -25,23 +24,11 @@ from src.plugins.ai_chat.adapters.qq_official.lease import (
 )
 
 
-def _migration():
-    path = Path(__file__).resolve().parents[1] / "migrations/versions/0062_qq_official_inbound.py"
-    spec = importlib.util.spec_from_file_location("qq_official_inbound_migration", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-@contextmanager
-def migration_ops(database):
-    engine = create_engine("postgresql+psycopg://", creator=lambda: psycopg.connect(database.dsn), poolclass=pool.NullPool)
-    try:
-        with patch.dict(os.environ, AI_POSTGRES_SCHEMA=database.schema), engine.begin() as connection:
-            with Operations.context(MigrationContext.configure(connection)):
-                yield _migration()
-    finally:
-        engine.dispose()
+def migrate(database, method, revision):
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "migrations"))
+    with patch.dict(os.environ, AI_POSTGRES_DSN=database.dsn, AI_POSTGRES_SCHEMA=database.schema):
+        method(config, revision)
 
 
 class _LeaseFixture(unittest.TestCase):
@@ -272,14 +259,19 @@ class LeaseMigrationTests(_LeaseFixture):
             self.assertTrue(cursor.execute("SELECT ambiguous FROM qq_official_message_indexes").fetchone()["ambiguous"])
 
     def test_downgrade_refuses_populated_evidence_then_empty_roundtrip_preserves_legacy(self):
-        with migration_ops(self.database) as migration, self.assertRaisesRegex(RuntimeError, "Export official"):
-            migration.downgrade()
+        # Follow Alembic's dependency order so newer outbox FKs are removed
+        # before exercising 0062's evidence guard in this owned schema.
+        with self.assertRaisesRegex(RuntimeError, "Export official"):
+            migrate(self.database, command.downgrade, "0061_platform_actor_identity")
+        self.database.require_revision(HEAD_REVISION)
         with self.tx() as cursor:
             cursor.execute("DELETE FROM qq_official_accounts")
             cursor.execute("INSERT INTO admin_security_audit VALUES ('TEST_AUDIT','','legacy.test','','safe',100)")
-        with migration_ops(self.database) as migration:
-            migration.downgrade()
-            migration.upgrade()
+        migrate(self.database, command.downgrade, "0061_platform_actor_identity")
+        try:
+            self.database.require_revision("0061_platform_actor_identity")
+        finally:
+            migrate(self.database, command.upgrade, HEAD_REVISION)
         with self.tx() as cursor:
             self.assertEqual(cursor.execute("SELECT action FROM admin_security_audit WHERE audit_id='TEST_AUDIT'").fetchone()["action"], "legacy.test")
 

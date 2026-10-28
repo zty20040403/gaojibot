@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import copy
 import errno
 import os
 import tempfile
@@ -18,7 +19,7 @@ from src.qq_official.credentials import Credentials, CredentialError, validate_a
 from src.qq_official.errors import QQAPIError
 from src.qq_official.http import RestClient
 from src.qq_official.outgoing import markdown_payload, text_payload
-from src.qq_official.token import TokenManager
+from src.qq_official.token import TokenManager, PreparedToken
 
 
 FAKE = Credentials("TEST_APP", "TEST_SECRET")
@@ -187,6 +188,42 @@ class TokenTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.aclose()
 
+    async def test_prepared_token_is_opaque_issued_and_expires_without_refresh(self):
+        prepared = await self.manager.prepare()
+        self.assertTrue(prepared.is_valid())
+        self.assertFalse(PreparedToken().is_valid())
+        self.assertFalse(copy(prepared).is_valid())
+        self.assertNotIn("TEST_TOKEN", repr(prepared))
+        self.clock.now = self.manager.expires_at
+        self.assertFalse(prepared.is_valid())
+        with self.assertRaises(QQAPIError) as caught:
+            prepared.value_for_request()
+        self.assertIs(caught.exception.accepted, False)
+        self.assertEqual(len(self.requests), 1)
+
+    async def test_prepared_token_same_refresh_keeps_original_expiry(self):
+        prepared = await self.manager.prepare()
+        expiry = self.manager.expires_at
+        self.clock.now += 51
+        await self.manager.get()
+        self.assertTrue(prepared.is_valid())
+        self.assertEqual(self.manager.expires_at, expiry)
+        self.clock.now = expiry
+        self.assertFalse(prepared.is_valid())
+
+    async def test_old_prepared_generation_never_revives_when_token_text_reappears(self):
+        old = await self.manager.prepare()
+        self.manager.invalidate("TEST_TOKEN")
+        self.responses.append({"access_token": "TEST_SECOND", "expires_in": 100})
+        second = await self.manager.prepare()
+        self.assertFalse(old.is_valid())
+        self.manager.invalidate("TEST_SECOND")
+        self.responses.append({"access_token": "TEST_TOKEN", "expires_in": 100})
+        current = await self.manager.prepare()
+        self.assertFalse(old.is_valid())
+        self.assertFalse(second.is_valid())
+        self.assertTrue(current.is_valid())
+
     async def test_parallel_refresh_single_flight_and_wire_contract(self):
         results = await asyncio.gather(*(self.manager.get() for _ in range(25)))
         self.assertEqual(results, ["TEST_TOKEN"] * 25)
@@ -316,6 +353,48 @@ class RestTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.aclose()
 
+    async def test_prepared_send_never_fetches_token_again_and_is_single_use(self):
+        prepared = await self.rest.prepare_send("group", "OPENID_TEST")
+        self.assertNotIn("TEST_TOKEN", repr(prepared))
+        with patch.object(self.token, "get", side_effect=AssertionError("unexpected refresh")):
+            result = await self.rest.send_message("group", "OPENID_TEST", text_payload("hello"), prepared=prepared)
+            self.assertEqual(result["id"], "MESSAGE_TEST_1")
+            self.assertFalse(self.rest.prepared_is_current(prepared))
+            with self.assertRaises(QQAPIError) as caught:
+                await self.rest.send_message("group", "OPENID_TEST", text_payload("hello"), prepared=prepared)
+        self.assertIs(caught.exception.accepted, False)
+        self.assertEqual(len(self.seen), 2)
+        self.assertEqual(self.seen[-1].headers["authorization"], "QQBot TEST_TOKEN")
+
+    async def test_prepared_send_expired_or_invalidated_is_proven_not_sent(self):
+        clock = Clock()
+        self.token._clock = clock
+        for expire in (False, True):
+            self.token._invalidated_token = None
+            prepared = await self.rest.prepare_send("group", "OPENID_TEST")
+            count = len(self.seen)
+            if expire:
+                clock.now = self.token.expires_at
+            else:
+                self.token.invalidate()
+            with patch.object(self.token, "get", side_effect=AssertionError("unexpected refresh")):
+                with self.assertRaises(QQAPIError) as caught:
+                    await self.rest.send_message("group", "OPENID_TEST", {}, prepared=prepared)
+            self.assertIs(caught.exception.accepted, False)
+            self.assertEqual(caught.exception.stage, "token")
+            self.assertEqual(len(self.seen), count)
+
+    async def test_prepared_send_rejects_other_rest_route_and_copied_handle_without_io(self):
+        other = RestClient(self.token, client=self.client, allow_test_server=True)
+        for target, client, copied in (("OPENID_OTHER", self.rest, False),
+                                       ("OPENID_TEST", other, False), ("OPENID_TEST", self.rest, True)):
+            prepared = await self.rest.prepare_send("group", "OPENID_TEST")
+            count = len(self.seen)
+            with self.assertRaises(QQAPIError) as caught:
+                await client.send_message("group", target, {}, prepared=copy(prepared) if copied else prepared)
+            self.assertIs(caught.exception.accepted, False)
+            self.assertEqual(len(self.seen), count)
+
     async def test_sends_group_and_c2c_to_correct_route_with_receipts(self):
         for kind, route in (("group", "groups"), ("c2c", "users")):
             result = await self.rest.send_message(kind, "OPENID_TEST", text_payload("hello", msg_id="MSG_TEST", msg_seq=1))
@@ -351,7 +430,7 @@ class RestTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len([request for request in self.seen[before:] if request.method == "POST" and "/messages" in request.url.path]), 1)
 
     async def test_delayed_401_invalidates_request_token_not_concurrently_refreshed_token(self):
-        for send in (False, True):
+        for send in (False, True, "prepared"):
             with self.subTest(send=send):
                 clock, arrived, release = Clock(), asyncio.Event(), asyncio.Event()
                 token_requests, api_requests = [], []
@@ -370,7 +449,11 @@ class RestTests(unittest.IsolatedAsyncioTestCase):
                     manager = TokenManager(FAKE, BASE, client=client, clock=clock, sleep=clock.sleep,
                                            allow_test_server=True)
                     rest = RestClient(manager, client=client, allow_test_server=True)
-                    call = rest.send_message("group", "OPENID_TEST", text_payload("hello")) if send else rest.gateway()
+                    if send == "prepared":
+                        prepared = await rest.prepare_send("group", "OPENID_TEST")
+                        call = rest.send_message("group", "OPENID_TEST", text_payload("hello"), prepared=prepared)
+                    else:
+                        call = rest.send_message("group", "OPENID_TEST", text_payload("hello")) if send else rest.gateway()
                     pending = asyncio.create_task(call)
                     await arrived.wait()
                     clock.now += 51

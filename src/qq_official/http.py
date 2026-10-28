@@ -4,6 +4,7 @@ from __future__ import annotations
 import json as json_module
 import math
 import re
+import weakref
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -16,6 +17,11 @@ if TYPE_CHECKING:
 
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _TARGET = re.compile(r"[A-Za-z0-9_-]{1,256}\Z")
+
+
+class PreparedSend:
+    """Single-use opaque handle issued by one RestClient for one exact route."""
+    __slots__ = ("__weakref__",)
 
 
 def _code(value: object) -> int | None:
@@ -109,6 +115,7 @@ class RestClient:
         self._client = client or httpx.AsyncClient(trust_env=False, follow_redirects=False)
         self._owns_client = client is None
         self._timeout = timeout
+        self._prepared_sends = weakref.WeakKeyDictionary()
 
     async def request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
         if (
@@ -119,6 +126,10 @@ class RestClient:
         ):
             raise ValueError("Request requires a canonical relative platform path")
         token = await self.token_manager.get()
+        return await self._request_with_token(method, path, token, json)
+
+    async def _request_with_token(self, method, path, token, json):
+        """Already validated internal route; no await/auth refresh before HTTP."""
         try:
             return await request_json(
                 self._client, method, self.base_url + path,
@@ -137,11 +148,43 @@ class RestClient:
     async def gateway(self) -> dict[str, Any]:
         return await self.request("GET", "/gateway/bot")
 
-    async def send_message(self, kind: str, target: str, payload: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _message_path(kind, target):
         if kind not in {"group", "c2c", "user", "private"} or not _TARGET.fullmatch(target):
             raise ValueError("Invalid message endpoint")
         route = "groups" if kind == "group" else "users"
-        result = await self.request("POST", f"/v2/{route}/{target}/messages", json=payload)
+        return f"/v2/{route}/{target}/messages"
+
+    async def prepare_send(self, kind: str, target: str) -> PreparedSend:
+        """Do all token work before a caller's final rate/lease/deadline checks."""
+        from .token import PreparedToken
+        path = self._message_path(kind, target)
+        token = await self.token_manager.prepare()
+        if not isinstance(token, PreparedToken) or not token.is_valid():
+            raise QQAPIError("prepared_token_unavailable", accepted=False, stage="token")
+        prepared = PreparedSend()
+        self._prepared_sends[prepared] = (path, token)
+        return prepared
+
+    def prepared_is_current(self, prepared: PreparedSend) -> bool:
+        if not isinstance(prepared, PreparedSend):
+            return False
+        state = self._prepared_sends.get(prepared)
+        return bool(state is not None and state[1].is_valid())
+
+    async def send_message(self, kind: str, target: str, payload: dict[str, Any], *,
+                           prepared: PreparedSend | None = None) -> dict[str, Any]:
+        path = self._message_path(kind, target)
+        if prepared is None:
+            result = await self.request("POST", path, json=payload)
+        else:
+            # Pop before any network await, including rejection: a ticket cannot
+            # authorize a second physical call, another RestClient or endpoint.
+            state = self._prepared_sends.pop(prepared, None) if isinstance(prepared, PreparedSend) else None
+            if state is None or state[0] != path:
+                raise QQAPIError("prepared_send_unavailable", accepted=False, stage="token")
+            token = state[1].value_for_request()
+            result = await self._request_with_token("POST", path, token, payload)
         if not isinstance(result.get("id"), str) or not result["id"]:
             raise QQAPIError("missing_receipt", stage="send")
         return result
