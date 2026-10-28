@@ -1,0 +1,24 @@
+{
+  "op": 0,
+  "s": 42,
+  "id": "EVENT_ID_TEST_1",
+  "t": "GROUP_MESSAGE_CREATE",
+  "d": {
+    "id": "MESSAGE_ID_TEST_1",
+    "group_openid": "GROUP_OPENID_TEST_1",
+    "author": {"member_openid": "MEMBER_OPENID_TEST_1", "nickname": "测试用户", "member_role": "member"},
+    "timestamp": "2026-10-28T10:00:00+00:00",
+    "content": "<@BOT_OPENID_TEST_1> 测试引用和附件",
+    "mentions": [{"member_openid": "BOT_OPENID_TEST_1", "is_you": true}],
+    "message_type": 103,
+    "message_scene": {"ext": ["msg_idx=MSG_INDEX_TEST_1", "ref_msg_idx=REF_INDEX_TEST_1"]},
+    "msg_elements": [{
+      "msg_idx": "REF_INDEX_TEST_1",
+      "content": "被引用的测试原文",
+      "author": {"member_openid": "MEMBER_OPENID_TEST_2"},
+      "attachments": [{"content_type": "audio/wav", "url": "https://media.example.invalid/fixture.wav?signature=TEST_ONLY", "voice_wav_url": "https://media.example.invalid/fixture.wav", "asr_refer_text": "测试识别文本", "size": 1024}],
+      "msg_elements": [{"content": "递归测试", "author": {"member_openid": "MEMBER_OPENID_TEST_3"}}]
+    }],
+    "attachments": [{"url": "https://media.example.invalid/fixture.png", "content_type": "image/png", "filename": "fixture.png", "size": 12}]
+  }
+}
