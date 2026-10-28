@@ -67,7 +67,7 @@ class ProjectBrowserHost:
                 raise
         return await _journal(self.journal.current, identity, sid)
 
-    async def execute(self, identity, session_id, sequence, method, args, *, persist):
+    async def execute(self, identity, session_id, sequence, method, args, *, persist, before_dispatch=None):
         """persist must be an idempotent, durable application-side commit callback."""
         async with self._lock(session_id):
             frame, reply = await _journal(
@@ -75,6 +75,8 @@ class ProjectBrowserHost:
             )
             if frame is not None:
                 try:
+                    if before_dispatch is not None:
+                        await before_dispatch()
                     channel = self.channels.get(session_id)
                     if channel is None:
                         raise ProtocolError("Browser channel was lost; do not relaunch its action")

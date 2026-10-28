@@ -31,6 +31,15 @@ class ProjectWorkspaces:
                 "Project volume and container observations must use the same Docker daemon"
             )
         self.manager, self.volumes = manager, volumes
+        self._browser = None
+
+    @property
+    def browser(self):
+        if self._browser is None:
+            from .project_browser_oci import OciProjectBrowser
+
+            self._browser = OciProjectBrowser(self)
+        return self._browser
 
     async def _volume(self, method, *args, **kwargs):
         worker = asyncio.create_task(asyncio.to_thread(method, *args, **kwargs))
@@ -68,6 +77,11 @@ class ProjectWorkspaces:
     async def write_guard(self, owner, sandbox_id, *, incoming=0, dependencies=False):
         # Native volumes enforce capacity at the filesystem boundary.
         yield
+
+    async def browser_admission(self, owner, binding, *, dependencies=False):
+        # Desktop overrides this for sampled quotas. Native mounts enforce the
+        # filesystem limit for browser writes just as for normal project exec.
+        pass
 
     def _workspace_mount_matches(self, binding, work, host):
         return (len(work) == 1 and work[0]["Type"] == "bind"
@@ -199,13 +213,14 @@ class ProjectWorkspaces:
 
     async def _capacity(self, owner):
         owned = await self.manager.list(owner)
+        owner_browsers, all_browsers = await self.manager._browser_capacity(owner)
         all_workspaces = await self.manager._list_by_label(
             f"{self.manager._sandbox_label}=true"
         )
         if (
-            sum(self.manager._status_is_running(item) for item in owned)
+            sum(self.manager._status_is_running(item) for item in owned) + owner_browsers
             >= self.manager.max_per_owner
-            or sum(self.manager._status_is_running(item) for item in all_workspaces)
+            or sum(self.manager._status_is_running(item) for item in all_workspaces) + all_browsers
             >= self.manager.max_total
         ):
             raise SandboxError(

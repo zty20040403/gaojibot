@@ -3034,3 +3034,47 @@ implementation evidence, not a claim that the production App has these features.
   IO quiescence with a worker's success flag. Remaining M3, native M2 acceptance
   and M4-M7 are not complete. No shared nix-config edit, production connection,
   deployment, App release or user-plan modification occurred.
+
+### M3 isolated OCI browser driver and capacity enforcement
+
+- Added the actual Docker pipe launcher and shutdown observer. A dedicated
+  instance helper container shares only the verified project workspace and
+  read-only Nix closure cache. Python/Playwright/Chromium are prepared on demand
+  from the existing pinned catalog, rather than added to every base image.
+  Isolated Python bootstrap checks the workspace device/inode before profile
+  access. New actions revalidate the project fence, parent container, mounts,
+  network and sidecar isolation; saved receipts can be published without a
+  live container or another click.
+- Frozen launch descriptors precede creation, immutable container IDs precede
+  start, and removal intent precedes deletion. Drain observes a stopped
+  container/zero PID and confirmed removal, without stopping the parent or
+  unrelated tasks. Unknown creation is not erased merely because an inspect
+  currently finds nothing. Foreign containers are refused. Session/allocation
+  lock order prevents dispatch/close deadlocks.
+- Browser helpers count toward instance/owner sandbox limits, including
+  uncertain created/stopped containers. Desktop soft-quota enforcement stops
+  both independent writers, including a blocked browser or one whose parent
+  has already exited. Unknown effects remain fenced for reconciliation rather
+  than becoming successful receipts. Inspect JSON uses bounded byte transport;
+  the real-container test caught ordinary display truncation corrupting the
+  longer source-bearing container descriptor, which is now fixed.
+- Verification: 247 focused browser, workspace, dependency, VM executor,
+  private-runner and sandbox tests passed in 54.048 seconds
+  (`.cache/roadmap/m3-browser-oci-verified.log`), using local disposable
+  PostgreSQL and explicit kernel/libvirt/Docker fixtures. Separately, the
+  opt-in real OCI process test passed in 7.053 seconds
+  (`.cache/roadmap/m3-browser-oci-process.log`): existing image only, no pulls,
+  network disabled, local HTTP fixture inside the container, real Chromium,
+  replay with visible count one, preserved profile and verified shutdown.
+  This smoke test uses a fixture parent identity/bind directory, not native
+  Nix dependency preparation or loop-backed hard-quota acceptance. Its
+  temporary containers, cache volume and profiles were removed. ResourceWarnings
+  were errors. Whole-CI Ruff, compileall and whitespace checks passed; Nix
+  package/import checks passed on aarch64-darwin
+  (`.cache/roadmap/m3-browser-oci-nix.log`), other architectures omitted.
+- Still open: private runner/browser RPC, application session/sequence mapping
+  and durable publication, project tool routing, KVM launcher, automatic
+  lifecycle drain, browser-only cache cleanup and native quota/Nix acceptance.
+  Remaining M3, native M2 acceptance and M4-M7 are not complete. No production
+  connection, shared nix-config edit, rebuild, App release or user-plan change
+  occurred. Source publication does not update the deployment repository pin.

@@ -173,13 +173,14 @@ class DockerSandboxManager:
         owner_running = [
             item for item in owner_sandboxes if self._status_is_running(item)
         ]
-        if len(owner_running) >= self.max_per_owner:
+        owner_browsers, all_browsers = await self._browser_capacity(owner)
+        if len(owner_running) + owner_browsers >= self.max_per_owner:
             raise SandboxError(
                 f"你最多同时运行 {self.max_per_owner} 个沙盒，"
                 "请等待当前任务结束或让管理员回收旧工作区。"
             )
         all_sandboxes = await self._list_by_label(f"{self._sandbox_label}=true")
-        if sum(self._status_is_running(item) for item in all_sandboxes) >= self.max_total:
+        if sum(self._status_is_running(item) for item in all_sandboxes) + all_browsers >= self.max_total:
             raise SandboxError("机器人沙盒总数已达到上限。")
 
         sandbox_id = project["workspace"]["sandbox_id"] if project else "s" + secrets.token_hex(3)
@@ -1164,12 +1165,13 @@ with tempfile.TemporaryFile() as output:
         )
         if target is not None and self._status_is_running(target):
             return
-        if sum(self._status_is_running(item) for item in owned) >= self.max_per_owner:
+        owner_browsers, all_browsers = await self._browser_capacity(owner)
+        if sum(self._status_is_running(item) for item in owned) + owner_browsers >= self.max_per_owner:
             raise SandboxError(
                 f"你最多同时运行 {self.max_per_owner} 个沙盒，请先停止其他沙盒。"
             )
         all_sandboxes = await self._list_by_label(f"{self._sandbox_label}=true")
-        if sum(self._status_is_running(item) for item in all_sandboxes) >= self.max_total:
+        if sum(self._status_is_running(item) for item in all_sandboxes) + all_browsers >= self.max_total:
             raise SandboxError("机器人正在运行的沙盒总数已达到上限。")
         result = await self._run("docker", "start", name, timeout=30)
         if result.returncode:
@@ -1349,6 +1351,25 @@ with tempfile.TemporaryFile() as output:
             )
         except SandboxError:
             return
+
+    async def _browser_capacity(self, owner):
+        if not self.namespace:
+            return 0, 0
+        # Include created/stopped browsers until reconciled and removed. A lost
+        # start response must not release a reservation or permit over-allocation.
+        result = await self._run(
+            "docker", "ps", "--all", "--no-trunc", "--filter",
+            f"label=gaoji.app.instance={self.namespace}", "--filter",
+            "label=gaoji.app.browser=true", "--format",
+            '{{.ID}}|{{.Label "qqbot.owner"}}', timeout=20,
+        )
+        rows = result.stdout.splitlines()
+        if result.returncode or any(re.fullmatch(r"[a-f0-9]{64}\|[a-f0-9]{20}", row) is None for row in rows):
+            raise SandboxError("Browser capacity inventory is unavailable")
+        identities = {row.split("|", 1)[0] for row in rows}
+        if len(identities) != len(rows):
+            raise SandboxError("Browser capacity inventory is ambiguous")
+        return sum(row.endswith("|" + self._owner_hash(owner)) for row in rows), len(rows)
 
     async def _list_by_label(self, label: str) -> list[dict[str, str]]:
         result = await self._run(

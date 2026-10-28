@@ -165,6 +165,8 @@ class DockerFixture:
             elif "tee" in command and self.tee_entered is not None:
                 self.tee_entered.set()
                 await self.tee_release.wait()
+        elif action == "ps" and "label=gaoji.app.browser=true" in command:
+            result = SandboxResult("", "", 0)
         else:
             raise AssertionError(f"Unexpected fixture command: {command}")
         if action in self.after:
@@ -447,6 +449,8 @@ class ProjectWorkspaceTests(unittest.IsolatedAsyncioTestCase):
         async def fail_creation(*command, **options):
             if command[1] == "inspect":
                 return SandboxResult("", "No such container", 1)
+            if command[1] == "ps":
+                return SandboxResult("", "", 0)
             return SandboxResult(
                 "", "invalid mount: " + str(self.volumes.root / "p1/mount"), 1
             )

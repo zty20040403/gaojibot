@@ -118,7 +118,8 @@ class SandboxIsolationTests(unittest.IsolatedAsyncioTestCase):
         manager._list_by_label = AsyncMock(return_value=[])
         manager._ensure_nix_volume = AsyncMock()
         manager._prepare_workspace_volume = AsyncMock()
-        manager._run = AsyncMock(return_value=SandboxResult("created", "", 0))
+        manager._run = AsyncMock(side_effect=lambda *args, **kw:
+            SandboxResult("" if args[1] == "ps" else "created", "", 0))
         created = await manager.create("owner", "python")
         command = manager._docker_command(manager._run.await_args.args)
         self.assertIn(f"gaoji.app.instance={INSTANCE}", command)
@@ -142,6 +143,8 @@ class SandboxIsolationTests(unittest.IsolatedAsyncioTestCase):
             return list(running)
 
         async def run(*_args, **_kwargs):
+            if _args[1] == "ps":
+                return SandboxResult("", "", 0)
             await asyncio.sleep(0)
             running.append({"status": "Up 1 second"})
             return SandboxResult("created", "", 0)
@@ -174,6 +177,8 @@ class SandboxIsolationTests(unittest.IsolatedAsyncioTestCase):
             return list(running)
 
         async def run(*_args, **_kwargs):
+            if _args[1] == "ps":
+                return SandboxResult("", "", 0)
             running.append({"status": "Up 1 second"})
             return SandboxResult("started", "", 0)
 

@@ -1176,11 +1176,57 @@ durable busy state even if no browser process has started or the control
 process restarted. Guest file bundles remain independent of the host receipt
 implementation and retain their own execution-gate checks.
 
-This is not a native browser launcher. The future driver must supply the actual
-isolated pipe, prove quota-backed `/workspace` placement, enforce resources, and
-provide physical shutdown evidence. The local Chromium test uses a temporary
-loopback page and real worker process, but its OCI identity is explicitly a
-fixture; it does not prove native container/KVM isolation.
+This journal layer is independent of the native launcher below. Its local
+Chromium test uses a temporary loopback page and real worker process, but its
+OCI identity is explicitly a fixture; it does not prove container/KVM isolation.
+
+### OCI project browser driver
+
+`project_browser_oci.py` launches a dedicated helper container on the owning
+Docker daemon. It shares the verified project's `/workspace` mount (native
+bind or Desktop volume-subpath) and the instance's read-only Nix cache, not Bot
+configuration, secrets or the Docker socket. Chromium and a Python environment
+containing Playwright are prepared on demand from the existing pinned Nix
+catalog. The source-only worker bundle is not taken from project files.
+The bootstrap uses isolated Python mode and checks the workspace device/inode
+before importing the worker or creating its profile.
+
+The container uses UID 1000, read-only root, dropped capabilities,
+no-new-privileges, the configured sandbox network, IPv6 disabled, no exposed
+host ports, bounded tmpfs, at most 1 GiB RAM/one CPU/128 processes, and no Docker
+logs of browser protocol data. Created/stopped browser containers reserve owner
+and instance sandbox capacity until reconciled and removed; generic task
+creation and restart also count them. They use the existing instance helper
+inventory naming without masquerading as a second normal project container.
+
+Private driver records freeze the container specification before `docker
+create`, then its immutable ID before `docker start -a -i`. Each new effect
+rechecks project generation/fence, parent container, both actual workspace
+mounts, sidecar isolation and network policy. Saved result publication remains
+possible after process loss without repeating the browser effect. Long inspect
+JSON is bounded separately from user-facing text truncation.
+
+Drain validates and stops only that immutable browser sidecar, observes its
+stopped state and zero PID, records removal intent, removes it, then observes
+absence. A lost removal acknowledgement can resume that original intent; an
+absent unconfirmed creation cannot become proof of shutdown. Foreign/replaced
+containers are not stopped. Session/allocation locks use the same order for
+dispatch and drain. Desktop soft-quota enforcement can stop this independent
+writer even while an action is blocked or its parent has already exited; the
+unknown action receipt remains fenced for reconciliation.
+
+The opt-in `tests/test_project_browser_oci_process.py` ran against an existing
+local image with Python/Playwright/Chromium, `network=none`, and a temporary HTTP
+fixture inside that same container. It exercised real pipes, browser clicks,
+replay (visible count stayed one), retained profile and confirmed container
+shutdown/removal. It deliberately uses a fixture parent identity and a bind
+directory, not the product Nix dependency preparation or a mounted hard-quota
+volume. Temporary containers, the test cache volume and profiles are removed.
+
+Still required: native Nix dependency/loop-volume acceptance, the KVM launcher,
+private runner RPC and application session/sequence publication, project tool
+routing and automatic lifecycle drain. The driver alone does not enable project
+browser tools in production. Browser-only cache cleanup also remains open.
 
 ### Remaining acceptance
 

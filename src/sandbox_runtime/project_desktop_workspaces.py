@@ -49,6 +49,10 @@ class DesktopProjectWorkspaces(ProjectWorkspaces):
             )
         return await super().operate(action, owner, project_id, **options)
 
+    async def browser_admission(self, owner, binding, *, dependencies=False):
+        await self._volume(self.volumes.require_quota, owner, binding["project_id"],
+                           generation=binding["generation"], dependencies=dependencies)
+
     @asynccontextmanager
     async def write_guard(self, owner, sandbox_id, *, incoming=0, dependencies=False):
         binding = await self.for_sandbox(owner, sandbox_id)
@@ -85,9 +89,14 @@ class DesktopProjectWorkspaces(ProjectWorkspaces):
                 return container
 
             container = await observe()
-            if not container or not container["State"]["Running"]:
+            identity = {"instance_id": self.volumes.instance_id, "owner": owner,
+                        "project_id": project_id, "generation": generation, "fence": binding["fence"]}
+            browser = await self._volume(self.volumes.browsers.current, identity)
+            running = bool(container and container["State"]["Running"])
+            if not running and (browser is None or browser["state"] == "closed"):
                 return
-            await self._verify_running(binding, container)
+            if running:
+                await self._verify_running(binding, container)
             try:
                 await self._volume(
                     self.volumes.require_quota,
@@ -98,11 +107,15 @@ class DesktopProjectWorkspaces(ProjectWorkspaces):
                 )
             except (OSError, ValueError, SandboxError) as error:
                 # Do not wait for the execution lock held by the offending writer.
-                # Stop the whole verified project, including detached children.
-                await self._command("stop", container)
-                current = await observe()
-                if current is None or current["State"]["Running"]:
-                    raise SandboxError("Soft quota stop is unverified") from error
+                # Stop both independent process groups, even if one stop fails.
+                try:
+                    await self.browser.stop_for_quota(identity)
+                finally:
+                    if running:
+                        await self._command("stop", container)
+                        current = await observe()
+                        if current is None or current["State"]["Running"]:
+                            raise SandboxError("Soft quota stop is unverified") from error
                 log.warning("Stopped soft-quota project p%s: %s", project_id, error)
                 if raise_full:
                     raise SandboxError(str(error)) from error
