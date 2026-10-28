@@ -1,6 +1,6 @@
 # QQ 官方机器人接入方案（qq-official）
 
-> 状态：执行中，2026-10-28。M0 已通过本地/CI 并经用户授权合并，M1 已完成离线回归、待 CI 与审阅；真实 API、后续里程碑与生产启用尚未验收。具体结果见 [实施进度](qq-official-progress.md)。下文“本次/本轮只修订文档”描述原方案修订轮，不代表当前实施进度。
+> 状态：执行中，2026-10-28。M0、M1 已通过本地/CI 并经用户审阅合并；M1 merge commit 为 `e5425370161ad665d02bf0f98ea9047149f3f502`，PR #2 三项 CI 通过、本地全量 3,479 项。M2 已完成本地全量 3,626 项回归、默认关闭，待 CI 与审阅；真实 API、后续里程碑与生产启用尚未验收。具体结果见 [实施进度](qq-official-progress.md)。下文“本次/本轮只修订文档”描述原方案修订轮，不代表当前实施进度。
 > 读者：负责实现的 AI 执行者，以及审阅它的人。
 > 一句话：让 gaojibot 直接用 WebSocket 连接腾讯 QQ 开放平台，按腾讯的格式收发消息，不经过 NapCat 和 OneBot。现有 NapCat 路径保持不变，两条路径并存。
 
@@ -726,18 +726,37 @@ class TurnPlatform(Protocol):
 
 ## 8. 配置项
 
+### 8.1 当前 M2 配置
+
+以下变量已由 `adapters/qq_official/config.py` 读取，并已接入 App 启停。默认关闭时不读取官方凭证或解析休眠配置；开启后仍需通过账号租约、绑定和当前准入策略。当前 runtime 只持久接收入站与回合意图，M3 发送和 M4 模型执行尚未接通。
+
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `AI_QQ_OFFICIAL_ENABLED` | `false` | 总开关 |
-| `AI_QQ_OFFICIAL_APP_ID_FILE` | 空 | AppID 文件路径 |
-| `AI_QQ_OFFICIAL_APP_SECRET_FILE` | 空 | 受保护密钥文件/安全存储，权限规则见 M8 |
-| `AI_QQ_OFFICIAL_API_BASE` | `https://api.bot.qq.com` | 当前 REST 地址；覆盖须校验可信域，不向任意 URL 发凭证 |
+| `AI_QQ_OFFICIAL_APP_ID_FILE` | 空 | 必填受保护 AppID 文件，单个文本值；不把内容写进 Git/Nix store |
+| `AI_QQ_OFFICIAL_APP_SECRET_FILE` | 空 | 必填受保护 AppSecret 文件；有效 ACL 与文件权限必须通过运行时验证 |
+| `AI_QQ_OFFICIAL_BIND_PEPPER_FILE` | 空 | 必填独立 HMAC pepper 文件：32 个安全随机字节编码为 64 个十六进制字符，不复用 AppSecret |
+| `AI_QQ_OFFICIAL_API_BASE` | 空 | 空值随环境选择协议默认地址；生产默认 `https://api.bot.qq.com`。覆盖须通过可信域和环境检查，不静默跨环境 |
 | `AI_QQ_OFFICIAL_SANDBOX` | `false` | 沙箱地址按契约配置；环境参与全部 key，不静默切换 |
-| `AI_QQ_OFFICIAL_ACCOUNT_KEY` | 根据已校验账号信息确定 | 稳定区分 AppID/环境；更换 AppID 不复用旧身份/授权 |
-| `AI_QQ_OFFICIAL_OWNER_OPENIDS` | 空 | 当前账号下的 C2C owner，可信控制面初始化；空则只能进行受限引导 |
+| `AI_QQ_OFFICIAL_ACCOUNT_KEY` | 空 | 可选规范 AccountKey 校验值；设置时必须与文件中的 AppID 和环境完全一致。实际 key 始终由已校验账号生成 |
+| `AI_QQ_OFFICIAL_OWNER_OPENIDS` | 空 | 当前账号下的 C2C owner，最多 32 个；可信配置初始化，空则只能进行受限引导 |
 | `AI_QQ_OFFICIAL_PRIVATE_POLICY` | `owner_only` | 可选 `owner_only / allowlist / public`，与腾讯服务范围分开 |
-| `AI_QQ_OFFICIAL_PRIVATE_ALLOWED_OPENIDS` | 空 | allowlist 的本账号 C2C 身份；不授予管理权限 |
+| `AI_QQ_OFFICIAL_PRIVATE_ALLOWED_OPENIDS` | 空 | allowlist 的本账号 C2C 身份，最多 256 个；不授予管理权限 |
 | `AI_QQ_OFFICIAL_GROUP_ADMISSION` | `manual_bind` | 即使腾讯允许公开加群，本地仍须绑定；v1 不自动启用任意群 |
+| `AI_QQ_OFFICIAL_INBOX_PAYLOAD_TTL_HOURS` | `24` | 范围 1–168；限制原始 payload 保留时间，待处理事件先终态过期再清理，不删除影响恢复的去重/索引/派发记录 |
+
+身份列表推荐使用 JSON 字符串数组，完整保留非数字 opaque ID；也兼容逗号分隔配置。账号、环境、群成员身份与 C2C 身份不因昵称或字面 ID 相同而合并。私聊准入不代替 owner 授权，首次私聊不能认领 owner。
+
+三个文件均须通过权限和有效 ACL 检查。通常使用运行服务用户或 root 所有的 `0600` 文件；代码仅在专用服务组与 ACL 验证均通过时接受受限的 root/服务组读取。不能因为 `chmod 0600` 就忽略额外 ACL 授权，也不能让应用读取权限不明的文件。关闭开关时不读取这些文件。
+
+NixOS 对应 `services.gaoji.qqOfficial`：`enable`、`appIdFile`、`appSecretFile`、`bindPepperFile`、`apiBase`、`sandbox`、`accountKey`、`ownerOpenids`、`privatePolicy`、`privateAllowedOpenids`、`groupAdmission`、`inboxPayloadTtlHours`。默认不增加官方环境变量或 credential 项；启用后使用 `LoadCredential`，应用读取 `/run/credentials/gaoji.service/qq-official-{app-id,app-secret,bind-pepper}`。文件选项必须是 Nix store 外的绝对字符串，不使用 Nix path literal、`builtins.readFile` 或内联秘密。身份列表作为普通 Nix 配置会进入 Nix store；如需隐藏这些身份配置，使用既有受保护环境文件入口。
+
+TODO(qq-official)：Nix 求值检查不验证目标系统上 systemd credential 的文件系统与有效 ACL；M8 必须实测，不能放宽安全规则。当前沙箱 API 地址对目标账号的可用性也仍待验收。
+
+### 8.2 后续里程碑配置（尚未接入，不因出现在本表而生效）
+
+| 变量 | 计划默认值 | 说明 |
+|---|---|---|
 | `AI_QQ_OFFICIAL_NATIVE_FILES` | `false` | 群/私聊分项实测后允许；端点有效能力继续限制 |
 | `AI_QQ_OFFICIAL_MARKDOWN` | `true` | 能力待验证；仅明确格式拒绝且未发送时降级 |
 | `AI_QQ_OFFICIAL_MAX_TEXT_CHARS` | `2000` | 单条长度上限，按实测结果调整 |

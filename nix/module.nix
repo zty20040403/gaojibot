@@ -87,6 +87,18 @@
     if value
     then "true"
     else "false";
+  officialCredentialPath = value:
+    value
+    != null
+    && !builtins.hasContext value
+    && lib.hasPrefix "/" value
+    && value != "/"
+    && value != "/nix/store"
+    && !(lib.hasPrefix "/nix/store/" value)
+    && !(lib.hasInfix "//" value)
+    && !(lib.hasInfix "\n" value)
+    && !(lib.hasInfix "\r" value)
+    && lib.all (part: part != "." && part != "..") (lib.splitString "/" value);
   nativeNapcat = cfg.napcat.backend == "native";
   nativeWebsocketHost =
     if cfg.host == "0.0.0.0" then "127.0.0.1"
@@ -148,6 +160,79 @@ in {
       default = {};
       example = {AI_ENABLED_GROUPS = "123456789";};
       description = "Non-secret environment variables for the bot service.";
+    };
+
+    qqOfficial = {
+      enable = lib.mkEnableOption "QQ official durable ingress (M2; model replies and sending are not connected)";
+
+      appIdFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/secrets/gaoji-qq-app-id";
+        description = "Protected AppID file, supplied as an absolute string outside the Nix store; loaded with systemd credentials.";
+      };
+
+      appSecretFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/secrets/gaoji-qq-app-secret";
+        description = "Protected AppSecret file, supplied as an absolute string outside the Nix store. Never put its contents in Nix configuration.";
+      };
+
+      bindPepperFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/secrets/gaoji-qq-bind-pepper";
+        description = "Protected binding HMAC pepper file containing 32 independently random bytes as 64 hexadecimal characters; loaded with systemd credentials.";
+      };
+
+      apiBase = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Empty selects the protocol default for the chosen environment. Explicit addresses must pass the application's trusted-host and environment checks.";
+      };
+
+      sandbox = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Use the separate sandbox account namespace and API default; actual sandbox availability still requires verification.";
+      };
+
+      accountKey = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Optional exact canonical AccountKey guard; when set, it must match the protected AppID and selected environment.";
+      };
+
+      ownerOpenids = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Explicit C2C owner openids for this account, at most 32. First contact, group roles and matching nicknames never grant ownership.";
+      };
+
+      privatePolicy = lib.mkOption {
+        type = lib.types.enum ["owner_only" "allowlist" "public"];
+        default = "owner_only";
+        description = "Local private-message admission, independent of Tencent's service scope. Public admission grants no owner privilege.";
+      };
+
+      privateAllowedOpenids = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "C2C identities admitted by allowlist policy for this account, at most 256; these entries do not grant management authority.";
+      };
+
+      groupAdmission = lib.mkOption {
+        type = lib.types.enum ["manual_bind"];
+        default = "manual_bind";
+        description = "Groups require the two-sided binding flow. Receiving all group messages never enables an unbound group.";
+      };
+
+      inboxPayloadTtlHours = lib.mkOption {
+        type = lib.types.ints.between 1 168;
+        default = 24;
+        description = "Bounded inbox payload retention. Expire pending work before purging; retain deduplication tombstones, indexes and dispatch uniqueness.";
+      };
     };
 
     user = lib.mkOption {
@@ -564,6 +649,26 @@ in {
         message = "services.gaoji.cluster.tokenFile is required when cluster tools are enabled";
       }
       {
+        assertion =
+          !cfg.qqOfficial.enable
+          || lib.all officialCredentialPath [
+            cfg.qqOfficial.appIdFile
+            cfg.qqOfficial.appSecretFile
+            cfg.qqOfficial.bindPepperFile
+          ];
+        message = "QQ official ingress requires protected appIdFile, appSecretFile and bindPepperFile absolute string paths outside /nix/store, without Nix string context or dot segments";
+      }
+      {
+        assertion =
+          !cfg.qqOfficial.enable
+          || (
+            builtins.length cfg.qqOfficial.ownerOpenids
+            <= 32
+            && builtins.length cfg.qqOfficial.privateAllowedOpenids <= 256
+          );
+        message = "QQ official configuration permits at most 32 owner openids and 256 private allowlist entries";
+      }
+      {
         assertion = !cfg.napcat.passwordLogin.enable || (
           cfg.napcat.enable
           && cfg.napcat.passwordLogin.passwordFile != null
@@ -655,6 +760,20 @@ in {
           AI_ADMIN_ORIGIN = cfg.admin.origin;
           AI_ADMIN_BOT_ID = cfg.admin.botId;
         }
+        // lib.optionalAttrs cfg.qqOfficial.enable {
+          AI_QQ_OFFICIAL_ENABLED = "true";
+          AI_QQ_OFFICIAL_APP_ID_FILE = "/run/credentials/${serviceName}.service/qq-official-app-id";
+          AI_QQ_OFFICIAL_APP_SECRET_FILE = "/run/credentials/${serviceName}.service/qq-official-app-secret";
+          AI_QQ_OFFICIAL_BIND_PEPPER_FILE = "/run/credentials/${serviceName}.service/qq-official-bind-pepper";
+          AI_QQ_OFFICIAL_API_BASE = cfg.qqOfficial.apiBase;
+          AI_QQ_OFFICIAL_SANDBOX = boolString cfg.qqOfficial.sandbox;
+          AI_QQ_OFFICIAL_ACCOUNT_KEY = cfg.qqOfficial.accountKey;
+          AI_QQ_OFFICIAL_OWNER_OPENIDS = builtins.toJSON cfg.qqOfficial.ownerOpenids;
+          AI_QQ_OFFICIAL_PRIVATE_POLICY = cfg.qqOfficial.privatePolicy;
+          AI_QQ_OFFICIAL_PRIVATE_ALLOWED_OPENIDS = builtins.toJSON cfg.qqOfficial.privateAllowedOpenids;
+          AI_QQ_OFFICIAL_GROUP_ADMISSION = cfg.qqOfficial.groupAdmission;
+          AI_QQ_OFFICIAL_INBOX_PAYLOAD_TTL_HOURS = toString cfg.qqOfficial.inboxPayloadTtlHours;
+        }
         // lib.optionalAttrs cfg.browser.enable {
           AI_BROWSER_ENABLED = "true";
           AI_BROWSER_EXECUTABLE_PATH = lib.getExe cfg.browser.package;
@@ -714,8 +833,12 @@ in {
           Restart = "on-failure";
           RestartSec = 5;
           UMask = "0077";
-          LoadCredential = lib.optional (cfg.cluster.enable && cfg.cluster.tokenFile != null) "fleet-control-token:${cfg.cluster.tokenFile}"
-            ++ lib.optional (cfg.admin.secretFile != null) "admin-authorization-key:${cfg.admin.secretFile}";
+          LoadCredential =
+            lib.optional (cfg.cluster.enable && cfg.cluster.tokenFile != null) "fleet-control-token:${cfg.cluster.tokenFile}"
+            ++ lib.optional (cfg.admin.secretFile != null) "admin-authorization-key:${cfg.admin.secretFile}"
+            ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.appIdFile != null) "qq-official-app-id:${cfg.qqOfficial.appIdFile}"
+            ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.appSecretFile != null) "qq-official-app-secret:${cfg.qqOfficial.appSecretFile}"
+            ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.bindPepperFile != null) "qq-official-bind-pepper:${cfg.qqOfficial.bindPepperFile}";
 
           NoNewPrivileges = true;
           PrivateTmp = true;

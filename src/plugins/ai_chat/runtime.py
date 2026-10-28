@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from .adapters.qq_official.runtime import OfficialRuntime
     from .mcp_bridge.runtime import McpRuntime
     from .mcp_bridge.service import McpService
     from .project_runtime import ProjectRuntime
@@ -168,12 +169,46 @@ class AppContext:
     alert_store: AlertEventStore | None = None
     fleet_client: FleetControlClient | None = None
     mobile_authorization: MobileAuthorization | None = None
+    official_runtime: OfficialRuntime | None = field(default=None, repr=False)
     db_call: DatabaseCalls = field(default_factory=DatabaseCalls, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
+    _closing: bool = field(default=False, init=False, repr=False)
+
+    async def start_official_ingress(self, env: Mapping[str, str] | None = None) -> bool:
+        """Application startup hook independent of any OneBot connection."""
+        if self._closed or self._closing:
+            raise RuntimeError("Application context is closed")
+        if self.official_runtime is not None:
+            return False
+        import os
+        from .adapters.qq_official.config import OfficialConfig
+
+        config = OfficialConfig.from_env(os.environ if env is None else env)
+        if not config.enabled:
+            return False
+        if self.database is None:
+            raise RuntimeError("Official ingress requires durable storage")
+        from .adapters.qq_official.runtime import OfficialRuntime
+
+        runtime = OfficialRuntime(config, self.database, logger=self.logger, ledger=self.message_ledger)
+        self.official_runtime = runtime
+        try:
+            return await runtime.start()
+        except BaseException:
+            await runtime.stop()
+            self.official_runtime = None
+            raise
 
     async def shutdown(self) -> None:
         if self._closed:
             return
+        self._closing = True
+
+        if self.official_runtime is not None:
+            # Stop ingress and drain its transactions before closing shared ledger
+            # or database resources, regardless of the OneBot connection state.
+            await self.official_runtime.stop()
+            self.official_runtime = None
 
         stopped = await self.background_tasks.stop_all()
         if stopped:

@@ -169,6 +169,7 @@ class OneBotRuntime:
                     version=BOT_VERSION,
                     logger=self.logger,
                 )
+                await context.start_official_ingress()
                 await start_background_tasks(context, self.handlers, notifier)
                 self.ready = True
             except BaseException:
