@@ -57,6 +57,8 @@ TODO(qq-official)：M8 核实目标 Nix 的 `/run` 凭证文件系统，补齐�
 
 M0 代码已达到本阶段离线完成标准，PR/CI 与用户审阅合并仍待完成。整体方案、M1–M9 和生产启用均未完成。
 
+M0 已推送并建立 [PR #1](https://github.com/zty20040403/gaojibot/pull/1)。首次 GitHub Actions 在解析既有工作流时失败，尚未启动任何 job：job 级 `env` 使用了不允许的 `runner.temp` 上下文。最小修复是在 step 中通过 `$RUNNER_TEMP` / `$GITHUB_ENV` 设置同一隔离状态路径；没有放宽测试或切换数据库。修复后继续检查 CI。
+
 ## 后续里程碑及门槛
 
 | 里程碑 | 状态 |
