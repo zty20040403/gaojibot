@@ -120,6 +120,10 @@ class ProjectLifecycle:
     @staticmethod
     def _idle(cursor, project):
         require_project_io_idle(cursor, project["project_id"])
+        if cursor.execute("""SELECT 1 FROM project_file_deliveries f JOIN deliveries d USING(delivery_id)
+                WHERE f.project_id=? AND NOT (d.status='committed'
+                OR (d.status='cancelled' AND f.upload_started_at IS NULL)) LIMIT 1""", (project["project_id"],)).fetchone():
+            raise ProjectConflict("Project file deliveries are unresolved")
         if project["locked_task_id"] is not None:
             raise ProjectConflict("Project has an attached task")
         # A failed task is not proof its files are disposable. The task adapter

@@ -278,6 +278,9 @@ class ProjectUsageStore:
                 if fresh
                 else None,
                 "version_bytes": int(versions),
+                "delivery_bytes": int(cursor.execute("""SELECT coalesce(sum(byte_size),0) FROM project_blobs b
+                    WHERE EXISTS(SELECT 1 FROM project_file_deliveries f WHERE f.project_id=? AND f.blob_sha256=b.sha256)""",
+                    (project_id,)).fetchone()[0]),
                 "sampled_at": project["sampled_at"],
                 "complete": fresh,
                 "error": row["error"] if row else "not_sampled",
@@ -320,6 +323,9 @@ class ProjectUsageStore:
                         if self._fresh(row, row, now)
                     ),
                     "versions": int(version_bytes),
+                    "deliveries": int(cursor.execute("""SELECT coalesce(sum(byte_size),0) FROM project_blobs b
+                        WHERE EXISTS(SELECT 1 FROM project_file_deliveries f WHERE f.blob_sha256=b.sha256)
+                        AND NOT EXISTS(SELECT 1 FROM project_version_blobs v WHERE v.sha256=b.sha256)""").fetchone()[0]),
                 },
                 "unknown": sum(not self._fresh(row, row, now) for row in rows),
                 "rebuildable_unknown": sum(

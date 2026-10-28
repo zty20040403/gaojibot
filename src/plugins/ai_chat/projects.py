@@ -555,7 +555,8 @@ class ProjectStore:
             + COALESCE((SELECT sum(b.byte_size) FROM project_blobs b JOIN
             (SELECT DISTINCT r.project_id,r.sha256 FROM
                 (SELECT project_id,sha256 FROM project_version_blobs UNION
-                 SELECT project_id,sha256 FROM project_snapshot_staging) r JOIN projects p USING(project_id)
+                 SELECT project_id,sha256 FROM project_snapshot_staging UNION
+                 SELECT project_id,blob_sha256 AS sha256 FROM project_file_deliveries WHERE blob_sha256 IS NOT NULL) r JOIN projects p USING(project_id)
              WHERE p.scope_key=?) refs USING(sha256)),0)""",
                 (scope_key, scope_key),
             ).fetchone()[0]
@@ -1097,6 +1098,13 @@ class ProjectStore:
         deleted = []
         with self._transaction() as cursor:
             self._blob_lock(cursor)
+            released = cursor.execute("""UPDATE project_file_deliveries f SET blob_sha256=NULL
+                FROM deliveries d WHERE d.delivery_id=f.delivery_id AND (d.status='committed'
+                OR (d.status='cancelled' AND f.upload_started_at IS NULL))
+                AND f.blob_sha256 IS NOT NULL RETURNING f.sha256""").fetchall()
+            for row in released:
+                cursor.execute("UPDATE project_blobs SET unreferenced_since=? WHERE sha256=?",
+                               (now, row["sha256"]))
             cursor.execute(
                 """DELETE FROM project_snapshot_staging s USING durable_jobs j
                 WHERE s.job_id=j.job_id AND j.status IN ('failed','cancelled','succeeded') AND j.updated_at<=?""",
@@ -1107,6 +1115,7 @@ class ProjectStore:
                 AND NOT EXISTS(SELECT 1 FROM project_version_blobs r WHERE r.sha256=b.sha256)
                 AND NOT EXISTS(SELECT 1 FROM project_versions v WHERE v.manifest_sha256=b.sha256)
                 AND NOT EXISTS(SELECT 1 FROM project_snapshot_staging s WHERE s.sha256=b.sha256)
+                AND NOT EXISTS(SELECT 1 FROM project_file_deliveries f WHERE f.blob_sha256=b.sha256)
                 ORDER BY unreferenced_since LIMIT ? FOR UPDATE""",
                 (now - GC_GRACE_SECONDS, min(max(limit, 1), 1000)),
             ).fetchall()

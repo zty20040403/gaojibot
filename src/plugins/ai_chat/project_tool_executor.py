@@ -15,13 +15,13 @@ from .project_access import project_access, projects_available
 from .project_executor import _store
 from .project_io import WRITE_TOOLS
 from .project_usage import ProjectQuotaRejected
-from .projects import ProjectConflict
+from .projects import ProjectConflict, ProjectQuotaExceeded
 from .tool_invocation import active_tool_call_id
 from .workers.durable_jobs import JobDeferred
 from .vm_sandbox import PACKAGE_PATTERN
 
 
-PROJECT_IO_TOOLS = frozenset({"sandbox_read_file", *WRITE_TOOLS})
+PROJECT_IO_TOOLS = frozenset({"sandbox_read_file", "send_file_from_sandbox", *WRITE_TOOLS})
 
 
 def routes_to_project(context, name, arguments):
@@ -183,7 +183,28 @@ async def _execute(context, name, args):
         await runtime.backends[project["backend"]].io_evidence(project)
         access = await project_access(context)
         target = await _store(runtime.io.dispatch, access, grant)
-        result = await _invoke(context.app.sandbox_manager, target, name, args)
+        if name == "send_file_from_sandbox":
+            try:
+                content = await context.app.sandbox_manager.read_file(
+                    target["owner"], target["sandbox_id"], args["path"],
+                    max_bytes=context.app.sandbox_manager.max_file_bytes or 256 * 1024**2,
+                )
+            except SandboxError:
+                result = _error("project_read_failed", "文件不存在、不可读或超过传输限制。")
+            else:
+                access = await project_access(context)
+                try:
+                    result = await _store(runtime.files.queue, access, grant, content, args["path"], args.get("filename"))
+                except ProjectQuotaRejected as exc:
+                    result = _error(exc.code, "会话用量尚未核实，未创建文件副本或投递。")
+                except ProjectQuotaExceeded:
+                    result = _error("project_scope_quota_full", "会话容量不足，未创建文件副本或投递。")
+                except ProjectConflict:
+                    raise
+                except ValueError:
+                    result = _error("project_attachment_invalid", "文件为空、名称或容量不符合要求，未创建投递。")
+        else:
+            result = await _invoke(context.app.sandbox_manager, target, name, args)
         result.update(project_handle=f"prj#{pid}", operation_id=grant.operation_id)
         await _store(runtime.io.observe_result, grant, result)
         await _settle(runtime, access, grant)

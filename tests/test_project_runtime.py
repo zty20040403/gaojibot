@@ -100,7 +100,7 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.worker._timeouts[KIND], 3600)
         self.assertEqual(
             [item.args[0] for item in self.app.background_tasks.start.call_args_list],
-            ["project-usage", "project-maintenance"],
+            ["project-usage", "project-maintenance", "project-files"],
         )
         self.assertEqual(self.runtime.backends["oci"].quota_mode, "hard")
         self.assertEqual(

@@ -41,6 +41,8 @@ from .handler_services import HandlerService
 from .group_wiki import NEWCOMER_DELIVERY_PREFIX, WikiSuperseded
 from .mcp_bridge.continuations import DELIVERY_PREFIX as MCP_DELIVERY_PREFIX
 from .mcp_bridge.store import McpDenied
+from .project_file_outbox import FILE_PREFIX
+from .project_file_transport import file_identity, deliver_file
 
 
 class OneBotDelivery(HandlerService):
@@ -128,6 +130,9 @@ class OneBotDelivery(HandlerService):
                     self.context.reminder_store.mark_sent(reminder.reminder_id)
 
     async def _deliver_onebot_outbox(self, bot: Bot, delivery: Delivery) -> None:
+        if delivery.idempotency_key.startswith(FILE_PREFIX):
+            await deliver_file(self.context, bot, delivery)
+            return
         is_wiki_brief = delivery.idempotency_key.startswith(NEWCOMER_DELIVERY_PREFIX)
         is_mcp_reply = delivery.idempotency_key.startswith(MCP_DELIVERY_PREFIX)
         if is_mcp_reply:
@@ -240,7 +245,14 @@ class OneBotDelivery(HandlerService):
                         self.context.bridge_manager.validate_delivery(delivery)
                     if delivery.target_platform == "onebot-v11":
                         selected_bot = bots[0] if bots else None
-                        if delivery.idempotency_key.startswith("subagent-final:"):
+                        if delivery.idempotency_key.startswith(FILE_PREFIX):
+                            try:
+                                identity = await file_identity(self.context, delivery)
+                            except BridgeRetryableError as exc:
+                                await self.context.db_call(self.context.delivery_store.defer_unsent, delivery, str(exc))
+                                continue
+                            selected_bot = next((bot for bot in bots if str(bot.self_id) == identity["bot_native_user_id"]), None)
+                        elif delivery.idempotency_key.startswith("subagent-final:"):
                             task_id = int(delivery.idempotency_key.split(":")[1])
                             dispatch = self.context.subagent_store.control(task_id)["dispatch"]
                             selected_bot = next((bot for bot in bots if str(bot.self_id) == str(dispatch["bot_id"])), None)

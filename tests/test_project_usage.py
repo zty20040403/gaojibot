@@ -290,7 +290,7 @@ class ProjectUsageStoreTests(UsageFixture, unittest.TestCase):
         metrics = self.usage.metrics(now=self.now)
         self.assertEqual(
             metrics["bytes"],
-            {"workspace": 1000, "rebuildable": 500, "versions": expected},
+            {"workspace": 1000, "rebuildable": 500, "versions": expected, "deliveries": 0},
         )
         self.assertEqual(metrics["unknown"], 1)
         self.assertEqual(metrics["rebuildable_unknown"], 1)

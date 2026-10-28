@@ -142,7 +142,7 @@ class BotTelemetry:
         self._tracer = trace.get_tracer("gaoji")
 
     def update_project_gauges(self, value):
-        for kind in ("workspace", "rebuildable", "versions"):
+        for kind in ("workspace", "rebuildable", "versions", "deliveries"):
             self.project_bytes.labels(kind=kind).set(value["bytes"].get(kind, 0))
         for state in ("active", "stopped", "hibernated", "archived", "trash"):
             self.projects.labels(state=state).set(value["states"].get(state, 0))

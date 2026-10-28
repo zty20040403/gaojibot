@@ -909,11 +909,44 @@ They do not prove native command cancellation, full helper-loss reconciliation
 or actual QQ file delivery. Projects remain default-disabled.
 
 This is not the complete M3 interface. Snapshot/restore/delete/preview tools,
-project routing of attachment/browser tools, live workspace
+project routing of image/browser tools, live workspace
 notes, Sub-Agent baselines and accepted-version publication, shared
 Matrix/iMessage ownership, and console management remain pending. Routine and
 Sub-Agent contexts do not receive these management tools until their project
 ownership is wired explicitly. No production enablement is implied.
+
+### Project file delivery
+
+`send_file_from_sandbox` without `sandbox_id` now reads the current project
+under its durable I/O grant. It does not activate a temporary task sandbox or
+schedule project cleanup. The exact bytes are hashed into the private CAS;
+`0050_project_files` atomically records their reference, Outbox entry and tool
+receipt. The returned `queued` flag is not a claim of delivery. Inspect
+`project_status.file_deliveries` for the latest five records; `committed` means
+there is a file receipt. Explicit temporary sandbox IDs keep their old route.
+
+The existing Outbox dispatches through the original bot, after rechecking live
+membership, target scope, tool enablement, the read receipt and file checksum.
+An operation-specific filename permits strict group-file reconciliation using
+name, size, uploader, upload time and file ID. A successful upload API response
+without a file receipt remains ambiguous. Private uploads also require a file
+ID; an adapter returning only `{}` cannot be declared delivered, and private
+receipt recovery remains an unverified platform limitation.
+
+The independent `project-files` supervised loop settles saved read receipts,
+resumes claims that crashed before upload dispatch, and looks up uncertain group
+uploads without resending. It does not block ordinary message delivery while
+looking up group files. Uncertain uploads remain protected even if cancelled;
+only a verified receipt or cancellation before upload releases the reference.
+CAS cleanup uses its normal 24-hour grace and preserves version references.
+Pending files block project lifecycle reclamation, and their unique bytes count
+toward scope quota. Project status reports `delivery_bytes`; the Prometheus
+`deliveries` byte category excludes blobs already counted under versions.
+
+These paths have local PostgreSQL/RPC tests with fake QQ uploads, including
+process-loss boundaries and immutable-byte checks. No live QQ delivery, native
+Linux/KVM acceptance, or production enablement is implied. Sending a file here
+verifies its bytes and transport, not its semantic correctness or PDF typography.
 
 ### Remaining acceptance
 

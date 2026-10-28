@@ -2727,3 +2727,39 @@ implementation evidence, not a claim that the production App has these features.
   Ruff, compileall and whitespace checks passed. Nix package/import checks
   passed on aarch64-darwin (`.cache/roadmap/m3-project-routing-nix.log`); Linux
   and the other incompatible architectures were omitted, not verified.
+
+### M3 durable current-project file delivery
+
+- Existing `send_file_from_sandbox` now accepts omitted sandbox ID for the
+  current project. A scoped read grant freezes the requested bytes into CAS.
+  Migration `0050_project_files` atomically links the immutable reference,
+  original actor/project, Outbox item and tool receipt. Explicit temporary
+  sandboxes retain their existing route; no fake Sub-Agent task is created.
+- The normal Outbox selects the original bot and rechecks live membership,
+  target conversation, tool enablement, settled read and checksum before upload.
+  A queued result explicitly does not mean sent. Project status lists the
+  latest five deliveries, including errors and exact update timestamps.
+- A separate supervised reconciler resumes claims lost before dispatch and
+  settles recorded reads against physical quiescence. Once upload starts,
+  uncertainty never authorizes a second upload. Group-file reconciliation
+  checks operation-specific filename, byte size, uploader, timestamp and file
+  ID; plain API acceptance is insufficient. It runs independently of ordinary
+  message delivery. Private uploads with no file ID remain unconfirmed: private
+  receipt recovery still needs platform acceptance, not a fabricated success.
+- Pending/failed/uncertain delivery prevents project reclamation. Cancellation
+  after dispatch also retains the copy until a real receipt exists. Confirmed
+  or never-dispatched cancelled copies release their CAS reference; standard
+  grace-based GC preserves any version references. Scope quota, fresh usage
+  admission, status and low-cardinality metrics include retained file bytes.
+- Verification: 189 affected tests passed in 57.381 seconds, ResourceWarnings
+  treated as errors (`.cache/roadmap/m3-project-files-verified.log`). Real local
+  PostgreSQL and Unix RPC were used; QQ uploads, membership and kernel effects
+  were fixtures. Whole-CI Ruff, compileall and whitespace checks passed. Nix
+  package/import checks passed on aarch64-darwin
+  (`.cache/roadmap/m3-project-files-nix.log`); Linux/other architectures omitted.
+  One interrupted test fixture's owned schema was explicitly cleaned up.
+- M3 is still incomplete: image/browser defaults, automatic turn snapshots,
+  live notes, Sub-Agent baseline/lock/publication, other project commands,
+  shared platform identity and console integration remain. Native M2 acceptance
+  and M4-M7 remain open. No production connection, live QQ/model call, shared
+  nix-config edit, deployment, App release or user-plan edit occurred.
