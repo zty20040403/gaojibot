@@ -3347,3 +3347,50 @@ implementation evidence, not a claim that the production App has these features.
   gates, general browser drain, native M2/KVM gates and M4-M7 remain open.
   No production connection, shared nix-config change, deployment, App release,
   QQ/model request or supplied-plan edit occurred.
+
+### M3 independently accepted project version publication
+
+- Added `0056_project_publish` and a host-only publication boundary. A task
+  remains bound to its original project, baseline, actor, bot, revision,
+  generation and fence. Publication requires passed independent acceptance of
+  the exact immutable update artifact. The reviewer must have imported that
+  snapshot and executed a successful check in its own sandbox. Execution proof
+  comes from complete, checksum-verified revision-bound host receipts, not the
+  console's truncated display log or a model's success claim.
+- Accepted ZIPs contain `gaoji-project-update.json` plus `files/<path>`. The
+  descriptor binds the project/base manifest and lists checksums, sizes, modes
+  and explicit deletions. Unmentioned files remain unchanged. No archive is
+  extracted on the host: unsafe paths, duplicate/case-colliding files, symlinks,
+  special files, undeclared members, oversized data and inconsistent manifests
+  are rejected. Browser state/cache classification is retained; changed
+  lockfiles are hash-repinned, and removing a lock requires an explicit rebuild
+  specification change rather than silently using a stale recipe.
+- Changed files stream into the project's independent CAS without holding the
+  durable job lease row. Scope capacity is checked before copying and again at
+  commit. Authority is rechecked after transfer. New version references, the
+  publication receipt, project metadata and task checkpoint commit together;
+  identical content reuses the existing version. Concurrent retries return one
+  receipt. After commit, replay no longer requires the one-hour task artifact.
+  Failed writes leave no partial version; existing CAS garbage collection owns
+  abandoned immutable objects, with renewed grace for reused orphan blobs.
+  Retention and downgrade guards protect accepted versions and recovery receipts.
+- Verification: 56 focused publication/admission/import/revision tests passed
+  in 19.572 seconds (`.cache/roadmap/m3-project-publication-verified.log`), and
+  32 store/migration tests passed separately in 9.492 seconds
+  (`.cache/roadmap/m3-project-publication-migration.log`). PostgreSQL, ZIP/CAS
+  bytes, transactions and lease updates are real and disposable. Reviewer/model
+  outputs and sandbox execution receipts are explicit fixtures; this is not
+  native KVM or live QQ acceptance. Tests cover interrupted streams, transaction
+  rollback, concurrent publication, lost leases, quota failure before IO,
+  obsolete or absent review, truncated display logs, source checksum failure,
+  scope/account/actor checks, noop versions and destructive downgrade refusal.
+  Whole-CI Ruff, focused compileall and whitespace checks passed.
+- Still deliberately not enabled as an automatic chat workflow. A published
+  version is not a materialized workspace: the project task lock remains held
+  and the checkpoint explicitly records `materialized=false`. Durable restore,
+  rebuild/physical verification, cancellation/revision reconciliation and lock
+  release must be connected with automatic admission and recovery hooks before
+  enabling project-bound task submission. M3 console/shared-conversation gates,
+  general browser drain, native M2/KVM gates and M4-M7 remain open. No production
+  connection, shared nix-config change, rebuild, App release, QQ/model call or
+  supplied-plan edit occurred.

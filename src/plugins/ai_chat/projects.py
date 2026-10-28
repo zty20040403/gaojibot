@@ -1033,8 +1033,9 @@ class ProjectStore:
                     continue
                 if cursor.execute(
                     """SELECT 1 FROM project_previews WHERE project_id=? AND version_no=?
-                    UNION ALL SELECT 1 FROM subagent_tasks WHERE project_id=? AND project_base_version=? LIMIT 1""",
-                    (project_id, number, project_id, number),
+                    UNION ALL SELECT 1 FROM subagent_tasks WHERE project_id=? AND project_base_version=?
+                    UNION ALL SELECT 1 FROM project_task_publications WHERE project_id=? AND version_no=? LIMIT 1""",
+                    (project_id, number, project_id, number, project_id, number),
                 ).fetchone():
                     continue
                 cursor.execute(
