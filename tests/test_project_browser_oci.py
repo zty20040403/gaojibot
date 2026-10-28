@@ -1,6 +1,7 @@
 """Real private journals with simulated Docker effects, not native quota proof."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
 import tempfile
@@ -75,6 +76,7 @@ class BrowserDesktopFixture(BrowserFixtureMixin, DesktopDockerFixture):
 
 class BrowserOciTests(unittest.IsolatedAsyncioTestCase):
     desktop = False
+    volume_directory = "projects"
 
     async def asyncSetUp(self):
         temp = tempfile.TemporaryDirectory(prefix="gj-browser-oci-", dir="/tmp")
@@ -82,7 +84,7 @@ class BrowserOciTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(temp.name).resolve()
         self.host = DesktopHostFixture(self.root) if self.desktop else HostFixture()
         volume_type = DirectoryProjectVolumes if self.desktop else ProjectVolumes
-        self.volumes = volume_type(self.root / "projects", INSTANCE, host=self.host)
+        self.volumes = volume_type(self.root / self.volume_directory, INSTANCE, host=self.host)
         self.volumes.create("scope", 1, quota_bytes=64 * MIB, fence=1)
         self.volumes.mutate("scope", 1, "mount", fence=2)
         self.manager = DockerSandboxManager(namespace=INSTANCE, image=IMAGE, network="none")
@@ -157,6 +159,49 @@ class BrowserOciTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((target / "keep.txt").read_text(), "retained")
         self.assertEqual(await self.manager._browser_capacity("scope"), (0, 0))
         self.assertEqual(self.browser._load(self.session)["phase"], "removed")
+
+    async def test_launch_never_holds_allocation_while_waiting_for_session_lock(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.browser.host._lock
+
+        @asynccontextmanager
+        async def gated(sid):
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+            async with original(sid):
+                yield
+
+        with patch.object(self.browser.host, "_lock", gated):
+            opening = asyncio.create_task(self.open())
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                record = self.volumes.browsers.current(self.identity)
+                self.assertFalse(self.manager._allocation_lock.locked())
+                # A not-yet-created descriptor cannot prove process absence,
+                # but drain must finish that observation rather than deadlock.
+                with self.assertRaises(FileNotFoundError):
+                    await asyncio.wait_for(self.browser.drain(self.identity, record["session_id"],
+                                                              cancel_pending=True), 1)
+            finally:
+                release.set()
+                with self.assertRaises(SandboxError):
+                    await opening
+        self.browser._spawn.assert_not_awaited()
+
+    async def test_launch_revalidates_parent_after_journal_admission(self):
+        original = self.browser.journal.begin
+
+        def replaced(*args, **kwargs):
+            record = original(*args, **kwargs)
+            self.parent["Id"] = "d" * 64
+            return record
+
+        with patch.object(self.browser.journal, "begin", side_effect=replaced):
+            with self.assertRaisesRegex(SandboxError, "changed before process creation"):
+                await self.open()
+        self.browser._spawn.assert_not_awaited()
+        self.assertEqual(len(self.docker.containers), 1)
 
     async def test_lost_publication_replays_after_driver_restart_and_shutdown(self):
         await self.open()

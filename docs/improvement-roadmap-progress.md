@@ -3078,3 +3078,40 @@ implementation evidence, not a claim that the production App has these features.
   Remaining M3, native M2 acceptance and M4-M7 are not complete. No production
   connection, shared nix-config edit, rebuild, App release or user-plan change
   occurred. Source publication does not update the deployment repository pin.
+
+### M3 project browser RPC and explicit durable acknowledgement
+
+- Added allowlisted open/status/execute/receive/ack/drain operations to the
+  authenticated private runner and its client. The helper, not the caller,
+  chooses instance, executable, profile path, mounts and network policy. Launch
+  IDs are correlated with host session journals and the generic RPC tombstone;
+  old requests cannot create another session after restart or replacement.
+- Returning a browser response does not acknowledge it. The caller must commit
+  the exact response before sending a separate hash-bound acknowledgement.
+  New actions and maintenance remain blocked until that happens. Browser
+  recovery uses its durable action journal, not a cached generic timeout/error.
+  Saved results remain readable when capacity is full or the browser is gone.
+- Fixed partial-frame timeout/cancellation recovery by retaining the original
+  framed read. Fixed launch/drain lock inversion by taking session before
+  allocation and repeating live target/capacity checks before creation. Graceful
+  runner shutdown drains its own sidecars, reaps local attach clients and retains
+  unknown/unpublished receipts; it does not stop parents or foreign containers.
+- Verification: 186 focused browser, Unix RPC, workspace, volume and Desktop
+  tests passed in 9.972 seconds (`.cache/roadmap/m3-browser-rpc-verified.log`).
+  These include real Unix sockets/private journals, dropped transport replies,
+  interrupted launch, restart, late/partial frames, explicit acknowledgements,
+  stale ownership/epochs, full capacity and shutdown refusal for foreign targets.
+  Docker/kernel effects in this suite are fixtures; local Chromium worker tests
+  use only a temporary loopback page. The separate existing-image OCI smoke
+  passed in 4.295 seconds (`.cache/roadmap/m3-browser-rpc-oci-process.log`), with
+  real pipes/Chromium, count-one replay, retained profile and observed removal.
+  It still uses a fixture parent/bind directory, not product Nix/loop quota.
+  Temporary test resources were removed. ResourceWarnings were errors.
+  Whole-CI Ruff, compileall and whitespace checks passed; Nix package/import
+  checks passed on aarch64-darwin (`.cache/roadmap/m3-browser-rpc-nix.log`). Other
+  architectures were omitted by the local check.
+- Still open: PostgreSQL browser session/sequence ownership and publication,
+  ordinary project tool routing, KVM browser launcher, automatic turn/lifecycle
+  drain, browser-only cache cleanup and native acceptance. Other remaining M3,
+  native M2 acceptance and M4-M7 are not complete. No production connection,
+  shared nix-config edit, rebuild, App release or user-plan modification occurred.

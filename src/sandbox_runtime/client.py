@@ -80,6 +80,22 @@ class SandboxClient:
     async def health(self):
         return (await self.request("health", {}))[0]
 
+    async def project_browser(self, operation, owner, project_id, *, generation, fence,
+                              request_id=None, **parameters):
+        """Caller persists launch/session/sequence before dispatch, then result before ack.
+
+        An absent status is not permission to repeat an uncertain launch with a
+        fresh ID. Replay open with its original launch_id or reconcile it first.
+        """
+        if operation not in {"open", "status", "execute", "receive", "ack", "drain"}:
+            raise ProtocolError("Unsupported project browser operation")
+        if operation == "open" and request_id is None:
+            request_id = parameters.get("launch_id")
+        return (await self.request("project_browser_" + operation, {
+            "owner": owner, "project_id": project_id, "generation": generation,
+            "fence": fence, **parameters,
+        }, request_id=request_id))[0]
+
     async def project_rebuild(self, operation, owner, project_id, *, generation,
                               fence, reservation, manifest_sha256, request_id=None):
         if operation not in {"run", "status"}:

@@ -13,7 +13,7 @@ class ProjectVolumeBrowserJournal(ProjectBrowserJournal):
         self.volumes = volumes
         super().__init__(volumes.root / "browser-state", volumes.instance_id)
 
-    def begin(self, config, runtime):
+    def begin(self, config, runtime, *, launch_id=None):
         identity, runtime = binding(config["binding"]), _runtime(runtime)
         # Both admission paths acquire volume -> browser. A maintenance intent
         # cannot pass between checking the workspace and persisting its writer.
@@ -33,7 +33,7 @@ class ProjectVolumeBrowserJournal(ProjectBrowserJournal):
                 raise ProtocolError("Browser runtime does not match its project workspace")
             # The native driver must additionally verify the live container or
             # domain and its mounted profile before starting any process.
-            return super().begin(config, runtime)
+            return super().begin(config, runtime, launch_id=launch_id)
 
     def require_idle(self, volume):
         """Called under the volume lock, before recording any maintenance intent."""

@@ -1224,9 +1224,58 @@ directory, not the product Nix dependency preparation or a mounted hard-quota
 volume. Temporary containers, the test cache volume and profiles are removed.
 
 Still required: native Nix dependency/loop-volume acceptance, the KVM launcher,
-private runner RPC and application session/sequence publication, project tool
-routing and automatic lifecycle drain. The driver alone does not enable project
-browser tools in production. Browser-only cache cleanup also remains open.
+application session/sequence publication, project tool routing and automatic
+lifecycle drain. The driver alone does not enable project browser tools in
+production. Browser-only cache cleanup also remains open.
+
+### Private browser RPC and two-phase publication
+
+The existing authenticated Unix socket now exposes the following operations
+when project workspaces are enabled. Every request includes `owner`,
+`project_id`, `generation` and `fence`; the runner supplies its own instance ID.
+It never accepts a workspace path, executable, mount, network-policy override,
+JavaScript expression or replacement worker configuration from the caller.
+
+| Operation | Additional identity/arguments | Meaning |
+| --- | --- | --- |
+| `project_browser_open` | `launch_id` equal to RPC request ID | Create one isolated session |
+| `project_browser_status` | Exactly one of `launch_id`, `session_id` | Inspect the original bound session |
+| `project_browser_execute` | `session_id`, `sequence`, `action`, `arguments` | Execute one of the nine existing browser actions |
+| `project_browser_receive` | `session_id`, `sequence` | Recover that action's saved or late observation |
+| `project_browser_ack` | `session_id`, `sequence`, `response_sha256` | Confirm application-side durable publication |
+| `project_browser_drain` | `session_id`, optional `cancel_pending` | Stop and verify only the owned browser sidecar |
+
+The application must commit the launch ID before opening, then persist the
+session/sequence/action identity before executing. Opening uses the runner's
+durable mutation receipt and non-expiring tombstone. A retry reuses its launch
+ID even after restart; it cannot quietly allocate another session. The browser
+journal records the launch ID before any process creation, so an interrupted
+open can be inspected by that ID. An absent status is only "not observed", not
+proof that a pending RPC cannot still launch. A cached open response describes
+the original launch, not current liveness; check status separately.
+
+Execution and recovery return an **unacknowledged** observation. After committing
+the exact response to PostgreSQL, the application sends `ack` with the SHA-256
+of `wire.encoded(response)`. Until then, the next action and workspace maintenance
+are refused. These operations use the browser's own fenced journal rather than
+the generic one-hour RPC result cache, so a late result remains recoverable.
+Wrong owners, epochs, sequence reuse, changed arguments and altered hashes are
+rejected. Capacity admission applies to new launches/effects, not replay, result
+recovery, acknowledgement or shutdown.
+
+Partial-frame timeouts/cancellation preserve the original pending read; recovery
+does not restart in the middle of a JSON frame or resend an effect. Graceful
+runner shutdown drains only browser launches owned by that runner process and
+reaps its attach clients. It preserves unacknowledged/unknown results and leaves
+foreign or unverified containers alone. Forced process death still needs
+journal-based reconciliation; it is not an automatic acknowledgement. Launch,
+execution and drain all take session locks before allocation locks, with live
+workspace/parent/capacity rechecks immediately before creation.
+
+`SandboxClient.project_browser()` is the typed operation wrapper, not the
+application's durable publisher. PostgreSQL session mapping, tool selection and
+turn-end lifecycle integration are still required before activating these
+calls through ordinary project `browser_*` tools. KVM transport remains separate.
 
 ### Remaining acceptance
 

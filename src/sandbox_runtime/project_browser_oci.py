@@ -10,6 +10,7 @@ import base64
 from copy import deepcopy
 import hashlib
 import json
+import logging
 import os
 import re
 
@@ -42,6 +43,7 @@ class OciProjectBrowser:
         self.journal = workspaces.volumes.browsers
         self.host = ProjectBrowserHost(self.journal)
         self.processes = {}
+        self.sessions = {}
 
     def _path(self, record):
         sid = record["session_id"]
@@ -176,62 +178,75 @@ class OciProjectBrowser:
         self.processes[record["session_id"]] = process
         return BrowserPipe(process.stdout, process.stdin)
 
-    async def open(self, owner, project_id, *, generation, fence):
+    async def _admit_open(self, owner, project_id, generation, fence):
+        """Caller holds allocation lock; recheck after acquiring the session lock."""
         manager, workspaces = self.manager, self.workspaces
+        binding = await workspaces._volume(workspaces.volumes.workspace, owner, project_id, generation=generation)
+        if (binding["fence"] != fence or not binding["workspace"]
+                or binding["workspace"]["image"] != manager.image):
+            raise SandboxError("Browser workspace epoch or pinned toolchain changed")
+        main = await workspaces._observe(owner, binding)
+        await workspaces._verify_running(binding, main)
+        sid = binding["workspace"]["sandbox_id"]
+        manager._ensure_idle(sid)
+        lock = manager._exec_locks.setdefault(sid, asyncio.Lock())
+        if lock.locked():
+            raise SandboxError("Project has an active command or file transfer")
+        await workspaces._capacity(owner)
+        await workspaces.browser_admission(owner, binding, dependencies=True)
+        await manager._verify_network_policy()
+        return binding, main, lock
+
+    async def open(self, owner, project_id, *, generation, fence, launch_id=None):
+        manager = self.manager
         # Package preparation writes only the shared closure cache, never a
         # project. Admission/mounts are rechecked after this bounded preparation.
         paths = await manager._prepare_packages(("chromium", "python3Packages.playwright"), timeout_seconds=300)
         if len(paths) != 2 or any(re.fullmatch(r"/nix/store/[a-z0-9]{32}-[A-Za-z0-9+._?=-]+", p) is None for p in paths):
             raise SandboxError("Browser dependencies did not produce pinned Nix closures")
         async with manager._allocation_lock:
-            binding = await workspaces._volume(workspaces.volumes.workspace, owner, project_id, generation=generation)
-            if (binding["fence"] != fence or not binding["workspace"]
-                    or binding["workspace"]["image"] != manager.image):
-                raise SandboxError("Browser workspace epoch or pinned toolchain changed")
-            main = await workspaces._observe(owner, binding)
-            await workspaces._verify_running(binding, main)
-            sid = binding["workspace"]["sandbox_id"]
-            manager._ensure_idle(sid)
-            lock = manager._exec_locks.setdefault(sid, asyncio.Lock())
-            if lock.locked():
-                raise SandboxError("Project has an active command or file transfer")
-            await workspaces._capacity(owner)
-            await workspaces.browser_admission(owner, binding, dependencies=True)
-            await manager._verify_network_policy()
-            identity = {"instance_id": manager.namespace, "owner": owner, "project_id": project_id,
-                        "generation": generation, "fence": fence}
-            runtime = {"backend": "oci", "sandbox_id": sid, "runtime_id": main["Id"]}
-            config = {"schema": 1, "binding": identity, "workspace": "/workspace",
-                "executable_path": paths[0] + "/bin/chromium", "allow_private_network": False,
-                "max_profile_bytes": 256 * 1024**2, "cache_bytes": 32 * 1024**2}
-            bundle = build_bundle()
+            binding, main, _ = await self._admit_open(owner, project_id, generation, fence)
+        identity = {"instance_id": manager.namespace, "owner": owner, "project_id": project_id,
+                    "generation": generation, "fence": fence}
+        runtime = {"backend": "oci", "sandbox_id": binding["workspace"]["sandbox_id"], "runtime_id": main["Id"]}
+        config = {"schema": 1, "binding": identity, "workspace": "/workspace",
+            "executable_path": paths[0] + "/bin/chromium", "allow_private_network": False,
+            "max_profile_bytes": 256 * 1024**2, "cache_bytes": 32 * 1024**2}
+        bundle = build_bundle()
 
-            async def launch(record):
-                spec = self._spec(record, binding, paths[1] + "/bin/python3", bundle)
-                await _journal(self._save, record, spec)
-                if await self._inspect(spec["name"]) is not None:
-                    raise SandboxError("Browser container name already exists; refusing adoption")
-                result = await manager._run(*self._create_command(spec), timeout=60)
-                if result.returncode:
-                    raise SandboxError("Browser container creation unconfirmed; reconcile this session")
-                container = await self._inspect(spec["name"])
-                if container is None or container["State"]["Running"]:
-                    raise SandboxError("Browser container was not observed in its unstarted state")
-                self._validate(spec, container)
-                spec.update(container_id=container["Id"], phase="created")
-                await _journal(self._save, record, spec)
-                spec["phase"] = "starting"
-                await _journal(self._save, record, spec)
-                return await self._spawn(record, spec)
+        async def launch(record):
+            self.sessions[record["session_id"]] = deepcopy(record)
+            # The host already owns the session lock. Never hold allocation
+            # while waiting for it: a concurrent drain uses session -> allocation.
+            async with manager._allocation_lock:
+                fresh, current, lock = await self._admit_open(owner, project_id, generation, fence)
+                if fresh != binding or current["Id"] != runtime["runtime_id"]:
+                    raise SandboxError("Browser workspace changed before process creation")
+                async with lock:
+                    spec = self._spec(record, binding, paths[1] + "/bin/python3", bundle)
+                    await _journal(self._save, record, spec)
+                    if await self._inspect(spec["name"]) is not None:
+                        raise SandboxError("Browser container name already exists; refusing adoption")
+                    result = await manager._run(*self._create_command(spec), timeout=60)
+                    if result.returncode:
+                        raise SandboxError("Browser container creation unconfirmed; reconcile this session")
+                    container = await self._inspect(spec["name"])
+                    if container is None or container["State"]["Running"]:
+                        raise SandboxError("Browser container was not observed in its unstarted state")
+                    self._validate(spec, container)
+                    spec.update(container_id=container["Id"], phase="created")
+                    await _journal(self._save, record, spec)
+                    spec["phase"] = "starting"
+                    await _journal(self._save, record, spec)
+                    return await self._spawn(record, spec)
 
-            async with lock:
-                result = await self.host.open(config, runtime, launch)
-                try:
-                    await self._verify_sidecar(result)
-                except BaseException:
-                    await _journal(self.journal.uncertain, identity, result["session_id"])
-                    raise
-                return result
+        result = await self.host.open(config, runtime, launch, launch_id=launch_id)
+        try:
+            await self._verify_sidecar(result)
+        except BaseException:
+            await _journal(self.journal.uncertain, identity, result["session_id"])
+            raise
+        return result
 
     async def _verify_sidecar(self, record):
         spec = await _journal(self._load, record)
@@ -241,8 +256,10 @@ class OciProjectBrowser:
         self._validate(spec, container)
         await self.workspaces._verify_running(spec["workspace"], container)
 
-    async def execute(self, identity, session_id, sequence, method, args, *, persist):
+    async def execute(self, identity, session_id, sequence, method, args, *, persist=None, admission=None):
         async def validate():
+            if admission is not None:
+                admission()
             async with self.manager._allocation_lock:
                 record = await _journal(self.journal.current, identity, session_id)
                 if record["state"] != "ready":
@@ -265,8 +282,11 @@ class OciProjectBrowser:
         return await self.host.execute(identity, session_id, sequence, method, args,
                                        persist=persist, before_dispatch=validate)
 
-    async def receive_pending(self, identity, session_id, *, persist):
-        return await self.host.receive_pending(identity, session_id, persist=persist)
+    async def receive_pending(self, identity, session_id, *, persist=None, sequence=None):
+        return await self.host.receive_pending(identity, session_id, persist=persist, sequence=sequence)
+
+    async def acknowledge(self, identity, session_id, sequence, response_sha256):
+        return await self.host.acknowledge(identity, session_id, sequence, response_sha256)
 
     async def stop_for_quota(self, identity):
         """Caller holds allocation lock. Do not wait for a blocked browser action."""
@@ -314,10 +334,7 @@ class OciProjectBrowser:
         await _journal(self._save, record, spec)
         process = self.processes.pop(record["session_id"], None)
         if process is not None:
-            try:
-                await asyncio.wait_for(process.wait(), 5)
-            except TimeoutError:
-                await self.manager._terminate_process(process)
+            await self._reap(process)
         return {"binding": record["binding"], "runtime": record["runtime"],
                 "session_id": record["session_id"], "processes_stopped": True}
 
@@ -328,4 +345,48 @@ class OciProjectBrowser:
 
         # Same order as dispatch: session -> allocation. Taking allocation first
         # can deadlock a dispatch already waiting to revalidate its container.
-        return await self.host.drain(identity, session_id, stop, cancel_pending=cancel_pending)
+        result = await self.host.drain(identity, session_id, stop, cancel_pending=cancel_pending)
+        self.sessions.pop(session_id, None)
+        return result
+
+    @staticmethod
+    async def _reap(process):
+        # This is the local Docker attach client, not evidence that the sidecar
+        # has stopped. Drain stdout as well; a pending frame can fill its pipe.
+        if process.stdin is not None:
+            process.stdin.close()
+        pending = asyncio.create_task(process.communicate())
+        try:
+            await asyncio.wait_for(asyncio.shield(pending), 5)
+        except TimeoutError:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await asyncio.wait_for(asyncio.shield(pending), 10)
+        finally:
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    async def close(self):
+        """Graceful runner shutdown drains only launches owned by this process."""
+        failures = []
+        for sid, record in tuple(self.sessions.items()):
+            try:
+                await self.drain(record["binding"], sid, cancel_pending=True)
+            except Exception:
+                failures.append(sid)
+                logging.getLogger(__name__).warning("Project browser shutdown unconfirmed: %s", sid)
+            finally:
+                channel = self.host.channels.pop(sid, None)
+                if channel is not None:
+                    try:
+                        await asyncio.wait_for(channel.eof(), 5)
+                    except (OSError, TimeoutError):
+                        pass
+                process = self.processes.pop(sid, None)
+                if process is not None:
+                    await self._reap(process)
+                self.sessions.pop(sid, None)
+        return failures

@@ -88,6 +88,10 @@ class ProjectBrowserJournal:
                         or re.fullmatch(r"[a-f0-9]{64}", record["config_sha256"]) is None
                         or type(record.get("sequence")) is not int or record["sequence"] < 0):
                     raise ProtocolError("Invalid browser session journal")
+                if record.get("launch_id") is not None and (
+                        not isinstance(record["launch_id"], str)
+                        or HEX_ID.fullmatch(record["launch_id"]) is None):
+                    raise ProtocolError("Invalid browser launch identity")
                 bound = binding(record["binding"])
                 _runtime(record["runtime"])
                 if bound["instance_id"] != self.instance_id or bound["project_id"] != project_id:
@@ -139,13 +143,17 @@ class ProjectBrowserJournal:
             raise ProtocolError("Browser journal exceeds its bounded receipt size")
         write_json(path, record, compact=True)
 
-    def begin(self, config, runtime):
+    def begin(self, config, runtime, *, launch_id=None):
         identity, runtime = binding(config["binding"]), _runtime(runtime)
+        if launch_id is not None and (not isinstance(launch_id, str) or HEX_ID.fullmatch(launch_id) is None):
+            raise ProtocolError("Invalid browser launch identity")
         if len(encoded(config)) > FRAME_LIMIT:
             raise ProtocolError("Browser bootstrap exceeds its limit")
         digest = _digest(config)
         with self._locked(identity) as (path, old):
             if old is not None:
+                if launch_id is not None and old.get("launch_id") == launch_id:
+                    raise ProtocolError("Browser launch already exists; inspect its original session")
                 if old["state"] != "closed":
                     raise ProtocolError("Previous browser still owns this workspace; reconcile it first")
                 if old["last"] and not old["last"]["acknowledged"]:
@@ -156,6 +164,8 @@ class ProjectBrowserJournal:
             record = {"schema": 1, "binding": identity, "runtime": runtime,
                       "session_id": uuid.uuid4().hex, "config_sha256": digest,
                       "state": "starting", "worker_id": None, "sequence": 0, "last": None}
+            if launch_id is not None:
+                record["launch_id"] = launch_id
             self._save(path, record)
             return deepcopy(record)
 

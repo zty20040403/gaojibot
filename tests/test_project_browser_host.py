@@ -19,7 +19,7 @@ from src.sandbox_runtime.project_browser_bundle import build_bundle
 from src.sandbox_runtime.project_browser_host import BrowserPipe, ProjectBrowserHost
 from src.sandbox_runtime.project_browser_journal import ProjectBrowserJournal
 from src.sandbox_runtime.project_browser_worker import ProjectBrowserWorker
-from src.sandbox_runtime.wire import ProtocolError, encoded, write_frame
+from src.sandbox_runtime.wire import ProtocolError, encoded, read_header, write_frame
 from tests.test_browser_runtime import LocalPage
 from tests.test_project_browser_worker import MemoryWriter
 
@@ -49,6 +49,9 @@ class FixturePipe:
             self.reader.feed_data(writer.data)
             raise TimeoutError("observation timed out")
         return reply
+
+    async def receive(self, *, timeout=10):
+        return await read_header(self.reader, timeout=timeout)
 
 
 class BrowserHostTests(unittest.IsolatedAsyncioTestCase):
@@ -217,8 +220,8 @@ class BrowserHostTests(unittest.IsolatedAsyncioTestCase):
         await self.host.drain(IDENTITY, self.sid, self.stop)
         begin = self.journal.begin
 
-        def begin_then_cancel(config, runtime):
-            record = begin(config, runtime)
+        def begin_then_cancel(config, runtime, **kwargs):
+            record = begin(config, runtime, **kwargs)
             sid = record["session_id"]
             self.journal.closing(IDENTITY, sid, cancel_pending=True)
             self.journal.closed(IDENTITY, sid, {"binding": IDENTITY, "runtime": RUNTIME,

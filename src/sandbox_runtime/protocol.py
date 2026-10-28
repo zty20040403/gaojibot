@@ -9,6 +9,7 @@ from .docker import NIX_ATTRIBUTE_PATTERN, RUNTIME_IMAGES, SANDBOX_ID_PATTERN
 from .wire import (HEADER_LIMIT as HEADER_LIMIT, ProtocolError as ProtocolError,
                    encoded as encoded, read_header as read_header, write_frame as write_frame)
 from .project_volumes import MIN_QUOTA, MAX_QUOTA, MIB
+from . import project_browser_rpc
 from src.project_content import CHUNK_BYTES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_VERSION_FILES
 
 
@@ -55,6 +56,10 @@ FIELDS = {
     "project_workspace_reserve": ({"owner", "project_id", "generation", "fence", "reservation"}, set()),
     "project_workspace_release": ({"owner", "project_id", "generation", "fence", "reservation"}, set()),
 }
+FIELDS.update(project_browser_rpc.FIELDS)
+# Only launch uses the generic request tombstone. Browser actions/ACK/drain
+# replay from their own fenced journal, including late results after a timeout.
+MUTATIONS |= {"project_browser_open"}
 PROJECT_FILE_FIELDS = {"owner", "project_id", "generation", "fence", "reservation"}
 for _action in ("run", "status"):
     FIELDS["project_rebuild_" + _action] = (PROJECT_FILE_FIELDS | {"manifest_sha256"}, set())
@@ -107,6 +112,8 @@ def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
             raise ProtocolError("项目编号或操作代次无效。")
     if "reservation" in args and (not isinstance(args["reservation"], str) or not ID_PATTERN.fullmatch(args["reservation"])):
         raise ProtocolError("项目维护凭据无效。")
+    if method.startswith("project_browser_"):
+        project_browser_rpc.validate(method, args, request["id"])
     if method == "project_usage" and "rebuild_command" in args and not _text(args["rebuild_command"], 4000, blank=True):
         raise ProtocolError("Invalid project rebuild classification command")
     if method.startswith(("project_files_", "project_rebuild_")):

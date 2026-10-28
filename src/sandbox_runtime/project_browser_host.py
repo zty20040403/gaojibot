@@ -20,15 +20,34 @@ class BrowserPipe:
     """One already-isolated process; no shell command or reconnect fallback."""
     def __init__(self, reader, writer):
         self.reader, self.writer = reader, writer
+        self.pending = None
 
     async def exchange(self, frame, *, timeout=160):
-        async with asyncio.timeout(timeout):
-            await write_frame(self.writer, frame, timeout=10)
-            return await read_header(self.reader, limit=FRAME_LIMIT, timeout=timeout)
+        if self.pending is not None:
+            raise ProtocolError("Previous browser frame has not been received")
+        # Keep the same framed read alive after a caller times out/cancels. A
+        # fresh read could mistake the middle of the old JSON body for a header.
+        self.pending = asyncio.create_task(read_header(self.reader, limit=FRAME_LIMIT, timeout=1800))
+        self.pending.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        await write_frame(self.writer, frame, timeout=10)
+        return await self.receive(timeout=timeout)
+
+    async def receive(self, *, timeout=10):
+        if self.pending is None:
+            raise ProtocolError("No original browser frame is pending")
+        result = await asyncio.wait_for(asyncio.shield(self.pending), timeout)
+        self.pending = None
+        return result
 
     async def eof(self):
         self.writer.close()
-        await self.writer.wait_closed()
+        try:
+            await self.writer.wait_closed()
+        finally:
+            if self.pending is not None:
+                self.pending.cancel()
+                await asyncio.gather(self.pending, return_exceptions=True)
+                self.pending = None
 
 
 class ProjectBrowserHost:
@@ -47,11 +66,11 @@ class ProjectBrowserHost:
             async with host_lock(self.journal.root / f"{session_id}.pipe.lock", timeout=0):
                 yield
 
-    async def open(self, config, runtime, launch):
+    async def open(self, config, runtime, launch, *, launch_id=None):
         # Persist before the driver creates a process. An uncertain launch keeps
         # its session ID so a restarted driver can stop that exact incarnation.
         config, runtime = deepcopy(config), deepcopy(runtime)
-        record = await _journal(self.journal.begin, config, runtime)
+        record = await _journal(self.journal.begin, config, runtime, launch_id=launch_id)
         identity, sid = record["binding"], record["session_id"]
         async with self._lock(sid):
             try:
@@ -67,8 +86,8 @@ class ProjectBrowserHost:
                 raise
         return await _journal(self.journal.current, identity, sid)
 
-    async def execute(self, identity, session_id, sequence, method, args, *, persist, before_dispatch=None):
-        """persist must be an idempotent, durable application-side commit callback."""
+    async def execute(self, identity, session_id, sequence, method, args, *, persist=None, before_dispatch=None):
+        """Without a durable commit callback, return an unacknowledged observation."""
         async with self._lock(session_id):
             frame, reply = await _journal(
                 self.journal.prepare, identity, session_id, sequence, method, args
@@ -92,26 +111,35 @@ class ProjectBrowserHost:
     async def _publish(self, identity, session_id, sequence, reply, persist):
         # An exception/lost acknowledgement here retains the host receipt. The
         # next replay runs only this idempotent publication, not the browser.
-        await persist(session_id, sequence, deepcopy(reply))
-        if reply["state"] == "completed":
+        if persist is not None:
+            await persist(session_id, sequence, deepcopy(reply))
+        if persist is not None and reply["state"] == "completed":
             await _journal(self.journal.acknowledge, identity, session_id, sequence,
                            hashlib.sha256(encoded(reply)).hexdigest())
         return reply
 
-    async def receive_pending(self, identity, session_id, *, persist):
+    async def receive_pending(self, identity, session_id, *, persist=None, sequence=None):
         """Read a late response from the same pipe, never resend an uncertain action."""
         async with self._lock(session_id):
             record = await _journal(self.journal.current, identity, session_id)
             if record["last"] is None:
                 raise ProtocolError("No browser action is pending")
+            if sequence is not None and (type(sequence) is not int or sequence != record["sequence"]):
+                raise ProtocolError("Browser receipt sequence changed; refusing another action's result")
             reply = record["last"]["response"]
             if reply is None:
                 channel = self.channels.get(session_id)
                 if channel is None:
                     raise ProtocolError("The original browser channel is unavailable")
-                reply = await read_header(channel.reader, limit=FRAME_LIMIT, timeout=10)
+                reply = await channel.receive(timeout=10)
                 await _journal(self.journal.observe, identity, session_id, record["sequence"], reply)
             return await self._publish(identity, session_id, record["sequence"], reply, persist)
+
+    async def acknowledge(self, identity, session_id, sequence, response_sha256):
+        """Separate RPC used only after the application commits the exact response."""
+        async with self._lock(session_id):
+            await _journal(self.journal.acknowledge, identity, session_id, sequence, response_sha256)
+            return await _journal(self.journal.current, identity, session_id)
 
     async def drain(self, identity, session_id, stop_and_observe, *, cancel_pending=False):
         """Driver stops its owned cgroup/container and independently observes it."""

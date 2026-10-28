@@ -99,6 +99,9 @@ class SandboxRunner:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        workspaces = self.manager.project_workspaces
+        if workspaces is not None and workspaces._browser is not None:
+            await workspaces._browser.close()
         if server:
             await asyncio.wait_for(server.wait_closed(), timeout=10)
             self.socket_path.unlink(missing_ok=True)
@@ -201,6 +204,11 @@ class SandboxRunner:
                 data['project_volumes_enabled'] = self.project_volumes is not None
                 data['project_workspaces_enabled'] = self.manager.project_workspaces is not None
                 data['project_quota_mode'] = self.project_volumes.quota_mode if self.project_volumes is not None else None
+                data['project_browser_protocol'] = 1 if self.manager.project_workspaces is not None else None
+            elif method.startswith('project_browser_'):
+                from .project_browser_rpc import dispatch
+                data = await dispatch(self.manager.project_workspaces, method, args,
+                                      capacity_check=self.capacity_check)
             elif method == 'project_notes':
                 if self.manager.project_workspaces is None:
                     raise SandboxError("Project workspaces are disabled")
