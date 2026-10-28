@@ -966,8 +966,36 @@ class TurnJournal(ReactionVoteStoreMixin):
         *,
         node_id: str = "final",
         chunk_index: int = 0,
+        transaction_cursor: StoreCursor | None = None,
+        strict_association: bool = False,
     ) -> None:
-        with self._transaction() as cursor:
+        """Link a receipt in the caller's transaction, optionally without reassignment.
+
+        Strict callers may replay the exact association, but cannot overwrite a
+        prior turn/node/chunk link. The external cursor remains caller-owned.
+        """
+        if strict_association and (
+            type(turn_id) is not int or turn_id <= 0
+            or type(canonical_message_id) is not int or canonical_message_id <= 0
+            or not isinstance(node_id, str) or not node_id
+            or type(chunk_index) is not int or chunk_index < 0
+        ):
+            raise ValueError("invalid strict send association")
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
+            if strict_association:
+                cursor.execute(
+                    """INSERT INTO turn_send_links
+                        (canonical_message_id,turn_id,node_id,chunk_index,created_at)
+                        VALUES (?,?,?,?,?) ON CONFLICT(canonical_message_id) DO NOTHING""",
+                    (canonical_message_id, turn_id, node_id, chunk_index, int(time.time())),
+                )
+                row = cursor.execute(
+                    """SELECT turn_id,node_id,chunk_index FROM turn_send_links
+                        WHERE canonical_message_id=? FOR UPDATE""", (canonical_message_id,),
+                ).fetchone()
+                if row is None or (row["turn_id"], row["node_id"], row["chunk_index"]) != (turn_id, node_id, chunk_index):
+                    raise ValueError("send receipt already has a different association")
+                return
             cursor.execute(
                 """
                 INSERT INTO turn_send_links (

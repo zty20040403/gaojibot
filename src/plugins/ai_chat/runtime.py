@@ -190,7 +190,8 @@ class AppContext:
             raise RuntimeError("Official ingress requires durable storage")
         from .adapters.qq_official.runtime import OfficialRuntime
 
-        runtime = OfficialRuntime(config, self.database, logger=self.logger, ledger=self.message_ledger)
+        runtime = OfficialRuntime(config, self.database, logger=self.logger, ledger=self.message_ledger,
+                                  journal=getattr(self, "turn_journal", None))
         self.official_runtime = runtime
         try:
             return await runtime.start()
