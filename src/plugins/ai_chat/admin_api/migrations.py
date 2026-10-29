@@ -99,12 +99,18 @@ def create_router(context: AdminRouteContext):
             raise HTTPException(404,'Migration unavailable')
         return value
 
+    def failed(action):
+        from ..observability import telemetry
+        from ..adapters.qq_official.official_metrics import official_metrics, observe
+        observe(official_metrics(telemetry.registry), 'migration', action)
+
     async def mutate(request,action,payload,preview=''):
         value=service(request)
         try:
             return await value.mutate(cookie=request.cookies.get(SESSION_COOKIE,''),
                 csrf=request.headers.get('x-csrf-token',''),action=action,request=payload,preview_digest=preview)
         except Exception:
+            failed(action)
             raise HTTPException(409,'Migration unavailable') from None
 
     @router.post('/api/qq-official/migrations/mappings')
@@ -151,6 +157,7 @@ def create_router(context: AdminRouteContext):
             return await value.request_verification(cookie=request.cookies.get(SESSION_COOKIE,''),
                 csrf=request.headers.get('x-csrf-token',''),migration_id=key,**body.model_dump())
         except Exception:
+            failed('verify')
             raise HTTPException(409,'Migration unavailable') from None
 
     @router.post('/api/qq-official/migrations/{migration_id}/actions')

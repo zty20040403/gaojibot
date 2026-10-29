@@ -31,7 +31,7 @@ def load_environment(filename: Path) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("serve", "migrate", "bootstrap-admin", "ensure-admin", "check-admin", "check-runtime", "check-database", "check-video", "check-sandbox", "probe-model", "probe-embedding", "probe-cluster", "probe-matrix", "probe-imessage"))
+    parser.add_argument("command", choices=("serve", "migrate", "bootstrap-admin", "add-local-admin", "ensure-admin", "check-admin", "check-runtime", "check-database", "check-video", "check-sandbox", "probe-model", "probe-embedding", "probe-cluster", "probe-matrix", "probe-imessage"))
     args = parser.parse_args(argv)
     try:
         if args.command in {"probe-model", "probe-embedding", "probe-cluster", "probe-matrix", "probe-imessage"}:
@@ -90,20 +90,44 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "migrate":
             from src.bot_storage.cli import main as migrate
             return migrate(["upgrade"])
-        if args.command in {"bootstrap-admin", "ensure-admin", "check-admin"}:
+        if args.command in {"bootstrap-admin", "add-local-admin", "ensure-admin", "check-admin"}:
             from src.bot_security.store import SecurityStore
             from src.bot_storage.database import PostgresDatabase
             from src.bot_storage.schema import HEAD_REVISION
             payload = json.loads(sys.stdin.read(16385))
-            fields = {"qq_id"} if args.command == "check-admin" else {"username", "password", "qq_id"}
+            local = isinstance(payload, dict) and payload.get("identity_kind") == "local_admin"
+            if args.command == "add-local-admin" and not local:
+                raise ValueError("Local administrator identity is required")
+            if local:
+                fields = {"identity_kind", "username"} if args.command == "check-admin" else {"identity_kind", "username", "password"}
+            else:
+                fields = {"qq_id"} if args.command == "check-admin" else {"username", "password", "qq_id"}
             if not isinstance(payload, dict) or set(payload) != fields:
                 raise ValueError("Invalid administrator input")
             database = PostgresDatabase(os.environ["AI_POSTGRES_DSN"], schema=os.environ["AI_POSTGRES_SCHEMA"])
             try:
                 database.require_revision(HEAD_REVISION)
-                store = SecurityStore(database, Path(os.environ["AI_ADMIN_SECRET_FILE"]).read_bytes())
+                from src.plugins.ai_chat.application_security import read_console_secret
+                store = SecurityStore(database, read_console_secret(os.environ["AI_ADMIN_SECRET_FILE"]))
                 created = False
-                if args.command == "check-admin":
+                if local:
+                    from src.bot_security.passwords import verify_password
+                    with store.transaction() as cursor:
+                        account = cursor.execute("""SELECT * FROM admin_accounts WHERE username=?
+                            AND role='admin' AND enabled=1 AND qq_id IS NULL AND identity_mode='local_admin'""",
+                            (payload["username"].strip().lower(),)).fetchone()
+                    if args.command == "add-local-admin":
+                        store.add_local_admin(payload["username"], payload["password"])
+                        created = True
+                    elif args.command == "check-admin":
+                        if account is None:raise ValueError("Initialize local administrator first")
+                    elif args.command == "ensure-admin" and store.accounts():
+                        if account is None or not verify_password(account["password_hash"], payload["password"]):
+                            raise ValueError("Existing administrator credentials do not match")
+                    else:
+                        store.bootstrap_local_admin(payload["username"], payload["password"])
+                        created = True
+                elif args.command == "check-admin":
                     if not store.account_for_qq(payload["qq_id"]):
                         raise ValueError("Initialize administrator first")
                 elif args.command == "ensure-admin" and store.accounts():
@@ -122,14 +146,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         from .cluster_credentials import cluster_credentials
         with cluster_credentials(cluster_token):
-            import nonebot
-            from src.plugins.ai_chat.adapters.onebot_route import RouteGuardedOneBotAdapter as Adapter
-            nonebot.init(_env_file=(os.devnull,))
-            nonebot.get_driver().register_adapter(Adapter)
-            nonebot.load_plugin("src.plugins.ai_chat.onebot_plugin")
-            from .runtime_health import install_health_writer
-            install_health_writer()
-            nonebot.run(timeout_graceful_shutdown=10)
+            from src.plugins.ai_chat.platform_entrypoint import serve
+            serve(env_file=(os.devnull,),health_writer=True)
         return 0
     except Exception:
         # Database and model exceptions may contain private connection strings.

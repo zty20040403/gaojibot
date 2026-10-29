@@ -144,12 +144,13 @@ class TestOnlyPartTransport:
         self.fake = fake
         self.client = httpx.AsyncClient(trust_env=False, follow_redirects=False)
         self.calls = 0
-    async def put(self, part, content, *, timeout, before_dispatch):
+    async def put(self, part, content, *, timeout, before_dispatch, ensure_current):
         parsed = urlsplit(part.presigned_url)
         if parsed.netloc != 'uploads.example' or parsed.query != 'signed=TEST_ONLY':
             raise UploadGuardError()
         if parsed.path != f'/put/{part.index}':
             raise UploadGuardError()
+        await ensure_current()
         before_dispatch()
         self.calls += 1
         response = await self.client.put(self.fake.base_url + parsed.path,

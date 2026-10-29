@@ -31,6 +31,12 @@ gaoji 通过 NapCatQQ 接收 OneBot V11 事件，使用 NoneBot2 处理消息，
 工具调用、长期记忆、媒体任务与投递状态保存到 PostgreSQL。它不只是聊天接口：模型会在
 宿主管控的 Agent Loop 中读取证据、选择工具、执行任务，再把适合 QQ 的结果发回群聊。
 
+## 消息平台
+
+默认使用 OneBot V11 / NapCat，也可显式启用 QQ 官方机器人或同时运行两个渠道。官方单平台不启动 NapCat；会话身份、绑定、项目授权与文件能力按各自账号和端点核验。
+
+官方入口默认关闭。配置、owner 与群绑定、单文件大小、持久发送、备份恢复和迁移步骤见 [QQ 官方机器人](docs/qq-official.md)。各阶段实际验证结果与待验收范围见 [实施进度](docs/qq-official-progress.md)。下方结构图展示默认 OneBot 入口。
+
 ## 主要能力
 
 <table>

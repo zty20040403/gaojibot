@@ -342,15 +342,24 @@ WantedBy=multi-user.target
                 manifest = extract_bundle(self.archive, self.release, self.checksum)
                 sys.path.insert(0, str(self.release))
                 from src.local_runtime.instances import InstanceStore
+                from src.local_runtime.official_configuration import platforms
                 from src.local_runtime.capacity import prepare_directory
                 from src.local_runtime.files import write_json
                 from src.local_runtime.runtime import compose_document, runtime_environment
                 store = InstanceStore(ROOT / "data")
                 if not self.state.get("instance_id"):
                     config = store.create("高级")
+                    platform_path = self.archive.parent.parent / "platforms.json"
+                    if platform_path.exists():
+                        if platform_path.is_symlink():
+                            raise InstallError("平台配置文件无效")
+                        selected = platforms(json.loads(platform_path.read_text()))
+                        settings = {**config["settings"], "platforms": selected}
+                        config = store.update(config["id"], settings, expected_revision=config["revision"])
                     self.save(instance_id=config["id"])
                 identifier = self.state["instance_id"]
                 config, private = store.snapshot(identifier)
+                selected = platforms(config["settings"].get("platforms"))
                 directory = store.directory(identifier)
                 prepare_directory(directory)
                 self.done("prepare")
@@ -390,7 +399,7 @@ WantedBy=multi-user.target
                     if filename == "admin.secret":
                         os.chown(path, 10001, 10001)
                 webui = directory / "napcat/config/webui.json"
-                if not webui.exists():
+                if selected["onebot"] and not webui.exists():
                     write_json(directory / "napcat/config/napcat.json", {})
                     write_json(webui, {"host": "0.0.0.0", "port": 6099, "prefix": "", "token": private["napcat_token"], "loginRate": 3})
                 runtime_path = directory / "config/runtime.json"
@@ -401,7 +410,7 @@ WantedBy=multi-user.target
                 compose = directory / "compose.json"
                 write_json(compose, compose_document(config, directory, runtime_image=image, images=images))
                 command = [self.docker, "compose", "--file", str(compose)]
-                self.run(command + ["pull", "database", "napcat"], timeout=1800)
+                self.run(command + ["pull", "database", *(["napcat"] if selected["onebot"] else [])], timeout=1800)
                 self.run(command + ["up", "--detach", "--wait", "--wait-timeout", "180", "database"], timeout=210)
                 self.check_database(command)
                 self.run(command + ["run", "--rm", "--no-deps", "bot", "migrate"], timeout=600)
@@ -428,21 +437,25 @@ WantedBy=multi-user.target
                 self.run(["systemctl", "start", unit], timeout=330)
                 self.setup_controller(directory)
                 self.done("service")
-                self.save(stage="verify", message="正在检查 QQ 登录入口")
-                ready = False
-                for _ in range(60):
-                    try:
-                        with urlopen(f"http://127.0.0.1:{config['ports']['napcat']}/webui/", timeout=3) as response:
-                            ready = response.status == 200
-                    except Exception:
-                        pass
-                    if ready:
-                        break
-                    time.sleep(2)
-                if not ready:
-                    raise InstallError("QQ 登录入口暂未就绪，现有数据库会保留，可重试检测")
-                self.done("verify")
-                self.save(status="awaiting_setup", message="安装环境已就绪，等待登录自己的 QQ 并配置模型")
+                if selected["onebot"]:
+                    self.save(stage="verify", message="正在检查 QQ 登录入口")
+                    ready = False
+                    for _ in range(60):
+                        try:
+                            with urlopen(f"http://127.0.0.1:{config['ports']['napcat']}/webui/", timeout=3) as response:
+                                ready = response.status == 200
+                        except Exception:
+                            pass
+                        if ready:
+                            break
+                        time.sleep(2)
+                    if not ready:
+                        raise InstallError("QQ 登录入口暂未就绪，现有数据库会保留，可重试检测")
+                    self.done("verify")
+                    self.save(status="awaiting_setup", message="安装环境已就绪，等待登录自己的 QQ 并配置模型")
+                else:
+                    self.done("verify")
+                    self.save(status="awaiting_setup", message="官方环境已就绪，等待配置官方凭据与模型")
             except Exception as error:
                 self.save(status="failed", message=str(error) if isinstance(error, InstallError) else "安装未完成，请查看私有安装日志并重试")
                 raise

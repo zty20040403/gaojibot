@@ -183,6 +183,7 @@ class GatewayConnection:
         self.max_dispatch_queue = max_dispatch_queue
         self._dispatch_queue: asyncio.Queue | None = None
         self._dispatch_task: asyncio.Task | None = None
+        self.observer = None
         self.state = "closed"
         self.reason = "not_started"
         self.last_close_code: int | None = None
@@ -199,6 +200,19 @@ class GatewayConnection:
         self._session_id = checkpoint.session_id if checkpoint else None
         self._observed_seq = checkpoint.seq if checkpoint else None
         self._ready_at: float | None = None
+
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, value):
+        previous = getattr(self, '_state', None)
+        self._state = value
+        observer = getattr(self, 'observer', None)
+        if previous != value and observer is not None:
+            try: observer.observe('gateway', value)
+            except Exception: pass
 
     @property
     def health(self) -> dict:

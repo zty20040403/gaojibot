@@ -13,6 +13,7 @@ from src.qq_official.credentials import (
     Credentials, CredentialError, DEFAULT_API_BASE, SANDBOX_API_BASE,
     _read_secret, validate_api_base,
 )
+from .delivery_configuration import DeliveryConfiguration
 
 
 class OfficialConfigurationError(ValueError):
@@ -57,6 +58,7 @@ class LoadedOfficialConfig:
     binding_pepper: bytes = field(repr=False)
     payload_retention_hours: int = 24
     allow_test_server: bool = False
+    delivery: DeliveryConfiguration = DeliveryConfiguration()
 
     @property
     def owner_actors(self) -> tuple[ActorKey, ...]:
@@ -76,6 +78,7 @@ class OfficialConfig:
     private_allowed_openids: tuple[str, ...] = field(default=(), repr=False)
     binding_pepper_file: str = field(default="", repr=False)
     payload_retention_hours: int = 24
+    delivery: DeliveryConfiguration = DeliveryConfiguration()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> OfficialConfig:
@@ -97,6 +100,10 @@ class OfficialConfig:
         owners = _identifiers(env.get("AI_QQ_OFFICIAL_OWNER_OPENIDS", ""))
         if len(owners) > 32:
             raise OfficialConfigurationError("Official owner configuration exceeds account limit")
+        try:
+            delivery = DeliveryConfiguration.from_env(env)
+        except ValueError:
+            raise OfficialConfigurationError('Invalid official delivery configuration') from None
         return cls(
             enabled=True,
             app_id_file=env.get("AI_QQ_OFFICIAL_APP_ID_FILE", "").strip(),
@@ -109,6 +116,7 @@ class OfficialConfig:
             private_allowed_openids=_identifiers(env.get("AI_QQ_OFFICIAL_PRIVATE_ALLOWED_OPENIDS", "")),
             binding_pepper_file=env.get("AI_QQ_OFFICIAL_BIND_PEPPER_FILE", "").strip(),
             payload_retention_hours=retention,
+            delivery=delivery,
         )
 
     def load(self, *, acl_validator=None, allow_test_server: bool = False) -> LoadedOfficialConfig | None:
@@ -150,5 +158,5 @@ class OfficialConfig:
         return LoadedOfficialConfig(
             account, credentials, base, self.owner_openids, self.private_policy,
             self.private_allowed_openids, bytes.fromhex(pepper_text),
-            self.payload_retention_hours, allow_test_server,
+            self.payload_retention_hours, allow_test_server, self.delivery,
         )

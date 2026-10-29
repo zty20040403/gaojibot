@@ -10,6 +10,7 @@ const { EventEmitter } = require('node:events');
 const deploy = require('./deploy.cjs');
 const control = require('./control.cjs');
 const imagePolicy = require('./image-policy.cjs');
+const { platforms } = require('./platform-options.cjs');
 const { UserError } = require('./contracts.cjs');
 
 const LOCAL_ID = 'desktop-local';
@@ -74,6 +75,7 @@ class LocalDeployment {
         || typeof value.engineId !== 'string'
         || value.controllerChecksum !== undefined && !HASH.test(value.controllerChecksum)
         || value.storageState !== undefined && !['new', 'created', 'ready'].includes(value.storageState)) throw new UserError('local_record', '本机安装记录损坏，请保留数据，勿重复安装');
+    if (value.platforms !== undefined) platforms(value.platforms);
     return value;
   }
   write(value) {
@@ -170,12 +172,16 @@ class LocalDeployment {
     }
     const manifest = deploy.bundle(this.bundleDirectory);
     const checksum = manifest.files['gaoji-runtime.tar.gz'].sha256;
-    const imageOptions = imagePolicy.options(options || record?.imageOptions);
+    const { platforms: requestedPlatforms, ...imageInput } = options || record?.imageOptions || {};
+    const selected = record ? platforms(record.platforms) : platforms(requestedPlatforms);
+    if (record && requestedPlatforms !== undefined && JSON.stringify(platforms(requestedPlatforms)) !== JSON.stringify(selected))
+      throw new UserError('platform_options', '已有安装的平台选项不能通过重试更换，请在实例设置中修改');
+    const imageOptions = imagePolicy.options(imageInput);
     if (record && checksum !== record.checksum) throw new UserError('local_version', '原运行组件缺失或安装未完成，需要匹配原运行包才能修复；已有数据保留，未自动迁移或创建新实例');
     if (!record) {
       const port = await freePort();
       record = { schema: 1, job: randomUUID().replaceAll('-', ''), checksum, port,
-        botPort: await freePort([port]), engineId: inspection.engineId, storageState: 'new',
+        platforms: selected, botPort: await freePort([port]), engineId: inspection.engineId, storageState: 'new',
         credential: this.safeStorage.encryptString(randomBytes(32).toString('base64url')).toString('base64') };
     }
     record.imageOptions = imageOptions;
@@ -303,7 +309,7 @@ class LocalDeployment {
     const image = `gaoji-desktop-controller:${record.checksum}`;
     progress('initialize', '正在初始化本机专属数据卷和管理凭据');
     await this.checked(['run', '--rm', '-i', '--network', 'none', ...mounts, image, 'init'], {
-      input: JSON.stringify({ job: record.job, checksum: record.checksum, token: this.access(record).token, bot_port: record.botPort }) });
+      input: JSON.stringify({ job: record.job, checksum: record.checksum, token: this.access(record).token, bot_port: record.botPort, ...(record.platforms ? { platforms: record.platforms } : {}) }) });
     record.storageState = 'ready'; this.write(record);
     if (await this.resumeController(record)) return;
     else {
@@ -312,7 +318,7 @@ class LocalDeployment {
         '--memory', '512m', '--cpus', '1', '--log-driver', 'local', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3',
         ...mounts, '--mount', 'type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock', image, 'serve']);
     }
-    record.progress = { status: 'running', stage: 'database', message: '管理组件已启动，正在初始化本机数据库与 QQ' };
+    record.progress = { status: 'running', stage: 'database', message: '管理组件已启动，正在初始化本机数据库和所选平台' };
     this.write(record);
   }
 }

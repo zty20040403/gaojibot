@@ -162,8 +162,21 @@ in {
       description = "Non-secret environment variables for the bot service.";
     };
 
+    oneBot.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Enable the existing OneBot application path. Disable alongside qqOfficial.enable for official-only startup.";
+    };
+
     qqOfficial = {
-      enable = lib.mkEnableOption "QQ official durable ingress (M2; model replies and sending are not connected)";
+      enable = lib.mkEnableOption "QQ official durable ingress, shared turns and delivery";
+
+      hostConfigFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/secrets/gaoji-qq-official-host.json";
+        description = "Protected host configuration for native services, verified native/download file routes and reviewed migration sources; loaded with systemd credentials. Absent file routes stay disabled. Loading this file never starts a migration or configures a public proxy.";
+      };
 
       appIdFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -226,6 +239,90 @@ in {
         type = lib.types.enum ["manual_bind"];
         default = "manual_bind";
         description = "Groups require the two-sided binding flow. Receiving all group messages never enables an unbound group.";
+      };
+
+      markdown = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Enable Markdown rendering when the endpoint contract supports it; explicit unaccepted format rejection may downgrade.";
+      };
+
+      maxTextChars = lib.mkOption {
+        type = lib.types.ints.between 1 20000;
+        default = 2000;
+        description = "Maximum Unicode characters per rendered part; UTF-8 bytes are checked independently.";
+      };
+
+      maxTextParts = lib.mkOption {
+        type = lib.types.ints.between 1 16;
+        default = 4;
+        description = "Maximum rendered message parts; each part uses its own authorized window charge.";
+      };
+
+      maxTextBytes = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 1 1048576);
+        default = null;
+        description = "Optional UTF-8 byte cap per rendered part.";
+      };
+
+      deferMaxHours = lib.mkOption {
+        type = lib.types.ints.between 1 24;
+        default = 24;
+        description = "Maximum original result waiting deadline in hours; never refresh on reconnect or apply to expired proactive speech/OTP.";
+      };
+
+      projectGrantTtlSeconds = lib.mkOption {
+        type = lib.types.ints.between 60 86400;
+        default = 86400;
+        description = "Maximum lifetime for a newly issued project grant, including reviewed migration grants; existing deadlines are never renewed by configuration.";
+      };
+
+      fileLinkTtlSeconds = lib.mkOption {
+        type = lib.types.ints.between 60 3600;
+        default = 3600;
+        description = "Maximum new download publication lifetime in seconds, also bounded by the original artifact retention and result deadline. Existing publications are never renewed.";
+      };
+
+      allowNewerWindows = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Permit an authorized durable result to use a later actual inbound window before its original deadline; never refresh authority.";
+      };
+
+      certification = lib.mkOption {
+        type = lib.types.enum ["unknown" "unverified" "certified"];
+        default = "unknown";
+        description = "Trusted operator observation of Tencent account certification; unknown uses unverified limits and grants no target API permissions.";
+      };
+
+      rateGroupProactivePerMinute = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 1 1000);
+        default = null;
+        description = "Optional stricter proactive group account rate per minute; capped by the contract for the certification profile.";
+      };
+
+      rateC2cProactivePerSecond = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 1 1000);
+        default = null;
+        description = "Optional stricter proactive C2C account rate per second.";
+      };
+
+      rateC2cProactivePerMinute = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 1 1000);
+        default = null;
+        description = "Optional extra proactive C2C account rate per minute; does not replace the per-second contract cap.";
+      };
+
+      rateEndpointProactivePerMinute = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 1 1000);
+        default = null;
+        description = "Optional stricter proactive rate for each physical target; cannot raise the contract cap.";
+      };
+
+      ratePassivePerSecond = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 1 1000);
+        default = null;
+        description = "Optional local passive rate per second for each account scene; reply-window and server cooldown checks remain authoritative.";
       };
 
       inboxPayloadTtlHours = lib.mkOption {
@@ -649,6 +746,19 @@ in {
         message = "services.gaoji.cluster.tokenFile is required when cluster tools are enabled";
       }
       {
+        assertion = !cfg.runBot || cfg.oneBot.enable || cfg.qqOfficial.enable;
+        message = "A running Gaoji application requires OneBot or QQ official to be enabled";
+      }
+      {
+        assertion = !cfg.runBot || cfg.oneBot.enable || !cfg.napcat.enable;
+        message = "QQ official-only startup requires services.gaoji.napcat.enable = false";
+      }
+      {
+        assertion = !cfg.qqOfficial.enable || cfg.qqOfficial.hostConfigFile == null
+          || officialCredentialPath cfg.qqOfficial.hostConfigFile;
+        message = "QQ official hostConfigFile must be a protected absolute string path outside /nix/store";
+      }
+      {
         assertion =
           !cfg.qqOfficial.enable
           || lib.all officialCredentialPath [
@@ -760,6 +870,12 @@ in {
           AI_ADMIN_ORIGIN = cfg.admin.origin;
           AI_ADMIN_BOT_ID = cfg.admin.botId;
         }
+        // lib.optionalAttrs (!cfg.oneBot.enable) {
+          AI_ONEBOT_ENABLED = "false";
+        }
+        // lib.optionalAttrs (cfg.qqOfficial.enable && cfg.qqOfficial.hostConfigFile != null) {
+          AI_QQ_OFFICIAL_HOST_CONFIG_FILE = "/run/credentials/${serviceName}.service/qq-official-host-config";
+        }
         // lib.optionalAttrs cfg.qqOfficial.enable {
           AI_QQ_OFFICIAL_ENABLED = "true";
           AI_QQ_OFFICIAL_APP_ID_FILE = "/run/credentials/${serviceName}.service/qq-official-app-id";
@@ -773,6 +889,20 @@ in {
           AI_QQ_OFFICIAL_PRIVATE_ALLOWED_OPENIDS = builtins.toJSON cfg.qqOfficial.privateAllowedOpenids;
           AI_QQ_OFFICIAL_GROUP_ADMISSION = cfg.qqOfficial.groupAdmission;
           AI_QQ_OFFICIAL_INBOX_PAYLOAD_TTL_HOURS = toString cfg.qqOfficial.inboxPayloadTtlHours;
+          AI_QQ_OFFICIAL_MARKDOWN = boolString cfg.qqOfficial.markdown;
+          AI_QQ_OFFICIAL_MAX_TEXT_CHARS = toString cfg.qqOfficial.maxTextChars;
+          AI_QQ_OFFICIAL_MAX_TEXT_PARTS = toString cfg.qqOfficial.maxTextParts;
+          AI_QQ_OFFICIAL_MAX_TEXT_BYTES = (if cfg.qqOfficial.maxTextBytes == null then "" else toString cfg.qqOfficial.maxTextBytes);
+          AI_QQ_OFFICIAL_DEFER_MAX_HOURS = toString cfg.qqOfficial.deferMaxHours;
+          AI_QQ_OFFICIAL_PROJECT_GRANT_TTL_SECONDS = toString cfg.qqOfficial.projectGrantTtlSeconds;
+          AI_QQ_OFFICIAL_FILE_LINK_TTL_SECONDS = toString cfg.qqOfficial.fileLinkTtlSeconds;
+          AI_QQ_OFFICIAL_ALLOW_NEWER_WINDOWS = boolString cfg.qqOfficial.allowNewerWindows;
+          AI_QQ_OFFICIAL_CERTIFICATION = cfg.qqOfficial.certification;
+          AI_QQ_OFFICIAL_RATE_GROUP_PROACTIVE_PER_MINUTE = (if cfg.qqOfficial.rateGroupProactivePerMinute == null then "" else toString cfg.qqOfficial.rateGroupProactivePerMinute);
+          AI_QQ_OFFICIAL_RATE_C2C_PROACTIVE_PER_SECOND = (if cfg.qqOfficial.rateC2cProactivePerSecond == null then "" else toString cfg.qqOfficial.rateC2cProactivePerSecond);
+          AI_QQ_OFFICIAL_RATE_C2C_PROACTIVE_PER_MINUTE = (if cfg.qqOfficial.rateC2cProactivePerMinute == null then "" else toString cfg.qqOfficial.rateC2cProactivePerMinute);
+          AI_QQ_OFFICIAL_RATE_ENDPOINT_PROACTIVE_PER_MINUTE = (if cfg.qqOfficial.rateEndpointProactivePerMinute == null then "" else toString cfg.qqOfficial.rateEndpointProactivePerMinute);
+          AI_QQ_OFFICIAL_RATE_PASSIVE_PER_SECOND = (if cfg.qqOfficial.ratePassivePerSecond == null then "" else toString cfg.qqOfficial.ratePassivePerSecond);
         }
         // lib.optionalAttrs cfg.browser.enable {
           AI_BROWSER_ENABLED = "true";
@@ -838,7 +968,8 @@ in {
             ++ lib.optional (cfg.admin.secretFile != null) "admin-authorization-key:${cfg.admin.secretFile}"
             ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.appIdFile != null) "qq-official-app-id:${cfg.qqOfficial.appIdFile}"
             ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.appSecretFile != null) "qq-official-app-secret:${cfg.qqOfficial.appSecretFile}"
-            ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.bindPepperFile != null) "qq-official-bind-pepper:${cfg.qqOfficial.bindPepperFile}";
+            ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.bindPepperFile != null) "qq-official-bind-pepper:${cfg.qqOfficial.bindPepperFile}"
+            ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.hostConfigFile != null) "qq-official-host-config:${cfg.qqOfficial.hostConfigFile}";
 
           NoNewPrivileges = true;
           PrivateTmp = true;

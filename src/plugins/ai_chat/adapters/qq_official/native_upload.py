@@ -7,6 +7,7 @@ unknown, never replay automatically. Bytes/handles/URLs never enter diagnostics.
 from __future__ import annotations
 
 from .project_authority import RecipientEvidenceUnavailable
+from ...agent.control import LeaseLost
 
 import asyncio
 import hashlib
@@ -128,6 +129,18 @@ class StageResult:
     value: object = field(default=None, repr=False)
 
 
+class UploadSourceLost(LeaseLost):
+    """A control interruption with bounded historical evidence, not a retry.
+
+    Only the uploader knows whether its physical handoff occurred. The caller
+    may persist that fact, then must retain LeaseLost control flow. Cancellation
+    is deliberately not transformed by this exception.
+    """
+    def __init__(self, stage: StageRequest, result: StageResult):
+        super().__init__('upload_source_unavailable')
+        self.stage, self.result = stage, result
+
+
 @dataclass(frozen=True)
 class PutResponse:
     # A provider PUT response proves only this part, never finish/merge/message.
@@ -136,12 +149,13 @@ class PutResponse:
 
 class PartTransport(Protocol):
     async def put(self, part: UploadPart, content: bytes, *, timeout: float,
-                  before_dispatch: Callable[[], None]) -> PutResponse:
+                  before_dispatch: Callable[[], None], ensure_current: Callable[[], Awaitable[None]]) -> PutResponse:
         """Host-selected transport: no QQ auth/cookies/proxies/redirects.
 
         Must resolve+pin approved public addresses with TLS verification and
-        consume before_dispatch immediately before its single physical request.
-        No automatic retry. This draft has no default production implementation.
+        await ensure_current after DNS/other preparation, then consume
+        before_dispatch immediately before its single physical request.
+        No automatic retry. PinnedPartTransport is the production implementation.
         """
         ...
 
@@ -316,11 +330,17 @@ class OfficialMediaUploader:
             timeout = min(30, intent.deadline_at - self._now())
             async with asyncio.timeout(timeout):
                 response = await self.part_transport.put(part, content, timeout=timeout,
-                    before_dispatch=final_check)
+                    before_dispatch=final_check, ensure_current=lambda:self.ensure_current(intent,"upload_put"))
             if not started or not isinstance(response, PutResponse) or type(response.status) is not int:
                 raise NativeProtocolError("invalid_part_transport_evidence")
             return StageResult("upload_put", "confirmed" if response.status == 200 else "unknown",
                 attempt_id, stage.request_commitment, http_status=response.status)
+        except LeaseLost:
+            raise UploadSourceLost(stage, StageResult("upload_put", "unknown" if started else "proven_unsent",
+                attempt_id, stage.request_commitment, "upload_source_unavailable")) from None
+        except RecipientEvidenceUnavailable:
+            return StageResult("upload_put", "unknown" if started else "proven_unsent", attempt_id,
+                stage.request_commitment, "recipient_evidence_unavailable")
         except Exception:
             return StageResult("upload_put", "unknown" if started else "proven_unsent", attempt_id,
                 stage.request_commitment, "part_upload_unavailable")

@@ -305,7 +305,7 @@ if (ownsLock) app.whenReady().then(async () => {
       const client = await clientFor(server.id);
       const onPrepared = value => store.setDeployment(server.id, value);
       return server.deployment ? await deploy.retry(client, deploymentDirectory, server.deployment, request.password, onPrepared, request.imageOptions)
-        : await deploy.start(client, deploymentDirectory, { password: request.password, onPrepared, imageOptions: request.imageOptions });
+        : await deploy.start(client, deploymentDirectory, { password: request.password, onPrepared, imageOptions: request.imageOptions, platforms: request.platforms });
     } finally { installations.delete(server.id); }
   });
   ipc('instance', async request => {

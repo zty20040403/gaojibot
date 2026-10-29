@@ -71,7 +71,8 @@ class ForegroundProjectProvider:
     that some project exists in an aliased conversation.
     """
     def __init__(self, *, token, handle, job, admission, route_epoch,
-                 route_guard=_deny, project_scope_guard=_deny, clock=time.time, expected_execution_kind="chat"):
+                 route_guard=_deny, project_scope_guard=_deny, clock=time.time, expected_execution_kind="chat",
+                 max_grant_ttl_seconds=86400):
         if type(route_epoch) is not int or route_epoch < 0:
             raise Denied()
         if expected_execution_kind not in {"chat", "command"}:
@@ -85,7 +86,7 @@ class ForegroundProjectProvider:
         self._pins_lock = threading.RLock()
         self.authority = ProjectAuthority(source_guard=self._source_guard,
             route_guard=route_guard, recipient_evidence=self._recipient,
-            fresh_actor_evidence=self._fresh, clock=clock)
+            fresh_actor_evidence=self._fresh, clock=clock, max_grant_ttl_seconds=max_grant_ttl_seconds)
 
     def _now(self):
         value = self.clock()
@@ -201,7 +202,8 @@ class ForegroundProjectProvider:
         request = ProjectRequest(self.endpoint, self.actor, self.endpoint.scope, self.route_epoch,
                                  self.handle.route_epoch, project_id, Operation.MANAGE)
         grant = self.authority.issue_project(cursor, issuer=request, recipient=self.actor,
-            capabilities=frozenset(Operation), grant_id=uuid.uuid4().hex, expires_at=self._now()+86400,
+            capabilities=frozenset(Operation), grant_id=uuid.uuid4().hex,
+            expires_at=self._now()+self.authority.max_grant_ttl_seconds,
             evidence_ref='project-create:' + self.handle.execution_id, source=self)
         # The grant and new project commit together. If the caller rolls back,
         # the pin cannot authorize a missing grant on retry.

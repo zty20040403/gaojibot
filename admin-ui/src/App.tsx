@@ -25,6 +25,7 @@ import {
 import { LoginGate, MemberStatus, AccountsView, ApprovalNotice } from './AccountViews'
 import { StatusBadge } from './components'
 import { ContextDebugView } from './ContextDebugView'
+import { OfficialQQView } from './OfficialQQView'
 import { WikiView } from './WikiView'
 import { ProjectsView } from './ProjectsView'
 import { McpView } from './McpView'
@@ -53,9 +54,10 @@ const runtime = window.__GAOJI_ADMIN__ ?? {
   requiresLogin: true,
 }
 
-type ViewId = 'accounts' | 'overview' | 'observability' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'context-debug' | 'wiki' | 'projects' | 'mcp' | 'databases' | 'fleet' | 'sandboxes' | 'media' | 'audit' | 'help'
+type ViewId = 'qq-official' | 'accounts' | 'overview' | 'observability' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'context-debug' | 'wiki' | 'projects' | 'mcp' | 'databases' | 'fleet' | 'sandboxes' | 'media' | 'audit' | 'help'
 
 const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group: string; icon: ComponentType<{ size?: number }> }> = [
+  { id: 'qq-official', label: 'QQ 官方机器人', description: '连接诊断、管理员关联与验收记录', group: '配置', icon: Bot },
   { id: 'accounts', label: '账户与任务授权', description: '账户权限、服务器任务授权与操作记录', group: '配置', icon: Users },
   { id: 'overview', label: '概览', description: '服务状态、Token 趋势与最近投递', group: '运行', icon: Gauge },
   { id: 'observability', label: '可观测性', description: 'Prometheus、告警、延迟与模型降级', group: '运行', icon: Activity },
@@ -177,6 +179,7 @@ export function App() {
             <DetailView detail={route.detail} plane={plane} onBack={() => openView(DETAIL_META[route.detail!].parent)} />
           ) : (
             <>
+              {active === 'qq-official' && <OfficialQQView plane={plane} />}
               {active === 'accounts' && <AccountsView plane={plane} />}
               {active === 'overview' && <OverviewView plane={plane} onOpenDetail={openDetail} />}
               {active === 'observability' && <ObservabilityView plane={plane} onOpenDetail={openDetail} />}

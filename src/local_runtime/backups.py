@@ -19,6 +19,7 @@ from .files import read_json, write_json
 from .instances import InstanceError, validate_settings
 from .components import component_keys
 from .runtime import runtime_environment
+from .official_configuration import backup_bundle, validate_backup_bundle
 
 
 ID = re.compile(r"^[a-f0-9]{32}$")
@@ -89,7 +90,7 @@ def walk_data(directory: Path) -> Iterator[tuple[str, Path]]:
                 yield _member_name(filename.relative_to(directory).as_posix()), filename
 
 
-def _snapshot(config: dict, private: dict, admin_secret: bytes) -> dict:
+def _snapshot(config: dict, private: dict, admin_secret: bytes, official_bundle: dict | None = None) -> dict:
     if len(admin_secret) != 32:
         raise BackupError("控制台密钥不完整，未创建备份")
     runtime_environment(config, private, configured=False)
@@ -99,12 +100,12 @@ def _snapshot(config: dict, private: dict, admin_secret: bytes) -> dict:
         raise BackupError("实例凭据不完整，未创建备份")
     credentials["model_key_sets"] = {str(revision): private["model_keys"]}
     credentials["component_key_sets"] = {str(revision): component_keys(private.get("component_keys", {}))}
-    return {"schema": 1, "instance_id": config["id"], "revision": revision, "settings": validate_settings(config["settings"]),
+    return {**({"official_bundle": validate_backup_bundle(official_bundle)} if official_bundle is not None else {}), "schema": 1, "instance_id": config["id"], "revision": revision, "settings": validate_settings(config["settings"]),
         "private": credentials, "admin_secret": base64.b64encode(admin_secret).decode("ascii")}
 
 
 def validate_snapshot(value: dict) -> dict:
-    if not isinstance(value, dict) or set(value) != {"schema", "instance_id", "revision", "settings", "private", "admin_secret"} \
+    if not isinstance(value, dict) or set(value) - {"official_bundle"} != {"schema", "instance_id", "revision", "settings", "private", "admin_secret"} \
             or value["schema"] != 1 or type(value["revision"]) is not int or value["revision"] < 1:
         raise BackupError("备份配置格式不支持")
     backup_id(value["instance_id"])
@@ -122,7 +123,9 @@ def validate_snapshot(value: dict) -> dict:
         raise BackupError("备份控制台密钥无效") from None
     services = component_keys(private["component_key_sets"].get(str(value["revision"]))) if "component_key_sets" in private else {}
     normalized = _snapshot({"id": value["instance_id"], "revision": value["revision"], "settings": settings},
-        {**private, "model_keys": keys, "component_keys": services}, admin)
+        {**private, "model_keys": keys, "component_keys": services}, admin, value.get("official_bundle"))
+    if "official_bundle" in normalized and normalized["official_bundle"]["environment"] != settings.get("official", {}).get("environment"):
+        raise BackupError("官方备份环境与凭据不匹配")
     return normalized
 
 
@@ -281,7 +284,7 @@ class BackupStore:
             with regular_file(self.directory / "config/admin.secret") as stream:
                 secret = stream.read(33)
             manifest = write_archive(temporary, directory=self.directory,
-                snapshot=_snapshot(config, private, secret), dump=dump, checksum=checksum)
+                snapshot=_snapshot(config, private, secret, backup_bundle(self.directory, config["official_credential_ref"]) if config.get("official_credential_ref") else None), dump=dump, checksum=checksum)
             size, digest = digest_file(temporary)
             verified = verify_archive(temporary, expected_checksum=checksum, max_bytes=size)
             os.replace(temporary, directory / "snapshot.tar")

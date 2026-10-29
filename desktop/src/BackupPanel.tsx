@@ -40,6 +40,7 @@ export function BackupPanel({ id, status, disabled, onOperation }: {
   return <section className="backup-section">
     <div className="backup-heading"><h3>备份与恢复</h3><span className="tag neutral">{id === 'desktop-local' ? '本机实例备份' : '服务器本机备份'}</span></div>
     {error && <div className="notice error" role="alert"><CircleAlert size={17} /><span>{error}</span></div>}
+    {status.instance.settings.platforms?.qq_official && <p className="muted">备份包含官方凭据与原始 pepper，请妥善保管。恢复后机器人保持停止；缺少原始凭据的旧备份会阻止官方启动，不会替换账号或重新发送未知结果。</p>}
     <div className="backup-actions">
       <button type="button" className="secondary" disabled={blocked} onClick={() => setConfirmation({ kind: 'backup' })}><Archive size={16} />创建备份</button>
       {status.maintenance_pending && <button type="button" className="secondary" disabled={disabled} onClick={() => onOperation('recover')}><RotateCcw size={16} />完成中断恢复</button>}

@@ -105,8 +105,9 @@ class BackgroundTests(fixture.ProjectFixture):
         host=object.__new__(runtime.ProjectRuntime)
         host.closed=False;host.app=app;host.store=self.store;host.official_provider_factory=AsyncMock(return_value=access)
         import asyncio
-        with patch.object(runtime,'get_bots',side_effect=AssertionError('OneBot must not load')):
+        with patch('nonebot.get_bots',side_effect=AssertionError('OneBot must not load')) as bots:
             result=asyncio.run(host._execution_access(self.project,access.principal_id,job=self.lifecycle_job))
+        bots.assert_not_called()
         self.assertIs(result,access)
         host.official_provider_factory=None
         with self.assertRaises(PermissionError):

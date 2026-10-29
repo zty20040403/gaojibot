@@ -232,9 +232,13 @@ class MigrationServices(OneBotMigrationRuntime):
     def __init__(self, *, database, transaction, database_calls, security,
                  onebot_accounts, canonical_scope, clock=time.time, target_resolver=None,
                  project_preview=None, deadlines=(), verification=None, artifacts=None,
-                 official_domains=None, scheduled_profile=None, subagent_profile=None, file_admission=None):
+                 official_domains=None, scheduled_profile=None, subagent_profile=None, file_admission=None,
+                 project_grant_ttl_seconds=86400):
+        if type(project_grant_ttl_seconds) is not int or not 60<=project_grant_ttl_seconds<=86400:
+            raise MigrationDenied('project_grant_lifetime_invalid')
+        self.project_grant_ttl_seconds=project_grant_ttl_seconds
         configs=tuple(onebot_accounts)
-        if (not configs or any(type(c) is not OneBotAccount for c in configs)
+        if (any(type(c) is not OneBotAccount for c in configs)
                 or len({c.account.key for c in configs})!=len(configs)):
             raise MigrationDenied('explicit_onebot_accounts_required')
         self.database,self.transaction,self.clock=database,transaction,clock
@@ -273,6 +277,15 @@ class MigrationServices(OneBotMigrationRuntime):
             transaction=transaction,calls=database_calls,journal=self.journal,
             baseline_source=self.baseline_source,history=_Histories(self),activation=self.activation,
             project_grants=self.project_grants,verification=self.request_verification,clock=clock)
+
+    async def start_native(self):
+        """Native host owns no legacy baseline and installs no OneBot hooks.
+
+        Journal/source guards remain in every official account session. Existing
+        legacy evidence is read as persisted; no current holder is fabricated.
+        """
+        if self._renewal is not None:
+            raise MigrationDenied('legacy_baseline_already_started')
 
     async def request_verification(self, **request):
         def target():
@@ -626,7 +639,8 @@ class OfficialMigrationSession:
                 return factory(token=self.token,handle=binding.handle,job=binding.job,
                     admission=self.admission,route_epoch=source['logical_route_epoch'],
                     route_guard=authority.route_guard,project_scope_guard=authority.project_scope_guard,
-                    clock=self.runtime.store.clock,**options)
+                    clock=self.runtime.store.clock,
+                    max_grant_ttl_seconds=self.services.project_grant_ttl_seconds,**options)
         return await self.runtime._calls(issue)
 
     async def maintain(self):

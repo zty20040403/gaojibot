@@ -89,8 +89,14 @@ def _verify_posix_acl(fd: int) -> None:
             except OSError as error:
                 if error.errno == errno.ENODATA:
                     return
-                # ENOTSUP is not proof of no ACL; an uninspectable filesystem
-                # must not accept credentials or report contents.
+                # Native tmpfs can be compiled without TMPFS_POSIX_ACL. On
+                # that verified local filesystem, ENOTSUP means this ACL
+                # namespace is disabled and Unix mode is authoritative. Keep
+                # requiring successful descriptor xattr enumeration, and do
+                # not generalize this to remote/FUSE/unknown filesystems.
+                if (error.errno == errno.ENOTSUP and filesystem_type == 0x01021994
+                        and 'system.posix_acl_access' not in attributes):
+                    return
                 raise CredentialError("Private file ACL could not be verified") from None
             raise CredentialError("Private file has an extended ACL")
         except (OSError, AttributeError):
@@ -104,8 +110,8 @@ def verify_private_file(
     """Verify a private regular file by descriptor before reading or writing.
 
     Reusable for credentials and protected probe reports, including newly
-    created files with inherited ACLs. No content is read. Windows callers must
-    supply a native, descriptor-based ACL validator until M8 provides one.
+    created files with inherited ACLs. No content is read. Windows uses native
+    descriptor-based DACL checks; an explicit validator remains injectable.
     """
     try:
         info = os.fstat(fd)
@@ -114,7 +120,14 @@ def verify_private_file(
     if not stat.S_ISREG(info.st_mode):
         raise CredentialError("Private storage must be a regular file")
     if os.name == "nt":
-        if acl_validator is None or not acl_validator(fd):
+        if acl_validator is None:
+            from .windows_private import verify_windows_private_file
+            acl_validator = verify_windows_private_file
+        try:
+            valid = acl_validator(fd)
+        except (OSError, AttributeError, ValueError):
+            valid = False
+        if not valid:
             raise CredentialError("Private file ACL could not be verified")
         return
     mode = stat.S_IMODE(info.st_mode)
@@ -144,7 +157,11 @@ def verify_private_file(
 
 def _read_secret(path: str | Path, acl_validator: Callable[[int], bool] | None) -> str:
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        if os.name == "nt":
+            from .windows_private import open_windows_private_readonly
+            fd = open_windows_private_readonly(path)
+        else:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError:
         raise CredentialError("Credential file could not be securely opened") from None
     try:

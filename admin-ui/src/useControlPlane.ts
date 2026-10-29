@@ -9,6 +9,7 @@ import {
 } from './api'
 
 const INITIAL_RESOURCES: ResourceName[] = [
+  'qqOfficial',
   'accounts',
   'approvals',
   'securityAudit',
@@ -194,7 +195,7 @@ export function useControlPlane(runtime: GaojiAdminRuntime) {
   useEffect(() => {
     if (!authenticated) return
     const timer = window.setInterval(() => {
-      void refreshMany(isAdmin ? ['overview', 'observability', 'alerts', 'databases', 'fleet', 'usage', 'subagents', 'contextDebug', 'wiki', 'mcp', 'localModel', 'approvals', 'accounts', 'securityAudit'] : ['status'])
+      void refreshMany(isAdmin ? ['qqOfficial', 'overview', 'observability', 'alerts', 'databases', 'fleet', 'usage', 'subagents', 'contextDebug', 'wiki', 'mcp', 'localModel', 'approvals', 'accounts', 'securityAudit'] : ['status'])
     }, 30000)
     return () => window.clearInterval(timer)
   }, [authenticated, refreshMany, initialResources])

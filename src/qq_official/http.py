@@ -48,6 +48,20 @@ def scoped_request_guard(guard):
         _request_guard.reset(token)
 
 
+_request_observer: ContextVar[object] = ContextVar("qq_request_observer", default=None)
+
+
+@contextmanager
+def scoped_request_observer(callback):
+    """Host telemetry only. No URL/payload is supplied and failures are ignored."""
+    marker = {'active': True, 'callback': callback}
+    token = _request_observer.set(marker)
+    try: yield
+    finally:
+        marker['active'] = False
+        _request_observer.reset(token)
+
+
 class PreparedUpload:
     """Single-use token snapshot for an exact validated media endpoint."""
     __slots__ = ("__weakref__",)
@@ -87,6 +101,10 @@ async def request_json_response(
         await guard(stage)
     if before_dispatch is not None:
         before_dispatch()
+    marker = _request_observer.get()
+    if marker is not None and marker['active']:
+        try: marker['callback']()
+        except Exception: pass
     try:
         async with client.stream(
             method, url, headers=headers, json=json, timeout=timeout, follow_redirects=False,

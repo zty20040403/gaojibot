@@ -4,7 +4,7 @@ export interface Target { host: string; port: number; username: string }
 export interface Server extends Target {
   id: string; name: string; fingerprint: string; authType: AuthType;
   remembered: boolean; authenticated: boolean; updatedAt: number;
-  deployment?: { job: string; checksum: string; previousChecksum?: string; version: string; startedAt: number; imageOptions?: ImageOptions };
+  deployment?: { job: string; checksum: string; previousChecksum?: string; version: string; startedAt: number; imageOptions?: ImageOptions; platforms?: PlatformSelection };
   lifecycle?: LifecycleRecord;
 }
 export interface Application {
@@ -52,7 +52,7 @@ export interface DesktopApi {
   installAppUpdate(): Promise<Result<AppUpdateState>>;
   onAppUpdateRequested(callback: () => void): () => void;
   localInspect(): Promise<Result<LocalInspection>>;
-  localStart(options?: ImageOptions): Promise<Result<LocalProgress>>;
+  localStart(options?: ImageOptions & { platforms?: PlatformSelection }): Promise<Result<LocalProgress>>;
   localStatus(): Promise<Result<LocalProgress | null>>;
   localDocker(action: 'open' | 'download'): Promise<Result<boolean>>;
   info(): Promise<Result<{ version: string; platform: string; secureStorage: boolean; runtimeAvailable: boolean }>>;
@@ -75,7 +75,7 @@ export interface DesktopApi {
   discover(target: Target): Promise<Result<Target & { fingerprint: string }>>;
   connect(request: ConnectRequest): Promise<Result<Inspection & { server: Server }>>;
   inspect(id: string): Promise<Result<Inspection>>;
-  install(request: { id: string; password?: string; imageOptions?: ImageOptions }): Promise<Result<Installation>>;
+  install(request: { id: string; password?: string; imageOptions?: ImageOptions; platforms?: PlatformSelection }): Promise<Result<Installation>>;
   installStatus(id: string): Promise<Result<Installation | null>>;
   updatePlan(id: string): Promise<Result<UpdatePlan>>;
   updateStatus(id: string): Promise<Result<VersionTask | null>>;
@@ -159,10 +159,28 @@ export interface ModelProfile {
   reasoning_effort: string; max_input_tokens: number; max_output_tokens: number; fallbacks: string[]; has_key?: boolean;
   thinking?: 'auto' | 'enabled' | 'disabled';
 }
+export type PlatformSelection = { onebot: boolean; qq_official: boolean };
+export type OfficialRouteEvidence = Record<string, string | number | boolean>;
+export interface OfficialMultipartPolicy {
+  allowed_part_hosts: string[]; max_parts?: number; max_session_seconds?: number;
+}
+export interface OfficialFileSettings {
+  enabled: boolean; generation_enabled: boolean; native_routes: OfficialRouteEvidence[];
+  multipart?: OfficialMultipartPolicy;
+  download: null | { origin: string; listen_host: '127.0.0.1' | '::1'; listen_port: number; routes: OfficialRouteEvidence[] };
+}
+export interface OfficialSettings {
+  environment: 'production' | 'sandbox'; private_policy: 'owner_only' | 'allowlist' | 'public';
+  owner_openids: string[]; private_allowed_openids: string[];
+  daily_calls: number; daily_input_tokens: number; daily_output_tokens: number;
+  exclusive_deployment_confirmed: boolean; files?: OfficialFileSettings;
+}
+export interface OfficialConfiguration { schema: number; credentials_saved: boolean; same_app_local_instances: number; global_exclusivity: 'unknown' }
 export interface InstanceSettings {
   name: string; bot_qq: string; admin_qq: string; group_ids: string[]; allow_all_groups: boolean;
   system_prompt: string; models: ModelProfile[]; default_model: string; vision_model: string; features: Record<string, boolean>;
   components?: ComponentSettings;
+  platforms?: PlatformSelection; official?: OfficialSettings; console_admin_username?: string;
 }
 export interface ComponentSettings {
   capacity: { max_data_gib: number; reserve_free_gib: number };
@@ -177,7 +195,9 @@ export interface ComponentSettings {
   video: { max_duration_minutes: number; max_download_mb: number; frame_count: number; threads: number; timeout_seconds: number };
 }
 export interface InstanceStatus {
-  instance: { id: string; revision: number; settings: InstanceSettings; component_keys_present?: string[] };
+  instance: { id: string; revision: number; settings: InstanceSettings; component_keys_present?: string[]; official_configuration?: OfficialConfiguration; official_recovery_required?: boolean };
+  official_configuration?: { schema: number };
+  official_connection?: 'connected' | 'disconnected' | 'stale' | 'not_running' | 'unavailable' | 'configuration_pending';
   desired: { bot_enabled: boolean; revision?: number };
   maintenance_pending?: boolean;
   component_requirements?: Record<string, string>;

@@ -153,6 +153,7 @@ def build_turn_consumer(runtime, token, app):
         outbox=runtime.outbox, journal=runtime.journal, database_calls=runtime._calls,
         orchestrator=orchestrator, command_services=command_services,
         business_services=build_business_services(runtime,app),
+        policy=runtime.loaded.delivery.turn_policy(),
         transport_state=transport_state, usage=app.usage_store,
         sender_wake=lambda: runtime.sender.wake() if runtime.sender is not None else None,
         clock=runtime.store.clock)

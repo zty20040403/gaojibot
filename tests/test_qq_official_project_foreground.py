@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from src.sandbox_runtime.docker import SandboxResult
 
+from src.plugins.ai_chat.adapters.qq_official.delivery_configuration import DeliveryConfiguration
 from src.plugins.ai_chat.adapters.qq_official.file_artifacts import file_job_kind
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
@@ -81,7 +82,7 @@ class ProjectForegroundTests(HostCompositionFixture):
         await self.build()
         await projects.start()
         await self.service.configure_project_runtime(projects)
-        official.loaded=SimpleNamespace(account=self.account,credentials=object())
+        official.loaded=SimpleNamespace(account=self.account,credentials=object(),delivery=DeliveryConfiguration())
         official._gateway=SimpleNamespace(state='ready');official.subagent_service=None
         official.journal=self.app.turn_journal
         consumer=build_turn_consumer(official,self.token,self.app)

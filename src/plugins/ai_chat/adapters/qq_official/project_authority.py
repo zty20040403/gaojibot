@@ -142,7 +142,10 @@ def _deny(*args, **kwargs):
 class ProjectAuthority:
     def __init__(self, *, source_guard=_deny, route_guard=_deny,
                  recipient_evidence=_deny, fresh_actor_evidence=_deny,
-                 clock=time.time):
+                 clock=time.time, max_grant_ttl_seconds=86400):
+        if type(max_grant_ttl_seconds) is not int or not 60 <= max_grant_ttl_seconds <= 86400:
+            raise Denied()
+        self.max_grant_ttl_seconds = max_grant_ttl_seconds
         self.source_guard = source_guard
         self.route_guard = route_guard
         self.recipient_evidence = recipient_evidence
@@ -245,7 +248,7 @@ class ProjectAuthority:
                 or type(capabilities) is not frozenset or not capabilities
                 or any(not isinstance(cap, Operation) for cap in capabilities)
                 or type(expected_revision) is not int or not 0 <= expected_revision < 2**63-1
-                or not _positive(expires_at) or not now < expires_at <= now+86400
+                or not _positive(expires_at) or not now < expires_at <= now+self.max_grant_ttl_seconds
                 or not isinstance(evidence_ref, str)
                 or re.fullmatch('[A-Za-z0-9_.:-]{1,128}', evidence_ref) is None):
             raise Denied()
@@ -269,7 +272,7 @@ class ProjectAuthority:
             raise Denied()
         self._project(cursor, issuer)
         now = self._now()
-        if (not now < expires_at <= now+86400
+        if (not now < expires_at <= now+self.max_grant_ttl_seconds
                 or self.source_guard(cursor, request=issuer, source=source) is not True):
             raise Denied()
         caps = sorted(cap.value for cap in capabilities)

@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import re
 
-from nonebot import get_bots
-from nonebot.adapters.onebot.v11 import Bot
 
 from src.sandbox_runtime.client import SandboxClient
 from src.storage_admission import require_capacity
@@ -18,7 +16,6 @@ from .project_file_executor import ProjectFileExecutor
 from .project_lifecycle import KIND, ProjectLifecycle
 from .project_io import ProjectIOStore
 from .project_file_outbox import ProjectFileOutbox
-from .project_file_transport import reconcile_files
 from .project_autosave import ProjectAutosave
 from .project_browser_controller import ProjectBrowserController
 from .project_maintenance import ProjectMaintenance
@@ -68,8 +65,10 @@ def validate_project_settings(settings):
 
 
 class ProjectRuntime:
-    def __init__(self, handlers, *, official_provider_factory=None, official_task_dispatch=None, official_file_delivery=None):
-        self.handlers, self.app = handlers, handlers.context
+    def __init__(self, handlers=None, *, application=None, official_provider_factory=None, official_task_dispatch=None, official_file_delivery=None):
+        if (handlers is None) == (application is None):
+            raise ValueError("project_application_source_invalid")
+        self.handlers, self.app = handlers, application if handlers is None else handlers.context
         self.official_provider_factory = official_provider_factory
         self.official_task_dispatch = official_task_dispatch
         self.official_file_delivery = official_file_delivery
@@ -120,6 +119,10 @@ class ProjectRuntime:
                     proof.provider.require(cursor, proof, project_id=project['project_id'])
             await _store(current)
             return source
+        if self.handlers is None:
+            raise JobDeferred("Legacy project transport is unavailable", 30)
+        from nonebot import get_bots
+        from nonebot.adapters.onebot.v11 import Bot
         platform, kind, conversation = project["scope_key"].split(":", 2)
         bot_id = project["bot_native_user_id"]
         from .adapters.onebot_route_context import legacy_project_gate
@@ -309,7 +312,8 @@ class ProjectRuntime:
                 self.app.background_tasks.start(
                     "project-maintenance", self.maintain_forever
                 )
-                self.app.background_tasks.start("project-files", self.reconcile_files_forever)
+                if self.handlers is not None:
+                    self.app.background_tasks.start("project-files", self.reconcile_files_forever)
                 self.app.background_tasks.start("project-autosave", self.save_turns_forever)
                 if self.task_reconciler is not None:
                     self.app.background_tasks.start("project-tasks", self.reconcile_tasks_forever)
@@ -342,6 +346,9 @@ class ProjectRuntime:
         await self.task_reconciler.run(self._stop)
 
     async def reconcile_files_forever(self):
+        from nonebot import get_bots
+        from nonebot.adapters.onebot.v11 import Bot
+        from .project_file_transport import reconcile_files
         while not self._stop.is_set():
             bots = [bot for bot in get_bots().values() if isinstance(bot, Bot)]
             await reconcile_files(self.app, bots)

@@ -10,6 +10,7 @@ from typing import Any
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from nonebot.exception import IgnoredException
 
+from .application_construction import build_owned_context
 from .adapters import OneBotIngestAdapter
 from .agent_loop import configure_llm_runtime, release_llm_runtime
 from .alert_notifier import AlertNotificationService
@@ -139,7 +140,8 @@ class OneBotRuntime:
                 return
             if self._closed:
                 raise RuntimeError("OneBot runtime is closed; restart the process")
-            context = build_app_context(
+            context = await build_owned_context(
+                build_app_context,
                 self.settings,
                 state_dir=self.state_dir,
                 cache_dir=self.cache_dir,
@@ -175,6 +177,13 @@ class OneBotRuntime:
                     logger=self.logger,
                 )
                 await context.start_official_ingress()
+                if getattr(context,'official_runtime',None) is not None:
+                    from nonebot import get_bots
+                    from .application_diagnostics import start_application_diagnostics
+                    def legacy_health():
+                        key=str(self.settings.admin_bot_id or '')
+                        return {'qq':key,'connected':bool(key) and key in get_bots()}
+                    await start_application_diagnostics(app,context,legacy_getter=legacy_health)
                 await start_background_tasks(context, self.handlers, notifier)
                 self.ready = True
             except BaseException:
@@ -225,6 +234,15 @@ class OneBotRuntime:
             raise RuntimeError("Migration service factory returned no service")
         self.migration_routes = service
         context.migration_service = service
+        if getattr(service, "baselines", None) == {}:
+            def managed_without_sources():
+                with context.delivery_store.transaction() as cursor:
+                    return cursor.execute("SELECT 1 FROM migration_routes LIMIT 1").fetchone() is not None
+            if await context.db_call(managed_without_sources):
+                raise RuntimeError("Managed OneBot routes require explicit source baselines")
+            await service.start_native()
+            self.migration_routes = None
+            return
         start = getattr(service, "start", None)
         if start is not None:
             result = start()

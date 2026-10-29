@@ -9,7 +9,10 @@ from src.bot_security.store import SecurityError, SecurityStore
 from src.bot_security.cli import read_secret
 
 
-def build_mobile_authorization(settings: Any, database: Any) -> MobileAuthorization | None:
+def build_mobile_authorization(settings: Any, database: Any, *, onebot_enabled: bool = True) -> MobileAuthorization | None:
+    if not onebot_enabled:
+        from .application_security import build_console_authorization
+        return build_console_authorization(settings, database)
     from nonebot import get_bots, get_plugin_config
     from nonebot.adapters.onebot.v11 import Bot
     from nonebot.adapters.onebot.v11.config import Config as OneBotConfig

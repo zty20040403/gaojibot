@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, CircleAlert, Download, HardDrive, LoaderCircle, Play, RefreshCw } from 'lucide-react';
 import { desktop, unwrap } from './api';
 import type { LocalInspection, LocalProgress } from './api';
+import { PlatformOptions, legacyPlatforms } from './PlatformOptions';
 import { SetupPanel } from './SetupPanel';
 import { UpdatePanel } from './UpdatePanel';
 import { StoragePanel } from './StoragePanel';
@@ -14,6 +15,7 @@ const stages = [['runtime', '机器人与管理镜像'], ['verify', '字体、�
 export function LocalPanel() {
   const [inspection, setInspection] = useState<LocalInspection | null>(null);
   const [progress, setProgress] = useState<LocalProgress | null>(null);
+  const [platforms, setPlatforms] = useState(legacyPlatforms);
   const [imageOptions, setImageOptions] = useState<ImagePolicy>({ mode: 'auto', source: 'official' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -66,7 +68,7 @@ export function LocalPanel() {
         const current = progress.stage === stage;
         return <div className="install-step" key={stage}><span className={`step-number ${done ? 'green' : ''}`}>
           {done ? <Check size={13} /> : current && running ? <LoaderCircle size={13} className="spin" /> : index + 1}</span>
-          <span>{title}</span><span className="muted">{done ? '已完成' : current ? running ? '进行中' : '待恢复' : '待执行'}</span></div>;
+          <span>{!platforms.onebot && stage === 'database' ? '独立数据库' : !platforms.onebot && stage === 'qq' ? '官方配置入口' : title}</span><span className="muted">{done ? '已完成' : current ? running ? '进行中' : '待恢复' : '待执行'}</span></div>;
       })}</div>}
       {progress?.stage_started_at && <div className="install-detail">
         <span>当前步骤 {Math.floor(Math.max(0, (running ? now / 1000 : progress.updated_at || progress.stage_started_at) - progress.stage_started_at) / 60)} 分</span>
@@ -74,14 +76,15 @@ export function LocalPanel() {
         {progress.progress && <strong>{progress.progress.detail}</strong>}
         {(progress.progress?.quiet_seconds || 0) >= 60 && <span className="warning">暂未收到新的组件输出</span>}
       </div>}
+      {!inspection?.recorded && <PlatformOptions value={platforms} onChange={setPlatforms} disabled={busy || running} />}
       <ImageOptions value={imageOptions} onChange={setImageOptions} disabled={busy || running} />
       <div className="form-actions"><button className="primary" disabled={busy || running || !inspection?.ready}
-        onClick={() => void run(async () => { setProgress(await unwrap(desktop?.localStart(imageOptions))); await inspect(); })}>
+        onClick={() => void run(async () => { setProgress(await unwrap(desktop?.localStart({ ...imageOptions, ...(!inspection?.recorded ? { platforms } : {}) }))); await inspect(); })}>
         {busy || running ? <LoaderCircle className="spin" size={17} /> : <Play size={17} />}{running ? '正在安装' : progress ? '继续本机安装 / 连接' : '安装到这台电脑'}</button></div>
     </>}
     {installed && <>
       <div className="setup-tabs" role="tablist" aria-label="本机实例管理">
-        <button role="tab" aria-selected={view === 'setup'} onClick={() => setView('setup')}>QQ 与模型</button>
+        <button role="tab" aria-selected={view === 'setup'} onClick={() => setView('setup')}>平台与模型</button>
         <button role="tab" aria-selected={view === 'versions'} onClick={() => setView('versions')}>更新与回退</button>
         <button role="tab" aria-selected={view === 'storage'} onClick={() => { setStorageOpened(true); setView('storage'); }}>存储管理</button>
       </div>

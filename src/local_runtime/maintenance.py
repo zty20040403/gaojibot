@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import time
 
+from .official_configuration import backup_bundle, restore_bundle, platforms
 from .backups import BackupError, BackupStore, backup_id, regular_file, verify_archive, walk_data
 from .files import file_lock, read_json, write_json
 from .runtime import compose_document, runtime_environment
@@ -125,7 +126,7 @@ class Maintenance:
             service["profiles"] = ["maintenance"]
             service["restart"] = "no"
         write_json(self.directory / "compose.json", paused)
-        self.c.compose(["stop", "bot", "napcat"], timeout=90)
+        self.c.compose(["stop", *[name for name in ("bot", "napcat") if name in original["services"]]], timeout=90)
         self.c.sandbox.pause()
 
     def stop_candidate(self) -> None:
@@ -141,7 +142,7 @@ class Maintenance:
         self.save(stage="rolling_back")
         self.c.sandbox.pause()
         self.stop_candidate()
-        self.c.compose(["stop", "bot", "napcat", "database"], timeout=90)
+        self.c.compose(["stop", *[name for name in ("bot", "napcat", "database") if name in read_json(self.directory / "compose.json")["services"]]], timeout=90)
         rollback = self.workspace / "rollback"
         discarded = self.workspace / "discarded"
         discarded.mkdir(mode=0o700, exist_ok=True)
@@ -185,7 +186,7 @@ class Maintenance:
         self.c.napcat = NapCatSetup(config["ports"]["napcat"], private["napcat_token"])
 
     def resume_backup(self) -> None:
-        newly_started = [name for name in ("bot", "napcat", "database") if name not in self.state["running"]]
+        newly_started = [name for name in ("bot", "napcat", "database") if name not in self.state["running"] and name in self.state["compose"]["services"]]
         if newly_started:
             self.c.compose(["stop", *newly_started], timeout=90)
         write_json(self.directory / "compose.json", self.state["compose"])
@@ -238,6 +239,11 @@ class Maintenance:
             raise BackupError("此备份来源未经当前实例的导入流程验证")
         current = self.c.store.read(self.c.identifier)
         current["settings"] = snapshot["settings"]
+        # Never retain the destination account or manufacture a new HMAC origin.
+        current.pop("official_credential_ref", None)
+        current.pop("official_recovery_required", None)
+        if current["settings"].get("platforms", {}).get("qq_official"):
+            current["settings"]["official"]["exclusive_deployment_confirmed"] = False
         current["revision"] += 1
         private = snapshot["private"]
         keys = private["model_key_sets"][str(snapshot["revision"])]
@@ -248,6 +254,10 @@ class Maintenance:
             (candidate / name).mkdir(mode=0o700, exist_ok=True)
         (candidate / "capacity").mkdir(mode=0o755, exist_ok=True)
         (candidate / "assets").mkdir(mode=0o755, exist_ok=True)
+        if snapshot.get("official_bundle") is not None:
+            current["official_credential_ref"] = restore_bundle(candidate, snapshot["official_bundle"])
+        elif current["settings"].get("platforms", {}).get("qq_official"):
+            current["official_recovery_required"] = True
         write_json(candidate / "instance.json", current)
         write_json(candidate / "config/secrets.json", private)
         write_bytes(candidate / "config/admin.secret", base64.b64decode(snapshot["admin_secret"]), bot_owned=True)
@@ -260,7 +270,7 @@ class Maintenance:
         document = self.candidate_document(current, candidate, runtime_image=runtime_image or self.c.deployment["runtime_image"],
             images=images or read_json(self.c.release / "images.lock.json"))
         document["name"] = "gaoji-restore-" + self.c.operation["id"]
-        document["services"].pop("napcat")
+        document["services"].pop("napcat", None)
         document["services"]["bot"].pop("ports")
         for service in document["services"].values():
             service["restart"] = "no"
@@ -298,7 +308,7 @@ class Maintenance:
 
     def replace_candidate(self, candidate: Path) -> None:
         """Move only journaled instance data; the caller controls the commit point."""
-        self.c.compose(["stop", "bot", "napcat", "database"], timeout=90)
+        self.c.compose(["stop", *[name for name in ("bot", "napcat", "database") if name in read_json(self.directory / "compose.json")["services"]]], timeout=90)
         rollback = self.workspace / "rollback"
         rollback.mkdir(mode=0o700)
         for name in DATA:
@@ -308,6 +318,10 @@ class Maintenance:
             os.rename(candidate / name, self.directory / name)
             sync_directory(self.directory)
             sync_directory(candidate)
+        candidate_config = read_json(candidate / "instance.json")
+        reference = candidate_config.get("official_credential_ref")
+        if reference:
+            restore_bundle(self.directory, backup_bundle(candidate, reference), reference=reference)
         for name in CONFIG:
             with regular_file(candidate / name) as source:
                 write_bytes(self.directory / name, source.read(), bot_owned=name in {"config/admin.secret", "config/runtime.json"})
@@ -315,9 +329,9 @@ class Maintenance:
     def finish_restore(self) -> None:
         write_json(self.workspace / "rollback.json", self.state)
         foreign = self.state.get("source_instance_id", self.c.identifier) != self.c.identifier
-        if not foreign and start_allowed(self.directory):
+        if not foreign and platforms(self.c.store.read(self.c.identifier)["settings"].get("platforms"))["onebot"] and start_allowed(self.directory):
             self.c.compose(["up", "--detach", "--no-deps", "napcat"])
-        self.c.persist(status="completed", stage="restored", message="备份已恢复并核对数据库；原数据仍保留。机器人保持停止，请核对 QQ 和设置后启用")
+        self.c.persist(status="completed", stage="restored", message="备份已恢复并核对数据库；原数据仍保留。机器人保持停止；请核对账号、原始凭据完整性和旧部署状态后再启用")
         self.marker.unlink()
         sync_directory(self.marker.parent)
         candidate = self.workspace / "candidate"

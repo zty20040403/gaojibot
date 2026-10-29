@@ -101,15 +101,24 @@ class OfficialFileDispatcher:
     """
     def __init__(self, token, artifacts, payloads, outbox, rest, *, calls,
                  lease_check, publisher_factory=None, check_delivery_ready=None,
-                 clock=time.time, limits=NativeLimits()):
-        if not callable(calls) or not callable(lease_check) or not callable(clock):
+                 clock=time.time, limits=NativeLimits(), link_ttl_seconds=3600,
+                 multipart_configuration=None, multipart_vault=None, part_transport=None):
+        if (not callable(calls) or not callable(lease_check) or not callable(clock)
+                or type(link_ttl_seconds) is not int or not 60 <= link_ttl_seconds <= 3600):
             raise ValueError('invalid_file_dispatcher_configuration')
         self.token, self.artifacts, self.payloads = token, artifacts, payloads
         self.outbox, self.rest, self.calls = outbox, rest, calls
         self.lease_check, self.publisher_factory = lease_check, publisher_factory
         self.check_delivery_ready = check_delivery_ready or (lambda *_: False)
         self.clock, self.limits = clock, limits
+        self.link_ttl_seconds = link_ttl_seconds
         self._clock_lock, self._last_now = threading.Lock(), 0
+        self.multipart=None
+        if any(value is not None for value in (multipart_configuration,multipart_vault,part_transport)):
+            if any(value is None for value in (multipart_configuration,multipart_vault,part_transport)):
+                raise ValueError('incomplete_multipart_configuration')
+            from .native_chunk_dispatch import MultipartDispatcher
+            self.multipart=MultipartDispatcher(self,multipart_configuration,multipart_vault,part_transport)
 
     def _now(self):
         with self._clock_lock:
@@ -187,7 +196,7 @@ class OfficialFileDispatcher:
         if delivery['route'] is not None:
             return delivery['route']
         if not artifact['draft'] and self.payloads.route_policy(cursor, artifact, 'native') is True:
-            if artifact['byte_size'] <= min(self.limits.small_bytes, 3_750_000):
+            if artifact['byte_size'] <= min(self.limits.small_bytes, 3_750_000) or self.multipart is not None:
                 return 'native'
             if self.payloads.route_policy(cursor, artifact, 'link') is not True:
                 return 'large_unavailable'
@@ -242,6 +251,9 @@ class OfficialFileDispatcher:
         return {'status': 'handed_off'}
 
     async def _native(self, job, grant, artifact):
+        if artifact['byte_size']>min(self.limits.small_bytes,3_750_000):
+            if self.multipart is None:raise UploadGuardError()
+            return await self.multipart(job,grant,artifact)
         await self._db(self._current, grant, 'native')
         content = await self.calls(self.artifacts.read_verified, artifact['artifact_id'],
                                    sha256=artifact['sha256'], byte_size=artifact['byte_size'])
@@ -413,7 +425,7 @@ class OfficialFileDispatcher:
                                (self._now(), artifact['artifact_id']))
             return artifact, delivery, retry
         now = self._now()
-        expiry = min(now + 3600, artifact['retain_until'], artifact['pending_deadline_at'])
+        expiry = min(now + self.link_ttl_seconds, artifact['retain_until'], artifact['pending_deadline_at'])
         key = _digest(['qq-file-publication-v1', self.token.account_key, artifact['artifact_id']])
         cursor.execute('''UPDATE qq_official_file_deliveries SET state='publishing',route='link',
             publication_request_key=?,publication_started_at=?,publication_expires_at=?,updated_at=?

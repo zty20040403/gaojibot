@@ -136,9 +136,41 @@ class MigrationServicesTests(MigrationServicesFixture):
         self.assertNotIn(self.account.key,self.service.routes.tokens)
         with self.tx() as c:
             with self.assertRaises(MigrationDenied):self.service.baseline_source(c,self.endpoint,self.now)
-        with self.assertRaises(MigrationDenied):
-            MigrationServices(database=self.database,transaction=self.tx,database_calls=self.calls,
-                security=self.mapping_security,onebot_accounts=(),canonical_scope=lambda event:self.source_scope)
+        # A native-only host may start without any OneBot account. It must not
+        # borrow another live service's baseline, even from the same database.
+        native=MigrationServices(database=self.database,transaction=self.tx,database_calls=self.calls,
+            security=self.mapping_security,onebot_accounts=(),canonical_scope=lambda event:self.source_scope,
+            clock=lambda:self.now)
+        try:
+            await native.start_native()
+            self.assertEqual(native.baselines,{})
+            self.assertIsNone(native._renewal)
+            session=native.official_factory(self.runtime,self.token)
+            await self.calls(session.attach)
+            self.assertIs(native.routes.tokens[self.account.key],self.token)
+            baseline=dict(self.query('SELECT * FROM migration_runtime_baselines WHERE account_key=?',
+                (self.source.account.key,))[0])
+            routes=[dict(row) for row in self.query('SELECT * FROM migration_routes ORDER BY route_id')]
+            journals=[dict(row) for row in self.query('SELECT * FROM migration_journals ORDER BY migration_id')]
+            with self.tx() as cursor:
+                for endpoint in (self.source,self.endpoint):
+                    with self.assertRaisesRegex(MigrationDenied,'migration_source_account_unconfigured'):
+                        native.baseline_source(cursor,endpoint,self.now)
+            with self.assertRaisesRegex(MigrationDenied,'migration_source_account_unconfigured'):
+                await native.console.mutate(cookie=self.mapping_cookie,csrf=self.mapping_csrf,action='plan',
+                    request=dict(source_endpoint=self.source.key,source_scope=self.source_scope.key,
+                        target_endpoint=self.endpoint.key,items=[],deadline=self.now+300))
+            self.assertEqual([dict(row) for row in self.query('SELECT * FROM migration_routes ORDER BY route_id')],routes)
+            self.assertEqual([dict(row) for row in self.query('SELECT * FROM migration_journals ORDER BY migration_id')],journals)
+            self.assertEqual(dict(self.query('SELECT * FROM migration_runtime_baselines WHERE account_key=?',
+                (self.source.account.key,))[0]),baseline)
+        finally:
+            await native.close()
+        self.assertIsNone(self.outbox.source_guard);self.assertIsNone(self.store.source_authority)
+        self.assertNotIn(self.account.key,native.routes.tokens)
+        with self.tx() as cursor:
+            self.assertIs(self.service.baseline_source(cursor,self.source,self.now),
+                self.service.baselines[self.source.account.key])
 
     async def test_actual_file_factory_uses_current_migration_authority(self):
         from pathlib import Path

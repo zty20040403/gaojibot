@@ -79,7 +79,7 @@ class ProjectMigrationGrants:
             if (mapping.mapping_id,mapping.revision,mapping.target)!=(request['mapping_id'],request['mapping_revision'],actor):
                 raise MigrationDenied('project_grant_mapping_changed')
             expires=request['expires_at']
-            if type(expires) is not int or not now<expires<=min(now+86400,mapping.expires_at):
+            if type(expires) is not int or not now<expires<=min(now+self.services.project_grant_ttl_seconds,mapping.expires_at):
                 raise MigrationDenied('project_grant_deadline_invalid')
             if type(request['capabilities']) is not list or not request['capabilities']:
                 raise MigrationDenied('project_grant_capabilities_invalid')

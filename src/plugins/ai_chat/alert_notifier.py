@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import threading
 from time import monotonic
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -19,7 +18,7 @@ from nonebot import get_bots
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
 from nonebot.adapters.onebot.v11.exception import ActionFailed
 
-from src.bot_storage import StateSource, open_json_state
+from .alert_preferences import AlertNotificationPreferences as AlertNotificationPreferences
 from .onebot_availability import delivery_blocker
 
 
@@ -72,35 +71,6 @@ BotProvider = Callable[[], Sequence[GroupMessageBot]]
 NotificationEnabledProvider = Callable[[], bool]
 
 
-class AlertNotificationPreferences:
-    """Persistent operator override for QQ alert delivery."""
-
-    def __init__(self, state_source: StateSource) -> None:
-        self._state = open_json_state(
-            state_source,
-            "alert_notification_preferences",
-        )
-        self._lock = threading.RLock()
-        payload = self._state.load()
-        stored = payload.get("enabled") if isinstance(payload, dict) else None
-        self._enabled_override = stored if isinstance(stored, bool) else None
-
-    def effective_enabled(self, configured_default: bool) -> bool:
-        with self._lock:
-            if self._enabled_override is None:
-                return bool(configured_default)
-            return self._enabled_override
-
-    def enabled_override(self) -> bool | None:
-        with self._lock:
-            return self._enabled_override
-
-    def set_enabled(self, enabled: bool) -> bool:
-        normalized = bool(enabled)
-        with self._lock:
-            self._state.save({"version": 1, "enabled": normalized})
-            self._enabled_override = normalized
-        return normalized
 
 
 class AlertHistoryStore(Protocol):

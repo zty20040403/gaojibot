@@ -570,3 +570,7 @@ dd { margin: 0; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 }
 .reaction-votes { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 6px 0; color: var(--muted); font-size: 11px; }
 .reaction-votes > span { display: inline-flex; align-items: center; gap: 4px; }
+
+.official-view{display:grid;gap:20px}.official-view .panel{padding:24px}.official-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}.official-grid dt{color:var(--text-muted,#718096)}.official-grid dd{margin:4px 0 0}.official-command{overflow-wrap:anywhere;white-space:pre-wrap;user-select:all;padding:16px;border:1px solid #ced7e2;border-radius:8px}.official-view table{width:100%;text-align:left}.official-view td,.official-view th{padding:10px}.official-view li{margin:8px 0}
+
+.official-details code,.official-details dd{overflow-wrap:anywhere}.official-detail-table{max-width:100%;overflow-x:auto}.official-detail-table table{min-width:680px}.official-details article{min-width:0}

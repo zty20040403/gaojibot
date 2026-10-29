@@ -7,6 +7,7 @@ import re
 from urllib.parse import quote
 
 from .instances import InstanceError, validate_settings
+from .official_configuration import platforms,runtime_environment as official_environment,runtime_name
 from .components import environment as component_environment
 from src.sandbox_runtime.protocol import TOKEN_PATTERN
 
@@ -24,9 +25,12 @@ _IMAGE = re.compile(r"^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$")
 def runtime_environment(config: dict, private: dict, *, configured: bool = True, sandbox: dict | None = None,
                         sandbox_available: bool = False) -> dict[str, str]:
     settings = validate_settings(config["settings"])
-    if configured and (not settings["bot_qq"] or not settings["admin_qq"] or not settings["default_model"]):
+    selected=platforms(settings.get('platforms'))
+    if configured and selected["qq_official"] and config.get("official_recovery_required"):
+        raise InstanceError("此官方备份缺少原始凭据与 pepper，保持停止；请恢复完整受保护备份")
+    if configured and (not settings['default_model'] or selected['onebot'] and (not settings['bot_qq'] or not settings['admin_qq'])):
         raise InstanceError("Complete QQ, administrator and default model setup before starting")
-    for key in ("database_password", "onebot_token", "onebot_secret"):
+    for key in (("database_password", "onebot_token", "onebot_secret") if selected["onebot"] else ("database_password",)):
         if not isinstance(private.get(key), str) or len(private[key]) < 32:
             raise InstanceError("Instance credentials are missing or invalid")
     result = {
@@ -39,7 +43,7 @@ def runtime_environment(config: dict, private: dict, *, configured: bool = True,
         "AI_ADMIN_BOT_ID": settings["bot_qq"], "AI_ADMIN_USER_IDS": settings["admin_qq"],
         "AI_SANDBOX_ALLOWED_USERS": settings["admin_qq"], "AI_SANDBOX_ALLOW_ALL": "false",
         "SUPERUSERS": json.dumps([settings["admin_qq"]] if settings["admin_qq"] else []),
-        "ONEBOT_ACCESS_TOKEN": private["onebot_token"], "ONEBOT_SECRET": private["onebot_secret"],
+        "ONEBOT_ACCESS_TOKEN": private.get("onebot_token","") if selected["onebot"] else "", "ONEBOT_SECRET": private.get("onebot_secret","") if selected["onebot"] else "",
         "AI_SYSTEM_PROMPT": settings["system_prompt"], "AI_ENABLED_GROUPS": ",".join(settings["group_ids"]),
         "AI_DISABLED_GROUPS": "", "AI_GROUPS_REQUIRE_ALLOWLIST": str(not settings["allow_all_groups"]).lower(),
         "AI_MODEL_DEFAULT_PROFILE": settings["default_model"], "AI_LOCAL_MODEL_PROFILE": "",
@@ -54,6 +58,12 @@ def runtime_environment(config: dict, private: dict, *, configured: bool = True,
         "AI_MEDIA_WORKER_CONCURRENCY": "1", "AI_OBSERVABILITY_ENABLED": "true",
         "AI_APP_CAPACITY_FILE": "/run/gaoji-capacity/status.json", "AI_APP_INSTANCE_ID": config["id"],
     }
+    result.update(official_environment(settings,private.get('official_reference'),configured=configured,revision=config['revision']))
+    if not selected['onebot']:
+        for name in ('AI_ADMIN_BOT_ID','AI_ADMIN_USER_IDS','AI_SANDBOX_ALLOWED_USERS','AI_ENABLED_GROUPS'):result[name]=''
+        result['SUPERUSERS']='[]'
+        if settings['components']['matrix']['enabled'] or settings['components']['imessage']['enabled']:
+            raise InstanceError('OneBot bridges require OneBot to be enabled')
     profiles = {}
     for index, model in enumerate(settings["models"]):
         key = private.get("model_keys", {}).get(model["id"], "")
@@ -99,7 +109,7 @@ def compose_document(config: dict, directory: Path, *, runtime_image: str, image
         return {"type": "bind", "source": (root + "/" + source).replace("$", "$$"), "target": target,
             "read_only": readonly, "bind": {"create_host_path": False}}
     logging = {"driver": "local", "options": {"max-size": "10m", "max-file": "3"}}
-    return {"name": "gaoji-" + identifier, "services": {
+    document = {"name": "gaoji-" + identifier, "services": {
         "database": {"image": images["postgres"], "restart": "unless-stopped", "logging": logging,
             "environment": {"POSTGRES_DB": "gaoji", "POSTGRES_USER": "gaoji", "POSTGRES_PASSWORD_FILE": "/run/secrets/postgres-password"},
             "volumes": [bind("database", "/var/lib/postgresql/data"), bind("config/postgres.password", "/run/secrets/postgres-password", readonly=True)],
@@ -121,3 +131,10 @@ def compose_document(config: dict, directory: Path, *, runtime_image: str, image
                 *([bind("sandbox/socket", "/run/gaoji-sandbox", readonly=True)] if sandbox_enabled else []),
                 bind("config/runtime.json", "/run/gaoji/runtime.json", readonly=True), bind("config/admin.secret", "/run/gaoji/admin.secret", readonly=True)]},
     }}
+    selected=platforms(config.get('settings',{}).get('platforms'))
+    if not selected['onebot']:document['services'].pop('napcat')
+    reference=config.get('official_credential_ref')
+    if selected['qq_official'] and reference:
+        name=runtime_name(reference,config['revision'])
+        document['services']['bot']['volumes'].append(bind('runtime-config/'+name,'/run/gaoji/'+name,readonly=True))
+    return document

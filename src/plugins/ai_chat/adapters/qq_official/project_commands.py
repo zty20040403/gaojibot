@@ -83,7 +83,8 @@ class CommandProjectProvider(ForegroundProjectProvider):
             self.resource_origins.check_origin(c,request=request,origin_id=origin.origin_id)
             return True
         authority=ProjectAuthority(source_guard=management_source,route_guard=self.route_guard,
-            recipient_evidence=self._recipient,fresh_actor_evidence=self._fresh,clock=self.clock)
+            recipient_evidence=self._recipient,fresh_actor_evidence=self._fresh,clock=self.clock,
+            max_grant_ttl_seconds=self.authority.max_grant_ttl_seconds)
         if command.action=='issue':
             recipient=self.recipient(cursor,command.message_id)
             grant_id=command.grant_id or hashlib.sha256(json.dumps([
@@ -93,7 +94,8 @@ class CommandProjectProvider(ForegroundProjectProvider):
                 return (management_source(c,request=request,source=source)
                     and self.recipient(c,command.message_id)==recipient)
             authority=ProjectAuthority(source_guard=issuance_source,route_guard=self.route_guard,
-                recipient_evidence=self._recipient,fresh_actor_evidence=self._fresh,clock=self.clock)
+                recipient_evidence=self._recipient,fresh_actor_evidence=self._fresh,clock=self.clock,
+                max_grant_ttl_seconds=self.authority.max_grant_ttl_seconds)
             grant=authority.issue_project(cursor,issuer=issuer,recipient=recipient,
                 capabilities=frozenset(Operation(value) for value in command.capabilities),grant_id=grant_id,
                 expires_at=self._now()+command.ttl_seconds,evidence_ref=f'message:{command.message_id}',

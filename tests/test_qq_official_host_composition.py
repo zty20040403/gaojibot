@@ -46,11 +46,11 @@ class HostCompositionFixture(VerificationHostFixture):
         self.config_path.touch(mode=0o600)
         self.onebot=SimpleNamespace(handlers=SimpleNamespace(chat=SimpleNamespace(_conversation_scope=lambda event:self.source_scope)))
 
-    async def build(self,raw=None):
+    async def build(self,raw=None,**configuration):
         self.config_path.write_text(json.dumps(raw or self.raw),encoding='utf-8')
         config=HostConfiguration.from_env({'AI_QQ_MIGRATION_ENABLED':'true',
             'AI_QQ_MIGRATION_CONFIG_FILE':str(self.config_path)})
-        self.service=config.build(self.context,self.onebot)
+        self.service=config.build(self.context,self.onebot,**configuration)
         self.host=self.context.official_host
         await self.service.start()
         self.session=self.host.migration_factory(self.runtime,self.token)
