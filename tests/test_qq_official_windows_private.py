@@ -99,6 +99,8 @@ class WindowsPrivateFileTests(unittest.TestCase):
         self.path = Path(self.directory.name) / "synthetic-credential"
         self.path.write_text("TEST_SECRET", encoding="utf-8")
         self.user = _Api().user()
+        # Remove pre-existing explicit grants before restricting inheritance.
+        self.acl("/reset")
         self.acl("/inheritance:r", "/grant:r", f"*{self.user}:(F)")
 
     def acl(self, *arguments):
