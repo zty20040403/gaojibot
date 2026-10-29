@@ -20,10 +20,14 @@ from .credentials import Credentials, verify_private_file
 from .errors import QQAPIError
 from .events import EventParseError, LIFECYCLE_EVENTS, MESSAGE_EVENTS, parse_dispatch
 from .gateway import GatewayConnection
-from .http import RestClient
+from .http import RestClient, scoped_request_guard
+from .probe_files import FILE_CHECKS, UnconfirmedUpload, sample, upload_receipt
 from .token import TokenManager
 
 CHECKS = {
+    "image_upload": (2, "固定小 PNG：1 次上传（不自动发送）+ 1 条 Type 7 消息"),
+    "pdf_upload": (2, "固定小 PDF：1 次上传（不自动发送）+ 1 条 Type 7 消息"),
+    "zip_upload": (2, "固定小 ZIP：1 次上传（不自动发送）+ 1 条 Type 7 消息"),
     "reply": (1, "普通被动文字回复"),
     "non_at": (1, "用非 @ 群消息回复；只适用于群"),
     "proactive": (1, "主动发送，不使用回复窗口"),
@@ -34,7 +38,7 @@ CHECKS = {
     "length": (1, "2001 字有限长度探测，可能被拒绝"),
     "window_limit": (6, "回复窗口上限探测，最多 6 次，会故意触发限制"),
 }
-PENDING_CHECKS = ["image_upload", "pdf_upload", "zip_upload", "chunked_upload", "recall", "voice_send"]
+PENDING_CHECKS = ["chunked_upload", "recall", "voice_send"]
 _KNOWN_EVENTS = MESSAGE_EVENTS | LIFECYCLE_EVENTS | {"READY", "RESUMED", "INTERACTION_CREATE"}
 _FIXED_CONTENT = {
     "reply": "QQ 官方接入测试：被动文字回复。",
@@ -262,7 +266,8 @@ async def run_probe(
         raw_file.write({"purpose": "Protected local identity mapping only; do not commit or share.", "identities": aliases.identities})
     if options.checks:
         limit = sum(CHECKS[name][0] for name in options.checks) * len(options.targets)
-        summary = f"探测目标：{', '.join(str(v) for v in target_names.values())}；最多 {limit} 次发送请求。\n" + "\n".join(f"- {name}: {CHECKS[name][1]}" for name in options.checks)
+        uploads = sum(name in FILE_CHECKS for name in options.checks) * len(options.targets)
+        summary = f"探测目标：{', '.join(str(v) for v in target_names.values())}；最多 {limit} 次业务请求（最多 {uploads} 次上传、{limit - uploads} 条消息；鉴权/网关另计）。\n" + "\n".join(f"- {name}: {CHECKS[name][1]}" for name in options.checks)
         output(summary)
         decision = confirm(summary)
         if hasattr(decision, "__await__"):
@@ -330,8 +335,69 @@ async def run_probe(
         else:
             dropped_events += 1
 
-    async def send(kind: str, target: str, check: str, payload: dict[str, Any]) -> dict[str, Any]:
+    class FileWindowClosed(Exception):
+        """A local proof of no dispatch; never a remote acceptance guess."""
+
+    def file_guard(kind, target, message_id, media_expires_at=None):
+        if (loop.time() >= deadline
+                or clock() >= reply_deadlines[(kind, target, message_id)]
+                or (media_expires_at is not None and clock() >= media_expires_at)):
+            raise FileWindowClosed()
+
+    async def file_upload(kind, target, check, message_id):
+        fixed = sample(check)
+        item = {"check": check, "kind": kind, "target": target_names[(kind, target)],
+                "time": _now(clock), "stage": "upload", **fixed.summary}
+        namespace = json.dumps([account, kind, target])
+        started = False
+        started_at = clock()
+        async def guard(_stage):
+            file_guard(kind, target, message_id)
+        def before_dispatch():
+            nonlocal started
+            file_guard(kind, target, message_id)
+            started = True
+        try:
+            # Identical validated target namespace to the eventual message send.
+            path = RestClient._message_path(kind, target).rsplit("/", 1)[0] + "/files"
+            with scoped_request_guard(guard, before_headers=True):
+                prepared = await rest.prepare_upload(path)
+                response = await rest.upload(path, fixed.payload, prepared=prepared,
+                                             before_dispatch=before_dispatch)
+            item["http_status"] = response.status
+            media = upload_receipt(response.status, response.body, started_at=started_at)
+            item.update(status="uploaded", receipt_fields=["file_info", "file_uuid", "ttl"],
+                delivery="not_sent", verification="manual_file_verification_required")
+        except FileWindowClosed:
+            item.update(status="not_run", reason="reply_or_batch_deadline_before_upload")
+            media = None
+        except QQAPIError as exc:
+            item.update(status="rejected" if exc.accepted is False or not started else "ambiguous",
+                        code=exc.code, http_status=exc.status, category=exc.category,
+                        protocol_stage=exc.stage,
+                        request_id=aliases.get("request", exc.request_id, namespace=namespace))
+            media = None
+        except UnconfirmedUpload:
+            item.update(status="ambiguous", reason="unconfirmed_upload_receipt")
+            media = None
+        except asyncio.CancelledError:
+            item.update(status="ambiguous" if started else "not_run", reason="interrupted")
+            report["checks"].append(item)
+            raise
+        except Exception:
+            item.update(status="ambiguous" if started else "not_run", reason="upload_unavailable")
+            media = None
+        if item["status"] == "ambiguous":
+            uncertain_targets.add((kind, target))
+        report["checks"].append(item)
+        report_file.write(report)
+        output(f"{check} / {kind} / upload: {item['status']}")
+        return media
+
+    async def send(kind: str, target: str, check: str, payload: dict[str, Any], *, media=None) -> dict[str, Any]:
         item: dict[str, Any] = {"check": check, "kind": kind, "target": target_names[(kind, target)], "time": _now(clock), "stage": "send"}
+        if media is not None:
+            item.update(sample(check).summary)
         namespace = json.dumps([account, kind, target])
         expires_at = reply_deadlines.get((kind, target, payload.get("msg_id")))
         if expires_at is not None and clock() >= expires_at:
@@ -339,21 +405,49 @@ async def run_probe(
             report["checks"].append(item)
             report_file.write(report)
             return item
+        file_send_started = False
         try:
-            response = await rest.send_message(kind, target, payload)
+            if media is None:
+                response = await rest.send_message(kind, target, payload)
+            else:
+                async def guard(_stage):
+                    file_guard(kind, target, payload["msg_id"], media.expires_at)
+                # Token work and the physical handoff both recheck the original
+                # source window; successful upload never grants a fresh window.
+                with scoped_request_guard(guard, before_headers=True):
+                    await guard("prepare")
+                    prepared = await rest.prepare_send(kind, target)
+                    await guard("send")
+                    file_send_started = True
+                    response = await rest.send_message(kind, target, payload, prepared=prepared)
             receipt = _receipt(response, aliases, namespace)
             item.update(status="accepted" if receipt["message_id"] else "ambiguous", receipt=receipt)
             if isinstance(response.get("id"), str):
                 sent_ids.add((kind, target, response["id"]))
                 if (kind, target, response["id"]) in observed_ids:
                     report["self_echo"] = "observed_matching_receipt"
+            if media is not None and receipt["message_id"]:
+                item["verification"] = "manual_file_verification_required"
             if check.startswith("markdown_") and receipt["message_id"]:
                 item["rendering"] = "manual_verification_required"
+        except asyncio.CancelledError:
+            if media is not None:
+                item.update(status="ambiguous" if file_send_started else "not_run", reason="interrupted")
+                report["checks"].append(item)
+            raise
+        except FileWindowClosed:
+            item.update(status="not_run", reason="reply_or_upload_or_batch_expired_before_send")
         except QQAPIError as exc:
             item.update(status="rejected" if exc.accepted is False else "ambiguous", code=exc.code, http_status=exc.status, category=exc.category, stage=exc.stage,
                         request_id=aliases.get("request", exc.request_id, namespace=namespace))
+            if media is not None:
+                item.update(stage="send", protocol_stage=exc.stage)
         except (OSError, TimeoutError):
             item.update(status="ambiguous", category="transport_unknown")
+        except Exception:
+            if media is None:
+                raise
+            item.update(status="ambiguous" if file_send_started else "not_run", reason="send_unavailable")
         if item["status"] == "ambiguous":
             uncertain_targets.add((kind, target))
         report["checks"].append(item)
@@ -376,7 +470,9 @@ async def run_probe(
                     report["checks"].append({"check": check, "kind": kind, "target": target_names[(kind, target)], "status": "not_applicable"})
                     continue
                 payload: dict[str, Any] = {"msg_type": 2 if check.startswith("markdown_") else 0}
-                if payload["msg_type"] == 2:
+                if check in FILE_CHECKS:
+                    payload = {}
+                elif payload["msg_type"] == 2:
                     payload["markdown"] = {"content": _FIXED_CONTENT[check]}
                 else:
                     payload["content"] = _FIXED_CONTENT[check]
@@ -407,7 +503,17 @@ async def run_probe(
                         continue
                     payload.update(msg_id=message.message_id, msg_seq=1)
                     reply_deadlines[(kind, target, message.message_id)] = message.occurred_at + (295 if kind == "group" else 3595)
-                result = await send(kind, target, check, payload)
+                media = None
+                if check in FILE_CHECKS:
+                    media = await file_upload(kind, target, check, message.message_id)
+                    if media is None:
+                        report["checks"].append({"check": check, "kind": kind,
+                            "target": target_names[(kind, target)], "stage": "send",
+                            "status": "not_run", "reason": "upload_not_confirmed",
+                            **sample(check).summary})
+                        continue
+                    payload.update(msg_type=7, media={"file_info": media.file_info})
+                result = await send(kind, target, check, payload, media=media)
                 if result["status"] != "accepted":
                     continue  # No fallback or replacement seq after any uncertain result.
                 if check == "dedup":

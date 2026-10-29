@@ -36,15 +36,25 @@ _request_guard: ContextVar[Callable[[str], Awaitable[None]] | None] = ContextVar
     "qq_physical_request_guard", default=None)
 
 
+_request_before_headers: ContextVar[bool] = ContextVar("qq_guard_before_headers", default=False)
+
+
 @contextmanager
-def scoped_request_guard(guard):
-    """Host-only per-task guard, including every physical token refresh retry."""
-    if not callable(guard):
+def scoped_request_guard(guard, *, before_headers=False):
+    """Host-only guard, including every physical token refresh retry.
+
+    before_headers is an opt-in for an idempotent deadline check after connection
+    setup. It never repeats the once-only before_dispatch/intent callback.
+    Ordinary callers retain the original pre-transport behavior.
+    """
+    if not callable(guard) or type(before_headers) is not bool:
         raise ValueError("Invalid physical request guard")
     token = _request_guard.set(guard)
+    marker = _request_before_headers.set(before_headers)
     try:
         yield
     finally:
+        _request_before_headers.reset(marker)
         _request_guard.reset(token)
 
 
@@ -105,9 +115,19 @@ async def request_json_response(
     if marker is not None and marker['active']:
         try: marker['callback']()
         except Exception: pass
+    options = {}
+    if guard is not None and _request_before_headers.get():
+        async def trace(name, _info):
+            # Locked httpx 0.28.1 / httpcore 1.0.9: both events run after
+            # connect/TLS and before the first request headers. Never log data,
+            # re-run before_dispatch, or increment the physical intent observer.
+            if name in {"http11.send_request_headers.started", "http2.send_request_headers.started"}:
+                await guard(stage)
+        options["extensions"] = {"trace": trace}
     try:
         async with client.stream(
             method, url, headers=headers, json=json, timeout=timeout, follow_redirects=False,
+            **options,
         ) as response:
             status = response.status_code
             raw_id = response.headers.get("x-tps-trace-id", "")
@@ -136,7 +156,7 @@ async def request_json_response(
         raise QQAPIError("transport_ambiguous", stage=stage) from None
     try:
         data = json_module.loads(content)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         if status in {401, 429}:
             raise classify_error(status, None, stage=stage, request_id=request_id, retry_after=retry_after) from None
         raise QQAPIError("invalid_response", status=status, stage=stage, request_id=request_id) from None

@@ -235,9 +235,9 @@ M5 代码提交 `278286fdf3062c3f0a11597abe54bad4d790f759` 的 [PR #7](https://g
 
 Ruff、compileall、暂存差异空白检查及两个本机测试库的 upgrade/check 已通过。最终 89 个暂存文件的 Gitleaks 扫描为零发现。最终实现提交 `b21b9dc0fec1727ca7cb707944602c49b651596b` 的 [PR #8](https://github.com/zty20040403/gaojibot/pull/8) 已通过 Python 3.12 完整单元/集成回归、Linux Nix package 和 Secret scan。按用户的自审合并授权复核后，以 merge commit `389692aa66c2282f1a261767aa335a6ec9636ba1` 合并，独立开发分支已 fetch 并同步 main。该 CI 结果对应最终修正后的提交，不把前述有两项失败的本地全量改记为通过。以上均为本机假平台/模型与独立 PostgreSQL 证据，不代替本账号媒体、后台任务或迁移验收。
 
-## M8：交付入口与控制台（本地完整验证通过，PR/CI 待办）
+## M8：交付入口与控制台（本地完整验证及四项 CI 通过，已合并）
 
-M8 在独立快照完成最终完整验证后，145 项变更已按冻结哈希精确采用到基于 M7 merge `389692aa66c2282f1a261767aa335a6ec9636ba1` 的正式开发分支，包含启动、凭据、App/控制台、配置、下载服务和诊断详情。本节按实际结果回填文档；PR、当前 head 的四项 CI 及合并尚待完成，没有部署。单一 `0068_qq_official_operations` 合并本地控制台身份、官方管理员挑战与原生上传会话；降级拒绝丢弃本地管理员、任意挑战历史、未匹配挑战的身份控制消息和任何分片阶段/session 记录，尚未应用目标部署。
+M8 在独立快照完成最终完整验证后，145 项变更已按冻结哈希精确采用到基于 M7 merge `389692aa66c2282f1a261767aa335a6ec9636ba1` 的正式开发分支，包含启动、凭据、App/控制台、配置、下载服务和诊断详情。本节按实际结果回填文档；PR #9 最终 head 的四项 CI 全部通过，已以 merge commit `d20fd84586efd0ef0929d34d721971bf2c1519c6` 合并，没有部署。单一 `0068_qq_official_operations` 合并本地控制台身份、官方管理员挑战与原生上传会话；降级拒绝丢弃本地管理员、任意挑战历史、未匹配挑战的身份控制消息和任何分片阶段/session 记录，尚未应用目标部署。
 
 配置候选的 53 项回归通过（12.184 秒），23 项真实 NixOS 模块求值断言通过。渲染长度/分片、固定等待截止、认证与更严格速率配置接到实际 turn/sender；项目授权秒数由可信启动时捕获，同时限制原生命令/创建及控制台新迁移授权，原有授权和恢复任务不自动续期。默认期限保持 86,400 秒，允许配置为 60–86,400 秒。
 
@@ -273,11 +273,55 @@ M8 首次冻结全量于 2026-10-29 完成 **5,416 项**（3,436.354 秒）：5,
 
 全量结束后的差异空白检查发现 `sender.py` 一处行尾空格及三个文件多余的结尾空行，清理后逐文件比较完整 Python AST（含位置信息）不变；除结果文档回填外，没有语义修改。
 
-既有 admin-ui、desktop 的 production build 及本机 aarch64-darwin Nix flake 求值证据继续有效，包含 24 项 NixOS 模块断言；本机检查明确省略不兼容系统，不能替代 Linux Nix package CI 或 Windows 原生 ACL。已将验证后的 M8 变更精确整合至正式开发分支，并回填本次结果文档；**M8 本地完整验证通过，PR 与当前 head 的 Python 3.12、Windows credential ACL、Nix package、Secret scan 四项 CI 待验证，尚未合并或上线**。22 项跳过不算 Windows 原生 ACL 通过。真实公网反代、大文件、部署和历史迁移仍保持原验收边界。
+既有 admin-ui、desktop 的 production build 及本机 aarch64-darwin Nix flake 求值证据继续有效，包含 24 项 NixOS 模块断言；本机检查明确省略不兼容系统，不能替代 Linux Nix package CI 或 Windows 原生 ACL。已将验证后的 M8 变更精确整合至正式开发分支，并回填本次结果文档；**M8 本地完整验证通过，PR #9 最终 head 的 Python 3.12、Windows credential ACL、Nix package、Secret scan 四项 CI 全部通过，已以 merge commit `d20fd84586efd0ef0929d34d721971bf2c1519c6` 合并，尚未部署**。本地 22 项跳过不算 Windows 原生 ACL 通过；实际 Windows 结果另记如下。真实公网反代、大文件、部署和历史迁移仍保持原验收边界。
 
-M8 PR #9 的首轮 Windows Server 2025 / CPython 3.12.10 原生 CI 运行 13 项（0.070 秒），两项合法受限文件的初次校验报错，不能记为通过；符号链接拒绝用例已执行，未跳过。原错误被生产脱敏层合并，尚不足以区分 API 失败与 ACL 策略拒绝。后续仅给这两项合成文件测试增加同一原生句柄的固定阶段、数值及信任布尔诊断，并启用 verbose 输出；不输出 SID、路径或文件内容，原断言及生产安全校验不变。本机 10 项可移植检查通过，3 项原生检查在 macOS 跳过；该诊断提交当时仍待真实 Windows 结果确认。原提交的 Linux Nix package 和 Secret scan 已成功，后续提交仍须重新核对全部四项 CI。
+M8 的 [PR #9](https://github.com/zty20040403/gaojibot/pull/9) 最终 head 为 `5f58535f2dcdb7dd4daea746b208756973998884`。此前 Windows 原生 CI 的受限 ACL 夹具曾失败；诊断确认实际 API 与 owner 校验正常，但夹具残留非受信主体的显式 allow，产品拒绝正确。最终只在测试初始化先 `icacls /reset`，再执行原继承限制与当前测试用户授权；产品权限策略及原正负断言保持不变。该 head 的 [Windows 原生 CI](https://github.com/zty20040403/gaojibot/actions/runs/40947626685/job/123707319059) 在 Windows Server 2025 / Python 3.12.10 上运行 **13 项 / 0.164 秒，零错误、零失败、零跳过**，已通过（run `40947626685`，job `123707319059`）。同一 head 的 Python 3.12、Nix package 与 Secret scan 也全部通过；PR #9 已以 merge commit `d20fd84586efd0ef0929d34d721971bf2c1519c6` 合并，正式分支已 fast-forward，文件树与最终 head 一致。此结果单独证明 Windows 原生凭据测试，不把本地 5,416 项或以往失败批次改记为 Windows 通过，也不接通仍受限制的 Windows CLI 报告写入。
 
-第二轮 Windows 原生诊断运行 13 项（0.075 秒），两项初始断言失败且零跳过。实际同句柄 API 均成功、owner 受信，但 DACL 的四条显式 allow 中有一条授予非受信主体，生产校验按设计返回拒绝；没有据此放宽主体或权限判断。测试夹具现先对唯一合成文件执行 `icacls /reset`，再按原命令移除继承并仅授当前测试用户权限，以清除此前遗留的显式授权。仅新增这一条初始化调用，所有原生诊断、原正负断言及符号链接测试保持不变；本机仍为 10 项通过、3 项原生跳过，修正后的真实 Windows CI 待确认。
+## M9：全面回归与交付（本地离线实现验证完成，正式 PR 流程待完成）
+
+独立探测工具新增图片、PDF、ZIP 三个显式小文件检查，使用固定无害样本、逐项新窗口和原始截止时间。上传与 Type 7 消息各自记录阶段和样本哈希；结果不明停止目标，不重新上传、换序号或悄悄改链接。新增的 HTTP header 前检查在连接/TLS 之后复核窗口、媒体 TTL 和批次期限；深层 JSON 被归类为安全的未知响应，取消保持向上传播。此检查为 opt-in，未改变产品默认请求语义。协议库没有引入应用/OneBot 依赖。
+
+新增一份先前获准 M4 事件经 M0 探测器离线脱敏生成的 GROUP_MESSAGE_CREATE 夹具，保留结构化 is_you 与消息字段，真实身份、原文与原时间不进入仓库。它不是本轮新连接或新发送的证据。协议、原生 codec/uploader 和探测定向组合共 188 项运行成功（2.853 秒，5 项平台跳过）；新事件夹具及既有事件解析 13 项通过。M8 本地完整回归及最终 head 的四项 CI 结果已在上节记录；上述定向通过与本阶段完整回归分别记录。
+
+M9 最终冻结完整回归已通过：**5,437 项 / 3,982.899 秒，22 项跳过，零错误、零失败**。运行结束时 **1,505 个冻结文件（1,490 个源文件与 15 个既有前端构建文件）均无漂移**；旧 OneBot 出站快照保持原期待值。完整日志 SHA-256 为 `1ecc4b40b0a63cf39f7be1a45993afd1495ecfde5d076c6d6a0c71798a4fb2c1`，冻结清单 SHA-256 为 `8214385784af078e350c90fb492fe857a268f09fc760366596ce35d1330bf1b0`。Ruff、compileall 均 exit 0；末次两个本机隔离数据库 upgrade/check 均 exit 0，版本保持 `0068_qq_official_operations`，M9 没有新增迁移。本阶段未修改 Nix 或前端源，沿用 M8 已通过的构建/检查证据，不把它们改写为尚未运行的 M9 CI。
+
+11 项 M9 变更已基于 M8 merge `d20fd84586efd0ef0929d34d721971bf2c1519c6` 按候选哈希精确采用到正式开发分支；回归结束后回填这份结果文档与方案，另清理事件测试及其夹具说明各一个末尾空行；Python AST（含位置）保持一致。以上证明 **M9 本地离线实现验证完成，正式 PR 流程仍待完成**。本节为 M9 提交前的本地验证记录：记录时正式 PR 尚未创建，当前提交的 CI、审阅与合并流程尚未完成。之后的 PR 编号、当前 head 检查和最终合并状态以 GitHub 对应 PR 为准；本文不预先宣称其通过。 本阶段没有连接真实 QQ、部署目标服务、迁移实际历史或扩大测试范围；§13 的 PR/交付及受控上线门槛不能由本地通过代替。
+
+探测说明整理了剩余受控验收、固定参数与报告边界。CLI 未提供的分片、撤回、发语音契约继续明确标记；Windows 受保护探测报告仍限制使用，不能把凭据读取 ACL 的支持推导为所有 Windows 工具可用。完整待验清单见[剩余受控验收与记录](qq-official-probe.md#剩余受控验收与记录)，现有真实证据限于此前获准群的文字、帮助命令和小 PDF/ZIP 下载打开。未获下载副本哈希，真实大文件、公网下载、管理员 C2C、历史迁移/回退与生产启用仍待验收。
+
+### 第 5 节不变量测试索引（M9）
+
+下表为测试映射，不将入口存在等同于本次通过；完整断言、补充用例和真实环境限制见[不变量文档](qq-official-invariants.md)。M7 CI、M8 本地全量及最终 head 的 Windows 原生 ACL CI 以本记录相应批次为准；真实大文件验收仍待结果。
+
+| # | 不变量 | 代表测试（类.方法） |
+|---|---|---|
+| 1 | 旧路径隔离 | [OneBotPlatformSnapshots.test_ordinary_group_reply](../tests/test_onebot_platform_snapshots.py) |
+| 2 | 入站可靠接管 | [OfficialInboxTests.test_checkpoint_update_failure_rolls_back_receipt_dedup_inbox_and_job](../tests/test_qq_official_inbox.py) |
+| 3 | 发送结果不明不重放 | [OfficialSenderTests.test_dropped_response_is_ambiguous_and_never_replayed](../tests/test_qq_official_sender.py) |
+| 4 | 窗口原子分配 | [OfficialSendPolicyTests.test_concurrent_window_claims_do_not_overspend_or_duplicate_sequences](../tests/test_qq_official_send_policy.py) |
+| 5 | 配额不因重启清零 | [OfficialSendPolicyTests.test_unverified_daily_limit_never_refills_on_restart_or_elapsed_time](../tests/test_qq_official_send_policy.py) |
+| 6 | 等待有类别和期限 | [PlanTests.test_normal_purposes_obey_default_wait_limit_and_preserve_absolute_deadline](../tests/test_qq_official_plans.py) |
+| 7 | 身份与数据隔离 | [PlatformIdentityStorageTests.test_same_opaque_id_isolated_by_app_environment_kind_and_namespace](../tests/test_platform_identity_storage.py) |
+| 8 | 未绑定群不消费业务 | [OfficialInboxTests.test_unbound_ordinary_message_persists_no_body_nickname_url_or_content_hash](../tests/test_qq_official_inbox.py) |
+| 9 | 首次身份可信 | [OfficialBindingTests.test_first_contact_does_not_enroll_owner_and_config_is_idempotent](../tests/test_qq_official_binding.py) |
+| 10 | 凭证不外泄 | [OfficialReceiptTests.test_otp_code_never_enters_receipts_ledger_manifest_or_public_hash](../tests/test_qq_official_receipts.py) |
+| 11 | 能力与授权分开 | [PlatformToolGatesTests.test_all_feature_gates_apply_to_definition_and_execution](../tests/test_platform_tool_gates.py) |
+| 12 | @ 和引用不可伪造 | [RendererTests.test_same_literal_member_different_app_env_or_group_not_authority](../tests/test_qq_official_renderer.py) |
+| 13 | 单实例有边界 | [LeaseTests.test_same_account_in_another_schema_still_competes](../tests/test_qq_official_lease.py) |
+| 14 | 项目访问须证明 | [ProjectAuthorityTests.test_actual_task_binding_freezes_original_grant_revision](../tests/test_qq_official_project_authority.py) |
+| 15 | 任务完成不等于交付完成 | [OfficialFileReportingTests.test_accepted_message_does_not_claim_download_or_pass_failed_content](../tests/test_qq_official_file_reporting.py) |
+| 16 | 迁移与回退可审计 | [JournalTests.test_rollback_revokes_grants_and_old_epochs_while_preserving_receipts](../tests/test_qq_official_migration_journal.py) |
+| 17 | 文件清理与有效期一致 | [IntegrationTests.test_link_expired_then_artifact_gc_keeps_audit_and_no_live_bytes](../tests/test_qq_official_file_links_integration.py) |
+
+### 三种启动形态的证据矩阵
+
+默认配置保留 OneBot、关闭官方入口；启用官方单平台或双平台必须显式选择。下表区分完整回归形态和定向证据，批次结果、CI 状态与执行环境均以[进度记录](qq-official-progress.md)为准。
+
+| 启动形态 | 具体证据 | 覆盖范围与边界 |
+| --- | --- | --- |
+| 默认官方关闭、OneBot 启用 | [PlatformModeTests.test_default_and_dual_preserve_onebot](../tests/test_official_application_startup.py)；[DualApplicationTests.test_real_legacy_only_context_never_opens_official_credentials](../tests/test_dual_application_postgres.py) | 默认开关及实际旧平台 builder、assembly、worker、ingest、关闭；官方凭据读取哨兵从未触发。该形态的完整兼容回归结果单独记录，不以这两条定向测试代替全量。 |
+| 官方单平台（SDK-blocked 验证） | [PlatformModeTests.test_full_product_asgi_import_has_no_nonebot](../tests/test_official_application_startup.py)；[NativeApplicationTests.test_real_epoch_zero_legacy_baselines_projects_security_reconnect_shutdown](../tests/test_official_application_postgres.py) | 禁止导入 NoneBot 的独立进程检查真实产品入口；实际 PG/Fake 生命周期检查零 legacy baseline、项目/安全服务、命令、重连、健康与关闭。实际生命周期的 SDK-blocked 执行批次见进度记录；普通运行该方法本身不自动安装导入禁令。 |
+| 双平台同时启用 | [DualApplicationTests.test_real_dual_context_owns_one_worker_set_two_ingresses_and_ordered_shutdown](../tests/test_dual_application_postgres.py) | 真实 OneBotRuntime/OfficialRuntime 共用 context、ledger、journal 和 pool；无 OneBot 连接时官方仍 ready，两端分别入账，官方 `/help` 经 M3 到 committed。并发重复 start 不复制共享 worker/健康 writer；官方先停，再关闭共享存储，fixture 独立 pool 不被误关。实际平台 I/O 为 FakePlatform/假 Bot 边界，未据此声称真实双平台部署通过。 |
 
 ## 后续里程碑及门槛
 
@@ -290,7 +334,7 @@ M8 PR #9 的首轮 Windows Server 2025 / CPython 3.12.10 原生 CI 运行 13 项
 | M6 文件出口和生命周期 | 已合并；4,530 项全量与 PR #6 三项 CI 通过；指定测试群小型 PDF/ZIP 已获发送回执，用户确认下载并打开 |
 | M5 项目授权、历史迁移与回退 | 已合并；本地全量 5,039 项通过、PR #7 三项 CI 通过；实际迁移验收待完成 |
 | M7 其余业务与可选能力 | 已合并；最终提交 PR #8 的完整 Python、Nix package、Secret scan CI 通过，最终本地 83 项定向回归通过；可选平台能力按证据保持关闭 |
-| M8 配置、App、控制台、指标、文档 | 本地完整验证通过：5,416 项，22 项跳过，零错误/失败，冻结文件无漂移；已整合正式开发分支，PR 与当前 head 四项 CI 待验证，尚未合并或部署 |
-| M9 全面回归与交付 | 未完成 |
+| M8 配置、App、控制台、指标、文档 | 已合并（`d20fd84586efd0ef0929d34d721971bf2c1519c6`）；本地完整回归 5,416 项、22 跳过、零错误/失败；PR #9 最终 head 四项 CI 全通过，Windows 原生 13 项零跳过；未部署 |
+| M9 全面回归与交付 | 本地离线实现验证完成：5,437 项、22 跳过、零错误/失败，1,505 文件无漂移，11 项变更已整合正式开发分支；本记录提交时 PR 尚未创建，CI/合并流程待完成，后续状态以 GitHub 对应 PR 为准 |
 
 按方案每个里程碑分别提交 PR；按用户最新授权，由执行者审阅实现、测试和 CI，合适后用 merge commit 合并。前一个 PR 未合并时，下一阶段可本地推进，但不把后续提交推入前一个 PR。已完成上述单群单条纯文本收发验证；其他目标能力、下载副本哈希、迁移/回退与生产切换尚未验收。

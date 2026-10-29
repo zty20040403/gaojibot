@@ -1,6 +1,6 @@
 # QQ 官方机器人接入方案（qq-official）
 
-> 状态：执行中，2026-10-29。M0–M7（按 M6 先于 M5 的顺序）均已通过各 PR 当前提交的 CI 并以 merge commit 合并；最近 M7 PR #8 合并为 `389692aa66c2282f1a261767aa335a6ec9636ba1`。M8 的独立部署、App/控制台、配置、凭据和文件出口已通过本地完整回归（5,416 项，22 项跳过，零错误/失败），并整合到正式开发分支；PR 及当前 head 的四项 CI 尚待验证，包含 Windows 原生 ACL。尚未合并或部署。M9 正在整理不变量、三种启动形态与交付验收。用户授权的唯一测试群已确认真实文字与 `/help` 可见，小型 PDF/ZIP 已取得回执且可下载打开；下载副本哈希、其他真实能力、迁移和生产切换仍待验收。具体批次、历史失败和修正见 [实施进度](qq-official-progress.md)。下文“本次/本轮只修订文档”描述原方案修订轮，不代表当前实施进度。
+> 状态：执行中，2026-10-29。M0–M7（按 M6 先于 M5 的顺序）均已通过各 PR 当前提交的 CI 并以 merge commit 合并；最近 M7 PR #8 合并为 `389692aa66c2282f1a261767aa335a6ec9636ba1`。M8 的独立部署、App/控制台、配置、凭据和文件出口已通过本地完整回归（5,416 项，22 项跳过，零错误/失败），并整合到正式开发分支；[PR #9](https://github.com/zty20040403/gaojibot/pull/9) 最终 head `5f58535f2dcdb7dd4daea746b208756973998884` 的 Python 3.12、Windows credential ACL、Nix package、Secret scan 四项 CI 全部通过，已以 merge commit `d20fd84586efd0ef0929d34d721971bf2c1519c6` 合并；没有执行部署或历史迁移。M9 本地离线实现验证完成：完整回归 5,437 项（3,982.899 秒、22 项跳过、零错误/失败），1,505 个冻结文件无漂移，11 项变更已整合至正式开发分支。本记录提交时 M9 PR 尚未创建，CI/合并流程待完成；后续正式状态以 GitHub 对应 PR 为准。用户授权的唯一测试群已确认真实文字与 `/help` 可见，小型 PDF/ZIP 已取得回执且可下载打开；下载副本哈希、其他真实能力、迁移和生产切换仍待验收。具体批次、历史失败和修正见 [实施进度](qq-official-progress.md)。下文“本次/本轮只修订文档”描述原方案修订轮，不代表当前实施进度。
 > 读者：负责实现的 AI 执行者，以及审阅它的人。
 > 一句话：让 gaojibot 直接用 WebSocket 连接腾讯 QQ 开放平台，按腾讯的格式收发消息，不经过 NapCat 和 OneBot。现有 NapCat 路径保持不变，两条路径并存。
 
@@ -933,7 +933,7 @@ python -m src.bot_storage.cli check
 - M1 的 OneBot 快照与依赖核对提前准备，尚未据此宣称业务入口已经解耦。
 - Unix 凭证和探测报告额外检查有效 ACL；无法核实的文件系统拒绝使用。Windows 原生 ACL、Linux 不支持 ACL 查询的 tmpfs 兼容性留待 M8，未声称所有系统可用。
 
-### M8 实现记录（2026-10-29，本地完整验证通过，PR/CI 待办）
+### M8 实现记录（2026-10-29，本地完整验证及四项 CI 通过，已合并）
 
 - 官方单平台入口与 OneBot 入口复用应用服务和后台 worker；`AI_ONEBOT_ENABLED` 默认 `true`。官方默认关闭，两个入口都关闭时明确拒绝启动。App/Nix 官方单平台不启动 NapCat。
 - 第 8.2 节的草案配置名称按现有结构调整：原生文件由受保护 host JSON 的 `files.native_routes` 按账号、端点及文件类型导入证据；不设可绕过目标证明的全局 `NATIVE_FILES` 开关。文件路线、严格主机策略及下载后端都经 `.env.example` 中的 `AI_QQ_OFFICIAL_HOST_CONFIG_FILE` / Nix `qqOfficial.hostConfigFile` 接入。
@@ -942,6 +942,14 @@ python -m src.bot_storage.cli check
 - 原生 PDF/ZIP 分片已接到既有 file job、stage receipt 与 M3，需明确 `multipart=true` 的目标证明以及单独受信主机配置。默认持久产物上限 20 MiB，仍取目标原有尺寸证明的更小值；图片保持 3,500,000 字节。真实 QQ 大文件尚未验收。
 - 单一 0068 合并本地控制台身份、管理员 C2C 挑战及原生上传会话元数据；不修改已发布 0065–0067。未知分片请求、过期会话、已结束挑战仍是应保留的历史证据，降级不能丢弃。
 - 管理员身份确认与文件能力记录使用既有受保护控制面及人工受控证据导入，没有另建“验收会话”或发送队列。配置成功、平台接受、用户下载分别展示。
-- Windows 使用原生有效身份/文件句柄/DACL 检查；Linux tmpfs 在原生文件系统证据与 ACL 属性均通过时允许兼容读取。目标 Windows CI 与实际部署的 systemd 凭据检查结果需分别记录，不能以 Nix 求值代替。
-- 首次冻结全量完成 5,416 项，138 项错误及 2 项失败，1,484 个冻结文件无漂移，不记为通过。修正候选的 148 项定向回归（254.574 秒）仍有 4 个夹具错误：两项缺 `handlers.triggers`、两项缺 `loaded.delivery`，冻结文件无漂移。现已补齐实际维护服务接口与 DeliveryConfiguration，保留原断言；这四个用例和九项 OneBot 快照共 13 项通过（69.017 秒），Ruff、compileall 通过。以上失败历史保留。修正后完整回归通过：5,416 项 / 3,515.186 秒，22 项跳过、零错误/失败，1,484 个冻结文件无漂移；九项原 OneBot 快照通过且期待值未改。两库最终 upgrade/check、Ruff、compileall 和 145 项变更的 Gitleaks 检查通过。已将 M8 精确整合至正式开发分支；PR 及当前 head 的 Python 3.12、Windows credential ACL、Nix package、Secret scan 四项 CI 待验证，尚未合并或上线。
+- Windows 使用原生有效身份/文件句柄/DACL 检查；Linux tmpfs 在原生文件系统证据与 ACL 属性均通过时允许兼容读取。最终 head `5f58535f2dcdb7dd4daea746b208756973998884` 的 [Windows 原生 CI](https://github.com/zty20040403/gaojibot/actions/runs/40947626685/job/123707319059) 已实际通过 13 项（0.164 秒、零跳过）；这与本地全量的 22 项跳过是独立证据。实际部署的 systemd 凭据检查仍待验收，不能以 CI 或 Nix 求值代替。
+- 首次冻结全量完成 5,416 项，138 项错误及 2 项失败，1,484 个冻结文件无漂移，不记为通过。修正候选的 148 项定向回归（254.574 秒）仍有 4 个夹具错误：两项缺 `handlers.triggers`、两项缺 `loaded.delivery`，冻结文件无漂移。现已补齐实际维护服务接口与 DeliveryConfiguration，保留原断言；这四个用例和九项 OneBot 快照共 13 项通过（69.017 秒），Ruff、compileall 通过。以上失败历史保留。修正后完整回归通过：5,416 项 / 3,515.186 秒，22 项跳过、零错误/失败，1,484 个冻结文件无漂移；九项原 OneBot 快照通过且期待值未改。两库最终 upgrade/check、Ruff、compileall 和 145 项变更的 Gitleaks 检查通过。已将 M8 精确整合至正式开发分支；[PR #9](https://github.com/zty20040403/gaojibot/pull/9) 最终 head `5f58535f2dcdb7dd4daea746b208756973998884` 的 Python 3.12、Windows credential ACL、Nix package、Secret scan 四项 CI 全部通过，已以 merge commit `d20fd84586efd0ef0929d34d721971bf2c1519c6` 合并；没有执行部署或历史迁移。
 - 运维说明见 [QQ 官方机器人](qq-official.md)。完整回归、合并和实际账号验收状态见 [实施进度](qq-official-progress.md)。
+
+### M9 实现记录（本地离线实现验证完成，正式 PR 流程待完成）
+
+- 独立 CLI 补齐图片、PDF、ZIP 三个固定小样本检查，分别记录上传和消息阶段，原窗口/TTL/批次期限在物理 HTTP header 前再次校验；未知结果不重传或换序号。协议层深层 JSON 统一归为不可确认响应，取消仍向上传播。
+- 已有获准事件经 M0 探测器离线脱敏后纳入夹具，未新连 QQ 或重新发送。17 条不变量和三种启动形态的具体方法索引已准备，静态链接核对不代替测试。
+- 定向协议/媒体探测 188 项运行成功（5 项跳过），新事件及既有解析 13 项通过；最终完整回归 **5,437 项 / 3,982.899 秒 / 22 项跳过 / 零错误与失败**，1,505 个冻结文件无漂移。Ruff、compileall 通过，两个隔离数据库的末次 upgrade/check 均到 0068。基于 M8 merge `d20fd84586efd0ef0929d34d721971bf2c1519c6`，11 项变更已按候选哈希精确采用到正式开发分支，随后回填结果文档，并清理事件测试及其夹具说明各一个末尾空行；Python AST（含位置）保持一致。
+- 本节为 M9 提交前的本地验证记录：记录时正式 PR 尚未创建，当前提交的 CI、审阅与合并流程尚未完成。之后的 PR 编号、当前 head 检查和最终合并状态以 GitHub 对应 PR 为准；本文不预先宣称其通过。
+- 剩余用户受控验收见 [探测说明](qq-official-probe.md#剩余受控验收与记录)。未验证项继续保持未知/关闭；生产启用与历史迁移不由本次自审合并授权推导。
