@@ -23,7 +23,7 @@ def host_coordinator(store, model_catalog, *, logger, files_enabled=False, **opt
     allowed=TEXT_TOOLS|FILE_TOOLS if files_enabled else TEXT_TOOLS
     roles=('supervisor',*sorted(FILE_ROLES)) if files_enabled else ('supervisor','researcher','analyst')
     specs={role:replace(AGENT_SPECS[role], allowed_tools=
-        (AGENT_SPECS[role].allowed_tools & allowed) | (HOST_TOOLS if role!='supervisor' else frozenset()))
+        (AGENT_SPECS[role].allowed_tools & allowed) | (HOST_TOOLS if role in {'researcher','analyst'} else frozenset()))
         for role in roles}
     return SubAgentCoordinator(store,model_catalog,logger=logger,registry=AgentRegistry(specs),**options)
 

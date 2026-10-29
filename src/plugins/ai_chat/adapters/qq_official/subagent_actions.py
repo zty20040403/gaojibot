@@ -39,8 +39,8 @@ def _project(definition, context):
             if files else '提交一个独立文字研究或分析任务，完成后由持久队列把结果送回当前会话。')
         function['parameters']['properties']['role']['enum'] = sorted(FILE_ROLES) if files else ['researcher', 'analyst']
     else:
-        function['description'] = ('提交多步骤研究、分析或 PDF/ZIP 文件任务；工作区只属于本次来源，不提供项目或宿主权限。'
-            if files else '提交有多个步骤的文字研究或分析任务；暂不支持文件、项目、宿主操作。')
+        function['description'] = ('提交多步骤研究、分析或 PDF/ZIP 文件任务；工作区只属于本次来源；文件任务不附带宿主权限，服务器任务另按当前准入执行。'
+            if files else '提交有多个步骤的文字研究或分析任务；文件和项目另需对应能力，服务器任务另按当前准入执行。')
 
 
 def task_registry_for(context):
@@ -89,7 +89,7 @@ class SubmissionBinding:
             if files:
                 await turn.context.agent_executor.readiness()
                 files = enabled(turn.context)
-            host = False
+            host_available = False
             if self.host_admission is not None:
                 if not callable(self.host_admission):
                     raise ValueError('official_host_admission_unavailable')
@@ -98,12 +98,9 @@ class SubmissionBinding:
                         row=self.source_api.assert_execution_current(cursor,token=self.token,handle=handle,
                             job=self.source_job,now=int(self.clock()),admission=self.admission)
                         return row['state']=='executing' and self.host_admission(cursor,handle) is True
-                host=await self.database_calls(permitted)
-            if host:
-                files=False
+                host_available=await self.database_calls(permitted)
             roles = FILE_ROLES if files else {'researcher', 'analyst'}
             allowed = TEXT_TOOLS | FILE_TOOLS if files else TEXT_TOOLS
-            if host:allowed |= HOST_TOOLS
             if role is not None and role not in roles:
                 raise ValueError('当前平台只开放文字研究与分析 Sub-Agent。')
             call_id = active_tool_call_id.get()
@@ -112,10 +109,26 @@ class SubmissionBinding:
             packet = ContextPacket(handle.scope_key, ports.conversation_id, None,
                 handle.canonical_message_id, objective, endpoint=handle.endpoint,
                 requester_actor=handle.actor, supporting_context=prepared.turn_context,
-                constraints=(('仅已配置服务的精确合同；真实任务范围获两人批准后才执行，不授任意宿主或项目权限。' if host else '只允许本次来源的临时隔离工作区与 PDF/ZIP 文件交付；不提供宿主或项目操作。'
-                              if files else '仅文字研究与分析；不得执行宿主/项目/文件操作。'),))
+                constraints=((('允许本次来源的临时隔离工作区与 PDF/ZIP 文件交付。' if files else '文件与项目操作不可用。')
+                    + ('服务器只读与已配置服务操作可单独规划，required_tools 必须列出实际需要；不得混入文件任务，写操作仍需精确合同两人审批。'
+                       if host_available else '宿主工具不可用。')),))
             decision = await self.coordinator.prepare_entry(packet, selected_profile,
                 role=role, parent_trace=parent_trace)
+            required = {name for step in decision.steps for name in step.get('required_tools', ())}
+            host = bool(required & HOST_TOOLS)
+            if host:
+                if not host_available:
+                    raise ValueError('official_host_profile_not_admitted')
+                if (decision.contract.delivery_required or required & FILE_TOOLS
+                        or any(step['agent'] not in {'researcher', 'analyst'} for step in decision.steps)):
+                    raise ValueError('official_host_file_profile_conflict')
+                files = False
+                roles = {'researcher', 'analyst'}
+                allowed = TEXT_TOOLS | HOST_TOOLS
+            packet = replace(packet, constraints=(
+                '仅已配置服务和只读状态；写操作需真实任务范围的精确合同及两人批准，不授文件或项目权限。' if host else
+                '只允许本次来源的临时隔离工作区与 PDF/ZIP 文件交付；不提供宿主或项目操作。' if files else
+                '仅文字研究与分析；不得执行宿主/项目/文件操作。',))
             if (decision.contract.delivery_required and not files) or decision.task_type == 'project':
                 raise ValueError('当前官方 Sub-Agent 尚不支持文件或项目交付。')
             if any(step['agent'] not in roles

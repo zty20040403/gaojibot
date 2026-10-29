@@ -150,6 +150,8 @@ class OfficialExternalOperations:
             raise SecurityError('official_external_source_changed')
         if item['remote_path']:
             record,context,contract=self._record(source,item['response'])
+            if request.get('path')=='/v1/operations/prepare':
+                self.authority.matches_preparation(record,request.get('body') or {})
             if item['remote_path'] != '/v1/operations/'+record['operation_id']:
                 raise SecurityError('official_external_receipt_changed')
             return record,context,contract

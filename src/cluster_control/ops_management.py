@@ -94,8 +94,11 @@ class OpsManagementService:
 
     async def call(self, operation: str, params: dict[str, Any], *, actor: str,
                    origin: str, idempotency_key: str = "", guardian_id: str = "",
-                   deployment: dict[str, str] | None = None) -> dict[str, Any]:
+                   deployment: dict[str, str] | None = None,
+                   deadline_at: int | None = None) -> dict[str, Any]:
         self.authorize(actor)
+        if deadline_at is not None and type(deadline_at) is not int:
+            raise ValueError("Invalid source operation deadline")
         definition = next((d for d in await self.definitions() if d["name"] == operation), None)
         if definition is None:
             raise PermissionError("Operation is not granted by the upstream catalog")
@@ -136,15 +139,20 @@ class OpsManagementService:
         if existing is not None:
             if existing.get("contract_hash") != intent_hash:
                 raise ValueError("Idempotency key belongs to a different approved intent")
+            if deadline_at is not None and existing["deadline_at"] > deadline_at:
+                raise ValueError("Existing operation exceeds source deadline")
             return self.proposal_result(existing)
         now = int(time.time())
+        expires = now + 1800 if deadline_at is None else min(now + 1800, deadline_at)
+        if expires <= now:
+            raise ValueError("Source operation deadline expired")
         record = {"operation_id": new_handle("op"), "task_ref": "", "step_ref": "",
             "actor_id": actor, "origin_scope": origin,
             "host_id": params.get("host") or params.get("target_host") or (deployment or {}).get("host_id", "scoped-resource"),
             "resource_ref": operation, "operation": "ssh.execute" if self.client.backend_name == "ssh" else "maxops.execute", "operation_version": 1,
             "arguments": arguments, "backend_ref": "ssh-management-v1" if self.client.backend_name == "ssh" else "ops-management-v2", "backend_binding_version": 1,
             "expected_state": {}, "resource_version": 1, "policy_version": 1,
-            "deadline_at": now + 1800, "resource_budget": {"wall_seconds": 1800},
+            "deadline_at": expires, "resource_budget": {"wall_seconds": expires - now},
             "idempotency_key": idempotency_key, "verification": {}, "compensation": {},
             "contract_hash": intent_hash, "status": "awaiting_approval", "capability_status": "available",
             "created_at": now}

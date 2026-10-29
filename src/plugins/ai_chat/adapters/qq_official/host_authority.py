@@ -164,7 +164,64 @@ class OfficialHostAuthority:
   finally:
    cursor.close();connection.close()
 
+ def _ssh_contract(self,record,source,account):
+  # /operations/prepare delegates service.* to the current OpsManagementService.
+  # Its SSH intent hash deliberately covers actor/origin/arguments; the full
+  # returned contract is additionally frozen by our existing Mobile policy.
+  if (any(key not in record for key in (*_CONTRACT,'operation_id','contract_hash','capability_status','status','created_at'))
+      or any(type(record[key])is not str for key in ('operation_id','contract_hash','host_id','resource_ref',
+       'backend_ref','actor_id','origin_scope','idempotency_key','task_ref','step_ref'))
+      or re.fullmatch(r'op_[a-f0-9]{32}',record['operation_id']) is None
+      or re.fullmatch(r'[a-f0-9]{64}',record['contract_hash']) is None
+      or type(record['arguments'])is not dict
+      or set(record['arguments'])!={'op','params','binding_hash','upstream_idempotency'}):
+   raise SecurityError('official_host_contract_unsupported')
+  args=record['arguments'];params=args['params']
+  actions={'units.start':'service.start','units.stop':'service.stop','units.restart':'service.restart'}
+  if (type(args['op'])is not str or args['op'] not in actions
+      or type(params)is not dict or set(params)!={'host','unit'}
+      or any(type(params[key])is not str for key in ('host','unit'))
+      or type(args['binding_hash'])is not str or re.fullmatch(r'[a-f0-9]{64}',args['binding_hash']) is None
+      or args['upstream_idempotency']!='required'):
+   raise SecurityError('official_host_contract_unsupported')
+  allowed=self.services.get((params['host'],params['unit']))
+  if (allowed is None or actions[args['op']] not in allowed.actions
+      or allowed.backend_ref!='ssh-management-v1' or allowed.backend_binding_version!=1
+      or record['backend_ref']!=allowed.backend_ref or type(record['backend_binding_version'])is not int
+      or record['backend_binding_version']!=1 or record['host_id']!=params['host'] or record['resource_ref']!=args['op']
+      or any(type(record[key])is not int or record[key]!=1 for key in ('operation_version','policy_version'))
+      or type(record['resource_version'])is not int or record['resource_version']<1
+      or record['actor_id']!='admin:'+account['username'] or record['origin_scope']!=self.origin(source)
+      or record['capability_status']!='available' or type(record['created_at'])is not int
+      or type(record['deadline_at'])is not int or not 0<=record['created_at']<=self.now()<record['deadline_at']<=source.deadline_at
+      or not 1<=record['deadline_at']-record['created_at']<=1800
+      or type(record['resource_budget'])is not dict or set(record['resource_budget'])!={'wall_seconds'}
+      or type(record['resource_budget']['wall_seconds'])is not int
+      or record['resource_budget']['wall_seconds']!=record['deadline_at']-record['created_at']
+      or any(type(record[key])is not dict or record[key] for key in ('expected_state','verification','compensation'))
+      or record['task_ref'] or record['step_ref'] or not 8<=len(record['idempotency_key'])<=160
+      or any(ch.isspace() or ord(ch)<32 for ch in record['idempotency_key'])
+      or record['contract_hash']!=content_hash({'actor':record['actor_id'],'origin':record['origin_scope'],'arguments':args})):
+   raise SecurityError('official_host_contract_changed')
+  actual={key:record[key] for key in _CONTRACT}
+  if len(canonical(actual).encode())>16384:raise SecurityError('official_host_contract_unsupported')
+  # binding_hash is pinned inside this exact approval; the authenticated control
+  # service re-computes it from its current SSH catalog, targets and credential
+  # digests on approval AND submission. No SSH secret/config is copied to Bot.
+  return {'operation_id':record['operation_id'],'contract_hash':record['contract_hash'],**actual}
+
+ def matches_preparation(self,record,body):
+  if record.get('operation')=='ssh.execute':
+   arguments=record['arguments']
+   actual=(arguments['params']['host'],arguments['params']['unit'],arguments['op'].replace('units.','service.',1))
+  else:actual=tuple(record[key] for key in ('host_id','resource_ref','operation'))
+  if (actual!=tuple(body.get(key) for key in ('host_id','resource_ref','operation'))
+      or type(body.get('deadline_at'))is not int or record['deadline_at']>body['deadline_at']):
+   raise SecurityError('official_host_contract_changed')
+
  def contract(self,record,source,account):
+  if isinstance(record,dict) and record.get('operation')=='ssh.execute':
+   return self._ssh_contract(record,source,account)
   if (not isinstance(record,dict) or any(key not in record for key in
         (*_CONTRACT,'operation_id','contract_hash','capability_status','status'))
       or any(not isinstance(record[key],str) for key in ('operation_id','contract_hash','host_id','resource_ref',
@@ -214,6 +271,7 @@ class OfficialHostAuthority:
    account,recipient=await self._identity_snapshot(source,policy,'prepare')
    record=await client._raw_request(method,path,body,actor='admin:'+account['username'],origin=self.origin(source))
    context,contract=self.context_for(record,source,account,recipient)
+   self.matches_preparation(record,body)
    ready=await self.tasks.ensure(context,account,wait=False) if self.tasks is not None else False
    if not ready:return {'operation':record,'approval_required':True,'executed':False}
    return await self._approve(client,record,context,account,contract)
