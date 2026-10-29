@@ -191,7 +191,7 @@ class AppContext:
         from .adapters.qq_official.runtime import OfficialRuntime
 
         runtime = OfficialRuntime(config, self.database, logger=self.logger, ledger=self.message_ledger,
-                                  journal=getattr(self, "turn_journal", None))
+                                  journal=getattr(self, "turn_journal", None), application=self)
         self.official_runtime = runtime
         try:
             return await runtime.start()

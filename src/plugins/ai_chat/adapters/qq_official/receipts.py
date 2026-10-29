@@ -11,7 +11,7 @@ import re
 import secrets
 import unicodedata
 
-from src.plugins.ai_chat.message_ir import MessageBody, body_from_json, body_to_json
+from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json, body_to_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 
 from .lease import assert_epoch
@@ -127,6 +127,46 @@ def _canonical_body(delivery):
         return body
     except (TypeError, ValueError):
         raise OutboxInvariantError("invalid_delivery_body") from None
+
+
+def _context_projection(cursor, delivery, attempt):
+    """Project confirmed whoami content without changing protected send evidence.
+
+    A current binding/window is deliberately not required for historical receipt
+    settlement. The immutable manifest and its exact persisted decision identify
+    this special response; message text alone never selects a redaction policy.
+    """
+    body = _canonical_body(delivery)
+    if delivery["payload_mode"] != "persistent":
+        return body, {}
+    plan = cursor.execute("SELECT manifest_json,manifest_digest FROM delivery_plans WHERE plan_id=?",
+                          (delivery["plan_id"],)).fetchone()
+    if plan is None:
+        raise OutboxInvariantError("receipt_plan_missing")
+    try:
+        manifest = json.loads(plan["manifest_json"])
+        control = manifest.get("control")
+    except (TypeError, ValueError, AttributeError):
+        raise OutboxInvariantError("receipt_plan_invalid") from None
+    if not isinstance(control, dict) or control.get("kind") != "authenticated_control":
+        return body, {}
+    if (digest(plan["manifest_json"]) != plan["manifest_digest"]
+            or set(control) != {"kind", "control_id"} or not isinstance(control["control_id"], str)):
+        raise OutboxInvariantError("control_projection_integrity_conflict")
+    decision = cursor.execute("""SELECT reply_kind,action,decision_code,body_digest
+        FROM qq_official_control_decisions WHERE control_id=? AND account_key=? AND endpoint_key=?
+          AND requester_actor_key=? AND plan_id=? AND delivery_id=? AND attempt_id=?""",
+        (control["control_id"], delivery["account_key"], delivery["endpoint_key"], delivery["requester_actor_key"],
+         delivery["plan_id"], delivery["delivery_id"], attempt["attempt_id"])).fetchone()
+    if decision is None or decision["body_digest"] != digest(body_to_json(body)):
+        raise OutboxInvariantError("control_projection_integrity_conflict")
+    if decision["reply_kind"] != "whoami":
+        return body, {}
+    if decision["action"] != "whoami" or decision["decision_code"] != "identity":
+        raise OutboxInvariantError("control_projection_integrity_conflict")
+    return MessageBody((TextNode(0, "[身份查询已回复：具体平台身份标识已从会话上下文隐去，仅保留于受保护发送审计。]"),)), {
+        "content_redacted": True, "redaction_reason": "qq_official_whoami_identity", "control_kind": "whoami",
+    }
 
 
 def _quote(cursor, attempt, delivery, endpoint):
@@ -290,7 +330,7 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now) ->
         return _wait(cursor, delivery, "identity_unverified", now)
     if delivery["turn_id"] is not None and journal is None and delivery["status"] != "committed":
         return _wait(cursor, delivery, "turn_journal_unavailable", now)
-    body = _canonical_body(delivery)
+    body, projection_metadata = _context_projection(cursor, delivery, attempt)
     reply_target, quoted_index = _quote(cursor, attempt, delivery, endpoint)
     existing, collision = _existing_message(cursor, endpoint, native, delivery, attempt, actor, body, reply_target)
     if collision:
@@ -311,10 +351,11 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now) ->
     stored = ledger.record_message(
         endpoint.scope, native_message_id=native, sender_native_user_id=actor.native_user_id,
         sender_display="Bot", body=body, occurred_at=receipt["accepted_at"] or receipt["observed_at"],
-        direction="outbound", message_kind="command" if delivery["payload_mode"] == "ephemeral" else "chat",
+        direction="outbound", message_kind="command" if delivery["payload_mode"] == "ephemeral" or projection_metadata else "chat",
         reply_to_native_message_id=reply_target, actor=actor, source_endpoint=endpoint,
         raw_event={"source": "qq-official", "delivery_id": delivery["delivery_id"],
-                   "attempt_id": attempt["attempt_id"], "receipt_id": receipt_id, "time_source": "receipt_observed"},
+                   "attempt_id": attempt["attempt_id"], "receipt_id": receipt_id, "time_source": "receipt_observed",
+                   **projection_metadata},
         transaction_cursor=cursor,
     )
     canonical = stored.canonical_message_id

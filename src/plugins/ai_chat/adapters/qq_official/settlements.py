@@ -5,6 +5,7 @@ import math
 import re
 
 from src.qq_official.errors import QQAPIError
+from .control_receipts import control_id_for_delivery, sync_control_terminal
 from .error_policy import decide_send_error
 from .format_fallback import decide_format_fallback
 from .lease import assert_epoch
@@ -39,10 +40,11 @@ def cancel_before_invocation(cursor, *, token, reservation, now, reason="request
     settle_send_policy(cursor, token=token, attempt_id=reservation.attempt_id, result="proven_unsent", now=now)
     cursor.execute("""UPDATE delivery_attempts SET state='cancelled_unsent',acceptance='confirmed_no',finished_at=?
         WHERE attempt_id=? AND state IN ('reserved','dispatched')""", (now, reservation.attempt_id))
-    state = "cancelled" if row["payload_mode"] == "ephemeral" or row["expires_at"] <= now else "pending"
+    state = "cancelled" if row["payload_mode"] == "ephemeral" or control_id_for_delivery(cursor, row) is not None or row["expires_at"] <= now else "pending"
     cursor.execute("""UPDATE deliveries SET status=?,wait_reason=?,next_attempt_at=?,lease_until=NULL,
         updated_at=? WHERE delivery_id=? AND current_attempt_id=?""",
         (state, reason, now + 1, now, reservation.delivery_id, reservation.attempt_id))
+    sync_control_terminal(cursor, token, reservation.delivery_id, now)
     return SendOutcome(state, reason, reservation.delivery_id, now + 1 if state == "pending" else None)
 
 
@@ -67,7 +69,7 @@ def settle_failure(cursor, *, token, reservation, error, now, frozen_plain_diges
     retry_at = now
     auth_used, transient_used = row["auth_retries_used"], row["transient_retries_used"]
     switch_plain = False
-    if not ephemeral and not unknown:
+    if not ephemeral and control_id_for_delivery(cursor, row) is None and not unknown:
         if fallback.action == "select_frozen_plain_once":
             retry, switch_plain = True, True
         elif policy.action == "refresh_token_once":
@@ -110,6 +112,9 @@ def settle_failure(cursor, *, token, reservation, error, now, frozen_plain_diges
     if state == "failed":
         cursor.execute("""UPDATE deliveries SET status='cancelled',wait_reason='previous_part_failed',updated_at=?
             WHERE plan_id=? AND part_index>? AND status='pending'""", (now, row["plan_id"], row["part_index"]))
+    # Complete account-fenced metadata before this same transaction deliberately
+    # pauses authentication. A new assert_epoch after the pause must reject it.
+    sync_control_terminal(cursor, token, reservation.delivery_id, now)
     if policy.action in {"pause_auth", "pause_token_preflight"}:
         cursor.execute("""UPDATE qq_official_accounts SET gateway_state='paused',pause_reason=?,updated_at=?
             WHERE account_key=?""", (reason, now, token.account_key))
@@ -130,6 +135,7 @@ def recover_account_sends(cursor, *, token, now):
         cursor.execute("UPDATE delivery_attempts SET state='ambiguous',acceptance='unknown',finished_at=? WHERE attempt_id=?", (now, row["attempt_id"]))
         cursor.execute("""UPDATE deliveries SET status='ambiguous',wait_reason='restart_outcome_unknown',lease_until=NULL,
             updated_at=? WHERE delivery_id=? AND current_attempt_id=?""", (now, row["delivery_id"], row["attempt_id"]))
+        sync_control_terminal(cursor, token, row["delivery_id"], now)
     cursor.execute("""UPDATE deliveries SET status='cancelled',wait_reason='ephemeral_payload_lost',updated_at=?
         WHERE account_key=? AND payload_mode='ephemeral' AND status='pending'""", (now, token.account_key))
     cursor.execute("""UPDATE deliveries SET status='cancelled',wait_reason='delivery_expired',updated_at=?

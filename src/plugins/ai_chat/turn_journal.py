@@ -131,9 +131,10 @@ class TurnJournal(ReactionVoteStoreMixin):
         prompt_version: str = "",
         tool_catalog_version: str = "",
         started_at: int | None = None,
+        transaction_cursor: StoreCursor | None = None,
     ) -> TurnRecord:
         now = int(started_at or time.time())
-        with self._transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(?))",
                 (f"turn:{scope.key}",),
@@ -694,13 +695,17 @@ class TurnJournal(ReactionVoteStoreMixin):
         now = int(time.time())
         with self._transaction() as cursor:
             rows = cursor.execute(
-                "SELECT turn_id FROM agent_turns WHERE status = 'running'"
+                """SELECT turn_id FROM agent_turns WHERE status = 'running'
+                   AND NOT EXISTS (SELECT 1 FROM qq_official_turn_executions x
+                                   WHERE x.journal_turn_id=agent_turns.turn_id)"""
             ).fetchall()
             cursor.execute(
                 """
                 UPDATE agent_turns
                 SET status = 'crashed', finished_at = ?
                 WHERE status = 'running'
+                  AND NOT EXISTS (SELECT 1 FROM qq_official_turn_executions x
+                                  WHERE x.journal_turn_id=agent_turns.turn_id)
                 """,
                 (now,),
             )
@@ -726,6 +731,8 @@ class TurnJournal(ReactionVoteStoreMixin):
                 FROM turn_journal_events AS e
                 WHERE e.event_kind = 'tool'
                   AND e.state = 'started'
+                  AND NOT EXISTS (SELECT 1 FROM qq_official_turn_executions x
+                                  WHERE x.journal_turn_id=e.turn_id)
                   AND NOT EXISTS (
                       SELECT 1 FROM turn_journal_events AS done
                       WHERE done.turn_id = e.turn_id

@@ -138,12 +138,15 @@ def _quota_admission(cursor, endpoint, now, verified_boundary):
     return spec
 
 
+from .control_receipts import control_policy_authority
+
+
 def check_send_policy(
     cursor: StoreCursor, *, token: LeaseToken, endpoint: EndpointKey, endpoint_row: Mapping,
     source_native_id: str | None, purpose: str, deadline: int, now: int,
     rate_permit: LocalRatePermit | None = None, certification: Certification = 'unknown',
     allow_newer_windows: bool = False, allow_proactive_probe: bool = False,
-    verified_boundary: VerifiedDayBoundary | None = None,
+    verified_boundary: VerifiedDayBoundary | None = None, control_reply_id=None,
 ) -> SendPolicyChoice | PolicyWait:
     """Lock/check candidates; never allocate a sequence or charge an attempt.
 
@@ -169,7 +172,12 @@ def check_send_policy(
         return PolicyWait('endpoint_revoked')
     if current['membership_state'] != 'present':
         return PolicyWait('membership_unknown')
-    if endpoint.kind == 'group' and current['binding_state'] != 'active':
+    control_view = None
+    if control_reply_id is not None:
+        control_view = control_policy_authority(cursor, token, control_id=control_reply_id, endpoint=endpoint,
+            source_native_id=source_native_id, deadline=deadline, now=now)
+        allow_newer_windows = allow_proactive_probe = False
+    if control_view is None and endpoint.kind == 'group' and current['binding_state'] != 'active':
         return PolicyWait('endpoint_unbound')
     window = None
     if source_native_id is not None:
@@ -188,6 +196,8 @@ def check_send_policy(
     probe = False
     if window is not None:
         mode = 'passive'
+    elif control_view is not None:
+        return PolicyWait('waiting_reply_window')
     elif current['proactive_state'] == 'allowed':
         mode = 'proactive'
     elif (current['proactive_state'] == 'unknown' and current['proactive_probe_attempt_id'] is None
@@ -228,7 +238,7 @@ def _attempt(cursor, token, attempt_id):
     return row
 
 
-def reserve_send_policy(cursor: StoreCursor, *, token: LeaseToken, choice: SendPolicyChoice, attempt_id: int, now: int) -> None:
+def reserve_send_policy(cursor: StoreCursor, *, token: LeaseToken, choice: SendPolicyChoice, attempt_id: int, now: int, control_reply_id=None) -> None:
     """Reserve after attempt insertion; every mutation shares the caller's TX.
 
     Choice is single-use, not a recovery command. A duplicate window reservation
@@ -240,9 +250,15 @@ def reserve_send_policy(cursor: StoreCursor, *, token: LeaseToken, choice: SendP
     if not choice.rate_permit.matches(choice.endpoint, choice.send_mode, certification=choice.certification):
         raise SendPolicyError('rate_permit_mismatch')
     current = _target(cursor, token, choice.endpoint)
+    control_view = None
+    if control_reply_id is not None:
+        control_view = control_policy_authority(cursor, token, control_id=control_reply_id, endpoint=choice.endpoint,
+            source_native_id=choice.credential_value, deadline=choice.send_by_at, now=now)
+        if choice.send_mode != 'passive' or choice.window_id != control_view.window_id:
+            raise SendPolicyError('control_window_changed')
     if (choice.purpose not in _PURPOSES or choice.purpose == 'progress'
             or current['membership_state'] != 'present' or current['binding_state'] == 'revoked'
-            or (choice.endpoint.kind == 'group' and current['binding_state'] != 'active')):
+            or (control_view is None and choice.endpoint.kind == 'group' and current['binding_state'] != 'active')):
         raise SendPolicyError('send_admission_changed')
     if (current['generation'], current['route_epoch'], current['capability_revision']) != (
             choice.endpoint_generation, choice.route_epoch, choice.capability_revision):

@@ -25,6 +25,7 @@ from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from .codec import DecodedMessage, RejectedMessage, decode_message
 from .keys import account_job_kind
 from .lease import LeaseToken
+from .input_normalization import normalize_input
 
 
 Admission = Callable[[StoreCursor, EndpointKey, ActorKey], bool]
@@ -267,6 +268,15 @@ def process_inbox(
         return _finish(cursor, row, timestamp, status="revoked", reason="policy_denied")
     if existing is not None:
         return _finish(cursor, row, timestamp, reason="duplicate_message", canonical=existing["canonical_message_id"])
+    prepared_input = normalize_input(dispatch)
+    if prepared_input.kind != "message":
+        # Old/incorrect TxA admission must still never put a binding secret into
+        # canonical history or leave its raw payload behind for later workers.
+        cursor.execute("UPDATE qq_official_inbound_events SET payload_json=NULL WHERE inbox_id=?", (inbox_id,))
+        return _finish(cursor, row, timestamp, status="quarantined", reason="input_sensitive_control")
+    cursor.execute("""UPDATE qq_official_inbound_events SET turn_text=?,turn_text_version=?
+        WHERE inbox_id=? AND account_key=?""",
+        (prepared_input.input_text, prepared_input.version, inbox_id, account.key))
     reply_target = _reply_target(cursor, decoded)
     recorded = ledger.record_message(
         endpoint.scope, native_message_id=decoded.native_message_id,

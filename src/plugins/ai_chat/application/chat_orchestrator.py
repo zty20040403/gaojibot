@@ -51,6 +51,20 @@ class ChatPorts:
     journal_reply_text: Callable[[Any], str]
 
 
+class DurableTurnLifecycle(Protocol):
+    """Trusted adapter transaction hooks; never populated from model arguments."""
+
+    async def assert_current(self) -> None: ...
+
+    async def begin(self, *, inbound: InboundMessage, selected_profile: Any,
+                    objective: str, prompt_version: str) -> int: ...
+
+    async def finish(self, *, turn_id: int | None, status: str, trace: AgentTrace | None,
+                     final_text: str, error_code: str, scope_key: str) -> None: ...
+
+    async def interrupted(self, *, turn_id: int | None, reason: str) -> None: ...
+
+
 class ChatOrchestrator:
     """Run one model-backed chat turn without knowing the chat platform SDK."""
 
@@ -88,23 +102,25 @@ class ChatOrchestrator:
         user_text: str,
         *,
         legacy_task_identity: LegacyTaskIdentity | None = None,
+        durable_lifecycle: DurableTurnLifecycle | None = None,
         **kwargs: Any,
     ) -> ChatTurnResult | None:
         if platform.account != inbound.endpoint.account:
             raise ValueError("turn platform does not own the inbound endpoint")
+        if durable_lifecycle is not None:
+            await durable_lifecycle.assert_current()
         conversation_id = self.ports.conversation_id(inbound)
         scope = inbound.scope
         stream_context = kwargs.pop("_stream_context", None)
         if self.usage_store is not None:
             quota = await self.db_call(self.usage_store.status, scope.key)
             if not quota.allowed:
-                return ChatTurnResult(
-                    reply=(
-                        "今天这个会话的模型额度已经用完了。"
-                        "可以在本机管理页调整配额，或者明天再继续。"
-                    ),
-                    turn_id=None,
-                )
+                reply = "今天这个会话的模型额度已经用完了。可以在本机管理页调整配额，或者明天再继续。"
+                if durable_lifecycle is not None:
+                    await durable_lifecycle.assert_current()
+                    await durable_lifecycle.finish(turn_id=None, status="succeeded", trace=None,
+                        final_text=reply, error_code="model_quota", scope_key=scope.key)
+                return ChatTurnResult(reply=reply, turn_id=None)
 
         task = self.running_tasks.register_inbound(
             conversation_id=conversation_id,
@@ -118,6 +134,25 @@ class ChatOrchestrator:
         )
         journal_turn_id: int | None = None
         trace: AgentTrace | None = None
+
+        async def finish(status, text="", error_code=""):
+            if durable_lifecycle is not None:
+                await durable_lifecycle.assert_current()
+                await durable_lifecycle.finish(turn_id=journal_turn_id, status=status, trace=trace,
+                    final_text=text, error_code=error_code, scope_key=scope.key)
+            else:
+                await self.db_call(self._finish_turn, journal_turn_id, status, trace, text,
+                                   scope_key=scope.key, error_code=error_code)
+
+        async def interrupted(reason):
+            if durable_lifecycle is not None:
+                try:
+                    await durable_lifecycle.interrupted(turn_id=journal_turn_id, reason=reason)
+                except BaseException:
+                    # The original failure/cancellation must escape. A stale
+                    # lease cannot be reclaimed merely to write a terminal row.
+                    pass
+
         try:
             caller_selected_profile = "selected_profile_override" in kwargs
             explicit_profile = await self.db_call(
@@ -162,7 +197,26 @@ class ChatOrchestrator:
             journal_scope_enabled = inbound.endpoint.kind == "private" or (
                 await self.db_call(self.ports.endpoint_enabled, inbound.endpoint)
             )
-            if (
+            if durable_lifecycle is not None:
+                # This branch is strict: the same journal/execution transaction
+                # must commit before model or tool handoff. There is no legacy
+                # best-effort fallback if storage is unavailable.
+                selected_profile = kwargs["selected_profile_override"]
+                await durable_lifecycle.assert_current()
+                journal_turn_id = await durable_lifecycle.begin(inbound=inbound,
+                    selected_profile=selected_profile, objective=user_text,
+                    prompt_version=self.prompt_version)
+                if type(journal_turn_id) is not int or journal_turn_id < 1:
+                    raise RuntimeError("durable_turn_journal_unavailable")
+                # No model call has happened yet. Bind trace identity to the
+                # actual selected override, not an earlier routing candidate.
+                trace = AgentTrace(provider=selected_profile.provider_identity,
+                    model=selected_profile.model, profile=selected_profile.name)
+                kwargs["journal_turn_id"] = journal_turn_id
+                kwargs["turn_trace"] = trace
+                kwargs["turn_context"] = await self.db_call(
+                    self.ports.current_turn_context, inbound, journal_turn_id)
+            elif (
                 self.turn_journal is not None
                 and self.message_ledger is not None
                 and journal_scope_enabled
@@ -220,59 +274,37 @@ class ChatOrchestrator:
 
             if isinstance(stream_context, dict):
                 stream_context["turn_id"] = journal_turn_id
+            if durable_lifecycle is not None:
+                await durable_lifecycle.assert_current()
             reply = await self.ports.ask_agent(inbound, platform, user_text, **kwargs)
             status = "silence" if self.ports.is_silence_reply(reply) else "succeeded"
-            (
-                await self.db_call(
-                    self._finish_turn,
-                    journal_turn_id,
-                    status,
-                    trace,
-                    self.ports.journal_reply_text(reply),
-                    scope_key=scope.key,
-                )
-            )
+            await finish(status, self.ports.journal_reply_text(reply))
             return ChatTurnResult(reply=reply, turn_id=journal_turn_id, status=status)
         except ChatFailure as exc:
-            (
-                await self.db_call(
-                    self._finish_turn,
-                    journal_turn_id,
-                    "crashed",
-                    trace,
-                    exc.reply,
-                    scope_key=scope.key,
-                    error_code=exc.code,
-                )
-            )
-            return ChatTurnResult(
-                reply=exc.reply, turn_id=journal_turn_id,
-                status="crashed", error_code=exc.code,
-            )
+            try:
+                await finish("crashed", exc.reply, exc.code)
+            except BaseException:
+                await interrupted("result_commit_unavailable")
+                raise
+            return ChatTurnResult(reply=exc.reply, turn_id=journal_turn_id,
+                                  status="crashed", error_code=exc.code)
         except asyncio.CancelledError:
-            self.logger.info(
-                f"AI task {task.task_id} cancelled for {conversation_id}."
-            )
-            (
-                await self.db_call(
-                    self._finish_turn,
-                    journal_turn_id,
-                    "aborted",
-                    trace,
-                    scope_key=scope.key,
-                )
-            )
+            if durable_lifecycle is not None:
+                await interrupted("turn_cancelled_or_owner_lost")
+                raise
+            self.logger.info(f"AI task {task.task_id} cancelled for {conversation_id}.")
+            await finish("aborted")
             return None
         except Exception:
-            (
-                await self.db_call(
-                    self._finish_turn,
-                    journal_turn_id,
-                    "crashed",
-                    trace,
-                    scope_key=scope.key,
-                )
-            )
+            if durable_lifecycle is not None:
+                await interrupted("turn_execution_interrupted")
+            else:
+                await finish("crashed")
+            raise
+        except BaseException:
+            # Shared tool/model fencing intentionally uses a BaseException so
+            # ordinary retry handlers cannot swallow lease loss.
+            await interrupted("turn_owner_lost")
             raise
         finally:
             self.running_tasks.finish(task.task_id)

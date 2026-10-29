@@ -28,6 +28,8 @@ from .agent import (
     SubAgentRole,
 )
 from .ai_tools import ToolDefinition
+from .platform_types import EndpointKey, ActorKey
+from .agent.task_identity import make_owner, object_owner, owner_fields, require_same_owner
 from .agent.execution import (
     DECISION_TOOL,
     ENTRY_PROMPT,
@@ -201,7 +203,7 @@ class TaskRecord:
     trace_id: str
     scope_key: str
     conversation_id: str
-    requester_user_id: int
+    requester_user_id: int | None
     trigger_message_id: int | None
     objective: str
     status: str
@@ -214,6 +216,8 @@ class TaskRecord:
     finished_at: int | None
     project_id: int | None = None
     project_base_version: int | None = None
+    endpoint: EndpointKey | None = None
+    requester_actor: ActorKey | None = None
 
     @property
     def handle(self) -> str:
@@ -274,34 +278,40 @@ class SubAgentStore(
         *,
         scope_key: str,
         conversation_id: str,
-        requester_user_id: int,
+        requester_user_id: int | None,
         trigger_message_id: int | None,
         objective: str,
         max_parallelism: int,
         max_steps: int,
+        endpoint: EndpointKey | None = None,
+        requester_actor: ActorKey | None = None,
         now: int | None = None,
         transaction_cursor: StoreCursor | None = None,
     ) -> TaskRecord:
         timestamp = int(time.time() if now is None else now)
+        owner = make_owner(requester_user_id, endpoint, requester_actor)
         trace_id = uuid.uuid4().hex
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             row = cursor.execute(
                 """
                 INSERT INTO subagent_tasks (
-                    trace_id, scope_key, conversation_id, requester_user_id,
+                    trace_id, scope_key, conversation_id, requester_user_id, account_key, endpoint_key, requester_actor_key,
                     trigger_message_id, objective, status, priority,
                     max_parallelism, max_steps, plan_json, result_json,
                     last_error, cancel_requested, created_at, updated_at,
                     finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'received', 100, ?, ?, '{}', '{}',
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', 100, ?, ?, '{}', '{}',
                           '', ?, ?, ?, NULL)
                 RETURNING *
                 """,
                 (
                     trace_id,
-                    str(scope_key)[:300],
-                    str(conversation_id)[:300],
-                    int(requester_user_id),
+                    str(scope_key) if endpoint else str(scope_key)[:300],
+                    str(conversation_id) if endpoint else str(conversation_id)[:300],
+                    owner.requester_user_id if endpoint is None else None,
+                    endpoint.account.key if endpoint else None,
+                    endpoint.key if endpoint else None,
+                    requester_actor.key if requester_actor else None,
                     trigger_message_id,
                     str(objective).strip(),
                     int(max_parallelism),
@@ -330,7 +340,7 @@ class SubAgentStore(
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             task = self.create_task(
                 scope_key=packet.scope_key, conversation_id=packet.conversation_id,
-                requester_user_id=packet.requester_user_id, trigger_message_id=packet.trigger_message_id,
+                **owner_fields(object_owner(packet)), trigger_message_id=packet.trigger_message_id,
                 objective=packet.objective, max_parallelism=max_parallelism, max_steps=max_steps,
                 now=timestamp, transaction_cursor=cursor,
             )
@@ -816,6 +826,11 @@ class SubAgentStore(
         """Persist the immutable context visible to one Agent run."""
 
         timestamp = int(time.time() if now is None else now)
+        task = self.get(task_id)
+        if context.endpoint is not None or (task is not None and task.endpoint is not None):
+            if task is None or context.scope_key != task.scope_key:
+                raise PermissionError("Task context does not belong to this task")
+            require_same_owner(object_owner(context), object_owner(task))
         payload = context.as_payload()
         with self._transaction() as cursor:
             cursor.execute(
@@ -1092,8 +1107,10 @@ class SubAgentStore(
                 cursor.execute("BEGIN")
                 fence = active_job_fence.get()
                 if fence:
+                    if fence.transaction_guard:
+                        fence.transaction_guard(cursor)
                     row = cursor.execute(
-                        "SELECT status, lease_owner, attempts, lease_until FROM durable_jobs WHERE job_id=? FOR SHARE",
+                        "SELECT status, lease_owner, attempts, lease_until, lease_generation FROM durable_jobs WHERE job_id=? FOR SHARE",
                         (fence.job_id,),
                     ).fetchone()
                     if (
@@ -1102,6 +1119,7 @@ class SubAgentStore(
                         or row["lease_owner"] != fence.owner
                         or int(row["attempts"]) != fence.attempt
                         or int(row["lease_until"] or 0) <= time.time()
+                        or (fence.lease_generation is not None and row["lease_generation"] != fence.lease_generation)
                     ):
                         raise LeaseLost("Sub-Agent task lease expired")
                 yield cursor
@@ -1120,7 +1138,9 @@ class SubAgentStore(
             trace_id=str(row["trace_id"]),
             scope_key=str(row["scope_key"]),
             conversation_id=str(row["conversation_id"]),
-            requester_user_id=int(row["requester_user_id"]),
+            requester_user_id=int(row["requester_user_id"]) if row["requester_user_id"] is not None else None,
+            endpoint=EndpointKey.parse(row["endpoint_key"]) if row["endpoint_key"] else None,
+            requester_actor=ActorKey.parse(row["requester_actor_key"]) if row["requester_actor_key"] else None,
             trigger_message_id=(
                 int(row["trigger_message_id"])
                 if row["trigger_message_id"] is not None
@@ -1633,7 +1653,9 @@ class SubAgentCoordinator:
         task_id: int,
         *,
         scope_key: str,
-        requester_user_id: int,
+        requester_user_id: int | None,
+        endpoint: EndpointKey | None = None,
+        requester_actor: ActorKey | None = None,
         selected_profile: ModelProfile,
         tools: Sequence[ToolDefinition],
         execute_tool: ToolExecutor,
@@ -1647,9 +1669,21 @@ class SubAgentCoordinator:
         task = self.store.get(task_id)
         if task is None:
             raise ValueError(f"Sub-Agent 任务 task#{task_id} 不存在。")
-        if task.scope_key != scope_key or self.store.revision_actor(task_id) != requester_user_id:
+        expected_owner = make_owner(requester_user_id, endpoint, requester_actor)
+        if task.scope_key != scope_key:
             raise ValueError("不能恢复其他群或其他用户发起的 Sub-Agent 任务。")
-        self.store.require_execution_actor(task_id, requester_user_id)
+        if endpoint is None:
+            if self.store.revision_actor(task_id) != requester_user_id:
+                raise ValueError("不能恢复其他群或其他用户发起的 Sub-Agent 任务。")
+            self.store.require_execution_actor(task_id, requester_user_id)
+        else:
+            require_same_owner(object_owner(task), expected_owner)
+            fence = active_job_fence.get()
+            if fence is None or fence.transaction_guard is None or fence.lease_generation is None:
+                raise PermissionError("Official task requires current account and job authority")
+            fence.assert_owned()
+            if self.store.control(task_id)["revision"] != 1:
+                raise PermissionError("Official task revisions are unavailable")
         if task.status not in {"interrupted", "queued", "waiting_external"}:
             raise ValueError(f"{task.handle} 当前状态是 {task.status}，不能断点续跑。")
         context = _checkpoint_context_packet(self.store.checkpoints(task_id))
@@ -1664,8 +1698,7 @@ class SubAgentCoordinator:
             raise RuntimeError(f"{task.handle} 缺少可恢复的上下文检查点。")
         if context.scope_key != task.scope_key:
             raise RuntimeError(f"{task.handle} 的检查点作用域不一致。")
-        if context.requester_user_id != requester_user_id:
-            raise RuntimeError(f"{task.handle} 的恢复上下文不属于本版执行者。")
+        require_same_owner(object_owner(context), expected_owner)
         if not self.store.prepare_resume(task_id):
             raise RuntimeError(f"{task.handle} 未能进入恢复状态。")
         active_model_policy.set(self.store.execution_model_policy(task_id))
@@ -2995,7 +3028,7 @@ class SubAgentCoordinator:
         trace = AgentTrace(trace_id=task.trace_id)
         self.store.hydrate_external_session(task.task_id, run.run_id)
         session = self.store.agent_session(
-            task.task_id, run.run_id, scope_key=task.scope_key, requester_user_id=task.requester_user_id,
+            task.task_id, run.run_id, scope_key=task.scope_key, **owner_fields(object_owner(task)),
         )
         session_version = session["version"]
         external = ExternalCalls(self.store, task.task_id, run.run_id) if self.store.control(task.task_id)["dispatch"] else None
@@ -3013,7 +3046,7 @@ class SubAgentCoordinator:
             nonlocal session_version
             session_version = self.store.save_agent_session(
                 task.task_id, run.run_id, messages, scope_key=task.scope_key,
-                requester_user_id=task.requester_user_id,
+                **owner_fields(object_owner(task)),
                 model_profile=trace.profile, expected_version=session_version,
             )
 

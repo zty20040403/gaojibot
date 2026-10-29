@@ -305,6 +305,10 @@ async def _invoke_completion(
     trace: AgentTrace | None = None,
     **kwargs: Any,
 ) -> Any:
+    # Import lazily: the public agent package exports AgentTrace from this module.
+    from .agent.control import assert_job_owned
+
+    assert_job_owned()
     token = _active_profile.set(profile)
     try:
         return await _create_completion(_trace=trace, **kwargs)

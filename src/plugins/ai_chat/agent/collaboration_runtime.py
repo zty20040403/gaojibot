@@ -6,10 +6,8 @@ import asyncio
 from contextvars import ContextVar
 import time
 
-from nonebot.adapters.onebot.v11 import GroupMessageEvent
 
 from .contracts import ContextPacket
-from ..onebot_codec import scope_from_event
 from ..workers.durable_jobs import JobDeferred
 
 
@@ -31,6 +29,7 @@ async def guard_collaboration():
 
 
 async def group_roster(bot, event):
+    from nonebot.adapters.onebot.v11 import GroupMessageEvent
     if not isinstance(event, GroupMessageEvent) or str(bot.self_id) != str(event.self_id):
         raise ValueError("Collaboration requires the original group and QQ account")
     try:
@@ -45,6 +44,8 @@ async def group_roster(bot, event):
 
 
 def execution_event(store, task, control):
+    from nonebot.adapters.onebot.v11 import GroupMessageEvent
+    from ..onebot_codec import scope_from_event
     value = control["dispatch"].get("execution")
     if value is None:
         return None
