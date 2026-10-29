@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import time
+from types import SimpleNamespace
 
 from src.plugins.ai_chat.agent.control import JobFence, LeaseLost, active_job_fence
 from src.plugins.ai_chat.agent.task_identity import object_owner, require_same_owner, StructuredTaskOwner
@@ -25,6 +26,9 @@ from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 TERMINAL = frozenset({'completed', 'partial', 'failed', 'cancelled'})
 TEXT_TOOLS = frozenset({'context_search', 'context_expand', 'get_message_by_id',
     'search_messages', 'memory_list', 'web_search', 'inspect_source', 'use_skill'})
+FILE_TOOLS = frozenset({'sandbox_create', 'sandbox_list', 'sandbox_destroy', 'sandbox_exec',
+    'sandbox_write_file', 'sandbox_read_file', 'send_file_from_sandbox'})
+FILE_ROLES = frozenset({'researcher', 'analyst', 'coder', 'document'})
 
 
 def _json(value):
@@ -40,7 +44,7 @@ def job_kind(account):
 
 def submit(cursor, *, token, source_api, source_handle, source_job, tool_call_id,
            tool_name, packet, decision, profile, now, execution_deadline,
-           result_wait_seconds, admission, coordinator, jobs):
+           result_wait_seconds, admission, coordinator, jobs, tool_profile='official-text-v1'):
     row = source_api.assert_execution_current(cursor, token=token, handle=source_handle,
         job=source_job, now=now, admission=admission)
     if (row['state'] != 'executing' or not isinstance(tool_call_id, str)
@@ -48,7 +52,8 @@ def submit(cursor, *, token, source_api, source_handle, source_job, tool_call_id
             or any(ord(c) < 32 for c in tool_call_id)
             or tool_name not in {'delegate_agent', 'run_subagents'}
             or type(execution_deadline) is not int or not now < execution_deadline <= now + 7200
-            or type(result_wait_seconds) is not int or not 1 <= result_wait_seconds <= 86400):
+            or type(result_wait_seconds) is not int or not 1 <= result_wait_seconds <= 86400
+            or tool_profile not in {'official-text-v1', 'official-files-v1'}):
         raise ValueError('invalid_subagent_submission')
     expected = StructuredTaskOwner(source_handle.endpoint, source_handle.actor)
     require_same_owner(object_owner(packet), expected)
@@ -59,12 +64,15 @@ def submit(cursor, *, token, source_api, source_handle, source_job, tool_call_id
     if decision is not None:
         _validate_plan({'steps': list(decision.steps)}, packet.objective,
                        coordinator.max_steps, strict=True)
-        if any(step.get('agent') not in {'researcher', 'analyst'} for step in decision.steps):
+        roles = FILE_ROLES if tool_profile == 'official-files-v1' else {'researcher', 'analyst'}
+        allowed = TEXT_TOOLS | FILE_TOOLS if tool_profile == 'official-files-v1' else TEXT_TOOLS
+        if any(step.get('agent') not in roles or not set(step.get('required_tools', ())) <= allowed
+               for step in decision.steps):
             raise ValueError('unsupported_subagent_role')
     key = _digest(['qq-subagent:v1', token.account_key, source_handle.execution_id,
                    tool_call_id, tool_name])
     request_digest = _digest([packet.as_payload(), decision.as_payload() if decision else None,
-        profile, execution_deadline, result_wait_seconds, 'official-text-v1'])
+        profile, execution_deadline, result_wait_seconds, tool_profile])
     existing = cursor.execute('''SELECT task_id,submission_digest FROM qq_official_subagent_dispatches
         WHERE source_execution_id=? AND submission_key=? FOR UPDATE''',
         (source_handle.execution_id, key)).fetchone()
@@ -75,7 +83,7 @@ def submit(cursor, *, token, source_api, source_handle, source_job, tool_call_id
             'SELECT * FROM subagent_tasks WHERE task_id=?', (existing['task_id'],)).fetchone())
     task = coordinator.store.prepare_task(packet=packet, decision=decision,
         dispatch={'version': 1, 'platform': 'qq-official', 'deadline': execution_deadline,
-                  'profile': profile, 'tool_profile': 'official-text-v1'},
+                  'profile': profile, 'tool_profile': tool_profile},
         max_parallelism=coordinator.max_parallelism, max_steps=coordinator.max_steps,
         transaction_cursor=cursor)
     pending, _ = jobs.enqueue(kind=job_kind(expected.endpoint.account),
@@ -88,11 +96,11 @@ def submit(cursor, *, token, source_api, source_handle, source_job, tool_call_id
          source_canonical_message_id,source_native_message_id,submission_key,submission_digest,
          job_id,endpoint_generation,route_epoch,tool_profile,execution_deadline_at,
          result_wait_seconds,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'official-text-v1',?,?,?,?)''',
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (task.task_id, token.account_key, expected.endpoint.key, expected.requester_actor.key,
          source_handle.execution_id, source_handle.canonical_message_id,
          source_handle.source_native_message_id, key, request_digest, pending.job_id,
-         source_handle.endpoint_generation, source_handle.route_epoch,
+         source_handle.endpoint_generation, source_handle.route_epoch, tool_profile,
          execution_deadline, result_wait_seconds, now, now))
     return task
 
@@ -137,6 +145,10 @@ def assert_current(cursor, *, token, task_id, now, admission, job=None):
             or task['trigger_message_id'] != binding['source_canonical_message_id']
             or task['project_id'] is not None):
         raise LeaseLost('official_subagent_identity_unavailable')
+    dispatch = json.loads(control['dispatch_json'])
+    if (binding['tool_profile'] not in {'official-text-v1', 'official-files-v1'}
+            or dispatch.get('tool_profile') != binding['tool_profile']):
+        raise LeaseLost('official_subagent_tool_profile_changed')
     if job is None and task['status'] not in TERMINAL:
         raise LeaseLost('official_subagent_execution_requires_job')
     return dict(binding), dict(task)
@@ -155,8 +167,18 @@ def freeze_and_enqueue(cursor, *, token, task_id, now, outbox, admission, job=No
     if binding['result_body_json'] is None:
         result = json.loads(task['result_json'])
         text = str(result.get('answer') or result.get('result', {}).get('summary') or task['status'])
+        from .file_projection import project_task_files
+        from src.plugins.ai_chat.agent.outcomes import outcome_report
+        projection_task = SimpleNamespace(task_id=task_id, endpoint=endpoint, requester_actor=actor)
+        files = [view.for_task(projection_task, 1)['payload']
+                 for view in project_task_files(cursor, projection_task, 1)]
+        if files:
+            acceptance = result.get('validation', {}).get('acceptance')
+            text = outcome_report(acceptance if isinstance(acceptance, dict) else {},
+                                  str(result.get('report_narrative') or ''), files)
         if task['status'] in {'failed', 'cancelled'}:
-            text = '任务未完成。' if task['status'] == 'failed' else '任务已取消。'
+            prefix = '任务未完成。' if task['status'] == 'failed' else '任务已取消。'
+            text = prefix + ('\n' + text if files else '')
         body = MessageBody((TextNode(0, f'task#{task_id}\n{text}'),))
         encoded = body_to_json(body)
         expires = now + min(binding['result_wait_seconds'], outbox.max_wait_seconds)
@@ -264,6 +286,15 @@ def settle_authority_loss(cursor, *, token, job, now, admission, coordinator):
 
 
 @dataclass
+class TaskToolSession:
+    tools: tuple
+    execute_tool: object
+    hooks: object = None
+    close: object = None
+    files_enabled: bool = False
+
+
+@dataclass
 class OfficialSubAgentDispatcher:
     token: object
     coordinator: object
@@ -276,6 +307,7 @@ class OfficialSubAgentDispatcher:
     tools: tuple = ()
     execute_tool: object = None
     clock: object = time.time
+    execution_factory: object = None
 
     async def authority_lost(self, job):
         def settle():
@@ -299,6 +331,7 @@ class OfficialSubAgentDispatcher:
         fence = JobFence(job.job_id, job.lease_owner, job.attempts, owned,
                          job.lease_generation, guard)
         mark = active_job_fence.set(fence)
+        session = None
         try:
             await self.database_calls(owned)
             task = await self.database_calls(self.coordinator.store.get, task_id)
@@ -312,7 +345,16 @@ class OfficialSubAgentDispatcher:
                 else:
                     if task.status not in {'queued', 'interrupted'}:
                         self.coordinator.store.interrupt_task(task_id)
-                    tools = tuple(t for t in self.tools if t['function']['name'] in TEXT_TOOLS)
+                    files_enabled = binding['tool_profile'] == 'official-files-v1'
+                    if self.execution_factory is not None:
+                        session = await self.execution_factory(job, task, files_enabled)
+                        if not isinstance(session, TaskToolSession):
+                            raise LeaseLost('official_task_context_invalid')
+                    if files_enabled and (session is None or not session.files_enabled or session.hooks is None):
+                        raise JobDeferred('official_task_files_unavailable', 30)
+                    allowed = TEXT_TOOLS | FILE_TOOLS if files_enabled else TEXT_TOOLS
+                    tools = tuple(t for t in (session.tools if session else self.tools)
+                                  if t['function']['name'] in allowed)
                     saved_profile = self.coordinator.store.control(task_id)['dispatch'].get('profile')
                     profile = self.profile(saved_profile) if callable(self.profile) else self.profile
                     if profile is None or profile.name != saved_profile or not profile.configured:
@@ -320,17 +362,19 @@ class OfficialSubAgentDispatcher:
 
                     async def execute_tool(name, args):
                         await self.database_calls(owned)
-                        if name not in TEXT_TOOLS or name not in {t['function']['name'] for t in tools}:
+                        if name not in allowed or name not in {t['function']['name'] for t in tools}:
                             return '{"ok":false,"error":"tool_unavailable"}'
-                        if self.execute_tool is None:
+                        executor = session.execute_tool if session else self.execute_tool
+                        if executor is None:
                             return '{"ok":false,"error":"tool_unavailable"}'
-                        return await self.execute_tool(name, args)
+                        return await executor(name, args)
 
                     async with asyncio.timeout(remaining):
                         await self.coordinator.resume(task_id, scope_key=task.scope_key,
                             requester_user_id=None, endpoint=task.endpoint,
                             requester_actor=task.requester_actor, selected_profile=profile,
-                            tools=tools, execute_tool=execute_tool, progress=None, hooks=None)
+                            tools=tools, execute_tool=execute_tool, progress=None,
+                            hooks=session.hooks if session else None)
 
             def finish():
                 with self.transaction() as cursor:
@@ -349,7 +393,11 @@ class OfficialSubAgentDispatcher:
             # model and persisted-context diagnostics inside the trusted store.
             raise JobDeferred('official_subagent_unavailable', 3) from None
         finally:
-            active_job_fence.reset(mark)
+            try:
+                if session is not None and session.close is not None:
+                    await session.close()
+            finally:
+                active_job_fence.reset(mark)
 
     async def reconcile_results(self, *, after_task_id=0, limit=20):
         if type(after_task_id) is not int or after_task_id < 0 or type(limit) is not int or not 1 <= limit <= 100:

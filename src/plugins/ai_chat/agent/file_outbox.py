@@ -27,6 +27,7 @@ class FileOutboxStoreMixin:
         if artifact.get("draft") is True:
             payload.update(draft=True, draft_reason=str(artifact.get("draft_reason") or "内容尚未全部验收通过"))
         with self._transaction() as cursor:
+            self._require_legacy_file_task(cursor, task_id)
             cursor.execute("""INSERT INTO subagent_deliveries
                 (task_id, revision, delivery_key, state, payload_json, updated_at)
                 VALUES (?, ?, ?, 'queued', ?, ?) ON CONFLICT DO NOTHING""",
@@ -42,14 +43,15 @@ class FileOutboxStoreMixin:
             rows = self._connection.execute("""SELECT DISTINCT d.task_id FROM subagent_deliveries d
                 JOIN subagent_controls c ON c.task_id=d.task_id AND c.revision=d.revision
                 JOIN subagent_tasks t ON t.task_id=d.task_id
-                WHERE d.state='queued' AND c.dispatch_json <> '{}' AND t.cancel_requested=? LIMIT 50""", (False,)).fetchall()
+                WHERE t.account_key IS NULL AND d.state='queued' AND c.dispatch_json <> '{}' AND t.cancel_requested=? LIMIT 50""", (False,)).fetchall()
         return [int(row["task_id"]) for row in rows]
 
     def rejected_file_tasks(self) -> list[int]:
         with self._lock:
             rows = self._connection.execute("""SELECT DISTINCT d.task_id FROM subagent_deliveries d
                 JOIN subagent_controls c ON c.task_id=d.task_id AND c.revision=d.revision
-                WHERE d.state='rejected' AND c.dispatch_json <> '{}'
+                JOIN subagent_tasks t ON t.task_id=d.task_id
+                WHERE t.account_key IS NULL AND d.state='rejected' AND c.dispatch_json <> '{}'
                 AND NOT EXISTS (SELECT 1 FROM subagent_checkpoints p WHERE p.task_id=d.task_id
                     AND p.phase='file_rejected:' || CAST(d.revision AS TEXT) || ':' || d.delivery_key)
                 LIMIT 50""").fetchall()
@@ -59,6 +61,7 @@ class FileOutboxStoreMixin:
         assert_job_owned()
         now = int(time.time())
         with self._transaction() as cursor:
+            self._require_legacy_file_task(cursor, task_id)
             lock = " FOR UPDATE"
             control = cursor.execute(
                 "SELECT revision FROM subagent_controls WHERE task_id=?" + lock,
@@ -91,6 +94,7 @@ class FileOutboxStoreMixin:
         payload.update(preparation_failures=failures, state=state, ok=False, not_sent=True,
                        error=error, next_attempt_at=int(time.time()) + 30)
         with self._transaction() as cursor:
+            self._require_legacy_file_task(cursor, task_id)
             cursor.execute("""UPDATE subagent_deliveries SET state=?, payload_json=?, updated_at=?
                 WHERE task_id=? AND revision=? AND delivery_key=? AND state='queued'""",
                 (state, json.dumps(payload, ensure_ascii=False), int(time.time()), task_id, delivery["revision"], delivery["key"]))
@@ -102,6 +106,7 @@ class FileOutboxStoreMixin:
         assert_job_owned()
         now = int(time.time())
         with self._transaction() as cursor:
+            self._require_legacy_file_task(cursor, task_id)
             lock = " FOR UPDATE"
             control = cursor.execute(
                 "SELECT revision FROM subagent_controls WHERE task_id=?" + lock,
@@ -142,6 +147,7 @@ class FileOutboxStoreMixin:
             "ok": state == "acknowledged", "state": state,
             "next_attempt_at": now + min(15 * 2 ** claimed["attempts"], 300) if state == "queued" else 0}
         with self._transaction() as cursor:
+            self._require_legacy_file_task(cursor, task_id)
             lock = " FOR UPDATE"
             row = cursor.execute(
                 """SELECT state, payload_json FROM subagent_deliveries
@@ -163,6 +169,9 @@ class FileOutboxStoreMixin:
 
 
 async def attempt_file(store: Any, task_id: int, delivery: dict, *, prepare, send, readiness=None) -> dict:
+    task = store.get(task_id)
+    if getattr(task, "endpoint", None) is not None:
+        raise ValueError("legacy_file_route_unavailable")
     if delivery["state"] != "queued":
         return {**delivery["payload"], "state": delivery["state"], "ok": delivery["state"] == "acknowledged"}
     if delivery["payload"].get("next_attempt_at", 0) > time.time():

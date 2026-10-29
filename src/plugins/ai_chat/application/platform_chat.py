@@ -33,7 +33,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, reference_resolver=None, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
-        subagent_actions_factory=None, memory_writer=None,
+        subagent_actions_factory=None, memory_writer=None, generation_factory=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -47,6 +47,7 @@ class PlatformChatService:
         self.llm = llm
         self.subagent_actions_factory = subagent_actions_factory
         self.memory_writer = memory_writer
+        self.generation_factory = generation_factory
 
     def _scope_enabled(self, scope) -> bool:
         override = self.context.model_preferences.get_scope_enabled_override(scope)
@@ -135,93 +136,99 @@ class PlatformChatService:
             capabilities.add("web")
         if self.subagent_actions_factory is not None:
             capabilities.add("subagents")
-        turn = TurnState(
-            context=ToolContext(
-                self.services, event=None, capabilities=frozenset(capabilities),
-                journal_turn_id=journal_turn_id, inbound=inbound, platform=platform,
-            ),
-            user_text=user_text,
+        context = ToolContext(
+            self.services, event=None, capabilities=frozenset(capabilities),
+            journal_turn_id=journal_turn_id, inbound=inbound, platform=platform,
         )
-        registry = await self.context.db_call(self.registry_factory, turn.context)
-        tools = await self.context.db_call(registry.definitions, turn.context)
-        prepared = await shared_core.prepare_shared_turn_context(
-            self.context, inbound, ports, user_text=user_text, selected_profile=selected_profile,
-            tools=tools, journal_turn_id=journal_turn_id, turn_context=turn_context,
-        )
-        if prepared.blocked_reply:
-            return prepared.blocked_reply
-        if self.subagent_actions_factory is not None:
-            turn.subagent_actions = self.subagent_actions_factory(
-                turn, ports, selected_profile, prepared, turn_trace)
-
-        async def execute_tool(name, arguments):
-            from src.storage_admission import CapacityError, require_tool_capacity
-            from ..tool_policy import policy_for_tool
-            assert_job_owned()
-            try:
-                require_tool_capacity(name, policy_for_tool(name).side_effects)
-            except CapacityError as exc:
-                return json.dumps({"ok": False, "error": str(exc), "code": "capacity_blocked"}, ensure_ascii=False)
-            async with telemetry.tool(name):
-                result = await registry.execute(turn, name, arguments)
-            return result if result is not None else json.dumps({
-                "ok": False, "code": "tool_unavailable", "error": "当前会话不能使用此工具。",
-            }, ensure_ascii=False)
-
+        file_session = (await self.generation_factory(inbound, platform)
+                        if self.generation_factory is not None else None)
         try:
-            group_context, memory_context = await shared_core.build_shared_prompt_context(
-                self.context, inbound, ports, prepared, user_text=user_text,
-                selected_profile=selected_profile, journal_turn_id=journal_turn_id,
+            if file_session is not None:
+                context = file_session.context(context)
+            turn = TurnState(context=context, user_text=user_text)
+            registry = await self.context.db_call(self.registry_factory, turn.context)
+            tools = await self.context.db_call(registry.definitions, turn.context)
+            prepared = await shared_core.prepare_shared_turn_context(
+                self.context, inbound, ports, user_text=user_text, selected_profile=selected_profile,
+                tools=tools, journal_turn_id=journal_turn_id, turn_context=turn_context,
             )
-            context_parts = []
-            if prepared.turn_context:
-                context_parts.append(quote_evidence(prepared.turn_context, "turn_context"))
-            if prepared.replay_prefix:
-                context_parts.append("[host replay status]\n先前回合记录仅作为上下文；不要重复已提交的发送或写入效果。")
-            if prepared.replay_digest_prefix:
-                context_parts.append(quote_evidence(prepared.replay_digest_prefix, "older_turn_digest"))
-            prompt = "[输出约定]\n直接用文字回答。不要编造原生 @、引用、媒体发送或工具成功回执。"
-            if platform.features.markdown:
-                prompt += "可以使用 Markdown 排版。"
-            skill_index = self.context.skill_registry.prompt_index()
-            if skill_index:
-                prompt += "\n\n" + skill_index
-            answer = await shared_core.run_shared_agent_turn(
-                user_text, tools, execute_tool, app=self.context, inbound=inbound,
-                ports=ports, prepared=prepared, llm=self.llm,
-                group_context=group_context, memory_context=memory_context,
-                tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",
-                profile=selected_profile, max_tool_rounds=self.context.settings.tool_simple_max_rounds,
-                tool_context="\n\n".join(context_parts), system_context=prompt,
-                trace=turn_trace, feedback_provider=feedback_provider,
-                event_sink=(
-                    lambda event: shared_core.record_shared_loop_event(self.context, journal_turn_id, event)
-                ) if journal_turn_id is not None else None,
-                final_text_sink=final_stream_sink, final_stream_state=final_stream_state,
-                approval_checker=lambda _policy, name, arguments: approval_from_user_text(user_text, name, arguments),
-            )
-        except (ModelBudgetExceeded, JobDeferred, ChatFailure):
-            raise
-        except DeepSeekConfigError as exc:
-            raise ChatFailure(f"模型配置 {selected_profile.name} 不可用，请检查 API Key 和模型配置。", code="model_config") from exc
-        except DatabaseError as exc:
-            raise ChatFailure("我读取聊天上下文时遇到数据库问题，等会儿再试。", code="database") from exc
-        except RuntimeError as exc:
-            raise ChatFailure(f"{selected_profile.provider} 暂时没回上来，等会儿再试。", code="model_request") from exc
-        except Exception as exc:
-            raise ChatFailure("我这边处理消息时出错了。", code="internal") from exc
-        if not answer:
-            raise ChatFailure("模型没有返回内容。", code="empty_response")
-        assert_job_owned()
-        if self.memory_writer is None:
-            await shared_core.append_shared_turn_memory(self.context, ports, user_text, answer)
-        else:
-            await self.memory_writer(inbound, platform, ports, user_text, answer)
-        visible = answer
-        if final_stream_state is not None and final_stream_state.sent_prefix:
-            prefix = final_stream_state.sent_prefix.rstrip()
-            if visible.startswith(prefix):
-                visible = visible[len(prefix):].lstrip("\r\n")
-        sources = render_search_sources(turn.search_results)
-        return f"{visible}\n\n{sources}" if sources else visible
+            if prepared.blocked_reply:
+                return prepared.blocked_reply
+            if self.subagent_actions_factory is not None:
+                turn.subagent_actions = self.subagent_actions_factory(
+                    turn, ports, selected_profile, prepared, turn_trace)
 
+            async def execute_tool(name, arguments):
+                from src.storage_admission import CapacityError, require_tool_capacity
+                from ..tool_policy import policy_for_tool
+                assert_job_owned()
+                try:
+                    require_tool_capacity(name, policy_for_tool(name).side_effects)
+                except CapacityError as exc:
+                    return json.dumps({"ok": False, "error": str(exc), "code": "capacity_blocked"}, ensure_ascii=False)
+                async with telemetry.tool(name):
+                    result = await registry.execute(turn, name, arguments)
+                return result if result is not None else json.dumps({
+                    "ok": False, "code": "tool_unavailable", "error": "当前会话不能使用此工具。",
+                }, ensure_ascii=False)
+
+            try:
+                group_context, memory_context = await shared_core.build_shared_prompt_context(
+                    self.context, inbound, ports, prepared, user_text=user_text,
+                    selected_profile=selected_profile, journal_turn_id=journal_turn_id,
+                )
+                context_parts = []
+                if prepared.turn_context:
+                    context_parts.append(quote_evidence(prepared.turn_context, "turn_context"))
+                if prepared.replay_prefix:
+                    context_parts.append("[host replay status]\n先前回合记录仅作为上下文；不要重复已提交的发送或写入效果。")
+                if prepared.replay_digest_prefix:
+                    context_parts.append(quote_evidence(prepared.replay_digest_prefix, "older_turn_digest"))
+                prompt = "[输出约定]\n直接用文字回答。不要编造原生 @、引用、媒体发送或工具成功回执。"
+                if platform.features.markdown:
+                    prompt += "可以使用 Markdown 排版。"
+                skill_index = self.context.skill_registry.prompt_index()
+                if skill_index:
+                    prompt += "\n\n" + skill_index
+                answer = await shared_core.run_shared_agent_turn(
+                    user_text, tools, execute_tool, app=self.context, inbound=inbound,
+                    ports=ports, prepared=prepared, llm=self.llm,
+                    group_context=group_context, memory_context=memory_context,
+                    tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",
+                    profile=selected_profile, max_tool_rounds=self.context.settings.tool_simple_max_rounds,
+                    tool_context="\n\n".join(context_parts), system_context=prompt,
+                    trace=turn_trace, feedback_provider=feedback_provider,
+                    event_sink=(
+                        lambda event: shared_core.record_shared_loop_event(self.context, journal_turn_id, event)
+                    ) if journal_turn_id is not None else None,
+                    final_text_sink=final_stream_sink, final_stream_state=final_stream_state,
+                    approval_checker=lambda _policy, name, arguments: approval_from_user_text(user_text, name, arguments),
+                )
+            except (ModelBudgetExceeded, JobDeferred, ChatFailure):
+                raise
+            except DeepSeekConfigError as exc:
+                raise ChatFailure(f"模型配置 {selected_profile.name} 不可用，请检查 API Key 和模型配置。", code="model_config") from exc
+            except DatabaseError as exc:
+                raise ChatFailure("我读取聊天上下文时遇到数据库问题，等会儿再试。", code="database") from exc
+            except RuntimeError as exc:
+                raise ChatFailure(f"{selected_profile.provider} 暂时没回上来，等会儿再试。", code="model_request") from exc
+            except Exception as exc:
+                raise ChatFailure("我这边处理消息时出错了。", code="internal") from exc
+            if not answer:
+                raise ChatFailure("模型没有返回内容。", code="empty_response")
+            assert_job_owned()
+            if self.memory_writer is None:
+                await shared_core.append_shared_turn_memory(self.context, ports, user_text, answer)
+            else:
+                await self.memory_writer(inbound, platform, ports, user_text, answer)
+            visible = answer
+            if final_stream_state is not None and final_stream_state.sent_prefix:
+                prefix = final_stream_state.sent_prefix.rstrip()
+                if visible.startswith(prefix):
+                    visible = visible[len(prefix):].lstrip("\r\n")
+            sources = render_search_sources(turn.search_results)
+            return f"{visible}\n\n{sources}" if sources else visible
+
+        finally:
+            if file_session is not None:
+                await file_session.close()

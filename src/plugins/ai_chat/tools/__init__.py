@@ -72,10 +72,11 @@ def _neutral_registry() -> ToolRegistry:
     from .memory import HANDLERS as MEMORY_HANDLERS
     from .sources import HANDLERS as SOURCE_HANDLERS
     from .stickers import HANDLERS as STICKER_HANDLERS
+    from .owned_sandbox import HANDLERS as OWNED_SANDBOX_HANDLERS
 
     migrated = {handler.definition["function"]["name"]: handler
                 for handler in (*ALERT_HANDLERS, *CONTEXT_HANDLERS, *MEMORY_HANDLERS,
-                                *SOURCE_HANDLERS, *STICKER_HANDLERS)
+                                *SOURCE_HANDLERS, *STICKER_HANDLERS, *OWNED_SANDBOX_HANDLERS)
                 if handler.platform_neutral}
     return ToolRegistry((migrated.get(definition["function"]["name"])
                          or FunctionTool(definition, _unavailable, _reject)

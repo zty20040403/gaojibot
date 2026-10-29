@@ -5,6 +5,12 @@ import json as json_module
 import math
 import re
 import weakref
+import unicodedata
+from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from urllib.parse import quote, unquote_to_bytes
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -17,6 +23,34 @@ if TYPE_CHECKING:
 
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _TARGET = re.compile(r"[A-Za-z0-9_-]{1,256}\Z")
+
+
+@dataclass(frozen=True)
+class ProtocolResponse:
+    """Internal synchronous-response evidence; raw bodies never enter repr/logs."""
+    status: int
+    body: dict[str, Any] = field(repr=False)
+
+
+_request_guard: ContextVar[Callable[[str], Awaitable[None]] | None] = ContextVar(
+    "qq_physical_request_guard", default=None)
+
+
+@contextmanager
+def scoped_request_guard(guard):
+    """Host-only per-task guard, including every physical token refresh retry."""
+    if not callable(guard):
+        raise ValueError("Invalid physical request guard")
+    token = _request_guard.set(guard)
+    try:
+        yield
+    finally:
+        _request_guard.reset(token)
+
+
+class PreparedUpload:
+    """Single-use token snapshot for an exact validated media endpoint."""
+    __slots__ = ("__weakref__",)
 
 
 class PreparedSend:
@@ -34,17 +68,25 @@ def _code(value: object) -> int | None:
     return None
 
 
-async def request_json(
+async def request_json_response(
     client: httpx.AsyncClient, method: str, url: str, *,
     headers: dict[str, str] | None = None, json: dict[str, Any] | None = None,
     stage: str = "request", timeout: float = 30.0,
     secrets: tuple[str, ...] = (),
-) -> dict[str, Any]:
+    before_dispatch: Callable[[], None] | None = None,
+) -> ProtocolResponse:
     """Internal transport helper. Callers must validate URL before this call.
 
     Do not call raise_for_status: its exception contains request URLs and may
     retain credentials. Do not follow redirects, including on injected clients.
     """
+    # This is before transport and outside HTTPError classification: denied
+    # local authority never becomes a misleading ambiguous provider outcome.
+    guard = _request_guard.get()
+    if guard is not None:
+        await guard(stage)
+    if before_dispatch is not None:
+        before_dispatch()
     try:
         async with client.stream(
             method, url, headers=headers, json=json, timeout=timeout, follow_redirects=False,
@@ -88,8 +130,25 @@ async def request_json(
     codes.discard(None)
     if status >= 300 or status < 200 or codes or malformed_code:
         code = next(iter(codes)) if len(codes) == 1 and not malformed_code else None
+        if stage == "upload" and data.get("id") is not None and data.get("id") != "":
+            # srv_send_msg=false forbids a message receipt. A simultaneous
+            # error code cannot erase that conflicting acceptance evidence.
+            raise QQAPIError("unexpected_upload_message_evidence", status=status,
+                             code=code, stage=stage, request_id=request_id)
         raise classify_error(status, code, stage=stage, request_id=request_id, retry_after=retry_after)
-    return data
+    return ProtocolResponse(status, data)
+
+
+async def request_json(
+    client: httpx.AsyncClient, method: str, url: str, *,
+    headers: dict[str, str] | None = None, json: dict[str, Any] | None = None,
+    stage: str = "request", timeout: float = 30.0,
+    secrets: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Compatibility wrapper: existing callers still receive the same dict."""
+    result = await request_json_response(client, method, url, headers=headers,
+        json=json, stage=stage, timeout=timeout, secrets=secrets)
+    return result.body
 
 
 class RestClient:
@@ -116,6 +175,7 @@ class RestClient:
         self._owns_client = client is None
         self._timeout = timeout
         self._prepared_sends = weakref.WeakKeyDictionary()
+        self._prepared_uploads = weakref.WeakKeyDictionary()
 
     async def request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
         if (
@@ -130,11 +190,17 @@ class RestClient:
 
     async def _request_with_token(self, method, path, token, json):
         """Already validated internal route; no await/auth refresh before HTTP."""
+        response = await self._request_response_with_token(method, path, token, json,
+            stage="upload" if path.endswith("/files") else "request")
+        return response.body
+
+    async def _request_response_with_token(self, method, path, token, json, *, stage,
+                                           before_dispatch=None):
         try:
-            return await request_json(
+            return await request_json_response(
                 self._client, method, self.base_url + path,
                 headers={"Authorization": "QQBot " + token}, json=json,
-                stage="upload" if path.endswith("/files") else "request", timeout=self._timeout,
+                stage=stage, timeout=self._timeout, before_dispatch=before_dispatch,
                 secrets=(token, self.token_manager.credentials.app_id, self.token_manager.credentials.app_secret),
             )
         except QQAPIError as error:
@@ -144,6 +210,55 @@ class RestClient:
                 self.token_manager.invalidate(token)
             # Policy/sender decides what to do next; no automatic message retry.
             raise
+
+    @staticmethod
+    def _upload_path(path):
+        # Dedicated media route. Old message/request validation is unchanged.
+        if not isinstance(path, str):
+            raise ValueError("Invalid media route")
+        pieces = path.split("/")
+        if (len(pieces) != 5 or pieces[:2] != ["", "v2"]
+                or pieces[2] not in {"groups", "users"}
+                or pieces[4] not in {"files", "upload_prepare", "upload_part_finish"}):
+            raise ValueError("Invalid media route")
+        try:
+            native = unquote_to_bytes(pieces[3]).decode("utf-8")
+            if (not native.strip() or len(native.encode()) > 256 or native in {".", ".."}
+                    or "/" in native or "\\" in native
+                    or any(unicodedata.category(c) in {"Cc", "Cf", "Cs"} for c in native)
+                    or quote(native, safe="") != pieces[3]):
+                raise ValueError
+        except (UnicodeError, ValueError):
+            raise ValueError("Invalid media route") from None
+        return path
+
+    async def prepare_upload(self, path: str) -> PreparedUpload:
+        from .token import PreparedToken
+        path = self._upload_path(path)
+        token = await self.token_manager.prepare()
+        if not isinstance(token, PreparedToken) or not token.is_valid():
+            raise QQAPIError("prepared_token_unavailable", accepted=False, stage="token")
+        prepared = PreparedUpload()
+        self._prepared_uploads[prepared] = (path, token)
+        return prepared
+
+    async def upload(self, path: str, payload: dict[str, Any], *, prepared: PreparedUpload,
+                     before_dispatch: Callable[[], None]) -> ProtocolResponse:
+        path = self._upload_path(path)
+        # Consume before any await, including a validation failure.
+        state = self._prepared_uploads.pop(prepared, None) if isinstance(prepared, PreparedUpload) else None
+        if state is None or state[0] != path:
+            raise QQAPIError("prepared_upload_unavailable", accepted=False, stage="token")
+        if (not isinstance(payload, dict) or not callable(before_dispatch)
+                or (path.endswith("/files") and payload.get("srv_send_msg") is not False)):
+            raise ValueError("Invalid upload payload or guard")
+        token = state[1].value_for_request()
+        def final_check():
+            # Recheck after the asynchronous physical source guard. No refresh.
+            state[1].value_for_request()
+            before_dispatch()
+        return await self._request_response_with_token("POST", path, token, payload,
+            stage="upload", before_dispatch=final_check)
 
     async def gateway(self) -> dict[str, Any]:
         return await self.request("GET", "/gateway/bot")

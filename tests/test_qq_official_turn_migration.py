@@ -2,16 +2,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import importlib.util
 import os
 from pathlib import Path
 import secrets
 from unittest.mock import patch
 
 import psycopg
-import sqlalchemy as sa
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
+from alembic import command
+from alembic.config import Config
 
 from tests.qq_official_outbox_fixture import OutboxFixture
 from src.bot_storage.database import DatabaseError
@@ -41,16 +39,16 @@ class UnifiedMigrationTests(OutboxFixture):
         self.assertIsInstance(caught.exception.__cause__, cause)
 
     def migration(self, direction):
-        spec = importlib.util.spec_from_file_location("test_unified_migration", Path(__file__).resolve().parents[1] / "migrations/versions/0064_qq_official_turn_execution.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        engine = sa.create_engine("postgresql+psycopg://", creator=lambda: psycopg.connect(self.database.dsn), poolclass=sa.pool.NullPool)
-        try:
-            with engine.begin() as connection, patch.dict(os.environ, {"AI_POSTGRES_SCHEMA": self.database.schema}):
-                with Operations.context(MigrationContext.configure(connection)):
-                    getattr(module, direction)()
-        finally:
-            engine.dispose()
+        # The disposable schema starts at the latest head. Follow Alembic's
+        # dependency order so newer file FKs are removed before testing 0064's
+        # downgrade, without weakening its refusal to discard real evidence.
+        config = Config()
+        config.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "migrations"))
+        revision = ("0063_qq_official_outbox" if direction == "downgrade"
+                    else "0064_qq_official_turn_execution")
+        with patch.dict(os.environ, {"AI_POSTGRES_SCHEMA": self.database.schema,
+                                     "AI_POSTGRES_DSN": self.database.dsn}):
+            getattr(command, direction)(config, revision)
 
     def insert(self, table, values):
         with self.tx() as cursor:

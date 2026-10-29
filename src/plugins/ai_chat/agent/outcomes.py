@@ -108,16 +108,41 @@ def acceptance_blocks_completion(validation: Mapping[str, Any]) -> bool:
     return validation.get("status") == "failed" or (isinstance(matrix, dict) and matrix.get("status") != "passed")
 
 
+def official_file_report(deliveries: list[dict]) -> str:
+    """Platform acceptance is a transport fact, independent of task acceptance."""
+    accepted = sum(item.get('official_artifact') is True and item.get('message_accepted') is True
+                   for item in deliveries)
+    lines = [f'文件消息：{accepted}/{len(deliveries)} 个已被平台接受。']
+    states = {'stored': '已持久保存，等待交付', 'queued': '等待交付',
+        'uploading': '正在上传', 'uploaded': '已上传，等待消息发送',
+        'upload_unknown': '上传结果不明，已停止自动重传',
+        'publishing': '正在发布限时下载', 'publication_unknown': '发布结果不明，已停止自动重新签发',
+        'published': '下载已发布，等待消息发送', 'handed_off': '已进入消息发送队列',
+        'delivery_unknown': '消息结果不明，已停止自动重发', 'failed': '交付失败',
+        'cancelled': '交付已取消', 'expired': '交付已过期', 'unsupported': '没有可用文件出口',
+        'message_accepted': '文件消息已被平台接受'}
+    for item in deliveries:
+        name = item.get('filename') or '附件'
+        state = states.get(item.get('state'), '尚未确认消息接受')
+        lines.append(f'{name}：{state}。')
+        if item.get('draft'):
+            lines.append('未完成草稿：' + (item.get('draft_reason') or '内容仍有未完成部分，请查看文件说明。'))
+    return '\n'.join(lines)
+
+
 def outcome_report(validation: Mapping[str, Any], narrative: str = "", deliveries: list[dict] | None = None) -> str:
     matrix = validation.get("task_outcome")
+    official_files = bool(deliveries) and any(item.get('official_artifact') for item in deliveries)
     if not isinstance(matrix, dict):
-        return narrative
+        return official_file_report(deliveries) if official_files else narrative
     rows = matrix.get("criteria", [])
     passed = sum(row.get("status") == "passed" for row in rows)
     criteria_passed = bool(rows) and passed == len(rows) and matrix.get("status") == "passed"
     files_confirmed = not deliveries or all(item.get("ok") is True and not item.get("draft") for item in deliveries)
-    if criteria_passed and validation.get("status") == "passed" and files_confirmed:
-        heading = f"已完成并核实 {passed} 项验收。"
+    if criteria_passed and validation.get("status") == "passed" and (files_confirmed or official_files):
+        # Official artifact transport has its own host-owned state below. A
+        # waiting/unknown message must not undo independent content acceptance.
+        heading = f"内容已完成并核实 {passed} 项验收。" if official_files else f"已完成并核实 {passed} 项验收。"
     elif criteria_passed:
         heading = f"已核实 {passed} 项验收，但任务尚未全部完成。"
     else:
@@ -142,7 +167,9 @@ def outcome_report(validation: Mapping[str, Any], narrative: str = "", deliverie
     # File delivery is authoritative here; a model-written pre-upload draft is not.
     if criteria_passed and validation.get("status") == "passed" and not deliveries and narrative.strip():
         lines.append(narrative.strip())
-    if deliveries:
+    if official_files:
+        lines.append(official_file_report(deliveries))
+    elif deliveries:
         confirmed = sum(item.get("ok") is True for item in deliveries)
         lines.append(f"文件交付：{confirmed}/{len(deliveries)} 个已确认送达。")
         states = {"queued": "已进入持久投递队列，等待重试", "sending": "正在核对上传回执",

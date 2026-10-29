@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+import inspect
 import logging
 import re
 
@@ -97,7 +98,7 @@ class OfficialRuntime:
                  protocol_factory=open_official_protocol, binding_sender=None,
                  lease_factory=DedicatedAccountLease, probe_seconds: float = 1,
                  retry_seconds: float = 2, allow_test_server: bool = False,
-                 application=None, turn_consumer_factory=None):
+                 application=None, turn_consumer_factory=None, file_services_factory=None):
         self.config, self.database, self.logger = config, database, logger
         self.protocol_factory, self.binding_sender = protocol_factory, binding_sender
         self.lease_factory = lease_factory
@@ -105,6 +106,8 @@ class OfficialRuntime:
         self.retry_seconds = min(max(retry_seconds, 0.01), 60)
         self.allow_test_server = allow_test_server
         self.application, self.turn_consumer_factory = application, turn_consumer_factory
+        self.file_services_factory = file_services_factory
+        self.file_service = None
         self.turn_consumer = None
         self.subagent_service = None
         self.ledger = ledger
@@ -330,6 +333,7 @@ class OfficialRuntime:
             loop = asyncio.get_running_loop()
             next_purge = 0.0
             next_result_scan = 0.0
+            next_file_scan = 0.0
             while not self._stopping:
                 if not await self._calls(lease.probe):
                     raise LeaseLost("Official account lease was lost")
@@ -340,6 +344,9 @@ class OfficialRuntime:
                 if self.subagent_service is not None and loop.time() >= next_result_scan:
                     await self.subagent_service.reconcile()
                     next_result_scan = loop.time() + 5
+                if self.file_service is not None and loop.time() >= next_file_scan:
+                    await self.file_service.maintain()
+                    next_file_scan = loop.time() + 30
                 await asyncio.sleep(self.probe_seconds)
 
         async def failure():
@@ -350,7 +357,7 @@ class OfficialRuntime:
                                   concurrency=2, per_scope_limit=1, database_calls=self._calls)
         worker.register(account_job_kind("ingest", self.loaded.account.key), ingest)
         async with self.protocol_factory(self.loaded, checkpoint=checkpoint, on_checkpoint=on_checkpoint,
-                                         ensure_current=lambda: self._ensure_current(token)) as gateway:
+                                         ensure_current=lambda: self._ensure_current(token)) as gateway, AsyncExitStack() as resources:
             self._gateway = gateway
             rest = getattr(gateway, "rest_client", None)
             if isinstance(rest, RestClient):
@@ -364,6 +371,26 @@ class OfficialRuntime:
                 worker.register(control_job_kind(self.loaded.account.key), ControlJobHandler(
                     token=token, outbox=self.outbox, sender=self.sender, database_calls=self._calls,
                     ensure_current=lambda: self._ensure_current(token), clock=self.store.clock))
+            file_worker = None
+            if self.file_services_factory is not None and isinstance(rest, RestClient):
+                service = self.file_services_factory(self, token, rest)
+                if inspect.isawaitable(service):
+                    service = await service
+                if service is not None:
+                    self.file_service = service
+                    self.outbox.protected_payloads = service.payloads
+
+                    async def close_files():
+                        try:
+                            await service.close()
+                        finally:
+                            self.file_service = None
+                            self.outbox.protected_payloads = None
+
+                    resources.push_async_callback(close_files)
+                    file_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
+                        concurrency=1, per_scope_limit=1, database_calls=self._calls)
+                    file_worker.register(account_job_kind('file', self.loaded.account.key), service.dispatcher)
             factory = self.turn_consumer_factory
             subagent_worker = None
             if (self.application is not None and getattr(self.application, "subagent_store", None) is not None
@@ -392,6 +419,8 @@ class OfficialRuntime:
                 tasks.append(asyncio.create_task(turns.run_forever()))
             if subagent_worker is not None:
                 tasks.append(asyncio.create_task(subagent_worker.run_forever()))
+            if file_worker is not None:
+                tasks.append(asyncio.create_task(file_worker.run_forever()))
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for finished in done:

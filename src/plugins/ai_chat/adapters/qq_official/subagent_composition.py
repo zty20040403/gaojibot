@@ -14,8 +14,8 @@ from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 
 from . import execution
-from .subagent_actions import SubmissionBinding, text_coordinator
-from .subagent_runtime import OfficialSubAgentDispatcher, TEXT_TOOLS, assert_current
+from .subagent_actions import SubmissionBinding, text_coordinator, file_coordinator
+from .subagent_runtime import OfficialSubAgentDispatcher, TaskToolSession, FILE_TOOLS, TEXT_TOOLS, assert_current
 
 
 class TaskPlatform:
@@ -52,7 +52,9 @@ class OfficialSubAgentService:
     def __init__(self, runtime, token, app):
         self.runtime, self.token, self.app = runtime, token, app
         original = app.subagent_coordinator
-        self.coordinator = text_coordinator(app.subagent_store, app.model_catalog, logger=app.logger,
+        files = getattr(runtime, 'file_service', None)
+        coordinator_factory = file_coordinator if files is not None else text_coordinator
+        self.coordinator = coordinator_factory(app.subagent_store, app.model_catalog, logger=app.logger,
             max_steps=app.settings.subagent_max_steps, max_parallelism=app.settings.subagent_max_parallelism,
             max_tool_rounds=app.settings.subagent_max_tool_rounds,
             timeout_seconds=app.settings.subagent_timeout_seconds,
@@ -103,7 +105,8 @@ class OfficialSubAgentService:
             jobs=self.runtime.jobs, outbox=self.runtime.outbox,
             transaction=self.runtime.deliveries.transaction, database_calls=self.runtime._calls,
             admission=self.runtime.store.admitted, profile=self.app.model_catalog.try_resolve,
-            tools=tools, execute_tool=execute_tool, clock=self.runtime.store.clock)
+            tools=tools, execute_tool=execute_tool, clock=self.runtime.store.clock,
+            execution_factory=self._prepare_tool_session)
 
     async def execute(self, job):
         try:
@@ -115,7 +118,8 @@ class OfficialSubAgentService:
         except Exception:
             raise JobDeferred("official_subagent_context_unavailable", 3) from None
 
-    async def _execute(self, job):
+    async def _prepare_tool_session(self, job, task, files_enabled):
+        # Invoked by the dispatcher only while its actual job fence is active.
         inbound, objective = await self.runtime._calls(self._restore, job)
         capabilities = {"self", "context"}
         if self.app.long_term_memory is not None:
@@ -124,18 +128,39 @@ class OfficialSubAgentService:
             capabilities.add("web")
         context = ToolContext(SimpleNamespace(context=self.app), event=None,
             capabilities=frozenset(capabilities), inbound=inbound, platform=TaskPlatform(inbound.endpoint))
-        turn = TurnState(context, user_text=objective)
-        registry = await self.runtime._calls(neutral_registry_for, context)
-        definitions = await self.runtime._calls(registry.definitions, context)
-        definitions = tuple(item for item in definitions if item["function"]["name"] in TEXT_TOOLS)
+        file_session = None
+        try:
+            if files_enabled:
+                files = getattr(self.runtime, 'file_service', None)
+                if files is None:
+                    raise JobDeferred('official_task_files_unavailable', 30)
+                file_session = await files.generation.subagent(job, task)
+                if file_session is None:
+                    raise JobDeferred('official_task_files_unavailable', 30)
+                context = file_session.context(context)
+            turn = TurnState(context, user_text=objective)
+            registry = await self.runtime._calls(neutral_registry_for, context)
+            definitions = await self.runtime._calls(registry.definitions, context)
+            allowed = TEXT_TOOLS | FILE_TOOLS if file_session is not None else TEXT_TOOLS
+            definitions = tuple(item for item in definitions if item["function"]["name"] in allowed)
 
-        async def execute_tool(name, arguments):
-            assert_job_owned()
-            if name not in TEXT_TOOLS:
-                return '{"ok":false,"error":"tool_unavailable"}'
-            return await registry.execute(turn, name, arguments)
+            async def execute_tool(name, arguments):
+                assert_job_owned()
+                if name not in allowed:
+                    return '{"ok":false,"error":"tool_unavailable"}'
+                return await registry.execute(turn, name, arguments)
 
-        result = await self._dispatcher(tools=definitions, execute_tool=execute_tool).execute(job)
+            return TaskToolSession(definitions, execute_tool,
+                hooks=file_session.hooks if file_session is not None else None,
+                close=file_session.close if file_session is not None else None,
+                files_enabled=file_session is not None)
+        except BaseException:
+            if file_session is not None:
+                await file_session.close()
+            raise
+
+    async def _execute(self, job):
+        result = await self._dispatcher().execute(job)
         if self.runtime.sender is not None:
             self.runtime.sender.wake()
         return result

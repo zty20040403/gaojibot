@@ -13,6 +13,8 @@ import secrets
 from src.plugins.ai_chat.message_ir import body_to_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 
+from .protected_payload import ProtectedContentRef
+from .protected_plans import PROTECTED_BODY, protected_manifest
 from .lease import assert_epoch
 from .outbox_types import OutboxInvariantError, PlanRef, digest, stable_json
 from .renderer import RenderedPlan, content_payload
@@ -63,7 +65,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
                  source_canonical_message_id: int | None = None, turn_id: int | None = None,
                  admission=None, challenge_id: str | None = None, pepper: bytes | None = None,
                  digest_key_id: str = "v1", binding_preview=None, control_reply_id=None, epoch_guard=assert_epoch,
-                 max_wait_seconds: int = DEFAULT_MAX_WAIT_SECONDS) -> PlanRef:
+                 max_wait_seconds: int = DEFAULT_MAX_WAIT_SECONDS, protected_ref=None) -> PlanRef:
     """The adapter must pass current admission, not a model-supplied grant.
 
     The rendered object is sealed by the pure renderer. A duplicate identity
@@ -104,6 +106,13 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         control_view = validate_plan_authority(cursor, token, control_id=control_reply_id, rendered=rendered,
             requester=requester, logical_key=logical_key, source_scope_key=source_scope_key,
             source_native_message_id=source_native_message_id, expires_at=expires_at, purpose=purpose, now=now)
+    protected = protected_ref is not None
+    if protected and (not isinstance(protected_ref, ProtectedContentRef)
+            or purpose != "requested_artifact" or len(rendered.parts) != 1
+            or challenge_id is not None or control_reply_id is not None or binding_preview is not None
+            or pepper is not None or expires_at > protected_ref.expires_at
+            or body_to_json(rendered.parts[0].canonical_body) != PROTECTED_BODY):
+        raise OutboxInvariantError("invalid_protected_plan")
     ephemeral = purpose == "binding_otp"
     if (ephemeral != (challenge_id is not None) or (not ephemeral and pepper is not None)
             or (control_view is None and not admission(cursor, endpoint, requester))):
@@ -133,6 +142,8 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         control = {"kind": "binding_preview", "candidate_id": binding_preview[0], "version": binding_preview[1]}
     manifest = stable_json({"v": 1, "rendered": rendered.to_json(), "control": control,
                             "source_native_message_id": source_native_message_id}) if not ephemeral else EPHEMERAL_MANIFEST
+    if protected:
+        manifest = protected_manifest(protected_ref, source_native_message_id)
     identity = ["qq-plan-v1", token.account_key, endpoint.key, logical_key]
     idem = "qqp1:" + digest(stable_json(identity))
     # Use the stable idempotency identity for the keyed content commitment, so
@@ -141,6 +152,8 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     manifest_digest = (keyed_digest(pepper, "content", [identity, requester.key, challenge_id, contents])
                        if ephemeral else digest(manifest))
     mode, scheme, key_id = ("ephemeral", "hmac_sha256_v1", digest_key_id) if ephemeral else ("persistent", "sha256", None)
+    if protected:
+        mode = "protected"
     immutable = dict(account_key=token.account_key, endpoint_key=endpoint.key,
         requester_actor_key=requester.key, source_scope_key=source_scope_key,
         source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
@@ -168,6 +181,8 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         part_idem = "qqd1:" + digest(stable_json([*identity, i]))
         payload_digest = (keyed_digest(pepper, "part", [identity, plan_id, i, requester.key, challenge_id, contents[i]])
                           if ephemeral else digest(stable_json(contents[i])))
+        if protected:
+            payload_digest = protected_ref.content_commitment
         fields = dict(idempotency_key=part_idem, source_scope_key=source_scope_key,
             source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
             target_platform="qq-official", target_kind=endpoint.kind,

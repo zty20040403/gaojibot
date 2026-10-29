@@ -248,6 +248,11 @@ class RunRecord:
         return f"agent#{self.run_id}"
 
 
+from .agent.artifact_delivery import (
+    ArtifactDeliveryRequest, ArtifactDeliveryView, ArtifactDeliveryError, official_task, delivery_state,
+)
+
+
 class SubAgentStore(
     AgentSessionStoreMixin,
     TaskControlStoreMixin,
@@ -256,8 +261,9 @@ class SubAgentStore(
     EvidenceStoreMixin,
     FileOutboxStoreMixin,
 ):
-    def __init__(self, source: DatabaseSource) -> None:
+    def __init__(self, source: DatabaseSource, *, official_file_projection=None) -> None:
         self.database = source
+        self.official_file_projection = official_file_projection
         self.path, self._connection = open_store_connection(source)
         self._lock = threading.RLock()
         self._change_listener: Callable[[int], None] | None = None
@@ -1201,6 +1207,7 @@ class AgentExecutionHooks:
     ] | None = None
     operation_receipt: Callable[..., Awaitable[dict[str, Any]]] | None = None
     project_inputs: Any = None
+    artifact_delivery: Callable[[ArtifactDeliveryRequest], Awaitable[ArtifactDeliveryView]] | None = None
 
 
 @dataclass(frozen=True)
@@ -1978,7 +1985,7 @@ class SubAgentCoordinator:
                     hooks=hooks,
                     validation=validation,
                 )
-                delivery_failed = any(not bool(item.get("ok")) for item in deliveries)
+                delivery_failed = not official_task(task) and any(not bool(item.get("ok")) for item in deliveries)
                 if outcome.state == "failed":
                     status = "failed"
                 elif outcome.state == "partial" or delivery_failed or acceptance_blocks_completion(validation):
@@ -2424,7 +2431,7 @@ class SubAgentCoordinator:
             },
         }
         result["validation"]["acceptance"] = validation
-        status = _settled_task_status(list(completed.values()), delivery_results, validation)
+        status = _settled_task_status(list(completed.values()), [] if official_task(task) else delivery_results, validation)
         if status == "completed" and validation.get("status") == "passed":
             result["execution_state"] = "succeeded"
             result["validation"]["result_contract"] = "passed"
@@ -2872,6 +2879,32 @@ class SubAgentCoordinator:
                     filename = f"kb-{task.task_id}-r{self.store.control(task.task_id)['revision']}-{raw_artifact['snapshot'][:10]}-{filename}"
                 if draft:
                     filename = "未完成草稿-" + filename
+                if official_task(current_task):
+                    # The existing independent artifact verdict decides draft, not model metadata.
+                    if not hooks or hooks.artifact_delivery is None or not hooks.workspaces or validation is None:
+                        deliveries.append({"ok": False, "state": "unsupported", "official_artifact": True,
+                            "message_accepted": False, "error": "artifact_delivery_unavailable"})
+                        continue
+                    assert_job_owned()
+                    request = self.store.artifact_delivery_request(current_task, outcome.run.run_id,
+                        raw_artifact, filename, draft=draft,
+                        draft_reason=raw_artifact.get("draft_reason", "") if draft else "")
+                    result = await hooks.artifact_delivery(request)
+                    assert_job_owned()
+                    # Re-read task revision/capture after await; a callback is not a transport receipt.
+                    current_request = self.store.artifact_delivery_request(current_task, outcome.run.run_id,
+                        raw_artifact, filename, draft=draft, draft_reason=request.draft_reason)
+                    if current_request != request:
+                        raise ArtifactDeliveryError("artifact_source_changed")
+                    if not isinstance(result, ArtifactDeliveryView):
+                        raise ArtifactDeliveryError("invalid_artifact_projection")
+                    payload = result.for_request(current_task, request)
+                    deliveries.append(payload)
+                    self.store.append_checkpoint(task.task_id, "artifact_delivery", {
+                        "run_id": outcome.run.run_id, "artifact_id": result.artifact_id,
+                        "state": result.state, "message_accepted": payload["message_accepted"],
+                        "draft": draft}, run_id=outcome.run.run_id)
+                    continue
                 if raw_artifact.get("snapshot") and hooks and hooks.workspaces and isinstance(contract, Mapping) and contract.get("version", 1) >= 2:
                     queued = self.store.queue_file(task.task_id, raw_artifact, filename)
                     payload = await attempt_file(self.store, task.task_id, queued,
@@ -4208,7 +4241,8 @@ def _completion_states(outcomes: Sequence[StepOutcome], deliveries: Sequence[Map
             "result_contract": "passed" if complete else "incomplete",
             "acceptance": "not_independently_verified",
         },
-        "delivery_state": ("not_requested" if not deliveries else
+        "delivery_state": (delivery_state(list(deliveries), required=True) if any(item.get("official_artifact") for item in deliveries) else
+                           "not_requested" if not deliveries else
                            "acknowledged" if all(item.get("ok") is True for item in deliveries) else "failed_or_unknown"),
     }
 

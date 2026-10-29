@@ -15,6 +15,7 @@ from .protocol import (HEADER_LIMIT, ID_PATTERN, TOKEN_PATTERN, VERSION, Protoco
 
 
 class SandboxClient:
+    requires_export_handshake = True
     def __init__(self, socket_path: str, token: str, *, max_file_bytes: int = 20 * 1024 * 1024, image: str = "runner"):
         if not Path(socket_path).is_absolute() or len(os.fsencode(socket_path)) > 100 or not TOKEN_PATTERN.fullmatch(token):
             raise ValueError("Invalid sandbox runner address or credential")
@@ -29,10 +30,15 @@ class SandboxClient:
                   "args": args, "payload_size": len(payload)}
         validate_request(header, file_limit=self.max_file_bytes)
         # One retry uses the same durable request ID, never a fresh operation.
+        from .source_fence import assert_sandbox_source
         for attempt in range(2):
+            if method != "cancel":
+                await assert_sandbox_source()
             writer = None
             try:
                 reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(self.socket_path, limit=HEADER_LIMIT), timeout=5)
+                if method != "cancel":
+                    await assert_sandbox_source()
                 await write_frame(writer, header, payload)
                 deadline, callbacks = time.monotonic() + 720, 0
                 while True:
@@ -190,8 +196,19 @@ class SandboxClient:
     async def read_file(self, owner, sandbox_id, path, max_bytes=64 * 1024):
         return (await self.request("read_file", {"owner": owner, "sandbox_id": sandbox_id, "path": path, "max_bytes": max_bytes}))[1]
 
-    async def export_artifact(self, owner, sandbox_id, path):
-        data, payload = await self.request("export_artifact", {"owner": owner, "sandbox_id": sandbox_id, "path": path})
+    async def export_artifact(self, owner, sandbox_id, path, *, file_only=False, max_bytes=None):
+        parameters = {"owner": owner, "sandbox_id": sandbox_id, "path": path}
+        if type(file_only) is not bool:
+            raise SandboxError("Invalid export mode")
+        if file_only:
+            if type(max_bytes) is not int or max_bytes <= 0:
+                raise SandboxError("Bounded export requires positive limits")
+            parameters.update(file_only=True, max_bytes=min(max_bytes, self.max_file_bytes))
+        elif max_bytes is not None:
+            raise SandboxError("Export limit requires regular-file mode")
+        data, payload = await self.request("export_artifact", parameters)
+        if file_only and (data.get("directory") is not False or not 0 < len(payload) <= parameters["max_bytes"]):
+            raise SandboxError("Invalid bounded export receipt")
         return payload, data["directory"]
 
     async def reclaim_stopped(self, owner, sandbox_id, *, eligible, not_used_since=None):

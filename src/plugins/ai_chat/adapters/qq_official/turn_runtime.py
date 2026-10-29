@@ -53,6 +53,9 @@ def build_turn_consumer(runtime, token, app):
         await runtime._calls(commit)
 
     service_options = {"memory_writer": memory_writer, "scope_enabled": scope_enabled}
+    files = getattr(runtime, 'file_service', None)
+    if files is not None:
+        service_options['generation_factory'] = files.generation.foreground
     subagents = runtime.subagent_service
     if subagents is not None and app.settings.subagent_entry_enabled:
         from .subagent_actions import task_registry_for

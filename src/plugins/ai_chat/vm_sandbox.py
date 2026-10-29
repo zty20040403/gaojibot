@@ -310,6 +310,8 @@ class VmSandboxManager:
         finishing.result()
 
     async def _run(self, *args: str, timeout: int = 60) -> tuple[int, bytes, bytes]:
+        from src.sandbox_runtime.source_fence import assert_sandbox_source
+        await assert_sandbox_source()
         starting = asyncio.create_task(asyncio.create_subprocess_exec(
             *args, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -901,8 +903,25 @@ class VmSandboxManager:
         await self._write_content(owner, sandbox_id, path, content,
                                   allow_large=True, readonly=True)
 
-    async def export_artifact(self, owner: str, sandbox_id: str, path: str) -> tuple[bytes, bool]:
+    async def export_artifact(self, owner: str, sandbox_id: str, path: str, *,
+                              file_only: bool = False, max_bytes: int | None = None) -> tuple[bytes, bool]:
         async with self.io_lock(sandbox_id):
+            if type(file_only) is not bool:
+                raise SandboxError("Invalid export mode")
+            if file_only:
+                from src.sandbox_runtime.artifact_export import EXPORT_FILE_SCRIPT
+
+                if (type(self.max_file_bytes) is not int or self.max_file_bytes <= 0
+                        or type(max_bytes) is not int or max_bytes <= 0):
+                    raise SandboxError("Bounded export requires positive limits")
+                limit = min(self.max_file_bytes, max_bytes, 256 * 1024 * 1024)
+                await self._owned_running(owner, sandbox_id)
+                target = self._workspace_path(path).removeprefix("/workspace/")
+                code, content, _ = await self._guest_exec(sandbox_id, "/usr/bin/python3",
+                    ["-I", "-c", EXPORT_FILE_SCRIPT, target, str(limit)], timeout=60)
+                if code or not 0 < len(content) <= limit:
+                    raise SandboxError("Bounded regular-file export failed")
+                return content, False
             return await self._export_artifact_locked(owner, sandbox_id, path)
 
     async def _export_artifact_locked(self, owner: str, sandbox_id: str, path: str) -> tuple[bytes, bool]:

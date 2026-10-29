@@ -62,6 +62,7 @@ class AdminServices:
     alert_preferences: Any = None
     fleet_client: Any = None
     mobile_authorization: MobileAuthorization | None = None
+    official_file_service: Any = None  # Live host getter; never a request-supplied route.
 
 
 @dataclass(frozen=True)
