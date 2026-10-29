@@ -9,7 +9,7 @@ import threading
 import weakref
 
 from src.plugins.ai_chat.agent.control import LeaseLost
-from .file_artifacts import current_source
+from .file_artifacts import current_source, _require
 
 _issued=weakref.WeakValueDictionary()
 _lock=threading.Lock()
@@ -36,6 +36,21 @@ class GenerationBindingAdapter:
         identity=json.dumps([self.endpoint.account.key,self.endpoint.key,self.actor.key],ensure_ascii=False,separators=(',',':'))
         self.owner='qqo:v1:'+hashlib.sha256(identity.encode()).hexdigest()+':x:'+hashlib.sha256(self.source_key.encode()).hexdigest()[:32]
 
+    def allows_missing_native_source(self):
+        _require(self.source)
+        return (self.source.source_native_message_id is None and self.source.source_execution_id is None
+            and self.source.task_id is not None and self.source.source_migration_item_id is not None
+            and getattr(self.source.extension,'kind',None) in {'migration','project'})
+
+    def matches_tool_source(self, source):
+        from src.plugins.ai_chat.platform_types import BackgroundToolSource
+        _require(self.source)
+        kind = 'project' if getattr(self.source.extension,'kind',None)=='project' else 'subagent'
+        return (isinstance(source,BackgroundToolSource) and self.source.task_id is not None
+            and source.endpoint==self.endpoint and source.actor==self.actor
+            and source.source_kind==kind and source.source_ref==f'task:{self.source.task_id}'
+            and source.source_revision==1)
+
     async def assert_current(self):
         def check():
             with self.store.transaction() as cursor:
@@ -58,12 +73,15 @@ class GenerationBindingAdapter:
                 if usage['total']>=self.account_limit or usage['actor']>=self.actor_limit:
                     raise ValueError('generation_capacity_exhausted')
                 reservation_id=secrets.token_hex(16)
+                migration=self.source.source_migration_item_id is not None
+                columns=',source_migration_item_id,source_task_id,source_task_revision,source_job_id' if migration else ''
+                extra=(self.source.source_migration_item_id,self.source.task_id,1,self.source.job.job_id) if migration else ()
                 cursor.execute('''INSERT INTO qq_official_generation_capacity
                     (reservation_id,account_key,endpoint_key,requester_actor_key,source_execution_id,
-                     source_key,owner,state,created_at,expires_at)
-                    VALUES (?,?,?,?,?,?,?,'reserved',?,?)''',
+                     source_key,owner,state,created_at,expires_at'''+columns+''')
+                    VALUES (?,?,?,?,?,?,?,'reserved',?,?'''+(',?,?,?,?' if migration else '')+')',
                     (reservation_id,self.endpoint.account.key,self.endpoint.key,self.actor.key,
-                     self.source.source_execution_id,self.source_key,owner,now,self.deadline_at))
+                     self.source.source_execution_id,self.source_key,owner,now,self.deadline_at,*extra))
                 return CapacityReservation(reservation_id,self.source_key,owner)
         item=await self.calls(reserve)
         with _lock: _issued[id(item)]=item

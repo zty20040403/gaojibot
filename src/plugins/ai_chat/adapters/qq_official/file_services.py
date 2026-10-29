@@ -20,7 +20,7 @@ from src.plugins.ai_chat.project_blobs import ProjectBlobStore
 from src.qq_official.credentials import _verify_posix_acl
 from src.sandbox_runtime.source_fence import active_sandbox_source
 from .file_artifacts import ArtifactStore, current_source
-from .file_authority import assert_file_current, assert_file_read_current
+from .file_authority import assert_file_read_current
 from .file_dispatcher import OfficialFileDispatcher
 from .file_links import ArtifactRef, FileCredentialVault, FileLinkPublisher, LinkError, VerifiedStream, _origin, create_download_app
 from .file_payloads import TrustedFilePayloads
@@ -62,6 +62,8 @@ class FileServiceConfig:
     account_capacity: int = 16
     actor_capacity: int = 4
     destroy_expired_resources: bool = False
+    source_authority: Callable | None = field(default=None, repr=False)
+    existing_artifact_authority: Callable | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if (not isinstance(self.private_directory, Path) or not self.private_directory.is_absolute()
@@ -73,7 +75,8 @@ class FileServiceConfig:
                         self.account_capacity,self.actor_capacity))
                 or not self.actor_capacity <= self.account_capacity <= 100
                 or any(port is not None and not callable(port) for port in
-                       (self.route_authority,self.native_evidence,self.link_reachable))):
+                       (self.route_authority,self.source_authority,self.existing_artifact_authority,
+                        self.native_evidence,self.link_reachable))):
             raise ValueError('invalid_file_service_configuration')
         if self.link_origin is not None:
             _origin(self.link_origin, False)  # HTTPS public origin only; no implicit loopback deployment.
@@ -192,7 +195,8 @@ class FileServices:
             self.native_vault=NativeUploadVault(self.directory/'native',clock=self.clock)
             self.link_vault=FileCredentialVault(self.directory/'links')
             self.payloads=TrustedFilePayloads(admission=self.admission,route_policy=self._route,
-                native_vault=self.native_vault,link_vault=self.link_vault,link_origin=config.link_origin)
+                native_vault=self.native_vault,link_vault=self.link_vault,link_origin=config.link_origin,
+                source_authority=config.source_authority)
             self.dispatcher=OfficialFileDispatcher(token,self.artifacts,self.payloads,runtime.outbox,rest,
                 calls=self.calls,lease_check=self._local,publisher_factory=self.publisher_factory if config.link_origin else None,
                 check_delivery_ready=self.check_delivery_ready,clock=self.clock)
@@ -342,9 +346,14 @@ class FileServices:
             delivery=cursor.execute('SELECT active_plan_id FROM qq_official_file_deliveries WHERE artifact_id=?',
                 (publication.artifact.artifact_id,)).fetchone()
             if delivery is None or delivery['active_plan_id'] is None:raise LinkError('publication_unavailable')
-            artifact,_=assert_file_current(cursor,token=self.token,artifact_id=publication.artifact.artifact_id,
-                admission=self.admission,now=int(self.clock()),plan_id=delivery['active_plan_id'])
-            if not self._route(cursor,artifact,'link'):raise LinkError('publication_unavailable')
+            artifact,_=assert_file_read_current(cursor,token=self.token,artifact_id=publication.artifact.artifact_id,
+                admission=self.admission,now=int(self.clock()),
+                source_authority=self.config.source_authority)
+            if self.config.existing_artifact_authority is None:
+                allowed = self._route(cursor,artifact,'link')
+            else:
+                allowed = self._link_ready() and self.config.existing_artifact_authority(cursor,artifact) is True
+            if not allowed:raise LinkError('publication_unavailable')
             if (artifact['sha256'],artifact['byte_size'])!=(publication.artifact.sha256,publication.artifact.size):
                 raise LinkError('publication_unavailable')
 
@@ -377,7 +386,7 @@ class FileServices:
         with self.transaction() as cursor:
             self._account(cursor)
             row,_=assert_file_read_current(cursor,token=self.token,artifact_id=artifact_id,
-                admission=self.admission,now=int(self.clock()))
+                admission=self.admission,now=int(self.clock()),source_authority=self.config.source_authority)
             ref=ArtifactRef(row['artifact_id'],row['sha256'],row['byte_size'],row['mime'],row['filename'])
             identity=tuple(row[key] for key in ('account_key','endpoint_key','requester_actor_key',
                 'source_execution_id','source_job_id','source_task_id','source_task_revision',

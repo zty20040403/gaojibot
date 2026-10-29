@@ -21,12 +21,23 @@ def _digest(value):
 
 
 class ProjectTaskStore:
-    def __init__(self, projects, tasks):
+    def __init__(self, projects, tasks, *, official_dispatch=None):
         if projects.database is not tasks.database:
             raise ValueError("Project tasks require the same database transaction owner")
         self.projects, self.tasks = projects, tasks
+        self.official_dispatch = official_dispatch
 
     def _prior(self, cursor, access, request_key):
+        from .project_authorization import official_project
+        if official_project(access) is not None:
+            rows = cursor.execute("""SELECT b.* FROM project_task_bindings b
+                JOIN qq_official_project_task_authority a USING(task_id,project_id)
+                WHERE a.endpoint_key=? AND a.actor_key=? AND b.actor_principal_id=?
+                AND b.request_key=? LIMIT 2""",
+                (access.endpoint.key,access.actor.key,access.principal_id,request_key)).fetchall()
+            if len(rows)>1:
+                raise ProjectConflict('project_task_identity_ambiguous')
+            return dict(rows[0]) if rows else None
         rows = cursor.execute(
             """SELECT b.* FROM project_task_bindings b JOIN projects p USING(project_id)
             WHERE p.scope_key=? AND p.bot_native_user_id=? AND b.actor_principal_id=?
@@ -38,22 +49,44 @@ class ProjectTaskStore:
         return dict(rows[0]) if rows else None
 
     def _owned(self, cursor, access, task_id):
-        binding = cursor.execute(
-            """SELECT b.* FROM project_task_bindings b JOIN projects p USING(project_id)
-            WHERE b.task_id=? AND p.scope_key=? FOR UPDATE OF b""",
-            (task_id, access.scope.key),
-        ).fetchone()
+        from .project_authorization import official_project, authorize
+        proof = official_project(access)
+        if proof is not None:
+            # Account/route/source locks precede the project/task binding lock.
+            authorize(cursor,access,operation='project.execute')
+            binding=cursor.execute('SELECT * FROM project_task_bindings WHERE task_id=?',
+                                   (task_id,)).fetchone()
+        else:
+            binding = cursor.execute(
+                """SELECT b.* FROM project_task_bindings b JOIN projects p USING(project_id)
+                WHERE b.task_id=? AND p.scope_key=? FOR UPDATE OF b""",
+                (task_id, access.scope.key),
+            ).fetchone()
         if binding is None:
             raise PermissionError("Project task is not available in this conversation")
+        if proof is not None:
+            from .adapters.qq_official.project_authority import Operation
+            proof.provider.require(cursor,proof,project_id=binding['project_id'],operation=Operation.EXECUTE)
+            original=cursor.execute('SELECT * FROM qq_official_project_task_authority WHERE task_id=?',
+                                    (task_id,)).fetchone()
+            pinned,_=proof.provider._pin(cursor,binding['project_id'])
+            if (original is None or original['grant_id']!=pinned.grant_id
+                    or original['grant_revision']!=pinned.revision
+                    or original['endpoint_key']!=access.endpoint.key or original['actor_key']!=access.actor.key):
+                raise PermissionError('project_authority_denied')
         project = self.projects._get(cursor, access, binding["project_id"])
         self.projects._editor(cursor, access, project)
         if (binding["actor_principal_id"] != access.principal_id
                 or not project["bot_native_user_id"]
-                or project["bot_native_user_id"] != access.scope.bot_native_user_id):
+                or (proof is None and project["bot_native_user_id"] != access.scope.bot_native_user_id)):
             raise PermissionError("Project task belongs to another execution identity")
         task = cursor.execute("SELECT * FROM subagent_tasks WHERE task_id=? FOR UPDATE", (task_id,)).fetchone()
         if (task is None or task["scope_key"] != access.scope.key
-                or str(task["requester_user_id"]) != access.scope.actor_native_user_id
+                or (proof is None and str(task["requester_user_id"]) != access.scope.actor_native_user_id)
+                or (proof is not None and (task['requester_user_id'] is not None
+                    or task['account_key'] != access.endpoint.account.key
+                    or task['endpoint_key'] != access.endpoint.key
+                    or task['requester_actor_key'] != access.actor.key))
                 or task["project_id"] != binding["project_id"]
                 or task["project_base_version"] != binding["base_version"]):
             raise ProjectConflict("Project task binding changed")
@@ -98,7 +131,9 @@ class ProjectTaskStore:
         if (not isinstance(request_key, str) or not re.fullmatch(r"[a-f0-9]{64}", request_key)
                 or any(type(v) is not int or v <= 0 for v in (project_id, expected_version, base_version))):
             raise ValueError("Invalid project task admission")
-        if (packet.scope_key != access.scope.key
+        from .project_background import require_packet
+        structured = require_packet(access,packet,dispatch)
+        if not structured and (packet.scope_key != access.scope.key
                 or str(packet.requester_user_id) != access.scope.actor_native_user_id
                 or str(dispatch.get("bot_id", "")) != access.scope.bot_native_user_id):
             raise PermissionError("Task context does not match the project execution identity")
@@ -152,6 +187,12 @@ class ProjectTaskStore:
             (task.task_id, project_id, access.principal_id, request_key, intent, base_version,
              baseline["manifest_sha256"], project["workspace_generation"], project["lifecycle_fence"], now),
         )
+        from .project_background import bind_task_authority
+        if bind_task_authority(cursor,access,task_row,project,now=now):
+            if self.official_dispatch is None:
+                raise PermissionError('project_task_dispatch_unavailable')
+            self.official_dispatch(cursor,access=access,task=task_row,packet=packet,
+                                   dispatch=dispatch,now=now)
         cursor.execute("UPDATE projects SET locked_task_id=?,version=version+1,updated_at=?,last_active_at=? WHERE project_id=?",
                            (task.task_id, now, now, project_id))
         self.projects._touch_focus(cursor, access, project_id, now)
@@ -169,16 +210,28 @@ class ProjectTaskStore:
         return document
 
     def _baseline(self, cursor, access, task_id):
-        project, binding, task = self._owned(cursor, access, task_id)
-        require_project_io_idle(cursor, project["project_id"])
-        if (project["locked_task_id"] != task_id or project["lifecycle_job_id"] is not None
-                or project["workspace_generation"] != binding["generation"]
-                or project["lifecycle_fence"] != binding["fence"]
-                or task["cancel_requested"] or task["status"] in {"completed", "partial", "failed", "cancelled"}):
-            raise ProjectConflict("Project task is not active on its admitted workspace")
-        document = self._manifest(cursor, access, binding["project_id"],
-                                  {"version_no": binding["base_version"], "manifest_sha256": binding["manifest_sha256"]})
-        return binding, document
+        # This method only reads ownership, workspace state and immutable CAS
+        # metadata. Keep one checked background source within this synchronous
+        # call; every project/grant/run/hash check below remains in place.
+        from contextlib import nullcontext
+        from .project_authorization import official_project
+        proof = official_project(access)
+        composition = nullcontext()
+        if proof is not None:
+            from .project_background import BackgroundProjectProvider
+            if type(proof.provider) is BackgroundProjectProvider:
+                composition = proof.provider._read_composition(cursor)
+        with composition:
+            project, binding, task = self._owned(cursor, access, task_id)
+            require_project_io_idle(cursor, project["project_id"])
+            if (project["locked_task_id"] != task_id or project["lifecycle_job_id"] is not None
+                    or project["workspace_generation"] != binding["generation"]
+                    or project["lifecycle_fence"] != binding["fence"]
+                    or task["cancel_requested"] or task["status"] in {"completed", "partial", "failed", "cancelled"}):
+                raise ProjectConflict("Project task is not active on its admitted workspace")
+            document = self._manifest(cursor, access, binding["project_id"],
+                                      {"version_no": binding["base_version"], "manifest_sha256": binding["manifest_sha256"]})
+            return binding, document
 
     def baseline(self, access, task_id):
         """Private immutable input index, never an arbitrary workspace mount."""
@@ -188,16 +241,31 @@ class ProjectTaskStore:
             return {"project_id": binding["project_id"], "version_no": binding["base_version"],
                     "manifest_sha256": binding["manifest_sha256"], "manifest": document}
 
+    def _require_step(self, cursor, access, task_id, step_key):
+        # Caller owns the actual project store transaction; this helper keeps
+        # the original scope/owner/baseline/run/reviewer checks in that cursor.
+        self.projects._scope_lock(cursor, access)
+        _, _, task = self._owned(cursor, access, task_id)
+        self._baseline(cursor, access, task_id)
+        run = cursor.execute("SELECT * FROM subagent_runs WHERE task_id=? AND step_key=? AND status='running'",
+                             (task_id, step_key)).fetchone()
+        control = cursor.execute("SELECT revision FROM subagent_controls WHERE task_id=?", (task_id,)).fetchone()
+        reviewer = (task["status"] == "verifying" and control is not None
+            and re.fullmatch(rf"acceptance_r{control['revision']}_[a-f0-9]{{8}}", step_key) is not None
+            and run is not None and bool(json.loads(run['dependencies_json'])))
+        if reviewer:
+            dependencies = json.loads(run['dependencies_json'])
+            reviewer = all(isinstance(key,str) and cursor.execute(
+                "SELECT 1 FROM subagent_runs WHERE task_id=? AND step_key=? "
+                "AND run_id<>? AND status IN ('succeeded','partial')",
+                (task_id,key,run['run_id'])).fetchone() is not None for key in dependencies)
+        if run is None or (task["status"] != "running" and not reviewer):
+            raise ProjectConflict("Project baseline import requires its running task step")
+        return task["conversation_id"]
+
     def require_step(self, access, task_id, step_key):
         with self.tasks._transaction() as cursor:
-            self.projects._scope_lock(cursor, access)
-            _, _, task = self._owned(cursor, access, task_id)
-            self._baseline(cursor, access, task_id)
-            run = cursor.execute("SELECT 1 FROM subagent_runs WHERE task_id=? AND step_key=? AND status='running'",
-                                 (task_id, step_key)).fetchone()
-            if task["status"] != "running" or run is None:
-                raise ProjectConflict("Project baseline import requires its running task step")
-            return task["conversation_id"]
+            return self._require_step(cursor, access, task_id, step_key)
 
     def read_baseline_file(self, access, task_id, path):
         name = project_path(path)

@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 
 import nonebot
-from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
+from src.plugins.ai_chat.adapters.onebot_route import RouteGuardedOneBotAdapter as OneBotV11Adapter
 
 
 load_dotenv()

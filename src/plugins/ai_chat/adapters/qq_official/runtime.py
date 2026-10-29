@@ -98,7 +98,7 @@ class OfficialRuntime:
                  protocol_factory=open_official_protocol, binding_sender=None,
                  lease_factory=DedicatedAccountLease, probe_seconds: float = 1,
                  retry_seconds: float = 2, allow_test_server: bool = False,
-                 application=None, turn_consumer_factory=None, file_services_factory=None):
+                 application=None, turn_consumer_factory=None, file_services_factory=None, approval_factory=None, migration_factory=None):
         self.config, self.database, self.logger = config, database, logger
         self.protocol_factory, self.binding_sender = protocol_factory, binding_sender
         self.lease_factory = lease_factory
@@ -106,6 +106,9 @@ class OfficialRuntime:
         self.retry_seconds = min(max(retry_seconds, 0.01), 60)
         self.allow_test_server = allow_test_server
         self.application, self.turn_consumer_factory = application, turn_consumer_factory
+        self.migration_factory, self.migration_service = migration_factory, None
+        self.approval_factory = approval_factory
+        self.approval_service = None
         self.file_services_factory = file_services_factory
         self.file_service = None
         self.turn_consumer = None
@@ -195,7 +198,8 @@ class OfficialRuntime:
                 "turn_execution_connected": self.turn_consumer is not None,
                 "subagent_execution_connected": self.subagent_service is not None,
                 "binding_transport_connected": self.binding_sender is not None or self.sender is not None,
-                "durable_sender_connected": self.sender is not None}
+                "durable_sender_connected": self.sender is not None,
+                "approval_transport_connected": self.approval_service is not None}
 
     async def _ensure_current(self, token):
         if self._stopping or self._token is not token:
@@ -302,6 +306,8 @@ class OfficialRuntime:
                         await self._calls(record_self)
             if self.sender is not None:
                 self.sender.wake()
+            if accepted.approval is not None and self.approval_service is not None:
+                await self.approval_service.consume(accepted.approval)
             if accepted.binding is not None and accepted.binding.effect is not None:
                 await self._deliver_binding(token, accepted.binding.effect)
 
@@ -344,6 +350,8 @@ class OfficialRuntime:
                 if self.subagent_service is not None and loop.time() >= next_result_scan:
                     await self.subagent_service.reconcile()
                     next_result_scan = loop.time() + 5
+                if self.migration_service is not None:
+                    await self.migration_service.maintain()
                 if self.file_service is not None and loop.time() >= next_file_scan:
                     await self.file_service.maintain()
                     next_file_scan = loop.time() + 30
@@ -359,6 +367,29 @@ class OfficialRuntime:
         async with self.protocol_factory(self.loaded, checkpoint=checkpoint, on_checkpoint=on_checkpoint,
                                          ensure_current=lambda: self._ensure_current(token)) as gateway, AsyncExitStack() as resources:
             self._gateway = gateway
+            if self.migration_factory is not None:
+                from .migration_services import OfficialMigrationSession
+                migration = self.migration_factory(self, token)
+                if inspect.isawaitable(migration):
+                    migration = await migration
+                if not isinstance(migration, OfficialMigrationSession):
+                    raise RuntimeError('official_migration_service_invalid')
+                async def close_migration():
+                    try:
+                        await migration.close()
+                    finally:
+                        self.migration_service = None
+                resources.push_async_callback(close_migration)
+                await self._calls(migration.attach)
+                self.migration_service = migration
+            else:
+                def require_unmanaged():
+                    with self.store.transaction() as cursor:
+                        if cursor.execute('''SELECT 1 FROM migration_routes
+                            WHERE source_account_key=? OR target_account_key=? LIMIT 1''',
+                            (token.account_key,token.account_key)).fetchone():
+                            raise RuntimeError('managed_official_route_requires_migration_host')
+                await self._calls(require_unmanaged)
             rest = getattr(gateway, "rest_client", None)
             if isinstance(rest, RestClient):
                 from .sender import OfficialSender
@@ -371,6 +402,32 @@ class OfficialRuntime:
                 worker.register(control_job_kind(self.loaded.account.key), ControlJobHandler(
                     token=token, outbox=self.outbox, sender=self.sender, database_calls=self._calls,
                     ensure_current=lambda: self._ensure_current(token), clock=self.store.clock))
+            if self.approval_factory is not None and self.sender is not None:
+                from .approval_runtime import OfficialApprovalService
+                async def reset_approval_bindings():
+                    self.approval_service = None
+                    self.store.approval_store = None
+                    self.outbox.approval_authority = None
+                # A host factory must clean up construction failures of its own
+                # resources; partially installed authority never reaches next epoch.
+                resources.push_async_callback(reset_approval_bindings)
+                service = self.approval_factory(self, token)
+                if inspect.isawaitable(service):
+                    service = await service
+                if service is not None:
+                    if not isinstance(service, OfficialApprovalService):
+                        raise RuntimeError('official_approval_service_invalid')
+                    # Capture this service, not the later file-factory variable.
+                    async def cleanup_approval(current=service):
+                        try:
+                            await current.close()
+                        finally:
+                            self.approval_service = None
+                            self.store.approval_store = None
+                            self.outbox.approval_authority = None
+                    resources.push_async_callback(cleanup_approval)
+                    await self._calls(service.attach, self, token)
+                    self.approval_service = service
             file_worker = None
             if self.file_services_factory is not None and isinstance(rest, RestClient):
                 service = self.file_services_factory(self, token, rest)
@@ -388,16 +445,28 @@ class OfficialRuntime:
                             self.outbox.protected_payloads = None
 
                     resources.push_async_callback(close_files)
+                    migration=self.migration_service
+                    if migration is not None and migration.services.project_router is not None:
+                        migration.configure_project_runtime(migration.services.project_router.projects)
                     file_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
                         concurrency=1, per_scope_limit=1, database_calls=self._calls)
                     file_worker.register(account_job_kind('file', self.loaded.account.key), service.dispatcher)
+                    imports=self.migration_service.domains.get('file') if self.migration_service is not None else None
+                    if imports is not None:
+                        file_worker.register(account_job_kind('file_import',token.account_key), imports.execute)
+            if self.migration_service is not None:
+                for kind in ('reminder','routine'):
+                    domain = self.migration_service.domains.get(kind)
+                    if domain is not None:
+                        worker.register(account_job_kind(kind,token.account_key), domain.execute)
             factory = self.turn_consumer_factory
             subagent_worker = None
             if (self.application is not None and getattr(self.application, "subagent_store", None) is not None
                     and getattr(self.application, "subagent_coordinator", None) is not None
                     and self.application.settings.subagents_enabled):
                 from .subagent_composition import OfficialSubAgentService
-                self.subagent_service = OfficialSubAgentService(self, token, self.application)
+                self.subagent_service = OfficialSubAgentService(self, token, self.application,
+                    migration_authority=self.migration_service.task_sources if self.migration_service else None)
                 subagent_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
                     concurrency=2, per_scope_limit=1, database_calls=self._calls)
                 subagent_worker.register(account_job_kind("subagent", self.loaded.account.key), self.subagent_service.execute)
@@ -415,6 +484,8 @@ class OfficialRuntime:
                      asyncio.create_task(monitor()), asyncio.create_task(failure())]
             if self.sender is not None:
                 tasks.append(asyncio.create_task(self.sender.run()))
+            if self.approval_service is not None:
+                tasks.append(asyncio.create_task(self.approval_service.run()))
             if turns is not None:
                 tasks.append(asyncio.create_task(turns.run_forever()))
             if subagent_worker is not None:

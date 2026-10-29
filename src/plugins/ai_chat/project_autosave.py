@@ -22,7 +22,13 @@ class ProjectAutosave:
         runtime = self.runtime
         pid, turn_id = candidate["project_id"], candidate["turn_id"]
         actor = candidate["actor_principal_id"]
-        access = await runtime._execution_access(candidate, actor)
+        factory=getattr(runtime,'official_provider_factory',None)
+        # Only a persisted IO binding selects the official branch. In
+        # particular, an old OneBot resource scope is not an identity hint.
+        source=None
+        if factory is not None and callable(getattr(factory,'autosave',None)):
+            source=await factory.autosave(candidate,actor)
+        access = await runtime._execution_access(candidate, actor, **({'source':source} if source is not None else {}))
         operations = await _store(self.saves.operations, access, pid, turn_id)
         for row in operations:
             grant = ProjectIOGrant(row["operation_id"], pid, row["token"])
@@ -51,7 +57,7 @@ class ProjectAutosave:
         backend = runtime.backends[project["backend"]]
         if not await backend.maintenance_ready(project):
             raise ProjectConflict("Project has unverified workspace state")
-        access = await runtime._execution_access(project, actor)
+        access = await runtime._execution_access(project, actor, **({'source':source} if source is not None else {}))
         await _store(
             runtime.lifecycle.request,
             access,

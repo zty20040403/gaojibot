@@ -12,7 +12,7 @@ from src.plugins.ai_chat.tools.registry import ToolRegistry
 from src.plugins.ai_chat.tools.state import SubAgentActions
 from src.plugins.ai_chat.tools.subagents import HANDLERS
 
-from .subagent_runtime import FILE_ROLES, FILE_TOOLS, TEXT_TOOLS, submit
+from .subagent_runtime import FILE_ROLES, FILE_TOOLS, TEXT_TOOLS, HOST_TOOLS, submit
 
 
 def text_coordinator(store, model_catalog, *, logger, **options):
@@ -67,6 +67,7 @@ class SubmissionBinding:
     execution_deadline: int
     result_wait_seconds: int = 86400
     clock: object = None
+    host_admission: object = None
 
     def actions_for(self, turn, ports, selected_profile, prepared, parent_trace=None):
         """Call once after prepare_shared_turn_context, before the same LLM loop.
@@ -88,8 +89,21 @@ class SubmissionBinding:
             if files:
                 await turn.context.agent_executor.readiness()
                 files = enabled(turn.context)
+            host = False
+            if self.host_admission is not None:
+                if not callable(self.host_admission):
+                    raise ValueError('official_host_admission_unavailable')
+                def permitted():
+                    with self.transaction() as cursor:
+                        row=self.source_api.assert_execution_current(cursor,token=self.token,handle=handle,
+                            job=self.source_job,now=int(self.clock()),admission=self.admission)
+                        return row['state']=='executing' and self.host_admission(cursor,handle) is True
+                host=await self.database_calls(permitted)
+            if host:
+                files=False
             roles = FILE_ROLES if files else {'researcher', 'analyst'}
             allowed = TEXT_TOOLS | FILE_TOOLS if files else TEXT_TOOLS
+            if host:allowed |= HOST_TOOLS
             if role is not None and role not in roles:
                 raise ValueError('当前平台只开放文字研究与分析 Sub-Agent。')
             call_id = active_tool_call_id.get()
@@ -98,7 +112,7 @@ class SubmissionBinding:
             packet = ContextPacket(handle.scope_key, ports.conversation_id, None,
                 handle.canonical_message_id, objective, endpoint=handle.endpoint,
                 requester_actor=handle.actor, supporting_context=prepared.turn_context,
-                constraints=(('只允许本次来源的临时隔离工作区与 PDF/ZIP 文件交付；不提供宿主或项目操作。'
+                constraints=(('仅已配置服务的精确合同；真实任务范围获两人批准后才执行，不授任意宿主或项目权限。' if host else '只允许本次来源的临时隔离工作区与 PDF/ZIP 文件交付；不提供宿主或项目操作。'
                               if files else '仅文字研究与分析；不得执行宿主/项目/文件操作。'),))
             decision = await self.coordinator.prepare_entry(packet, selected_profile,
                 role=role, parent_trace=parent_trace)
@@ -117,7 +131,8 @@ class SubmissionBinding:
                         execution_deadline=self.execution_deadline,
                         result_wait_seconds=self.result_wait_seconds, admission=self.admission,
                         coordinator=self.coordinator, jobs=self.jobs,
-                        tool_profile='official-files-v1' if files else 'official-text-v1')
+                        tool_profile='official-host-v1' if host else ('official-files-v1' if files else 'official-text-v1'),
+                        host_admission=self.host_admission if host else None)
             return await self.database_calls(commit)
 
         async def delegate(role, objective):

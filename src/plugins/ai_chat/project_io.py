@@ -42,18 +42,40 @@ class ProjectIOStore:
         return ProjectIOGrant(row["operation_id"], row["project_id"], row["token"])
 
     def _prior(self, cursor, access, request_key, tool_name, arguments_sha256):
-        rows = cursor.execute(
+        from .project_authorization import official_project
+        if official_project(access) is not None:
+            # The host key contains the full transport actor/source/call. Find
+            # its original operation before consulting mutable focus or grants;
+            # revocation must not turn replay into a fresh write elsewhere.
+            rows = cursor.execute('''SELECT * FROM project_io
+                WHERE actor_principal_id=? AND request_key=? LIMIT 2''',
+                (access.principal_id,request_key)).fetchall()
+        else:
+            rows = cursor.execute(
             """SELECT io.* FROM project_io io JOIN projects p USING(project_id)
             WHERE p.scope_key=? AND p.bot_native_user_id=?
             AND io.actor_principal_id=? AND io.request_key=? LIMIT 2""",
             (access.scope.key, access.scope.bot_native_user_id, access.principal_id, request_key),
-        ).fetchall()
+            ).fetchall()
         if not rows:
             return None
         if len(rows) != 1 or rows[0]["tool_name"] != tool_name or rows[0]["arguments_sha256"] != arguments_sha256:
             raise ProjectConflict("Project operation identity was reused")
         self.projects._get(cursor, access, rows[0]["project_id"])
         return rows[0]
+
+    @staticmethod
+    def _account_binding(cursor, access, project):
+        from .project_authorization import authorize, official_project
+        if official_project(access) is not None:
+            # The exact resource scope and original bot snapshot are checked
+            # by the issued provider's ProjectScopeGuard. The access identity
+            # stays the real official bot; it is never rewritten as the old bot.
+            scope=authorize(cursor,access,project_id=project['project_id'])
+            if scope.key!=project['scope_key'] or not project['bot_native_user_id']:
+                raise PermissionError('Project account binding changed')
+        elif not project['bot_native_user_id'] or project['bot_native_user_id']!=access.scope.bot_native_user_id:
+            raise PermissionError('Project account binding changed')
 
     def find(self, access, request_key, tool_name, arguments_sha256):
         """Resolve a replay before consulting mutable current-project focus."""
@@ -118,13 +140,12 @@ class ProjectIOStore:
         now = int(time.time()) if now is None else now
         mutating = tool_name in MUTATING_TOOLS
         with self.projects._transaction() as cursor:
+            from .project_authorization import authorize
+            authorize(cursor, access, project_id=project_id,
+                      operation='project.execute')
             self.projects._scope_lock(cursor, access)
             project = self.projects._get(cursor, access, project_id)
-            if (
-                not project["bot_native_user_id"]
-                or project["bot_native_user_id"] != access.scope.bot_native_user_id
-            ):
-                raise PermissionError("Project requires an account binding")
+            self._account_binding(cursor,access,project)
             prior = self._prior(cursor, access, request_key, tool_name, arguments_sha256)
             if prior:
                 if prior["project_id"] != project_id:
@@ -193,6 +214,8 @@ class ProjectIOStore:
                 ),
             ).fetchone()
             if mutating:
+                from .project_autosave_authority import capture_io
+                capture_io(cursor,access,project,row,now=now)
                 cursor.execute(
                     """INSERT INTO project_turn_saves(project_id,turn_id,actor_principal_id,created_at,updated_at)
                     VALUES (?,?,?,?,?) ON CONFLICT(project_id,turn_id) DO UPDATE
@@ -244,13 +267,14 @@ class ProjectIOStore:
         """Return the frozen physical target exactly once, before starting I/O."""
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
+            from .adapters.onebot_route_context import begin_project_effect
+            begin_project_effect(cursor, scope=access.scope, domain="project.io", reference=str(grant.operation_id))
+            from .project_authorization import authorize
+            authorize(cursor, access, project_id=grant.project_id,
+                      operation='project.execute')
             self.projects._scope_lock(cursor, access)
             project = self.projects._get(cursor, access, grant.project_id)
-            if (
-                not project["bot_native_user_id"]
-                or project["bot_native_user_id"] != access.scope.bot_native_user_id
-            ):
-                raise PermissionError("Project account binding changed")
+            self._account_binding(cursor,access,project)
             _, row = self._owned(cursor, grant)
             if row["actor_principal_id"] != access.principal_id:
                 raise PermissionError("Project operation belongs to another actor")
@@ -401,6 +425,8 @@ class ProjectIOStore:
                            WHERE operation_id=?""",
                 (json.dumps(result), json.dumps(evidence), now, grant.operation_id),
             )
+            from .adapters.onebot_route_context import observe_project_effect
+            observe_project_effect(cursor, domain="project.io", reference=str(grant.operation_id))
             cursor.execute(
                 "UPDATE projects SET last_active_at=?,updated_at=?,version=version+? WHERE project_id=?",
                 (now, now, int(row["mutating"]), grant.project_id),
@@ -415,11 +441,7 @@ class ProjectIOStore:
         with self.projects._transaction() as cursor:
             self.projects._scope_lock(cursor, access)
             project = self.projects._get(cursor, access, grant.project_id)
-            if (
-                not project["bot_native_user_id"]
-                or project["bot_native_user_id"] != access.scope.bot_native_user_id
-            ):
-                raise PermissionError("Project account binding changed")
+            self._account_binding(cursor,access,project)
             _, row = self._owned(cursor, grant)
             if drain_job is not None:
                 from .project_browser_drain import require_drain

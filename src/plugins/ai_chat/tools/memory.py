@@ -8,9 +8,9 @@ import re
 from ..ai_tools import MEMORY_ADD_TOOL, MEMORY_LIST_TOOL, MEMORY_REMOVE_TOOL
 from ..long_term_memory import LongTermMemoryError
 from ..memory_scopes import memory_scopes_for_inbound
-from ..platform_types import InboundMessage
+from ..platform_types import BackgroundToolSource, InboundMessage
 from .registry import FunctionTool
-from .state import ToolContext, TurnState
+from .state import ToolContext, TurnState, structured_tool_source
 
 
 def enabled(context: ToolContext) -> bool:
@@ -20,16 +20,17 @@ def enabled(context: ToolContext) -> bool:
 
 def supports_context(context: ToolContext) -> bool:
     """Only the migrated official path and existing OneBot path are implemented."""
-    if context.inbound is None:
+    inbound = structured_tool_source(context)
+    if inbound is None:
         return context.platform is None and context.event is not None
-    if context.inbound.endpoint.account.platform == "onebot-v11":
+    if inbound.endpoint.account.platform == "onebot-v11":
         return context.event is not None
-    return (context.inbound.endpoint.account.platform == "qq-official" and context.platform is not None
-            and context.platform.account == context.inbound.endpoint.account)
+    return (inbound.endpoint.account.platform == "qq-official" and context.platform is not None
+            and context.platform.account == inbound.endpoint.account)
 
 
-def official_inbound(context: ToolContext) -> InboundMessage | None:
-    inbound = context.inbound
+def official_inbound(context: ToolContext) -> InboundMessage | BackgroundToolSource | None:
+    inbound = structured_tool_source(context)
     if inbound is None or inbound.endpoint.account.platform == "onebot-v11":
         return None
     if (inbound.endpoint.account.platform != "qq-official" or context.platform is None
@@ -70,7 +71,9 @@ def official_memory_provenance(context: ToolContext) -> dict[str, object]:
         raise ValueError("official memory provenance requires an official inbound")
     ledger = context.app.message_ledger
     principal_id, source_message_id = 0, None
-    if ledger is not None:
+    if ledger is not None and isinstance(inbound, BackgroundToolSource):
+        principal_id = ledger.ensure_actor_identity(inbound.actor, "")
+    elif ledger is not None:
         principal_id = ledger.ensure_actor_identity(
             inbound.actor, inbound.sender_display, seen_at=inbound.occurred_at,
         )
@@ -147,7 +150,7 @@ async def _official_remove(turn: TurnState, arguments: dict[str, object]) -> str
     entry = next((item for item in entries if item.id == raw_id), None)
     if entry is None:
         return _error("当前会话中找不到这条记忆。", code="memory_not_found")
-    if entry.scope_type != "user" or entry.scope_key != context.inbound.actor.key:
+    if entry.scope_type != "user" or entry.scope_key != official_inbound(context).actor.key:
         return _error("当前平台尚未授予修改群记忆的本地权限。", code="memory_permission_denied")
     removed = await context.app.db_call(
         context.app.long_term_memory.remove, raw_id, memory_scope_keys(context, "user"),

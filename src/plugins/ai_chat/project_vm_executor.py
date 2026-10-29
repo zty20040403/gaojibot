@@ -229,6 +229,9 @@ class VmProjectBackend:
             "observation": "Private VM runtime verified the disk journal, immutable domain and guest admission",
         }
 
+    async def _official_fence(self,job,access):
+        await DockerProjectBackend._official_fence(self,job,access)
+
     async def execute(self, job, step, access):
         args, operation = step["arguments"], step["operation"]
         if args.get("backend") != "vm":
@@ -241,6 +244,7 @@ class VmProjectBackend:
             return await self.files.execute(job, step, access)
         if operation in self.ACTIONS:
             action = self.ACTIONS[operation]
+            await self._official_fence(job,access)
             observed = await self.runtime.operate(
                 action,
                 args["owner"],
@@ -296,6 +300,7 @@ class VmProjectBackend:
         if operation not in self.VERIFICATIONS:
             raise ProjectBackendUnavailable("Unknown VM lifecycle operation")
         target = operation.removeprefix("verify_")
+        await self._official_fence(job,access)
         observed = await self.runtime.inspect(
             args["owner"], args["project_id"], generation=args["generation"]
         )

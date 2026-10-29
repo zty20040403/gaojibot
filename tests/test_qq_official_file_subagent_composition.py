@@ -271,7 +271,7 @@ class FileSubAgentCompositionTests(FileFixture, unittest.IsolatedAsyncioTestCase
         self.submit_task()
         from src.bot_storage.database import DatabaseError
         with self.assertRaises(DatabaseError), self.tx() as cursor:
-            cursor.execute("UPDATE qq_official_subagent_dispatches SET tool_profile='official-host-v1' WHERE task_id=?", (self.task.task_id,))
+            cursor.execute("UPDATE qq_official_subagent_dispatches SET tool_profile='official-unknown-v999' WHERE task_id=?", (self.task.task_id,))
         self.assertEqual(self.query('SELECT tool_profile FROM qq_official_subagent_dispatches'), [{'tool_profile': 'official-files-v1'}])
 
     async def test_final_summary_recovery_reads_current_file_state_without_rerunning_model(self):

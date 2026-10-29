@@ -43,6 +43,7 @@ from .mcp_bridge.continuations import DELIVERY_PREFIX as MCP_DELIVERY_PREFIX
 from .mcp_bridge.store import McpDenied
 from .project_file_outbox import FILE_PREFIX
 from .project_file_transport import file_identity, deliver_file
+from .agent.control import RouteAuthorityLost
 
 
 class OneBotDelivery(HandlerService):
@@ -112,7 +113,23 @@ class OneBotDelivery(HandlerService):
             bot = bots[0]
             for reminder in self.context.reminder_store.claim_due(limit=10):
                 try:
-                    await self._deliver_reminder(bot, reminder)
+                    migration = getattr(self.context, "migration_service", None)
+                    if migration is None:
+                        await self._deliver_reminder(bot, reminder)
+                    else:
+                        try:
+                            account = await self.context.db_call(migration.outgoing_account, "reminder", reminder.reminder_id)
+                            selected = next((item for item in bots if str(item.self_id) == account.app_id), None)
+                            if selected is None:
+                                self.context.reminder_store.mark_failed(reminder.reminder_id, "原机器人尚未连接", retry_seconds=30)
+                                continue
+                        except Exception:
+                            raise RouteAuthorityLost("reminder_source_unavailable") from None
+                        async with migration.outgoing_context("reminder", reminder.reminder_id, selected):
+                            await self._deliver_reminder(selected, reminder)
+                except RouteAuthorityLost:
+                    self.context.reminder_store.park_route_attention(reminder)
+                    self.context.logger.warning("Managed reminder stopped for source/receipt review.")
                 except ActionFailed as exc:
                     if self.services.replies._is_napcat_send_timeout(exc):
                         self.context.logger.warning(
@@ -250,6 +267,13 @@ class OneBotDelivery(HandlerService):
                         self.context.bridge_manager.validate_delivery(delivery)
                     if delivery.target_platform == "onebot-v11":
                         selected_bot = bots[0] if bots else None
+                        migration = getattr(self.context, "migration_service", None)
+                        if migration is not None:
+                            try:
+                                account = await self.context.db_call(migration.outgoing_account, "delivery", delivery.delivery_id)
+                            except Exception:
+                                raise RouteAuthorityLost("delivery_source_unavailable") from None
+                            selected_bot = next((bot for bot in bots if str(bot.self_id) == account.app_id), None)
                         if delivery.idempotency_key.startswith(FILE_PREFIX):
                             try:
                                 identity = await file_identity(self.context, delivery)
@@ -297,7 +321,11 @@ class OneBotDelivery(HandlerService):
                         if blocker is not None:
                             self.context.delivery_store.defer_unsent(delivery, blocker)
                             continue
-                        await self._deliver_onebot_outbox(selected_bot, delivery)
+                        if migration is None:
+                            await self._deliver_onebot_outbox(selected_bot, delivery)
+                        else:
+                            async with migration.outgoing_context("delivery", delivery.delivery_id, selected_bot):
+                                await self._deliver_onebot_outbox(selected_bot, delivery)
                     elif self.context.bridge_manager is not None:
                         native_id = await self.context.bridge_manager.deliver(delivery)
                         self.context.delivery_store.mark_committed(
@@ -308,6 +336,9 @@ class OneBotDelivery(HandlerService):
                         raise BridgeRetryableError(
                             f"没有注册 {delivery.target_platform} 投递器"
                         )
+                except RouteAuthorityLost:
+                    self.context.delivery_store.mark_ambiguous(delivery.delivery_id, "source_route_needs_attention")
+                    self.context.logger.warning("Managed delivery stopped for source/receipt review.")
                 except ActionFailed as exc:
                     if self.services.replies._is_napcat_send_timeout(exc):
                         self.context.delivery_store.mark_ambiguous(

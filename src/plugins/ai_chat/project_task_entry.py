@@ -48,12 +48,14 @@ async def submit_project_task(context, *, objective, role, packet_factory, selec
     project = None if prior is not None else await _store(runtime.store.current, access)
     if prior is None and project is None:
         return None
-    if not app.settings.is_sandbox_user_allowed(context.event.user_id):
+    from .project_authorization import official_project
+    official = official_project(access) is not None
+    if not official and not app.settings.is_sandbox_user_allowed(context.event.user_id):
         raise PermissionError("当前用户没有项目沙盒执行权限。")
     if prior is not None:
         return entry_receipt(prior)
     coordinator = app.subagent_coordinator
-    if admission is None or coordinator is None or coordinator.dispatcher is None:
+    if admission is None or coordinator is None or (not official and coordinator.dispatcher is None):
         raise JobDeferred("项目后台任务尚未就绪；不会改用临时任务。", 30)
     if type(turn_id) is not int or turn_id <= 0:
         raise ProjectConflict("项目任务缺少持久消息记录，尚未启动。")
@@ -79,16 +81,18 @@ async def submit_project_task(context, *, objective, role, packet_factory, selec
     # Recheck membership after model latency; the transaction also checks focus,
     # project revision, original turn and all outstanding I/O before freezing it.
     access = await project_access(context)
-    if not app.settings.is_sandbox_user_allowed(context.event.user_id):
+    if not official and not app.settings.is_sandbox_user_allowed(context.event.user_id):
         raise PermissionError("项目沙盒执行权限已撤销。")
     require_tools({name for step in decision.steps for name in step.get("required_tools", [])})
     try:
         receipt = await _store(admission.request, access, project_id=project["project_id"],
             expected_version=project["version"], request_key=key, turn_id=turn_id,
             packet=packet, decision=decision,
-            dispatch={"event": context.event.model_dump(mode="json"),
+            dispatch=({'platform':'qq-official','tool_profile':'official-projects-v1',
+                       'profile':selected_profile.name,'project_entry':entry}
+                      if official else {"event": context.event.model_dump(mode="json"),
                       "bot_id": access.scope.bot_native_user_id, "profile": selected_profile.name,
-                      "project_entry": entry},
+                      "project_entry": entry}),
             max_parallelism=coordinator.max_parallelism, max_steps=coordinator.max_steps,
             timeout_seconds=coordinator.timeout_seconds,
             preflight=runtime.backends[project["backend"]].preflight)

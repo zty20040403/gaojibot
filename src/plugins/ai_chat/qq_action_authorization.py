@@ -6,14 +6,15 @@ import json
 from functools import wraps
 from typing import Any
 
-from nonebot import get_bots
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, PrivateMessageEvent
-from nonebot.exception import FinishedException
-from nonebot.matcher import Matcher, current_bot, current_event, current_matcher
 
 from src.bot_security.service import approved_request, assert_approved
 from src.bot_security.store import SecurityError, canonical
 from .tool_policy import tool_enabled
+
+def get_bots():
+    from nonebot import get_bots as legacy_get_bots
+    return legacy_get_bots()
+
 
 COMMANDS = {
     "handle_model_command": "修改会话模型", "handle_effort_command": "修改推理强度",
@@ -38,6 +39,7 @@ def requires_mobile_tool(name: str) -> bool:
 
 
 def command_changes_state(name: str, event: Any, args: Any) -> bool:
+    from nonebot.adapters.onebot.v11 import Message
     text = args.extract_plain_text().strip() if isinstance(args, Message) else ""
     if name in {"handle_model_command", "handle_effort_command"}:
         return bool(text)
@@ -51,6 +53,7 @@ def command_changes_state(name: str, event: Any, args: Any) -> bool:
 
 
 def command_payload(name: str, event: Any, args: Any) -> dict[str, Any]:
+    from nonebot.adapters.onebot.v11 import Message
     return {"handler": name, "event": event.model_dump(mode="json"), "args": str(args) if isinstance(args, Message) else ""}
 
 
@@ -62,6 +65,8 @@ def command_targets() -> dict[str, Any]:
 
 
 async def freeze_targets(service, name, event, args) -> dict[str, Any]:
+    from nonebot.adapters.onebot.v11 import GroupMessageEvent
+    from nonebot.adapters.onebot.v11 import Message
     text = args.extract_plain_text().strip() if isinstance(args, Message) else ""
     plain = event.get_plaintext().strip()
     if name == "handle_task_stop" or (name == "handle_control_command" and plain.split()[0].lower() == "/kill"):
@@ -86,6 +91,10 @@ def mobile_command(function):
     async def guarded(*args, **kwargs):
         bound = signature.bind(*args, **kwargs)
         service, event = bound.arguments["self"], bound.arguments["event"]
+        if event is None:
+            # Official commands have a separate current source/fenced router.
+            # Never deserialize a fabricated OneBot event to reuse this path.
+            raise SecurityError('official_legacy_command_unavailable')
         command_args = bound.arguments.get("args")
         if function.__name__ == "handle_shell_command" or not command_changes_state(function.__name__, event, command_args):
             return await function(*args, **kwargs)
@@ -120,6 +129,8 @@ def tool_payload(name: str, arguments: dict[str, Any], event: Any, user_text: st
 
 
 async def propose_tool(context: Any, name: str, arguments: dict[str, Any], event: Any, user_text: str) -> str:
+    if event is None:
+        raise SecurityError('official_legacy_tool_unavailable')
     mobile = getattr(context, "mobile_authorization", None)
     try:
         if mobile is None:
@@ -137,11 +148,15 @@ def register_qq_executors(services: Any) -> None:
         return
 
     def event_from(payload):
+        from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
         raw = payload["event"]
         event_type = GroupMessageEvent if raw["message_type"] == "group" else PrivateMessageEvent
         return event_type.model_validate(raw)
 
     async def execute_command(request: dict[str, Any]) -> dict[str, Any]:
+        from nonebot.adapters.onebot.v11 import Message
+        from nonebot.exception import FinishedException
+        from nonebot.matcher import Matcher, current_bot, current_event, current_matcher
         payload = request["payload"]
         assert_approved("command", payload)
         name = payload["handler"]
@@ -188,3 +203,15 @@ def register_qq_executors(services: Any) -> None:
         return parsed if isinstance(parsed, dict) else {"ok": True, "data": parsed}
 
     mobile.executors.update(command=execute_command, tool=execute_tool)
+
+
+def bind_official_host_source(authority, source):
+    """Host-only boundary used around the existing Fleet call path.
+
+    Normal M6 owned sandbox tools keep their native automatic capacity/source
+    policy; this binding never broadens them or an unknown legacy command.
+    """
+    from .adapters.qq_official.host_authority import OfficialHostAuthority
+    if not isinstance(authority, OfficialHostAuthority):
+        raise SecurityError('official_host_authority_unavailable')
+    return authority.bind(source)

@@ -20,6 +20,9 @@ async def start_background_tasks(
     project_runtime = getattr(context, "project_runtime", None)
     if project_runtime is not None:
         await project_runtime.start()
+        migration=getattr(context,'migration_service',None)
+        if migration is not None:
+            await migration.configure_project_runtime(project_runtime)
     mcp_runtime = getattr(context, "mcp_runtime", None)
     if mcp_runtime is not None:
         await mcp_runtime.start()

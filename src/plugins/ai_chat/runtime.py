@@ -5,7 +5,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from .adapters.qq_official.runtime import OfficialRuntime
@@ -171,6 +171,8 @@ class AppContext:
     mobile_authorization: MobileAuthorization | None = None
     official_runtime: OfficialRuntime | None = field(default=None, repr=False)
     db_call: DatabaseCalls = field(default_factory=DatabaseCalls, repr=False)
+    migration_service: Any = field(default=None, repr=False)
+    official_host: Any = field(default=None, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _closing: bool = field(default=False, init=False, repr=False)
 
@@ -190,8 +192,16 @@ class AppContext:
             raise RuntimeError("Official ingress requires durable storage")
         from .adapters.qq_official.runtime import OfficialRuntime
 
+        factories = {}
+        host = getattr(self, 'official_host', None)
+        migration = getattr(self, 'migration_service', None)
+        if host is not None:
+            factories.update(migration_factory=host.migration_factory,
+                file_services_factory=host.files_factory, approval_factory=host.approval_factory)
+        elif migration is not None:
+            factories['migration_factory'] = migration.official_factory
         runtime = OfficialRuntime(config, self.database, logger=self.logger, ledger=self.message_ledger,
-                                  journal=getattr(self, "turn_journal", None), application=self)
+                                  journal=getattr(self, "turn_journal", None), application=self, **factories)
         self.official_runtime = runtime
         try:
             return await runtime.start()
@@ -220,6 +230,13 @@ class AppContext:
             self.logger.info(
                 f"Cancelled {cancelled} running AI task(s) during shutdown."
             )
+
+        if self.migration_service is not None:
+            # All effects/tasks have stopped. Keep baseline locks alive until
+            # then; closing the shared DB first would lose historical receipts.
+            await self.migration_service.close()
+            self.migration_service = None
+        self.official_host = None
 
         await self.db_call.close()
 

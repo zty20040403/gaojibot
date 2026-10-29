@@ -247,6 +247,38 @@ class InboundMessage:
 
 
 @dataclass(frozen=True)
+class BackgroundToolSource:
+    """Actual background identity metadata, never an inbound or a permission.
+
+    The host separately checks its persisted job, source and exact grants.
+    No message ID, timestamp, reply credential or synthetic event is invented
+    for work continued without a new authenticated inbound message.
+    """
+
+    endpoint: EndpointKey = field(repr=False)
+    actor: ActorKey = field(repr=False)
+    source_kind: Literal["subagent", "routine", "project"]
+    source_ref: str = field(repr=False)
+    source_revision: int
+
+    def __post_init__(self) -> None:
+        _validate_target(self.endpoint, self.actor, None)
+        if self.endpoint.account.platform != "qq-official":
+            raise ValueError("background tool source requires an official account")
+        if self.source_kind not in {"subagent", "routine", "project"}:
+            raise ValueError("unsupported background tool source")
+        _text(self.source_ref, "source_ref")
+        if len(self.source_ref.encode("utf-8")) > 128:
+            raise ValueError("background source reference is too long")
+        if type(self.source_revision) is not int or not 1 <= self.source_revision <= 2**63-1:
+            raise ValueError("background source revision must be positive")
+
+    @property
+    def scope(self) -> ConversationScope:
+        return self.endpoint.scope
+
+
+@dataclass(frozen=True)
 class PlatformFeatures:
     """Implementation support only; not platform or local authorization."""
 

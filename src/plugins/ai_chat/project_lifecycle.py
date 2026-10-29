@@ -149,9 +149,10 @@ def transition_plan(project, action, baseline, *, rebuild=None):
 
 
 class ProjectLifecycle:
-    def __init__(self, projects, jobs):
+    def __init__(self, projects, jobs, *, official_authority=None):
         self.projects, self.jobs = projects, jobs
         self.task_admission = None
+        self.official_authority = official_authority
 
     @staticmethod
     def _public_run(run):
@@ -380,6 +381,11 @@ class ProjectLifecycle:
                 cursor, project_id, access, "lifecycle_requested",
                 {"job_id": job.job_id, "action": action, "generation": generation}, now,
             )
+        if access is not None:
+            from .project_background import bind_lifecycle
+            bind_lifecycle(cursor, access, project, job, row, now=now)
+            from .adapters.onebot_route_context import capture_created_job
+            capture_created_job(cursor, job, scope=access.scope)
         return job, row
 
     def context(self, job, *, access=None, now=None):
@@ -411,7 +417,33 @@ class ProjectLifecycle:
                 raise PermissionError("Host quota authority cannot run other lifecycle actions")
             return require_quota_authority(cursor, project, run)
 
-    def _owned(self, cursor, job, now):
+    def pre_rpc(self, job):
+        from .agent.control import assert_job_owned
+        assert_job_owned()
+        with self.projects._transaction() as cursor:
+            exists = cursor.execute("SELECT to_regclass('qq_official_project_lifecycle_authority') AS name").fetchone()['name']
+            row = (cursor.execute('SELECT 1 FROM qq_official_project_lifecycle_authority WHERE job_id=?',
+                                  (job.job_id,)).fetchone() if exists else None)
+            if row is not None:
+                if self.official_authority is None:
+                    raise PermissionError('project_authority_unavailable')
+                self.official_authority(cursor,job)
+
+    def _owned(self, cursor, job, now, *, receipt_only=False):
+        authority = None
+        # Resolve account/route/source/job before the project row. Historical
+        # observations do not grant a new physical operation.
+        if not receipt_only:
+            exists = cursor.execute("SELECT to_regclass('qq_official_project_lifecycle_authority') AS name").fetchone()['name']
+            binding = (cursor.execute('SELECT 1 FROM qq_official_project_lifecycle_authority WHERE job_id=?',
+                       (job.job_id,)).fetchone() if exists else None)
+            if binding is not None:
+                if self.official_authority is None:
+                    raise PermissionError('project_authority_unavailable')
+                authority = self.official_authority(cursor, job)
+                from .project_authorization import official_project
+                if official_project(authority) is None:
+                    raise PermissionError('project_authority_unavailable')
         project = cursor.execute(
             "SELECT * FROM projects WHERE project_id=? FOR UPDATE",
             (job.payload.get("project_id"),),
@@ -441,7 +473,10 @@ class ProjectLifecycle:
         if run["action"] == "resize":
             from .project_quota import require_quota_authority
             require_quota_authority(cursor, project, run)
-        return dict(project), dict(run)
+        result = dict(run)
+        if authority is not None:
+            result['official_authority'] = True
+        return dict(project), result
 
     def next_step(self, job, *, now=None):
         lease_now = now
@@ -642,7 +677,7 @@ class ProjectLifecycle:
         if len(json.dumps(progress)) > 8192:
             raise ValueError("Project progress is too large")
         with self.projects._transaction() as cursor:
-            project, run = self._owned(cursor, job, None)
+            project, run = self._owned(cursor, job, None, receipt_only=True)
             row = cursor.execute(
                 "SELECT * FROM project_lifecycle_steps WHERE job_id=? AND step_index=?",
                 (job.job_id, step["step_index"]),
@@ -674,7 +709,7 @@ class ProjectLifecycle:
         lease_now = now
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            project, run = self._owned(cursor, job, lease_now)
+            project, run = self._owned(cursor, job, lease_now, receipt_only=True)
             stored = cursor.execute(
                 "SELECT * FROM project_lifecycle_steps WHERE job_id=? AND step_index=?",
                 (job.job_id, step["step_index"]),
@@ -712,6 +747,8 @@ class ProjectLifecycle:
                 "UPDATE project_lifecycle_runs SET next_step=next_step+1,updated_at=? WHERE job_id=?",
                 (now, job.job_id),
             )
+            from .adapters.onebot_route_context import observe_project_effect
+            observe_project_effect(cursor, domain="project.lifecycle", reference=f"{job.job_id}:{stored['step_index']}")
 
     def finish(self, job, *, access=None, now=None):
         lease_now = now
@@ -879,7 +916,7 @@ class ProjectLifecycle:
         lease_now = now
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
-            _, run = self._owned(cursor, job, lease_now)
+            _, run = self._owned(cursor, job, lease_now, receipt_only=True)
             cursor.execute(
                 "UPDATE project_lifecycle_runs SET status='needs_attention',updated_at=? WHERE job_id=?",
                 (now, run["job_id"]),

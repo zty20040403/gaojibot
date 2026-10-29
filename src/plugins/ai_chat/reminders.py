@@ -42,6 +42,7 @@ class ReminderStore:
         self.path, self._connection = open_store_connection(path)
         self.max_per_scope = max(int(max_per_scope), 1)
         self._lock = threading.RLock()
+        self.source_recorder = None
 
     def close(self) -> None:
         with self._lock:
@@ -65,6 +66,8 @@ class ReminderStore:
         if due_at <= created_at:
             raise ValueError("提醒时间必须晚于当前时间。")
         with self._transaction() as cursor:
+            from .adapters.onebot_route_context import guard_source_transaction
+            guard_source_transaction(cursor)
             active = int(
                 cursor.execute(
                     """
@@ -105,6 +108,8 @@ class ReminderStore:
                 "SELECT * FROM reminders WHERE reminder_id = ?",
                 (int(cursor.lastrowid),),
             ).fetchone()
+            if self.source_recorder is not None and row is not None and row["platform"] == "onebot-v11":
+                self.source_recorder(cursor, self._row(row), created_at)
         if row is None:
             raise RuntimeError("提醒写入失败。")
         return self._row(row)
@@ -151,7 +156,7 @@ class ReminderStore:
                         WHEN last_error = '' THEN '发送租约过期，等待重试'
                         ELSE last_error
                     END
-                WHERE status = 'sending' AND lease_until <= ?
+                WHERE platform <> 'qq-official' AND status = 'sending' AND lease_until <= ?
                 """,
                 (timestamp,),
             )
@@ -159,7 +164,7 @@ class ReminderStore:
             rows = cursor.execute(
                 f"""
                 SELECT * FROM reminders
-                WHERE status = 'pending' AND next_attempt_at <= ?
+                WHERE platform <> 'qq-official' AND status = 'pending' AND next_attempt_at <= ?
                 ORDER BY next_attempt_at ASC, reminder_id ASC
                 LIMIT ?
                 {lock_clause}
@@ -202,6 +207,15 @@ class ReminderStore:
             )
             return cursor.rowcount > 0
 
+    def park_route_attention(self, reminder: Reminder) -> bool:
+        """Stop this exact claimed attempt without asserting remote delivery."""
+        with self._transaction() as cursor:
+            cursor.execute("""UPDATE reminders SET status='cancelled',lease_until=NULL,
+                last_error='source_route_needs_attention'
+                WHERE reminder_id=? AND status='sending' AND attempts=?""",
+                (reminder.reminder_id, reminder.attempts))
+            return cursor.rowcount == 1
+
     def mark_failed(
         self,
         reminder_id: int,
@@ -234,7 +248,7 @@ class ReminderStore:
             try:
                 cursor.execute("BEGIN")
                 yield cursor
-            except Exception:
+            except BaseException:
                 self._connection.rollback()
                 raise
             else:

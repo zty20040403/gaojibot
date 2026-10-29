@@ -6,6 +6,8 @@ unknown, never replay automatically. Bytes/handles/URLs never enter diagnostics.
 """
 from __future__ import annotations
 
+from .project_authority import RecipientEvidenceUnavailable
+
 import asyncio
 import hashlib
 import json
@@ -224,6 +226,11 @@ class OfficialMediaUploader:
             value = parse(response.status, response.body)
             return StageResult(operation, "confirmed", attempt_id, stage.request_commitment,
                                http_status=response.status, value=value)
+        except RecipientEvidenceUnavailable:
+            # Only this invocation's pre-dispatch flag proves no physical upload.
+            # If a future transport invokes authority after dispatch, retain unknown.
+            return StageResult(operation, "unknown" if started else "proven_unsent", attempt_id,
+                stage.request_commitment, "recipient_evidence_unavailable")
         except QQAPIError as error:
             if not started or error.category == "connection_failed":
                 disposition = "proven_unsent"

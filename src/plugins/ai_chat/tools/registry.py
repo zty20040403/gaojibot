@@ -41,7 +41,8 @@ def platform_enabled(handler: ToolHandler, context: ToolContext) -> bool:
     callers require both account-bound inputs; history aliases grant no access.
     Unknown/custom handlers must opt in explicitly to non-OneBot execution.
     """
-    inbound, platform = context.inbound, context.platform
+    from .state import structured_tool_source
+    inbound, platform = structured_tool_source(context), context.platform
     neutral = getattr(handler, "platform_neutral", False) is True
     required = getattr(handler, "required_features", frozenset())
     if inbound is None and platform is None:

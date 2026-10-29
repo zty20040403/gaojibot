@@ -196,6 +196,24 @@ class ModelLeaseFenceTests(unittest.IsolatedAsyncioTestCase):
             client.with_options.assert_not_called()
         self.assertEqual(client.chat.completions.create.await_count, 2)
 
+    async def test_route_only_fence_also_disables_sdk_hidden_retries(self):
+        from src.plugins.ai_chat.agent.control import RouteFence, active_route_fence, RouteAuthorityLost
+        client, provider = self.openai_client(), OpenAIChatProvider()
+        job_token = active_job_fence.set(None)
+        route_live = True
+        route_token = active_route_fence.set(RouteFence(lambda: route_live))
+        try:
+            with patch.object(provider, "_client", return_value=client):
+                self.assertEqual(await provider.create_completion(self.primary, messages=[]), "ok")
+                client.with_options.assert_called_once_with(max_retries=0)
+                route_live = False
+                with self.assertRaises(RouteAuthorityLost):
+                    await provider.create_completion(self.primary, messages=[])
+                self.assertEqual(client.chat.completions.create.await_count, 1)
+        finally:
+            active_route_fence.reset(route_token)
+            active_job_fence.reset(job_token)
+
     async def test_real_openai_sdk_does_not_hide_retry_after_server_failure(self):
         requests = []
 

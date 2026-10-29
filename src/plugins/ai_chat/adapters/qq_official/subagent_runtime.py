@@ -28,6 +28,7 @@ TEXT_TOOLS = frozenset({'context_search', 'context_expand', 'get_message_by_id',
     'search_messages', 'memory_list', 'web_search', 'inspect_source', 'use_skill'})
 FILE_TOOLS = frozenset({'sandbox_create', 'sandbox_list', 'sandbox_destroy', 'sandbox_exec',
     'sandbox_write_file', 'sandbox_read_file', 'send_file_from_sandbox'})
+HOST_TOOLS = frozenset({'operation_prepare','operation_status','operation_approve'})
 FILE_ROLES = frozenset({'researcher', 'analyst', 'coder', 'document'})
 
 
@@ -44,7 +45,7 @@ def job_kind(account):
 
 def submit(cursor, *, token, source_api, source_handle, source_job, tool_call_id,
            tool_name, packet, decision, profile, now, execution_deadline,
-           result_wait_seconds, admission, coordinator, jobs, tool_profile='official-text-v1'):
+           result_wait_seconds, admission, coordinator, jobs, tool_profile='official-text-v1', host_admission=None):
     row = source_api.assert_execution_current(cursor, token=token, handle=source_handle,
         job=source_job, now=now, admission=admission)
     if (row['state'] != 'executing' or not isinstance(tool_call_id, str)
@@ -53,8 +54,11 @@ def submit(cursor, *, token, source_api, source_handle, source_job, tool_call_id
             or tool_name not in {'delegate_agent', 'run_subagents'}
             or type(execution_deadline) is not int or not now < execution_deadline <= now + 7200
             or type(result_wait_seconds) is not int or not 1 <= result_wait_seconds <= 86400
-            or tool_profile not in {'official-text-v1', 'official-files-v1'}):
+            or tool_profile not in {'official-text-v1', 'official-files-v1', 'official-host-v1'}):
         raise ValueError('invalid_subagent_submission')
+    if tool_profile == 'official-host-v1' and (not callable(host_admission)
+            or host_admission(cursor, source_handle) is not True):
+        raise ValueError('official_host_profile_not_admitted')
     expected = StructuredTaskOwner(source_handle.endpoint, source_handle.actor)
     require_same_owner(object_owner(packet), expected)
     if (packet.scope_key != source_handle.scope_key
@@ -66,6 +70,8 @@ def submit(cursor, *, token, source_api, source_handle, source_job, tool_call_id
                        coordinator.max_steps, strict=True)
         roles = FILE_ROLES if tool_profile == 'official-files-v1' else {'researcher', 'analyst'}
         allowed = TEXT_TOOLS | FILE_TOOLS if tool_profile == 'official-files-v1' else TEXT_TOOLS
+        if tool_profile == 'official-host-v1':
+            allowed |= HOST_TOOLS
         if any(step.get('agent') not in roles or not set(step.get('required_tools', ())) <= allowed
                for step in decision.steps):
             raise ValueError('unsupported_subagent_role')
@@ -105,7 +111,7 @@ def submit(cursor, *, token, source_api, source_handle, source_job, tool_call_id
     return task
 
 
-def assert_current(cursor, *, token, task_id, now, admission, job=None):
+def assert_current(cursor, *, token, task_id, now, admission, job=None, migration_authority=None, project_authority=None):
     try:
         assert_epoch(cursor, token)
     except AccountLeaseLost:
@@ -142,21 +148,42 @@ def assert_current(cursor, *, token, task_id, now, admission, job=None):
     if (control is None or control['revision'] != 1 or task is None
             or task['requester_user_id'] is not None or task['account_key'] != token.account_key
             or task['endpoint_key'] != endpoint.key or task['requester_actor_key'] != actor.key
-            or task['trigger_message_id'] != binding['source_canonical_message_id']
-            or task['project_id'] is not None):
+            or task['trigger_message_id'] != binding['source_canonical_message_id']):
         raise LeaseLost('official_subagent_identity_unavailable')
     dispatch = json.loads(control['dispatch_json'])
-    if (binding['tool_profile'] not in {'official-text-v1', 'official-files-v1'}
+    if (binding['tool_profile'] not in {'official-text-v1', 'official-files-v1', 'official-host-v1', 'official-projects-v1'}
             or dispatch.get('tool_profile') != binding['tool_profile']):
         raise LeaseLost('official_subagent_tool_profile_changed')
+    if (task['project_id'] is not None) != (binding['tool_profile'] == 'official-projects-v1'):
+        raise LeaseLost('official_project_source_changed')
+    if task['project_id'] is not None:
+        if job is None or project_authority is None or (binding.get('migration_item_id') is not None and migration_authority is None):
+            raise LeaseLost('official_project_authority_unavailable')
+        try:
+            accepted = project_authority(cursor, token=token, binding=dict(binding), task=dict(task), job=job, now=now)
+        except (PermissionError, ValueError):
+            raise LeaseLost('official_project_authority_unavailable') from None
+        if accepted is not True:
+            raise LeaseLost('official_project_authority_unavailable')
     if job is None and task['status'] not in TERMINAL:
         raise LeaseLost('official_subagent_execution_requires_job')
+    if binding.get('migration_item_id') is not None:
+        if migration_authority is None:
+            raise LeaseLost('migration_authority_unavailable')
+        migration_authority.assert_current(cursor, binding=dict(binding), task=dict(task), job=job, now=now)
+    elif getattr(admission, 'require_execution', None) is not None:
+        from .migration_types import MigrationDenied
+        try:
+            admission.require_execution(cursor, binding['source_execution_id'], endpoint=endpoint,
+                actor=actor, operation='execute' if task['status'] not in TERMINAL else 'send')
+        except MigrationDenied:
+            raise LeaseLost('migration_source_unavailable') from None
     return dict(binding), dict(task)
 
 
-def freeze_and_enqueue(cursor, *, token, task_id, now, outbox, admission, job=None):
+def freeze_and_enqueue(cursor, *, token, task_id, now, outbox, admission, job=None, migration_authority=None, project_authority=None):
     binding, task = assert_current(cursor, token=token, task_id=task_id, now=now,
-                                   admission=admission, job=job)
+                                   admission=admission, job=job, migration_authority=migration_authority, project_authority=project_authority)
     if task['status'] not in TERMINAL:
         raise ValueError('subagent_result_not_ready')
     if binding['plan_id']:
@@ -182,6 +209,8 @@ def freeze_and_enqueue(cursor, *, token, task_id, now, outbox, admission, job=No
         body = MessageBody((TextNode(0, f'task#{task_id}\n{text}'),))
         encoded = body_to_json(body)
         expires = now + min(binding['result_wait_seconds'], outbox.max_wait_seconds)
+        if binding.get('migration_item_id') is not None:
+            expires = min(expires, binding['migration_result_deadline_at'])
         cursor.execute('''UPDATE qq_official_subagent_dispatches SET result_body_json=?,
             result_digest=?,result_task_status=?,result_at=?,result_expires_at=?,updated_at=?
             WHERE task_id=? AND result_body_json IS NULL''',
@@ -196,14 +225,18 @@ def freeze_and_enqueue(cursor, *, token, task_id, now, outbox, admission, job=No
             SET suppressed_reason='result_expired',updated_at=? WHERE task_id=?''', (now, task_id))
         return None
     rendered = render_plan(body, endpoint, allowed_mentions=frozenset())
+    source_proof = (migration_authority.enqueue_proof(cursor, binding=binding, job=job, now=now)
+        if binding.get('migration_item_id') is not None else None)
     ref = outbox.enqueue(token, rendered=rendered, requester=actor,
         logical_key=f'qq-subagent-result:{task_id}:1', source_scope_key=task['scope_key'],
-        source_native_message_id=binding['source_native_message_id'],
+        source_native_message_id=binding['source_native_message_id'] or '',
         source_canonical_message_id=binding['source_canonical_message_id'],
-        expires_at=expires, purpose='background_result', transaction_cursor=cursor)
+        expires_at=expires, purpose='background_result', transaction_cursor=cursor, source_proof=source_proof)
     cursor.execute('''UPDATE qq_official_subagent_dispatches SET plan_id=?,handed_off_at=?,updated_at=?
         WHERE task_id=? AND plan_id IS NULL''', (ref.plan_id, now, now, task_id))
     cursor.execute('UPDATE subagent_controls SET final_queued_revision=1 WHERE task_id=? AND revision=1', (task_id,))
+    if binding.get('migration_item_id') is not None:
+        migration_authority.bind_plan(cursor, binding=binding, plan_id=ref.plan_id, job=job, now=now)
     return ref.plan_id
 
 
@@ -292,6 +325,8 @@ class TaskToolSession:
     hooks: object = None
     close: object = None
     files_enabled: bool = False
+    host_enabled: bool = False
+    project_enabled: bool = False
 
 
 @dataclass
@@ -308,6 +343,9 @@ class OfficialSubAgentDispatcher:
     execute_tool: object = None
     clock: object = time.time
     execution_factory: object = None
+    migration_authority: object = None
+    project_finalizer: object = None
+    project_authority: object = None
 
     async def authority_lost(self, job):
         def settle():
@@ -321,7 +359,7 @@ class OfficialSubAgentDispatcher:
 
         def guard(cursor):
             assert_current(cursor, token=self.token, task_id=task_id, now=int(self.clock()),
-                           admission=self.admission, job=job)
+                           admission=self.admission, job=job, migration_authority=self.migration_authority, project_authority=self.project_authority)
 
         def owned():
             with self.transaction() as cursor:
@@ -334,25 +372,40 @@ class OfficialSubAgentDispatcher:
         session = None
         try:
             await self.database_calls(owned)
+            if self.migration_authority is not None:
+                def begin_migration():
+                    with self.transaction() as cursor:
+                        return self.migration_authority.begin_job(cursor, job=job, now=int(self.clock()))
+                if await self.database_calls(begin_migration) is False:
+                    return {'task_id': task_id, 'status': 'needs_attention', 'reason': 'migration_execution_unknown'}
             task = await self.database_calls(self.coordinator.store.get, task_id)
             if task.status not in TERMINAL:
                 with self.transaction() as cursor:
                     binding, _ = assert_current(cursor, token=self.token, task_id=task_id,
-                        now=int(self.clock()), admission=self.admission, job=job)
+                        now=int(self.clock()), admission=self.admission, job=job, migration_authority=self.migration_authority, project_authority=self.project_authority)
                 remaining = binding['execution_deadline_at'] - self.clock()
                 if remaining <= 0:
                     self.coordinator.store.set_task_state(task_id, 'failed', error='subagent_deadline')
                 else:
                     if task.status not in {'queued', 'interrupted'}:
                         self.coordinator.store.interrupt_task(task_id)
-                    files_enabled = binding['tool_profile'] == 'official-files-v1'
+                    project_enabled = binding['tool_profile'] == 'official-projects-v1'
+                    files_enabled = binding['tool_profile'] in {'official-files-v1','official-projects-v1'}
                     if self.execution_factory is not None:
                         session = await self.execution_factory(job, task, files_enabled)
                         if not isinstance(session, TaskToolSession):
                             raise LeaseLost('official_task_context_invalid')
                     if files_enabled and (session is None or not session.files_enabled or session.hooks is None):
                         raise JobDeferred('official_task_files_unavailable', 30)
+                    if project_enabled and (session is None or not session.project_enabled
+                            or session.hooks.project_inputs is None or self.project_finalizer is None):
+                        raise JobDeferred('official_task_projects_unavailable', 30)
+                    host_enabled = binding['tool_profile'] == 'official-host-v1'
+                    if host_enabled and (session is None or not session.host_enabled):
+                        raise JobDeferred('official_task_host_unavailable', 3)
                     allowed = TEXT_TOOLS | FILE_TOOLS if files_enabled else TEXT_TOOLS
+                    if host_enabled:
+                        allowed |= HOST_TOOLS
                     tools = tuple(t for t in (session.tools if session else self.tools)
                                   if t['function']['name'] in allowed)
                     saved_profile = self.coordinator.store.control(task_id)['dispatch'].get('profile')
@@ -376,10 +429,23 @@ class OfficialSubAgentDispatcher:
                             tools=tools, execute_tool=execute_tool, progress=None,
                             hooks=session.hooks if session else None)
 
+            if (self.coordinator.store.get(task_id).status == 'waiting_external'
+                    and self.coordinator.store.control(task_id)['dispatch'].get('tool_profile') == 'official-host-v1'):
+                raise JobDeferred('official_host_operation_pending', 3)
+
+            if task.project_id is not None:
+                terminal = self.coordinator.store.get(task_id)
+                if terminal.status in {'failed','cancelled'}:
+                    return {'task_id': task_id, 'status': 'needs_attention', 'reason': 'project_update_not_accepted'}
+                if self.project_finalizer is None:
+                    raise JobDeferred('official_task_projects_unavailable', 30)
+                if await self.project_finalizer(job,terminal) is False:
+                    return {'task_id': task_id, 'status': 'needs_attention', 'reason': 'project_update_not_accepted'}
+
             def finish():
                 with self.transaction() as cursor:
                     return freeze_and_enqueue(cursor, token=self.token, task_id=task_id,
-                        now=int(self.clock()), outbox=self.outbox, admission=self.admission, job=job)
+                        now=int(self.clock()), outbox=self.outbox, admission=self.admission, job=job, migration_authority=self.migration_authority, project_authority=self.project_authority)
             plan_id = await self.database_calls(finish)
             return {'task_id': task_id, 'plan_id': plan_id}
         except LeaseLost:
@@ -409,14 +475,14 @@ class OfficialSubAgentDispatcher:
                     FROM qq_official_subagent_dispatches b JOIN subagent_tasks t ON t.task_id=b.task_id
                     WHERE b.account_key=? AND b.task_id>? AND b.plan_id IS NULL
                     AND b.suppressed_reason IS NULL
-                    AND t.status IN ('completed','partial','failed','cancelled')
+                    AND t.status IN ('completed','partial','failed','cancelled') AND t.project_id IS NULL
                     ORDER BY b.task_id LIMIT ?''', (self.token.account_key, after_task_id, limit)).fetchall())
         result = []
         for task_id in await self.database_calls(candidates):
             def finish():
                 with self.transaction() as cursor:
                     return freeze_and_enqueue(cursor, token=self.token, task_id=task_id,
-                        now=int(self.clock()), outbox=self.outbox, admission=self.admission)
+                        now=int(self.clock()), outbox=self.outbox, admission=self.admission, migration_authority=self.migration_authority)
             try:
                 plan_id = await self.database_calls(finish)
                 result.append((task_id, 'handed_off' if plan_id else 'suppressed', plan_id))

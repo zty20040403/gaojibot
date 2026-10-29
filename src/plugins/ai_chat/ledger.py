@@ -81,9 +81,10 @@ class CanonicalMessage:
 
 
 class MessageLedger:
-    def __init__(self, path: DatabaseSource) -> None:
+    def __init__(self, path: DatabaseSource, *, public_history_clear=None) -> None:
         self.path, self._connection = open_store_connection(path)
         self._lock = threading.RLock()
+        self.public_history_clear = public_history_clear
 
     def close(self) -> None:
         with self._lock:
@@ -906,6 +907,12 @@ class MessageLedger:
 
     def hide_history(self, scope: ConversationScope) -> int:
         with self._transaction() as cursor:
+            # A clear must consume preexisting directional grants even when the
+            # target has no physical conversation or this second has cleared
+            # already. Default None preserves the legacy zero-extra-I/O path.
+            if self.public_history_clear is not None:
+                if self.public_history_clear(cursor, scope) is not None:
+                    raise PermissionError("Public history clear was not authorized")
             conversation = cursor.execute(
                 """
                 SELECT conversation_id FROM conversations WHERE scope_key = ?

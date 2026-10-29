@@ -13,9 +13,16 @@ from .agent.external import active_external
 
 
 class FleetAuthorization:
-    def __init__(self, client: Any, mobile: MobileAuthorization):
+    def __init__(self, client: Any, mobile: MobileAuthorization, *, official_authority=None):
         self.client = client
         self.mobile = mobile
+        self.official_authority = official_authority
+        if official_authority is not None:
+            self.tasks = official_authority.tasks
+            self.submit_lock = asyncio.Lock()
+            return
+        if getattr(mobile.store, 'transport', None) is not None:
+            raise SecurityError('official_host_authority_unavailable')
         mobile.executors["fleet"] = self.execute
         mobile.http_summary = self.http_summary
         mobile.pollers.append(self.poll)
@@ -32,6 +39,11 @@ class FleetAuthorization:
         return account
 
     async def request(self, method: str, path: str, body: dict[str, Any] | None, *, actor: str, origin: str) -> dict[str, Any]:
+        if self.official_authority is not None:
+            return await self.official_authority.request(self.client, method, path, body, actor=actor, origin=origin)
+        from .adapters.qq_official.host_authority import OfficialHostScope
+        if isinstance(server_task.get(), OfficialHostScope):
+            raise SecurityError('official_host_authority_unavailable')
         if method == "GET":
             if actor.startswith("qq:"):
                 account = await asyncio.to_thread(self.mobile.store.account_for_qq, actor[3:])

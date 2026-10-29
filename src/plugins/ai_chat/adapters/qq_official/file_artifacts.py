@@ -99,10 +99,12 @@ class SourceBinding:
     pending_deadline_at: int
     endpoint: EndpointKey
     actor: ActorKey
-    source_execution_id: str
+    source_execution_id: str | None
     source_key: str
     deadline_at: int
-    source_native_message_id: str
+    source_native_message_id: str | None
+    extension: object | None = None
+    source_migration_item_id: str | None = None
 
     def __repr__(self):
         return 'SourceBinding(<protected>)'
@@ -150,6 +152,10 @@ def current_source(cursor, binding, now):
     _time(now)
     if now >= min(binding.deadline_at, binding.pending_deadline_at):
         raise LeaseLost('artifact_source_expired')
+    if binding.extension is not None:
+        # Only a trusted host issuer can register this weak-issued binding.
+        # The extension must re-read its exact persistent domain authority.
+        return binding.extension.current_source(cursor, binding, now)
     if binding.task_id is None:
         try:
             row = execution.assert_execution_current(cursor, token=binding.token, handle=binding.handle,
@@ -367,6 +373,10 @@ class ArtifactStore:
                     'endpoint_key':binding.endpoint.key,'requester_actor_key':binding.actor.key}
                 if any(existing[k] != v for k,v in expected.items()):
                     raise ArtifactError('artifact_request_conflict')
+                if binding.extension is not None:
+                    binding.extension.bind_artifact(cursor,binding,dict(existing),now=self._now(),existing=True)
+                elif existing.get('source_extension_kind') is not None:
+                    raise ArtifactError('artifact_source_conflict')
                 return _record(existing)
             usage = cursor.execute('''SELECT COALESCE(sum(byte_size),0) AS used,count(*) AS objects
                 FROM qq_official_file_artifacts WHERE account_key=? AND bytes_state='available' ''',
@@ -391,8 +401,22 @@ class ArtifactStore:
                 route_epoch=source['route_epoch'], sha256=sha, byte_size=len(content), mime=mime, filename=filename,
                 draft=draft, draft_reason=draft_reason, created_at=now,
                 pending_deadline_at=binding.pending_deadline_at, retain_until=binding.pending_deadline_at)
+            if binding.extension is not None:
+                if binding.extension.kind not in {'project','migration'}:
+                    raise ArtifactError('artifact_extension_unavailable')
+                fields['source_extension_kind'] = binding.extension.kind
+                if binding.extension.kind=='migration' or binding.source_migration_item_id is not None:
+                    if (binding.source_migration_item_id is None or binding.source_execution_id is not None
+                            or binding.source_native_message_id is not None
+                            or (binding.task_id is None and getattr(binding.extension,'source_kind',None)!='file')):
+                        raise ArtifactError('artifact_migration_source_invalid')
+                    fields['source_migration_item_id']=binding.source_migration_item_id
             cursor.execute('INSERT INTO qq_official_file_artifacts (' + ','.join(fields)
                 + ') VALUES (' + ','.join('?' for _ in fields) + ')', tuple(fields.values()))
+            if binding.extension is not None:
+                # Domain binding and artifact commit atomically before the file
+                # worker can claim the ordinary durable job below.
+                binding.extension.bind_artifact(cursor,binding,fields,now=now,existing=False)
             job, _ = self.jobs.enqueue(kind=file_job_kind(binding.endpoint.account),
                 idempotency_key='qq-file:' + key, scope_key='qq-file-endpoint:'
                     + hashlib.sha256(binding.endpoint.key.encode()).hexdigest(),

@@ -68,8 +68,11 @@ def validate_project_settings(settings):
 
 
 class ProjectRuntime:
-    def __init__(self, handlers):
+    def __init__(self, handlers, *, official_provider_factory=None, official_task_dispatch=None, official_file_delivery=None):
         self.handlers, self.app = handlers, handlers.context
+        self.official_provider_factory = official_provider_factory
+        self.official_task_dispatch = official_task_dispatch
+        self.official_file_delivery = official_file_delivery
         validate_project_settings(self.app.settings)
         if not self.app.settings.projects_enabled:
             raise RuntimeError("Projects are disabled")
@@ -99,12 +102,28 @@ class ProjectRuntime:
         self._stop = asyncio.Event()
         self._vm_mounts = None
 
-    async def resolve_access(self, project, principal_id):
+    async def resolve_access(self, project, principal_id, *, source=None, job=None):
         """Never use cached event roles or a different connected bot on recovery."""
         if self.closed or not self.app.settings.projects_enabled:
             raise PermissionError("Project runtime is unavailable")
+        if source is not None or job is not None:
+            from .project_authorization import official_project
+            if source is None:
+                if self.official_provider_factory is None:
+                    raise PermissionError('project_authority_unavailable')
+                source = await self.official_provider_factory(project, principal_id, job=job)
+            proof = official_project(source)
+            if proof is None or source.principal_id != principal_id:
+                raise PermissionError('project_authority_denied')
+            def current():
+                with self.store._transaction() as cursor:
+                    proof.provider.require(cursor, proof, project_id=project['project_id'])
+            await _store(current)
+            return source
         platform, kind, conversation = project["scope_key"].split(":", 2)
         bot_id = project["bot_native_user_id"]
+        from .adapters.onebot_route_context import legacy_project_gate
+        await _store(legacy_project_gate, ConversationScope.from_key(project["scope_key"]))
         if (
             platform != "onebot-v11"
             or kind not in {"group", "private"}
@@ -161,8 +180,17 @@ class ProjectRuntime:
             admin=int(user_id) in self.app.settings.admin_user_ids,
         )
 
-    async def _execution_access(self, project, principal_id):
-        access = await self.resolve_access(project, principal_id)
+    async def _execution_access(self, project, principal_id, *, source=None, job=None):
+        access = await self.resolve_access(project, principal_id, source=source, job=job)
+        from .project_authorization import official_project
+        proof = official_project(access)
+        if proof is not None:
+            from .adapters.qq_official.project_authority import Operation
+            def current():
+                with self.store._transaction() as cursor:
+                    proof.provider.require(cursor, proof, project_id=project['project_id'], operation=Operation.EXECUTE)
+            await _store(current)
+            return access
         if not self.app.settings.is_sandbox_user_allowed(
             int(access.scope.actor_native_user_id)
         ):
@@ -231,7 +259,8 @@ class ProjectRuntime:
                 return
             try:
                 await _store(self._open_store)
-                self.lifecycle = ProjectLifecycle(self.store, self.app.job_store)
+                self.lifecycle = ProjectLifecycle(self.store, self.app.job_store,
+                    official_authority=getattr(self.official_provider_factory, 'authority', None))
                 key, backend = await self._backend()
                 self.backends = {key: backend}
                 self.usage = ProjectUsageStore(
@@ -245,7 +274,7 @@ class ProjectRuntime:
                     from .project_task_admission import ProjectTaskAdmission
                     from .project_task_reconciliation import ProjectTaskReconciler
 
-                    self.task_admission = ProjectTaskAdmission(self.lifecycle, tasks)
+                    self.task_admission = ProjectTaskAdmission(self.lifecycle, tasks, official_dispatch=self.official_task_dispatch)
                     self.lifecycle.task_admission = self.task_admission
                     self.task_reconciler = ProjectTaskReconciler(self, tasks)
                 self.files = ProjectFileOutbox(self.io, self.app.delivery_store)

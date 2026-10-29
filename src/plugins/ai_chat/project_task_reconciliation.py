@@ -35,6 +35,54 @@ class ProjectTaskReleases:
         self.bindings = bindings
         self.projects, self.tasks = bindings.projects, bindings.tasks
 
+    @staticmethod
+    def _check_failed(cursor, *, project, binding, task, revision, now, verify_manifest, lease_clock=None):
+        """Check actual settled domain rows; this is not actor/source authority.
+
+        Caller owns the real transaction and its source/grant/row locks. The
+        manifest callback must verify the exact admitted CAS bytes and hash.
+        No receipt, mutation, lock release or notification is performed here.
+        """
+        if (type(revision) is not int or revision <= 0
+                or type(now) not in (int, float) or not 0 <= now <= 2**63-1
+                or not callable(verify_manifest)):
+            raise ProjectConflict("Invalid project release proof")
+        task_id = task["task_id"]
+        control = cursor.execute("SELECT revision FROM subagent_controls WHERE task_id=?", (task_id,)).fetchone()
+        if (control is None or control["revision"] != revision or binding["task_id"] != task_id
+                or task["project_id"] != project["project_id"] or binding["project_id"] != project["project_id"]):
+            raise ProjectConflict("Project release source changed")
+        if cursor.execute("SELECT 1 FROM project_task_publications WHERE task_id=?", (task_id,)).fetchone():
+            raise ProjectConflict("Accepted project version must be materialized, not discarded")
+        require_project_io_idle(cursor, project["project_id"])
+        if (project["locked_task_id"] != task_id or project["lifecycle_job_id"] is not None
+                or project["workspace_generation"] != binding["generation"]
+                or project["lifecycle_fence"] != binding["fence"]
+                or task["status"] not in {"failed", "cancelled"}):
+            raise ProjectConflict("Project task has not settled on its admitted workspace")
+        baseline = {"version_no": binding["base_version"], "manifest_sha256": binding["manifest_sha256"]}
+        if ProjectLifecycle._baseline(cursor, project["project_id"]) != baseline:
+            raise ProjectConflict("Project version changed while the failed task owned it")
+        ProjectTaskStore._clean_baseline(cursor, project, baseline)
+        verify_manifest(cursor, project["project_id"], baseline)
+        if cursor.execute("""SELECT 1 FROM subagent_runs WHERE task_id=?
+            AND status NOT IN ('succeeded','partial','failed','cancelled','skipped') LIMIT 1""", (task_id,)).fetchone():
+            raise ProjectConflict("Project task still has unfinished steps")
+        # The legacy entry uses its existing fresh wall-clock read here;
+        # trusted migration callers may supply their explicit domain clock.
+        worker_now = now if lease_clock is None else lease_clock()
+        if type(worker_now) not in (int, float) or not 0 <= worker_now <= 2**63-1:
+            raise ProjectConflict("Invalid project release clock")
+        if cursor.execute("""SELECT 1 FROM durable_jobs WHERE kind='subagent.workflow'
+            AND payload_json::jsonb->>'task_id'=? AND status='running' AND lease_until>? LIMIT 1""",
+            (str(task_id), worker_now)).fetchone():
+            raise ProjectConflict("Project task worker still owns an execution lease")
+        _require_settled_external_calls(cursor, task_id)
+        if cursor.execute("""SELECT 1 FROM project_turn_saves WHERE project_id=? AND state='pending' LIMIT 1""",
+                          (project["project_id"],)).fetchone():
+            raise ProjectConflict("Project still has an unfinished automatic save")
+        return baseline
+
     def release_failed(self, access, task_id):
         """Detach a settled failed task, leaving its independent artifacts alone."""
         now = int(time.time())
@@ -49,30 +97,9 @@ class ProjectTaskReleases:
                 if prior["revision"] != control["revision"]:
                     raise ProjectConflict("Released task revision changed")
                 return dict(prior)
-            if cursor.execute("SELECT 1 FROM project_task_publications WHERE task_id=?", (task_id,)).fetchone():
-                raise ProjectConflict("Accepted project version must be materialized, not discarded")
-            require_project_io_idle(cursor, project["project_id"])
-            if (project["locked_task_id"] != task_id or project["lifecycle_job_id"] is not None
-                    or project["workspace_generation"] != binding["generation"]
-                    or project["lifecycle_fence"] != binding["fence"]
-                    or task["status"] not in {"failed", "cancelled"}):
-                raise ProjectConflict("Project task has not settled on its admitted workspace")
-            baseline = {"version_no": binding["base_version"], "manifest_sha256": binding["manifest_sha256"]}
-            if ProjectLifecycle._baseline(cursor, project["project_id"]) != baseline:
-                raise ProjectConflict("Project version changed while the failed task owned it")
-            self.bindings._clean_baseline(cursor, project, baseline)
-            self.bindings._manifest(cursor, access, project["project_id"], baseline)
-            if cursor.execute("""SELECT 1 FROM subagent_runs WHERE task_id=?
-                AND status NOT IN ('succeeded','partial','failed','cancelled','skipped') LIMIT 1""", (task_id,)).fetchone():
-                raise ProjectConflict("Project task still has unfinished steps")
-            if cursor.execute("""SELECT 1 FROM durable_jobs WHERE kind='subagent.workflow'
-                AND payload_json::jsonb->>'task_id'=? AND status='running' AND lease_until>? LIMIT 1""",
-                (str(task_id), time.time())).fetchone():
-                raise ProjectConflict("Project task worker still owns an execution lease")
-            _require_settled_external_calls(cursor, task_id)
-            if cursor.execute("""SELECT 1 FROM project_turn_saves WHERE project_id=? AND state='pending' LIMIT 1""",
-                              (project["project_id"],)).fetchone():
-                raise ProjectConflict("Project still has an unfinished automatic save")
+            baseline = self._check_failed(cursor, project=project, binding=binding, task=task,
+                revision=control["revision"], now=now, lease_clock=time.time,
+                verify_manifest=lambda c, pid, baseline: self.bindings._manifest(c, access, pid, baseline))
             receipt = cursor.execute("""INSERT INTO project_task_releases(task_id,revision,task_status,created_at)
                 VALUES (?,?,?,?) RETURNING *""", (task_id, control["revision"], task["status"], now)).fetchone()
             cursor.execute("UPDATE projects SET locked_task_id=NULL,version=version+1,updated_at=? WHERE project_id=?",

@@ -22,6 +22,7 @@ from .file_links import ArtifactRef, Publication, LinkError, _origin
 from .native_media import ArtifactFingerprint
 from .native_vault import NativeUploadBinding, NativeUploadRef, NativeVaultError
 from .protected_payload import ProtectedContentRef, commitment, validate_content
+from .project_authority import RecipientEvidenceUnavailable
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True, eq=False, repr=False)
@@ -46,8 +47,9 @@ def _artifact_ref(row):
 
 class TrustedFilePayloads:
     def __init__(self, *, admission, route_policy=None, link_vault=None,
-                 native_vault=None, link_origin=None, allow_loopback=False):
+                 native_vault=None, link_origin=None, allow_loopback=False, source_authority=None):
         self.admission = admission
+        self.source_authority = source_authority
         self.route_policy = route_policy or (lambda cursor, artifact, route: False)
         self.link_vault, self.native_vault = link_vault, native_vault
         self.link_origin = _origin(link_origin, allow_loopback) if link_origin is not None else None
@@ -59,7 +61,7 @@ class TrustedFilePayloads:
     def issue(self, cursor, *, token, job, artifact_id, now):
         _ref(artifact_id)
         assert_file_current(cursor, token=token, job=job, artifact_id=artifact_id,
-                            admission=self.admission, now=now)
+                            admission=self.admission, now=now, source_authority=self.source_authority)
         grant = _FileGrant(self, token, job, artifact_id)
         with self._lock:
             self._issued[id(grant)] = grant
@@ -71,7 +73,7 @@ class TrustedFilePayloads:
                     or self._issued.get(id(grant)) is not grant):
                 raise PermissionError('unissued_file_grant')
         return assert_file_current(cursor, token=grant.token, job=grant.job,
-            artifact_id=grant.artifact_id, admission=self.admission, now=now)
+            artifact_id=grant.artifact_id, admission=self.admission, now=now, source_authority=self.source_authority)
 
     def _route(self, cursor, artifact, route):
         # Type-7 captions are not a verified draft-detail channel. Link messages
@@ -207,12 +209,15 @@ class TrustedFilePayloads:
 
     @staticmethod
     def _binding(artifact, ref, binding):
+        source_native = artifact['source_native_message_id']
+        if artifact.get('source_migration_item_id') is not None and source_native is None:
+            source_native = ''  # M3 represents an absent source ID as empty; never invent an ID.
         if (not isinstance(ref, ProtectedContentRef) or ref.artifact_id != artifact['artifact_id']
                 or binding.endpoint.key != artifact['endpoint_key']
                 or binding.requester.key != artifact['requester_actor_key']
                 or binding.source_scope_key != artifact['source_scope_key']
                 or binding.source_canonical_message_id != artifact['source_canonical_message_id']
-                or binding.source_native_message_id != artifact['source_native_message_id']
+                or binding.source_native_message_id != source_native
                 or binding.endpoint_generation != artifact['endpoint_generation']
                 or binding.route_epoch != artifact['route_epoch'] or binding.turn_id is not None
                 or not artifact['created_at'] < binding.expires_at <= ref.expires_at):
@@ -234,9 +239,18 @@ class TrustedFilePayloads:
 
     def authorize(self, cursor, *, token, content_ref, binding, now):
         _time(now)
+        recipient_wait = None
         try:
             artifact, delivery = assert_file_current(cursor, token=token, artifact_id=content_ref.artifact_id,
-                admission=self.admission, now=now, plan_id=binding.plan_id)
+                admission=self.admission, now=now, plan_id=binding.plan_id, source_authority=self.source_authority)
+        except RecipientEvidenceUnavailable as error:
+            # assert_file_current has completed all non-freshness checks. Finish
+            # this port's exact plan/credential checks before reporting a wait.
+            recipient_wait = error
+            artifact = dict(cursor.execute('SELECT * FROM qq_official_file_artifacts WHERE artifact_id=?',
+                (content_ref.artifact_id,)).fetchone())
+            delivery = dict(cursor.execute('SELECT * FROM qq_official_file_deliveries WHERE artifact_id=?',
+                (content_ref.artifact_id,)).fetchone())
         except LeaseLost:
             raise PermissionError('file_source_unavailable') from None
         self._binding(artifact, content_ref, binding)
@@ -249,6 +263,8 @@ class TrustedFilePayloads:
                 or association['requester_actor_key'] != binding.requester.key):
             raise PermissionError('file_plan_association_conflict')
         self._catalog(cursor, artifact, content_ref, now)
+        if recipient_wait is not None:
+            raise recipient_wait
 
     def resolve(self, cursor, *, token, content_ref, binding, now):
         self.authorize(cursor, token=token, content_ref=content_ref, binding=binding, now=now)
@@ -287,11 +303,26 @@ class TrustedFilePayloads:
         cursor.execute('''UPDATE qq_official_file_artifacts
             SET first_possible_send_at=COALESCE(first_possible_send_at,?),retain_until=? WHERE artifact_id=?''',
             (now, retain, grant.artifact_id))
+        source_proof=None
+        migration = artifact.get('source_migration_item_id') is not None
+        if migration:
+            if self.source_authority is None or not callable(getattr(self.source_authority,'enqueue_proof',None)):
+                raise PermissionError('migration_artifact_authority_unavailable')
+            source_proof=self.source_authority.enqueue_proof(cursor,token=grant.token,artifact=artifact,job=grant.job,now=now)
+        else:
+            verification = getattr(self.admission,'file_verification',None)
+            evidence = verification(cursor,artifact=artifact,now=now) if verification is not None else None
+            if evidence is not None:
+                source_proof, original_expiry = evidence
+                if type(original_expiry) is not int or original_expiry <= now or source_proof is None:
+                    raise PermissionError('file_verification_expired')
+                expiry = min(expiry,original_expiry)
         ref = outbox.enqueue_artifact(grant.token, content_ref=content_ref, source_grant=grant,
             endpoint=EndpointKey.parse(artifact['endpoint_key']), requester=ActorKey.parse(artifact['requester_actor_key']),
             logical_key='artifact:' + grant.artifact_id, source_scope_key=artifact['source_scope_key'], expires_at=expiry,
-            source_native_message_id=artifact['source_native_message_id'],
-            source_canonical_message_id=artifact['source_canonical_message_id'], transaction_cursor=cursor)
+            source_native_message_id=artifact['source_native_message_id'] or '',
+            source_canonical_message_id=artifact['source_canonical_message_id'], transaction_cursor=cursor,
+            **({'source_proof':source_proof} if source_proof is not None else {}))
         cursor.execute('''INSERT INTO qq_official_file_message_plans
             (plan_id,artifact_id,account_key,endpoint_key,requester_actor_key,credential_ref,delivery_id,created_at)
             VALUES (?,?,?,?,?,?,?,?)''', (ref.plan_id, grant.artifact_id, artifact['account_key'], artifact['endpoint_key'],
@@ -300,4 +331,6 @@ class TrustedFilePayloads:
             WHERE artifact_id=? AND active_plan_id IS NULL''', (ref.plan_id, now, grant.artifact_id))
         if cursor.rowcount != 1:
             raise PermissionError('file_handoff_conflict')
+        if migration:
+            self.source_authority.bind_plan(cursor,source_proof,plan_id=ref.plan_id,now=now)
         return ref

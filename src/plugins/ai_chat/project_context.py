@@ -5,8 +5,7 @@ import json
 
 from src.bot_storage import DatabaseError
 from src.sandbox_runtime.errors import SandboxError
-from .onebot_codec import scope_from_event
-from .project_access import project_access, projects_available
+from .project_access import project_access, projects_available, official_inbound
 from .project_executor import _store
 from .projects import ProjectConflict
 from .prompt_context import quote_evidence
@@ -36,18 +35,24 @@ async def _current_notes(runtime, access, payload):
 async def current_project_payload(context):
     if not projects_available(context):
         return None
-    app, scope = context.app, scope_from_event(context.event)
+    app = context.app
     try:
         async with asyncio.timeout(3):
-            principal = await app.db_call(
-                app.message_ledger.principal_id_for_native,
-                scope.platform,
-                scope.actor_native_user_id,
-            )
             store = app.project_runtime.store
-            if principal is None or not await _store(store.has_focus, scope, principal):
-                return None
-            access = await project_access(context, principal=principal)
+            if official_inbound(context) is not None:
+                access = await project_access(context)
+                principal = access.principal_id
+            else:
+                from .onebot_codec import scope_from_event
+                scope = scope_from_event(context.event)
+                principal = await app.db_call(
+                    app.message_ledger.principal_id_for_native,
+                    scope.platform,
+                    scope.actor_native_user_id,
+                )
+                if principal is None or not await _store(store.has_focus, scope, principal):
+                    return None
+                access = await project_access(context, principal=principal)
             payload = await _store(store.prompt_context, access)
             if payload is None:
                 return None
@@ -74,9 +79,16 @@ async def current_project_payload(context):
                         raise ProjectConflict("Project changed during context read")
                 except ProjectConflict:
                     payload["notes"] = {"source": "workspace", "state": "changed", "retryable": True}
-            payload["sandbox_admitted"] = app.settings.is_sandbox_user_allowed(
-                context.event.user_id
-            )
+            if official_inbound(context) is not None:
+                try:
+                    await _store(store.get, access, current["project_id"], operation="project.execute")
+                    payload["sandbox_admitted"] = True
+                except PermissionError:
+                    payload["sandbox_admitted"] = False
+            else:
+                payload["sandbox_admitted"] = app.settings.is_sandbox_user_allowed(
+                    context.event.user_id
+                )
             return payload
     except PermissionError:
         return None

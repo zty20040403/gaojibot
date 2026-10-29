@@ -8,7 +8,8 @@ request body. Cross-scope access remains forbidden even for administrators.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from .project_authorization import authorize, official_project
 import codecs
 import json
 from pathlib import Path
@@ -72,6 +73,9 @@ class ProjectAccess:
     principal_id: int
     member: bool = False
     admin: bool = False
+    endpoint: object | None = field(default=None, repr=False)
+    actor: object | None = field(default=None, repr=False)
+    official_proof: object | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,9 @@ class StagedProjectFile:
 
 
 def validate_project_access(cursor, access: ProjectAccess):
+    if official_project(access) is not None:
+        authorize(cursor, access)
+        return
     if not access.member or access.principal_id <= 0:
         raise PermissionError("Current conversation membership is required")
     if access.scope.kind == "private":
@@ -138,6 +145,8 @@ class ProjectStore:
 
     @staticmethod
     def _scope_lock(cursor, access):
+        from .adapters.onebot_route_context import guard_source_transaction
+        guard_source_transaction(cursor, scope=access.scope)
         validate_project_access(cursor, access)
         cursor.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(?,0))",
@@ -162,24 +171,31 @@ class ProjectStore:
         allow_trash=False,
         lifecycle_job=None,
         now=None,
+        operation=None,
     ):
         validate_project_access(cursor, access)
+        official = official_project(access)
+        required = operation or ('project.manage' if owner else 'project.write' if edit else 'project.read')
+        scope = authorize(cursor, access, project_id=project_id, operation=required) if official else access.scope
         row = cursor.execute(
             "SELECT * FROM projects WHERE project_id=? AND scope_key=? FOR UPDATE",
-            (project_id, access.scope.key),
+            (project_id, scope.key),
         ).fetchone()
+        if official:
+            # Lock waits never preserve a grant/source that expired while waiting.
+            authorize(cursor, access, project_id=project_id, operation=required)
         if (
             row is None
             or row["status"] == "purged"
             or (row["status"] == "trash" and not allow_trash)
         ):
             raise PermissionError("Project is not available in this conversation")
-        if row["bot_native_user_id"] and row["bot_native_user_id"] != access.scope.bot_native_user_id:
+        if not official and row["bot_native_user_id"] and row["bot_native_user_id"] != access.scope.bot_native_user_id:
             raise PermissionError("Project belongs to another bot account")
         is_owner = row["creator_principal_id"] == access.principal_id
-        if access.scope.kind == "private" and not is_owner:
+        if not official and access.scope.kind == "private" and not is_owner:
             raise PermissionError("Private projects are owner-only")
-        if owner and not (is_owner or access.admin):
+        if not official and owner and not (is_owner or access.admin):
             raise PermissionError("Project owner permission required")
         if edit:
             ProjectStore._editor(cursor, access, row)
@@ -198,6 +214,9 @@ class ProjectStore:
 
     @staticmethod
     def _editor(cursor, access, project):
+        if official_project(access) is not None:
+            authorize(cursor, access, project_id=project["project_id"], operation="project.write")
+            return
         if project["creator_principal_id"] == access.principal_id or access.admin:
             return
         member = cursor.execute(
@@ -238,6 +257,9 @@ class ProjectStore:
             raise ValueError("Invalid project title, backend or quota")
         with self._transaction() as cursor:
             self._scope_lock(cursor, access)
+            official = official_project(access)
+            if official:
+                official.provider.before_create(cursor, official)
             if creation_key is not None:
                 previous = cursor.execute(
                     """SELECT p.project_id,e.payload FROM projects p JOIN project_events e
@@ -298,6 +320,8 @@ class ProjectStore:
                 ),
             ).fetchone()
             pid = row["project_id"]
+            if official:
+                official.provider.created(cursor, official, pid)
             cursor.execute(
                 """INSERT INTO project_members(project_id,principal_id,role,added_by,created_at)
                 VALUES (?,?,'owner',?,?)""",
@@ -309,13 +333,16 @@ class ProjectStore:
             }, now)
             return dict(row)
 
-    def get(self, access, project_id, *, edit=False):
+    def get(self, access, project_id, *, edit=False, operation=None):
         with self._transaction() as cursor:
-            return self._get(cursor, access, project_id, edit=edit)
+            return self._get(cursor, access, project_id, edit=edit, operation=operation)
 
     def list(self, access, *, include_trash=False):
         with self._transaction() as cursor:
             validate_project_access(cursor, access)
+            official = official_project(access)
+            if official:
+                return official.provider.visible(cursor, official, include_trash=include_trash)
             rows = cursor.execute(
                 """SELECT * FROM projects WHERE scope_key=? AND status<>'purged'
                 AND (? OR status<>'trash') ORDER BY last_active_at DESC,project_id DESC LIMIT 200""",
@@ -331,6 +358,15 @@ class ProjectStore:
 
     @staticmethod
     def _focus(cursor, access, project_id, now):
+        if official_project(access) is not None:
+            cursor.execute('''INSERT INTO qq_official_project_focus
+                (account_key,endpoint_key,actor_key,principal_id,project_id,updated_at) VALUES (?,?,?,?,?,?)
+                ON CONFLICT(endpoint_key,actor_key) DO UPDATE SET project_id=excluded.project_id,
+                updated_at=excluded.updated_at WHERE qq_official_project_focus.account_key=excluded.account_key
+                AND qq_official_project_focus.principal_id=excluded.principal_id''',
+                (access.endpoint.account.key,access.endpoint.key,access.actor.key,access.principal_id,project_id,now))
+            if cursor.rowcount!=1:raise PermissionError('project_focus_identity_changed')
+            return
         cursor.execute(
             """INSERT INTO project_focus(scope_key,principal_id,project_id,updated_at) VALUES (?,?,?,?)
             ON CONFLICT(scope_key,principal_id) DO UPDATE SET project_id=excluded.project_id,updated_at=excluded.updated_at""",
@@ -353,6 +389,11 @@ class ProjectStore:
 
     @staticmethod
     def _touch_focus(cursor, access, project_id, now):
+        if official_project(access) is not None:
+            cursor.execute('''UPDATE qq_official_project_focus SET updated_at=? WHERE account_key=?
+                AND endpoint_key=? AND actor_key=? AND principal_id=? AND project_id=?''',
+                (now,access.endpoint.account.key,access.endpoint.key,access.actor.key,access.principal_id,project_id))
+            return
         cursor.execute(
             """UPDATE project_focus SET updated_at=?
             WHERE scope_key=? AND principal_id=? AND project_id=?""",
@@ -366,11 +407,16 @@ class ProjectStore:
 
     def _current(self, cursor, access, now):
         validate_project_access(cursor, access)
-        focus = cursor.execute(
+        if official_project(access) is not None:
+            focus=cursor.execute('''SELECT project_id FROM qq_official_project_focus WHERE account_key=?
+                AND endpoint_key=? AND actor_key=? AND principal_id=? AND updated_at>?''',
+                (access.endpoint.account.key,access.endpoint.key,access.actor.key,access.principal_id,now-24*3600)).fetchone()
+        else:
+            focus = cursor.execute(
             """SELECT project_id FROM project_focus WHERE scope_key=? AND principal_id=?
             AND updated_at>?""",
             (access.scope.key, access.principal_id, now - 24 * 3600),
-        ).fetchone()
+            ).fetchone()
         if focus is None:
             return None
         try:
@@ -382,6 +428,13 @@ class ProjectStore:
         """Private optimization, not authorization: exposes no project content."""
         now = int(time.time()) if now is None else now
         with self._transaction() as cursor:
+            if scope.platform=='qq-official':
+                from .platform_types import EndpointKey
+                endpoint=EndpointKey(scope.account,scope.kind,scope.native_conversation_id)
+                return cursor.execute('''SELECT 1 FROM qq_official_project_focus f JOIN projects p USING(project_id)
+                    WHERE f.account_key=? AND f.endpoint_key=? AND f.principal_id=? AND f.updated_at>?
+                    AND p.status NOT IN ('trash','purged')''',
+                    (endpoint.account.key,endpoint.key,principal,now-24*3600)).fetchone() is not None
             return cursor.execute(
                 """SELECT 1 FROM project_focus f JOIN projects p USING(project_id)
                 WHERE f.scope_key=? AND f.principal_id=? AND f.updated_at>?
@@ -394,7 +447,7 @@ class ProjectStore:
         now = int(time.time()) if now is None else now
         with self._transaction() as cursor:
             row = self._current(cursor, access, now)
-            if row is None or row["bot_native_user_id"] != access.scope.bot_native_user_id:
+            if row is None or (official_project(access) is None and row["bot_native_user_id"] != access.scope.bot_native_user_id):
                 return None
             pid = row["project_id"]
             versions = cursor.execute(
@@ -410,6 +463,12 @@ class ProjectStore:
                     (pid, access.principal_id),
                 ).fetchone() is not None
             )
+            if official_project(access) is not None:
+                try:
+                    authorize(cursor, access, project_id=pid, operation="project.write")
+                    editor = True
+                except PermissionError:
+                    editor = False
             notes = (
                 {"source": "workspace", "state": "unavailable"}
                 if row["status"] == "active"
@@ -535,6 +594,8 @@ class ProjectStore:
         self, access, project_id, principal_id, role, *, expected_version, now=None
     ):
         now = int(time.time()) if now is None else now
+        if official_project(access) is not None:
+            raise PermissionError("Use explicit official project grants")
         if role not in {"editor", "viewer", None}:
             raise ValueError("Only editor/viewer grants are supported")
         with self._transaction() as cursor:
@@ -582,7 +643,7 @@ class ProjectStore:
 
     @staticmethod
     def _scope_bytes(cursor, scope_key):
-        return int(
+        total = int(
             cursor.execute(
                 """SELECT COALESCE((SELECT sum(used_bytes) FROM projects WHERE scope_key=?),0)
             + COALESCE((SELECT sum(b.byte_size) FROM project_blobs b JOIN
@@ -594,6 +655,16 @@ class ProjectStore:
                 (scope_key, scope_key),
             ).fetchone()[0]
         )
+        # A retained official copy occupies a separate store from project
+        # snapshots. Charge it until actual byte eviction, including failed
+        # transports. Historical migrations do not have this extension table.
+        if cursor.execute("SELECT to_regclass('qq_official_project_artifacts')").fetchone()[0] is not None:
+            total += int(cursor.execute("""SELECT coalesce(sum(byte_size),0) FROM
+                (SELECT DISTINCT b.project_id,a.sha256,a.byte_size
+                 FROM qq_official_project_artifacts b JOIN qq_official_file_artifacts a USING(artifact_id)
+                 JOIN projects p USING(project_id) WHERE p.scope_key=? AND a.bytes_state='available') copies""",
+                (scope_key,)).fetchone()[0])
+        return total
 
     @staticmethod
     def _scope_reserved_bytes(cursor, scope_key):
@@ -803,11 +874,11 @@ class ProjectStore:
                 )
             limit = cursor.execute(
                 "SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?",
-                (access.scope.key,),
+                (row["scope_key"],),
             ).fetchone()[0]
             if (
-                self._scope_bytes(cursor, access.scope.key)
-                + self._scope_reserved_bytes(cursor, access.scope.key) > limit
+                self._scope_bytes(cursor, row["scope_key"])
+                + self._scope_reserved_bytes(cursor, row["scope_key"]) > limit
             ):
                 raise ProjectQuotaExceeded(
                     "Conversation retained data exceeds its quota"
@@ -902,11 +973,11 @@ class ProjectStore:
                 )
             limit = cursor.execute(
                 "SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?",
-                (access.scope.key,),
+                (row["scope_key"],),
             ).fetchone()[0]
             if (
-                self._scope_bytes(cursor, access.scope.key)
-                + self._scope_reserved_bytes(cursor, access.scope.key) > limit
+                self._scope_bytes(cursor, row["scope_key"])
+                + self._scope_reserved_bytes(cursor, row["scope_key"]) > limit
             ):
                 raise ProjectQuotaExceeded(
                     "Staged snapshot exceeds conversation capacity"

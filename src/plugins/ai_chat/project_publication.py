@@ -169,11 +169,15 @@ class ProjectPublications:
             # orphans under the existing 24-hour garbage-collection grace period.
             with self.projects._transaction() as cursor:
                 self.projects._scope_lock(cursor, access)
+                # A migrated actor's current conversation is not the resource's
+                # accounting scope. Recheck the exact project before taking the
+                # blob mutex so resource-scope locks keep their normal order.
+                resource = self.projects._get(cursor, access, project["project_id"], operation="project.write")
                 self.projects._blob_lock(cursor)
                 now = int(time.time())
-                self._check_capacity(cursor, access, project["project_id"], update.manifest, update.encoded)
+                self._check_capacity(cursor, resource, update.manifest, update.encoded)
                 for item in update.changed:
-                    assert_job_owned()
+                    assert_job_owned(transaction_cursor=cursor)
                     with update.open(item["path"]) as source:
                         blob = self.projects.blobs.put(source)
                     if (blob.sha256, blob.byte_size) != (item["sha256"], item["size"]):
@@ -181,7 +185,7 @@ class ProjectPublications:
                     self.projects._register_blob(cursor, blob, now)
                 changed = {item["path"] for item in update.changed}
                 for item in update.manifest["files"]:
-                    assert_job_owned()
+                    assert_job_owned(transaction_cursor=cursor)
                     if item["path"] not in changed:
                         self.projects.blobs.verify(item["sha256"], item["size"])
                 manifest = self.projects.blobs.put(update.encoded)
@@ -204,7 +208,8 @@ class ProjectPublications:
         self.tasks._notify_changed(task_id)
         return receipt
 
-    def _check_capacity(self, cursor, access, pid, document, encoded):
+    def _check_capacity(self, cursor, project, document, encoded):
+        pid, scope_key = project["project_id"], project["scope_key"]
         sizes = {item["sha256"]: item["size"] for item in document["files"]}
         sizes[hashlib.sha256(encoded).hexdigest()] = len(encoded)
         held = {row[0] for row in cursor.execute("""SELECT sha256 FROM project_version_blobs WHERE project_id=?
@@ -212,9 +217,11 @@ class ProjectPublications:
             UNION SELECT blob_sha256 FROM project_file_deliveries WHERE project_id=? AND blob_sha256 IS NOT NULL""",
             (pid, pid, pid)).fetchall()}
         additional = sum(size for digest, size in sizes.items() if digest not in held)
-        limit = cursor.execute("SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?", (access.scope.key,)).fetchone()[0]
-        if (self.projects._scope_bytes(cursor, access.scope.key)
-                + self.projects._scope_reserved_bytes(cursor, access.scope.key) + additional > limit):
+        policy = cursor.execute("SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?", (scope_key,)).fetchone()
+        if policy is None:
+            raise ProjectQuotaExceeded("Project resource capacity policy is unavailable")
+        if (self.projects._scope_bytes(cursor, scope_key)
+                + self.projects._scope_reserved_bytes(cursor, scope_key) + additional > policy[0]):
             raise ProjectQuotaExceeded("Conversation has insufficient capacity for accepted project update")
 
     def _commit(self, cursor, access, task_id, project, binding, proof, artifact, document, manifest, now):
@@ -234,9 +241,12 @@ class ProjectPublications:
                 cursor.execute("INSERT INTO project_version_blobs(project_id,version_no,sha256) VALUES (?,?,?)",
                                (pid, version, digest))
                 cursor.execute("UPDATE project_blobs SET unreferenced_since=NULL WHERE sha256=?", (digest,))
-        limit = cursor.execute("SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?", (access.scope.key,)).fetchone()[0]
-        if (self.projects._scope_bytes(cursor, access.scope.key)
-                + self.projects._scope_reserved_bytes(cursor, access.scope.key) > limit):
+        scope_key = project["scope_key"]
+        policy = cursor.execute("SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?", (scope_key,)).fetchone()
+        if policy is None:
+            raise ProjectQuotaExceeded("Project resource capacity policy is unavailable")
+        if (self.projects._scope_bytes(cursor, scope_key)
+                + self.projects._scope_reserved_bytes(cursor, scope_key) > policy[0]):
             raise ProjectQuotaExceeded("Conversation retained data exceeds its quota")
         receipt = cursor.execute("""INSERT INTO project_task_publications(task_id,revision,project_id,artifact_sha256,
             acceptance_run_id,version_no,manifest_sha256,created_at) VALUES (?,?,?,?,?,?,?,?) RETURNING *""",

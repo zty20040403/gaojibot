@@ -21,6 +21,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "ignore_disabled_group_event",
             "startup_app_context",
             "shutdown_app_context",
+            "connect_migration_baseline",
         }
         definitions = {
             node.name
@@ -120,6 +121,8 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                     self.assertNotEqual(node.module, "admin", path.name)
 
     def test_handlers_keep_native_globals_and_isolated_runtime(self) -> None:
+        import nonebot
+        nonebot.init()
         from src.plugins.ai_chat.handler_services import HandlerServices
         from src.plugins.ai_chat import command_handlers
 

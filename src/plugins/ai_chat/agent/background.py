@@ -40,6 +40,9 @@ class SubAgentDispatcher:
         self.jobs = self.context.job_store
         self.coordinator = self.context.subagent_coordinator
         self.worker = DurableJobWorker(self.jobs, logger=self.context.logger, concurrency=2, per_scope_limit=1)
+        migration = getattr(self.context, "migration_service", None)
+        if migration is not None:
+            self.worker.source_context = migration.job_context
         self.worker.register(self.kind, self.execute, compensator=self.settle_failed_dispatch)
         self._next_artifact_prune = 0.0
         self._next_message_reconcile = 0.0
@@ -78,10 +81,18 @@ class SubAgentDispatcher:
         if preview_note:
             text += "\n\n" + preview_note
         body = decode_onebot_message(Message(MessageSegment.text(f"{task.handle}\n{text}"))).body
-        delivery, _ = self.context.delivery_store.enqueue(
-            idempotency_key=f"subagent-final:{task_id}:{control['revision']}",
-            source_scope_key=task.scope_key, source_canonical_message_id=task.trigger_message_id,
-            target_scope=scope_from_event(event), body=body, reply_to_native_message_id=str(event.message_id))
+        from contextlib import nullcontext
+        from ..adapters.onebot_route_context import active_source_route
+        from ..adapters.onebot_results import terminal_delivery_source
+        migration=getattr(self.context,'migration_service',None)
+        source=(terminal_delivery_source(migration,task_id,control['revision'],body=body,
+            source_scope_key=task.scope_key,target_scope=scope_from_event(event),source_message=task.trigger_message_id,
+            reply_to=str(event.message_id)) if migration is not None and active_source_route.get() is None else nullcontext())
+        with source:
+            delivery, _ = self.context.delivery_store.enqueue(
+                idempotency_key=f"subagent-final:{task_id}:{control['revision']}",
+                source_scope_key=task.scope_key, source_canonical_message_id=task.trigger_message_id,
+                target_scope=scope_from_event(event), body=body, reply_to_native_message_id=str(event.message_id))
         # The marker follows the outbox commit. A crash in between safely repeats enqueue.
         self.store.mark_final_queued(task_id, control["revision"])
         return delivery
@@ -117,9 +128,19 @@ class SubAgentDispatcher:
             return None
         task = self.store.get(task_id)
         control = self.store.control(task_id)
-        return self.jobs.enqueue(kind=self.kind, idempotency_key=f"subagent:{task_id}:revision:{control['revision']}",
-            scope_key=task.scope_key, payload={"task_id": task_id, "revision": control["revision"]}, max_attempts=5,
-            resume_on_lease_loss=True)
+        migration = getattr(self.context, "migration_service", None)
+        if migration is None:
+            return self.jobs.enqueue(kind=self.kind, idempotency_key=f"subagent:{task_id}:revision:{control['revision']}",
+                scope_key=task.scope_key, payload={"task_id": task_id, "revision": control["revision"]}, max_attempts=5,
+                resume_on_lease_loss=True)
+        with self.store._transaction() as cursor:
+            job, created = self.jobs.enqueue(kind=self.kind, idempotency_key=f"subagent:{task_id}:revision:{control['revision']}",
+                scope_key=task.scope_key, payload={"task_id": task_id, "revision": control["revision"]}, max_attempts=5,
+                resume_on_lease_loss=True, transaction_cursor=cursor)
+            if created:
+                migration.derive_job(cursor, job, kind="subagent", identifier=task_id,
+                                     revision=control["revision"], now=int(time.time()))
+            return job, created
 
     async def run_forever(self):
         async def reconcile_queue():

@@ -37,7 +37,7 @@ def approval_command(text: str, *, private: bool = False) -> bool:
 
 
 class MobileAuthorization:
-    def __init__(self, store: SecurityStore, *, sender: Sender, bot_selector: Callable[[], str]):
+    def __init__(self, store: SecurityStore, *, sender: Sender, bot_selector: Callable[[], str | None], official_sender=None):
         self.store = store
         self.sender = sender
         self.bot_selector = bot_selector
@@ -45,14 +45,15 @@ class MobileAuthorization:
         self.owner = secrets.token_hex(16)
         self.wake = asyncio.Event()
         self.pollers: list[Callable[[], Awaitable[None]]] = []
+        self.official_sender = official_sender
 
     async def _account_change(self, request: dict[str, Any]) -> dict[str, Any]:
         result = await asyncio.to_thread(self.store.apply_account_change, request["account"], request["payload"])
         return {"ok": True, "account": result}
 
-    async def propose(self, account: dict[str, Any], *, kind: str, payload: dict[str, Any], summary: str, reference: str = "", quorum: int = 1) -> dict[str, Any]:
+    async def propose(self, account: dict[str, Any], *, kind: str, payload: dict[str, Any], summary: str, reference: str = "", quorum: int = 1, transport_context=None) -> dict[str, Any]:
         bot_id = self.bot_selector()
-        request, code = await asyncio.to_thread(self.store.propose, account, bot_id=bot_id, kind=kind, payload=payload, summary=summary, reference=reference, quorum=quorum)
+        request, code = await asyncio.to_thread(self.store.propose, account, bot_id=bot_id, kind=kind, payload=payload, summary=summary, reference=reference, quorum=quorum, transport_context=transport_context)
         if code is not None:
             await self._send_code(request, code)
         result = await asyncio.to_thread(self.store.get, request["approval_id"], account["account_id"])
@@ -69,14 +70,40 @@ class MobileAuthorization:
             raise SecurityError("仅绑定 QQ 的管理员可以执行管理变更")
         return await self.propose(account, kind=kind, payload=payload, summary=summary)
 
-    async def _send_code(self, request: dict[str, Any], code: str) -> None:
+    @staticmethod
+    def code_text(request: dict[str, Any], code: str) -> str:
         review = (f"\n高风险操作须两位不同管理员批准。另一位请私聊：复核 {request['approval_id']}\n"
                   if request["quorum"] > 1 else f"\n复核原操作：{request['parent_approval_id']}；记一票，不单独执行命令。\n" if request.get("parent_approval_id") else "")
-        text = (f"待确认操作：{request['approval_id']}\n{request['summary']}\n\n"
+        return (f"待确认操作：{request['approval_id']}\n{request['summary']}\n\n"
                 f"一次性口令：{code}\n3 分钟有效，仅本人可用，成功一次立即失效。\n"
                 f"直接回复 {code} 记录本人的批准；达到所需人数才会执行。{review}\n"
                 f"取消请回复：取消 {request['approval_id']}\n"
                 f"重发请回复：重发 {request['approval_id']}")
+
+    async def _send_code(self, request: dict[str, Any], code: str) -> None:
+        text = self.code_text(request, code)
+        if request.get('identity_transport') == 'qq_official':
+            outcome = 'failed'
+            try:
+                if self.official_sender is not None:
+                    async with asyncio.timeout(30):
+                        outcome = await self.official_sender.send_code(request, code, text)
+            except asyncio.CancelledError:
+                settle = asyncio.create_task(asyncio.to_thread(self.store.delivered,
+                    request['approval_id'], request['code_generation'], False))
+                while not settle.done():
+                    try:
+                        await asyncio.shield(settle)
+                    except asyncio.CancelledError:
+                        continue
+                settle.result()
+                raise
+            except Exception:
+                outcome = 'unknown'
+            await asyncio.to_thread(self.store.delivered, request['approval_id'], request['code_generation'], outcome == 'success')
+            if outcome != 'success':
+                raise SecurityError('official_approval_delivery_unavailable', 503)
+            return
         try:
             await self.sender(request["bot_id"], request["qq_id"], text)
         except Exception:
@@ -178,6 +205,12 @@ class MobileAuthorization:
             approval_id, status = request["approval_id"], request["status"]
             result = request["result"]
             try:
+                if request.get('identity_transport') == 'qq_official':
+                    if self.official_sender is None:
+                        continue
+                    if await self.official_sender.send_receipt(request) == 'success':
+                        await asyncio.to_thread(self.store.receipt_sent, approval_id)
+                    continue
                 labels = {"succeeded": "授权操作已完成", "failed": "执行失败", "needs_attention": "需要核对执行结果"}
                 if result.get("submitted"):
                     labels["succeeded"] = "已提交，正在等待服务器执行结果"

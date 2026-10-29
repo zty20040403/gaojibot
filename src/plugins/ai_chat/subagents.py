@@ -218,6 +218,7 @@ class TaskRecord:
     project_base_version: int | None = None
     endpoint: EndpointKey | None = None
     requester_actor: ActorKey | None = None
+    migration_item_id: str | None = None
 
     @property
     def handle(self) -> str:
@@ -264,6 +265,7 @@ class SubAgentStore(
     def __init__(self, source: DatabaseSource, *, official_file_projection=None) -> None:
         self.database = source
         self.official_file_projection = official_file_projection
+        self.source_recorder = None
         self.path, self._connection = open_store_connection(source)
         self._lock = threading.RLock()
         self._change_listener: Callable[[int], None] | None = None
@@ -291,22 +293,28 @@ class SubAgentStore(
         max_steps: int,
         endpoint: EndpointKey | None = None,
         requester_actor: ActorKey | None = None,
+        migration_item_id: str | None = None,
         now: int | None = None,
         transaction_cursor: StoreCursor | None = None,
     ) -> TaskRecord:
         timestamp = int(time.time() if now is None else now)
         owner = make_owner(requester_user_id, endpoint, requester_actor)
         trace_id = uuid.uuid4().hex
+        # Preserve the original SQL shape for all native/legacy tasks. The
+        # migration column belongs exclusively to the new proven source union.
+        migration_column = ", migration_item_id" if migration_item_id is not None else ""
+        migration_placeholder = ", ?" if migration_item_id is not None else ""
+        migration_values = (migration_item_id,) if migration_item_id is not None else ()
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             row = cursor.execute(
-                """
+                f"""
                 INSERT INTO subagent_tasks (
                     trace_id, scope_key, conversation_id, requester_user_id, account_key, endpoint_key, requester_actor_key,
-                    trigger_message_id, objective, status, priority,
+                    trigger_message_id{migration_column}, objective, status, priority,
                     max_parallelism, max_steps, plan_json, result_json,
                     last_error, cancel_requested, created_at, updated_at,
                     finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', 100, ?, ?, '{}', '{}',
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?{migration_placeholder}, ?, 'received', 100, ?, ?, '{{}}', '{{}}',
                           '', ?, ?, ?, NULL)
                 RETURNING *
                 """,
@@ -319,6 +327,7 @@ class SubAgentStore(
                     endpoint.key if endpoint else None,
                     requester_actor.key if requester_actor else None,
                     trigger_message_id,
+                    *migration_values,
                     str(objective).strip(),
                     int(max_parallelism),
                     int(max_steps),
@@ -339,15 +348,18 @@ class SubAgentStore(
     def prepare_task(
         self, *, packet: ContextPacket, decision: EntryDecision | None,
         dispatch: dict[str, Any], max_parallelism: int, max_steps: int,
+        migration_item_id: str | None = None,
+        now: int | None = None,
         transaction_cursor: StoreCursor | None = None,
     ) -> TaskRecord:
         """Commit a task, its recovery checkpoint and its envelope together."""
-        timestamp = int(time.time())
+        timestamp = int(time.time() if now is None else now)
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             task = self.create_task(
                 scope_key=packet.scope_key, conversation_id=packet.conversation_id,
                 **owner_fields(object_owner(packet)), trigger_message_id=packet.trigger_message_id,
                 objective=packet.objective, max_parallelism=max_parallelism, max_steps=max_steps,
+                migration_item_id=migration_item_id,
                 now=timestamp, transaction_cursor=cursor,
             )
             self.append_checkpoint(task.task_id, "task_received", {
@@ -362,6 +374,8 @@ class SubAgentStore(
                                  (task.task_id,)).fetchone()
             self.append_event(task.task_id, "task.queued", {"error": ""},
                               now=timestamp, transaction_cursor=cursor)
+            if self.source_recorder is not None and task.endpoint is None:
+                self.source_recorder(cursor, "subagent", task.task_id, 1, timestamp)
         if transaction_cursor is None:
             self._notify_changed(task.task_id)
         return self._task_row(row)
@@ -405,9 +419,10 @@ class SubAgentStore(
         allowed_tools: Sequence[str],
         model_profile: str,
         now: int | None = None,
+        transaction_cursor: StoreCursor | None = None,
     ) -> RunRecord:
         timestamp = int(time.time() if now is None else now)
-        with self._transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             row = cursor.execute(
                 """
                 INSERT INTO subagent_runs (
@@ -437,7 +452,7 @@ class SubAgentStore(
             task_id,
             "run.created",
             {"run_id": run.run_id, "step": run.step_key, "role": run.role},
-            run_id=run.run_id,
+            run_id=run.run_id, transaction_cursor=transaction_cursor,
         )
         return run
 
@@ -1111,6 +1126,8 @@ class SubAgentStore(
             cursor = self._connection.cursor()
             try:
                 cursor.execute("BEGIN")
+                from .adapters.onebot_route_context import guard_source_transaction
+                guard_source_transaction(cursor)
                 fence = active_job_fence.get()
                 if fence:
                     if fence.transaction_guard:
@@ -1165,6 +1182,7 @@ class SubAgentStore(
             ),
             project_id=row["project_id"],
             project_base_version=row["project_base_version"],
+            migration_item_id=row.get("migration_item_id"),
         )
 
     @staticmethod
@@ -1423,6 +1441,8 @@ class SubAgentCoordinator:
                         (run.objective + "\n[用户追加修订]\n" + instruction, run.run_id))
             cursor.execute("UPDATE subagent_tasks SET status='queued', cancel_requested=?, objective=?, plan_json=?, result_json='{}', last_error='', finished_at=NULL WHERE task_id=?",
                 (False, task.objective + "\n[修订要求]\n" + instruction, _json_dump(plan), task_id))
+            if self.store.source_recorder is not None and task.endpoint is None:
+                self.store.source_recorder(cursor, "subagent", task_id, updated["revision"], int(time.time()))
             event_sequence = cursor.execute("SELECT COALESCE(MAX(sequence),0)+1 AS next_sequence FROM subagent_events WHERE task_id=?", (task_id,)).fetchone()["next_sequence"]
             cursor.execute("""INSERT INTO subagent_events (task_id, run_id, sequence, event_type, payload_json, created_at)
                 VALUES (?, NULL, ?, 'task.revised', ?, ?)""",
@@ -2225,7 +2245,7 @@ class SubAgentCoordinator:
                 hooks=hooks,
                 validation=validation,
             )
-            delivery_failed = any(not bool(item.get("ok")) for item in deliveries)
+            delivery_failed = not official_task(task) and any(not bool(item.get("ok")) for item in deliveries)
             if outcome.state == "failed":
                 status = "failed"
             elif outcome.state == "partial" or delivery_failed or acceptance_blocks_completion(validation):

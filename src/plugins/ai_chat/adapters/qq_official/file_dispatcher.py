@@ -20,7 +20,8 @@ from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
 from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 from src.qq_official.errors import ERROR_CONTRACT
 from .file_artifacts import _ref, _time, file_job_kind
-from .file_links import ArtifactRef
+from .file_links import ArtifactRef, PublicationNotCreated
+from .project_authority import RecipientEvidenceUnavailable
 from .lease import assert_epoch
 from .native_media import CONTRACT, NativeLimits, UploadedMedia, build_small_upload, fingerprint
 from .native_upload import OfficialMediaUploader, UploadGuardError, UploadIntent, issue_upload_permit
@@ -218,6 +219,8 @@ class OfficialFileDispatcher:
                 return await self._link(job, grant, artifact)
             return await self._stop(job, artifact_id, 'failed',
                 'large_upload_unavailable' if route == 'large_unavailable' else 'native_draft_details_unavailable')
+        except RecipientEvidenceUnavailable:
+            raise JobDeferred('recipient_evidence_unavailable', 15) from None
         except (JobDeferred, asyncio.CancelledError):
             raise
         except (LeaseLost, PermissionError):
@@ -255,7 +258,7 @@ class OfficialFileDispatcher:
                                         clock=self._now, limits=self.limits)
         request = build_small_upload(endpoint, fp, content, limits=self.limits)
         stage = uploader._stage(intent, request.stage, [request.path, request.body])
-        old = await self._db(self._existing_stage, grant)
+        old = await self._db(self._existing_stage, grant, stage)
         if old is not None:
             if old['request_commitment'] != stage.request_commitment or old['operation'] != 'upload_small':
                 return await self._stop(job, artifact['artifact_id'], 'upload_unknown', 'upload_stage_conflict')
@@ -273,9 +276,13 @@ class OfficialFileDispatcher:
         if result.stage_attempt_id is None:
             # A before-network commit may have succeeded without delivering its
             # return value. Preserve any intent; never allocate another one.
-            old = await self._db(self._existing_stage, grant)
+            # Inspect evidence without fresh authority: a lost commit result must
+            # never be hidden by the subsequent recipient wait.
+            old = await self._db(self._unreturned_stage, job, artifact['artifact_id'])
             if old is not None:
                 return await self._stop(job, artifact['artifact_id'], 'upload_unknown', 'upload_intent_unknown')
+            if result.disposition == 'proven_unsent' and result.category == 'recipient_evidence_unavailable':
+                raise JobDeferred('recipient_evidence_unavailable', 15)
             return await self._stop(job, artifact['artifact_id'], 'failed', _reason(result.category))
         binding = NativeUploadBinding(artifact['artifact_id'], result.stage_attempt_id, endpoint, fp, artifact['mime'])
         if result.disposition == 'confirmed' and isinstance(result.value, UploadedMedia):
@@ -284,6 +291,8 @@ class OfficialFileDispatcher:
             return await self._db(self._handoff_native, grant, binding, reference)
         status = {'confirmed_rejected': 'rejected', 'proven_unsent': 'unsent'}.get(result.disposition, 'unknown')
         await self._db(self._settle_stage, result.stage_attempt_id, stage, status, None, result)
+        if status == 'unsent' and result.category == 'recipient_evidence_unavailable':
+            raise JobDeferred('recipient_evidence_unavailable', 15)
         if status == 'rejected' and await self._db(self._rejected_fallback, grant) == 'link':
             return await self._link(job, grant, artifact)
         return await self._stop(job, artifact['artifact_id'], 'upload_unknown' if status == 'unknown' else 'failed',
@@ -295,7 +304,13 @@ class OfficialFileDispatcher:
             return None
         rows = cursor.execute('SELECT * FROM qq_official_file_stage_attempts WHERE artifact_id=?',
                               (artifact['artifact_id'],)).fetchall()
-        if len(rows) != 1 or not _unsupported_stage(rows[0]):
+        physical = [row for row in rows if not self._fresh_unsent(row)]
+        if len(physical) != 1 or not _unsupported_stage(physical[0]):
+            return None
+        rejected = physical[0]
+        if any((row['artifact_id'],row['operation'],row['request_commitment'],row['expires_at']) !=
+               (rejected['artifact_id'],rejected['operation'],rejected['request_commitment'],rejected['expires_at'])
+               for row in rows):
             return None
         if delivery['active_plan_id'] is not None or delivery['credential_ref'] is not None:
             raise PermissionError('file_rejection_handoff_conflict')
@@ -308,19 +323,40 @@ class OfficialFileDispatcher:
             AND active_plan_id IS NULL AND credential_ref IS NULL''', (self._now(), artifact['artifact_id']))
         return 'link'
 
-    def _existing_stage(self, cursor, grant):
+    @staticmethod
+    def _fresh_unsent(row):
+        return (row['state'] == 'unsent' and row['failure_code'] == 'recipient_evidence_unavailable'
+            and row['receipt_commitment'] is None and row['http_status'] is None and row['platform_code'] is None)
+
+    def _unreturned_stage(self, cursor, job, artifact_id):
+        self._job(cursor, job, artifact_id, self._now())
+        rows = cursor.execute('SELECT * FROM qq_official_file_stage_attempts WHERE artifact_id=?',
+                              (artifact_id,)).fetchall()
+        return next((dict(row) for row in rows if not self._fresh_unsent(row)), None)
+
+    def _existing_stage(self, cursor, grant, stage):
         artifact, _ = self._current(cursor, grant, 'native')
         rows = cursor.execute('SELECT * FROM qq_official_file_stage_attempts WHERE artifact_id=? ORDER BY created_at,stage_attempt_id',
                               (artifact['artifact_id'],)).fetchall()
-        if len(rows) > 1:
+        remaining = []
+        for row in rows:
+            if self._fresh_unsent(row):
+                if (row['request_commitment'] != stage.request_commitment or row['operation'] != stage.operation
+                        or row['expires_at'] != stage.intent.deadline_at):
+                    raise PermissionError('upload_stage_conflict')
+            else:
+                remaining.append(row)
+        # Retain every historical unsent claim. Only the exact, locally proven
+        # no-I/O freshness result can permit another stage; unknown never can.
+        if len(remaining) > 1 or (not remaining and len(rows) >= 32):
             raise PermissionError('multiple_upload_attempts')
-        return dict(rows[0]) if rows else None
+        return dict(remaining[0]) if remaining else None
 
     def _begin_stage(self, cursor, grant, job, stage):
         artifact, delivery = self._current(cursor, grant, 'native')
         if (stage.operation != 'upload_small' or stage.part_index is not None
                 or stage.intent.artifact_id != artifact['artifact_id'] or delivery['active_plan_id'] is not None
-                or self._existing_stage(cursor, grant) is not None):
+                or self._existing_stage(cursor, grant, stage) is not None):
             raise UploadGuardError()
         attempt_id, now = secrets.token_hex(16), self._now()
         cursor.execute('''INSERT INTO qq_official_file_stage_attempts
@@ -366,7 +402,14 @@ class OfficialFileDispatcher:
     def _link_intent(self, cursor, grant):
         artifact, delivery = self._current(cursor, grant, 'link', True)
         if delivery['publication_request_key'] is not None:
-            return artifact, delivery, False
+            retry = delivery['reason_code'] == 'publication_not_created_recipient_wait'
+            if retry:
+                # The previous real store transaction rejected before INSERT.
+                # Commit consuming that proof before a new publication call;
+                # a crash/unknown result after this boundary cannot retry it.
+                cursor.execute("UPDATE qq_official_file_deliveries SET reason_code='',updated_at=? WHERE artifact_id=?",
+                               (self._now(), artifact['artifact_id']))
+            return artifact, delivery, retry
         now = self._now()
         expiry = min(now + 3600, artifact['retain_until'], artifact['pending_deadline_at'])
         key = _digest(['qq-file-publication-v1', self.token.account_key, artifact['artifact_id']])
@@ -398,6 +441,9 @@ class OfficialFileDispatcher:
                 if row is None or row.expires_at != delivery['publication_expires_at']:
                     raise PermissionError('file_publication_unknown')
                 published = await publisher.restore(row.credential_ref)
+        except PublicationNotCreated:
+            await self._db(self._publication_wait, job, artifact['artifact_id'], delivery['publication_request_key'])
+            raise JobDeferred('recipient_evidence_unavailable', 15) from None
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -413,6 +459,15 @@ class OfficialFileDispatcher:
             except Exception:
                 return await self._stop(job, artifact['artifact_id'], 'publication_unknown', 'publication_unknown')
         return await self._db(self._handoff_link, grant, published.publication_ref)
+
+    def _publication_wait(self, cursor, job, artifact_id, request_key):
+        self._job(cursor, job, artifact_id, self._now())
+        row = cursor.execute('SELECT 1 FROM qq_official_file_publications WHERE request_key=?', (request_key,)).fetchone()
+        if row is None:
+            cursor.execute("""UPDATE qq_official_file_deliveries
+                SET reason_code='publication_not_created_recipient_wait',updated_at=?
+                WHERE artifact_id=? AND publication_request_key=? AND state='publishing'""",
+                (self._now(), artifact_id, request_key))
 
     def _handoff_link(self, cursor, grant, publication_ref):
         self._current(cursor, grant, 'link', True)

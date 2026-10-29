@@ -14,11 +14,30 @@ from . import project_browser_drain
 
 
 class ProjectTaskAdmission:
-    def __init__(self, lifecycle, tasks):
+    def __init__(self, lifecycle, tasks, *, official_dispatch=None):
         self.lifecycle, self.projects, self.tasks = lifecycle, lifecycle.projects, tasks
-        self.bindings = ProjectTaskStore(self.projects, tasks)
+        self.bindings = ProjectTaskStore(self.projects, tasks, official_dispatch=official_dispatch)
 
     def _prior(self, cursor, access, request_key):
+        from .project_authorization import official_project
+        proof=official_project(access)
+        if proof is not None:
+            rows=cursor.execute("""SELECT r.* FROM project_lifecycle_runs r
+                JOIN qq_official_project_lifecycle_authority a USING(job_id,project_id)
+                WHERE a.endpoint_key=? AND a.actor_key=? AND r.actor_principal_id=?
+                AND r.request_key=? LIMIT 2""",
+                (access.endpoint.key,access.actor.key,access.principal_id,'task:'+request_key)).fetchall()
+            if len(rows)>1:
+                raise ProjectConflict('project_task_identity_ambiguous')
+            if rows:
+                from .adapters.qq_official.project_authority import Operation
+                proof.provider.require(cursor,proof,project_id=rows[0]['project_id'],operation=Operation.EXECUTE)
+                pinned,_=proof.provider._pin(cursor,rows[0]['project_id'])
+                bound=cursor.execute('SELECT grant_id,grant_revision FROM qq_official_project_lifecycle_authority WHERE job_id=?',
+                                     (rows[0]['job_id'],)).fetchone()
+                if bound['grant_id']!=pinned.grant_id or bound['grant_revision']!=pinned.revision:
+                    raise PermissionError('project_authority_denied')
+            return dict(rows[0]) if rows else None
         rows = cursor.execute(
             """SELECT r.* FROM project_lifecycle_runs r JOIN projects p USING(project_id)
             WHERE p.scope_key=? AND p.bot_native_user_id=? AND r.actor_principal_id=?
@@ -62,7 +81,9 @@ class ProjectTaskAdmission:
             raise ValueError("Invalid project task preparation")
         if not callable(preflight):
             raise ValueError("Project preparation requires backend preflight")
-        if (packet.scope_key != access.scope.key
+        from .project_background import require_packet
+        structured = require_packet(access,packet,dispatch)
+        if not structured and (packet.scope_key != access.scope.key
                 or str(packet.requester_user_id) != access.scope.actor_native_user_id
                 or str(dispatch.get("bot_id", "")) != access.scope.bot_native_user_id):
             raise PermissionError("Project preparation context belongs to another identity")
@@ -159,7 +180,9 @@ class ProjectTaskAdmission:
         self.bindings._clean_baseline(cursor, project, baseline)
         self.bindings._manifest(cursor, access, run["project_id"], baseline)
         packet = ContextPacket.from_payload(envelope["packet"])
-        if (packet.scope_key != access.scope.key
+        from .project_background import require_packet
+        structured = require_packet(access,packet,envelope['dispatch'])
+        if not structured and (packet.scope_key != access.scope.key
                 or str(packet.requester_user_id) != access.scope.actor_native_user_id
                 or str(envelope["dispatch"].get("bot_id", "")) != access.scope.bot_native_user_id):
             raise PermissionError("Saved task identity changed")

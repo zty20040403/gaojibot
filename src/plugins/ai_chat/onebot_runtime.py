@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,7 @@ class OneBotRuntime:
         cache_dir: Path,
         project_root: Path,
         logger: RuntimeLogger,
+        migration_service_factory=None,
     ) -> None:
         self.settings = settings
         self.state_dir = state_dir
@@ -105,6 +107,8 @@ class OneBotRuntime:
         self._lock = asyncio.Lock()
         self._closed = False
         self.ready = False
+        self.migration_service_factory = migration_service_factory
+        self.migration_routes = None
 
     @property
     def context(self) -> AppContext:
@@ -147,6 +151,7 @@ class OneBotRuntime:
             )
             self._context = context
             try:
+                await self._start_migration_service(context)
                 self._handlers = assemble_handlers(context)
                 notifier = AlertNotificationService(
                     alertmanager_url=self.settings.alertmanager_url,
@@ -179,14 +184,79 @@ class OneBotRuntime:
     async def preprocess(self, bot: Bot, event: MessageEvent) -> None:
         if not self.ready:
             raise IgnoredException("OneBot runtime is not ready")
-        if await handle_approval_event(self.context.mobile_authorization, bot, event):
-            raise IgnoredException(
-                "Mobile authorization handled outside conversation history"
-            )
+        if self.migration_routes is not None:
+            if event.user_id == event.self_id:
+                from .adapters.onebot_echo import settle_self_echo
+                await self.context.db_call(settle_self_echo,self.migration_routes,self.context.delivery_store,bot,event)
+                raise IgnoredException('Managed self receipt settled outside conversation handlers')
+            # Approval reducers may cause effects before a matcher runs. Their
+            # actual task needs its own captured source; a later matcher obtains
+            # another handler-scoped proof for the same authenticated event.
+            async with self.migration_routes.handler_context("approval_preprocessor", bot, event):
+                if await handle_approval_event(self.context.mobile_authorization, bot, event):
+                    raise IgnoredException("Mobile authorization handled outside conversation history")
+        elif await handle_approval_event(self.context.mobile_authorization, bot, event):
+            raise IgnoredException("Mobile authorization handled outside conversation history")
         if isinstance(event, GroupMessageEvent) and not await self.context.db_call(
             self.handlers.group_enabled, event.group_id
         ):
             raise IgnoredException("QQ group is disabled for this bot")
+
+    async def _start_migration_service(self, context):
+        if self.migration_service_factory is None:
+            from .adapters.qq_official.host_config import configured_migration_factory
+            self.migration_service_factory = configured_migration_factory()
+        if self.migration_service_factory is None:
+            database = getattr(context, "database", None)
+            if database is not None:
+                def managed():
+                    connection = database.store_connection()
+                    try:
+                        return connection.execute("SELECT 1 FROM migration_routes LIMIT 1").fetchone() is not None
+                    finally:
+                        connection.close()
+                if await context.db_call(managed):
+                    raise RuntimeError("Managed OneBot routes require migration_service_factory")
+            return
+        service = self.migration_service_factory(context, self)
+        if inspect.isawaitable(service):
+            service = await service
+        if service is None:
+            raise RuntimeError("Migration service factory returned no service")
+        self.migration_routes = service
+        context.migration_service = service
+        start = getattr(service, "start", None)
+        if start is not None:
+            result = start()
+            if inspect.isawaitable(result):
+                await result
+        from .adapters.onebot_route import install_boundary
+        from .adapters.onebot_route_context import install_source_runtime
+        install_boundary(service)
+        install_source_runtime(service)
+        worker = getattr(context, "job_worker", None)
+        if worker is not None:
+            worker.source_context = service.job_context
+        tasks = getattr(context, "subagent_store", None)
+        if tasks is not None:
+            tasks.source_recorder = service.capture_domain
+        routines = getattr(context, "routine_store", None)
+        if routines is not None:
+            routines.source_recorder = service.capture_domain
+            routines.source_job_recorder = service.derive_job
+            routines.source_schedule_guard = service.guard_due_routines
+        deliveries = getattr(context, "delivery_store", None)
+        if deliveries is not None:
+            deliveries.source_recorder = service.capture_delivery
+        reminders = getattr(context, "reminder_store", None)
+        if reminders is not None:
+            reminders.source_recorder = service.capture_reminder
+
+    async def connected(self, bot):
+        if self.migration_routes is not None:
+            connect = getattr(self.migration_routes, "connected", None)
+            if connect is not None:
+                await connect(bot)
 
     async def _close(self) -> None:
         self.ready = False
@@ -196,6 +266,12 @@ class OneBotRuntime:
             if context is not None:
                 await context.shutdown()
         finally:
+            if self.migration_routes is not None:
+                from .adapters.onebot_route import uninstall_boundary
+                from .adapters.onebot_route_context import uninstall_source_runtime
+                uninstall_boundary(self.migration_routes)
+                uninstall_source_runtime(self.migration_routes)
+                self.migration_routes = None
             if context is not None:
                 release_llm_runtime(context.llm_gateway)
             self._handlers = None

@@ -25,7 +25,15 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
     async def bound_group(self, fake, runtime, *, grant_owner=False):
         await self.emit(fake, native="TEST_REVIEW_CREATE", content="/bind create")
         challenge = (await self.wait_db("SELECT challenge_id FROM qq_official_binding_challenges WHERE state='issued'"))[0]
-        sent = next(item for item in fake.received if item["payload"].get("msg_id") == "TEST_REVIEW_CREATE")
+        # Binding can use any live private reply window for this endpoint;
+        # same-second windows need not select the create command's message.
+        delivery = (await self.wait_db(
+            "SELECT d.native_message_id FROM deliveries d "
+            "JOIN delivery_plans p ON p.plan_id=d.plan_id "
+            "WHERE p.challenge_id=? AND d.purpose='binding_otp' AND d.status='committed'",
+            (challenge["challenge_id"],),
+        ))[0]
+        sent = next(item for item in fake.received if item["receipt"]["id"] == delivery["native_message_id"])
         code = re.search(r"一次性验证码：(\d{6})", sent["payload"]["content"]).group(1)
         await self.group_message(fake, "TEST_REVIEW_SUBMIT", f"/bind submit {challenge['challenge_id']} {code}")
         candidate = (await self.wait_db("SELECT candidate_id,version FROM qq_official_binding_candidates WHERE state='pending'"))[0]

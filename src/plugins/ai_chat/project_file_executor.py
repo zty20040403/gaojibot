@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import time
 import uuid
+import tempfile
 
 from src.project_content import CHUNK_BYTES, MAX_VERSION_FILES, manifest_bytes
 from .project_executor import DockerProjectBackend, _store
@@ -63,7 +64,8 @@ class ProjectFileExecutor:
 
     async def _context(self, job):
         project, run = await _store(self.lifecycle.context, job)
-        access = self.resolve_access(project, run["actor_principal_id"])
+        access = (self.resolve_access(project, run["actor_principal_id"], job=job)
+                  if run.get('official_authority') else self.resolve_access(project, run["actor_principal_id"]))
         if inspect.isawaitable(access):
             access = await access
         if not isinstance(access, ProjectAccess):
@@ -71,13 +73,18 @@ class ProjectFileExecutor:
         project, _ = await _store(self.lifecycle.context, job, access=access)
         return access, project
 
-    async def _call(self, step, action, *, key="", **parameters):
+    async def _call(self, job, access, step, action, *, key="", **parameters):
+        from .agent.control import assert_job_owned
+        assert_job_owned()
         args = step["arguments"]
         identifier = (
             step["request_id"]
             if not key
             else uuid.uuid5(uuid.UUID(step["request_id"]), key).hex
         )
+        from .project_authorization import official_project
+        if official_project(access) is not None:
+            await _store(self.lifecycle.pre_rpc,job)
         result, body = await self.client.project_files(
             action,
             args["owner"],
@@ -210,9 +217,45 @@ class ProjectFileExecutor:
                 )
             await asyncio.sleep(2)
 
+    async def _spool_snapshot(self,job,item,read,*,quota_bytes):
+        from src.storage_admission import require_capacity
+        from src.qq_official.credentials import verify_private_file
+        size=item['size']
+        if type(size) is not int or not 0<=size<=min(quota_bytes,256*1024*1024):
+            raise ProjectConflict('Project snapshot exceeds its bounded transfer limit')
+        await _store(require_capacity,size)
+        stream=tempfile.TemporaryFile(mode='w+b')
+        try:
+            verify_private_file(stream.fileno())
+            deadline=time.monotonic()+300
+            offset=0
+            digest=hashlib.sha256()
+            while offset<size:
+                remaining=deadline-time.monotonic()
+                if remaining<=0:
+                    raise TimeoutError('Project snapshot transfer expired')
+                async with asyncio.timeout(remaining):
+                    await _store(self.lifecycle.pre_rpc,job)
+                    maximum=min(CHUNK_BYTES,self.client.max_file_bytes,size-offset)
+                    chunk=await read(offset,maximum)
+                    await _store(self.lifecycle.pre_rpc,job)
+                if not isinstance(chunk,bytes) or not chunk or len(chunk)>maximum or offset+len(chunk)>size:
+                    raise ProjectConflict('Project snapshot bytes are incomplete')
+                await _store(stream.write,chunk)
+                digest.update(chunk)
+                offset+=len(chunk)
+            if offset!=size or digest.hexdigest()!=item['sha256'] or time.monotonic()>=deadline:
+                raise ProjectConflict('Project snapshot checksum failed')
+            await _store(self.lifecycle.pre_rpc,job)
+            stream.seek(0)
+            return stream
+        except BaseException:
+            stream.close()
+            raise
+
     async def _snapshot(self, job, step):
         access, project = await self._context(job)
-        observed, _ = await self._call(
+        observed, _ = await self._call(job, access,
             step, "snapshot", rebuild_command=step["arguments"]["rebuild_command"]
         )
         digest, count = observed.get("manifest_sha256"), observed.get("file_count")
@@ -225,7 +268,7 @@ class ProjectFileExecutor:
             raise ProjectConflict("Incomplete project snapshot manifest")
         entries = []
         while len(entries) < count:
-            page, _ = await self._call(
+            page, _ = await self._call(job, access,
                 step,
                 "page",
                 key=f"page:{len(entries)}",
@@ -264,7 +307,7 @@ class ProjectFileExecutor:
                     or document["files"] != source["files"]
                     or any(source_recipe.get(k) != observed_recipe.get(k) for k in ("command", "locks"))):
                 raise ProjectConflict("Task baseline workspace changed; preserve it for reconciliation")
-            checked, _ = await self._call(step, "check", key="snapshot-check", manifest_sha256=digest)
+            checked, _ = await self._call(job, access, step, "check", key="snapshot-check", manifest_sha256=digest)
             if checked.get("pending") is not False:
                 raise ProjectConflict("Task baseline consistency was not confirmed")
             await self._context(job)
@@ -283,7 +326,7 @@ class ProjectFileExecutor:
                     self.client.max_file_bytes,
                     item["size"] - offset,
                 )
-                receipt, body = await self._call(
+                receipt, body = await self._call(job, access,
                     step,
                     "read",
                     key=f"read:{index}:{offset}",
@@ -301,19 +344,18 @@ class ProjectFileExecutor:
                     raise ProjectConflict("Snapshot chunk does not match its receipt")
                 return body
 
-            stream = _RemoteFile(asyncio.get_running_loop(), read, item["size"])
-            staged.append(
-                await _store(
-                    self.projects.stage_snapshot_file,
-                    access,
-                    project["project_id"],
-                    job,
-                    item,
-                    stream,
-                    manifest_sha256=digest,
-                )
-            )
-        checked, _ = await self._call(
+            from .project_authorization import official_project
+            from .adapters.onebot_route_context import active_source_route
+            bounded=official_project(access) is not None or active_source_route.get() is not None
+            stream=(await self._spool_snapshot(job,item,read,quota_bytes=project['quota_bytes']) if bounded
+                    else _RemoteFile(asyncio.get_running_loop(),read,item['size']))
+            try:
+                staged.append(await _store(self.projects.stage_snapshot_file,access,
+                    project['project_id'],job,item,stream,manifest_sha256=digest))
+            finally:
+                if bounded:
+                    stream.close()
+        checked, _ = await self._call(job, access,
             step, "check", key="snapshot-check", manifest_sha256=digest
         )
         if checked.get("pending") is not False:
@@ -340,14 +382,14 @@ class ProjectFileExecutor:
         )
 
     async def _prune(self, job, step):
-        await self._context(job)
+        access, _ = await self._context(job)
         snapshot = step["arguments"]["snapshot"]
         options = {
             "manifest_sha256": snapshot["manifest_sha256"],
             "snapshot_fence": step["arguments"]["snapshot_fence"],
         }
-        await self._call(step, "prune", **options)
-        observed, _ = await self._call(
+        await self._call(job, access, step, "prune", **options)
+        observed, _ = await self._call(job, access,
             step, "prune_check", key="prune-check", **options
         )
         if (
@@ -372,7 +414,7 @@ class ProjectFileExecutor:
         digest = hashlib.sha256(encoded).hexdigest()
         if digest != baseline["manifest_sha256"]:
             raise ProjectConflict("Retained restore baseline changed")
-        begun, _ = await self._call(
+        begun, _ = await self._call(job, access,
             step, "restore_begin", manifest_sha256=digest, manifest_size=len(encoded)
         )
         chunk_size = min(CHUNK_BYTES, self.client.max_file_bytes)
@@ -381,7 +423,7 @@ class ProjectFileExecutor:
                 raise ProjectConflict("Restore was not reserved")
             for offset in range(0, len(encoded), chunk_size):
                 await self._context(job)
-                await self._call(
+                await self._call(job, access,
                     step,
                     "restore_manifest",
                     key=f"manifest:{offset}",
@@ -396,7 +438,7 @@ class ProjectFileExecutor:
                     raise ProjectConflict("Retained file size changed")
                 for offset in range(0, max(len(data), 1), chunk_size):
                     await self._context(job)
-                    await self._call(
+                    await self._call(job, access,
                         step,
                         "restore_file",
                         key=f"file:{index}:{offset}",
@@ -406,11 +448,11 @@ class ProjectFileExecutor:
                         payload=data[offset : offset + chunk_size],
                     )
         await self._context(job)
-        await self._call(
+        await self._call(job, access,
             step, "restore_finish", key="restore-finish", manifest_sha256=digest
         )
         # Mutation receipts can be replayed. Completion needs a fresh tree scan.
-        observed, _ = await self._call(
+        observed, _ = await self._call(job, access,
             step, "restore_check", key="restore-check", manifest_sha256=digest
         )
         if observed.get("pending") is not False:

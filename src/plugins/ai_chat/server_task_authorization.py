@@ -8,27 +8,40 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from nonebot import get_bot
 
 from src.bot_security.service import assert_approved
 from src.bot_security.store import SecurityError, canonical, digest
 from .agent.execution import active_agent_step
-from .onebot_codec import scope_from_event
 from .agent.collaboration_runtime import group_roster, execution_event
 from .workers.durable_jobs import JobDeferred
 
 
-server_task: ContextVar[dict[str, Any] | None] = ContextVar("server_task", default=None)
+server_task: ContextVar[Any] = ContextVar("server_task", default=None)
+
+
+def get_bot(*args, **kwargs):
+    # Legacy patch point remains available without importing the SDK for official.
+    from nonebot import get_bot as legacy_get_bot
+    return legacy_get_bot(*args, **kwargs)
 
 
 class ServerTaskAuthorization:
-    def __init__(self, context):
+    def __init__(self, context, *, official_authority=None):
         self.context = context
         self.mobile = context.mobile_authorization
+        self.official_authority = official_authority
+        if official_authority is not None:
+            official_authority.tasks = self
         self.mobile.executors["server_task"] = self.grant
+
+    def bind_inbound(self, source):
+        if self.official_authority is None:
+            raise SecurityError('official_host_authority_unavailable')
+        return self.official_authority.bind(source)
 
     @contextmanager
     def bind(self, event, turn_id):
+        from .onebot_codec import scope_from_event
         scope = {"scope": scope_from_event(event).key, "qq_id": str(event.user_id),
                  "bot_id": str(event.self_id)}
         step = re.fullmatch(r"task#([1-9][0-9]*)/.+", active_agent_step.get() or "")
@@ -99,6 +112,10 @@ class ServerTaskAuthorization:
         await asyncio.to_thread(self.validate, scope)
 
     async def grant(self, request):
+        if request.get('identity_transport') == 'qq_official':
+            if self.official_authority is None:
+                raise SecurityError('official_host_authority_unavailable')
+            return await self.official_authority.grant(request)
         assert_approved("server_task", request["payload"])
         scope = request["payload"]
         await self.validate_execution(scope)
@@ -109,6 +126,10 @@ class ServerTaskAuthorization:
                 "message": "本任务已统一授权，所有子任务共享；结束、取消或修订后失效。"}
 
     async def ensure(self, scope, account, *, wait=True):
+        if getattr(self.mobile.store, 'transport', None) is not None:
+            if self.official_authority is None:
+                raise SecurityError('official_host_authority_unavailable')
+            return await self.official_authority.ensure(scope, account, wait=wait)
         await self.validate_execution(scope)
         if account["qq_id"] != scope["qq_id"]:
             raise SecurityError("任务发起人与授权管理员不匹配")

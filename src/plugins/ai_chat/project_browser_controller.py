@@ -15,7 +15,10 @@ class ProjectBrowserController:
 
     async def _fresh(self, access, grant, drain_job=None):
         project = await _store(self.runtime.store.get, access, grant.project_id)
-        current = await self.runtime._execution_access(project, access.principal_id)
+        from .project_authorization import official_project
+        current = (await self.runtime._execution_access(project, access.principal_id, source=access)
+                   if official_project(access) is not None else
+                   await self.runtime._execution_access(project, access.principal_id))
         if current.scope != access.scope or current.principal_id != access.principal_id:
             raise PermissionError("Browser actor or conversation identity changed")
         if drain_job is not None:

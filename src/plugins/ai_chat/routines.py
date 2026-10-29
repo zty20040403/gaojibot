@@ -96,6 +96,12 @@ class Routine:
     spec: dict = field(default_factory=dict)
     dispatch: dict = field(default_factory=dict)
     consecutive_failures: int = 0
+    account_key: str | None = None
+    endpoint_key: str | None = None
+    creator_actor_key: str | None = None
+    endpoint_generation: int | None = None
+    endpoint_route_epoch: int | None = None
+    budget_origin_routine_id: int | None = None
 
     @property
     def handle(self) -> str:
@@ -103,6 +109,14 @@ class Routine:
 
     @property
     def scope(self) -> ConversationScope:
+        if self.platform == 'qq-official':
+            from .platform_types import ActorKey, EndpointKey
+            endpoint = EndpointKey.parse(self.endpoint_key)
+            actor = ActorKey.parse(self.creator_actor_key)
+            if (endpoint.account.key != self.account_key or not actor.matches_endpoint(endpoint)
+                    or endpoint.scope.key != self.scope_key):
+                raise ValueError('Invalid routine identity')
+            return endpoint.scope
         return ConversationScope(
             self.platform,
             self.kind,
@@ -162,6 +176,9 @@ class RoutineStore:
         max_per_owner: int = 5,
     ) -> None:
         _, self._connection = open_store_connection(source)
+        self.source_recorder = None
+        self.source_job_recorder = None
+        self.source_schedule_guard = None
         self._source = source
         self._lock = threading.RLock()
         self.jobs, self.outbox, self.usage = jobs, outbox, usage
@@ -177,6 +194,8 @@ class RoutineStore:
             cursor = self._connection.cursor()
             try:
                 cursor.execute("BEGIN")
+                from .adapters.onebot_route_context import guard_source_transaction
+                guard_source_transaction(cursor)
                 yield cursor
                 self._connection.commit()
             except BaseException:
@@ -337,6 +356,8 @@ class RoutineStore:
                         existing["routine_id"],
                     ),
                 ).fetchone()
+            if self.source_recorder is not None:
+                self.source_recorder(cursor, "routine", row["routine_id"], row["version"], timestamp)
             return Routine(**dict(row))
 
     def _creator_principal(self, scope, now):
@@ -482,6 +503,8 @@ class RoutineStore:
                 next_due_at=?,updated_at=? WHERE routine_id=? RETURNING *""",
                 (cron_time(row["cron"], row["timezone"], now), now, routine_id),
             ).fetchone()
+            if self.source_recorder is not None:
+                self.source_recorder(cursor, "routine", result["routine_id"], result["version"], now)
             return Routine(**dict(result))
 
     def list_owned(
@@ -563,10 +586,16 @@ class RoutineStore:
         timestamp = int(time.time()) if now is None else now
         result = []
         with self._transaction() as cursor:
+            allowed = None
+            if self.source_schedule_guard is not None:
+                allowed = self.source_schedule_guard(cursor, now=timestamp, limit=min(max(limit, 1), 100))
+                if not allowed:
+                    return []
+            restriction = "" if allowed is None else " AND routine_id IN (" + ",".join("?" for _ in allowed) + ")"
             rows = cursor.execute(
-                """SELECT * FROM agent_routines WHERE enabled AND state='active' AND routine_kind='schedule' AND next_due_at<=?
+                """SELECT * FROM agent_routines WHERE platform='onebot-v11' AND enabled AND state='active' AND routine_kind='schedule' AND next_due_at<=?""" + restriction + """
                 ORDER BY next_due_at, routine_id LIMIT ? FOR UPDATE SKIP LOCKED""",
-                (timestamp, min(max(limit, 1), 100)),
+                (timestamp, *(allowed or ()), min(max(limit, 1), 100)),
             ).fetchall()
             for row in rows:
                 spec = Routine(**dict(row))
@@ -618,6 +647,9 @@ class RoutineStore:
                     "UPDATE routine_runs SET job_id=? WHERE run_id=?",
                     (job.job_id, run_id),
                 )
+                if self.source_job_recorder is not None:
+                    self.source_job_recorder(cursor, job, kind="routine", identifier=spec.routine_id,
+                                             revision=spec.version, now=timestamp)
                 result.append(
                     self._run(
                         cursor.execute(
@@ -1037,7 +1069,7 @@ class RoutineStore:
         reconciled = 0
         with self._transaction() as cursor:
             routines = cursor.execute(
-                """SELECT a.* FROM agent_routines a WHERE EXISTS (
+                """SELECT a.* FROM agent_routines a WHERE a.platform='onebot-v11' AND EXISTS (
                        SELECT 1 FROM routine_runs r JOIN durable_jobs j ON j.job_id=r.job_id
                        WHERE r.routine_id=a.routine_id AND r.status IN ('queued','running','generated')
                          AND j.status IN ('failed','cancelled','succeeded'))
@@ -1104,7 +1136,7 @@ class RoutineStore:
         count = 0
         with self._transaction() as cursor:
             owners = cursor.execute(
-                """SELECT a.routine_id FROM agent_routines a WHERE a.enabled AND EXISTS (
+                """SELECT a.routine_id FROM agent_routines a WHERE a.platform='onebot-v11' AND a.enabled AND EXISTS (
                     SELECT 1 FROM routine_runs r WHERE r.routine_id=a.routine_id
                     AND r.version=a.version AND r.status IN ('failed','skipped') AND r.delivery_id IS NULL)
                 ORDER BY a.routine_id LIMIT ? FOR UPDATE OF a SKIP LOCKED""",

@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 import psycopg
 import sqlalchemy as sa
+from alembic import command
+from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from src.bot_storage.database import DatabaseError
@@ -35,6 +37,13 @@ REDACTED = body_to_json(MessageBody((TextNode(0, "[受保护附件：文件内�
 class FileMigrationTests(ExecutionFixture):
     def setUp(self):
         super().setUp()
+        # Remove newer descendants through Alembic's dependency order first.
+        # M6's direct Operations assertions below then remain isolated to 0065.
+        config = Config()
+        config.set_main_option("script_location", str(ROOT / "migrations"))
+        with patch.dict(os.environ, {"AI_POSTGRES_SCHEMA": self.database.schema,
+                                     "AI_POSTGRES_DSN": self.database.dsn}):
+            command.downgrade(config, "0065_qq_official_files")
         spec = importlib.util.spec_from_file_location("test_m6_migration", ROOT / "migrations/versions/0065_qq_official_files.py")
         self.migration_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.migration_module)

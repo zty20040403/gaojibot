@@ -53,6 +53,10 @@ def build_turn_consumer(runtime, token, app):
         await runtime._calls(commit)
 
     service_options = {"memory_writer": memory_writer, "scope_enabled": scope_enabled}
+    migration = getattr(runtime,'migration_service',None)
+    if migration is not None:
+        service_options['public_history_factory'] = migration.public_history
+        service_options['project_factory'] = migration.project_context
     files = getattr(runtime, 'file_service', None)
     if files is not None:
         service_options['generation_factory'] = files.generation.foreground

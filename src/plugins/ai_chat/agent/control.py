@@ -26,15 +26,43 @@ class LeaseLost(BaseException):
     """Must escape ordinary model/tool retry handlers."""
 
 
+class RouteAuthorityLost(BaseException):
+    """A captured source route was frozen or changed; never retry a model call."""
+
+
+@dataclass(frozen=True, repr=False)
+class RouteFence:
+    check: Callable[[], bool]
+    transaction_guard: Callable[[Any], None] | None = None
+
+    def assert_current(self) -> None:
+        try:
+            current = self.check()
+        except Exception:
+            raise RouteAuthorityLost("source_route_unavailable") from None
+        if current is not True:
+            raise RouteAuthorityLost("source_route_unavailable")
+
+
 active_job_fence: ContextVar[JobFence | None] = ContextVar("subagent_job_fence", default=None)
+active_route_fence: ContextVar[RouteFence | None] = ContextVar("source_route_fence", default=None)
 active_task_id: ContextVar[int | None] = ContextVar("subagent_task_id", default=None)
 active_model_policy: ContextVar[dict[str, Any]] = ContextVar("subagent_model_policy", default={})
 
 
-def assert_job_owned() -> None:
+def assert_job_owned(*, transaction_cursor=None) -> None:
+    route = active_route_fence.get()
+    if route is not None:
+        if transaction_cursor is not None and route.transaction_guard is not None:
+            route.transaction_guard(transaction_cursor)
+        else:
+            route.assert_current()
     fence = active_job_fence.get()
     if fence:
-        fence.assert_owned()
+        if transaction_cursor is not None and fence.transaction_guard is not None:
+            fence.transaction_guard(transaction_cursor)
+        else:
+            fence.assert_owned()
 
 
 class TaskControlStoreMixin:
@@ -216,6 +244,11 @@ class TaskControlStoreMixin:
                 raise ValueError("Task version changed; refresh before editing")
             if expected_version == 0 and dispatch:
                 cursor.execute("UPDATE subagent_tasks SET status='queued' WHERE task_id=? AND status='received'", (task_id,))
+            recorder = getattr(self, "source_recorder", None)
+            if recorder is not None and dispatch:
+                row = cursor.execute("SELECT account_key FROM subagent_tasks WHERE task_id=?", (task_id,)).fetchone()
+                if row is not None and row["account_key"] is None:
+                    recorder(cursor, "subagent", task_id, value["revision"], int(time.time()))
         self._notify_changed(task_id)
         return value
 
