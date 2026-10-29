@@ -7,6 +7,6 @@ from src.plugins.ai_chat.platform_types import AccountKey
 
 
 def account_job_kind(stage: str, account_key: str) -> str:
-    if stage not in {"ingest", "turn", "subagent", "file", "file_import", "reminder", "routine"} or AccountKey.parse(account_key).platform != "qq-official":
+    if stage not in {"ingest", "turn", "subagent", "file", "file_import", "reminder", "routine", "wiki"} or AccountKey.parse(account_key).platform != "qq-official":
         raise ValueError("Invalid official account job stage")
     return "qq_official." + stage + "." + hashlib.sha256(account_key.encode("utf-8")).hexdigest()

@@ -26,6 +26,7 @@ from .file_links import ArtifactRef, FileCredentialVault, FileLinkPublisher, Lin
 from .file_payloads import TrustedFilePayloads
 from .file_publications import PgPublicationStore
 from .lease import LeaseLost as AccountLeaseLost, assert_epoch
+from .image_formats import file_type_for_mime
 from .native_media import CONTRACT
 from .native_vault import NativeUploadVault
 from .send_policy import SendPolicyChoice, check_send_policy
@@ -64,6 +65,8 @@ class FileServiceConfig:
     destroy_expired_resources: bool = False
     source_authority: Callable | None = field(default=None, repr=False)
     existing_artifact_authority: Callable | None = field(default=None, repr=False)
+    # M7 typed route evidence; old two-argument port remains type-4 only.
+    native_media_evidence: Callable | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if (not isinstance(self.private_directory, Path) or not self.private_directory.is_absolute()
@@ -75,7 +78,7 @@ class FileServiceConfig:
                         self.account_capacity,self.actor_capacity))
                 or not self.actor_capacity <= self.account_capacity <= 100
                 or any(port is not None and not callable(port) for port in
-                       (self.route_authority,self.source_authority,self.existing_artifact_authority,
+                       (self.route_authority,self.source_authority,self.existing_artifact_authority,self.native_media_evidence,
                         self.native_evidence,self.link_reachable))):
             raise ValueError('invalid_file_service_configuration')
         if self.link_origin is not None:
@@ -231,6 +234,13 @@ class FileServices:
     def _link_ready(self):
         return self.config.link_origin is not None and self.config.link_reachable is not None and self.config.link_reachable() is True
 
+    def _native_evidence(self,cursor,endpoint,kind):
+        if self.config.native_media_evidence is not None:
+            return self.config.native_media_evidence(cursor,endpoint,kind)
+        if kind==4 and self.config.native_evidence is not None:
+            return self.config.native_evidence(cursor,endpoint)
+        return None
+
     def _route(self,cursor,artifact,route):
         self._account(cursor)
         endpoint,actor=EndpointKey.parse(artifact['endpoint_key']),ActorKey.parse(artifact['requester_actor_key'])
@@ -247,8 +257,9 @@ class FileServices:
                 or endpoint.kind=='group' and row['binding_state']!='active'
                 or self.admission(cursor,endpoint,actor) is not True): return False
         if route=='link': return self._link_ready()
-        if route!='native' or self.config.native_evidence is None or artifact.get('draft',False): return False
-        proof=self.config.native_evidence(cursor,endpoint)
+        if route!='native' or artifact.get('draft',False): return False
+        kind=file_type_for_mime(artifact['mime'])
+        proof=self._native_evidence(cursor,endpoint,kind)
         now=int(self.clock())
         if (not isinstance(proof,NativeRouteEvidence) or proof.endpoint!=endpoint
                 or any(type(x) is not int for x in (proof.endpoint_generation,proof.route_epoch,proof.capability_revision,
@@ -256,10 +267,10 @@ class FileServices:
                 or (proof.endpoint_generation,proof.route_epoch,proof.capability_revision)!=(row['generation'],row['route_epoch'],row['capability_revision'])
                 or not 0<=proof.verified_at<=now<proof.expires_at
                 or not 1<=artifact['byte_size']<=min(proof.max_bytes,self.dispatcher.limits.small_bytes,3_750_000)
-                or proof.contract!=CONTRACT or proof.file_type!=4): return False
+                or proof.contract!=CONTRACT or proof.file_type!=kind): return False
         from .file_dispatcher import native_rejected
         return not native_rejected(cursor,endpoint,endpoint_generation=row['generation'],route_epoch=row['route_epoch'],
-            verified_at=proof.verified_at,contract=CONTRACT,file_type=4)
+            verified_at=proof.verified_at,contract=CONTRACT,file_type=kind)
 
     def check_delivery_ready(self,cursor,artifact,now):
         self._account(cursor)
@@ -304,10 +315,11 @@ class FileServices:
                         or capacity['total']>=self.config.account_capacity or capacity['actor']>=self.config.actor_capacity)):
                     return ArtifactAvailability(False,0,'link')
                 artifact=dict(endpoint_key=binding.endpoint.key,requester_actor_key=binding.actor.key,
-                    endpoint_generation=source['endpoint_generation'],route_epoch=source['route_epoch'],byte_size=1,draft=False)
+                    endpoint_generation=source['endpoint_generation'],route_epoch=source['route_epoch'],byte_size=1,draft=False,
+                    mime='application/pdf')  # Existing generation exposes PDF/ZIP, never image-route authority.
                 if self._route(cursor,artifact,'link'):return ArtifactAvailability(True,int(cap),'link')
                 if self._route(cursor,artifact,'native'):
-                    proof=self.config.native_evidence(cursor,binding.endpoint)
+                    proof=self._native_evidence(cursor,binding.endpoint,4)
                     return ArtifactAvailability(True,min(int(cap),proof.max_bytes,
                         self.dispatcher.limits.small_bytes,3_750_000),'native')
                 return ArtifactAvailability(False,0,'link')

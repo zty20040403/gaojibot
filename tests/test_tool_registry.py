@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -69,6 +70,7 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "context_expand",
                 "context_search",
                 "group_members",
+                "recent_speakers",
                 "pin_message",
                 "unpin_message",
                 "use_skill",
@@ -122,6 +124,11 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(len(names), len(domain_registry.handlers))
+        # Registration is shared; the new official ledger query stays hidden
+        # from legacy turns even when they have general context capability.
+        legacy=replace(self.context,capabilities=self.context.capabilities|{'context'})
+        self.assertNotIn('recent_speakers',
+            {item['function']['name'] for item in domain_registry.definitions(legacy)})
         self.assertEqual(
             [
                 handler.definition["function"]["name"]

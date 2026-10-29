@@ -197,7 +197,9 @@ class AppContext:
         migration = getattr(self, 'migration_service', None)
         if host is not None:
             factories.update(migration_factory=host.migration_factory,
-                file_services_factory=host.files_factory, approval_factory=host.approval_factory)
+                file_services_factory=host.files_factory, approval_factory=host.approval_factory,
+                media_factory=host.media_factory,
+                background_factory=getattr(host,"background_factory",None))
         elif migration is not None:
             factories['migration_factory'] = migration.official_factory
         runtime = OfficialRuntime(config, self.database, logger=self.logger, ledger=self.message_ledger,

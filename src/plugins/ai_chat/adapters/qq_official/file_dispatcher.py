@@ -25,6 +25,7 @@ from .project_authority import RecipientEvidenceUnavailable
 from .lease import assert_epoch
 from .native_media import CONTRACT, NativeLimits, UploadedMedia, build_small_upload, fingerprint
 from .native_upload import OfficialMediaUploader, UploadGuardError, UploadIntent, issue_upload_permit
+from .image_formats import file_type_for_mime
 from .native_vault import NativeUploadBinding
 from .protected_payload import ProtectedContentRef
 
@@ -64,18 +65,19 @@ def native_rejected(cursor, endpoint, *, endpoint_generation, route_epoch,
             or type(file_type) is not int):
         raise ValueError('invalid_native_rejection_scope')
     _time(verified_at)
-    if file_type != 4:
+    if file_type not in {1, 4}:
         return False
+    mimes = ("image/png", "image/jpeg") if file_type == 1 else ("application/pdf", "application/zip")
     for marker, versions in _REJECTION_CONTRACTS.items():
         if versions != (contract, ERROR_CONTRACT):
             continue
         row = cursor.execute('''SELECT 1 FROM qq_official_file_stage_attempts s
             JOIN qq_official_file_artifacts a ON a.artifact_id=s.artifact_id
             WHERE a.account_key=? AND a.endpoint_key=? AND a.endpoint_generation=? AND a.route_epoch=?
-              AND a.mime IN ('application/pdf','application/zip')
+              AND a.mime IN (?,?)
               AND s.operation='upload_small' AND s.state='rejected' AND s.failure_code=?
               AND s.platform_code=50015014 AND s.http_status IN (200,400) AND s.settled_at>=? LIMIT 1''',
-            (endpoint.account.key, endpoint.key, endpoint_generation, route_epoch, marker, verified_at)).fetchone()
+            (endpoint.account.key, endpoint.key, endpoint_generation, route_epoch, *mimes, marker, verified_at)).fetchone()
         if row is not None:
             return True
     return False
@@ -243,7 +245,7 @@ class OfficialFileDispatcher:
         await self._db(self._current, grant, 'native')
         content = await self.calls(self.artifacts.read_verified, artifact['artifact_id'],
                                    sha256=artifact['sha256'], byte_size=artifact['byte_size'])
-        fp = fingerprint([content], filename=artifact['filename'], file_type=4)
+        fp = fingerprint([content], filename=artifact['filename'], file_type=file_type_for_mime(artifact['mime']))
         endpoint = EndpointKey.parse(artifact['endpoint_key'])
         intent = UploadIntent(artifact['artifact_id'], endpoint, fp,
                               min(artifact['pending_deadline_at'], artifact['retain_until']))

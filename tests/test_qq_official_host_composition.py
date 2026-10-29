@@ -156,7 +156,8 @@ class HostCompositionTests(HostCompositionFixture):
         config=await self.build()
         self.assertEqual(config.native_routes[0].contract,'TEST_OLD_CONTRACT')
         artifact=dict(account_key=self.account.key,endpoint_key=self.endpoint.key,requester_actor_key=self.actor.key,
-            endpoint_generation=endpoint['generation'],route_epoch=endpoint['route_epoch'],byte_size=100,draft=False)
+            endpoint_generation=endpoint['generation'],route_epoch=endpoint['route_epoch'],byte_size=100,draft=False,
+            mime='application/pdf')
         with self.tx() as cursor:self.assertFalse(self.files._route(cursor,artifact,'native'))
-        self.assertEqual(self.files.config.native_evidence(None,self.endpoint).contract,'TEST_OLD_CONTRACT')
+        self.assertEqual(self.files.config.native_media_evidence(None,self.endpoint,4).contract,'TEST_OLD_CONTRACT')
         self.assertFalse(self.fake.received)

@@ -21,7 +21,7 @@ import zipfile
 
 from src.plugins.ai_chat.adapters.qq_official import execution, subagent_runtime
 from src.plugins.ai_chat.agent.control import LeaseLost
-from src.plugins.ai_chat.agent.artifact_delivery import canonical_artifact_filename
+from .image_formats import artifact_filename as canonical_artifact_filename, detect_image, ImageFormatError
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 
 MAX_BYTES = 100 * 1024 * 1024
@@ -66,6 +66,11 @@ def detect_content(content, filename, max_bytes):
             or type(content) is not bytes or not 1 <= len(content) <= max_bytes):
         raise ArtifactError('artifact_size_unavailable')
     _clean_filename(filename)
+    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+        try:
+            return detect_image(content, filename, max_bytes=max_bytes)
+        except ImageFormatError:
+            raise ArtifactError('artifact_image_invalid') from None
     if filename.lower().endswith('.pdf') and content.startswith(b'%PDF-'):
         return 'application/pdf'
     if filename.lower().endswith('.zip') and content.startswith(b'PK\x03\x04'):

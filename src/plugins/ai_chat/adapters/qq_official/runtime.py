@@ -98,7 +98,7 @@ class OfficialRuntime:
                  protocol_factory=open_official_protocol, binding_sender=None,
                  lease_factory=DedicatedAccountLease, probe_seconds: float = 1,
                  retry_seconds: float = 2, allow_test_server: bool = False,
-                 application=None, turn_consumer_factory=None, file_services_factory=None, approval_factory=None, migration_factory=None):
+                 application=None, turn_consumer_factory=None, file_services_factory=None, approval_factory=None, migration_factory=None, media_factory=None, background_factory=None):
         self.config, self.database, self.logger = config, database, logger
         self.protocol_factory, self.binding_sender = protocol_factory, binding_sender
         self.lease_factory = lease_factory
@@ -107,7 +107,11 @@ class OfficialRuntime:
         self.allow_test_server = allow_test_server
         self.application, self.turn_consumer_factory = application, turn_consumer_factory
         self.migration_factory, self.migration_service = migration_factory, None
+        self.background_factory, self.background_service = background_factory, None
+        self.native_commands = None
         self.approval_factory = approval_factory
+        self.media_factory = media_factory
+        self.media_service = None
         self.approval_service = None
         self.file_services_factory = file_services_factory
         self.file_service = None
@@ -333,6 +337,8 @@ class OfficialRuntime:
                 raise JobDeferred("official_ingest_unavailable", 0) from None
             if result.status == "deferred":
                 raise JobDeferred("official_endpoint_order", 1)
+            if self.background_service is not None and result.status == "processed" and result.dispatch_job_id is None:
+                await self.background_service.on_ingested(job)
             return {"status": result.status, "inbox_id": inbox_id}
 
         async def monitor():
@@ -352,6 +358,8 @@ class OfficialRuntime:
                     next_result_scan = loop.time() + 5
                 if self.migration_service is not None:
                     await self.migration_service.maintain()
+                if self.background_service is not None:
+                    await self.background_service.maintain()
                 if self.file_service is not None and loop.time() >= next_file_scan:
                     await self.file_service.maintain()
                     next_file_scan = loop.time() + 30
@@ -454,11 +462,44 @@ class OfficialRuntime:
                     imports=self.migration_service.domains.get('file') if self.migration_service is not None else None
                     if imports is not None:
                         file_worker.register(account_job_kind('file_import',token.account_key), imports.execute)
-            if self.migration_service is not None:
-                for kind in ('reminder','routine'):
-                    domain = self.migration_service.domains.get(kind)
-                    if domain is not None:
-                        worker.register(account_job_kind(kind,token.account_key), domain.execute)
+            if self.media_factory is not None:
+                media = self.media_factory(self, token)
+                if inspect.isawaitable(media):
+                    media = await media
+                self.media_service = media
+                if media is not None:
+                    async def close_media():
+                        try:
+                            await media.close()
+                        finally:
+                            self.media_service = None
+                    resources.push_async_callback(close_media)
+            if self.background_factory is None:
+                # Removing feature configuration must not remove the persistent
+                # plan fence. This service only denies native work; it creates
+                # no model, schedule, wiki store, listener, or extra queue.
+                from .native_background import NativeBackgroundService
+                background = NativeBackgroundService(runtime=self, token=token)
+                background.attach()
+            else:
+                background = self.background_factory(self, token)
+                if inspect.isawaitable(background):
+                    background = await background
+                if background is None:
+                    raise RuntimeError('official_background_guard_required')
+            self.background_service = background
+            async def close_background():
+                try:
+                    await background.close()
+                finally:
+                    self.background_service = None
+            resources.push_async_callback(close_background)
+            background.register(worker)
+            for kind in ('reminder','routine'):
+                domain = self.background_service or (
+                    self.migration_service.domains.get(kind) if self.migration_service is not None else None)
+                if domain is not None:
+                    worker.register(account_job_kind(kind,token.account_key), domain.execute)
             factory = self.turn_consumer_factory
             subagent_worker = None
             if (self.application is not None and getattr(self.application, "subagent_store", None) is not None

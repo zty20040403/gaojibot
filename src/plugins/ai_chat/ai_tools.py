@@ -1845,6 +1845,15 @@ BROWSER_TOOLS = [
 ]
 
 
+RECENT_SPEAKERS_TOOL: ToolDefinition = {
+    'type': 'function', 'function': {'name': 'recent_speakers',
+        'description': '查询当前实际会话的近期发言者，只扫描指定时间窗内最多500条可见消息；不是群成员名单，也不授予成员权限。',
+        'parameters': {'type': 'object', 'properties': {
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50},
+            'max_age_seconds': {'type': 'integer', 'minimum': 1, 'maximum': 604800}},
+            'additionalProperties': False}}}
+
+
 TOOL_DEFINITIONS = (
     WEB_SEARCH_TOOL,
     QUERY_ALERTS_TOOL,
@@ -1863,7 +1872,7 @@ TOOL_DEFINITIONS = (
     *SOURCE_TOOLS,
     *BROWSER_TOOLS,
     CONTEXT_EXPAND_TOOL, CONTEXT_SEARCH_TOOL, PIN_MESSAGE_TOOL, UNPIN_MESSAGE_TOOL,
-    USE_SKILL_TOOL, INSPECT_SOURCE_TOOL, GROUP_MEMBERS_TOOL,
+    USE_SKILL_TOOL, INSPECT_SOURCE_TOOL, GROUP_MEMBERS_TOOL, RECENT_SPEAKERS_TOOL,
     REMINDER_SET_TOOL, REMINDER_LIST_TOOL, REMINDER_CANCEL_TOOL,
     ROUTINE_SET_TOOL, ROUTINE_LIST_TOOL, ROUTINE_CANCEL_TOOL,
     *PROJECT_TOOLS,

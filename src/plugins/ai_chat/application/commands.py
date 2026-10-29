@@ -17,9 +17,14 @@ from ..platform_types import InboundMessage
 from ..tasks import RunningTaskRegistry
 
 
-CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel"]
+CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "routine", "wiki", "memory", "project", "project_grant"]
 CommandStatus = Literal["ok", "unknown", "syntax", "denied", "unavailable", "not_found", "unsupported", "error"]
 _ALIASES: dict[str, CommandName] = {
+    "例行": "routine", "routine": "routine",
+    "群百科": "wiki", "wiki": "wiki",
+    "memory": "memory", "记忆": "memory",
+    "项目": "project", "project": "project",
+    "项目权限": "project_grant", "项目授权": "project_grant",
     "help": "help", "帮助": "help",
     "bind": "bind", "绑定": "bind",
     "model": "model", "模型": "model", "切换模型": "model",
@@ -99,6 +104,11 @@ class CommandServices:
     usage: ResultCallback | None = None
     binding_handler: ResultCallback | None = None
     db_call: Callable[..., Any] | None = None
+    routine: ResultCallback | None = None
+    wiki: ResultCallback | None = None
+    memory: ResultCallback | None = None
+    project: ResultCallback | None = None
+    project_grant: ResultCallback | None = None
 
 
 async def _await(value):
@@ -134,7 +144,17 @@ async def dispatch_command(
     if request.name == "help":
         if request.argument:
             return CommandResult("syntax", "用法：/help")
-        return CommandResult("ok", "可用命令：/help、/bind、/model、/effort、/usage、/task、/cancel。\n任务状态和停止仅作用于你在当前入口的运行任务。")
+        extras = [label for key, label in (("routine", "/例行"), ("wiki", "/群百科"),
+            ("memory", "/memory"), ("project", "/项目"), ("project_grant", "/项目权限"))
+            if getattr(services, key) is not None]
+        commands = "/help、/bind、/model、/effort、/usage、/task、/cancel" + ("、" + "、".join(extras) if extras else "")
+        return CommandResult("ok", "可用命令："+commands+"。\n任务状态和停止仅作用于你在当前入口的运行任务。")
+    if request.name in {"routine", "wiki", "memory", "project", "project_grant"}:
+        callback = getattr(services, request.name)
+        if callback is None:
+            return CommandResult("unavailable", "该业务命令尚未配置。")
+        result = await _await(callback(inbound, request))
+        return result if isinstance(result, CommandResult) else CommandResult("error", "命令服务返回无效结果。")
     if request.name in {"bind", "usage"}:
         callback = services.binding_handler if request.name == "bind" else services.usage
         if callback is None:

@@ -23,6 +23,7 @@ from pathlib import Path
 from src.plugins.ai_chat.platform_types import EndpointKey
 from src.qq_official.credentials import _verify_posix_acl, verify_private_file
 
+from .image_formats import file_type_for_mime, mime_matches_filename, MAX_IMAGE_BYTES
 from .native_media import (
     CONTRACT,
     ArtifactFingerprint,
@@ -79,10 +80,10 @@ class NativeUploadBinding:
             if not isinstance(self.artifact, ArtifactFingerprint):
                 raise TypeError
             replace(self.artifact)
-            if (self.artifact.file_type != 4 or self.artifact.size > 104857600
+            if (self.artifact.file_type != file_type_for_mime(self.mime) or self.artifact.size > 104857600
                     or len(self.artifact.filename.encode()) > 180
-                    or self.mime not in {"application/pdf", "application/zip"}
-                    or not self.artifact.filename.lower().endswith(".pdf" if self.mime == "application/pdf" else ".zip")):
+                    or (self.artifact.file_type == 1 and self.artifact.size > MAX_IMAGE_BYTES)
+                    or not mime_matches_filename(self.mime, self.artifact.filename)):
                 raise ValueError
         except (TypeError, ValueError, AttributeError):
             raise NativeVaultError("invalid_native_upload_binding") from None

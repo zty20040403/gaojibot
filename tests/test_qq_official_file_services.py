@@ -210,7 +210,7 @@ class FileServiceTests(FileFixture):
         self.assertTrue(ready.available)
         self.assertEqual(ready.max_bytes,3_500_000)
         artifact=dict(endpoint_key=self.endpoint.key,requester_actor_key=self.actor.key,
-            endpoint_generation=1,route_epoch=1,byte_size=ready.max_bytes+1,draft=False)
+            endpoint_generation=1,route_epoch=1,byte_size=ready.max_bytes+1,draft=False,mime='application/pdf')
         with self.tx() as cursor:self.assertFalse(self.service._route(cursor,artifact,'native'))
 
     def test_download_rechecks_cancel_and_each_chunk_without_parent_running(self):

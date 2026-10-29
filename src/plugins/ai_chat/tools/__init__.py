@@ -12,6 +12,7 @@ from .state import ToolContext, structured_tool_source
 def _domain_registry() -> ToolRegistry:
     from .alerts import HANDLERS as ALERT_HANDLERS
     from .context import HANDLERS as CONTEXT_HANDLERS
+    from .recent_speakers import HANDLERS as RECENT_SPEAKERS_HANDLERS
     from .executor import HANDLERS as EXECUTOR_HANDLERS
     from .fleet import HANDLERS as FLEET_HANDLERS
     from .media import HANDLERS as MEDIA_HANDLERS
@@ -25,7 +26,7 @@ def _domain_registry() -> ToolRegistry:
 
     return ToolRegistry(
         (
-            *ALERT_HANDLERS, *MEMORY_HANDLERS, *CONTEXT_HANDLERS,
+            *ALERT_HANDLERS, *MEMORY_HANDLERS, *CONTEXT_HANDLERS, *RECENT_SPEAKERS_HANDLERS,
             *SOURCE_HANDLERS, *MEDIA_HANDLERS, *STICKER_HANDLERS,
             *SUBAGENT_HANDLERS, *REMINDER_HANDLERS, *ROUTINE_HANDLERS,
             *PROJECT_HANDLERS, *FLEET_HANDLERS, *EXECUTOR_HANDLERS,
@@ -70,14 +71,17 @@ def _neutral_registry() -> ToolRegistry:
     # rejecting host handler without importing their legacy implementations.
     from .alerts import HANDLERS as ALERT_HANDLERS
     from .context import HANDLERS as CONTEXT_HANDLERS
+    from .recent_speakers import HANDLERS as RECENT_SPEAKERS_HANDLERS
     from .memory import HANDLERS as MEMORY_HANDLERS
     from .sources import HANDLERS as SOURCE_HANDLERS
     from .stickers import HANDLERS as STICKER_HANDLERS
     from .owned_sandbox import HANDLERS as OWNED_SANDBOX_HANDLERS
     from .projects import HANDLERS as PROJECT_HANDLERS
 
+    from .native_reminders import HANDLERS as NATIVE_REMINDER_HANDLERS
+
     migrated = {handler.definition["function"]["name"]: handler
-                for handler in (*ALERT_HANDLERS, *CONTEXT_HANDLERS, *MEMORY_HANDLERS,
+                for handler in (*ALERT_HANDLERS, *CONTEXT_HANDLERS, *RECENT_SPEAKERS_HANDLERS, *NATIVE_REMINDER_HANDLERS, *MEMORY_HANDLERS,
                                 *SOURCE_HANDLERS, *STICKER_HANDLERS, *OWNED_SANDBOX_HANDLERS, *PROJECT_HANDLERS)
                 if handler.platform_neutral}
     return ToolRegistry((migrated.get(definition["function"]["name"])
@@ -90,7 +94,8 @@ def neutral_registry_for(context: ToolContext) -> ToolRegistry:
     if structured_tool_source(context) is None or context.platform is None:
         raise ValueError("neutral tool registry requires inbound and platform")
     from ..adapters.qq_official.project_tools import project_registry
-    return project_registry(_neutral_registry(), context)
+    from ..adapters.qq_official.media_tools import media_registry
+    return media_registry(project_registry(_neutral_registry(), context), context)
 
 
 __all__ = ["ToolDefinition", "available_tools", "domain_registry", "registry_for", "neutral_registry_for"]

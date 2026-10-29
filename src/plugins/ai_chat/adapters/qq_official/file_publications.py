@@ -12,6 +12,7 @@ import threading
 import time
 from dataclasses import replace
 
+from .image_formats import ALL_ARTIFACT_MIMES, mime_matches_filename, MAX_IMAGE_BYTES, IMAGE_MIMES
 from .file_links import (
     ArtifactRef,
     LinkError,
@@ -74,7 +75,9 @@ class PgPublicationStore:
         checked = replace(value, artifact=replace(value.artifact))
         if (not _ref(checked.artifact.artifact_id)
                 or checked.artifact.size > 104857600
-                or checked.artifact.mime not in {"application/pdf", "application/zip"}
+                or checked.artifact.mime not in ALL_ARTIFACT_MIMES
+                or not mime_matches_filename(checked.artifact.mime, checked.artifact.filename)
+                or (checked.artifact.mime in IMAGE_MIMES and checked.artifact.size > MAX_IMAGE_BYTES)
                 or checked.served_complete_count > MAX_BIGINT
                 or type(checked.origin) is not str or len(checked.origin.encode()) > 1024
                 or _origin(checked.origin, self._allow_loopback) != checked.origin):

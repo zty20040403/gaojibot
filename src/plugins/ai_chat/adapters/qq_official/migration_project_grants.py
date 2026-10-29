@@ -323,6 +323,12 @@ class ProjectMigrationGrants:
         return recent_actor_evidence(cursor,endpoint=request.endpoint,actor=request.actor,now=now,max_age_seconds=300)
 
     def project_scope_guard(self,cursor,*,request,project,source):
+        # M7: a completed, explicitly included resource fact is independent of
+        # old recipient mapping/grant expiry. Ordinary ProjectAuthority still
+        # checks the current actor's exact grant/revision for every operation.
+        origins=getattr(self.services,'project_resource_origins',None)
+        if origins is not None and origins.project_scope_guard(cursor,request=request,project=project,source=source):
+            return True
         row=cursor.execute('''SELECT s.grant_id,s.grant_revision FROM migration_project_grants s
             JOIN qq_official_project_grants g ON g.grant_id=s.grant_id AND g.revision=s.grant_revision
             WHERE s.project_id=? AND s.target_endpoint_key=? AND s.target_actor_key=?''',
