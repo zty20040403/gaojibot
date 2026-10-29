@@ -35,6 +35,8 @@ def _view(row, now):
     status = row['status']
     if row.get('delivery_status'):
         status += '/' + row['delivery_status']
+    if row.get('result_suppressed_reason') == 'result_needs_attachment':
+        status += '/未发送：结果超过消息上限，完整结果已保留'
     return TaskView(f"task#{row['task_id']}", max(0, int((row['finished_at'] or now)-row['created_at'])),
                     f"{status} · {str(row['objective'])[:200]}")
 
@@ -43,7 +45,7 @@ def list_for_endpoint(cursor, *, token, endpoint, actor, now, admission, limit=2
     if type(limit) is not int or not 1 <= limit <= 50:
         raise ValueError('invalid_subagent_query_limit')
     _admit(cursor, token, endpoint, actor, admission)
-    rows = cursor.execute('''SELECT t.*, (SELECT CASE
+    rows = cursor.execute('''SELECT t.*, b.suppressed_reason AS result_suppressed_reason, (SELECT CASE
             WHEN COUNT(*)=0 THEN NULL
             WHEN BOOL_OR(d.status='ambiguous') THEN 'ambiguous'
             WHEN BOOL_AND(d.status='committed') THEN 'committed'

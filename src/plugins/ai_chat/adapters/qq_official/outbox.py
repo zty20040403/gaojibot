@@ -92,6 +92,7 @@ class OfficialOutbox:
         self.approval_authority = approval_authority
         self.source_guard = source_guard
         self._ephemeral = {}
+        self._progress = {}
         self._invocations = weakref.WeakKeyDictionary()
         self._used_permits = weakref.WeakKeyDictionary()
         self._permit_lock = threading.Lock()
@@ -100,6 +101,8 @@ class OfficialOutbox:
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
                 transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None):
+        if purpose == "progress":
+            raise OutboxInvariantError("progress_authority_unavailable")
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -114,6 +117,14 @@ class OfficialOutbox:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
+
+    def _prune_progress(self, now):
+        self._progress = {key: value for key, value in self._progress.items()
+                          if value.expires_at > now}
+
+    def enqueue_progress(self, token, **kwargs):
+        from .progress import enqueue_progress
+        return enqueue_progress(self, token, **kwargs)
 
     def enqueue_artifact(self, token, *, content_ref, source_grant, endpoint, requester,
                          logical_key, source_scope_key, expires_at, source_native_message_id="",
@@ -228,7 +239,16 @@ class OfficialOutbox:
         return challenge is not None
 
     def _authorized(self, cursor, token, row, endpoint, actor, now):
-        if self.source_guard is not None:
+        if row["purpose"] == "progress":
+            self._prune_progress(now)
+            emission = self._progress.get(row["plan_id"])
+            plan = cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?', (row['plan_id'],)).fetchone()
+            try:
+                if emission is None or not emission.current(cursor, token, plan, now):
+                    return False
+            except Exception:
+                return False
+        elif self.source_guard is not None:
             from .migration_types import MigrationDenied
             plan = cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?', (row['plan_id'],)).fetchone()
             try:
@@ -277,7 +297,7 @@ class OfficialOutbox:
     @staticmethod
     def _wait(cursor, row, reason, retry_at, now):
         fixed_reason(reason)
-        if row["purpose"] == "unsolicited" and reason == "waiting_reply_window":
+        if row["purpose"] in {"unsolicited", "progress"} and reason == "waiting_reply_window":
             cursor.execute("""UPDATE deliveries SET status='cancelled',wait_reason='unsolicited_window_unavailable',
                 updated_at=? WHERE delivery_id=? AND status='pending'""", (now, row["delivery_id"]))
             return SendOutcome("cancelled", "unsolicited_window_unavailable", row["delivery_id"])
@@ -287,12 +307,14 @@ class OfficialOutbox:
         return SendOutcome("pending", reason, row["delivery_id"], retry_at)
 
     def _choice(self, cursor, token, row, endpoint, endpoint_row, permit, now):
+        emission = self._progress.get(row["plan_id"]) if row["purpose"] == "progress" else None
         choice = check_send_policy(cursor, token=token, endpoint=endpoint, endpoint_row=endpoint_row,
             source_native_id=row["reply_to_native_message_id"] or None, purpose=row["purpose"],
             deadline=row["expires_at"], now=now, rate_permit=permit, certification=self.certification,
             allow_newer_windows=self.allow_newer_windows if row["purpose"] != "approval_otp" else False,
             allow_proactive_probe=self.allow_proactive_probe if row["purpose"] != "approval_otp" else False,
-            verified_boundary=self.verified_boundary, control_reply_id=control_id_for_delivery(cursor, row))
+            verified_boundary=self.verified_boundary, control_reply_id=control_id_for_delivery(cursor, row),
+            reserve_final_slots=emission.emitter.reserve_final_slots if emission is not None else 4)
         if row['purpose'] == 'approval_otp' and not isinstance(choice, PolicyWait):
             if self.approval_authority is None or not self.approval_authority.choice_current(cursor, delivery=row, choice=choice):
                 return PolicyWait('waiting_reply_window')
@@ -460,6 +482,14 @@ class OfficialOutbox:
                 return False
             if route["capability_revision"] != row["attempt_capability_revision"]:
                 return False
+            if row["purpose"] == "progress":
+                if row["send_mode"] == "passive":
+                    from .send_policy import progress_window_used
+                    if progress_window_used(cursor, account_key=token.account_key,
+                            window_id=row["window_id"], exclude_attempt_id=reservation.attempt_id):
+                        return False
+                elif route["proactive_state"] != "allowed":
+                    return False
             if row["send_mode"] == "passive":
                 if cursor.execute("""SELECT 1 FROM qq_official_reply_windows
                     WHERE window_id=? AND account_key=? AND endpoint_key=? AND state='active'
@@ -550,7 +580,11 @@ class OfficialOutbox:
     def recover(self, token):
         from .settlements import recover_account_sends
         with self.deliveries.transaction() as cursor:
-            return recover_account_sends(cursor, token=token, now=int(self.clock()))
+            now = int(self.clock())
+            self._prune_progress(now)
+            live = tuple(key for key, emission in self._progress.items()
+                         if emission.emitter.token is token and emission.emitter.epoch == token.epoch)
+            return recover_account_sends(cursor, token=token, now=now, live_progress=live)
 
     def pending_receipts(self, token, *, limit=100, after_receipt_id=None):
         """Read one fenced page of unapplied evidence, without recovery writes.

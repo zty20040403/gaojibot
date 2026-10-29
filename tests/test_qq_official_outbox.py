@@ -75,12 +75,9 @@ class OfficialOutboxTests(OutboxFixture):
         self.assertEqual(self.prepare(delivery).status, "cancelled")
         self.assertFalse(self.query("SELECT * FROM delivery_attempts"))
 
-    def test_progress_keeps_suppression_until_short_deadline(self):
-        delivery = self.enqueue(purpose="progress", expires_at=self.now + 30).delivery_ids[0]
-        result = self.outbox.candidate(self.token, delivery)
-        self.assertEqual((result.status, result.reason), ("pending", "progress_suppressed"))
-        self.now += 30
-        self.assertEqual(self.outbox.candidate(self.token, delivery).status, "cancelled")
+    def test_progress_requires_a_registered_live_authority(self):
+        with self.assertRaisesRegex(OutboxInvariantError, "progress_authority_unavailable"):
+            self.enqueue(purpose="progress", expires_at=self.now + 30)
         self.assertFalse(self.query("SELECT * FROM delivery_attempts"))
 
     def test_prepare_uses_existing_attempt_route_and_atomic_window(self):

@@ -22,7 +22,7 @@ from .rate_policy import (
 
 _PURPOSES = frozenset({'final', 'requested_artifact', 'background_result', 'progress', 'unsolicited', 'binding_otp', 'approval_otp'})
 _PROBE_PURPOSES = frozenset({'final', 'requested_artifact', 'background_result'})
-_LOW_PRIORITY = frozenset({'background_result', 'unsolicited'})
+_LOW_PRIORITY = frozenset({'background_result', 'unsolicited', 'progress'})
 _MAX_TIME = 2**63 - 1
 
 
@@ -53,6 +53,7 @@ class SendPolicyChoice:
     purpose: str
     certification: str
     rate_permit: LocalRatePermit | None = field(repr=False)
+    reserve_final_slots: int = 4
 
 
 def _time(value: int) -> None:
@@ -75,8 +76,27 @@ def _target(cursor, token, endpoint):
     return row
 
 
-def _available_window(row, endpoint_row, now, purpose):
-    floor = 1 if purpose in _LOW_PRIORITY else 0
+def _window_floor(purpose, reserve_final_slots):
+    if type(reserve_final_slots) is not int or not 1 <= reserve_final_slots <= 16:
+        raise SendPolicyError('invalid_policy_options')
+    return reserve_final_slots if purpose == 'progress' else 1 if purpose in _LOW_PRIORITY else 0
+
+
+def progress_window_used(cursor, *, account_key, window_id, exclude_attempt_id=None):
+    """Actual reserved/spent progress, across emitters and process instances.
+
+    Caller holds the account and window/endpoint fence. A proven-unsent release
+    consumes no reply; an ambiguous attempt retains its reservation.
+    """
+    return cursor.execute("""SELECT 1 FROM delivery_attempts a JOIN deliveries d
+        ON d.delivery_id=a.delivery_id AND d.account_key=a.account_key
+        WHERE a.account_key=? AND a.window_id=? AND d.purpose='progress'
+          AND a.window_charge_state IN ('reserved','spent') AND a.attempt_id<>? LIMIT 1""",
+        (account_key, window_id, exclude_attempt_id or 0)).fetchone() is not None
+
+
+def _available_window(row, endpoint_row, now, purpose, reserve_final_slots):
+    floor = _window_floor(purpose, reserve_final_slots)
     return (
         row is not None and row['state'] == 'active' and row['issued_at'] is not None
         and row['endpoint_generation'] == endpoint_row['generation']
@@ -146,7 +166,7 @@ def check_send_policy(
     source_native_id: str | None, purpose: str, deadline: int, now: int,
     rate_permit: LocalRatePermit | None = None, certification: Certification = 'unknown',
     allow_newer_windows: bool = False, allow_proactive_probe: bool = False,
-    verified_boundary: VerifiedDayBoundary | None = None, control_reply_id=None,
+    verified_boundary: VerifiedDayBoundary | None = None, control_reply_id=None, reserve_final_slots: int = 4,
 ) -> SendPolicyChoice | PolicyWait:
     """Lock/check candidates; never allocate a sequence or charge an attempt.
 
@@ -156,6 +176,7 @@ def check_send_policy(
     """
     _time(now)
     _time(deadline)
+    _window_floor(purpose, reserve_final_slots)
     if purpose not in _PURPOSES or type(allow_newer_windows) is not bool or type(allow_proactive_probe) is not bool:
         raise SendPolicyError('invalid_policy_options')
     if source_native_id is not None and (not isinstance(source_native_id, str) or not 1 <= len(source_native_id.encode('utf-8')) <= 256):
@@ -166,8 +187,6 @@ def check_send_policy(
             raise SendPolicyError('endpoint_snapshot_changed')
     if deadline <= now:
         return PolicyWait('delivery_expired')
-    if purpose == 'progress':
-        return PolicyWait('progress_suppressed')
     if current['binding_state'] == 'revoked' or current['membership_state'] == 'absent':
         return PolicyWait('endpoint_revoked')
     if current['membership_state'] != 'present':
@@ -184,7 +203,8 @@ def check_send_policy(
         candidate = cursor.execute('''SELECT * FROM qq_official_reply_windows
             WHERE account_key=? AND endpoint_key=? AND credential_kind='msg_id' AND credential_value=? FOR UPDATE''',
             (endpoint.account.key, endpoint.key, source_native_id)).fetchone()
-        if _available_window(candidate, current, now, purpose):
+        if (_available_window(candidate, current, now, purpose, reserve_final_slots)
+                and (purpose != 'progress' or not progress_window_used(cursor, account_key=token.account_key, window_id=candidate['window_id']))):
             window = candidate
     if window is None and allow_newer_windows:
         # Newer-window reuse is disabled without explicit trusted probe policy.
@@ -192,7 +212,9 @@ def check_send_policy(
             WHERE account_key=? AND endpoint_key=? AND credential_kind='msg_id' AND state='active'
               AND expires_at>? ORDER BY issued_at DESC,window_id FOR UPDATE''',
             (endpoint.account.key, endpoint.key, now)).fetchall()
-        window = next((row for row in candidates if _available_window(row, current, now, purpose)), None)
+        window = next((row for row in candidates
+            if _available_window(row, current, now, purpose, reserve_final_slots)
+            and (purpose != 'progress' or not progress_window_used(cursor, account_key=token.account_key, window_id=row['window_id']))), None)
     probe = False
     if window is not None:
         mode = 'passive'
@@ -224,7 +246,7 @@ def check_send_policy(
     return SendPolicyChoice(endpoint, current['generation'], current['route_epoch'], current['capability_revision'],
         mode, window['window_id'] if window else None, window['credential_kind'] if window else None,
         window['credential_value'] if window else None, window['next_seq'] if window else None,
-        send_by, quota_specs, probe, purpose, profile, rate_permit)
+        send_by, quota_specs, probe, purpose, profile, rate_permit, reserve_final_slots)
 
 
 def _attempt(cursor, token, attempt_id):
@@ -256,7 +278,7 @@ def reserve_send_policy(cursor: StoreCursor, *, token: LeaseToken, choice: SendP
             source_native_id=choice.credential_value, deadline=choice.send_by_at, now=now)
         if choice.send_mode != 'passive' or choice.window_id != control_view.window_id:
             raise SendPolicyError('control_window_changed')
-    if (choice.purpose not in _PURPOSES or choice.purpose == 'progress'
+    if (choice.purpose not in _PURPOSES
             or current['membership_state'] != 'present' or current['binding_state'] == 'revoked'
             or (control_view is None and choice.endpoint.kind == 'group' and current['binding_state'] != 'active')):
         raise SendPolicyError('send_admission_changed')
@@ -281,7 +303,10 @@ def reserve_send_policy(cursor: StoreCursor, *, token: LeaseToken, choice: SendP
     if part is None or part['purpose'] != choice.purpose:
         raise SendPolicyError('attempt_purpose_mismatch')
     if choice.window_id is not None:
-        floor = 1 if choice.purpose in _LOW_PRIORITY else 0
+        floor = _window_floor(choice.purpose, choice.reserve_final_slots)
+        if choice.purpose == 'progress' and progress_window_used(cursor, account_key=token.account_key,
+                window_id=choice.window_id, exclude_attempt_id=attempt_id):
+            raise SendPolicyError('window_reservation_changed')
         cursor.execute('''UPDATE qq_official_reply_windows SET reserved_count=reserved_count+1,next_seq=next_seq+1,updated_at=?
             WHERE window_id=? AND account_key=? AND endpoint_key=? AND endpoint_generation=? AND route_epoch=?
               AND state='active' AND issued_at IS NOT NULL AND expires_at>? AND expires_at>=?

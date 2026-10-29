@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+from itertools import chain
 import json
 import re
 import unicodedata
@@ -17,6 +18,7 @@ from src.plugins.ai_chat.message_ir import (
     CardNode, EmoteNode, ForwardNode, MediaNode, MentionNode, MessageBody, TextNode,
 )
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
+from src.plugins.ai_chat.reply_paragraphs import paragraph_spans
 from src.qq_official.outgoing import escape_platform_tags
 
 VERSION = "qq-render-v1"
@@ -403,42 +405,105 @@ def _make_plan(endpoint, parts, *, reason, warnings, markdown, max_chars, max_pa
     return plan
 
 
+def _paragraph_sources(source, spans, math_mode, warnings):
+    # Reuse the renderer's token boundaries so mentions, inline code, math and
+    # graphemes cannot become paragraph control syntax. Code blocks keep the
+    # same safe fence handling when a single block needs length fragmentation.
+    protected, blocks, position, block_start = [], [], 0, None
+    for unit in _unicode_units(source, _units(source, spans, math_mode, warnings)):
+        end = position + len(unit.canonical)
+        if unit.before is None and unit.after is not None:
+            block_start = position
+        if unit.before is not None and unit.after is None:
+            blocks.append((block_start, end))
+            block_start = None
+        if (unit.before is None and unit.after is None
+                and len(unit.canonical) > 1 and unit.canonical != "\r\n"):
+            protected.append((position, end))
+        position = end
+    if block_start is not None:
+        blocks.append((block_start, len(source)))
+    for start, end in paragraph_spans(source, protected=protected, blocks=blocks):
+        yield source[start:end], {offset - start: (stop - start, actor)
+            for offset, (stop, actor) in spans.items() if start <= offset and stop <= end}
+
+
 def render_plan(body: MessageBody, endpoint: EndpointKey, *, max_chars=2000, max_parts=4,
-                max_bytes=None, markdown=True, allowed_mentions=frozenset(), math_mode="preserve") -> RenderedPlan:
+                max_bytes=None, markdown=True, allowed_mentions=frozenset(), math_mode="preserve",
+                paragraphs=False, paragraph_parts=None) -> RenderedPlan:
+    """Freeze wire parts once; only new conversational replies opt into paragraphs.
+
+    paragraph_parts is a soft budget for natural boundaries, not a smaller
+    wire-part limit. Remaining paragraphs share the last natural slot; length
+    fragmentation can still use max_parts. If natural boundaries waste needed
+    capacity, an explicit soft budget permits one fully packed replan. Hard
+    overflow never yields a partial plan. Recovery restores frozen manifests.
+    """
     _limits(max_chars, max_parts, max_bytes)
     authorized = _authorized(endpoint, allowed_mentions)
-    if type(markdown) is not bool or math_mode not in {"preserve", "dollar_delimiters"}:
+    if (type(markdown) is not bool or type(paragraphs) is not bool
+            or math_mode not in {"preserve", "dollar_delimiters"}):
         raise RenderError("invalid_render_options")
+    if paragraph_parts is not None and (type(paragraph_parts) is not int
+            or not 1 <= paragraph_parts <= max_parts):
+        raise RenderError("invalid_render_options")
+    natural_parts = max_parts if paragraph_parts is None else paragraph_parts
     source, spans, warnings, reason = _flatten(body, authorized)
     if not source.strip() and not reason:
         raise RenderError("empty_body")
     parts, current = [], []
+    canonical_source = source
+
+    def flush():
+        md, plain, canonical = _content(current)
+        parts.append(_make_part(len(parts), md, plain, canonical, (a for u in current for a in u.actors)))
+        current.clear()
+
     if not reason:
-        for unit in _unicode_units(source, _units(source, spans, math_mode, warnings)):
-            candidate = [*current, unit]
-            md, plain, _ = _content(candidate)
-            if _fits(md, max_chars, max_bytes) and _fits(plain, max_chars, max_bytes):
-                current = candidate
-                continue
-            if not current:
-                reason = "indivisible_unit_limit"
-                break
-            md, plain, canonical = _content(current)
-            parts.append(_make_part(len(parts), md, plain, canonical, (a for u in current for a in u.actors)))
-            if len(parts) >= max_parts:
-                reason = "part_limit"
-                break
-            current = [unit]
-            md, plain, _ = _content(current)
-            if not _fits(md, max_chars, max_bytes) or not _fits(plain, max_chars, max_bytes):
-                reason = "indivisible_unit_limit"
+        groups = _paragraph_sources(source, spans, math_mode, warnings) if paragraphs else ((source, spans),)
+        for text, mentions in groups:
+            units = _unicode_units(text, _units(text, mentions, math_mode, warnings))
+            if current:
+                if len(parts) < natural_parts - 1:
+                    flush()
+                else:
+                    # Keep the overflow instead of silently dropping paragraphs.
+                    units = chain((_Unit("\n\n", "\n\n", "\n\n", None, None),), units)
+            for unit in units:
+                candidate = [*current, unit]
+                md, plain, _ = _content(candidate)
+                if _fits(md, max_chars, max_bytes) and _fits(plain, max_chars, max_bytes):
+                    current = candidate
+                    continue
+                if not current:
+                    reason = "indivisible_unit_limit"
+                    break
+                flush()
+                if len(parts) >= max_parts:
+                    reason = "part_limit"
+                    break
+                current = [unit]
+                md, plain, _ = _content(current)
+                if not _fits(md, max_chars, max_bytes) or not _fits(plain, max_chars, max_bytes):
+                    reason = "indivisible_unit_limit"
+                    break
+            if reason:
                 break
         if not reason and current:
-            md, plain, canonical = _content(current)
-            parts.append(_make_part(len(parts), md, plain, canonical, (a for u in current for a in u.actors)))
+            flush()
+        if not reason and not parts:
+            raise RenderError("empty_body")
+        if paragraphs and not reason:
+            canonical_source = "".join(part.canonical_text for part in parts)
+    if paragraphs and paragraph_parts is not None and paragraph_parts > 1 and reason == "part_limit":
+        # This is still pure planning, before any durable plan or send exists.
+        # Pack the whole normalized answer to retain the old hard capacity.
+        return render_plan(body, endpoint, max_chars=max_chars, max_parts=max_parts,
+            max_bytes=max_bytes, markdown=markdown, allowed_mentions=allowed_mentions,
+            math_mode=math_mode, paragraphs=True, paragraph_parts=1)
     return _make_plan(endpoint, () if reason else parts, reason=reason, warnings=warnings, markdown=markdown,
                       max_chars=max_chars, max_parts=max_parts, max_bytes=max_bytes, math_mode=math_mode,
-                      source_hash=_digest(source))
+                      source_hash=_digest(canonical_source))
 
 
 def _check_markup(content, actors):
