@@ -275,6 +275,8 @@ M8 首次冻结全量于 2026-10-29 完成 **5,416 项**（3,436.354 秒）：5,
 
 既有 admin-ui、desktop 的 production build 及本机 aarch64-darwin Nix flake 求值证据继续有效，包含 24 项 NixOS 模块断言；本机检查明确省略不兼容系统，不能替代 Linux Nix package CI 或 Windows 原生 ACL。已将验证后的 M8 变更精确整合至正式开发分支，并回填本次结果文档；**M8 本地完整验证通过，PR 与当前 head 的 Python 3.12、Windows credential ACL、Nix package、Secret scan 四项 CI 待验证，尚未合并或上线**。22 项跳过不算 Windows 原生 ACL 通过。真实公网反代、大文件、部署和历史迁移仍保持原验收边界。
 
+M8 PR #9 的首轮 Windows Server 2025 / CPython 3.12.10 原生 CI 运行 13 项（0.070 秒），两项合法受限文件的初次校验报错，不能记为通过；符号链接拒绝用例已执行，未跳过。原错误被生产脱敏层合并，尚不足以区分 API 失败与 ACL 策略拒绝。后续仅给这两项合成文件测试增加同一原生句柄的固定阶段、数值及信任布尔诊断，并启用 verbose 输出；不输出 SID、路径或文件内容，原断言及生产安全校验不变。本机 10 项可移植检查通过，3 项原生检查在 macOS 跳过；真实 Windows 原因与修复仍待当前提交 CI 确认。原提交的 Linux Nix package 和 Secret scan 已成功，后续提交仍须重新核对全部四项 CI。
+
 ## 后续里程碑及门槛
 
 | 里程碑 | 状态 |

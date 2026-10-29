@@ -92,7 +92,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check native Windows credential ACL and local handle rules
-        run: python -m unittest tests.test_qq_official_windows_private
+        run: python -m unittest -v tests.test_qq_official_windows_private
 
   nix:
     name: Nix package

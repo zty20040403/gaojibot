@@ -104,8 +104,82 @@ class WindowsPrivateFileTests(unittest.TestCase):
     def acl(self, *arguments):
         subprocess.run(["icacls", str(self.path), *arguments], check=True, capture_output=True)
 
+    def assert_native_descriptor_private(self, fd):
+        """Forward real Win32 calls; report only fixed stages and numeric facts.
+
+        This runs solely on the synthetic fixture. It does not replace the
+        validator, alter the DACL, or include paths, SIDs, or file contents.
+        """
+        import msvcrt
+        from src.qq_official.windows_private import _Api, _AclSize, PTR
+
+        api = _Api()
+        handle = msvcrt.get_osfhandle(fd)
+        observed = {}
+        owner, acl, descriptor = PTR(), PTR(), PTR()
+        stage = "effective_user"
+        try:
+            trusted = {api.user(), SYSTEM, ADMINS}
+            stage = "get_security_info"
+            status = api.advapi.GetSecurityInfo(handle, 1, 5, ctypes.byref(owner),
+                None, ctypes.byref(acl), None, ctypes.byref(descriptor))
+            observed[stage] = status
+            if status == 0:
+                stage = "descriptor_and_dacl"
+                observed["descriptor_valid"] = bool(descriptor and api.advapi.IsValidSecurityDescriptor(descriptor))
+                observed["dacl_valid"] = bool(acl and api.advapi.IsValidAcl(acl))
+                if observed["descriptor_valid"] and observed["dacl_valid"]:
+                    stage = "owner"
+                    observed["owner_trusted"] = api.sid(owner) in trusted
+                    size = _AclSize()
+                    stage = "get_acl_information"
+                    observed[stage] = bool(api.advapi.GetAclInformation(acl, ctypes.byref(size), ctypes.sizeof(size), 2))
+                    if not observed[stage]:
+                        observed["acl_information_error"] = ctypes.get_last_error()
+                    observed["acl_size"] = (size.count, size.used, size.free)
+                    if observed[stage] and 1 <= size.count <= 256:
+                        observed["aces"] = []
+                        for index in range(size.count):
+                            stage = "get_ace"
+                            ace = PTR()
+                            ace_ok = bool(api.advapi.GetAce(acl, index, ctypes.byref(ace)))
+                            if not ace_ok or not ace:
+                                observed["ace_unavailable"] = index
+                                observed["get_ace_success"] = ace_ok
+                                if not ace_ok:
+                                    observed["get_ace_error"] = ctypes.get_last_error()
+                                break
+                            header = ctypes.string_at(ace, 4)
+                            kind, flags, length = header[0], header[1], int.from_bytes(header[2:], "little")
+                            item = {"kind": kind, "flags": flags, "length": length}
+                            observed["aces"].append(item)
+                            if kind in {0, 1} and 16 <= length <= size.used:
+                                data = ctypes.string_at(ace, length)
+                                item["mask"] = int.from_bytes(data[4:8], "little")
+                                item["sid_layout_valid"] = data[8] == 1 and data[9] <= 15 and 16 + 4 * data[9] <= length
+                                if item["sid_layout_valid"]:
+                                    stage = "ace_sid"
+                                    item["sid_trusted"] = api.sid(PTR(ace.value + 8)) in trusted
+            stage = "real_private_validator"
+            observed[stage] = api.private(handle)
+        except (OSError, AttributeError, ValueError) as error:
+            # Do not attach a possibly stale GetLastError to validity predicates
+            # or the composite validator. Never include str(error).
+            observed["error_stage"] = stage
+            observed["error_type"] = type(error).__name__
+        finally:
+            if descriptor:
+                api.kernel.LocalFree(descriptor)
+        self.assertIs(observed.get("real_private_validator"), True, observed)
+
     def test_real_restricted_acl_is_readable_and_broad_grant_is_denied(self):
         from src.qq_official.credentials import _read_secret, CredentialError
+        from src.qq_official.windows_private import open_windows_private_readonly
+        fd = open_windows_private_readonly(self.path)
+        try:
+            self.assert_native_descriptor_private(fd)
+        finally:
+            os.close(fd)
         self.assertEqual(_read_secret(self.path, None), "TEST_SECRET")
         self.acl("/grant", "*S-1-1-0:(R)")
         with self.assertRaises(CredentialError) as caught:
@@ -116,6 +190,7 @@ class WindowsPrivateFileTests(unittest.TestCase):
     def test_acl_change_on_open_descriptor_is_checked_again(self):
         from src.qq_official.credentials import verify_private_file, CredentialError
         with self.path.open("rb") as stream:
+            self.assert_native_descriptor_private(stream.fileno())
             verify_private_file(stream.fileno())
             self.acl("/grant", "*S-1-1-0:(R)")
             with self.assertRaises(CredentialError):
