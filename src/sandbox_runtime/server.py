@@ -200,7 +200,8 @@ class SandboxRunner:
             if method == "health":
                 data = {"channel_ready": True, "instance_id": self.manager.namespace,
                         "image": self.manager.image,
-                        "max_file_bytes": self.manager.max_file_bytes, "active_operations": len(self.inflight)}
+                        "max_file_bytes": self.manager.max_file_bytes, "active_operations": len(self.inflight),
+                        "bounded_file_export_version": 1}
                 data['project_volumes_enabled'] = self.project_volumes is not None
                 data['project_workspaces_enabled'] = self.manager.project_workspaces is not None
                 data['project_quota_mode'] = self.project_volumes.quota_mode if self.project_volumes is not None else None

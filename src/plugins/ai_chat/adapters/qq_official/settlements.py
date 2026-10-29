@@ -8,6 +8,7 @@ from src.qq_official.errors import QQAPIError
 from .control_receipts import control_id_for_delivery, sync_control_terminal
 from .error_policy import decide_send_error
 from .format_fallback import decide_format_fallback
+from .protected_plans import verify_protected_attempt
 from .lease import assert_epoch
 from .outbox_types import OutboxInvariantError, SendOutcome, fixed_reason, require_issued
 from .send_policy import apply_policy_rejection, extend_server_cooldown, settle_send_policy
@@ -18,12 +19,16 @@ def _current(cursor, token, reservation):
     assert_epoch(cursor, token)
     if token.account_key != reservation.endpoint.account.key or token.epoch != reservation.fencing_epoch:
         return None
-    return cursor.execute("""SELECT d.*,a.state AS attempt_state,a.send_mode FROM deliveries d
+    row = cursor.execute("""SELECT d.*,a.state AS attempt_state,a.send_mode FROM deliveries d
         JOIN delivery_attempts a ON a.attempt_id=d.current_attempt_id
         WHERE d.delivery_id=? AND d.account_key=? AND d.current_attempt_id=? AND d.claim_epoch=?
           AND a.payload_digest=? AND d.status='sending' AND a.state IN ('reserved','dispatched')
         FOR UPDATE OF d,a""",
         (reservation.delivery_id, token.account_key, reservation.attempt_id, token.epoch, reservation.payload_digest)).fetchone()
+    if row is not None and row["payload_mode"] == "protected":
+        attempt = cursor.execute("SELECT * FROM delivery_attempts WHERE attempt_id=?", (reservation.attempt_id,)).fetchone()
+        verify_protected_attempt(cursor, row, attempt, reservation=reservation)
+    return row
 
 
 def cancel_before_invocation(cursor, *, token, reservation, now, reason="request_not_started"):
@@ -58,6 +63,8 @@ def settle_failure(cursor, *, token, reservation, error, now, frozen_plain_diges
         return SendOutcome("accepted", "receipt_needs_finalization", reservation.delivery_id)
     ephemeral = row["payload_mode"] == "ephemeral"
     attempted = "plain_fallback" if row["format_fallback_used"] else ("primary_markdown" if '"msg_type":2' in reservation.wire_json else "primary_text")
+    if row["payload_mode"] == "protected":
+        frozen_plain_digest = None
     fallback = decide_format_fallback(error, attempted_variant=attempted,
         fallbacks_used=int(row["format_fallback_used"]), frozen_plain_variant_ready=frozen_plain_digest is not None)
     policy = decide_send_error(error, auth_retries_used=row["auth_retries_used"], retry_count=row["transient_retries_used"])
@@ -70,7 +77,7 @@ def settle_failure(cursor, *, token, reservation, error, now, frozen_plain_diges
     auth_used, transient_used = row["auth_retries_used"], row["transient_retries_used"]
     switch_plain = False
     if not ephemeral and control_id_for_delivery(cursor, row) is None and not unknown:
-        if fallback.action == "select_frozen_plain_once":
+        if row["payload_mode"] == "persistent" and fallback.action == "select_frozen_plain_once":
             retry, switch_plain = True, True
         elif policy.action == "refresh_token_once":
             retry, auth_used = True, auth_used + 1

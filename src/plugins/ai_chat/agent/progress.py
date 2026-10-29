@@ -77,6 +77,10 @@ def task_progress(task: Any, runs: list, evidence: list[dict], external: list[di
     active = task.status in {"running", "planning", "verifying", "waiting_external"}
     file_rows = [item for item in deliveries if item["revision"] == revision]
     files_confirmed = not contract.get("delivery_required") or bool(file_rows) and all(item["state"] == "acknowledged" for item in file_rows)
+    if getattr(task, "endpoint", None) is not None:
+        files_confirmed = not contract.get("delivery_required") or bool(file_rows) and all(
+            item["payload"].get("official_artifact") is True
+            and item["payload"].get("message_accepted") is True for item in file_rows)
     if getattr(task, "project_id", None) is not None and project_completion:
         files = project_completion["files"]
         files_confirmed = (bool(files["items"]) or not files["required"]) and all(

@@ -14,6 +14,7 @@ import unicodedata
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json, body_to_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 
+from .protected_plans import load_protected_ref, verify_protected_attempt
 from .lease import assert_epoch
 from .outbox_types import OutboxInvariantError, SendOutcome, digest, require_issued, stable_json
 from .send_policy import settle_send_policy
@@ -81,6 +82,11 @@ def record_receipt_evidence(cursor, *, reservation, body, now, kind="response") 
         or (attempt["payload_mode"] == "ephemeral" and attempt["wire_payload_json"] is not None)
     ):
         raise OutboxInvariantError("receipt_attempt_identity_conflict")
+    if attempt["payload_mode"] == "protected":
+        delivery = cursor.execute("SELECT * FROM deliveries WHERE delivery_id=?", (reservation.delivery_id,)).fetchone()
+        if delivery is None:
+            raise OutboxInvariantError("receipt_delivery_namespace_conflict")
+        verify_protected_attempt(cursor, delivery, attempt, reservation=reservation)
     # Only these minimal fields are hashed/stored. Remote text, URLs, headers,
     # echoed OTPs and arbitrary response fields never enter the evidence row.
     receipt_digest = _receipt_digest(reservation.attempt_id, attempt["account_key"], attempt["endpoint_key"], kind, native, ref_idx)
@@ -137,6 +143,10 @@ def _context_projection(cursor, delivery, attempt):
     this special response; message text alone never selects a redaction policy.
     """
     body = _canonical_body(delivery)
+    if delivery["payload_mode"] == "protected":
+        load_protected_ref(cursor, delivery)
+        return body, {"content_redacted": True, "redaction_reason": "qq_official_protected_artifact",
+                      "artifact_delivery": True, "protected_payload_version": 1}
     if delivery["payload_mode"] != "persistent":
         return body, {}
     plan = cursor.execute("SELECT manifest_json,manifest_digest FROM delivery_plans WHERE plan_id=?",
@@ -170,10 +180,13 @@ def _context_projection(cursor, delivery, attempt):
 
 
 def _quote(cursor, attempt, delivery, endpoint):
-    if attempt["payload_mode"] != "persistent":
+    if attempt["payload_mode"] == "ephemeral":
         return None, None
     try:
-        wire = json.loads(attempt["wire_payload_json"])
+        if attempt["payload_mode"] == "protected":
+            _, wire = verify_protected_attempt(cursor, delivery, attempt)
+        else:
+            wire = json.loads(attempt["wire_payload_json"])
         reference = wire.get("message_reference")
         if reference is None:
             return None, None
@@ -301,6 +314,8 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now) ->
             raise OutboxInvariantError("receipt_integrity_conflict")
     if attempt["payload_mode"] == "persistent" and digest(attempt["wire_payload_json"]) != attempt["payload_digest"]:
         raise OutboxInvariantError("attempt_payload_integrity_conflict")
+    if attempt["payload_mode"] == "protected":
+        verify_protected_attempt(cursor, delivery, attempt)
     native_ids = {row["native_message_id"] for row in receipts}
     refs = {row["ref_idx"] for row in receipts if row["ref_idx"] is not None}
     conflict_reason = "receipt_identity_conflict" if len(native_ids) != 1 else "receipt_reference_conflict" if len(refs) > 1 else ""
@@ -387,4 +402,6 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now) ->
     cursor.execute("""UPDATE delivery_receipts SET applied_at=COALESCE(applied_at,?)
         WHERE attempt_id=? AND account_key=? AND native_message_id=?""",
         (max(now, max(row["observed_at"] for row in receipts)), attempt["attempt_id"], token.account_key, native))
+    from .file_projection import apply_file_receipt
+    apply_file_receipt(cursor, delivery=delivery, attempt=attempt, now=now)
     return SendOutcome("committed", "reference_index_ambiguous" if index_conflict else "", delivery["delivery_id"])

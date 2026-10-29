@@ -38,7 +38,7 @@ FIELDS = {
     "write_file": ({"owner", "sandbox_id", "path"}, {"allow_large"}),
     "install_readonly_file": ({"owner", "sandbox_id", "path"}, set()),
     "read_file": ({"owner", "sandbox_id", "path"}, {"max_bytes"}),
-    "export_artifact": ({"owner", "sandbox_id", "path"}, set()),
+    "export_artifact": ({"owner", "sandbox_id", "path"}, {"file_only", "max_bytes"}),
     "project_volume_status": ({"owner", "project_id"}, {"generation"}),
     "project_volume_create": ({"owner", "project_id", "quota_bytes", "fence"}, {"generation"}),
     "project_volume_mount": ({"owner", "project_id", "fence"}, {"generation", "reservation"}),
@@ -148,6 +148,9 @@ def validate_request(request: dict, *, file_limit: int) -> tuple[str, dict]:
     for key, maximum in (("timeout_seconds", 300), ("max_bytes", file_limit), ("not_used_since", 2**53)):
         if key in args and args[key] is not None and (type(args[key]) is not int or not 0 <= args[key] <= maximum):
             raise ProtocolError("沙盒数值参数不正确。")
+    if method == "export_artifact" and ("file_only" in args or "max_bytes" in args):
+        if args.get("file_only") is not True or type(args.get("max_bytes")) is not int or args["max_bytes"] <= 0:
+            raise ProtocolError("Invalid bounded export options")
     if "allow_large" in args and type(args["allow_large"]) is not bool:
         raise ProtocolError("沙盒写入选项不正确。")
     if "packages" in args and args["packages"] is not None:

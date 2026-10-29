@@ -219,9 +219,60 @@ class TaskControlStoreMixin:
         self._notify_changed(task_id)
         return value
 
+    @staticmethod
+    def _require_legacy_file_task(cursor, task_id):
+        row = cursor.execute("SELECT account_key FROM subagent_tasks WHERE task_id=?", (task_id,)).fetchone()
+        if row is None or row["account_key"] is not None:
+            raise ValueError("legacy_file_route_unavailable")
+
+    def artifact_delivery_request(self, task, run_id, artifact, filename, *, draft, draft_reason):
+        from .artifact_delivery import ArtifactDeliveryRequest, ArtifactDeliveryError, canonical_artifact_filename
+        assert_job_owned()
+        with self._transaction() as cursor:
+            current = cursor.execute("""SELECT t.*, c.revision FROM subagent_tasks t
+                JOIN subagent_controls c ON c.task_id=t.task_id WHERE t.task_id=?""", (task.task_id,)).fetchone()
+            row = cursor.execute("""SELECT a.metadata_json FROM subagent_artifacts a
+                JOIN subagent_runs r ON r.run_id=a.run_id AND r.task_id=a.task_id
+                WHERE a.task_id=? AND a.run_id=? AND a.handle=?
+                AND r.status IN ('succeeded','partial')""", (task.task_id, run_id,
+                f"snapshot:{artifact.get('snapshot')}:{artifact.get('handle')}")).fetchone()
+            if (current is None or row is None or current["cancel_requested"]
+                    or current["status"] not in {"running", "verifying", "planning"}
+                    or current["endpoint_key"] != task.endpoint.key
+                    or current["requester_actor_key"] != task.requester_actor.key):
+                raise ArtifactDeliveryError("artifact_source_unavailable")
+            recorded = json.loads(row["metadata_json"])
+            if any(recorded.get(key) != artifact.get(key) for key in ("snapshot", "size", "name", "handle")):
+                raise ArtifactDeliveryError("artifact_capture_mismatch")
+            return ArtifactDeliveryRequest(task.task_id, run_id, int(current["revision"]),
+                task.endpoint, task.requester_actor, recorded.get("snapshot"), recorded.get("size"),
+                canonical_artifact_filename(filename, draft=draft), draft,
+                draft_reason.encode("utf-8")[:1000].decode("utf-8", "ignore"))
+
+    def projected_result(self, task_id):
+        from .artifact_delivery import official_task, delivery_state
+        task = self.get(task_id)
+        if task is None:
+            return None
+        if not official_task(task):
+            return task.result
+        result = dict(task.result)
+        result["deliveries"] = [row["payload"] for row in self.deliveries(task_id)]
+        result["delivery_state"] = delivery_state(result["deliveries"],
+            required=bool(task.plan.get("contract", {}).get("delivery_required")))
+        if result["deliveries"]:
+            from .outcomes import outcome_report
+            validation = result.get("validation")
+            acceptance = validation.get("acceptance") if isinstance(validation, dict) else None
+            narrative = result.get("report_narrative")
+            result["answer"] = outcome_report(acceptance if isinstance(acceptance, dict) else {},
+                narrative if isinstance(narrative, str) else "", result["deliveries"])
+        return result
+
     def begin_delivery(self, task_id: int, key: str, payload: dict[str, Any]) -> bool:
         revision = self.control(task_id)["revision"]
         with self._transaction() as cursor:
+            self._require_legacy_file_task(cursor, task_id)
             cursor.execute("""INSERT INTO subagent_deliveries
                 (task_id, revision, delivery_key, state, payload_json, updated_at)
                 VALUES (?, ?, ?, 'sending', ?, ?) ON CONFLICT DO NOTHING""",
@@ -235,6 +286,7 @@ class TaskControlStoreMixin:
         if revision is None:
             revision = self.control(task_id)["revision"]
         with self._transaction() as cursor:
+            self._require_legacy_file_task(cursor, task_id)
             lock = " FOR UPDATE"
             row = cursor.execute(
                 """SELECT state, payload_json FROM subagent_deliveries
@@ -257,8 +309,20 @@ class TaskControlStoreMixin:
         return changed
 
     def deliveries(self, task_id: int) -> list[dict[str, Any]]:
+        from .artifact_delivery import official_task, project_rows
+        task = self.get(task_id)
+        if task is not None and official_task(task):
+            projection = getattr(self, "official_file_projection", None)
+            revision = self.control(task_id)["revision"]
+            if projection is None:
+                from ..adapters.qq_official.file_projection import project_task_files
+                with self._transaction() as cursor:
+                    values = project_task_files(cursor, task, revision)
+            else:
+                values = projection(task, revision)
+            return project_rows(task, revision, values)
         with self._lock:
-            rows = self._connection.execute("SELECT * FROM subagent_deliveries WHERE task_id=? ORDER BY revision, updated_at", (task_id,)).fetchall()
+            rows = self._connection.execute("SELECT d.* FROM subagent_deliveries d JOIN subagent_tasks t ON t.task_id=d.task_id WHERE d.task_id=? AND t.account_key IS NULL ORDER BY d.revision, d.updated_at", (task_id,)).fetchall()
         return [{"key": row["delivery_key"], "revision": row["revision"], "state": row["state"],
                  "payload": json.loads(row["payload_json"]), "updated_at": row["updated_at"]} for row in rows]
 
@@ -288,7 +352,7 @@ class TaskControlStoreMixin:
 
     def uncertain_deliveries(self) -> list[int]:
         with self._lock:
-            rows = self._connection.execute("SELECT DISTINCT task_id FROM subagent_deliveries WHERE state IN ('unknown','sending') AND updated_at<? LIMIT 10", (int(time.time()) - 60,)).fetchall()
+            rows = self._connection.execute("SELECT DISTINCT d.task_id FROM subagent_deliveries d JOIN subagent_tasks t ON t.task_id=d.task_id WHERE t.account_key IS NULL AND d.state IN ('unknown','sending') AND d.updated_at<? LIMIT 10", (int(time.time()) - 60,)).fetchall()
         return [int(row["task_id"]) for row in rows]
 
     def unsettled_file_receipts(self) -> list[int]:
@@ -312,7 +376,7 @@ class TaskControlStoreMixin:
             lock = " FOR UPDATE"
             row = cursor.execute(
                 """SELECT t.* FROM subagent_tasks t JOIN subagent_controls c ON c.task_id=t.task_id
-                WHERE t.task_id=? AND c.revision=?
+                WHERE t.task_id=? AND c.revision=? AND t.account_key IS NULL
                 AND t.status IN ('completed','partial','failed','cancelled')"""
                 + lock,
                 (task_id, revision),

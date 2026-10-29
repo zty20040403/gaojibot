@@ -114,7 +114,7 @@ def create_router(context: AdminRouteContext) -> APIRouter:
                 "objective": task.objective,
                 "status": task.status,
                 "plan": task.plan,
-                "result": task.result,
+                "result": services.subagent_store.projected_result(task_id),
                 "last_error": task.last_error,
                 "cancel_requested": task.cancel_requested,
                 "created_at": task.created_at,

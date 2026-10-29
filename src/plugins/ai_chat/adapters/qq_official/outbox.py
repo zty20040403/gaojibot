@@ -16,6 +16,9 @@ from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from .control_receipts import (
     ControlEvidenceError, control_id_for_delivery, delivery_authorized, claim_control_attempt, sync_control_terminal,
 )
+from .protected_payload import envelope_for_wire, validate_content
+from .protected_plans import (ProtectedBinding, protected_rendered, load_protected_ref,
+                              binding_for, verify_protected_attempt)
 from .identity_store import snapshot
 from .lease import assert_epoch
 from .outbox_types import (
@@ -44,7 +47,8 @@ def begin_official_attempt(cursor, delivery_id, context, now):
         "capability_revision", "bot_actor_key", "bot_identity_source", "bot_identity_revision", "send_mode",
         "window_id", "msg_seq", "window_charge_state", "payload_mode", "payload_digest", "digest_scheme",
         "digest_key_id", "wire_payload_json", "send_by_at"}
-    if (len(fields) != len(context.fields) or set(fields) != required
+    if (len(fields) != len(context.fields) or not required.issubset(fields)
+            or set(fields) - required - {"wire_storage_digest"}
             or fields["account_key"] != context.token.account_key
             or fields["fencing_epoch"] != context.token.epoch
             or fields["endpoint_key"] != row["endpoint_key"]
@@ -52,6 +56,7 @@ def begin_official_attempt(cursor, delivery_id, context, now):
             or fields["route_epoch"] != row["route_epoch"]
             or fields["payload_mode"] != row["payload_mode"]):
         raise OutboxInvariantError("attempt_ownership_conflict")
+    fields.setdefault("wire_storage_digest", None)
     number = row["attempts"] + 1
     fields = dict(delivery_id=delivery_id, attempt=number, state="reserved", detail="",
                   started_at=now, acceptance="unknown", **fields)
@@ -69,7 +74,7 @@ def begin_official_attempt(cursor, delivery_id, context, now):
 class OfficialOutbox:
     def __init__(self, deliveries, *, admission, pepper, clock=time.time,
                  certification="unknown", allow_newer_windows=False, allow_proactive_probe=False,
-                 verified_boundary=None, mention_authority=None, max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS):
+                 verified_boundary=None, mention_authority=None, max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS, protected_payloads=None):
         validate_wait_limit(max_wait_seconds)
         self.deliveries = deliveries
         self.admission = admission
@@ -81,6 +86,7 @@ class OfficialOutbox:
         self.verified_boundary = verified_boundary
         self.mention_authority = mention_authority or (lambda cursor, endpoint: frozenset())
         self.max_wait_seconds = max_wait_seconds
+        self.protected_payloads = protected_payloads
         self._ephemeral = {}
         self._invocations = weakref.WeakKeyDictionary()
         self._used_permits = weakref.WeakKeyDictionary()
@@ -103,6 +109,28 @@ class OfficialOutbox:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
+
+    def enqueue_artifact(self, token, *, content_ref, source_grant, endpoint, requester,
+                         logical_key, source_scope_key, expires_at, source_native_message_id="",
+                         source_canonical_message_id=None, turn_id=None, transaction_cursor=None):
+        if self.protected_payloads is None:
+            raise OutboxInvariantError("protected_payload_port_unavailable")
+        now = int(self.clock())
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
+            assert_epoch(cursor, token)
+            route = cursor.execute("SELECT * FROM qq_official_endpoints WHERE account_key=? AND endpoint_key=? FOR UPDATE",
+                (token.account_key, endpoint.key)).fetchone()
+            if route is None or endpoint.account.key != token.account_key:
+                raise OutboxInvariantError("delivery_endpoint_unavailable")
+            binding = ProtectedBinding(endpoint, requester, source_scope_key, source_canonical_message_id,
+                source_native_message_id, turn_id, route["generation"], route["route_epoch"], expires_at)
+            self.protected_payloads.authorize_enqueue(cursor, token=token, source_grant=source_grant,
+                content_ref=content_ref, binding=binding, now=now)
+            return enqueue_plan(cursor, token=token, rendered=protected_rendered(endpoint), requester=requester,
+                logical_key=logical_key, source_scope_key=source_scope_key, expires_at=expires_at, now=now,
+                purpose="requested_artifact", source_native_message_id=source_native_message_id,
+                source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
+                admission=self.admission, max_wait_seconds=self.max_wait_seconds, protected_ref=content_ref)
 
     def list_due(self, token, *, limit=100):
         now = int(self.clock())
@@ -184,7 +212,18 @@ class OfficialOutbox:
 
     def _authorized(self, cursor, token, row, endpoint, actor, now):
         if control_id_for_delivery(cursor, row) is None:
-            return self.admission(cursor, endpoint, actor)
+            if not self.admission(cursor, endpoint, actor):
+                return False
+            if row["payload_mode"] == "protected":
+                if self.protected_payloads is None:
+                    return False
+                ref = load_protected_ref(cursor, row)
+                try:
+                    self.protected_payloads.authorize(cursor, token=token, content_ref=ref,
+                        binding=binding_for(row), now=now)
+                except PermissionError:
+                    return False
+            return True
         try:
             return delivery_authorized(cursor, token, row, now)
         except ControlEvidenceError:
@@ -238,7 +277,17 @@ class OfficialOutbox:
                 return self._wait(cursor, row, choice.reason, choice.retry_at, now)
             return SendCandidate(delivery_id, endpoint, choice.send_mode, choice.send_by_at, self.certification)
 
-    def _content(self, cursor, row, endpoint):
+    def _content(self, cursor, row, endpoint, *, token=None, now=None):
+        if row["payload_mode"] == "protected":
+            if self.protected_payloads is None or token is None or now is None:
+                raise OutboxInvariantError("protected_payload_port_unavailable")
+            ref = load_protected_ref(cursor, row)
+            if now >= ref.expires_at:
+                raise OutboxInvariantError("protected_payload_expired")
+            payload = self.protected_payloads.resolve(cursor, token=token, content_ref=ref,
+                binding=binding_for(row), now=now)
+            validate_content(ref, payload)
+            return json.loads(stable_json(payload))
         if row["payload_mode"] == "ephemeral":
             rendered = self._ephemeral.get(row["delivery_id"])
             if rendered is None:
@@ -274,7 +323,7 @@ class OfficialOutbox:
             if not rate_permit.matches(endpoint, choice.send_mode, certification=self.certification):
                 return self._wait(cursor, row, "mode_changed", now + 1, now)
             author = snapshot(cursor, endpoint.account)
-            payload = self._content(cursor, row, endpoint)
+            payload = self._content(cursor, row, endpoint, token=token, now=now)
             if choice.send_mode == "passive":
                 if (choice.credential_kind not in {"msg_id", "event_id"}
                         or not isinstance(choice.credential_value, str) or not choice.credential_value
@@ -294,6 +343,11 @@ class OfficialOutbox:
             ephemeral = row["payload_mode"] == "ephemeral"
             wire_digest = (keyed_digest(self.pepper, "wire", [token.account_key, endpoint.key,
                 row["plan_id"], delivery_id, row["attempts"] + 1, token.epoch, wire]) if ephemeral else digest(wire))
+            stored_wire, storage_digest = (None if ephemeral else wire), None
+            if row["payload_mode"] == "protected":
+                stored_wire, storage_digest, verified_wire_digest = envelope_for_wire(load_protected_ref(cursor, row), wire)
+                if verified_wire_digest != wire_digest:
+                    raise OutboxInvariantError("protected_wire_commitment_conflict")
             attempt_fields = dict(account_key=token.account_key, endpoint_key=endpoint.key, fencing_epoch=token.epoch,
                 endpoint_generation=row["endpoint_generation"], route_epoch=row["route_epoch"],
                 capability_revision=choice.capability_revision, bot_actor_key=author.bot_actor.key,
@@ -301,7 +355,7 @@ class OfficialOutbox:
                 window_id=choice.window_id, msg_seq=choice.msg_seq,
                 window_charge_state="reserved" if choice.send_mode == "passive" else "none",
                 payload_mode=row["payload_mode"], payload_digest=wire_digest, digest_scheme=row["digest_scheme"],
-                digest_key_id=row["digest_key_id"], wire_payload_json=None if ephemeral else wire, send_by_at=choice.send_by_at)
+                digest_key_id=row["digest_key_id"], wire_payload_json=stored_wire, wire_storage_digest=storage_digest, send_by_at=choice.send_by_at)
             context = OfficialAttemptContext(token, row["attempts"], tuple(attempt_fields.items()))
             delivery = self.deliveries.begin_direct_attempt(delivery_id, now=now,
                 transaction_cursor=cursor, official_context=context)
@@ -351,7 +405,12 @@ class OfficialOutbox:
             try:
                 # Native mentions are separately authorized: admission of the
                 # requester alone does not preserve every frozen mention grant.
-                self._content(cursor, row, endpoint)
+                payload = self._content(cursor, row, endpoint, token=token, now=now)
+                if row["payload_mode"] == "protected":
+                    attempt = cursor.execute("SELECT * FROM delivery_attempts WHERE attempt_id=?", (reservation.attempt_id,)).fetchone()
+                    _, routing = verify_protected_attempt(cursor, row, attempt, reservation=reservation)
+                    if stable_json({**payload, **routing}) != reservation.wire_json:
+                        return False
             except Exception:
                 return False
             if route["capability_revision"] != row["attempt_capability_revision"]:

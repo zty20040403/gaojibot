@@ -12,7 +12,7 @@ from src.plugins.ai_chat.tools.registry import ToolRegistry
 from src.plugins.ai_chat.tools.state import SubAgentActions
 from src.plugins.ai_chat.tools.subagents import HANDLERS
 
-from .subagent_runtime import TEXT_TOOLS, submit
+from .subagent_runtime import FILE_ROLES, FILE_TOOLS, TEXT_TOOLS, submit
 
 
 def text_coordinator(store, model_catalog, *, logger, **options):
@@ -22,13 +22,25 @@ def text_coordinator(store, model_catalog, *, logger, **options):
         registry=AgentRegistry(specs), **options)
 
 
+def file_coordinator(store, model_catalog, *, logger, **options):
+    allowed = TEXT_TOOLS | FILE_TOOLS
+    specs = {role: replace(AGENT_SPECS[role], allowed_tools=AGENT_SPECS[role].allowed_tools & allowed)
+             for role in ('supervisor', *sorted(FILE_ROLES))}
+    return SubAgentCoordinator(store, model_catalog, logger=logger,
+        registry=AgentRegistry(specs), **options)
+
+
 def _project(definition, context):
+    from src.plugins.ai_chat.tools.owned_sandbox import enabled
+    files = enabled(context)
     function = definition['function']
     if function['name'] == 'delegate_agent':
-        function['description'] = '提交一个独立文字研究或分析任务，完成后由持久队列把结果送回当前会话。'
-        function['parameters']['properties']['role']['enum'] = ['researcher', 'analyst']
+        function['description'] = ('提交独立研究、分析或 PDF/ZIP 文件任务；产物登记后由持久队列投递，上传不等于消息已接受。'
+            if files else '提交一个独立文字研究或分析任务，完成后由持久队列把结果送回当前会话。')
+        function['parameters']['properties']['role']['enum'] = sorted(FILE_ROLES) if files else ['researcher', 'analyst']
     else:
-        function['description'] = '提交有多个步骤的文字研究或分析任务；暂不支持文件、项目、宿主操作。'
+        function['description'] = ('提交多步骤研究、分析或 PDF/ZIP 文件任务；工作区只属于本次来源，不提供项目或宿主权限。'
+            if files else '提交有多个步骤的文字研究或分析任务；暂不支持文件、项目、宿主操作。')
 
 
 def task_registry_for(context):
@@ -71,7 +83,14 @@ class SubmissionBinding:
             raise ValueError('subagent_action_source_mismatch')
 
         async def queue(objective, role=None):
-            if role is not None and role not in {'researcher', 'analyst'}:
+            from src.plugins.ai_chat.tools.owned_sandbox import enabled
+            files = enabled(turn.context)
+            if files:
+                await turn.context.agent_executor.readiness()
+                files = enabled(turn.context)
+            roles = FILE_ROLES if files else {'researcher', 'analyst'}
+            allowed = TEXT_TOOLS | FILE_TOOLS if files else TEXT_TOOLS
+            if role is not None and role not in roles:
                 raise ValueError('当前平台只开放文字研究与分析 Sub-Agent。')
             call_id = active_tool_call_id.get()
             if not call_id:
@@ -79,13 +98,14 @@ class SubmissionBinding:
             packet = ContextPacket(handle.scope_key, ports.conversation_id, None,
                 handle.canonical_message_id, objective, endpoint=handle.endpoint,
                 requester_actor=handle.actor, supporting_context=prepared.turn_context,
-                constraints=('仅文字研究与分析；不得执行宿主/项目/文件操作。',))
+                constraints=(('只允许本次来源的临时隔离工作区与 PDF/ZIP 文件交付；不提供宿主或项目操作。'
+                              if files else '仅文字研究与分析；不得执行宿主/项目/文件操作。'),))
             decision = await self.coordinator.prepare_entry(packet, selected_profile,
                 role=role, parent_trace=parent_trace)
-            if decision.contract.delivery_required or decision.task_type == 'project':
+            if (decision.contract.delivery_required and not files) or decision.task_type == 'project':
                 raise ValueError('当前官方 Sub-Agent 尚不支持文件或项目交付。')
-            if any(step['agent'] not in {'researcher', 'analyst'}
-                   or not set(step.get('required_tools', ())) <= TEXT_TOOLS for step in decision.steps):
+            if any(step['agent'] not in roles
+                   or not set(step.get('required_tools', ())) <= allowed for step in decision.steps):
                 raise ValueError('subagent_tool_profile_denied')
 
             def commit():
@@ -96,7 +116,8 @@ class SubmissionBinding:
                         decision=decision, profile=selected_profile.name, now=int(self.clock()),
                         execution_deadline=self.execution_deadline,
                         result_wait_seconds=self.result_wait_seconds, admission=self.admission,
-                        coordinator=self.coordinator, jobs=self.jobs)
+                        coordinator=self.coordinator, jobs=self.jobs,
+                        tool_profile='official-files-v1' if files else 'official-text-v1')
             return await self.database_calls(commit)
 
         async def delegate(role, objective):

@@ -101,6 +101,7 @@ def register_http_surfaces(
                 alert_preferences=context.alert_preferences,
                 fleet_client=context.fleet_client,
                 mobile_authorization=context.mobile_authorization,
+                official_file_service=lambda: getattr(getattr(context, "official_runtime", None), "file_service", None),
             ),
             path=settings.admin_path,
         )

@@ -1046,9 +1046,26 @@ os.close(fd)
         if result.returncode:
             raise SandboxError("无法导入只读产物")
 
-    async def export_artifact(self, owner: str, sandbox_id: str, path: str) -> tuple[bytes, bool]:
+    async def export_artifact(self, owner: str, sandbox_id: str, path: str, *,
+                              file_only: bool = False, max_bytes: int | None = None) -> tuple[bytes, bool]:
         """Export a file or a ZIP snapshot of a directory without following links."""
         async with self._exec_locks.setdefault(sandbox_id, asyncio.Lock()):
+            if type(file_only) is not bool:
+                raise SandboxError("Invalid export mode")
+            if file_only:
+                from .artifact_export import EXPORT_FILE_SCRIPT
+
+                if (type(self.max_file_bytes) is not int or self.max_file_bytes <= 0
+                        or type(max_bytes) is not int or max_bytes <= 0):
+                    raise SandboxError("Bounded export requires positive limits")
+                limit = min(self.max_file_bytes, max_bytes, 256 * 1024 * 1024)
+                name = await self._owned_container(owner, sandbox_id)
+                target = self._workspace_path(path).removeprefix("/workspace/")
+                content, _, code = await self._run_bytes("docker", "exec", name,
+                    "python", "-I", "-c", EXPORT_FILE_SCRIPT, target, str(limit), timeout=60)
+                if code or not 0 < len(content) <= limit:
+                    raise SandboxError("Bounded regular-file export failed")
+                return content, False
             return await self._export_artifact(owner, sandbox_id, path)
 
     async def _export_artifact(self, owner, sandbox_id, path):
@@ -1591,6 +1608,8 @@ with tempfile.TemporaryFile() as output:
         if self.docker_host:
             environment = {key: value for key, value in os.environ.items() if key not in {"DOCKER_HOST", "DOCKER_CONTEXT"}}
             environment["DOCKER_HOST"] = self.docker_host
+        from .source_fence import assert_sandbox_source
+        await assert_sandbox_source()
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
