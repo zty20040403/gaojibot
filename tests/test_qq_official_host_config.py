@@ -44,7 +44,9 @@ class HostConfigTests(unittest.TestCase):
             with self.assertRaises(HostConfigurationError):HostConfiguration.from_env({**env,'AI_QQ_MIGRATION_CONFIG_FILE':str(link)})
 
     def test_unknown_duplicate_dynamic_or_relative_config_is_rejected(self):
-        changes=[{'version':True},{'factory':'untrusted.module'},{'onebot_accounts':[]},
+        # Native-only hosts intentionally allow an empty source list. The parser
+        # still rejects non-list baselines; startup enforces managed-route needs.
+        changes=[{'version':True},{'factory':'untrusted.module'},{'onebot_accounts':None},
                  {'onebot_accounts':self.raw['onebot_accounts']*2},
                  {'files':{'private_directory':'relative','native_routes':[]}},
                  {'host_services':[{'host_id':'all'}]}]

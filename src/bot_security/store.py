@@ -168,6 +168,39 @@ class SecurityStore(ApprovalQuorum):
                 raise SecurityError("已有账户，初始化命令不能覆盖现有管理员")
             return self._insert_account(db, username, encoded, "admin", qq_id, "bootstrap")
 
+    def bootstrap_local_admin(self, username: str, password: str) -> dict[str, Any]:
+        """Trusted local bootstrap only; creates no transport/owner binding."""
+        return self._create_local_admin(username, password, bootstrap=True)
+
+    def add_local_admin(self, username: str, password: str) -> dict[str, Any]:
+        """Trusted host CLI only; never exposed as an authenticated web mutation.
+
+        Access to the host database/protected secret is the operator authority.
+        This creates no remote owner/binding and cannot confirm any approval.
+        """
+        return self._create_local_admin(username, password, bootstrap=False)
+
+    def _create_local_admin(self, username: str, password: str, *, bootstrap: bool) -> dict[str, Any]:
+        username = username.strip().lower()
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{2,31}", username):
+            raise SecurityError("账户名需要 3～32 位字母、数字、点、下划线或短横线", 400)
+        encoded = hash_password(password)
+        with self.transaction() as db:
+            if bootstrap:
+                if db.execute("SELECT account_id FROM admin_accounts LIMIT 1").fetchone():
+                    raise SecurityError("已有账户，初始化命令不能覆盖现有管理员")
+            elif not db.execute("SELECT 1 FROM admin_accounts WHERE enabled=1 AND role='admin' LIMIT 1").fetchone():
+                raise SecurityError("请先初始化管理员账户")
+            if db.execute("SELECT 1 FROM admin_accounts WHERE username=?", (username,)).fetchone():
+                raise SecurityError("账户名已存在", 409)
+            account_id = secrets.token_hex(16)
+            db.execute("""INSERT INTO admin_accounts
+                (account_id,username,password_hash,role,qq_id,enabled,version,created_at,identity_mode)
+                VALUES (?, ?, ?, 'admin', NULL, 1, 1, ?, 'local_admin')""",
+                (account_id, username, encoded, int(self.clock())))
+            self._audit(db, "bootstrap" if bootstrap else "local-host", "account.created", account_id)
+            return public_account(dict(db.execute("SELECT * FROM admin_accounts WHERE account_id=?", (account_id,)).fetchone()))
+
     def _insert_account(self, db, username: str, encoded: str, role: str, qq_id: str | None, actor: str) -> dict[str, Any]:
         self.validate_account(username, role, qq_id)
         if db.execute("SELECT account_id FROM admin_accounts WHERE username=? OR (qq_id IS NOT NULL AND qq_id=?)", (username, qq_id)).fetchone():

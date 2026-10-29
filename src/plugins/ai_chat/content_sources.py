@@ -15,7 +15,7 @@ from src.bot_storage import PostgresDatabase
 from .conversation_scope import ConversationScope
 from .media_tools import BilibiliClient, BilibiliError, find_bilibili_ref
 from .message_ir import CardNode, MessageBody, TextNode
-from .onebot_codec import extract_card_summary
+from .card_summary import extract_card_summary
 
 
 SOURCE_HANDLE_PATTERN = re.compile(r"^source#([1-9][0-9]*)$")

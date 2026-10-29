@@ -14,6 +14,7 @@ import uuid
 from .files import file_lock, read_json, write_json
 from .validation import ConfigurationConflict, InstanceError, _text, _url
 from .components import component_keys, validate_components
+from .official_configuration import platforms,official_settings,stage_credentials,read_credentials
 
 
 SCHEMA_VERSION = 1
@@ -89,9 +90,17 @@ def _model(value: Any) -> dict:
 
 def validate_settings(value: dict) -> dict:
     required = {"name", "bot_qq", "admin_qq", "group_ids", "allow_all_groups", "system_prompt", "models", "default_model", "vision_model", "features"}
-    if not isinstance(value, dict) or set(value) - {"components"} != required:
+    if not isinstance(value, dict) or set(value) - {"components","platforms","official","console_admin_username"} != required:
         raise InstanceError("Invalid instance settings fields")
     result = deepcopy(value)
+    selection=platforms(result.get('platforms'))
+    if 'platforms' in result:result['platforms']=selection
+    if 'official' in result or selection['qq_official']:result['official']=official_settings(result.get('official'))
+    if 'console_admin_username' in result or selection['qq_official']:
+        name=result.get('console_admin_username','admin')
+        if type(name) is not str or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{2,31}',name):
+            raise InstanceError('Invalid console administrator name')
+        result['console_admin_username']=name.lower()
     result["name"] = _text(result["name"], "instance name", 80)
     result["bot_qq"] = _qq(result["bot_qq"], "bot QQ", empty=True)
     result["admin_qq"] = _qq(result["admin_qq"], "administrator QQ", empty=True)
@@ -240,6 +249,7 @@ class InstanceStore:
             config, private = self._read(instance_id), self.secrets(instance_id)
             private["model_keys"] = self._model_keys(config, private)
             private["component_keys"] = self._component_keys(config, private)
+            private['official_reference']=config.get('official_credential_ref')
             return config, private
 
     @staticmethod
@@ -256,7 +266,7 @@ class InstanceStore:
         return component_keys(private["component_key_sets"].get(str(config["revision"])))
 
     def update(self, instance_id: str, settings: dict, *, expected_revision: int, model_keys: dict | None = None,
-               service_keys: dict | None = None, model_key_sources: dict | None = None) -> dict:
+               service_keys: dict | None = None, model_key_sources: dict | None = None, official_credentials: dict | None = None) -> dict:
         settings = validate_settings(settings)
         supplied = component_keys(service_keys if service_keys is not None else {})
         ids = {model["id"] for model in settings["models"]}
@@ -302,6 +312,14 @@ class InstanceStore:
             if model_keys:
                 keys.update({key: value.strip() for key, value in model_keys.items()})
             keys.update(copied_keys)
+            if config.get("official_recovery_required") and official_credentials is not None:
+                raise InstanceError("恢复的官方数据库缺少原始 pepper，不能生成替代凭据；请恢复完整受保护备份")
+            prior=config.get('official_credential_ref')
+            official_ref=stage_credentials(directory,environment=official_settings(settings.get('official'))['environment'],
+                previous=prior,supplied=official_credentials) if prior is not None or official_credentials is not None else None
+            if official_ref is not None:
+                from .official_files import host_file_configuration
+                host_file_configuration(settings.get('official',{}).get('files'),account=read_credentials(directory,official_ref).account)
             # Publish secrets for the next revision first. A crash before the config
             # commit leaves the preceding config and its exact key set usable.
             private["model_key_sets"] = {str(config["revision"]): self._model_keys(config, private),
@@ -310,6 +328,7 @@ class InstanceStore:
                 str(config["revision"] + 1): service_values}
             write_json(directory / "config" / "secrets.json", private)
             config["settings"] = settings
+            if official_ref is not None:config['official_credential_ref']=official_ref
             config["revision"] += 1
             write_json(directory / "instance.json", config)
             return config
@@ -319,6 +338,18 @@ class InstanceStore:
         configured = {key for key, value in private["model_keys"].items() if value}
         for model in config["settings"]["models"]:
             model["has_key"] = model["id"] in configured
+        reference=config.pop('official_credential_ref',None)
+        if reference is not None or platforms(config['settings'].get('platforms'))['qq_official']:
+            configured=False;duplicates=0
+            if reference is not None:
+                current=read_credentials(self.directory(instance_id),reference);configured=True
+                for other in self.list():
+                    if other['id']==instance_id or not other.get('official_credential_ref'):continue
+                    try:bundle=read_credentials(self.directory(other['id']),other['official_credential_ref'])
+                    except InstanceError:continue
+                    if bundle.account==current.account:duplicates+=1
+            config['official_configuration']={'schema':1,'credentials_saved':configured,
+                'same_app_local_instances':duplicates,'global_exclusivity':'unknown'}
         config["data_directory"] = str(self.directory(instance_id))
         config["component_keys_present"] = [name for name, value in private["component_keys"].items() if value]
         return config

@@ -1,3 +1,4 @@
+import { PlatformOptions, legacyPlatforms } from './PlatformOptions';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, Cpu, Database, Eye, EyeOff,
@@ -127,6 +128,7 @@ function InstalledPanel({ id, lifecycle, passwordRequired, onStep }: { id: strin
 }
 function InstallationPanel({ result, server, runtimeAvailable, onStep }: { result: Inspection; server: Server; runtimeAvailable: boolean; onStep: (step: number) => void }) {
   const [progress, setProgress] = useState<Installation | null>(null);
+  const [platforms, setPlatforms] = useState(server.deployment?.platforms || legacyPlatforms);
   const [imageOptions, setImageOptions] = useState<ImagePolicy>(server.deployment?.imageOptions || { mode: 'auto', source: 'official' });
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -155,7 +157,7 @@ function InstallationPanel({ result, server, runtimeAvailable, onStep }: { resul
     event.preventDefault();
     if (submittingRef.current) return;
     submittingRef.current = true; installEpoch.current++; setSubmitting(true); setError('');
-    try { setProgress(await unwrap(desktop?.install({ id: server.id, password, imageOptions }))); setPassword(''); }
+    try { setProgress(await unwrap(desktop?.install({ id: server.id, password, imageOptions, platforms }))); setPassword(''); }
     catch (cause) { setError(cause instanceof Error ? cause.message : '安装未完成'); }
     finally { installEpoch.current++; submittingRef.current = false; setSubmitting(false); }
   }
@@ -172,6 +174,7 @@ function InstallationPanel({ result, server, runtimeAvailable, onStep }: { resul
     {pollError && <ErrorNotice text={pollError} />}
     {!runtimeAvailable && <div className="notice warning"><CircleAlert size={18} /><span>此客户端缺少服务器运行包，暂不能安装。</span></div>}
     <form onSubmit={event => void install(event)}>
+      {!server.deployment && <PlatformOptions value={platforms} onChange={setPlatforms} disabled={Boolean(running)} />}
       <ImageOptions value={imageOptions} onChange={setImageOptions} disabled={Boolean(running)} />
       {result.probe.privilege === 'password-required' && !running && <Field label="服务器 sudo 密码"><Secret id="sudo-password" value={password} onChange={setPassword} /></Field>}
       <div className="form-actions"><span className="muted">独立安装 · 数据保留在服务器</span><button className="primary" type="submit"

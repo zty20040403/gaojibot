@@ -6,6 +6,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { UserError, shellLiteral } = require('./contracts.cjs');
 const { execute, inspectServer } = require('./ssh.cjs');
 const imagePolicy = require('./image-policy.cjs');
+const platformOptions = require('./platform-options.cjs');
 const applications = require('./applications.cjs');
 
 const FILES = ['bootstrap.sh', 'installer.py', 'environment.nix', 'gaoji-runtime.tar.gz'];
@@ -45,7 +46,7 @@ function upload(client, source, target) {
   });
 }
 
-function launchScript(job, staging, manifest, ownerUid = 0, previousChecksum, options, application) {
+function launchScript(job, staging, manifest, ownerUid = 0, previousChecksum, options, application, selectedPlatforms) {
   jobId(job);
   if (!Number.isInteger(ownerUid) || ownerUid < 0 || ownerUid >= 2 ** 31) throw new UserError('invalid_owner', '安装账户身份无效');
   if (!/^\/tmp\/gaoji-upload\.[a-zA-Z0-9]{10}$/.test(staging)) throw new UserError('invalid_staging', '服务器临时目录无效');
@@ -69,6 +70,14 @@ test ! -L "$work/website.tar.gz"
 if ! test -e "$work/website.tar.gz"; then install -m 600 ${shellLiteral(staging + '/website.tar.gz')} "$work/website.tar.gz"; fi
 printf '%s  %s\\n' '${application.content_sha256}' "$work/website.tar.gz" | sha256sum --check --status`;
   }
+  const selected = platformOptions.platforms(selectedPlatforms);
+  const platformData = shellLiteral(JSON.stringify(selected));
+  const platformScript = application ? '' : `test ! -L "$jobroot/platforms.json"
+if test -e "$jobroot/platforms.json"; then
+  test "$(cat "$jobroot/platforms.json")" = ${platformData}
+else
+  printf '%s\\n' ${platformData} > "$jobroot/platforms.json"
+fi`;
   // Only validated IDs and hashes enter this fixed privileged program. Credentials
   // travel through SSH stdin, not through command arguments, files or service units.
   return `set -eu
@@ -86,6 +95,7 @@ test ! -L "$work"
 install -d -m 700 "$work"
 ${copies}
 ${appCopies}
+${platformScript}
 state=$(systemctl show gaoji-app-install-${job}.service --property=ActiveState --value 2>/dev/null || true)
 case "$state" in active|activating|reloading|deactivating) exit 1;; esac
 ${imagePolicy.script(manifest, options)}
@@ -144,7 +154,7 @@ async function privileged(client, command, privilege, password, { maxBytes = 102
   const request = privilegedCommand(command, privilege, password);
   return execute(client, request.command, { stdin: request.stdin, timeoutMs: 45000, maxBytes });
 }
-async function start(client, directory, { job, password, onPrepared, previousChecksum, imageOptions, application, contentFile }) {
+async function start(client, directory, { job, password, onPrepared, previousChecksum, imageOptions, application, contentFile, platforms }) {
   imageOptions = imagePolicy.options(imageOptions);
   const manifest = bundle(directory);
   const inspection = await inspectServer(client);
@@ -166,8 +176,8 @@ async function start(client, directory, { job, password, onPrepared, previousChe
     for (const name of FILES) await upload(client, path.join(directory, name), staging + '/' + name);
     if (application?.content_sha256) await upload(client, contentFile, staging + '/website.tar.gz');
     // Persist before dispatch: a lost reply must not create a second instance.
-    onPrepared({ job: id, checksum: manifest.files['gaoji-runtime.tar.gz'].sha256, version: manifest.version, startedAt: Date.now(), imageOptions, ...(application ? { application } : {}), ...(previousChecksum ? { previousChecksum } : {}) });
-    const launched = await privileged(client, launchScript(id, staging, manifest, inspection.probe.uid, previousChecksum, imageOptions, application), inspection.probe.privilege, password);
+    onPrepared({ job: id, checksum: manifest.files['gaoji-runtime.tar.gz'].sha256, version: manifest.version, startedAt: Date.now(), imageOptions, ...(!application ? { platforms: platformOptions.platforms(platforms) } : {}), ...(application ? { application } : {}), ...(previousChecksum ? { previousChecksum } : {}) });
+    const launched = await privileged(client, launchScript(id, staging, manifest, inspection.probe.uid, previousChecksum, imageOptions, application, platforms), inspection.probe.privilege, password);
     if (launched.code !== 0) throw new UserError('install_not_started', '安装尚未确认启动，请先查询任务状态；可能需要重新输入 sudo 密码');
     transferred = true;
     return { job: id, status: 'queued', stage: 'prepare', completed: [], message: '服务器已接收安装任务' };
@@ -212,7 +222,7 @@ async function retry(client, directory, deployment, password, onPrepared, imageO
     const repairPending = deployment.previousChecksum && current.checksum !== deployment.checksum;
     if (deployment.checksum !== manifest.files['gaoji-runtime.tar.gz'].sha256 || repairPending) {
       if (!['prepare', 'engine', 'runtime'].includes(current.stage)) throw new UserError('update_required', '此实例已有数据库，不能替换安装包；请使用实例更新功能');
-      return start(client, directory, { job: deployment.job, password, onPrepared, imageOptions,
+      return start(client, directory, { job: deployment.job, password, onPrepared, imageOptions, platforms: deployment.platforms,
         previousChecksum: deployment.checksum !== manifest.files['gaoji-runtime.tar.gz'].sha256 ? deployment.checksum : deployment.previousChecksum });
     }
     const inspection = await inspectServer(client);
@@ -225,7 +235,7 @@ async function retry(client, directory, deployment, password, onPrepared, imageO
   }
   const manifest = bundle(directory);
   if (manifest.files['gaoji-runtime.tar.gz'].sha256 !== deployment.checksum) throw new UserError('bundle_changed', '此任务使用的运行包与客户端不同，请先核对原任务状态');
-  return start(client, directory, { job: deployment.job, password, onPrepared, previousChecksum: deployment.previousChecksum, imageOptions });
+  return start(client, directory, { job: deployment.job, password, onPrepared, previousChecksum: deployment.previousChecksum, imageOptions, platforms: deployment.platforms });
 }
 
 module.exports = { FILES, bundle, jobId, launchScript, privilegedCommand, privileged, upload, start, status, retry };

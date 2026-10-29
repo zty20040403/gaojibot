@@ -27,6 +27,7 @@ from .keys import account_job_kind
 from .lease import DedicatedAccountLease, LeaseLost, LeaseUnavailable, advisory_key_for
 from .identity_store import observe_ready, observe_self_api
 from .outbox import OfficialOutbox
+from .official_metrics import observe
 
 
 class _FencedToken:
@@ -100,6 +101,11 @@ class OfficialRuntime:
                  retry_seconds: float = 2, allow_test_server: bool = False,
                  application=None, turn_consumer_factory=None, file_services_factory=None, approval_factory=None, migration_factory=None, media_factory=None, background_factory=None):
         self.config, self.database, self.logger = config, database, logger
+        self.observer = None
+        if config.enabled:
+            from ...observability import telemetry
+            from .official_metrics import official_metrics
+            self.observer = official_metrics(telemetry.registry)
         self.protocol_factory, self.binding_sender = protocol_factory, binding_sender
         self.lease_factory = lease_factory
         self.probe_seconds = min(max(probe_seconds, 0.01), 5)
@@ -109,6 +115,7 @@ class OfficialRuntime:
         self.migration_factory, self.migration_service = migration_factory, None
         self.background_factory, self.background_service = background_factory, None
         self.native_commands = None
+        self.admin_identity_service = None
         self.approval_factory = approval_factory
         self.media_factory = media_factory
         self.media_service = None
@@ -184,7 +191,9 @@ class OfficialRuntime:
                 payload_retention_hours=self.loaded.payload_retention_hours)
             await self._calls(self.store.ensure_account, self.loaded.account)
             self.outbox = OfficialOutbox(self.deliveries, admission=self.store.admitted,
-                                         pepper=self.loaded.binding_pepper)
+                pepper=self.loaded.binding_pepper, certification=self.loaded.delivery.certification,
+                max_wait_seconds=self.loaded.delivery.max_wait_seconds,
+                allow_newer_windows=self.loaded.delivery.allow_newer_windows)
         except Exception:
             await self._close_stores()
             self.state, self.reason = "failed", "configuration_or_storage_unavailable"
@@ -288,6 +297,7 @@ class OfficialRuntime:
                 session_id = data.get("session_id") if isinstance(data, dict) else None
             await self._ensure_current(token)
             accepted = await self._calls(self.store.accept, frame, token=token, session_id=session_id)
+            observe(self.observer, 'inbox', accepted.disposition)
             if frame.get("t") == "READY":
                 def record_ready():
                     with self.store.transaction() as cursor:
@@ -326,6 +336,7 @@ class OfficialRuntime:
             try:
                 await self._ensure_current(token)
                 result = await self._calls(execute)
+                observe(self.observer, 'ingest', result.status)
             except LeaseLost:
                 raise JobDeferred("official_account_lease_lost", 3) from None
             except Exception:
@@ -351,7 +362,12 @@ class OfficialRuntime:
                     raise LeaseLost("Official account lease was lost")
                 if loop.time() >= next_purge:
                     await self._calls(self.store.check_pending_ingest, token)
-                    await self._calls(self.store.purge_terminal_payloads, token)
+                    try:
+                        deleted = await self._calls(self.store.purge_terminal_payloads, token)
+                    except Exception:
+                        observe(self.observer, 'cleanup', 'failed')
+                        raise
+                    observe(self.observer, 'cleanup', 'completed', count=deleted)
                     next_purge = loop.time() + 60
                 if self.subagent_service is not None and loop.time() >= next_result_scan:
                     await self.subagent_service.reconcile()
@@ -375,6 +391,14 @@ class OfficialRuntime:
         async with self.protocol_factory(self.loaded, checkpoint=checkpoint, on_checkpoint=on_checkpoint,
                                          ensure_current=lambda: self._ensure_current(token)) as gateway, AsyncExitStack() as resources:
             self._gateway = gateway
+            gateway.observer = self.observer
+            from .admin_identity import AdminIdentityBinding
+            self.admin_identity_service = AdminIdentityBinding(self, token)
+            self.store.admin_identity_service = self.admin_identity_service
+            async def close_identity():
+                self.store.admin_identity_service = None
+                self.admin_identity_service = None
+            resources.push_async_callback(close_identity)
             if self.migration_factory is not None:
                 from .migration_services import OfficialMigrationSession
                 migration = self.migration_factory(self, token)
@@ -401,8 +425,10 @@ class OfficialRuntime:
             rest = getattr(gateway, "rest_client", None)
             if isinstance(rest, RestClient):
                 from .sender import OfficialSender
+                from .rate_policy import LocalAccountRateGate
                 self.sender = OfficialSender(self.loaded.account, token, self.outbox, rest, self.ledger,
-                    journal=self.journal, database_calls=self._calls,
+                    journal=self.journal, database_calls=self._calls, observer=self.observer,
+                    rate_gate=LocalAccountRateGate(self.loaded.account,rate_caps=self.loaded.delivery.rate_caps),
                     ensure_current=lambda: self._ensure_current(token))
                 await self.sender.recover()
                 from .control_handler import ControlJobHandler

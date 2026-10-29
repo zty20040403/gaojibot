@@ -3,6 +3,8 @@ import { QRCodeSVG } from 'qrcode.react';
 import { ArrowRight, Check, CircleAlert, ExternalLink, LoaderCircle, Play, RefreshCw, Save, Square } from 'lucide-react';
 import { DesktopError, desktop, instanceCall, unwrap } from './api';
 import type { InstanceSettings, InstanceStatus, ModelProfile, OperationKind, QQStatus } from './api';
+import { PlatformOptions, legacyPlatforms } from './PlatformOptions';
+import { OfficialConfiguration, officialDefaults, type OfficialCredentials } from './OfficialConfiguration';
 import { BackupPanel } from './BackupPanel';
 import { ComponentPanel, componentDefaults } from './ComponentPanel';
 import { ModelCatalog } from './ModelCatalog';
@@ -18,6 +20,7 @@ function ErrorText({ text }: { text: string }) {
 
 export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: string; onStep: (step: number) => void; onDirty?: (value: boolean) => void; suspended?: boolean }) {
   const [status, setStatus] = useState<InstanceStatus | null>(null);
+  const [officialCredentials, setOfficialCredentials] = useState<OfficialCredentials>({ app_id: '', app_secret: '' });
   const [qq, setQQ] = useState<QQStatus | null>(null);
   const [draft, setDraft] = useState<InstanceSettings | null>(null);
   const [revision, setRevision] = useState(0);
@@ -69,14 +72,15 @@ export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: str
           const settings = withCatalog(value.instance.settings);
           setDraft(settings); setRevision(value.instance.revision); setGroups(settings.group_ids.join('\n'));
           setSelectedModel(settings.default_model || settings.models[0].id);
-          setKeyChanges({}); setKeySources({}); setModels(null); setModelResult('');
+          setKeyChanges({}); setKeySources({}); setModels(null); setModelResult(''); setOfficialCredentials({ app_id: '', app_secret: '' });
+          setAdminName(settings.console_admin_username || 'admin');
           setDirty(!value.instance.settings.models.length);
           initialized.current = true;
           if (restoreCompleted) { restored.current = value.operation!.id; setServiceKeys({}); setEmbeddingResult(''); setClusterResult(''); setMatrixResult(''); setIMessageResult(''); }
           if (value.qq_handover) setView('qq');
           else if (value.instance.settings.default_model) setView('settings');
         }
-        try {
+        if ((value.instance.settings.platforms || legacyPlatforms).onebot) try {
           const login = await instanceCall<QQStatus>(id, 'qqStatus');
           if (disposed) return;
           setQQ(login);
@@ -84,7 +88,7 @@ export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: str
           if (disposed) return;
           setQQ(null);
           setPollError(cause instanceof Error ? cause.message : 'QQ 组件暂不可用');
-        }
+        } else setQQ(null);
         const components = await instanceCall<{ services: typeof services }>(id, 'services');
         if (!disposed) setServices(components.services);
       } catch (cause) { if (!disposed) setPollError(cause instanceof Error ? cause.message : '连接暂时中断'); }
@@ -95,7 +99,7 @@ export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: str
   }, [id, suspended]);
   useEffect(() => { onDirty?.(dirty || Boolean(busy)); }, [dirty, busy, onDirty]);
   useEffect(() => { setHandoverConfirmed(false); }, [id, status?.qq_handover?.operation_id]);
-  useEffect(() => { onStep(qq?.online && !pollError && !suspended ? 3 : 2); }, [qq?.online, pollError, suspended, onStep]);
+  useEffect(() => { onStep((qq?.online || status?.official_connection === 'connected') && !pollError && !suspended ? 3 : 2); }, [qq?.online, status?.official_connection, pollError, suspended, onStep]);
   useEffect(() => {
     if (discarding && !discardDialog.current?.open) discardDialog.current?.showModal();
     else if (!discarding) discardDialog.current?.close();
@@ -153,18 +157,22 @@ export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: str
     setClusterResult('');
     setMatrixResult('');
     setIMessageResult('');
-    setDirty(!next.instance.settings.models.length); setAdminPassword(''); setDiscarding(false);
+    setDirty(!next.instance.settings.models.length); setAdminPassword(''); setOfficialCredentials({ app_id: '', app_secret: '' }); setAdminName(settings.console_admin_username || 'admin'); setDiscarding(false);
   }
   async function save() {
     if (!draft) return;
     if (pendingOperation.current) throw new Error('上次运行操作的状态尚未确认，请等待状态更新或重试同一操作后再保存');
     const groupIds = groups.split(/[\s,，]+/).filter(Boolean);
-    if (!draft.admin_qq || !/^\d{5,15}$/.test(draft.admin_qq)) throw new Error('请填写你的管理员 QQ 号');
-    if (groupIds.some(group => !/^\d{5,15}$/.test(group))) throw new Error('群号只填数字，用空格或换行分开');
+    const selected = draft.platforms || legacyPlatforms;
+    if (selected.onebot && (!draft.admin_qq || !/^\d{5,15}$/.test(draft.admin_qq))) throw new Error('请填写你的管理员 QQ 号');
+    if (selected.onebot && groupIds.some(group => !/^\d{5,15}$/.test(group))) throw new Error('群号只填数字，用空格或换行分开');
     const botQQ = qq?.online ? qq.qq : draft.bot_qq;
-    if (!botQQ) throw new Error('请先扫码登录 QQ');
+    if (selected.onebot && !botQQ) throw new Error('请先扫码登录 QQ');
+    if (selected.qq_official && Boolean(officialCredentials.app_id) !== Boolean(officialCredentials.app_secret)) throw new Error('更换官方凭据时需要同时填写 AppID 和 AppSecret');
+    if (selected.qq_official && !status?.instance.official_configuration?.credentials_saved && !officialCredentials.app_id) throw new Error('请填写官方 AppID 与 AppSecret');
+    if (selected.qq_official && draft.features.projects && !draft.features.subagents) throw new Error('项目服务需要启用 Sub-Agent 任务存储；这不会自动授予宿主权限');
     validateCatalog(draft, keyChanges);
-    const settings: InstanceSettings = { ...draft, bot_qq: botQQ, group_ids: groupIds, models: draft.models.map(cleanProfile) };
+    const settings: InstanceSettings = { ...draft, bot_qq: botQQ || '', ...(selected.qq_official ? { console_admin_username: adminName, official: draft.official || officialDefaults } : {}), group_ids: groupIds, models: draft.models.map(cleanProfile) };
     // Older managers reject unknown component sections even when disabled.
     const { cluster, matrix, imessage, capacity, ...legacyComponents } = { ...componentDefaults(), ...settings.components };
     const compatibleSettings = { ...settings, components: { ...legacyComponents,
@@ -172,9 +180,10 @@ export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: str
       ...(status?.imessage_configuration?.schema === 1 ? { imessage } : {}),
       ...(status?.capacity_configuration?.schema === 1 ? { capacity } : {}) } };
     const next = await instanceCall<InstanceStatus>(id, 'save', { revision, settings: compatibleSettings, model_keys: keyChanges, component_keys: serviceKeys,
+      ...(selected.qq_official && officialCredentials.app_id ? { official_credentials: officialCredentials } : {}),
       ...(Object.keys(keySources).length ? { model_key_sources: keySources } : {}) });
     setStatus(next); setDraft(next.instance.settings); setRevision(next.instance.revision);
-    setKeyChanges({}); setKeySources({}); setServiceKeys({}); setDirty(false);
+    setKeyChanges({}); setKeySources({}); setServiceKeys({}); setOfficialCredentials({ app_id: '', app_secret: '' }); setDirty(false);
   }
   async function activate(kind: OperationKind, backupId?: string) {
     if (!status) return;
@@ -200,16 +209,20 @@ export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: str
     }
   }
   if (!status || !draft) return <div className="setup-loading"><LoaderCircle className="spin" size={20} /><span>正在连接配置入口</span>{pollError && <ErrorText text={pollError} />}</div>;
+  const selected = draft.platforms || legacyPlatforms;
   return <section className="instance-setup">
     <div className="setup-tabs" role="tablist" aria-label="机器人配置">
-      <button role="tab" aria-selected={view === 'qq'} onClick={() => setView('qq')}>QQ 登录 {qq?.online && <Check size={15} />}</button>
+      <button role="tab" aria-selected={view === 'qq'} onClick={() => setView('qq')}>平台接入 {qq?.online && <Check size={15} />}</button>
       <button role="tab" aria-selected={view === 'settings'} onClick={() => setView('settings')}>模型与启用</button>
       <button role="tab" aria-selected={view === 'health'} onClick={() => setView('health')}>运行检查</button>
     </div>
     {pollError && <ErrorText text={pollError} />}
     {error && <ErrorText text={error} />}
+    {status.instance.official_recovery_required && <ErrorText text="此备份缺少原始官方凭据与 pepper，官方启动已锁定。请恢复完整受保护备份，不能用新生成的凭据恢复旧发送。" />}
     {status.operation && <div className={`notice ${status.operation.status === 'failed' ? 'error' : 'install-notice'}`} role="status">{working ? <LoaderCircle size={17} className="spin" /> : <CircleAlert size={17} />}<span>{status.operation.message}</span></div>}
-    {view === 'health' ? <ReadinessPanel key={id} id={id} revision={status.instance.revision} suspended={disabled} onNavigate={setView} /> : view === 'qq' ? <div className="qq-setup">
+    {view === 'health' ? <ReadinessPanel key={id} id={id} revision={status.instance.revision} suspended={disabled} onNavigate={setView} /> : view === 'qq' ? <div><PlatformOptions value={selected} disabled={disabled || status.maintenance_pending || status.official_configuration?.schema !== 1} onChange={value => change('platforms', value)} />
+      {selected.qq_official && <p>在“模型与启用”中填写官方凭据并保存。启用后到控制台完成所有者关联、群绑定与验收。<button className="secondary" onClick={() => setView('settings')}>配置官方机器人</button></p>}
+      {selected.onebot && <div className="qq-setup">
       <h3>{status.qq_handover ? '接管迁移后的 QQ' : qq?.online ? 'QQ 已登录' : phaseLabels[qq?.phase || ''] || '扫码登录机器人 QQ'}</h3>
       {status.qq_handover ? <>
         <div className="notice warning"><CircleAlert size={17} /><span>已恢复其他实例的数据。请先停止原服务器的机器人和 QQ，避免同时登录导致掉线。接管不会自动启用机器人。</span></div>
@@ -220,10 +233,11 @@ export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: str
           {qq?.has_error && <ErrorText text="QQ 尚未完成登录，请查看手机 QQ 提示或刷新二维码" />}
           <button className="secondary" disabled={disabled} onClick={() => void run('刷新二维码', async () => setQQ(await instanceCall<QQStatus>(id, 'qqRefresh')))}><RefreshCw size={16} />刷新二维码</button></>}
       <div className="form-actions"><span className="muted">手机 QQ 扫码并确认登录</span><button className="primary" disabled={!qq?.online} onClick={() => { change('bot_qq', qq!.qq); setView('settings'); }}><ArrowRight size={16} />下一步</button></div>
-    </div> : <form onSubmit={event => { event.preventDefault(); void run('保存设置', save); }}>
+    </div>}</div> : <form onSubmit={event => { event.preventDefault(); void run('保存设置', save); }}>
       <fieldset disabled={disabled || status.maintenance_pending}>
         <div className="field-grid"><label className="field"><span>机器人名称</span><input value={draft.name} maxLength={80} onChange={event => change('name', event.target.value)} required /></label>
-          <label className="field"><span>你的 QQ 号（管理员）</span><input value={draft.admin_qq} inputMode="numeric" onChange={event => change('admin_qq', event.target.value)} required /></label></div>
+          {selected.onebot && <label className="field"><span>你的 QQ 号（管理员）</span><input value={draft.admin_qq} inputMode="numeric" onChange={event => change('admin_qq', event.target.value)} required /></label>}</div>
+        {selected.qq_official && <OfficialConfiguration settings={draft.official || officialDefaults} credentials={officialCredentials} saved={status.instance.official_configuration} onChange={value => change('official', value)} onCredentials={value => { setOfficialCredentials(value); change('official', { ...(draft.official || officialDefaults), exclusive_deployment_confirmed: false }); }} />}
         <ModelCatalog draft={draft} selected={selectedModel} keyChanges={keyChanges} available={models} testResult={modelResult} blocked={disabled || Boolean(status.maintenance_pending)}
           onSelect={selectModel} onDefault={id => change('default_model', id)} onModel={changeModel}
           onKey={value => { modelGeneration.current++; if (model) {
@@ -249,9 +263,10 @@ export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: str
             if (!alive.current || generation !== modelGeneration.current) return;
             setModelResult(`模型已返回文字，耗时 ${(result.latency_ms / 1000).toFixed(1)} 秒`);
           })} />
-        <label className="field"><span>启用的 QQ 群号（每行一个）</span><textarea value={groups} rows={3} onChange={event => { setGroups(event.target.value); setDirty(true); }} placeholder="留空时不回复群消息" disabled={draft.allow_all_groups} /></label>
-        <label className="checkbox"><input type="checkbox" checked={draft.allow_all_groups} onChange={event => change('allow_all_groups', event.target.checked)} />允许机器人在它加入的所有群中回复</label>
+        {selected.onebot && <><label className="field"><span>启用的 QQ 群号（每行一个）</span><textarea value={groups} rows={3} onChange={event => { setGroups(event.target.value); setDirty(true); }} placeholder="留空时不回复群消息" disabled={draft.allow_all_groups} /></label>
+        <label className="checkbox"><input type="checkbox" checked={draft.allow_all_groups} onChange={event => change('allow_all_groups', event.target.checked)} />允许机器人在它加入的所有群中回复</label></>}
         <details className="advanced"><summary>机器人说话风格</summary><label className="field"><span>人设与回答要求</span><textarea value={draft.system_prompt} rows={5} maxLength={16000} onChange={event => change('system_prompt', event.target.value)} /></label></details>
+        {selected.qq_official && <p className="muted">项目服务依赖 Sub-Agent 任务存储；启用存储不会授予宿主工具权限。Matrix 和 iMessage 仍需要 OneBot 接入。</p>}
         <ComponentPanel draft={draft} profiles={draft.models} videoModel={status.video_model} sandboxRuntime={status.sandbox_runtime}
           capacitySupported={status.capacity_configuration?.schema === 1}
           clusterSupported={status.cluster_configuration?.schema === 1} clusterResult={clusterResult}
@@ -300,8 +315,9 @@ export function SetupPanel({ id, onStep, onDirty, suspended = false }: { id: str
             <button type="submit" className="primary"><Save size={16} />保存设置</button></div></div>
       </fieldset>
       <section className="activation"><h3>控制台与运行</h3>
-        {!status.desired.bot_enabled && <div className="field-grid"><label className="field"><span>控制台账户名</span><input value={adminName} onChange={event => setAdminName(event.target.value)} autoComplete="username" disabled={disabled} /></label>
+        {!status.desired.bot_enabled && <div className="field-grid"><label className="field"><span>控制台账户名</span><input value={adminName} onChange={event => { setAdminName(event.target.value); if (selected.qq_official) change('console_admin_username', event.target.value); }} autoComplete="username" disabled={disabled} /></label>
           <label className="field"><span>控制台密码（首次设置至少 12 位）</span><input type="password" value={adminPassword} onChange={event => setAdminPassword(event.target.value)} autoComplete="new-password" disabled={disabled} /></label></div>}
+        {selected.qq_official && <p className="muted">官方连接：{({ connected: '已连接', disconnected: '未连接', stale: '状态已过期', not_running: '尚未启动', unavailable: '待诊断', configuration_pending: '有待应用的配置' })[status.official_connection || 'unavailable']}。控制台密码账户不会自动成为机器人所有者。</p>}
         <div className="component-states">{services.map(service => <span className="tag neutral" key={service.name}>{({ bot: '机器人', database: '数据库', napcat: 'QQ 组件' })[service.name] || service.name}: {({ running: '运行中', exited: '已停止', restarting: '重启中', created: '待启动' })[service.state] || service.state}</span>)}</div>
         <div className="activation-actions"><button type="button" className="primary" disabled={disabled || status.maintenance_pending || dirty || !draft.default_model} onClick={() => void run('启用机器人', () => activate('activate'))}><Play size={16} />{status.desired.bot_enabled ? '应用并重新连接' : '启用机器人'}</button>
           <button type="button" className="secondary" disabled={disabled || status.maintenance_pending || !status.desired.bot_enabled} onClick={() => void run('停止机器人', () => activate('stop'))}><Square size={15} />停止</button>

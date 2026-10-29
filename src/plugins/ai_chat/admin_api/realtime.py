@@ -91,6 +91,19 @@ class AdminEventBroker:
 
 
 _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
+    "qq_official_accounts": ("qq-official",),
+    "qq_official_endpoints": ("qq-official",),
+    "qq_official_admin_bindings": ("qq-official",),
+    "qq_official_owner_grants": ("qq-official",),
+    "qq_official_subagent_dispatches": ("qq-official",),
+    "delivery_receipts": ("qq-official",),
+    "admin_accounts": ("qq-official",),
+    "qq_official_inbound_events": ("qq-official",),
+    "qq_official_turn_executions": ("qq-official",),
+    "qq_official_file_deliveries": ("qq-official",),
+    "qq_official_reply_windows": ("qq-official",),
+    "qq_official_admin_identity_challenges": ("qq-official",),
+    "migration_routes": ("qq-official", "migrations"),
     "conversations": ("groups",),
     "principals": ("groups",),
     "principal_identities": ("groups",),
@@ -114,8 +127,8 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "project_io": ("projects",),
     "project_lifecycle_runs": ("projects",),
     "project_lifecycle_steps": ("projects",),
-    "deliveries": ("deliveries", "subagents", "overview", "observability"),
-    "delivery_attempts": ("deliveries", "subagents", "overview", "observability"),
+    "deliveries": ("qq-official", "deliveries", "subagents", "overview", "observability"),
+    "delivery_attempts": ("qq-official", "deliveries", "subagents", "overview", "observability"),
     "usage_events": ("usage", "overview", "observability"),
     "agent_turns": ("traces", "context-debug", "observability"),
     "turn_journal_events": ("traces", "context-debug", "observability"),
@@ -136,7 +149,7 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "alert_notifications": ("alerts", "observability"),
     "diagnostic_runs": ("fleet", "observability"),
     "diagnostic_evidence": ("fleet", "observability"),
-    "subagent_tasks": ("subagents", "tasks", "overview"),
+    "subagent_tasks": ("qq-official", "subagents", "tasks", "overview"),
     "subagent_runs": ("subagents", "tasks", "overview"),
     "subagent_events": ("subagents", "tasks", "overview"),
     "subagent_artifacts": ("subagents",),
@@ -190,6 +203,7 @@ class AdminRealtimeMonitor:
         database_counters: dict[str, tuple[int, int, int]] | None = None
         preference_signature: tuple[tuple[str, str], ...] | None = None
         task_signature: tuple[tuple[str, str], ...] | None = None
+        official_signature = None
         first = True
         next_process = 0.0
         next_external = 0.0
@@ -206,6 +220,19 @@ class AdminRealtimeMonitor:
                     )
                     database_counters = counters
 
+                getter = self.services.official_observability
+                try:
+                    service = getter() if callable(getter) else None
+                    official = service.snapshot() if service is not None else {}
+                except Exception:
+                    official = {"healthy": False}
+                import json
+                official.pop('observed_at', None)
+                if isinstance(official.get('lease'), dict):official['lease'].pop('checked_at', None)
+                current_official = json.dumps(official, sort_keys=True, separators=(',', ':'))
+                if official_signature is not None and current_official != official_signature:
+                    changed.add('qq-official')
+                official_signature = current_official
                 current_preferences = self._preference_signature()
                 if (
                     preference_signature is not None

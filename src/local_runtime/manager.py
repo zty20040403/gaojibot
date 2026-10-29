@@ -20,6 +20,7 @@ import time
 from .files import file_lock, read_json, write_json
 from .instances import ConfigurationConflict, InstanceError, InstanceStore
 from .runtime import compose_document, runtime_environment
+from .official_configuration import platforms,official_settings,materialize_runtime
 from .setup_clients import NapCatSetup, SetupError
 from .components import ComponentError, requirements
 from .backups import BackupError, BackupStore, backup_id
@@ -33,7 +34,7 @@ from .video_assets import VideoAssetError, VideoAssets
 from .sandbox_service import SandboxService
 from .sandbox_image import SandboxImage, SandboxImageError
 from .qq_handover import approve_handover, clear_handover, read_handover, start_allowed
-from .readiness import connection_status
+from .readiness import connection_status, official_connection
 
 
 ROOT = Path("/var/lib/gaoji-app")
@@ -136,6 +137,9 @@ class Controller:
             sandbox = self.sandbox_status()
             return {"instance": config, "desired": desired, "operation": self.public_operation(),
                 "qq_handover": read_handover(self.directory),
+                "official_configuration": {"schema": 1},
+                "official_connection": ("configuration_pending" if desired.get("revision") != config["revision"]
+                    else official_connection(self.directory)) if desired["bot_enabled"] else "not_running",
                 "video_model": VideoAssets(self.directory).status(),
                 "sandbox_runtime": sandbox,
                 "cluster_configuration": {"schema": 1},
@@ -209,12 +213,12 @@ class Controller:
             raise SetupError("上次维护还未完成，请先恢复中断前状态")
 
     def save(self, payload: dict) -> dict:
-        if set(payload) - {"component_keys", "model_key_sources"} != {"revision", "settings", "model_keys"}:
+        if set(payload) - {"component_keys", "model_key_sources", "official_credentials"} != {"revision", "settings", "model_keys"}:
             raise InstanceError("Invalid configuration request")
         with self.lock:
             self.mutable()
             try:
-                self.store.update(self.identifier, payload["settings"], expected_revision=payload["revision"], model_keys=payload["model_keys"], service_keys=payload.get("component_keys", {}), model_key_sources=payload.get("model_key_sources", {}))
+                self.store.update(self.identifier, payload["settings"], expected_revision=payload["revision"], model_keys=payload["model_keys"], service_keys=payload.get("component_keys", {}), model_key_sources=payload.get("model_key_sources", {}), official_credentials=payload.get("official_credentials"))
             except InstanceError as error:
                 if any(label + " 地址已更改" in str(error) for label in ("Embedding", "集群", "Matrix")):
                     raise SetupError(str(error)) from None
@@ -302,13 +306,15 @@ class Controller:
             elif self.worker and self.worker.is_alive():
                 raise SetupError("正在恢复，请等当前操作完成")
             config = self.store.read(self.identifier)
+            if kind == "resume_qq" and not platforms(config["settings"].get("platforms"))["onebot"]:
+                raise SetupError("当前未启用 OneBot，不能启动 QQ 个人号组件")
             if kind == "resume_qq" and read_handover(self.directory) is None:
                 raise SetupError("没有等待接管的 QQ，请刷新当前状态")
             if type(payload["revision"]) is not int or kind != "recover" and config["revision"] != payload["revision"]:
                 raise ConfigurationConflict("配置已变更，请刷新后重试")
             admin = payload.get("administrator")
             if kind == "activate":
-                if read_handover(self.directory) is not None:
+                if platforms(config["settings"].get("platforms"))["onebot"] and read_handover(self.directory) is not None:
                     raise SetupError("请先在 QQ 登录页完成接管，再启用机器人")
                 _, private = self.store.snapshot(self.identifier)
                 runtime_environment(config, private,
@@ -321,7 +327,7 @@ class Controller:
                         raise SetupError("管理员账户名需为 3～32 位字母或数字，可含点、下划线和短横线")
                     if not isinstance(admin["password"], str) or not 12 <= len(admin["password"]) <= 128:
                         raise SetupError("控制台密码请设置为 12～128 个字符")
-                if not re.fullmatch(r"[1-9][0-9]{4,14}", config["settings"]["admin_qq"]):
+                if platforms(config["settings"].get("platforms"))["onebot"] and not re.fullmatch(r"[1-9][0-9]{4,14}", config["settings"]["admin_qq"]):
                     raise SetupError("请填写有效的管理员 QQ 号")
             now = int(time.time())
             self.operation = {"id": identifier, "kind": kind, "revision": config["revision"], "administrator": admin,
@@ -356,6 +362,13 @@ class Controller:
         VideoAssets(self.directory).prepare()
         config, private = self.store.snapshot(self.identifier)
         sandbox = self.sandbox.prepare() if config["settings"]["features"]["sandbox"] else None
+        selected=platforms(config['settings'].get('platforms'))
+        if selected['qq_official'] and private.get('official_reference'):
+            target=self.directory/'runtime-config'
+            if not target.exists():target.mkdir(mode=0o700)
+            materialize_runtime(self.directory,reference=private['official_reference'],revision=config['revision'],
+                environment=official_settings(config['settings'].get('official'))['environment'],target_root=target,bot_owned=True,
+                files=config['settings'].get('official',{}).get('files'))
         runtime = self.directory / "config/runtime.json"
         write_json(runtime, {"schema": 1, "environment": runtime_environment(config, private, configured=enabled, sandbox=sandbox)})
         if os.geteuid() == 0:
@@ -413,12 +426,14 @@ class Controller:
                 self.sandbox.pause()
                 self.persist(status="completed", stage="stopped", message="机器人已停止，数据库和 QQ 登录仍保留", administrator=None)
                 return
-            if read_handover(self.directory) is not None:
+            if platforms(self.store.read(self.identifier)["settings"].get("platforms"))["onebot"] and read_handover(self.directory) is not None:
                 raise SetupError("请先在 QQ 登录页完成接管，再启用机器人")
-            self.compose(["up", "--detach", "--wait", "--wait-timeout", "120", "database", "napcat"], timeout=150)
-            qq = self.napcat.status()
-            if not qq["online"] or qq["qq"] != config["settings"]["bot_qq"]:
-                raise SetupError("请先扫码登录当前配置的 QQ，再启用机器人")
+            selected=platforms(config['settings'].get('platforms'))
+            self.compose(["up", "--detach", "--wait", "--wait-timeout", "120", "database", *(['napcat'] if selected['onebot'] else [])], timeout=150)
+            if selected['onebot']:
+                qq = self.napcat.status()
+                if not qq["online"] or qq["qq"] != config["settings"]["bot_qq"]:
+                    raise SetupError("请先扫码登录当前配置的 QQ，再启用机器人")
             self.persist(stage="model", message="正在从服务器验证默认模型")
             _, private = self.store.snapshot(self.identifier)
             profile = next(model for model in config["settings"]["models"] if model["id"] == config["settings"]["default_model"])
@@ -444,11 +459,13 @@ class Controller:
                 self.compose(["run", "--rm", "--no-deps", "-T", "bot", "check-video"], timeout=180)
             self.persist(stage="administrator", message="正在核对控制台管理员")
             administrator = self.operation.get("administrator")
-            request = {**administrator, "qq_id": config["settings"]["admin_qq"]} if administrator else None
+            identity={'qq_id':config['settings']['admin_qq']} if selected['onebot'] else {'identity_kind':'local_admin'}
+            request={**administrator,**identity} if administrator else None
             if request:
                 self.compose(["run", "--rm", "--no-deps", "-T", "bot", "ensure-admin"], stdin=request)
             else:
-                self.compose(["run", "--rm", "--no-deps", "-T", "bot", "check-admin"], stdin={"qq_id": config["settings"]["admin_qq"]})
+                check=identity if selected['onebot'] else {**identity,'username':config['settings'].get('console_admin_username','admin')}
+                self.compose(["run", "--rm", "--no-deps", "-T", "bot", "check-admin"], stdin=check)
             self.persist(stage="sandbox", message="正在核对沙盒运行状态")
             if config["settings"]["features"]["sandbox"]:
                 builder = self.sandbox_build()
@@ -470,7 +487,7 @@ class Controller:
             else:
                 self.sandbox.pause()
             self.persist(stage="connection", message="正在接通 QQ 与机器人")
-            self.napcat.configure(config["settings"]["bot_qq"], private["onebot_token"])
+            if selected["onebot"]:self.napcat.configure(config["settings"]["bot_qq"], private["onebot_token"])
             self.render(True)
             write_json(self.desired_path, {"bot_enabled": True, "revision": config["revision"]})
             self.compose(["up", "--detach", "--no-deps", "--force-recreate", "bot"])
@@ -481,7 +498,11 @@ class Controller:
             while time.monotonic() < deadline:
                 if ready_path.exists():
                     health = read_json(ready_path)
-                    if health.get("updated_at", 0) >= self.operation["updated_at"] and health.get("qq") == config["settings"]["bot_qq"] and health.get("connected"):
+                    legacy_ready=(not selected['onebot'] or health.get('qq')==config['settings']['bot_qq'] and health.get('connected') is True)
+                    official=health.get('official',{})
+                    official_ready=(not selected['qq_official'] or type(official) is dict and official.get('healthy') is True
+                        and official.get('lease_current') is True and official.get('gateway_ready') is True)
+                    if health.get("updated_at", 0) >= self.operation["updated_at"] and legacy_ready and official_ready:
                         self.persist(status="completed", stage="online", message="机器人已接通，可在已选择的群里 @它", administrator=None)
                         return
                 time.sleep(2)

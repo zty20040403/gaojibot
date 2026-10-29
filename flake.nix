@@ -225,6 +225,14 @@
       virtualenv = package.passthru.virtualenv;
     in {
       inherit package;
+      qq-official-module = let
+        evaluation = import ./tests/nix/qq-official-module-eval.nix {inherit self;};
+      in
+        assert lib.assertMsg (evaluation.failed == [])
+          ("QQ official module evaluation failed: " + lib.concatStringsSep ", " evaluation.failed);
+          pkgs.runCommand "gaoji-qq-official-module-check" {} ''
+            touch "$out"
+          '';
       imports = pkgs.runCommand "gaoji-import-check" {} ''
         cd ${package}/share/gaoji
         ${virtualenv}/bin/python -c 'import alembic, edge_tts, httpx, miniaudio, nonebot, openai, opentelemetry.sdk, playwright, prometheus_client, psycopg, psycopg_pool, pygments, pysilk, sqlalchemy'

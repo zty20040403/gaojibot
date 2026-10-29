@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 import hashlib
 import inspect
 import json
@@ -91,6 +91,43 @@ class RateSpec:
     @property
     def rate_key(self) -> str:
         return _key("qq.rate.", self.identity_tuple)
+
+
+@dataclass(frozen=True)
+class RateCaps:
+    """Optional stricter local limits; never increase a platform contract cap."""
+    group_proactive_per_minute: int | None = None
+    c2c_proactive_per_second: int | None = None
+    c2c_proactive_per_minute: int | None = None
+    endpoint_proactive_per_minute: int | None = None
+    passive_per_second: int | None = None
+
+    def __post_init__(self):
+        if any(value is not None and (type(value) is not int or not 1 <= value <= 1000)
+               for value in (getattr(self, item.name) for item in fields(self))):
+            raise RatePolicyError('invalid_local_rate_caps')
+
+    def apply(self, endpoint, mode, specs):
+        scene = _scope(endpoint, mode)
+        if mode == 'passive':
+            return (() if self.passive_per_second is None else
+                    (RateSpec(endpoint.account.key, None, scene, mode, 'messages_per_second', self.passive_per_second, 1),))
+        result = []
+        for spec in specs:
+            if spec.endpoint_key is not None:
+                limit = self.endpoint_proactive_per_minute
+            elif scene == 'group':
+                limit = self.group_proactive_per_minute
+            elif spec.interval_seconds == 1:
+                limit = self.c2c_proactive_per_second
+            else:
+                limit = self.c2c_proactive_per_minute
+            result.append(spec if limit is None else replace(spec, limit_count=min(spec.limit_count, limit)))
+        if (scene == 'c2c' and self.c2c_proactive_per_minute is not None
+                and not any(spec.endpoint_key is None and spec.interval_seconds == 60 for spec in result)):
+            result.append(RateSpec(endpoint.account.key, None, scene, mode, 'messages_per_minute',
+                                   self.c2c_proactive_per_minute, 60))
+        return tuple(result)
 
 
 def build_rate_specs(
@@ -260,11 +297,15 @@ class LocalAccountRateGate:
         self, account: AccountKey, *, clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, max_buckets: int = 4096,
+        rate_caps: RateCaps = RateCaps(),
     ) -> None:
         if not isinstance(account, AccountKey) or account.platform != "qq-official":
             raise RatePolicyError("official_account_required")
         if type(max_buckets) is not int or max_buckets < 1:
             raise RatePolicyError("invalid_bucket_capacity")
+        if type(rate_caps) is not RateCaps:
+            raise RatePolicyError('invalid_local_rate_caps')
+        self._rate_caps = rate_caps
         self._account = account
         self._clock, self._wall_clock, self._sleep = clock, wall_clock, sleep
         self._buckets: dict[str, _Bucket] = {}
@@ -299,7 +340,8 @@ class LocalAccountRateGate:
         if endpoint.account != self._account:
             raise RatePolicyError("rate_gate_account_mismatch")
         effective = effective_certification(certification)
-        specs = build_rate_specs(endpoint, send_mode, certification=certification)
+        specs = self._rate_caps.apply(endpoint, send_mode,
+            build_rate_specs(endpoint, send_mode, certification=certification))
         if deadline is not None and (type(deadline) not in {int, float} or not 0 <= deadline <= MAX_TIME or not math.isfinite(deadline)):
             raise RatePolicyError("invalid_deadline")
         mono, wall = self._sample()

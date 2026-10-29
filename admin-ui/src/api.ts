@@ -1,5 +1,6 @@
 export type ResourceName =
   | 'status'
+  | 'qqOfficial'
   | 'accounts'
   | 'approvals'
   | 'securityAudit'
@@ -41,6 +42,7 @@ export interface RealtimeEvent {
 
 export const RESOURCE_PATHS: Record<ResourceName, string> = {
   status: '/status',
+  qqOfficial: '/qq-official/status',
   accounts: '/accounts',
   approvals: '/approvals',
   securityAudit: '/security-audit',
@@ -72,6 +74,7 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
 }
 
 export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
+  'qq-official': ['qqOfficial'],
   overview: ['overview'],
   observability: ['observability'],
   alerts: ['alerts', 'observability'],

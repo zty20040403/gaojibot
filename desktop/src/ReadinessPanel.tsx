@@ -35,6 +35,7 @@ export function ReadinessPanel({ id, revision, suspended, onNavigate }: {
       // A failed component must not leave last time's green check in place.
       for (const [action, field] of [['status', 'status'], ['services', 'services'], ['qqStatus', 'qq']] as const) {
         if (!active.current || turn !== generation.current) return;
+        if (action === 'qqStatus' && result.status?.instance.settings.platforms?.onebot === false) continue;
         try { Object.assign(result, { [field]: await instanceCall(id, action) }); } catch { /* Each missing result becomes unknown. */ }
       }
       if (active.current && turn === generation.current) {
@@ -69,8 +70,9 @@ export function ReadinessPanel({ id, revision, suspended, onNavigate }: {
         detail: name === 'database' ? row.health === 'healthy' ? 'PostgreSQL 就绪检查通过；不代表数据完整性检查通过。' : '容器运行中，数据库就绪检查尚未通过。' : '容器正在运行。' };
       return { id: name, label, state: stopped ? 'off' : 'attention', detail: stopped ? '机器人设置为停止，不是故障。' : '组件未运行或正在重启，请先核对运行与维护状态。', destination: 'settings' };
     };
-    checks.push(service('database', '数据库'), service('napcat', 'QQ 接入组件'), service('bot', '机器人进程'));
-    checks.push({ id: 'qq', label: 'QQ 登录', state: status?.qq_handover ? 'attention' : snapshot.qq ? snapshot.qq.online ? 'ok' : 'attention' : 'unknown',
+    checks.push(service('database', '数据库'), service('bot', '机器人进程'));
+    if (settings?.platforms?.onebot !== false) checks.push(service('napcat', 'QQ 个人号接入组件'));
+    if (settings?.platforms?.onebot !== false) checks.push({ id: 'qq', label: 'QQ 登录', state: status?.qq_handover ? 'attention' : snapshot.qq ? snapshot.qq.online ? 'ok' : 'attention' : 'unknown',
       detail: status?.qq_handover ? '迁移后的 QQ 仍待接管。' : snapshot.qq?.online ? 'QQ 已登录。' : snapshot.qq ? 'QQ 未登录或正在重连。' : '未取得登录状态；不会自动清空会话。', destination: 'qq' });
     const connection = snapshot.services?.connection;
     checks.push({ id: 'connection', label: 'QQ 与机器人连接', state: connection === 'connected' ? 'ok' : status?.desired.bot_enabled === false ? 'off' : !connection || ['unavailable', 'stale'].includes(connection) ? 'unknown' : 'attention',
@@ -78,7 +80,9 @@ export function ReadinessPanel({ id, revision, suspended, onNavigate }: {
     const tested = probe && probe.revision === status?.instance.revision && now - probe.at <= 60000 ? probe : null;
     checks.push({ id: 'model', label: '默认聊天模型', state: !status ? 'unknown' : !model ? 'attention' : tested?.state || 'unknown',
       detail: !status ? '未取得已保存的模型配置。' : !model ? '尚未选择默认模型。' : tested ? tested.state === 'ok' ? `模型实际返回了文字，耗时 ${((tested.latency || 0) / 1000).toFixed(1)} 秒；${timestamp(tested.at)}。` : '模型测试失败；请核对地址、密钥、模型名称和服务状态。' : '已保存模型配置，本轮尚未确认真实调用结果。', destination: 'settings' });
-    checks.push({ id: 'groups', label: '群聊范围', state: !settings ? 'unknown' : settings.allow_all_groups || settings.group_ids.length ? 'ok' : 'off',
+    if (settings?.platforms?.qq_official) checks.push({ id: 'official-binding', label: '官方准入与能力', state: 'unknown', detail: '请在控制台 QQ 官方机器人页核对实际群绑定、管理员关联和文件能力；本地配置不代表平台已授权。', destination: 'settings' });
+    if (status?.instance.official_recovery_required) checks.push({ id: 'official-recovery', label: '官方原始凭据', state: 'attention', detail: '此备份缺少原始凭据与 pepper，不能启动旧任务；请恢复完整受保护备份。' });
+    if (settings?.platforms?.onebot !== false) checks.push({ id: 'groups', label: '群聊范围', state: !settings ? 'unknown' : settings.allow_all_groups || settings.group_ids.length ? 'ok' : 'off',
       detail: !settings ? '未读取到群设置。' : settings.allow_all_groups ? '已允许当前 QQ 加入的所有群。' : settings.group_ids.length ? `已允许 ${settings.group_ids.length} 个群；群成员资格和真实收发仍需在 QQ 验证。` : '没有启用群聊，机器人不会在群里回复。', destination: 'settings' });
     checks.push({ id: 'configuration', label: '配置应用', state: !status ? 'unknown' : status.desired.bot_enabled && status.desired.revision !== status.instance.revision ? 'attention' : status.desired.bot_enabled ? 'ok' : 'off',
       detail: !status ? '未读取到运行配置。' : !status.desired.bot_enabled ? '设置已保存时仍需单独启用机器人。' : status.desired.revision !== status.instance.revision ? '已保存的设置尚未应用到运行实例。' : '运行配置与已保存版本一致。', destination: 'settings' });

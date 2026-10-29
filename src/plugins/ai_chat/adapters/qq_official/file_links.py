@@ -511,17 +511,27 @@ def _headers() -> dict[str, str]:
         "Content-Security-Policy": "default-src 'none'; sandbox", "Accept-Ranges": "none"}
 
 
-def create_download_app(publisher: FileLinkPublisher) -> web.Application:
+def create_download_app(publisher: FileLinkPublisher | None = None, *, publisher_getter=None) -> web.Application:
     """Only attachment GET/HEAD; no sessions, cookies, redirects or HTML preview.
 
     Use create_download_runner to disable token-bearing access logs. Reverse
     proxies must likewise disable/redact the entire credential route, including
     error/tracing logs; the app cannot control an upstream proxy's logging.
     """
+    if (publisher is None) == (publisher_getter is None):
+        raise LinkError("invalid_download_publisher")
+    if publisher_getter is not None and not callable(publisher_getter):
+        raise LinkError("invalid_download_publisher")
+    fixed_publisher = publisher
+
     async def download(request: web.Request) -> web.StreamResponse:
+        publisher = None
         response = None
         acquired = False
         try:
+            publisher = publisher_getter() if publisher_getter is not None else fixed_publisher
+            if not isinstance(publisher, FileLinkPublisher):
+                return web.Response(status=503, headers=_headers())
             token = request.match_info.get("token", "")
             if not _TOKEN.fullmatch(token):
                 return web.Response(status=404, headers=_headers())
@@ -603,4 +613,4 @@ def create_download_app(publisher: FileLinkPublisher) -> web.Application:
 
 
 def create_download_runner(app: web.Application) -> web.AppRunner:
-    return web.AppRunner(app, access_log=None, handle_signals=False)
+    return web.AppRunner(app, access_log=None, handle_signals=False, shutdown_timeout=5)

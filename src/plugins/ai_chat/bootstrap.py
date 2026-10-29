@@ -7,7 +7,6 @@ from .bridges import register_bridge_routes
 from .config import Settings
 from .observability import register_metrics_endpoint, telemetry
 from .runtime import AppContext
-from .stickers import sticker_inventory
 
 
 class BootstrapLogger(Protocol):
@@ -23,6 +22,7 @@ def register_http_surfaces(
     settings: Settings,
     version: str,
     logger: BootstrapLogger,
+    onebot_enabled: bool = True,
 ) -> None:
     mcp_runtime = getattr(context, "mcp_runtime", None)
     if mcp_runtime is not None and mcp_runtime.endpoint is not None:
@@ -58,6 +58,11 @@ def register_http_surfaces(
                 f"Cross-platform bridge routes could not be registered: {exc}"
             )
 
+    if onebot_enabled:
+        from .stickers import sticker_inventory
+    else:
+        # The official classified media library has its own authenticated API.
+        sticker_inventory = None
     if not settings.admin_enabled:
         return
     try:
@@ -101,6 +106,8 @@ def register_http_surfaces(
                 alert_preferences=context.alert_preferences,
                 fleet_client=context.fleet_client,
                 mobile_authorization=context.mobile_authorization,
+                official_observability=lambda: getattr(context,'official_observability',None),
+                official_identity_service=lambda: getattr(getattr(context,'official_runtime',None),'admin_identity_service',None),
                 official_file_service=lambda: getattr(getattr(context, "official_runtime", None), "file_service", None),
                 official_migration_service=lambda: context.migration_service.admin_service()
                     if context.migration_service is not None else None,

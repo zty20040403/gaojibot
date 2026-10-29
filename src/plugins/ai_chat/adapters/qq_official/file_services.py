@@ -28,6 +28,7 @@ from .file_publications import PgPublicationStore
 from .lease import LeaseLost as AccountLeaseLost, assert_epoch
 from .image_formats import file_type_for_mime
 from .native_media import CONTRACT
+from .official_metrics import observe
 from .native_vault import NativeUploadVault
 from .send_policy import SendPolicyChoice, check_send_policy
 
@@ -43,6 +44,7 @@ class NativeRouteEvidence:
     expires_at: int
     contract: str = CONTRACT
     file_type: int = 4
+    multipart: bool = False
 
 
 @dataclass(frozen=True)
@@ -67,11 +69,18 @@ class FileServiceConfig:
     existing_artifact_authority: Callable | None = field(default=None, repr=False)
     # M7 typed route evidence; old two-argument port remains type-4 only.
     native_media_evidence: Callable | None = field(default=None, repr=False)
+    # Retained public reads keep original expiry, independent of live proxy probes.
+    # The complete existing publication/source checks always precede this port.
+    retained_link_authority: Callable | None = field(default=None, repr=False)
+    link_ttl_seconds: int = 3600
+    multipart_configuration: object | None = field(default=None, repr=False)
+    part_transport: object | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if (not isinstance(self.private_directory, Path) or not self.private_directory.is_absolute()
                 or type(self.generation_enabled) is not bool or type(self.destroy_expired_resources) is not bool
                 or not isinstance(self.generation_limits, GenerationLimits)
+                or type(self.link_ttl_seconds) is not int or not 60 <= self.link_ttl_seconds <= 3600
                 or type(self.min_free_bytes) is not int or self.min_free_bytes < 0
                 or any(type(value) is not int or value < 1 for value in
                        (self.max_file_bytes,self.quota_bytes,self.max_artifacts,
@@ -79,8 +88,14 @@ class FileServiceConfig:
                 or not self.actor_capacity <= self.account_capacity <= 100
                 or any(port is not None and not callable(port) for port in
                        (self.route_authority,self.source_authority,self.existing_artifact_authority,self.native_media_evidence,
-                        self.native_evidence,self.link_reachable))):
+                        self.native_evidence,self.link_reachable,self.retained_link_authority))):
             raise ValueError('invalid_file_service_configuration')
+        if self.multipart_configuration is not None:
+            from .native_part_transport import MultipartConfiguration
+            if type(self.multipart_configuration) is not MultipartConfiguration:
+                raise ValueError('invalid_multipart_configuration')
+        elif self.part_transport is not None:
+            raise ValueError('incomplete_multipart_configuration')
         if self.link_origin is not None:
             _origin(self.link_origin, False)  # HTTPS public origin only; no implicit loopback deployment.
 
@@ -185,7 +200,8 @@ class FileServices:
         self._maintenance_lock=asyncio.Lock()
         self._close_task=None
         self._native_cursor=self._link_cursor=self._orphan_cursor=self._capacity_cursor=None
-        self.link_vault=self.native_vault=None
+        self.link_vault=self.native_vault=self.session_vault=None
+        self._session_cursor=None
         try:
             _directory(config.private_directory)
             self.directory=config.private_directory/hashlib.sha256(token.account_key.encode()).hexdigest()
@@ -197,12 +213,21 @@ class FileServices:
                 max_artifacts=config.max_artifacts,account_key=token.account_key,maintenance_guard=self._account)
             self.native_vault=NativeUploadVault(self.directory/'native',clock=self.clock)
             self.link_vault=FileCredentialVault(self.directory/'links')
+            part_transport=None
+            if config.multipart_configuration is not None:
+                from .native_session_vault import NativeSessionVault
+                from .native_part_transport import PinnedPartTransport
+                self.session_vault=NativeSessionVault(self.directory/'upload-sessions',clock=self.clock)
+                part_transport=config.part_transport or PinnedPartTransport(config.multipart_configuration)
             self.payloads=TrustedFilePayloads(admission=self.admission,route_policy=self._route,
                 native_vault=self.native_vault,link_vault=self.link_vault,link_origin=config.link_origin,
                 source_authority=config.source_authority)
             self.dispatcher=OfficialFileDispatcher(token,self.artifacts,self.payloads,runtime.outbox,rest,
                 calls=self.calls,lease_check=self._local,publisher_factory=self.publisher_factory if config.link_origin else None,
-                check_delivery_ready=self.check_delivery_ready,clock=self.clock)
+                check_delivery_ready=self.check_delivery_ready,clock=self.clock,
+                link_ttl_seconds=config.link_ttl_seconds,
+                multipart_configuration=config.multipart_configuration,multipart_vault=self.session_vault,
+                part_transport=part_transport)
             from .file_runtime import OfficialFileRuntime
             from src.plugins.ai_chat.platform_types import AccountKey
             self.generation=OfficialFileRuntime(account=AccountKey.parse(token.account_key),token=token,
@@ -211,9 +236,10 @@ class FileServices:
                 limits=config.generation_limits,account_limit=config.account_capacity,actor_limit=config.actor_capacity)
             self._publication_store=self._store()
             self._maintenance_publisher=self._publisher(self._publication_store) if config.link_origin else None
-            self.download_app=create_download_app(self._publisher(_DownloadStore(self,self._publication_store))) if config.link_origin else None
+            self.download_publisher=self._publisher(_DownloadStore(self,self._publication_store)) if config.link_origin else None
+            self.download_app=create_download_app(self.download_publisher) if self.download_publisher is not None else None
         except BaseException:
-            for vault in (self.native_vault,self.link_vault):
+            for vault in (self.native_vault,self.link_vault,self.session_vault):
                 if vault is not None: vault.close()
             raise
 
@@ -241,6 +267,12 @@ class FileServices:
             return self.config.native_evidence(cursor,endpoint)
         return None
 
+    def _native_limit(self,proof):
+        if (proof.file_type==4 and proof.multipart is True and self.config.multipart_configuration is not None
+                and self.dispatcher.multipart is not None):
+            return min(proof.max_bytes,self.config.max_file_bytes,self.dispatcher.limits.total_bytes)
+        return min(proof.max_bytes,self.dispatcher.limits.small_bytes,3_750_000)
+
     def _route(self,cursor,artifact,route):
         self._account(cursor)
         endpoint,actor=EndpointKey.parse(artifact['endpoint_key']),ActorKey.parse(artifact['requester_actor_key'])
@@ -266,7 +298,8 @@ class FileServices:
                     proof.max_bytes,proof.verified_at,proof.expires_at,proof.file_type))
                 or (proof.endpoint_generation,proof.route_epoch,proof.capability_revision)!=(row['generation'],row['route_epoch'],row['capability_revision'])
                 or not 0<=proof.verified_at<=now<proof.expires_at
-                or not 1<=artifact['byte_size']<=min(proof.max_bytes,self.dispatcher.limits.small_bytes,3_750_000)
+                or type(proof.multipart) is not bool or proof.multipart and proof.file_type!=4
+                or not 1<=artifact['byte_size']<=self._native_limit(proof)
                 or proof.contract!=CONTRACT or proof.file_type!=kind): return False
         from .file_dispatcher import native_rejected
         return not native_rejected(cursor,endpoint,endpoint_generation=row['generation'],route_epoch=row['route_epoch'],
@@ -320,8 +353,7 @@ class FileServices:
                 if self._route(cursor,artifact,'link'):return ArtifactAvailability(True,int(cap),'link')
                 if self._route(cursor,artifact,'native'):
                     proof=self._native_evidence(cursor,binding.endpoint,4)
-                    return ArtifactAvailability(True,min(int(cap),proof.max_bytes,
-                        self.dispatcher.limits.small_bytes,3_750_000),'native')
+                    return ArtifactAvailability(True,min(int(cap),self._native_limit(proof)),'native')
                 return ArtifactAvailability(False,0,'link')
         return await self.calls(check)
 
@@ -361,7 +393,11 @@ class FileServices:
             artifact,_=assert_file_read_current(cursor,token=self.token,artifact_id=publication.artifact.artifact_id,
                 admission=self.admission,now=int(self.clock()),
                 source_authority=self.config.source_authority)
-            if self.config.existing_artifact_authority is None:
+            if self.config.retained_link_authority is not None:
+                allowed = self.config.retained_link_authority(cursor,artifact) is True
+                if self.config.existing_artifact_authority is not None:
+                    allowed = allowed and self.config.existing_artifact_authority(cursor,artifact) is True
+            elif self.config.existing_artifact_authority is None:
                 allowed = self._route(cursor,artifact,'link')
             else:
                 allowed = self._link_ready() and self.config.existing_artifact_authority(cursor,artifact) is True
@@ -480,12 +516,18 @@ class FileServices:
 
     async def _maintain(self):
         await self._fence()
-        await self.calls(self.artifacts.collect_expired,limit=50)
+        removed=await self.calls(self.artifacts.collect_expired,limit=50)
+        observe(getattr(self.runtime,'observer',None),'cleanup','completed',kind='artifact_tombstone',count=removed)
         await self._fence()
-        _,self._orphan_cursor=await self.calls(self.artifacts.collect_orphans,after_sha=self._orphan_cursor,limit=50)
+        removed,self._orphan_cursor=await self.calls(self.artifacts.collect_orphans,after_sha=self._orphan_cursor,limit=50)
+        observe(getattr(self.runtime,'observer',None),'cleanup','completed',kind='orphan_blob',count=removed)
         await self._fence()
         result=await self.calls(self.native_vault.collect_expired,after_ref=self._native_cursor,limit=50)
         self._native_cursor=result['next_ref']
+        if self.session_vault is not None:
+            await self._fence()
+            result=await self.calls(self.session_vault.collect_expired,after_ref=self._session_cursor,limit=50)
+            self._session_cursor=result['next_ref']
         await self._fence()
         if self._maintenance_publisher is not None:
             result=await self._maintenance_publisher.collect_credentials(after_ref=self._link_cursor,limit=50)
@@ -507,5 +549,8 @@ class FileServices:
 
     async def _close_resources(self):
         async with self._maintenance_lock:
-            try: await self.calls(self.native_vault.close)
-            finally: await self.calls(self.link_vault.close)
+            try:
+                if self.session_vault is not None:await self.calls(self.session_vault.close)
+            finally:
+                try: await self.calls(self.native_vault.close)
+                finally: await self.calls(self.link_vault.close)

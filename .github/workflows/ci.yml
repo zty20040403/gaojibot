@@ -81,6 +81,19 @@ jobs:
       - name: Run unit and PostgreSQL integration tests
         run: python -m unittest discover -s tests -p 'test_*.py'
 
+  windows-credentials:
+    name: Windows credential ACL
+    runs-on: windows-latest
+    env:
+      PYTHON_DOTENV_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check native Windows credential ACL and local handle rules
+        run: python -m unittest tests.test_qq_official_windows_private
+
   nix:
     name: Nix package
     runs-on: ubuntu-latest

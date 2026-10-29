@@ -139,7 +139,7 @@ class ApprovalIngressTests(HostFixture):
         from types import SimpleNamespace
         from unittest.mock import Mock
         from src.plugins.ai_chat.adapters.qq_official.runtime import OfficialRuntime
-        from src.plugins.ai_chat.adapters.qq_official.config import OfficialConfig
+        from src.plugins.ai_chat.adapters.qq_official.config import OfficialConfig, LoadedOfficialConfig
         from src.plugins.ai_chat.adapters.qq_official.approval_transport import ApprovalOtpSender
         from tests.test_qq_official_runtime import ControlledGateway
         opened=asyncio.Queue();created=[]
@@ -157,7 +157,11 @@ class ApprovalIngressTests(HostFixture):
             return service
         runtime=OfficialRuntime(OfficialConfig(),self.database,logger=Mock(),protocol_factory=protocol,
             approval_factory=factory,probe_seconds=.01)
-        runtime.store=self.inbox_store;runtime.loaded=SimpleNamespace(account=self.account)
+        runtime.store=self.inbox_store
+        runtime.loaded=LoadedOfficialConfig(account=self.account,credentials=self.tokens.credentials,
+            api_base=self.fake.base_url,owner_openids=('TEST_ADMIN_A','TEST_ADMIN_B'),
+            private_policy='allowlist',private_allowed_openids=(),binding_pepper=SECRET,
+            allow_test_server=True)
         runtime.jobs=self.jobs;runtime.deliveries=self.deliveries;runtime.outbox=self.outbox
         runtime.ledger=self.ledger;runtime.journal=self.journal;runtime._token=self.token
         task=asyncio.create_task(runtime._serve(SimpleNamespace(probe=lambda:True),self.token,
@@ -166,6 +170,8 @@ class ApprovalIngressTests(HostFixture):
             gateway=await asyncio.wait_for(opened.get(),3)
             await asyncio.wait_for(gateway.ready.wait(),3)
             self.assertTrue(runtime.status()['approval_transport_connected'])
+            self.assertIsNotNone(runtime.admin_identity_service)
+            self.assertIs(self.inbox_store.admin_identity_service,runtime.admin_identity_service)
             await self.prepare();code=self.code()
             await gateway.emit(code,owner='TEST_ADMIN_A')
             self.assertEqual(self.query("SELECT status FROM admin_approvals WHERE kind='server_task'")[0]['status'],'awaiting_quorum')
@@ -179,6 +185,8 @@ class ApprovalIngressTests(HostFixture):
             await runtime._calls.close()
         self.assertEqual(len(created),1)
         self.assertIsNone(runtime.approval_service)
+        self.assertIsNone(runtime.admin_identity_service)
+        self.assertIsNone(self.inbox_store.admin_identity_service)
         self.assertIsNone(self.inbox_store.approval_store)
         self.assertIsNone(self.outbox.approval_authority)
         self.assertTrue(created[0]._closed)

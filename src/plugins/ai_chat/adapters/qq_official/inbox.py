@@ -28,6 +28,7 @@ from .control_receipts import record_decision, enqueue_control_job
 from .codec import DecodedMessage, decode_message
 from .lease import assert_epoch
 from .keys import account_job_kind
+from .admin_identity import prepare_identity_input, command_commitment
 
 
 class IngressError(RuntimeError):
@@ -57,6 +58,7 @@ class Acceptance:
     approval: ControlResult | None = field(default=None, repr=False)
     _approval_input: object = field(default=None, repr=False)
     _native_admission: object = field(default=None, repr=False)
+    _identity_input: object = field(default=None, repr=False)
 
 
 class OfficialInboxStore:
@@ -80,6 +82,7 @@ class OfficialInboxStore:
         # Set only by the current authenticated runtime epoch; no factory = deny.
         self.approval_store = None
         self.source_authority = None
+        self.admin_identity_service = None
 
     def close(self):
         with self._lock:
@@ -224,6 +227,9 @@ class OfficialInboxStore:
                 self.source_authority.record(cursor, token=token, proof=result._native_admission,
                     inbox_id=result.inbox_id, session_id=session_id, seq=seq)
                 result = replace(result, _native_admission=None)
+            if result._identity_input is not None and self.admin_identity_service is not None:
+                self.admin_identity_service.observe(cursor,inbox_id=result.inbox_id,command=result._identity_input)
+                result=replace(result,_identity_input=None)
             if result._approval_input is not None:
                 control = apply_control(cursor, store=self.approval_store, inbox_id=result.inbox_id,
                     session_id=session_id, seq=seq, command=result._approval_input, now=now)
@@ -363,6 +369,7 @@ class OfficialInboxStore:
                 return result
         decision = None
         approval_input = None
+        identity_input = None
         approval = None
         payload = None
         status, reason, echo = "skipped", "not_admitted", "not_echo"
@@ -378,8 +385,16 @@ class OfficialInboxStore:
             prepared_input = normalize_input(dispatch)
             command = prepared_input.command
             admin_input = prepare_approval_input(dispatch, endpoint)
+            identity_command = prepare_identity_input(dispatch)
             if sent is not None:
                 reason, echo = "self_echo", "confirmed_self"
+            elif identity_command.kind != 'ordinary':
+                # Never retain the raw challenge, even without a configured service.
+                if (identity_command.kind=='control' and endpoint.kind=='private'
+                    and decoded.platform_occurred_at is not None):
+                    status,reason,identity_input='processed','admin_identity_control',identity_command
+                else:
+                    status,reason='quarantined','input_sensitive_identity'
             elif prepared_input.kind == "quarantine":
                 status, reason = "quarantined", prepared_input.reason
             elif command is not None:
@@ -425,6 +440,9 @@ class OfficialInboxStore:
         inbox_id = self._insert(cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=endpoint_row,
             native_id=native_id, event_id=event_id, status=status, reason=reason, payload=payload, echo=echo,
             trigger=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending")
+        if identity_input is not None:
+            cursor.execute("""UPDATE qq_official_inbound_events SET identity_control_actor_key=?,identity_control_occurred_at=?,identity_control_commitment=? WHERE inbox_id=?""",
+                (decoded.actor.key,decoded.platform_occurred_at,command_commitment(self.binding._pepper,inbox_id=inbox_id,endpoint=endpoint,actor=decoded.actor,native_id=native_id,command=identity_input),inbox_id))
         if approval_input is not None:
             commitment = control_commitment(self.approval_store.transport.secret,
                 inbox_id=inbox_id, endpoint=endpoint, actor=decoded.actor, command=approval_input)
@@ -447,8 +465,8 @@ class OfficialInboxStore:
             if job.kind != kind or job.scope_key != lane or job.payload != job_payload:
                 raise IngressError("Official ingest job identity conflict")
             cursor.execute("UPDATE qq_official_inbound_events SET ingest_job_id=? WHERE inbox_id=?", (job.job_id, inbox_id))
-        disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision or approval else "skipped"
-        return Acceptance(disposition, inbox_id, reason or "", decision, approval, approval_input, native_admission)
+        disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision or approval or identity_input else "skipped"
+        return Acceptance(disposition, inbox_id, reason or "", decision, approval, approval_input, native_admission, identity_input)
 
     def _lifecycle(self, cursor, account, dispatch, now):
         body = dispatch.data

@@ -129,6 +129,8 @@ class NativeSources:
             kind = 'message'
         elif row['reason_code'] == 'binding_control' and row['control_actor_key'] == proof.actor.key:
             kind = 'binding_control'
+        elif row['reason_code']=='admin_identity_control' and row['identity_control_actor_key']==proof.actor.key:
+            kind='admin_control'
         elif row['reason_code'] == 'admin_control' and row['admin_control_actor_key'] == proof.actor.key:
             kind = 'admin_control'
         else:

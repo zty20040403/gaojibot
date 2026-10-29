@@ -92,6 +92,7 @@ class HostConfiguration:
     proactive: object | None = field(default=None,repr=False)
     proactive_profile: str | None = None
     wiki: object | None = field(default=None,repr=False)
+    download: object | None = field(default=None,repr=False)
 
     @classmethod
     def parse(cls,text):
@@ -106,7 +107,7 @@ class HostConfiguration:
             for item in _list(raw['onebot_accounts'],16):
                 _object(item,('account','deployment_digest'))
                 sources.append(OneBotAccount(AccountKey.parse(item['account']),item['deployment_digest']))
-            if not sources or len({x.account.key for x in sources})!=len(sources):raise ValueError
+            if len({x.account.key for x in sources})!=len(sources):raise ValueError
             profiles=[]
             for name in ('scheduled_profile','subagent_profile'):
                 value=raw.get(name)
@@ -124,13 +125,33 @@ class HostConfiguration:
                 deadlines[key]=ExportDeadline(item['execution'],item['result'],item.get('schedule_json'))
             files=raw.get('files')
             evidence=[]
+            download=None
             if files is not None:
                 _object(files,('private_directory','native_routes'),
                     ('generation_enabled','max_file_bytes','quota_bytes','max_artifacts','min_free_bytes',
-                     'account_capacity','actor_capacity','destroy_expired_resources'))
+                     'account_capacity','actor_capacity','destroy_expired_resources','download','multipart'))
                 files=dict(files)
+                raw_multipart=files.pop('multipart',None)
+                if raw_multipart is not None:
+                    from .native_part_transport import MultipartConfiguration
+                    data=dict(_object(raw_multipart,('allowed_part_hosts',),('max_parts','max_session_seconds')))
+                    hosts=_list(data.pop('allowed_part_hosts'),16)
+                    if len(set(hosts))!=len(hosts):raise ValueError
+                    files['multipart_configuration']=MultipartConfiguration(frozenset(hosts),**data)
+                raw_download=files.pop('download',None)
+                if raw_download is not None:
+                    from .download_runtime import DownloadConfiguration,LinkRouteEvidence
+                    data=dict(_object(raw_download,('origin','listen_host','listen_port','routes')))
+                    links=[]
+                    for entry in _list(data.pop('routes'),128):
+                        entry=dict(_object(entry,('endpoint','endpoint_generation','route_epoch','capability_revision',
+                            'verified_at','expires_at','contract')))
+                        entry['endpoint']=EndpointKey.parse(entry['endpoint'])
+                        if entry['endpoint'].account!=account:raise ValueError
+                        links.append(LinkRouteEvidence(**entry))
+                    download=DownloadConfiguration(**data,routes=tuple(links))
                 for item in _list(files.pop('native_routes'),128):
-                    _object(item,('endpoint','endpoint_generation','route_epoch','capability_revision','max_bytes','verified_at','expires_at','contract','file_type'))
+                    _object(item,('endpoint','endpoint_generation','route_epoch','capability_revision','max_bytes','verified_at','expires_at','contract','file_type'),('multipart',))
                     item=dict(item);item['endpoint']=EndpointKey.parse(item['endpoint'])
                     if item['endpoint'].account!=account:raise ValueError
                     for key in ('endpoint_generation','route_epoch','capability_revision','max_bytes','expires_at'):
@@ -139,6 +160,7 @@ class HostConfiguration:
                     if (type(item['contract']) is not str or not 1<=len(item['contract'].encode())<=256
                             or any(ord(c)<32 or ord(c)==127 for c in item['contract'])
                             or type(item['file_type']) is not int or item['file_type'] not in {1,4}):raise ValueError
+                    if type(item.get('multipart',False)) is not bool or item.get('multipart',False) and item['file_type']!=4:raise ValueError
                     evidence.append(NativeRouteEvidence(**item))
                 if len({(x.endpoint.key,x.file_type) for x in evidence})!=len(evidence):raise ValueError
                 files['private_directory']=Path(files['private_directory'])
@@ -157,41 +179,77 @@ class HostConfiguration:
             schedule,schedule_profile,proactive,proactive_profile,wiki=_native_background(raw.get('native_background'),account)
             return cls(account,tuple(sources),*profiles,tuple(deadlines.items()),files,tuple(evidence),tuple(services),
                 media=media,native_schedule=schedule,native_schedule_profile=schedule_profile,
-                proactive=proactive,proactive_profile=proactive_profile,wiki=wiki)
+                proactive=proactive,proactive_profile=proactive_profile,wiki=wiki,download=download)
         except (ValueError,TypeError,KeyError,OverflowError,RecursionError,SecurityError):
             raise HostConfigurationError('invalid_official_host_configuration') from None
 
     @classmethod
     def from_env(cls,env):
-        if not _boolean(env.get('AI_QQ_MIGRATION_ENABLED','false'),'migration'):
-            return None
+        migration=_boolean(env.get('AI_QQ_MIGRATION_ENABLED','false'),'migration')
+        official=_boolean(env.get('AI_QQ_OFFICIAL_ENABLED','false'),'enabled')
+        old=env.get('AI_QQ_MIGRATION_CONFIG_FILE','') if migration else ''
+        native=env.get('AI_QQ_OFFICIAL_HOST_CONFIG_FILE','') if official else ''
+        if not migration and not native:return None
         try:
-            path=env.get('AI_QQ_MIGRATION_CONFIG_FILE','')
+            if migration and not old:raise ValueError
+            if old and native and Path(old)!=Path(native):
+                raise HostConfigurationError('conflicting_official_host_configuration')
+            path=old or native
             if not path or not Path(path).is_absolute():raise ValueError
             return cls.parse(_read_secret(path,None))
         except (ValueError,OSError):
             raise HostConfigurationError('official_host_configuration_unavailable') from None
 
-    def build(self,context,runtime):
+    def build(self,context,runtime,*,project_grant_ttl_seconds=86400,file_link_ttl_seconds=3600):
         mobile=getattr(context,'mobile_authorization',None)
         if context.database is None or context.delivery_store is None or mobile is None:
             raise HostConfigurationError('official_host_requires_durable_security_services')
         for profile in (self.scheduled_profile,self.subagent_profile,self.native_schedule_profile,self.proactive_profile,
                         self.wiki.profile if self.wiki is not None and self.wiki.enabled else None):
             if profile is not None:context.model_catalog.resolve(profile)
+        def canonical_scope(event):
+            if not getattr(runtime,'onebot_enabled',True):
+                raise HostConfigurationError('legacy_source_unavailable')
+            return runtime.handlers.chat._conversation_scope(event)
         service=MigrationServices(database=context.database,transaction=context.delivery_store.transaction,
             database_calls=context.db_call,security=mobile.store,onebot_accounts=self.onebot_accounts,
-            canonical_scope=lambda event:runtime.handlers.chat._conversation_scope(event),
-            deadlines=self.deadlines,scheduled_profile=self.scheduled_profile,subagent_profile=self.subagent_profile)
-        context.official_host=ConfiguredHost(self,context,service)
+            canonical_scope=canonical_scope,
+            deadlines=self.deadlines,scheduled_profile=self.scheduled_profile,subagent_profile=self.subagent_profile,
+            project_grant_ttl_seconds=project_grant_ttl_seconds)
+        context.official_host=ConfiguredHost(self,context,service,file_link_ttl_seconds=file_link_ttl_seconds)
         service.file_admission=context.official_host.file_admission
         return service
 
 
 class ConfiguredHost:
-    def __init__(self,config,context,migration):
+    def __init__(self,config,context,migration,*,file_link_ttl_seconds=3600):
+        if type(file_link_ttl_seconds) is not int or not 60<=file_link_ttl_seconds<=3600:
+            raise HostConfigurationError('invalid_file_link_lifetime')
+        self.file_link_ttl_seconds=file_link_ttl_seconds
+        if config.download is not None:
+            from urllib.parse import urlsplit
+            configured_admin=getattr(getattr(context,'settings',None),'admin_origin','')
+            if configured_admin:
+                def origin(value):
+                    parsed=urlsplit(value)
+                    return (parsed.scheme.lower(),(parsed.hostname or '').lower(),
+                        parsed.port or (443 if parsed.scheme.lower()=='https' else 80))
+                if origin(config.download.origin)==origin(configured_admin):
+                    raise HostConfigurationError('download_requires_independent_origin')
         self.config,self.context,self.migration=config,context,migration
         self.evidence={(value.endpoint.key,value.file_type):value for value in config.native_routes}
+        self.download_host=None
+        if config.download is not None:
+            from .download_runtime import DownloadHost
+            self.download_host=DownloadHost(config.download,config.account)
+
+    def download_status(self):
+        if self.download_host is None:
+            return dict(configured=False,listening=False,proxy_reachable=False,evidence_configured=False)
+        return self.download_host.status()
+
+    async def close(self):
+        if self.download_host is not None:await self.download_host.close()
 
     def media_factory(self,runtime,token):
         if self.config.media is None:return None
@@ -256,13 +314,25 @@ class ConfiguredHost:
             project_scope_guard=self.migration.project_grants.project_scope_guard,
             read_route_guard=lambda cursor,artifact,project_binding,**kwargs:
                 kwargs['canonical_scope'].key==kwargs['endpoint'].scope.key)
+        download=self.download_host
+        def route_authority(cursor,endpoint,actor,route):
+            if route=='native':return any(key[0]==endpoint.key for key in self.evidence)
+            return download is not None and download.route_allowed(cursor,endpoint,actor,route)
         config=FileServiceConfig(manager=self.context.sandbox_manager,**self.config.files,
+            link_ttl_seconds=self.file_link_ttl_seconds,
             source_authority=authority,native_media_evidence=lambda cursor,endpoint,kind:self.evidence.get((endpoint.key,kind)),
-            route_authority=lambda cursor,endpoint,actor,route:route=='native' and any(key[0]==endpoint.key for key in self.evidence))
+            route_authority=route_authority,
+            link_origin=download.config.origin if download is not None else None,
+            link_reachable=download.reachable if download is not None else None,
+            retained_link_authority=download.retained if download is not None else None)
         if config.generation_enabled and config.manager is None:
             raise HostConfigurationError('official_host_sandbox_unavailable')
         files=await file_services_factory(session.file_configuration(config))(runtime,token,rest)
-        try:session.attach_file_services(files)
+        try:
+            session.attach_file_services(files)
+            if download is not None:
+                await download.start()
+                download.attach(files)
         except BaseException:
             await files.close()
             raise
@@ -272,5 +342,11 @@ class ConfiguredHost:
 def configured_migration_factory(env=None):
     """Read protected deployment configuration only during startup."""
     import os
-    config=HostConfiguration.from_env(os.environ if env is None else env)
-    return config.build if config is not None else None
+    from .config import OfficialConfig
+    env=os.environ if env is None else env
+    config=HostConfiguration.from_env(env)
+    if config is None:return None
+    delivery=OfficialConfig.from_env(env).delivery
+    return lambda context,runtime:config.build(context,runtime,
+        project_grant_ttl_seconds=delivery.project_grant_ttl_seconds,
+        file_link_ttl_seconds=delivery.file_link_ttl_seconds)

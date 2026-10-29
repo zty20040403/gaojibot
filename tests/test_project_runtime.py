@@ -65,7 +65,11 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.addAsyncCleanup(self.app.db_call.close)
         self.handlers = SimpleNamespace(
-            context=self.app, group_enabled=Mock(return_value=True)
+            context=self.app, group_enabled=Mock(return_value=True),
+            triggers=Mock(spec=(
+                "_proactive_feedback_loop", "_semantic_index_loop",
+                "_historian_loop", "_dream_loop",
+            )),
         )
         self.bot = Mock(spec=Bot)
         self.bot.self_id = "301"
@@ -75,7 +79,7 @@ class ProjectRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.bots = {"301": self.bot}
         self.enterContext(
             patch(
-                "src.plugins.ai_chat.project_runtime.get_bots", return_value=self.bots
+                "nonebot.get_bots", return_value=self.bots
             )
         )
         self.runtime = ProjectRuntime(self.handlers)

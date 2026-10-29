@@ -15,6 +15,7 @@ import time
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from src.qq_official.errors import QQAPIError
+from src.qq_official.http import scoped_request_observer
 
 from .binding import BindingEffect
 from .lease import LeaseLost, assert_epoch
@@ -22,6 +23,7 @@ from .outbox_types import SendOutcome, SendReservation
 from .rate_policy import LocalAccountRateGate, RateWaitExpired
 from .renderer import render_plan
 from .send_policy import read_server_cooldown
+from .official_metrics import observe
 
 
 class SenderUnavailable(RuntimeError):
@@ -45,7 +47,7 @@ class OfficialSender:
                  database_calls, ensure_current, journal=None, rate_gate=None,
                  clock=time.monotonic, wall_clock=time.time, sleep=asyncio.sleep,
                  poll_seconds=0.5, max_inflight=3, max_waiters=100,
-                 receipt_retries=3, request_timeout=30, receipt_sweep_seconds=5):
+                 receipt_retries=3, request_timeout=30, receipt_sweep_seconds=5, observer=None):
         if (not isinstance(account, AccountKey) or account.platform != "qq-official"
                 or token.account_key != account.key
                 or type(max_inflight) is not int or not 1 <= max_inflight <= 10
@@ -73,6 +75,7 @@ class OfficialSender:
         self._wake = asyncio.Event()
         self._stopping = self._running = False
         self.reason = "ready"
+        self.observer = observer
 
     def wake(self):
         self._wake.set()
@@ -114,6 +117,7 @@ class OfficialSender:
         finally:
             self._rate_waiters.discard(candidate.delivery_id)
         try:
+            observe(self.observer, 'rate', 'admitted')
             yield permit
         finally:
             self._slots.release()
@@ -296,21 +300,36 @@ class OfficialSender:
                     result = await self._cleanup(reservation, started=False)
                     reservation = None
                     return result or SendOutcome("unavailable", "prepared_token_unavailable", delivery_id)
+                request_clock = None
+                request_result = 'unknown'
+                def physical_started():
+                    nonlocal request_clock
+                    if request_clock is None:
+                        request_clock = self.clock()
+                        observe(self.observer, 'send', 'started', mode=candidate.send_mode)
                 try:
                     async with asyncio.timeout(remaining):
                         payload = self.outbox.request_started(reservation)
                         started = True
-                        body = await self.rest.send_message(reservation.endpoint.kind,
-                            reservation.endpoint.native_conversation_id, payload, prepared=prepared)
+                        with scoped_request_observer(physical_started):
+                            body = await self.rest.send_message(reservation.endpoint.kind,
+                                reservation.endpoint.native_conversation_id, payload, prepared=prepared)
                     accepted = True
+                    request_result = 'accepted'
                 except QQAPIError as error:
+                    request_result = 'confirmed_no' if error.accepted is False else 'unknown'
                     return await self._calls(self.outbox.fail, self.token, reservation, error)
                 except TimeoutError:
                     return await self._calls(self.outbox.fail, self.token, reservation,
                         QQAPIError("transport_ambiguous", stage="send"))
+                finally:
+                    if request_clock is not None:
+                        observe(self.observer, 'send', request_result, mode=candidate.send_mode,
+                                seconds=max(0, self.clock() - request_clock))
                 receipt = await self._persist_success(reservation, body)
                 return await self._finalize(receipt)
         except RateWaitExpired:
+            observe(self.observer, 'rate', 'expired')
             return SendOutcome("pending", "rate_wait_expired", delivery_id)
         except asyncio.CancelledError:
             if reservation is not None and not accepted:

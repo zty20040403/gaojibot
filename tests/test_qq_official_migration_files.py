@@ -185,6 +185,7 @@ class MigrationFileTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
                 (delivery.delivery_id,operation,project['project_id'],blob.sha256,blob.sha256,blob.byte_size))
         host=SimpleNamespace(control=self.mapping_authority,routes=self.routes,mappings=self.mapping_store,
             journal=self.migration,transaction=self.tx,database_calls=self.calls,clock=lambda:self.now,
+            project_grant_ttl_seconds=600,
             baseline_source=lambda c,s,n:self.routes._baseline(c,s.account.key,n))
         self.project_grants=ProjectMigrationGrants(host)
         self.grant=await self.project_grants.mutate(cookie=self.mapping_cookie,csrf=self.mapping_csrf,

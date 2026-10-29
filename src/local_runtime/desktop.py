@@ -19,6 +19,7 @@ from .maintenance import Maintenance, write_bytes
 from .backups import regular_file
 from .qq_handover import start_allowed
 from .runtime import compose_document
+from .official_configuration import platforms
 from .setup_clients import SetupError
 
 SOURCE = Path("/opt/gaoji")
@@ -41,7 +42,7 @@ def desktop_compose(config, directory, deployment, images, *, enabled=False, san
         mounts = []
         for item in service["volumes"]:
             relative = Path(item["source"].replace("$$", "$")).relative_to(directory).as_posix()
-            if relative.startswith("config/"):
+            if relative.startswith("config/") or name=="bot" and relative.startswith("runtime-config/"):
                 continue
             mounts.append(mount(relative, item["target"], item["read_only"]))
         if name == "bot":
@@ -53,7 +54,7 @@ def desktop_compose(config, directory, deployment, images, *, enabled=False, san
         service["networks"] = ["instance"]
         service["extra_hosts"] = ["host.docker.internal:host-gateway"]
     # NapCat is available to the controller by private DNS, not a host-loopback detour.
-    document["services"]["napcat"].pop("ports")
+    if "napcat" in document["services"]:document["services"]["napcat"].pop("ports")
     document["volumes"] = {"data": {"external": True, "name": volume}}
     document["networks"] = {"instance": {"external": True, "name": deployment["network"]}}
     return document
@@ -212,30 +213,33 @@ class DesktopController(Controller):
                         return
                     desired = read_json(self.desired_path) if self.desired_path.exists() else {}
                     self.render(desired.get("bot_enabled") is True)
-                    services = ["database", *(["napcat"] if start_allowed(self.directory) else [])]
+                    selected=platforms(self.store.read(self.identifier)['settings'].get('platforms'))
+                    services = ["database", *(["napcat"] if selected['onebot'] and start_allowed(self.directory) else [])]
                     self.compose(["up", "-d", *services], timeout=120)
                     self.resume()
                     return
                 progress("database", "正在下载数据库与 QQ 组件，首次安装需要联网")
                 self.render(False)
-                self.install_compose(["pull", "database", "napcat"], timeout=1800)
+                selected=platforms(self.store.read(self.identifier)['settings'].get('platforms'))
+                self.install_compose(["pull", "database", *(['napcat'] if selected['onebot'] else [])], timeout=1800)
                 self.install_compose(["up", "-d", "--wait", "--wait-timeout", "180", "database"], timeout=210)
                 progress("migrate", "正在初始化独立数据库")
                 self.install_compose(["run", "--rm", "--no-deps", "-T", "bot", "migrate"], timeout=600)
-                progress("qq", "正在启动本机 QQ 登录入口")
-                self.install_compose(["up", "-d", "napcat"], timeout=120)
-                deadline = time.monotonic() + 120
-                while True:
-                    try:
-                        qq = self.napcat.status()
-                        if qq.get("online") or qq.get("qrcode"):
-                            break
-                    except SetupError:
-                        pass
-                    if time.monotonic() >= deadline:
-                        raise SetupError("QQ 登录入口尚未就绪")
-                    time.sleep(2)
-                progress("ready", "本机环境已就绪，请扫码并配置自己的模型", "awaiting_setup")
+                if selected['onebot']:
+                    progress("qq", "正在启动本机 QQ 登录入口")
+                    self.install_compose(["up", "-d", "napcat"], timeout=120)
+                    deadline = time.monotonic() + 120
+                    while True:
+                        try:
+                            qq = self.napcat.status()
+                            if qq.get("online") or qq.get("qrcode"):
+                                break
+                        except SetupError:
+                            pass
+                        if time.monotonic() >= deadline:
+                            raise SetupError("QQ 登录入口尚未就绪")
+                        time.sleep(2)
+                progress("ready", "本机环境已就绪，请配置官方凭证与模型" if not selected['onebot'] else "本机环境已就绪，请扫码并配置自己的模型", "awaiting_setup")
         except Exception as error:
             stage = read_json(self.install_path)["stage"]
             labels = {"database": "数据库与 QQ 组件", "migrate": "数据库初始化", "qq": "QQ 登录入口"}
@@ -245,11 +249,12 @@ class DesktopController(Controller):
 
 def initialize_seed(payload):
     job, checksum = payload.get("job", ""), payload.get("checksum", "")
-    if (set(payload) != {"job", "checksum", "token", "bot_port"}
+    if (set(payload)-{"platforms"} != {"job", "checksum", "token", "bot_port"}
             or not re.fullmatch(r"[a-f0-9]{32}", job) or not re.fullmatch(r"[a-f0-9]{64}", checksum)
             or not re.fullmatch(r"[A-Za-z0-9_-]{40,100}", payload.get("token", ""))
             or type(payload["bot_port"]) is not int or not 1024 <= payload["bot_port"] <= 65535):
         raise ValueError("Invalid local installation")
+    selected=platforms(payload.get("platforms"))
     ROOT.mkdir(parents=True, exist_ok=True)
     (ROOT / "jobs").mkdir(mode=0o700, exist_ok=True)
     with file_lock(ROOT / ".seed.lock"):
@@ -263,6 +268,7 @@ def initialize_seed(payload):
         if len(records) > 1:
             raise ValueError("Unexpected local instances")
         config = records[0] if records else store.create("本机高级")
+        if "platforms" in payload:config["settings"]["platforms"]=selected
         config["ports"] = {"bot": payload["bot_port"], "napcat": 6099,
                            "database": 5432}
         directory = store.directory(config["id"])
