@@ -85,7 +85,8 @@ class HostConfigTests(unittest.TestCase):
         migration.official_factory.assert_not_called()
 
     def test_actual_application_startup_passes_all_host_factories(self):
-        host=SimpleNamespace(migration_factory=object(),files_factory=object(),approval_factory=object())
+        host=SimpleNamespace(migration_factory=object(),files_factory=object(),approval_factory=object(),
+            media_factory=object(),background_factory=object())
         context=SimpleNamespace(_closed=False,_closing=False,official_runtime=None,database=object(),
             message_ledger=object(),logger=Mock(),official_host=host)
         official=SimpleNamespace(start=AsyncMock(return_value=True),stop=AsyncMock())
@@ -94,6 +95,8 @@ class HostConfigTests(unittest.TestCase):
         self.assertIs(factory.call_args.kwargs['migration_factory'],host.migration_factory)
         self.assertIs(factory.call_args.kwargs['file_services_factory'],host.files_factory)
         self.assertIs(factory.call_args.kwargs['approval_factory'],host.approval_factory)
+        self.assertIs(factory.call_args.kwargs['media_factory'],host.media_factory)
+        self.assertIs(factory.call_args.kwargs['background_factory'],host.background_factory)
 
 
 class HostConfiguredStartupTests(JournalFixture,unittest.IsolatedAsyncioTestCase):

@@ -21,7 +21,7 @@ async def _await(value):
 
 
 async def route_command(text, inbound: InboundMessage, *, services: CommandServices,
-                        admission, before_effect) -> RouteResult:
+                        admission, before_effect, services_factory=None) -> RouteResult:
     """Trusted runtime callbacks, not booleans/capabilities supplied by a model.
 
     before_effect MUST durably begin_command_execution (prepared -> executing),
@@ -44,6 +44,10 @@ async def route_command(text, inbound: InboundMessage, *, services: CommandServi
     await _await(before_effect(parsed.name if parsed is not None else "unsupported", inbound))
     if parsed is None:
         return RouteResult("reply", CommandResult("unsupported", "此入口暂不支持该命令。可用命令请查看 /help。"))
+    if services_factory is not None:
+        services = await _await(services_factory())
+        if not isinstance(services, CommandServices):
+            raise ValueError("command_services_factory_invalid")
     # Defensive removal prevents accidental future parser changes from enabling
     # a second binding reducer behind the generic router.
     result = await dispatch_command(parsed, inbound, services=replace(services, binding_handler=None))

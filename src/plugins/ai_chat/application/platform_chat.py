@@ -34,7 +34,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, reference_resolver=None, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
-        subagent_actions_factory=None, memory_writer=None, generation_factory=None, public_history_factory=None, project_factory=None,
+        subagent_actions_factory=None, memory_writer=None, generation_factory=None, public_history_factory=None, project_factory=None, media_factory=None, native_background=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -51,6 +51,8 @@ class PlatformChatService:
         self.generation_factory = generation_factory
         self.public_history_factory = public_history_factory
         self.project_factory = project_factory
+        self.media_factory = media_factory
+        self.native_background = native_background
 
     def _scope_enabled(self, scope) -> bool:
         override = self.context.model_preferences.get_scope_enabled_override(scope)
@@ -129,7 +131,15 @@ class PlatformChatService:
             if effort in SUPPORTED_REASONING_EFFORTS:
                 selected_profile = selected_profile.with_reasoning_effort(effort)
 
+        media_session = (await self.media_factory(inbound, platform) if self.media_factory is not None else None)
+        if media_session is not None:
+            platform.media_session = media_session
         capabilities = {"self"}
+        if media_session is not None and media_session.enabled("send_sticker"):
+            capabilities.add("media")
+        if self.native_background is not None and self.native_background.domain is not None:
+            platform.native_background = self.native_background
+            capabilities.add("reminders")
         project_provider = (await self.project_factory(inbound, platform)
                             if self.project_factory is not None else None)
         if project_provider is not None:
@@ -245,6 +255,9 @@ class PlatformChatService:
             if not answer:
                 raise ChatFailure("模型没有返回内容。", code="empty_response")
             assert_job_owned()
+            if media_session is not None:
+                await media_session.current()
+                answer = media_session.finish(answer)
             if self.memory_writer is None:
                 await shared_core.append_shared_turn_memory(self.context, ports, user_text, answer)
             else:

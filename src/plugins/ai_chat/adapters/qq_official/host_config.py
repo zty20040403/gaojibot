@@ -43,6 +43,39 @@ def _list(value,limit):
     return value
 
 
+def _native_background(raw,account):
+    if raw is None:return None,None,None,None,None
+    from .native_schedule_policy import NativeScheduleConfiguration
+    from .native_background_factory import ProactiveConfiguration
+    from .wiki_configuration import WikiConfiguration,WikiCollectionEvidence
+    _object(raw,(),('schedules','proactive','wiki'))
+    schedule,schedule_profile,proactive,proactive_profile,wiki=None,None,None,None,None
+    def profile(value,enabled):
+        if value is not None and (type(value) is not str or not 1<=len(value)<=128 or value!=value.strip()):raise ValueError
+        if enabled and value is None:raise ValueError
+        return value
+    if 'schedules' in raw:
+        data=dict(_object(raw['schedules'],('enabled','policy_id','revision','authorization_until'),
+            ('profile','execution_seconds','delivery_seconds','max_tokens','daily_tokens','daily_runs')))
+        schedule_profile=profile(data.pop('profile',None),data['enabled'])
+        schedule=NativeScheduleConfiguration(**data)
+    if 'proactive' in raw:
+        data=dict(_object(raw['proactive'],('enabled',),('profile','percent','max_checks_per_hour','threshold','max_reply_chars')))
+        proactive_profile=profile(data.pop('profile',None),data['enabled'])
+        proactive=ProactiveConfiguration(**data)
+    if 'wiki' in raw:
+        data=dict(_object(raw['wiki'],('enabled',),('profile','hour','timezone','check_seconds','collection_evidence')))
+        evidence=[]
+        for entry in _list(data.pop('collection_evidence',[]),128):
+            entry=dict(_object(entry,('endpoint','endpoint_generation','route_epoch','evidence_inbox_id','verified_at','expires_at')))
+            entry['endpoint']=EndpointKey.parse(entry['endpoint'])
+            if entry['endpoint'].account!=account:raise ValueError
+            evidence.append(WikiCollectionEvidence(**entry))
+        data['profile']=profile(data.get('profile'),data['enabled'])
+        wiki=WikiConfiguration(**data,collection_evidence=tuple(evidence))
+    return schedule,schedule_profile,proactive,proactive_profile,wiki
+
+
 @dataclass(frozen=True,repr=False)
 class HostConfiguration:
     account: AccountKey
@@ -53,13 +86,19 @@ class HostConfiguration:
     files: dict | None = field(default=None,repr=False)
     native_routes: tuple[NativeRouteEvidence,...] = field(default=(),repr=False)
     host_services: tuple = field(default=(),repr=False)
+    media: object | None = field(default=None,repr=False)
+    native_schedule: object | None = field(default=None,repr=False)
+    native_schedule_profile: str | None = None
+    proactive: object | None = field(default=None,repr=False)
+    proactive_profile: str | None = None
+    wiki: object | None = field(default=None,repr=False)
 
     @classmethod
     def parse(cls,text):
         try:
             raw=_object(json.loads(text,object_pairs_hook=_pairs),
                 ('version','account','onebot_accounts'),
-                ('scheduled_profile','subagent_profile','deadlines','files','host_services'))
+                ('scheduled_profile','subagent_profile','deadlines','files','host_services','media','native_background'))
             if type(raw['version']) is not int or raw['version']!=1:raise ValueError
             account=AccountKey.parse(raw['account'])
             if account.platform!='qq-official':raise ValueError
@@ -99,9 +138,9 @@ class HostConfiguration:
                     if type(item['verified_at']) is not int or not 0<=item['verified_at']<item['expires_at']:raise ValueError
                     if (type(item['contract']) is not str or not 1<=len(item['contract'].encode())<=256
                             or any(ord(c)<32 or ord(c)==127 for c in item['contract'])
-                            or type(item['file_type']) is not int or item['file_type']!=4):raise ValueError
+                            or type(item['file_type']) is not int or item['file_type'] not in {1,4}):raise ValueError
                     evidence.append(NativeRouteEvidence(**item))
-                if len({x.endpoint.key for x in evidence})!=len(evidence):raise ValueError
+                if len({(x.endpoint.key,x.file_type) for x in evidence})!=len(evidence):raise ValueError
                 files['private_directory']=Path(files['private_directory'])
                 FileServiceConfig(manager=None,**files)  # Validate without opening files or creating a manager.
             from .host_authority import AllowedService
@@ -110,7 +149,15 @@ class HostConfiguration:
                 _object(item,('host_id','resource_ref','backend_ref','backend_binding_version','actions'))
                 item=dict(item);item['actions']=frozenset(_list(item['actions'],16))
                 services.append(AllowedService(**item))
-            return cls(account,tuple(sources),*profiles,tuple(deadlines.items()),files,tuple(evidence),tuple(services))
+            from .media_runtime import MediaConfig
+            media=None
+            if raw.get('media') is not None:
+                value=_object(raw['media'],(),tuple(MediaConfig.__dataclass_fields__))
+                media=MediaConfig(**value)
+            schedule,schedule_profile,proactive,proactive_profile,wiki=_native_background(raw.get('native_background'),account)
+            return cls(account,tuple(sources),*profiles,tuple(deadlines.items()),files,tuple(evidence),tuple(services),
+                media=media,native_schedule=schedule,native_schedule_profile=schedule_profile,
+                proactive=proactive,proactive_profile=proactive_profile,wiki=wiki)
         except (ValueError,TypeError,KeyError,OverflowError,RecursionError,SecurityError):
             raise HostConfigurationError('invalid_official_host_configuration') from None
 
@@ -129,7 +176,8 @@ class HostConfiguration:
         mobile=getattr(context,'mobile_authorization',None)
         if context.database is None or context.delivery_store is None or mobile is None:
             raise HostConfigurationError('official_host_requires_durable_security_services')
-        for profile in (self.scheduled_profile,self.subagent_profile):
+        for profile in (self.scheduled_profile,self.subagent_profile,self.native_schedule_profile,self.proactive_profile,
+                        self.wiki.profile if self.wiki is not None and self.wiki.enabled else None):
             if profile is not None:context.model_catalog.resolve(profile)
         service=MigrationServices(database=context.database,transaction=context.delivery_store.transaction,
             database_calls=context.db_call,security=mobile.store,onebot_accounts=self.onebot_accounts,
@@ -143,7 +191,14 @@ class HostConfiguration:
 class ConfiguredHost:
     def __init__(self,config,context,migration):
         self.config,self.context,self.migration=config,context,migration
-        self.evidence={value.endpoint.key:value for value in config.native_routes}
+        self.evidence={(value.endpoint.key,value.file_type):value for value in config.native_routes}
+
+    def media_factory(self,runtime,token):
+        if self.config.media is None:return None
+        if token.account_key!=self.config.account.key:
+            raise HostConfigurationError('official_host_account_mismatch')
+        from .media_runtime import OfficialMediaService
+        return OfficialMediaService(runtime,token,self.context,self.config.media)
 
     def _session(self,runtime,token):
         if token.account_key!=self.config.account.key:
@@ -157,6 +212,22 @@ class ConfiguredHost:
         if token.account_key!=self.config.account.key:
             raise HostConfigurationError('official_host_account_mismatch')
         return self.migration.official_factory(runtime,token)
+
+    async def background_factory(self,runtime,token):
+        self._session(runtime,token)
+        from .native_background_factory import background_factory,ProactiveConfiguration
+        from .wiki_service import OfficialWikiService
+        wiki=self.config.wiki
+        def wiki_factory(actual,current):
+            if wiki is None or not wiki.enabled:return None
+            if actual is not runtime or current is not token:raise HostConfigurationError('official_host_epoch_unavailable')
+            return OfficialWikiService(runtime=actual,token=current,app=self.context,
+                collection_allowed=wiki.allowed,configuration=wiki)
+        factory=background_factory(schedule_configuration=self.config.native_schedule,
+            schedule_profile=self.config.native_schedule_profile,
+            proactive_configuration=self.config.proactive or ProactiveConfiguration(),
+            proactive_profile=self.config.proactive_profile,wiki_factory=wiki_factory)
+        return await factory(runtime,token)
 
     def approval_factory(self,runtime,token):
         self._session(runtime,token)
@@ -186,8 +257,8 @@ class ConfiguredHost:
             read_route_guard=lambda cursor,artifact,project_binding,**kwargs:
                 kwargs['canonical_scope'].key==kwargs['endpoint'].scope.key)
         config=FileServiceConfig(manager=self.context.sandbox_manager,**self.config.files,
-            source_authority=authority,native_evidence=lambda cursor,endpoint:self.evidence.get(endpoint.key),
-            route_authority=lambda cursor,endpoint,actor,route:route=='native' and endpoint.key in self.evidence)
+            source_authority=authority,native_media_evidence=lambda cursor,endpoint,kind:self.evidence.get((endpoint.key,kind)),
+            route_authority=lambda cursor,endpoint,actor,route:route=='native' and any(key[0]==endpoint.key for key in self.evidence))
         if config.generation_enabled and config.manager is None:
             raise HostConfigurationError('official_host_sandbox_unavailable')
         files=await file_services_factory(session.file_configuration(config))(runtime,token,rest)

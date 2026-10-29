@@ -46,6 +46,7 @@ class GroupWikiWorker:
         generate: Callable[[dict], Awaitable[dict]],
         permitted: Callable[[ConversationScope, str], Awaitable[bool]],
         logger, hour: int = 3, timezone: str = "Asia/Shanghai", check_seconds: int = 300,
+        clock=time.time, scope_label=None,
     ):
         if type(hour) is not int or not 0 <= hour <= 23:
             raise ValueError("Wiki generation hour must be between 0 and 23")
@@ -53,23 +54,24 @@ class GroupWikiWorker:
         self.permitted, self.logger = permitted, logger
         self.hour, self.timezone = hour, ZoneInfo(timezone)
         self.check_seconds = max(30, check_seconds)
+        self.clock, self.scope_label = clock, scope_label or (lambda value: value)
 
     async def schedule_once(self, *, now: int | None = None) -> int:
-        timestamp = int(time.time()) if now is None else now
+        timestamp = int(self.clock()) if now is None else now
         local = datetime.fromtimestamp(timestamp, self.timezone)
         if local.hour < self.hour:
             return 0
         queued = 0
         for settings in await self.db_call(self.store.enabled_groups):
             try:
-                scope = ConversationScope(*settings["scope_key"].split(":", 2))
+                scope = ConversationScope.from_key(settings["scope_key"])
                 if not await self.permitted(scope, settings["bot_id"]):
                     continue
                 job = await self.db_call(self.store.enqueue, scope, slot=local.date().isoformat(),
                                          now=timestamp, scheduled=True)
                 queued += int(job is not None)
             except Exception as exc:
-                self.logger.warning(f"Group wiki schedule {settings['scope_key']} failed: {type(exc).__name__}")
+                self.logger.warning(f"Group wiki schedule {self.scope_label(settings['scope_key'])} failed: {type(exc).__name__}")
         return queued
 
     async def run_forever(self) -> None:
@@ -87,7 +89,7 @@ class GroupWikiWorker:
             return {"status": "superseded"}
         if execution["receipt"] is not None:
             return {"status": "published", **execution["receipt"]}
-        scope = ConversationScope(*job.scope_key.split(":", 2))
+        scope = self.store._job_scope(job)
 
         async def guard():
             current = await self.db_call(self.store.execution, job)

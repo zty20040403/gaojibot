@@ -71,9 +71,12 @@ class ForegroundProjectProvider:
     that some project exists in an aliased conversation.
     """
     def __init__(self, *, token, handle, job, admission, route_epoch,
-                 route_guard=_deny, project_scope_guard=_deny, clock=time.time):
+                 route_guard=_deny, project_scope_guard=_deny, clock=time.time, expected_execution_kind="chat"):
         if type(route_epoch) is not int or route_epoch < 0:
             raise Denied()
+        if expected_execution_kind not in {"chat", "command"}:
+            raise Denied()
+        self.expected_execution_kind = expected_execution_kind
         self.token, self.handle, self.job, self.admission = token, handle, job, admission
         self.endpoint, self.actor = handle.endpoint, handle.actor
         self.route_epoch = route_epoch
@@ -101,7 +104,7 @@ class ForegroundProjectProvider:
                 job=self.job, admission=self.admission, now=self._now())
         except (execution.ExecutionError, LeaseUnavailable):
             raise Denied() from None
-        if (row['state'] != 'executing' or row['execution_kind'] != 'chat'
+        if (row['state'] != 'executing' or row['execution_kind'] != self.expected_execution_kind
                 or self._now() >= row['deadline_at']):
             raise Denied()
         return row

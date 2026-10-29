@@ -286,7 +286,7 @@ class ProjectAuthority:
         else:
             cursor.execute('''UPDATE qq_official_project_grants SET endpoint_generation=?,route_epoch=?,endpoint_route_epoch=?,
                 issuer_actor_key=?,owner_revision=?,issuer_link_revision=?,capabilities=?,
-                evidence_ref=?,revision=revision+1,state='active',issued_at=?,expires_at=?,
+                evidence_kind='owner_command',evidence_ref=?,revision=revision+1,state='active',issued_at=?,expires_at=?,
                 updated_at=?,revoked_at=NULL WHERE grant_id=?''',
                 (endpoint['generation'], issuer.route_epoch, issuer.endpoint_route_epoch, issuer.actor.key, owner.revision,
                  link_revision, caps, evidence_ref, now, expires_at, now, grant_id))

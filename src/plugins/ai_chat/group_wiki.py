@@ -67,6 +67,7 @@ class GroupWikiStore:
         _, self._connection = open_store_connection(source)
         self._lock = threading.RLock()
         self.ledger, self.context, self.jobs = ledger, context, jobs
+        self.job_kind = WIKI_JOB_KIND
 
     def close(self) -> None:
         with self._lock:
@@ -90,6 +91,19 @@ class GroupWikiStore:
     def _group(scope: ConversationScope) -> None:
         if scope.platform != "onebot-v11" or scope.kind != "group":
             raise ValueError("Group wiki requires a QQ group scope")
+
+    def _job_scope(self, job):
+        return ConversationScope.from_key(job.scope_key)
+
+    def _job_key(self, scope, version, slot, revision):
+        return f"wiki:{scope.key}:v{version}:{slot}:r{revision}"
+
+    def _job_scope_key(self, scope):
+        return scope.key
+
+    def _guard(self, cursor, scope, *, job=None):
+        # Official subclass must implement the account/source/config/job fence.
+        return None
 
     def settings(self, scope: ConversationScope) -> dict:
         self._group(scope)
@@ -131,9 +145,17 @@ class GroupWikiStore:
 
     def enabled_groups(self) -> list[dict]:
         with self._lock:
-            return [dict(row) for row in self._connection.execute(
+            rows = self._connection.execute(
                 "SELECT * FROM group_wiki_settings WHERE enabled ORDER BY scope_key"
-            ).fetchall()]
+            ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                self._group(ConversationScope.from_key(row["scope_key"]))
+            except (TypeError, ValueError):
+                continue
+            result.append(dict(row))
+        return result
 
     def admin_groups(self) -> list[dict]:
         with self._lock:
@@ -208,13 +230,14 @@ class GroupWikiStore:
         if scheduled:
             with self._lock:
                 active = self._connection.execute("""SELECT 1 FROM durable_jobs WHERE kind=? AND scope_key=?
-                    AND status IN ('pending','running') LIMIT 1""", (WIKI_JOB_KIND, scope.key)).fetchone()
+                    AND status IN ('pending','running') LIMIT 1""", (self.job_kind, self._job_scope_key(scope))).fetchone()
             if active:
                 return None
         snapshot = self._snapshot(scope)
         sources = self.capture(scope, known_sources=json.loads(snapshot["sources_json"]))
         timestamp = int(time.time()) if now is None else now
         with self._transaction() as cursor:
+            self._guard(cursor, scope)
             config = cursor.execute("SELECT * FROM group_wiki_settings WHERE scope_key=? FOR UPDATE",
                                     (scope.key,)).fetchone()
             if config is None or not config["enabled"] or config["version"] != initial_config["version"]:
@@ -224,7 +247,7 @@ class GroupWikiStore:
                     COUNT(*) FILTER (WHERE status IN ('pending','running')) AS active,
                     COUNT(*) FILTER (WHERE payload_json::jsonb->>'slot'=?) AS batches
                     FROM durable_jobs WHERE kind=? AND scope_key=?""",
-                    (slot, WIKI_JOB_KIND, scope.key)).fetchone()
+                    (slot, self.job_kind, self._job_scope_key(scope))).fetchone()
                 if counts["batches"] >= 4:
                     cursor.execute("UPDATE group_wiki_settings SET checked_slot=? WHERE scope_key=?", (slot, scope.key))
                     return None
@@ -241,8 +264,8 @@ class GroupWikiStore:
                 return None
             digest = _fingerprint(sources)
             job, _ = self.jobs.enqueue(
-                kind=WIKI_JOB_KIND, scope_key=scope.key,
-                idempotency_key=f"wiki:{scope.key}:v{config['version']}:{slot}:r{revision}",
+                kind=self.job_kind, scope_key=self._job_scope_key(scope),
+                idempotency_key=self._job_key(scope, config["version"], slot, revision),
                 payload={"scope_key": scope.key, "config_version": config["version"],
                          "bot_id": config["bot_id"], "sources": sources, "source_hash": digest,
                          "base_revision": revision, "slot": slot},
@@ -251,20 +274,23 @@ class GroupWikiStore:
             )
             return job
 
-    def _fenced(self, cursor: StoreCursor, job: DurableJob, timestamp: int, *, kind: str = WIKI_JOB_KIND) -> dict:
+    def _fenced(self, cursor: StoreCursor, job: DurableJob, timestamp: int, *, kind: str | None = None) -> dict:
+        kind = self.job_kind if kind is None else kind
+        scope = self._job_scope(job)
+        self._guard(cursor, scope, job=job)
         config = cursor.execute("SELECT * FROM group_wiki_settings WHERE scope_key=? FOR UPDATE",
-                                (job.scope_key,)).fetchone()
+                                (scope.key,)).fetchone()
         row = cursor.execute("SELECT * FROM durable_jobs WHERE job_id=? FOR UPDATE", (job.job_id,)).fetchone()
-        if (kind not in {WIKI_JOB_KIND, NEWCOMER_JOB_KIND}
+        if (kind not in {self.job_kind, NEWCOMER_JOB_KIND}
                 or row is None or config is None or not config["enabled"] or job.kind != kind
-                or row["kind"] != kind or row["scope_key"] != job.scope_key
+                or row["kind"] != kind or row["scope_key"] != job.scope_key or job.scope_key != self._job_scope_key(scope)
                 or row["status"] != "running" or row["lease_owner"] != job.lease_owner
                 or row["attempts"] != job.attempts or (row["lease_until"] or 0) <= timestamp):
             raise WikiLeaseLost("Group wiki execution lease is no longer current")
         payload = json.loads(row["payload_json"])
-        if (payload != job.payload or payload["scope_key"] != job.scope_key
+        if (payload != job.payload or payload["scope_key"] != scope.key
                 or payload["config_version"] != config["version"] or payload["bot_id"] != config["bot_id"]
-                or (kind == WIKI_JOB_KIND and _fingerprint(payload["sources"]) != payload["source_hash"])):
+                or (kind == self.job_kind and _fingerprint(payload["sources"]) != payload["source_hash"])):
             raise WikiLeaseLost("Group wiki source or configuration changed")
         if kind == NEWCOMER_JOB_KIND and not config["newcomer_enabled"]:
             raise WikiLeaseLost("Newcomer briefs are disabled")
@@ -359,7 +385,7 @@ class GroupWikiStore:
         with self._transaction() as cursor:
             payload = self._fenced(cursor, job, timestamp)
             receipt = cursor.execute("SELECT * FROM group_wiki_publications WHERE job_id=?", (job.job_id,)).fetchone()
-            page = cursor.execute("SELECT revision FROM group_wiki_pages WHERE scope_key=?", (job.scope_key,)).fetchone()
+            page = cursor.execute("SELECT revision FROM group_wiki_pages WHERE scope_key=?", (self._job_scope(job).key,)).fetchone()
             if receipt is None and (int(page["revision"]) if page else 0) != payload["base_revision"]:
                 raise WikiSuperseded("A newer wiki page was published; stale generation cannot replace it")
         return {**payload, "receipt": dict(receipt) if receipt else None}
@@ -367,7 +393,7 @@ class GroupWikiStore:
     def prepare_generation(self, job: DurableJob, *, now: int | None = None) -> dict:
         execution = self.execution(job, now=now)
         if execution["receipt"] is None:
-            scope = ConversationScope(*job.scope_key.split(":", 2))
+            scope = self._job_scope(job)
             if len(self._valid_sources(scope, execution["sources"])) != len(execution["sources"]):
                 raise WikiSuperseded("Wiki source evidence changed; schedule a fresh snapshot")
         return execution
@@ -378,7 +404,7 @@ class GroupWikiStore:
             payload = self._fenced(cursor, job, timestamp)
             if cursor.execute("SELECT 1 FROM group_wiki_publications WHERE job_id=?", (job.job_id,)).fetchone():
                 raise WikiSuperseded("Wiki publication already has a durable receipt")
-            page = cursor.execute("SELECT revision FROM group_wiki_pages WHERE scope_key=?", (job.scope_key,)).fetchone()
+            page = cursor.execute("SELECT revision FROM group_wiki_pages WHERE scope_key=?", (self._job_scope(job).key,)).fetchone()
             if (int(page["revision"]) if page else 0) != payload["base_revision"]:
                 raise WikiSuperseded("A newer wiki page was published; generation is no longer needed")
             count = cursor.execute("SELECT COUNT(*) AS n FROM group_wiki_generations WHERE job_id=?", (job.job_id,)).fetchone()
@@ -448,7 +474,7 @@ class GroupWikiStore:
         execution = self.execution(job, now=timestamp)
         if execution["receipt"] is not None:
             return execution["receipt"]
-        scope = ConversationScope(*job.scope_key.split(":", 2))
+        scope = self._job_scope(job)
         self._group(scope)
         sources = execution["sources"]
         if len(self._valid_sources(scope, sources)) != len(sources):

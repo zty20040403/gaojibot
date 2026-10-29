@@ -68,8 +68,9 @@ class SharedScheduledModel:
     Capability-granted project work is a separate integration, not inferred from
     old numeric creator/project memberships. No fabricated inbound message.
     """
-    def __init__(self, profile_for):
+    def __init__(self, profile_for, usage_callback=None):
         self.profile_for = profile_for
+        self.usage_callback = usage_callback
 
     async def __call__(self, work):
         from src.plugins.ai_chat.agent.control import assert_job_owned
@@ -80,10 +81,15 @@ class SharedScheduledModel:
         profile = replace(profile, max_output_tokens=min(profile.max_output_tokens or work.max_tokens, work.max_tokens))
         async def unavailable(*args, **kwargs):
             raise ContinuationDenied()
-        with model_budget_scope(ModelCallBudget(work.max_tokens, before_request=assert_job_owned)):
-            answer = await ask_deepseek_with_tools(work.prompt, [], [], unavailable,
-                profile=profile, max_tool_rounds=0,
-                system_context='Execute this approved scheduled text task. No tools are authorized.')
+        budget = ModelCallBudget(work.max_tokens, before_request=assert_job_owned)
+        try:
+            with model_budget_scope(budget):
+                answer = await ask_deepseek_with_tools(work.prompt, [], [], unavailable,
+                    profile=profile, max_tool_rounds=0,
+                    system_context='Execute this approved scheduled text task. No tools are authorized.')
+        finally:
+            if self.usage_callback is not None:
+                await self.usage_callback(work, budget.summary())
         assert_job_owned()
         return MessageBody((TextNode(0, answer),))
 

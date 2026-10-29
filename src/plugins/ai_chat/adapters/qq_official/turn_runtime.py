@@ -53,10 +53,16 @@ def build_turn_consumer(runtime, token, app):
         await runtime._calls(commit)
 
     service_options = {"memory_writer": memory_writer, "scope_enabled": scope_enabled}
+    background = getattr(runtime, 'background_service', None)
+    if background is not None:
+        service_options['native_background'] = background
     migration = getattr(runtime,'migration_service',None)
     if migration is not None:
         service_options['public_history_factory'] = migration.public_history
         service_options['project_factory'] = migration.project_context
+    media = getattr(runtime, 'media_service', None)
+    if media is not None:
+        service_options['media_factory'] = media.foreground
     files = getattr(runtime, 'file_service', None)
     if files is not None:
         service_options['generation_factory'] = files.generation.foreground
@@ -142,9 +148,11 @@ def build_turn_consumer(runtime, token, app):
         return TransportState(runtime.loaded.account, runtime.loaded.credentials is not None,
             runtime._token is token and gateway is not None and gateway.state == "ready")
 
+    from .business_commands import build_business_services
     return OfficialTurnConsumer(api=execution, token=token, store=runtime.store,
         outbox=runtime.outbox, journal=runtime.journal, database_calls=runtime._calls,
         orchestrator=orchestrator, command_services=command_services,
+        business_services=build_business_services(runtime,app),
         transport_state=transport_state, usage=app.usage_store,
         sender_wake=lambda: runtime.sender.wake() if runtime.sender is not None else None,
         clock=runtime.store.clock)

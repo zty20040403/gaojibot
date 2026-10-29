@@ -10,6 +10,7 @@ from alembic.config import Config
 import psycopg
 
 from src.bot_storage.database import DatabaseError
+from src.bot_storage.schema import HEAD_REVISION
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.ledger import MessageLedger
@@ -107,7 +108,7 @@ class MigrationConstraintTests(OutboxFixture):
             self.migrate('downgrade', '0065_qq_official_files')
         self.assertEqual(self.schema_snapshot(), before)
         self.assertEqual(dict(self.query('SELECT * FROM migration_runtime_baselines')[0]), dict(record))
-        self.assertEqual(self.query('SELECT version_num FROM alembic_version')[0][0], '0066_qq_official_migration')
+        self.assertEqual(self.query('SELECT version_num FROM alembic_version')[0][0], HEAD_REVISION)
 
     def test_partial_mapping_cannot_pass_a_nullable_sql_check(self):
         migration_id, _, _, _ = self.journal()

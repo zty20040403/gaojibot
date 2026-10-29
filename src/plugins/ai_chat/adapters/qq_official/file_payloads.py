@@ -20,6 +20,7 @@ from .file_artifacts import _ref, _time
 from .file_authority import assert_file_current
 from .file_links import ArtifactRef, Publication, LinkError, _origin
 from .native_media import ArtifactFingerprint
+from .image_formats import file_type_for_mime
 from .native_vault import NativeUploadBinding, NativeUploadRef, NativeVaultError
 from .protected_payload import ProtectedContentRef, commitment, validate_content
 from .project_authority import RecipientEvidenceUnavailable
@@ -117,7 +118,7 @@ class TrustedFilePayloads:
         return {'msg_type': 0, 'content': '\n'.join(lines)}
 
     def _native_content(self, artifact, credential):
-        fp = ArtifactFingerprint(artifact['filename'], 4, artifact['byte_size'], artifact['sha256'],
+        fp = ArtifactFingerprint(artifact['filename'], file_type_for_mime(artifact['mime']), artifact['byte_size'], artifact['sha256'],
             credential['native_md5'], credential['native_sha1'], credential['native_md5_10m'])
         binding = NativeUploadBinding(artifact['artifact_id'], credential['native_stage_attempt_id'],
             EndpointKey.parse(artifact['endpoint_key']), fp, artifact['mime'])
@@ -174,7 +175,7 @@ class TrustedFilePayloads:
         self._route(cursor, artifact, 'native')
         if (not isinstance(binding, NativeUploadBinding) or not isinstance(reference, NativeUploadRef)
                 or binding.artifact_id != grant.artifact_id or binding.endpoint.key != artifact['endpoint_key']
-                or binding.mime != artifact['mime'] or binding.artifact.file_type != 4
+                or binding.mime != artifact['mime'] or binding.artifact.file_type != file_type_for_mime(artifact['mime'])
                 or (binding.artifact.filename, binding.artifact.size, binding.artifact.sha256) !=
                    (artifact['filename'], artifact['byte_size'], artifact['sha256'])):
             raise PermissionError('native_file_binding_conflict')

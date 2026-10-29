@@ -26,7 +26,7 @@ class OfficialTurnConsumer:
     def __init__(self, *, api, token, store, outbox, journal, database_calls,
                  orchestrator, command_services, transport_state, usage=None,
                  sender_wake=None, policy=None, clock=time.time,
-                 model_timeout_seconds=600):
+                 model_timeout_seconds=600, business_services=None):
         if type(model_timeout_seconds) is not int or not 1 <= model_timeout_seconds <= 3600:
             raise ValueError("invalid_model_timeout")
         self.api, self.token, self.store, self.outbox = api, token, store, outbox
@@ -34,6 +34,7 @@ class OfficialTurnConsumer:
         self.command_services, self.transport_state, self.usage = command_services, transport_state, usage
         self.sender_wake, self.policy, self.clock = sender_wake, policy, clock
         self.model_timeout_seconds = model_timeout_seconds
+        self.business_services = business_services
 
     def _prepare(self, job):
         now = int(self.clock())
@@ -93,10 +94,13 @@ class OfficialTurnConsumer:
         if decision.handle is None:
             return {"status": decision.state, "reason": decision.reason}
         handle = decision.handle
+        # Capture one callable: separate reads of a bound method create distinct
+        # objects, while business effects require the exact same admission port.
+        admission = self.store.admitted
         life = OfficialTurnLifecycle(api=self.api, token=self.token, handle=handle,
-            job=job, admission=self.store.admitted, transactions=self.outbox.deliveries,
+            job=job, admission=admission, transactions=self.outbox.deliveries,
             journal=self.journal, database_calls=self._calls, usage=self.usage, clock=self.clock)
-        binding = ExecutionBinding(self.api, self.token, handle, job, self.store.admitted)
+        binding = ExecutionBinding(self.api, self.token, handle, job, admission)
         platform = OfficialTurnPlatform(inbound, execution=binding, outbox=self.outbox,
             database_calls=self._calls, transport_state=self.transport_state,
             sender_wake=self.sender_wake, policy=self.policy, clock=self.clock)
@@ -118,7 +122,9 @@ class OfficialTurnConsumer:
 
                     services = self.command_services(life, inbound) if callable(self.command_services) else self.command_services
                     result = await route_command(text, inbound, services=services,
-                        admission=admitted, before_effect=before_effect)
+                        admission=admitted, before_effect=before_effect,
+                        services_factory=(lambda: self.business_services(life,inbound,platform,services))
+                            if self.business_services is not None else None)
                     # The source-bound execution fence is the authoritative
                     # current admission check before all command callbacks.
                     if result.kind != "reply" or result.result is None:

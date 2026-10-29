@@ -258,6 +258,8 @@ class MigrationServices(OneBotMigrationRuntime):
         self.journal=Journal(routes)
         from .migration_project_grants import ProjectMigrationGrants
         self.project_grants=ProjectMigrationGrants(self)
+        from .project_resource_origins import ProjectResourceOrigins
+        self.project_resource_origins=ProjectResourceOrigins(routes=routes)
         if project_preview is None:self.preview.project_guard=self.project_grants.preview
         if verification is None:
             from .migration_verification_host import VerificationHost
@@ -594,11 +596,13 @@ class OfficialMigrationSession:
         if current is not None:current.projects=session
         return True
 
-    async def project_context(self,inbound,platform):
+    async def project_context(self,inbound,platform,*,expected_execution_kind="chat"):
         """Issue the current foreground provider from its ORIGINAL admitted epoch."""
         from . import execution
         from .turn_platform import ExecutionBinding
         from src.plugins.ai_chat.project_authorization import ForegroundProjectProvider
+        if expected_execution_kind not in {"chat", "command"}:
+            raise MigrationDenied("project_source_kind_invalid")
         projects=self.project_sessions
         if (projects is None or not projects.projects.ready or projects.projects.closed
                 or self._files is None or self._files.closed):return None
@@ -610,16 +614,19 @@ class OfficialMigrationSession:
         def issue():
             with self.runtime.deliveries.transaction() as cursor:
                 current=binding.current(cursor,int(self.runtime.store.clock()))
-                if current['state']!='executing' or current['execution_kind']!='chat':
+                if current['state']!='executing' or current['execution_kind']!=expected_execution_kind:
                     raise MigrationDenied('project_foreground_not_executing')
                 source=cursor.execute('SELECT logical_route_epoch FROM qq_migration_native_sources WHERE inbox_id=?',
                     (binding.handle.inbox_id,)).fetchone()
                 if source is None:raise MigrationDenied('project_foreground_source_unavailable')
                 authority=projects.authority
-                return ForegroundProjectProvider(token=self.token,handle=binding.handle,job=binding.job,
+                from .project_commands import CommandProjectProvider
+                factory=CommandProjectProvider if expected_execution_kind=="command" else ForegroundProjectProvider
+                options={"resource_origins":self.services.project_resource_origins} if expected_execution_kind=="command" else {}
+                return factory(token=self.token,handle=binding.handle,job=binding.job,
                     admission=self.admission,route_epoch=source['logical_route_epoch'],
                     route_guard=authority.route_guard,project_scope_guard=authority.project_scope_guard,
-                    clock=self.runtime.store.clock)
+                    clock=self.runtime.store.clock,**options)
         return await self.runtime._calls(issue)
 
     async def maintain(self):
