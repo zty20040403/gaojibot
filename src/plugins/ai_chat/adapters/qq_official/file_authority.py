@@ -9,6 +9,7 @@ from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.agent.control import LeaseLost
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from .file_artifacts import _ref, _time, file_job_kind
+from .project_authority import RecipientEvidenceUnavailable
 
 
 def _job_current(cursor, job, *, job_id, kind, payload, now):
@@ -20,7 +21,7 @@ def _job_current(cursor, job, *, job_id, kind, payload, now):
         raise LeaseLost('artifact_delivery_job_unavailable')
 
 
-def assert_file_current(cursor, *, token, artifact_id, admission, now, job=None, plan_id=None):
+def assert_file_current(cursor, *, token, artifact_id, admission, now, job=None, plan_id=None, source_authority=None):
     """Account→endpoint→jobs→source domain→artifact, under caller transaction.
 
     A worker supplies its exact live job. A post-handoff M3 sender instead
@@ -28,10 +29,10 @@ def assert_file_current(cursor, *, token, artifact_id, admission, now, job=None,
     expired producer or invents a source from canonical conversation history.
     """
     return _assert_current(cursor,token=token,artifact_id=artifact_id,admission=admission,
-        now=now,job=job,plan_id=plan_id,read_only=False)
+        now=now,job=job,plan_id=plan_id,read_only=False,source_authority=source_authority)
 
 
-def assert_file_read_current(cursor, *, token, artifact_id, admission, now):
+def assert_file_read_current(cursor, *, token, artifact_id, admission, now, source_authority=None):
     """Authenticated host-console read; never issues sending authority.
 
     Transport failures do not invalidate intact source-owned bytes. This path
@@ -39,10 +40,10 @@ def assert_file_read_current(cursor, *, token, artifact_id, admission, now):
     actor, endpoint, admission and retention checks below unchanged.
     """
     return _assert_current(cursor,token=token,artifact_id=artifact_id,admission=admission,
-        now=now,job=None,plan_id=None,read_only=True)
+        now=now,job=None,plan_id=None,read_only=True,source_authority=source_authority)
 
 
-def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id, read_only):
+def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id, read_only, source_authority):
     _ref(artifact_id)
     _time(now)
     try:
@@ -77,18 +78,42 @@ def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id,
     elif (not isinstance(plan_id,str) or delivery['active_plan_id']!=plan_id
           or delivery['state'] not in {'handed_off','message_accepted'}):
         raise LeaseLost('artifact_handoff_unavailable')
+    if not read_only and artifact['source_execution_id'] is not None:
+        file_guard = getattr(admission, 'require_file', None)
+        source_guard = getattr(admission, 'require_execution', None)
+        if file_guard is not None:
+            file_guard(cursor, artifact=dict(artifact), job=job, plan_id=plan_id, now=now)
+        elif source_guard is not None:
+            source_guard(cursor, artifact['source_execution_id'], endpoint=endpoint, actor=actor,
+                operation='execute' if job is not None else 'send')
+    recipient_wait = None
+    extension = artifact.get('source_extension_kind')
+    if extension is not None:
+        if extension not in {'project','migration'} or source_authority is None:
+            raise LeaseLost('artifact_extension_unavailable')
+        try:
+            if source_authority(cursor,token=token,artifact=dict(artifact),now=now,read_only=read_only) is not None:
+                raise LeaseLost('artifact_extension_unavailable')
+        except RecipientEvidenceUnavailable as error:
+            # Still check producer cancellation, exact provenance and retention.
+            # Missing presence must not disguise an independently revoked source.
+            recipient_wait = error
     # Parent job locking precedes domain records, as in the producer/cancel
     # paths. Completed producer jobs need no live lease to deliver frozen bytes.
     producer=cursor.execute('SELECT * FROM durable_jobs WHERE job_id=? FOR SHARE',
         (artifact['source_job_id'],)).fetchone()
     source=cursor.execute('SELECT * FROM qq_official_turn_executions WHERE execution_id=? FOR SHARE',
         (artifact['source_execution_id'],)).fetchone()
-    if source is None or any(source[k]!=artifact[v] for k,v in (
+    if artifact.get('source_migration_item_id') is None and (source is None or any(source[k]!=artifact[v] for k,v in (
         ('account_key','account_key'),('endpoint_key','endpoint_key'),('requester_actor_key','requester_actor_key'),
         ('canonical_message_id','source_canonical_message_id'),('source_native_message_id','source_native_message_id'),
-        ('scope_key','source_scope_key'),('endpoint_generation','endpoint_generation'),('route_epoch','route_epoch'))):
+        ('scope_key','source_scope_key'),('endpoint_generation','endpoint_generation'),('route_epoch','route_epoch')))):
         raise LeaseLost('artifact_source_conflict')
-    if artifact['source_task_id'] is None:
+    if extension=='migration' and artifact['source_task_id'] is None:
+        # The exact migration-file import/manifest authority above replaces
+        # the native producer; there is deliberately no fabricated turn/task.
+        pass
+    elif artifact['source_task_id'] is None:
         if source['state'] in {'prepared','cancelled','needs_attention'}:
             raise LeaseLost('artifact_turn_not_available')
         if source['state']=='executing':
@@ -111,7 +136,7 @@ def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id,
                 or task_binding['job_id']!=artifact['source_job_id']
                 or task_binding['task_revision']!=artifact['source_task_revision']
                 or control['revision']!=artifact['source_task_revision'] or task['cancel_requested']
-                or task['status']=='cancelled' or task['project_id'] is not None
+                or task['status']=='cancelled' or (task['project_id'] is not None and extension != 'project')
                 or (task['status']=='failed' and not artifact['draft'])
                 or task['endpoint_key']!=endpoint.key or task['requester_actor_key']!=actor.key
                 or task['account_key']!=token.account_key or task['requester_user_id'] is not None):
@@ -125,4 +150,42 @@ def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id,
         (artifact_id,)).fetchone()
     if (artifact['bytes_state']!='available' or now>=min(artifact['pending_deadline_at'],artifact['retain_until'])):
         raise LeaseLost('artifact_retention_expired')
+    if recipient_wait is not None:
+        raise recipient_wait
     return dict(artifact),dict(delivery)
+
+
+class ArtifactSourceAuthorities:
+    """Explicit host composition; kind names alone never authenticate a source."""
+    def __init__(self, *authorities):
+        self._authorities={}
+        for authority in authorities:
+            kind=getattr(authority,'kind',None)
+            if kind not in {'project','migration'} or kind in self._authorities or not callable(authority):
+                raise ValueError('invalid_artifact_authorities')
+            self._authorities[kind]=authority
+
+    def resolve(self, kind):
+        return self._authorities.get(kind)
+
+    def __call__(self,cursor,*,token,artifact,now,read_only):
+        authority=self.resolve(artifact.get('source_extension_kind'))
+        if authority is None:
+            raise LeaseLost('artifact_extension_unavailable')
+        return authority(cursor,token=token,artifact=artifact,now=now,read_only=read_only)
+
+    def enqueue_proof(self,cursor,*,token,artifact,job,now):
+        authority=self.resolve(artifact.get('source_extension_kind'))
+        if authority is None or artifact.get('source_migration_item_id') is None:
+            raise LeaseLost('migration_artifact_authority_unavailable')
+        return authority.enqueue_proof(cursor,token=token,artifact=artifact,job=job,now=now)
+
+    def bind_plan(self,cursor,proof,*,plan_id,now):
+        from .migration_artifact_journal import MigrationArtifactProof
+        from .migration_types import require_issued
+        require_issued(proof,MigrationArtifactProof)
+        row=cursor.execute('SELECT source_extension_kind,source_migration_item_id FROM qq_official_file_artifacts WHERE artifact_id=?',(proof.artifact_id,)).fetchone()
+        authority=self.resolve(row['source_extension_kind']) if row else None
+        if authority is None or row['source_migration_item_id']!=proof.item.item_id:
+            raise LeaseLost('migration_artifact_authority_unavailable')
+        return authority.bind_plan(cursor,proof,plan_id=plan_id,now=now)

@@ -1,6 +1,7 @@
 """Copy a pinned project baseline into an isolated, root-owned step input tree."""
 
 import asyncio
+import hashlib
 import json
 import re
 
@@ -8,7 +9,6 @@ from src.project_content import manifest_bytes
 from src.project_update import ARTIFACT_NAME, DESCRIPTOR
 from .agent.control import assert_job_owned
 from .agent.execution import active_agent_step
-from .onebot_codec import scope_from_event
 from .project_access import project_access
 from .project_executor import _store
 from .project_tasks import ProjectTaskStore
@@ -32,9 +32,21 @@ async def inputs_for_task(context, task_id):
         raise LookupError("Task no longer exists")
     if task.project_id is None:
         return None
-    scope = scope_from_event(context.event)
-    if task.scope_key != scope.key or str(task.requester_user_id) != scope.actor_native_user_id:
-        raise PermissionError("Project task belongs to another conversation or actor")
+    from .tools.state import structured_tool_source
+    structured = structured_tool_source(context)
+    if structured is not None and structured.endpoint.account.platform not in {'qq-official','onebot-v11'}:
+        raise PermissionError('Project task platform is unavailable')
+    # The shared OneBot turn also carries structured metadata. Its persisted
+    # tasks retain the original numeric actor and authenticated Event checks.
+    if structured is not None and structured.endpoint.account.platform == 'qq-official':
+        if (task.endpoint != structured.endpoint or task.requester_actor != structured.actor
+                or task.requester_user_id is not None):
+            raise PermissionError('Project task belongs to another conversation')
+    else:
+        from .onebot_codec import scope_from_event
+        scope = scope_from_event(context.event)
+        if task.scope_key != scope.key or str(task.requester_user_id) != scope.actor_native_user_id:
+            raise PermissionError("Project task belongs to another conversation or actor")
     runtime = getattr(app, "project_runtime", None)
     if (runtime is None or not app.settings.projects_enabled
             or not runtime.ready or runtime.closed):
@@ -43,7 +55,8 @@ async def inputs_for_task(context, task_id):
 
     async def resolve():
         access = await project_access(context)
-        if not app.settings.is_sandbox_user_allowed(context.event.user_id):
+        from .project_authorization import official_project
+        if official_project(access) is None and not app.settings.is_sandbox_user_allowed(context.event.user_id):
             raise PermissionError("Project actor is no longer allowed to execute sandboxes")
         return access
 
@@ -74,6 +87,17 @@ def project_output_contract():
     )
 
 
+def official_project_step_owner(endpoint, actor, task_id, step):
+    """Exact source/run namespace for host-owned official task workspaces."""
+    if (type(task_id) is not int or task_id <= 0 or not actor.matches_endpoint(endpoint)
+            or not step.startswith(f'task#{task_id}/') or not step.split('/',1)[1]):
+        raise PermissionError('Project step identity changed')
+    identity=json.dumps([endpoint.account.key,endpoint.key,actor.key],ensure_ascii=False,separators=(',',':'))
+    source=json.dumps([f'project-task:{task_id}:1',step],ensure_ascii=False,separators=(',',':'))
+    base='qqo:v1:'+hashlib.sha256(identity.encode()).hexdigest()
+    return base,base+':x:'+hashlib.sha256(source.encode()).hexdigest()[:32]
+
+
 class ProjectTaskInputs:
     def __init__(self, store, resolve_access):
         self.store, self.resolve_access = store, resolve_access
@@ -102,7 +126,12 @@ class ProjectTaskInputs:
             assert_job_owned()
             access = await self.resolve_access()
             conversation = await asyncio.to_thread(self.store.require_step, access, task_id, step[len(prefix):])
-            if executor.base_owner != conversation or executor.owner != f"{conversation}:{step}":
+            from .project_authorization import official_project
+            if official_project(access) is not None:
+                expected = official_project_step_owner(access.endpoint,access.actor,task_id,step)
+            else:
+                expected = (conversation,f"{conversation}:{step}")
+            if (executor.base_owner,executor.owner) != expected:
                 raise PermissionError("Project inputs require the isolated step owner")
             return access
 

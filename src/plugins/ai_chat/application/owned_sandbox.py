@@ -89,7 +89,7 @@ class GenerationBinding(Protocol):
     actor: ActorKey
     source_key: str
     deadline_at: int
-    source_native_message_id: str
+    source_native_message_id: str | None
 
     async def assert_current(self) -> None: ...
     # Host implementation atomically reserves aggregate actor/account capacity;
@@ -148,11 +148,14 @@ class OwnedSandboxExecutor:
                  limits=GenerationLimits(), clock=time.time):
         identity = _identity(binding)
         endpoint, actor, source, deadline, native = identity
+        background = getattr(binding,'allows_missing_native_source',None)
+        valid_native = (isinstance(native,str) and bool(native)) or (native is None
+            and callable(background) and background() is True)
         if (not isinstance(endpoint, EndpointKey) or endpoint.account.platform != 'qq-official'
                 or not isinstance(actor, ActorKey) or not actor.matches_endpoint(endpoint)
                 or actor.identity_kind == 'bot' or not isinstance(source, str) or not source
                 or len(source.encode('utf-8')) > 2048 or type(deadline) is not int
-                or not isinstance(native, str) or not native
+                or not valid_native
                 or not isinstance(limits, GenerationLimits)):
             raise GenerationError('invalid_generation_source')
         if any(not callable(getattr(binding, name, None)) for name in
@@ -173,6 +176,10 @@ class OwnedSandboxExecutor:
         self._logical = {}
 
     def matches(self, inbound):
+        from ..platform_types import BackgroundToolSource
+        if isinstance(inbound,BackgroundToolSource):
+            match = getattr(self.binding,'matches_tool_source',None)
+            return match is not None and match(inbound) is True
         return (inbound is not None and inbound.endpoint == self._identity[0]
                 and inbound.actor == self._identity[1]
                 and inbound.native_message_id == self._identity[4])

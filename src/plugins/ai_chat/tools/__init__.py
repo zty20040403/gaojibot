@@ -5,7 +5,7 @@ import json
 
 from ..ai_tools import TOOL_DEFINITIONS, ToolDefinition
 from .registry import FunctionTool, ToolRegistry
-from .state import ToolContext
+from .state import ToolContext, structured_tool_source
 
 
 @cache
@@ -46,7 +46,8 @@ def available_tools(context: ToolContext) -> list[ToolDefinition]:
 
 def registry_for(context: ToolContext) -> ToolRegistry:
     """Freeze the advertised catalog for one turn, never a process-global MCP cache."""
-    if context.inbound is not None and context.inbound.endpoint.account.platform != "onebot-v11":
+    source = structured_tool_source(context)
+    if source is not None and source.endpoint.account.platform != "onebot-v11":
         return neutral_registry_for(context)
     domain = _domain_registry()
     from .mcp import handlers as mcp_handlers
@@ -73,10 +74,11 @@ def _neutral_registry() -> ToolRegistry:
     from .sources import HANDLERS as SOURCE_HANDLERS
     from .stickers import HANDLERS as STICKER_HANDLERS
     from .owned_sandbox import HANDLERS as OWNED_SANDBOX_HANDLERS
+    from .projects import HANDLERS as PROJECT_HANDLERS
 
     migrated = {handler.definition["function"]["name"]: handler
                 for handler in (*ALERT_HANDLERS, *CONTEXT_HANDLERS, *MEMORY_HANDLERS,
-                                *SOURCE_HANDLERS, *STICKER_HANDLERS, *OWNED_SANDBOX_HANDLERS)
+                                *SOURCE_HANDLERS, *STICKER_HANDLERS, *OWNED_SANDBOX_HANDLERS, *PROJECT_HANDLERS)
                 if handler.platform_neutral}
     return ToolRegistry((migrated.get(definition["function"]["name"])
                          or FunctionTool(definition, _unavailable, _reject)
@@ -85,9 +87,10 @@ def _neutral_registry() -> ToolRegistry:
 
 def neutral_registry_for(context: ToolContext) -> ToolRegistry:
     """SDK-free catalog for an actual structured inbound, with fail-closed gates."""
-    if context.inbound is None or context.platform is None:
+    if structured_tool_source(context) is None or context.platform is None:
         raise ValueError("neutral tool registry requires inbound and platform")
-    return _neutral_registry()
+    from ..adapters.qq_official.project_tools import project_registry
+    return project_registry(_neutral_registry(), context)
 
 
 __all__ = ["ToolDefinition", "available_tools", "domain_registry", "registry_for", "neutral_registry_for"]

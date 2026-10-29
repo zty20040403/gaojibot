@@ -130,7 +130,7 @@ class UsageStore:
                 raise ValueError("Routine run is not executable")
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
-                (f"routine-budget:{spec['routine_id']}:{day}",),
+                (f"routine-budget:{spec['budget_origin_routine_id'] or spec['routine_id']}:{day}",),
             )
             existing = cursor.execute(
                 "SELECT * FROM routine_budget_reservations WHERE attempt_id=?",
@@ -144,8 +144,8 @@ class UsageStore:
                 """SELECT COALESCE(SUM(charged_tokens),0) AS charged,
                           COUNT(DISTINCT run_id) AS runs,
                           COALESCE(BOOL_OR(run_id=?),FALSE) AS same_run
-                   FROM routine_budget_reservations WHERE routine_id=? AND day=?""",
-                (run_id, spec["routine_id"], day),
+                   FROM routine_budget_reservations b JOIN agent_routines origin ON origin.routine_id=b.routine_id WHERE COALESCE(origin.budget_origin_routine_id,origin.routine_id)=? AND b.day=?""",
+                (run_id, spec["budget_origin_routine_id"] or spec["routine_id"], day),
             ).fetchone()
             if totals["charged"] + spec["max_tokens"] > spec["daily_tokens"] or (
                 not totals["same_run"] and totals["runs"] >= spec["daily_runs"]
@@ -201,7 +201,7 @@ class UsageStore:
                 raise ValueError("Unknown routine attempt")
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
-                (f"routine-budget:{reservation['routine_id']}:{reservation['day']}",),
+                (f"routine-budget:{cursor.execute('SELECT COALESCE(budget_origin_routine_id,routine_id) FROM agent_routines WHERE routine_id=?', (reservation['routine_id'],)).fetchone()[0]}:{reservation['day']}",),
             )
             reservation = cursor.execute(
                 "SELECT * FROM routine_budget_reservations WHERE attempt_id=? FOR UPDATE",
@@ -261,7 +261,9 @@ class UsageStore:
                           COALESCE(SUM(b.charged_tokens),0) AS charged_tokens,
                           COALESCE(SUM(CASE WHEN b.status='reserved' THEN b.charged_tokens ELSE 0 END),0) AS pending_tokens
                    FROM agent_routines a LEFT JOIN routine_budget_reservations b
-                     ON b.routine_id=a.routine_id AND b.day=?
+                     ON b.routine_id IN (SELECT member.routine_id FROM agent_routines member
+                       WHERE COALESCE(member.budget_origin_routine_id,member.routine_id)
+                         =COALESCE(a.budget_origin_routine_id,a.routine_id)) AND b.day=?
                    WHERE a.routine_id=? AND a.scope_key=? AND a.bot_id=? AND a.creator_id=?
                    GROUP BY a.routine_id""",
                 (day, routine_id, scope_key, bot_id, creator_id),

@@ -132,6 +132,7 @@ class DeliveryStore:
         self.max_attempts = min(max(int(max_attempts), 1), 50)
         self.lease_seconds = max(int(lease_seconds), 10)
         self._lock = threading.RLock()
+        self.source_recorder = None
         # Only a restarted sender may recover leases; maintenance clients coexist with it.
         self.recovered_ambiguous = self.park_interrupted_attempts() if recover_interrupted else 0
 
@@ -175,6 +176,8 @@ class DeliveryStore:
         reply_target = str(reply_to_native_message_id or "")
         fingerprint = body_fingerprint(body, reply_target)
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
+            from .adapters.onebot_route_context import guard_source_transaction
+            guard_source_transaction(cursor)
             existing = cursor.execute(
                 "SELECT * FROM deliveries WHERE idempotency_key = ?",
                 (key,),
@@ -217,6 +220,8 @@ class DeliveryStore:
                 "SELECT * FROM deliveries WHERE delivery_id = ?",
                 (int(cursor.lastrowid),),
             ).fetchone()
+            if self.source_recorder is not None and row is not None and row["target_platform"] == "onebot-v11":
+                self.source_recorder(cursor, self._row(row), timestamp)
         if row is None:
             raise RuntimeError("delivery was not stored")
         return self._row(row), True

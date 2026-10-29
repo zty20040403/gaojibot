@@ -5,8 +5,9 @@ import hashlib
 import json
 
 from jsonschema import ValidationError, validate
-from ..onebot_codec import scope_from_event
-from ..project_access import project_access as _access, projects_available as enabled
+from ..project_access import (project_access as _access, projects_available as enabled,
+    official_inbound, official_provider)
+from ..project_authorization import official_project
 from ..project_context import current_project_payload
 from ..project_executor import _store
 from ..project_restore import ProjectRestores
@@ -18,6 +19,12 @@ from .registry import FunctionTool
 
 
 def _key(context, action, target):
+    inbound = official_inbound(context)
+    if inbound is not None:
+        source = [inbound.endpoint.account.key, inbound.endpoint.key, inbound.actor.key,
+                  inbound.native_message_id, inbound.occurred_at, action, target]
+        return hashlib.sha256(json.dumps(source, ensure_ascii=False).encode()).hexdigest()
+    from ..onebot_codec import scope_from_event
     event, scope = context.event, scope_from_event(context.event)
     # Transport identity is supplied by the host, never accepted from tool args.
     source = [
@@ -33,6 +40,12 @@ def _key(context, action, target):
 
 
 def _execution_allowed(context):
+    if official_inbound(context) is not None:
+        if official_provider(context) is None:
+            raise PermissionError("Official project authority is unavailable")
+        # Actual store/IO/lifecycle admission checks the exact project.execute
+        # grant. This configuration predicate grants no operation by itself.
+        return
     if not context.app.settings.is_sandbox_user_allowed(context.event.user_id):
         raise PermissionError("Sandbox admission required")
 
@@ -66,7 +79,7 @@ async def _target(runtime, access, arguments):
         project = await _store(runtime.store.current, access)
     if project is None:
         raise LookupError("No current project")
-    if project["bot_native_user_id"] != access.scope.bot_native_user_id:
+    if official_project(access) is None and project["bot_native_user_id"] != access.scope.bot_native_user_id:
         raise PermissionError("Project requires operator account binding")
     return project
 
@@ -128,6 +141,7 @@ async def execute(turn, arguments, *, name):
             current = await _store(store.current, access)
             if (
                 current
+                and official_project(access) is None
                 and current["bot_native_user_id"] != access.scope.bot_native_user_id
             ):
                 current = None
@@ -135,7 +149,7 @@ async def execute(turn, arguments, *, name):
                 "projects": [
                     _project(p)
                     for p in await _store(store.list, access)
-                    if p["bot_native_user_id"] == access.scope.bot_native_user_id
+                    if official_project(access) is not None or p["bot_native_user_id"] == access.scope.bot_native_user_id
                 ],
                 "current": f"prj#{current['project_id']}" if current else None,
             }
@@ -185,7 +199,8 @@ async def execute(turn, arguments, *, name):
                 readonly = False
                 try:
                     _execution_allowed(context)
-                    await _store(store.get, access, pid, edit=True)
+                    await _store(store.get, access, pid, edit=True,
+                        **({"operation":"project.execute"} if official_project(access) else {}))
                 except PermissionError:
                     readonly = True
                 if not readonly:
@@ -288,6 +303,6 @@ async def execute(turn, arguments, *, name):
 
 
 HANDLERS = tuple(
-    FunctionTool(d, enabled, partial(execute, name=d["function"]["name"]))
+    FunctionTool(d, enabled, partial(execute, name=d["function"]["name"]), platform_neutral=True)
     for d in PROJECT_TOOLS
 )

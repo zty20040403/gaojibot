@@ -63,6 +63,7 @@ class AdminServices:
     fleet_client: Any = None
     mobile_authorization: MobileAuthorization | None = None
     official_file_service: Any = None  # Live host getter; never a request-supplied route.
+    official_migration_service: Any = None  # Host composition, default unavailable.
 
 
 @dataclass(frozen=True)

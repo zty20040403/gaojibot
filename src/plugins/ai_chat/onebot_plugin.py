@@ -38,4 +38,9 @@ async def shutdown_app_context() -> None:
     await _runtime.shutdown()
 
 
+@driver.on_bot_connect
+async def connect_migration_baseline(bot: Bot) -> None:
+    await _runtime.connected(bot)
+
+
 register_matcher_handlers(_runtime)

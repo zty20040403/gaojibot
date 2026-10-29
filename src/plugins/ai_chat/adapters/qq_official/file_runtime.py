@@ -54,7 +54,7 @@ class OfficialFileRuntime:
     def __init__(self, *, account, token, artifact_store, database_calls, manager,
                  admission, route_availability=None, enabled=False,
                  limits=GenerationLimits(), account_limit=16, actor_limit=4,
-                 pending_seconds=86400):
+                 pending_seconds=86400, source_factory=None):
         if (not isinstance(account, AccountKey) or account.platform != "qq-official"
                 or token.account_key != account.key or type(enabled) is not bool
                 or type(pending_seconds) is not int or not 1 <= pending_seconds <= 86400
@@ -65,6 +65,7 @@ class OfficialFileRuntime:
         self.admission, self.route_availability, self.enabled = admission, route_availability, enabled
         self.limits, self.account_limit, self.actor_limit = limits, account_limit, actor_limit
         self.pending_seconds = pending_seconds
+        self.source_factory=source_factory
 
     async def foreground(self, inbound, platform):
         if not self.enabled or self.route_availability is None or self.manager is None:
@@ -92,6 +93,14 @@ class OfficialFileRuntime:
         def issue():
             with self.store.transaction() as cursor:
                 now = self.store._now()
+                if task.migration_item_id is not None:
+                    if self.source_factory is None:
+                        raise LeaseLost('migration_artifact_source_unavailable')
+                    source=self.source_factory(cursor,task=task,job=job,now=now)
+                    current_source(cursor,source,now)
+                    if source.token is not self.token or (task.endpoint,task.requester_actor)!=(source.endpoint,source.actor):
+                        raise LeaseLost('file_runtime_source_mismatch')
+                    return source
                 row, _ = subagent_runtime.assert_current(cursor, token=self.token, task_id=task.task_id,
                     job=job, admission=self.admission, now=now)
                 source = task_source(cursor, token=self.token, task_id=task.task_id, job=job,
@@ -109,6 +118,18 @@ class OfficialFileRuntime:
         except GenerationError:
             return None
         return session
+
+    async def bound_session(self, source):
+        """Host-issued source extension; never accept a source from tool JSON."""
+        if not self.enabled or self.route_availability is None or self.manager is None:
+            return None
+        def check():
+            with self.store.transaction() as cursor:
+                current_source(cursor,source,self.store._now())
+                if source.token is not self.token or source.endpoint.account != self.account:
+                    raise LeaseLost('file_runtime_source_mismatch')
+        await self.calls(check)
+        return await self._session(source)
 
 
 class _Delivery:
@@ -165,7 +186,8 @@ class FileGenerationSession:
         return "FileGenerationSession(<protected>)"
 
     def context(self, context):
-        if self.closed or not self.executor.generation_enabled or not self.executor.matches(context.inbound):
+        if (self.closed or not self.executor.generation_enabled
+                or not self.executor.matches(context.inbound or context.background_source)):
             raise GenerationError("file_runtime_source_mismatch")
         if context.platform is None or context.platform.account != self.runtime.account:
             raise GenerationError("file_runtime_source_mismatch")

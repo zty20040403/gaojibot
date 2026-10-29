@@ -7,6 +7,7 @@ from nonebot.params import CommandArg
 
 from . import matchers
 from .adapters.onebot_commands import dispatch_onebot_command
+from .adapters.onebot_route_context import guarded_handler
 from .application.commands import parse_command
 from .onebot_runtime import OneBotRuntime
 
@@ -193,4 +194,4 @@ def register_matcher_handlers(runtime: OneBotRuntime) -> None:
         (matchers.ai_reset, handle_ai_reset),
         (matchers.clear_data, handle_clear_data),
     ):
-        matcher.handle()(handler)
+        matcher.handle()(guarded_handler(handler, runtime))

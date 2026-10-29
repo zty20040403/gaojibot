@@ -8,7 +8,7 @@ from src.plugins.ai_chat.agent.control import assert_job_owned, LeaseLost
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.message_ir import body_from_json
 from src.plugins.ai_chat.message_lowering import OutboundCapabilities
-from src.plugins.ai_chat.platform_types import InboundMessage, PlatformFeatures, SendOutcome, EffectiveCapabilities
+from src.plugins.ai_chat.platform_types import BackgroundToolSource, InboundMessage, PlatformFeatures, SendOutcome, EffectiveCapabilities
 from src.plugins.ai_chat.tools import neutral_registry_for
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
@@ -49,11 +49,18 @@ class TaskPlatform:
 
 
 class OfficialSubAgentService:
-    def __init__(self, runtime, token, app):
+    def __init__(self, runtime, token, app, *, migration_authority=None):
         self.runtime, self.token, self.app = runtime, token, app
+        self.migration_authority = migration_authority
         original = app.subagent_coordinator
         files = getattr(runtime, 'file_service', None)
+        self.approval = getattr(runtime, 'approval_service', None)
+        self.projects = getattr(runtime, 'project_service', None)
         coordinator_factory = file_coordinator if files is not None else text_coordinator
+        if self.approval is not None and self.approval.host_session_factory is not None:
+            from .host_session import host_coordinator
+            from functools import partial
+            coordinator_factory = partial(host_coordinator, files_enabled=files is not None)
         self.coordinator = coordinator_factory(app.subagent_store, app.model_catalog, logger=app.logger,
             max_steps=app.settings.subagent_max_steps, max_parallelism=app.settings.subagent_max_parallelism,
             max_tool_rounds=app.settings.subagent_max_tool_rounds,
@@ -73,13 +80,19 @@ class OfficialSubAgentService:
             admission=self.runtime.store.admitted, coordinator=self.coordinator, jobs=self.runtime.jobs,
             execution_deadline=min(authority.handle.deadline_at,
                 now + min(max(int(self.app.settings.subagent_timeout_seconds), 1), 7200)),
-            result_wait_seconds=min(self.runtime.outbox.max_wait_seconds, 86400), clock=self.runtime.store.clock)
+            result_wait_seconds=min(self.runtime.outbox.max_wait_seconds, 86400), clock=self.runtime.store.clock,
+            host_admission=self.approval.host_admission if self.approval is not None else None)
         return binding.actions_for(turn, ports, selected_profile, prepared, parent_trace)
 
     def _restore(self, job):
         with self.runtime.deliveries.transaction() as cursor:
             binding, task = assert_current(cursor, token=self.token, task_id=job.payload["task_id"],
-                now=int(self.runtime.store.clock()), admission=self.runtime.store.admitted, job=job)
+                now=int(self.runtime.store.clock()), admission=self.runtime.store.admitted, job=job,
+                migration_authority=self.migration_authority)
+            if binding.get("migration_item_id") is not None:
+                source = self.migration_authority.tool_source(cursor, task_id=task["task_id"],
+                    job=job, now=int(self.runtime.store.clock()))
+                return source, task["objective"]
             source = cursor.execute("""SELECT m.*,c.scope_key FROM messages m
                 JOIN conversations c USING(conversation_id)
                 WHERE m.canonical_message_id=?""", (binding["source_canonical_message_id"],)).fetchone()
@@ -106,7 +119,9 @@ class OfficialSubAgentService:
             transaction=self.runtime.deliveries.transaction, database_calls=self.runtime._calls,
             admission=self.runtime.store.admitted, profile=self.app.model_catalog.try_resolve,
             tools=tools, execute_tool=execute_tool, clock=self.runtime.store.clock,
-            execution_factory=self._prepare_tool_session)
+            execution_factory=self._prepare_tool_session, migration_authority=self.migration_authority,
+            project_finalizer=self.projects.finalize if self.projects is not None else None,
+            project_authority=self.projects.assert_current if self.projects is not None else None)
 
     async def execute(self, job):
         try:
@@ -120,6 +135,20 @@ class OfficialSubAgentService:
 
     async def _prepare_tool_session(self, job, task, files_enabled):
         # Invoked by the dispatcher only while its actual job fence is active.
+        def selected_profile():
+            with self.runtime.deliveries.transaction() as cursor:
+                row = cursor.execute('SELECT tool_profile FROM qq_official_subagent_dispatches WHERE task_id=?',
+                    (task.task_id,)).fetchone()
+                return row['tool_profile'] if row else None
+        selected = await self.runtime._calls(selected_profile)
+        if selected == 'official-projects-v1':
+            if self.projects is None:
+                raise JobDeferred('official_project_context_unavailable', 30)
+            return await self.projects.prepare(job,task,files_enabled)
+        if selected == 'official-host-v1':
+            if self.approval is None or self.approval.host_session_factory is None:
+                raise JobDeferred('official_host_context_unavailable', 3)
+            return await self.approval.host_session_factory(job, task, files_enabled)
         inbound, objective = await self.runtime._calls(self._restore, job)
         capabilities = {"self", "context"}
         if self.app.long_term_memory is not None:
@@ -127,7 +156,10 @@ class OfficialSubAgentService:
         if self.app.settings.search_enabled:
             capabilities.add("web")
         context = ToolContext(SimpleNamespace(context=self.app), event=None,
-            capabilities=frozenset(capabilities), inbound=inbound, platform=TaskPlatform(inbound.endpoint))
+            capabilities=frozenset(capabilities),
+            inbound=inbound if isinstance(inbound, InboundMessage) else None,
+            background_source=inbound if isinstance(inbound, BackgroundToolSource) else None,
+            platform=TaskPlatform(inbound.endpoint))
         file_session = None
         try:
             if files_enabled:

@@ -27,9 +27,12 @@ _logger = logging.getLogger(__name__)
 _profile_scope: ContextVar[frozenset[str] | None] = ContextVar("completion_profile_scope", default=None)
 
 
-def _assert_model_job_owned() -> None:
+def _assert_model_job_owned(*, inference=True) -> None:
     # agent.__init__ exports agent_loop, which imports this gateway.
     from .agent.control import assert_job_owned
+    if inference:
+        from .adapters.onebot_route_context import require_model_source
+        require_model_source()
 
     assert_job_owned()
 
@@ -401,10 +404,10 @@ class OpenAIChatProvider:
         profile: ModelProfile,
         **kwargs: Any,
     ) -> Any:
-        from .agent.control import active_job_fence
+        from .agent.control import active_job_fence, active_route_fence
 
         client = self._client(profile)
-        if active_model_budget() is not None or active_job_fence.get() is not None:
+        if active_model_budget() is not None or active_job_fence.get() is not None or active_route_fence.get() is not None:
             # SDK retries cannot revalidate our durable execution authority.
             client = client.with_options(max_retries=0)
         request = {key: value for key, value in kwargs.items() if value is not None}
@@ -429,13 +432,13 @@ class OpenAIChatProvider:
             ) from exc
 
     async def list_models(self, profile: ModelProfile) -> list[str]:
-        from .agent.control import active_job_fence
+        from .agent.control import active_job_fence, active_route_fence
 
         client = self._client(profile)
-        if active_job_fence.get() is not None:
+        if active_job_fence.get() is not None or active_route_fence.get() is not None:
             client = client.with_options(max_retries=0)
         try:
-            _assert_model_job_owned()
+            _assert_model_job_owned(inference=False)
             response = await client.models.list()
         except RateLimitError as exc:
             raise LLMRateLimitError(
@@ -909,7 +912,7 @@ class LLMGateway:
             raise LLMConfigError(
                 f"model listing is not enabled for profile {profile.name!r}"
             )
-        _assert_model_job_owned()
+        _assert_model_job_owned(inference=False)
         return await self._provider(profile).list_models(profile)
 
     async def close(self) -> None:

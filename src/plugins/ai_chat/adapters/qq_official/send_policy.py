@@ -20,7 +20,7 @@ from .rate_policy import (
     daily_quota_spec, effective_certification,
 )
 
-_PURPOSES = frozenset({'final', 'requested_artifact', 'background_result', 'progress', 'unsolicited', 'binding_otp'})
+_PURPOSES = frozenset({'final', 'requested_artifact', 'background_result', 'progress', 'unsolicited', 'binding_otp', 'approval_otp'})
 _PROBE_PURPOSES = frozenset({'final', 'requested_artifact', 'background_result'})
 _LOW_PRIORITY = frozenset({'background_result', 'unsolicited'})
 _MAX_TIME = 2**63 - 1

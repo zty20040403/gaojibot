@@ -46,6 +46,12 @@ class LinkError(ValueError):
     """Fixed diagnostic only: no paths, IDs, credentials or request text."""
 
 
+class PublicationNotCreated(LinkError):
+    """Internal PG authority rejected before INSERT; no publication was created."""
+    def __init__(self):
+        super().__init__('publication_not_created_recipient_wait')
+
+
 def _safe_operation(method):
     @wraps(method)
     async def wrapped(*args, **kwargs):

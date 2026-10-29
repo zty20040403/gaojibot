@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol, TypeAlias
 
 from ..storage.jobs import DurableJob, DurableJobStore
+from ..agent.control import RouteAuthorityLost
 
 
 DurableJobHandler: TypeAlias = Callable[
@@ -46,6 +47,7 @@ class DurableJobWorker:
         worker_id: str | None = None,
         per_scope_limit: int | None = None,
         database_calls: Callable[..., Awaitable[Any]] | None = None,
+        source_context: Callable[..., Any] | None = None,
     ) -> None:
         self.store = store
         self.logger = logger
@@ -56,6 +58,7 @@ class DurableJobWorker:
         # threads before releasing their outer lease. Existing workers retain
         # their original scheduling unless they explicitly supply that boundary.
         self._database_calls = database_calls or asyncio.to_thread
+        self.source_context = source_context
         self.worker_id = worker_id or (
             f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         )
@@ -192,6 +195,14 @@ class DurableJobWorker:
             safe_result = dict(result or {})
         except JobDeferred as exc:
             await self._database_calls(self.store.defer, job, delay_seconds=exc.delay_seconds, reason=str(exc))
+        except RouteAuthorityLost:
+            # The source's original route is immutable. Reclaiming this job
+            # must never upgrade its epoch or repeat an uncertain model/effect.
+            await self._database_calls(
+                self.store.mark_failed, job.job_id, self.worker_id,
+                "source_route_needs_attention", retryable=False,
+                lease_generation=job.lease_generation,
+            )
         except TimeoutError:
             await self._compensate(job, "timeout")
             changed = await self._database_calls(
@@ -266,6 +277,12 @@ class DurableJobWorker:
         handler: DurableJobHandler,
         job: DurableJob,
     ) -> Mapping[str, Any] | None:
+        if self.source_context is not None:
+            async with self.source_context(job):
+                result = handler(job)
+                if inspect.isawaitable(result):
+                    result = await result
+                return result
         result = handler(job)
         if inspect.isawaitable(result):
             result = await result

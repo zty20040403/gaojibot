@@ -6,6 +6,7 @@ HandlerServices, a synthetic event, or a numeric identity substitute.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
 from types import SimpleNamespace
 
@@ -33,7 +34,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, reference_resolver=None, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
-        subagent_actions_factory=None, memory_writer=None, generation_factory=None,
+        subagent_actions_factory=None, memory_writer=None, generation_factory=None, public_history_factory=None, project_factory=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -48,6 +49,8 @@ class PlatformChatService:
         self.subagent_actions_factory = subagent_actions_factory
         self.memory_writer = memory_writer
         self.generation_factory = generation_factory
+        self.public_history_factory = public_history_factory
+        self.project_factory = project_factory
 
     def _scope_enabled(self, scope) -> bool:
         override = self.context.model_preferences.get_scope_enabled_override(scope)
@@ -69,8 +72,9 @@ class PlatformChatService:
         """Prepare a structured text turn for the same context and agent core.
 
         Text delegation is available only through the trusted runtime factory.
-        Automatic task routing, host/project, media and revision continuations
-        still lack platform authorization and remain unavailable here.
+        Optional project/file/task host factories supply their exact current
+        source authority. Other host/media and revision continuations remain
+        unavailable through this foreground entry point.
         """
         if platform.account != inbound.endpoint.account:
             raise ValueError("turn platform does not own inbound endpoint")
@@ -126,6 +130,11 @@ class PlatformChatService:
                 selected_profile = selected_profile.with_reasoning_effort(effort)
 
         capabilities = {"self"}
+        project_provider = (await self.project_factory(inbound, platform)
+                            if self.project_factory is not None else None)
+        if project_provider is not None:
+            platform.project_provider = project_provider
+            capabilities.add("projects")
         if self.context.long_term_memory is not None:
             capabilities.add("memory")
         if any(store is not None for store in (
@@ -136,13 +145,25 @@ class PlatformChatService:
             capabilities.add("web")
         if self.subagent_actions_factory is not None:
             capabilities.add("subagents")
+        public_history = (self.public_history_factory(inbound, platform)
+                          if self.public_history_factory is not None else None)
+        services = (SimpleNamespace(context=self.context, public_history=public_history)
+                    if public_history is not None else self.services)
         context = ToolContext(
-            self.services, event=None, capabilities=frozenset(capabilities),
+            services, event=None, capabilities=frozenset(capabilities),
             journal_turn_id=journal_turn_id, inbound=inbound, platform=platform,
         )
         file_session = (await self.generation_factory(inbound, platform)
                         if self.generation_factory is not None else None)
+        history_guards = ExitStack()
         try:
+            history_prompt = ""
+            if public_history is not None:
+                history_prompt = await self.context.db_call(public_history.prompt)
+                history_guards.enter_context(public_history.guard_scope())
+            if project_provider is not None:
+                history_guards.enter_context(project_provider.guard_scope(
+                    self.context.project_runtime.store._transaction))
             if file_session is not None:
                 context = file_session.context(context)
             turn = TurnState(context=context, user_text=user_text)
@@ -178,6 +199,13 @@ class PlatformChatService:
                     selected_profile=selected_profile, journal_turn_id=journal_turn_id,
                 )
                 context_parts = []
+                if project_provider is not None:
+                    from ..project_context import current_project_context
+                    project_context = await current_project_context(turn.context)
+                    if project_context:
+                        context_parts.append(project_context)
+                if history_prompt:
+                    context_parts.append(history_prompt)
                 if prepared.turn_context:
                     context_parts.append(quote_evidence(prepared.turn_context, "turn_context"))
                 if prepared.replay_prefix:
@@ -230,5 +258,6 @@ class PlatformChatService:
             return f"{visible}\n\n{sources}" if sources else visible
 
         finally:
+            history_guards.close()
             if file_session is not None:
                 await file_session.close()

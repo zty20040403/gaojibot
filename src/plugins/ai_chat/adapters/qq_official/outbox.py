@@ -5,6 +5,8 @@ every actual send is represented by the existing begin_direct_attempt route.
 """
 from __future__ import annotations
 
+from .project_authority import RecipientEvidenceUnavailable
+
 from contextlib import nullcontext
 import json
 import re
@@ -74,7 +76,7 @@ def begin_official_attempt(cursor, delivery_id, context, now):
 class OfficialOutbox:
     def __init__(self, deliveries, *, admission, pepper, clock=time.time,
                  certification="unknown", allow_newer_windows=False, allow_proactive_probe=False,
-                 verified_boundary=None, mention_authority=None, max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS, protected_payloads=None):
+                 verified_boundary=None, mention_authority=None, max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS, protected_payloads=None, approval_authority=None, source_guard=None):
         validate_wait_limit(max_wait_seconds)
         self.deliveries = deliveries
         self.admission = admission
@@ -87,6 +89,8 @@ class OfficialOutbox:
         self.mention_authority = mention_authority or (lambda cursor, endpoint: frozenset())
         self.max_wait_seconds = max_wait_seconds
         self.protected_payloads = protected_payloads
+        self.approval_authority = approval_authority
+        self.source_guard = source_guard
         self._ephemeral = {}
         self._invocations = weakref.WeakKeyDictionary()
         self._used_permits = weakref.WeakKeyDictionary()
@@ -95,7 +99,7 @@ class OfficialOutbox:
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
-                transaction_cursor=None, binding_preview=None, control_reply_id=None):
+                transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -103,16 +107,17 @@ class OfficialOutbox:
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
                 admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if challenge_id is not None else None, binding_preview=binding_preview, control_reply_id=control_reply_id,
-                max_wait_seconds=self.max_wait_seconds)
-        if purpose == "binding_otp" and ref.created:
+                pepper=self.pepper if challenge_id is not None or approval_source_id is not None else None, binding_preview=binding_preview, control_reply_id=control_reply_id,
+                max_wait_seconds=self.max_wait_seconds, approval_source_id=approval_source_id,
+                approval_authority=self.approval_authority, source_guard=self.source_guard, source_proof=source_proof)
+        if purpose in {"binding_otp", "approval_otp"} and ref.created:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
 
     def enqueue_artifact(self, token, *, content_ref, source_grant, endpoint, requester,
                          logical_key, source_scope_key, expires_at, source_native_message_id="",
-                         source_canonical_message_id=None, turn_id=None, transaction_cursor=None):
+                         source_canonical_message_id=None, turn_id=None, transaction_cursor=None, source_proof=None):
         if self.protected_payloads is None:
             raise OutboxInvariantError("protected_payload_port_unavailable")
         now = int(self.clock())
@@ -130,7 +135,8 @@ class OfficialOutbox:
                 logical_key=logical_key, source_scope_key=source_scope_key, expires_at=expires_at, now=now,
                 purpose="requested_artifact", source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
-                admission=self.admission, max_wait_seconds=self.max_wait_seconds, protected_ref=content_ref)
+                admission=self.admission, max_wait_seconds=self.max_wait_seconds, protected_ref=content_ref,
+                source_guard=self.source_guard, source_proof=source_proof)
 
     def list_due(self, token, *, limit=100):
         now = int(self.clock())
@@ -177,12 +183,18 @@ class OfficialOutbox:
         elif (endpoint_row is None or endpoint_row["generation"] != row["endpoint_generation"]
                 or endpoint_row["route_epoch"] != row["route_epoch"]):
             reason = "route_changed"
-        elif (not actor.matches_endpoint(endpoint) or actor.identity_kind == "bot"
-                or not self._authorized(cursor, token, row, endpoint, actor, now)):
+        elif not actor.matches_endpoint(endpoint) or actor.identity_kind == "bot":
             reason = "authorization_revoked"
-        elif row["payload_mode"] == "ephemeral" and delivery_id not in self._ephemeral:
+        else:
+            try:
+                authorized = self._authorized(cursor, token, row, endpoint, actor, now)
+            except RecipientEvidenceUnavailable:
+                return self._wait(cursor, row, "recipient_evidence_unavailable", now + 15, now)
+            if not authorized:
+                reason = "authorization_revoked"
+        if reason is None and row["payload_mode"] == "ephemeral" and delivery_id not in self._ephemeral:
             reason = "ephemeral_payload_lost"
-        elif not self._control_current(cursor, row, endpoint, actor, now):
+        elif reason is None and not self._control_current(cursor, row, endpoint, actor, now):
             reason = "binding_control_expired"
         if reason:
             cursor.execute("""UPDATE deliveries SET status='cancelled',wait_reason=?,updated_at=?
@@ -198,19 +210,33 @@ class OfficialOutbox:
             return SendOutcome("pending", row["wait_reason"] or "scheduled", delivery_id, row["next_attempt_at"])
         if snapshot(cursor, endpoint.account) is None:
             return self._wait(cursor, row, "identity_unverified", now + 5, now)
-        if row["payload_mode"] == "ephemeral":
-            challenge = cursor.execute("""SELECT c.challenge_id FROM delivery_plans p
-                JOIN qq_official_binding_challenges c ON c.challenge_id=p.challenge_id
-                JOIN qq_official_owner_grants g ON g.grant_id=c.owner_grant_id
-                WHERE p.plan_id=? AND c.state='sending' AND c.expires_at>?
-                  AND c.delivery_epoch=? AND g.state='active' AND g.revision=c.owner_revision""",
-                (row["plan_id"], now, token.epoch)).fetchone()
-            if challenge is None:
-                cursor.execute("UPDATE deliveries SET status='cancelled',wait_reason='binding_grant_expired',updated_at=? WHERE delivery_id=?", (now, delivery_id))
-                return SendOutcome("cancelled", "binding_grant_expired", delivery_id)
+        if row['payload_mode'] == 'ephemeral' and not self._ephemeral_current(cursor, token, row, now):
+            cursor.execute("UPDATE deliveries SET status='cancelled',wait_reason='ephemeral_source_expired',updated_at=? WHERE delivery_id=?", (now, delivery_id))
+            return SendOutcome('cancelled', 'ephemeral_source_expired', delivery_id)
         return row, endpoint, endpoint_row
 
+    def _ephemeral_current(self, cursor, token, row, now):
+        if row['purpose'] == 'approval_otp':
+            return (self.approval_authority is not None
+                and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now))
+        challenge = cursor.execute("""SELECT c.challenge_id FROM delivery_plans p
+            JOIN qq_official_binding_challenges c ON c.challenge_id=p.challenge_id
+            JOIN qq_official_owner_grants g ON g.grant_id=c.owner_grant_id
+            WHERE p.plan_id=? AND c.state='sending' AND c.expires_at>?
+              AND c.delivery_epoch=? AND g.state='active' AND g.revision=c.owner_revision""",
+            (row["plan_id"], now, token.epoch)).fetchone()
+        return challenge is not None
+
     def _authorized(self, cursor, token, row, endpoint, actor, now):
+        if self.source_guard is not None:
+            from .migration_types import MigrationDenied
+            plan = cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?', (row['plan_id'],)).fetchone()
+            try:
+                if plan is None or self.source_guard(cursor, token=token, plan=plan,
+                        operation='send', source_proof=None, now=now) is not True:
+                    return False
+            except MigrationDenied:
+                return False
         if control_id_for_delivery(cursor, row) is None:
             if not self.admission(cursor, endpoint, actor):
                 return False
@@ -221,6 +247,8 @@ class OfficialOutbox:
                 try:
                     self.protected_payloads.authorize(cursor, token=token, content_ref=ref,
                         binding=binding_for(row), now=now)
+                except RecipientEvidenceUnavailable:
+                    raise
                 except PermissionError:
                     return False
             return True
@@ -259,11 +287,16 @@ class OfficialOutbox:
         return SendOutcome("pending", reason, row["delivery_id"], retry_at)
 
     def _choice(self, cursor, token, row, endpoint, endpoint_row, permit, now):
-        return check_send_policy(cursor, token=token, endpoint=endpoint, endpoint_row=endpoint_row,
+        choice = check_send_policy(cursor, token=token, endpoint=endpoint, endpoint_row=endpoint_row,
             source_native_id=row["reply_to_native_message_id"] or None, purpose=row["purpose"],
             deadline=row["expires_at"], now=now, rate_permit=permit, certification=self.certification,
-            allow_newer_windows=self.allow_newer_windows, allow_proactive_probe=self.allow_proactive_probe,
+            allow_newer_windows=self.allow_newer_windows if row["purpose"] != "approval_otp" else False,
+            allow_proactive_probe=self.allow_proactive_probe if row["purpose"] != "approval_otp" else False,
             verified_boundary=self.verified_boundary, control_reply_id=control_id_for_delivery(cursor, row))
+        if row['purpose'] == 'approval_otp' and not isinstance(choice, PolicyWait):
+            if self.approval_authority is None or not self.approval_authority.choice_current(cursor, delivery=row, choice=choice):
+                return PolicyWait('waiting_reply_window')
+        return choice
 
     def candidate(self, token, delivery_id):
         now = int(self.clock())
@@ -323,7 +356,10 @@ class OfficialOutbox:
             if not rate_permit.matches(endpoint, choice.send_mode, certification=self.certification):
                 return self._wait(cursor, row, "mode_changed", now + 1, now)
             author = snapshot(cursor, endpoint.account)
-            payload = self._content(cursor, row, endpoint, token=token, now=now)
+            try:
+                payload = self._content(cursor, row, endpoint, token=token, now=now)
+            except RecipientEvidenceUnavailable:
+                return self._wait(cursor, row, "recipient_evidence_unavailable", now + 15, now)
             if choice.send_mode == "passive":
                 if (choice.credential_kind not in {"msg_id", "event_id"}
                         or not isinstance(choice.credential_value, str) or not choice.credential_value
@@ -363,6 +399,9 @@ class OfficialOutbox:
                 raise OutboxInvariantError("delivery_claim_conflict")
             reserve_send_policy(cursor, token=token, choice=choice, attempt_id=delivery.current_attempt_id, now=now,
                 control_reply_id=control_id_for_delivery(cursor, row))
+            if row['purpose'] == 'approval_otp':
+                self.approval_authority.bind_attempt(cursor, token=token, delivery=row,
+                    attempt_id=delivery.current_attempt_id, now=now)
             control_id = control_id_for_delivery(cursor, row)
             if control_id is not None:
                 claim_control_attempt(cursor, token, control_id=control_id, attempt_id=delivery.current_attempt_id, now=now)
@@ -396,9 +435,15 @@ class OfficialOutbox:
                 return False
             endpoint = reservation.endpoint
             route = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=? FOR UPDATE", (endpoint.key,)).fetchone()
-            if (route is None or route["generation"] != row["endpoint_generation"] or route["route_epoch"] != row["route_epoch"]
-                    or not self._authorized(cursor, token, row, endpoint, ActorKey.parse(row["requester_actor_key"]), now)
-                    or snapshot(cursor, endpoint.account) is None):
+            if route is None or route["generation"] != row["endpoint_generation"] or route["route_epoch"] != row["route_epoch"]:
+                return False
+            try:
+                authorized = self._authorized(cursor, token, row, endpoint, ActorKey.parse(row["requester_actor_key"]), now)
+            except RecipientEvidenceUnavailable:
+                # Local issued reservation proves request_started has not run.
+                # Sender settles confirmed-unsent and releases reserved charges.
+                return False
+            if not authorized or snapshot(cursor, endpoint.account) is None:
                 return False
             if not self._control_current(cursor, row, endpoint, ActorKey.parse(row["requester_actor_key"]), now):
                 return False
@@ -427,12 +472,7 @@ class OfficialOutbox:
             cooldown = route["passive_blocked_until" if row["send_mode"] == "passive" else "proactive_blocked_until"]
             if cooldown > now:
                 return False
-            if row["payload_mode"] == "ephemeral" and cursor.execute("""SELECT 1
-                FROM delivery_plans p JOIN qq_official_binding_challenges c ON c.challenge_id=p.challenge_id
-                JOIN qq_official_owner_grants g ON g.grant_id=c.owner_grant_id
-                WHERE p.plan_id=? AND c.state='sending' AND c.expires_at>?
-                  AND c.delivery_epoch=? AND g.state='active' AND g.revision=c.owner_revision""",
-                (row["plan_id"], now, token.epoch)).fetchone() is None:
+            if row['payload_mode'] == 'ephemeral' and not self._ephemeral_current(cursor, token, row, now):
                 return False
             cursor.execute("UPDATE delivery_attempts SET state='dispatched',dispatched_at=? WHERE attempt_id=? AND state='reserved'",
                            (now, reservation.attempt_id))

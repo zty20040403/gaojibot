@@ -213,6 +213,13 @@ async def expand(turn: TurnState, arguments: dict[str, object]) -> str:
     if official_inbound(turn.context) is not None and set(arguments) - {"target", "turn_id"}:
         return json.dumps({"ok": False, "error": "不能指定其他会话的上下文地址。"}, ensure_ascii=False)
     target = str(arguments.get("target") or "").strip()
+    if target.startswith("migration:"):
+        history = getattr(turn.context.services, "public_history", None)
+        if history is None or official_inbound(turn.context) is None:
+            return json.dumps({"ok": False, "error": "迁移历史当前不可用。"}, ensure_ascii=False)
+        record = await turn.context.app.db_call(history.expand, target)
+        return json.dumps({"ok": record is not None, "record": record,
+            "error": None if record is not None else "当前单向历史视图没有这个记录。"}, ensure_ascii=False)
     if target.startswith("episode#"):
         if (
             turn.context.app.context_store is None
@@ -362,9 +369,12 @@ async def search(turn: TurnState, arguments: dict[str, object]) -> str:
     official_semantic = (await turn.context.app.db_call(
         _official_semantic_payload, turn.context, semantic_hits, lexical_handles, limit,
     )) if official else None
+    history = getattr(turn.context.services, "public_history", None) if official else None
+    migrated = (await turn.context.app.db_call(history.search, query, limit=limit)) if history is not None else []
     return json.dumps(
         {
             "ok": True,
+            **({"migrated_public_history": migrated} if history is not None else {}),
             "messages": [
                 {
                     "handle": f"msg#{message.canonical_message_id}",

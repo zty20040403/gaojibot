@@ -232,6 +232,10 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         timeout_seconds=30.0,
         max_identical_calls=1,
     )
+    policies["operation_approve"] = ToolPolicy(
+        risk="high", idempotency="keyed", side_effects=("write:operation-ledger", "execute:service"),
+        timeout_seconds=30.0, approval="task", max_identical_calls=1,
+    )
     policies["ops_call"] = ToolPolicy(
         risk="high", idempotency="keyed",
         side_effects=("read:fleet", "write:operation-ledger"),

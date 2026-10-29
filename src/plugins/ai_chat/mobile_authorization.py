@@ -3,9 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from nonebot import get_bots, get_plugin_config
-from nonebot.adapters.onebot.v11 import Bot, MessageEvent, PrivateMessageEvent
-from nonebot.adapters.onebot.v11.config import Config as OneBotConfig
 
 from src.bot_security.service import MobileAuthorization, approval_command
 from src.bot_security.store import SecurityError, SecurityStore
@@ -13,6 +10,9 @@ from src.bot_security.cli import read_secret
 
 
 def build_mobile_authorization(settings: Any, database: Any) -> MobileAuthorization | None:
+    from nonebot import get_bots, get_plugin_config
+    from nonebot.adapters.onebot.v11 import Bot
+    from nonebot.adapters.onebot.v11.config import Config as OneBotConfig
     secret_file = str(getattr(settings, "admin_secret_file", "") or "")
     if not secret_file:
         return None
@@ -45,6 +45,7 @@ def build_mobile_authorization(settings: Any, database: Any) -> MobileAuthorizat
 
 def redact_approval_event_logs() -> None:
     """NoneBot logs events before preprocessors; suppress the command at that boundary."""
+    from nonebot.adapters.onebot.v11 import MessageEvent, PrivateMessageEvent
     original = MessageEvent.get_log_string
     if getattr(original, "_approval_redacted", False):
         return
@@ -58,7 +59,8 @@ def redact_approval_event_logs() -> None:
     MessageEvent.get_log_string = get_log_string
 
 
-async def handle_approval_event(mobile: MobileAuthorization | None, bot: Bot, event: MessageEvent) -> bool:
+async def handle_approval_event(mobile: MobileAuthorization | None, bot: Any, event: Any) -> bool:
+    from nonebot.adapters.onebot.v11 import PrivateMessageEvent
     text = event.get_plaintext()
     private = isinstance(event, PrivateMessageEvent)
     if not approval_command(text, private=private):
@@ -80,3 +82,21 @@ async def handle_approval_event(mobile: MobileAuthorization | None, bot: Bot, ev
         # Never let a transport traceback serialize the original code-bearing event.
         pass
     return True
+
+
+def build_official_mobile_authorization(*, database, transport, sender):
+    """Explicit SDK-free host composition; default deployment remains unchanged.
+
+    `sender` is the configured existing M3 sender. Credentials/source identity
+    were already loaded/verified by the host; this never reads model paths.
+    """
+    from .adapters.qq_official.approval_transport import ApprovalOtpSender
+    if (getattr(sender, 'token', None) != transport.token
+            or getattr(getattr(sender, 'account', None), 'key', None) != transport.token.account_key
+            or getattr(getattr(sender, 'outbox', None), 'approval_authority', None) is not transport):
+        raise SecurityError('official_approval_sender_mismatch')
+    store = SecurityStore(database, transport.secret, clock=transport.clock, transport=transport)
+    async def denied(*args):
+        raise SecurityError('official_legacy_transport_forbidden')
+    otp = ApprovalOtpSender(sender=sender, transport=transport, store=store)
+    return MobileAuthorization(store, sender=denied, bot_selector=lambda: None, official_sender=otp)

@@ -6,7 +6,7 @@ evidence, not a second task queue: the existing durable job store owns workers.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import re
@@ -23,6 +23,7 @@ from src.qq_official.gateway import GatewayCheckpoint
 from .authority import OwnerAuthority
 from .binding import BindingContext, BindingDecision, BindingReducer
 from .input_normalization import normalize_input
+from .approval_control import (ControlResult, prepare_approval_input, control_commitment, apply_control)
 from .control_receipts import record_decision, enqueue_control_job
 from .codec import DecodedMessage, decode_message
 from .lease import assert_epoch
@@ -53,6 +54,9 @@ class Acceptance:
     inbox_id: str | None = None
     reason: str = ""
     binding: BindingDecision | None = field(default=None, repr=False)
+    approval: ControlResult | None = field(default=None, repr=False)
+    _approval_input: object = field(default=None, repr=False)
+    _native_admission: object = field(default=None, repr=False)
 
 
 class OfficialInboxStore:
@@ -73,6 +77,9 @@ class OfficialInboxStore:
         self.payload_retention_seconds = payload_retention_hours * 3600
         self.clock, self.epoch_guard = clock, epoch_guard
         self._lock = threading.RLock()
+        # Set only by the current authenticated runtime epoch; no factory = deny.
+        self.approval_store = None
+        self.source_authority = None
 
     def close(self):
         with self._lock:
@@ -213,6 +220,14 @@ class OfficialInboxStore:
             cursor.execute("""INSERT INTO qq_official_gateway_receipts
                 (account_key,session_id,seq,event_type,disposition,inbox_id,received_at) VALUES (?,?,?,?,?,?,?)""",
                 (account.key, session_id, seq, event_type, result.disposition, result.inbox_id, now))
+            if result._native_admission is not None:
+                self.source_authority.record(cursor, token=token, proof=result._native_admission,
+                    inbox_id=result.inbox_id, session_id=session_id, seq=seq)
+                result = replace(result, _native_admission=None)
+            if result._approval_input is not None:
+                control = apply_control(cursor, store=self.approval_store, inbox_id=result.inbox_id,
+                    session_id=session_id, seq=seq, command=result._approval_input, now=now)
+                result = replace(result, approval=control, _approval_input=None)
             if result.binding is not None and result.inbox_id is not None:
                 control_id = record_decision(cursor, token, inbox_id=result.inbox_id,
                     source_session_id=session_id, source_seq=seq, now=now)
@@ -273,6 +288,13 @@ class OfficialInboxStore:
             target = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=? FOR UPDATE", (endpoint.key,)).fetchone()
             if (target["generation"] == original["endpoint_generation"] and target["route_epoch"] == original["route_epoch"]
                     and target["canonical_scope_key"] == endpoint.scope.key and self.admitted(cursor, endpoint, actor)):
+                if self.source_authority is not None:
+                    from .migration_types import MigrationDenied
+                    try:
+                        self.source_authority.require_inbox(cursor, inbox_id, endpoint=endpoint,
+                            actor=actor, operation='ingest')
+                    except MigrationDenied:
+                        return Acceptance('duplicate', inbox_id, 'migration_route_unavailable')
                 cursor.execute("UPDATE qq_official_inbound_events SET trigger_requested=TRUE,updated_at=? WHERE inbox_id=?", (now, inbox_id))
                 if original["status"] == "processed":
                     from .ingest import ensure_turn_dispatch
@@ -327,7 +349,21 @@ class OfficialInboxStore:
             # A prior DEL's revoked binding is deliberately not reactivated.
             cursor.execute("UPDATE qq_official_endpoints SET membership_state='present',updated_at=? WHERE endpoint_key=?", (now, endpoint.key))
             endpoint_row = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,)).fetchone()
+        native_admission = None
+        if isinstance(decoded, DecodedMessage) and self.source_authority is not None:
+            from .migration_types import MigrationDenied
+            try:
+                native_admission = self.source_authority.admit(cursor, token=token,
+                    decoded=decoded, received_at=now)
+            except MigrationDenied:
+                # A paused route is terminal metadata, not a retried event or
+                # permission to run a binding/approval reducer before the fence.
+                result = self._terminal(cursor, account, dispatch.event_type, now, 'migration_route_unavailable')
+                self._save_aliases(cursor, account, aliases, result.inbox_id, now)
+                return result
         decision = None
+        approval_input = None
+        approval = None
         payload = None
         status, reason, echo = "skipped", "not_admitted", "not_echo"
         if not isinstance(decoded, DecodedMessage):
@@ -341,6 +377,7 @@ class OfficialInboxStore:
                 (account.key, endpoint.key, native_id)).fetchone()
             prepared_input = normalize_input(dispatch)
             command = prepared_input.command
+            admin_input = prepare_approval_input(dispatch, endpoint)
             if sent is not None:
                 reason, echo = "self_echo", "confirmed_self"
             elif prepared_input.kind == "quarantine":
@@ -357,6 +394,27 @@ class OfficialInboxStore:
                 if decision.status != "limited":
                     from .ingest import observe_reply_window
                     observe_reply_window(cursor, decoded, endpoint_row, now)
+            elif admin_input.kind == 'quarantine':
+                status, reason = 'quarantined', 'input_sensitive_approval'
+            elif admin_input.kind == 'control':
+                status, reason = 'processed', 'admin_control_unavailable'
+                approval = ControlResult('denied')
+                store = self.approval_store
+                if store is not None:
+                    from src.bot_security.store import SecurityError
+                    from .approval_transport import Recipient
+                    if store.transport is None or store.transport.token != token:
+                        raise IngressError('Official approval epoch mismatch')
+                    status, reason, approval_input = 'processed', 'admin_control', admin_input
+                    # Only a current real admin may obtain a reply window, and
+                    # only this authenticated event's ORIGINAL timestamp is used.
+                    try:
+                        store.transport.account_for_recipient(cursor, Recipient(endpoint, decoded.actor))
+                    except (SecurityError, PermissionError):
+                        pass
+                    else:
+                        from .ingest import observe_reply_window
+                        observe_reply_window(cursor, decoded, endpoint_row, now)
             elif self.admitted(cursor, endpoint, decoded.actor):
                 payload = json.dumps({"op": 0, "t": dispatch.event_type, "s": dispatch.seq,
                                       "id": dispatch.event_id, "d": dispatch.data}, ensure_ascii=False, separators=(",", ":"))
@@ -367,6 +425,12 @@ class OfficialInboxStore:
         inbox_id = self._insert(cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=endpoint_row,
             native_id=native_id, event_id=event_id, status=status, reason=reason, payload=payload, echo=echo,
             trigger=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending")
+        if approval_input is not None:
+            commitment = control_commitment(self.approval_store.transport.secret,
+                inbox_id=inbox_id, endpoint=endpoint, actor=decoded.actor, command=approval_input)
+            cursor.execute("""UPDATE qq_official_inbound_events
+                SET admin_control_actor_key=?,admin_control_commitment=? WHERE inbox_id=?""",
+                (decoded.actor.key, commitment, inbox_id))
         if decision is not None:
             cursor.execute("""UPDATE qq_official_inbound_events
                 SET control_actor_key=?,control_action=?,control_decision_code=? WHERE inbox_id=?""",
@@ -383,8 +447,8 @@ class OfficialInboxStore:
             if job.kind != kind or job.scope_key != lane or job.payload != job_payload:
                 raise IngressError("Official ingest job identity conflict")
             cursor.execute("UPDATE qq_official_inbound_events SET ingest_job_id=? WHERE inbox_id=?", (job.job_id, inbox_id))
-        disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision else "skipped"
-        return Acceptance(disposition, inbox_id, reason or "", decision)
+        disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision or approval else "skipped"
+        return Acceptance(disposition, inbox_id, reason or "", decision, approval, approval_input, native_admission)
 
     def _lifecycle(self, cursor, account, dispatch, now):
         body = dispatch.data

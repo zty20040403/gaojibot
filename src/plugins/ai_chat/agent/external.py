@@ -16,6 +16,7 @@ class ExternalPending(BaseException):
 
 
 active_external: ContextVar[ExternalCalls | None] = ContextVar("agent_external_calls", default=None)
+active_official_external: ContextVar[object | None] = ContextVar('official_external_bridge', default=None)
 SUBMISSIONS = {"/v1/ops/call", "/v1/operations/prepare", "/v1/jobs", "/v1/deployments/prepare"}
 READ_PATH = re.compile(r"/v1/(operations|jobs|deployments)/[A-Za-z0-9_.-]+")
 TERMINAL = {
@@ -59,7 +60,7 @@ class ExternalStoreMixin:
         return [{**dict(row), "request": json.loads(row["request_json"]),
                  "response": json.loads(row["response_json"])} for row in rows]
 
-    def begin_external(self, task_id, revision, run_id, call_id, request):
+    def begin_external(self, task_id, revision, run_id, call_id, request, *, official_once_path=None):
         assert_job_owned()
         if self.control(task_id)["revision"] != revision:
             raise ValueError("External request belongs to an obsolete task revision")
@@ -67,6 +68,25 @@ class ExternalStoreMixin:
             owner = cursor.execute("SELECT run_id FROM subagent_runs WHERE task_id=? AND run_id=?", (task_id, run_id)).fetchone()
             if owner is None:
                 raise PermissionError("External request is outside its task")
+            if official_once_path is not None:
+                bridge = active_official_external.get()
+                if (bridge is None or bridge.store is not self
+                        or request.get('method') != 'POST' or request.get('path') != official_once_path
+                        or re.fullmatch(r'/v1/operations/op_[a-f0-9]{32}/approve', official_once_path) is None):
+                    raise PermissionError('Official external operation scope is unavailable')
+                # The current task row serializes different model call IDs and
+                # parallel steps before ANY physical approval handoff.
+                cursor.execute('SELECT task_id FROM subagent_tasks WHERE task_id=? FOR UPDATE', (task_id,))
+                previous = cursor.execute("""SELECT run_id,call_id,request_json FROM subagent_external_calls
+                    WHERE task_id=? AND revision=? AND request_json::jsonb->>'path'=?
+                    AND request_json::jsonb->>'method'='POST' ORDER BY updated_at,run_id,call_id LIMIT 1""",
+                    (task_id,revision,official_once_path)).fetchone()
+                if previous is not None:
+                    original = json.loads(previous['request_json'])
+                    if any(original.get(k) != request.get(k) for k in
+                           ('method','path','body','actor','origin','official_source')):
+                        raise PermissionError('Official external operation contract changed')
+                    return previous['run_id'], previous['call_id']
             cursor.execute("""INSERT INTO subagent_external_calls
                 (task_id, revision, run_id, call_id, request_json, status, updated_at)
                 VALUES (?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT DO NOTHING""",
@@ -77,11 +97,20 @@ class ExternalStoreMixin:
             if row["request_json"] != canonical(request):
                 raise ValueError("Provider reused a tool call id for a different external request")
 
-    def finish_external(self, item, response):
+    def finish_external(self, item, response, *, official_resume_ready=False):
         path = remote_path(response) or item.get("remote_path", "")
         state = str(remote_record(response).get("status") or "")
         # A handle without a recognized final state is not proof of completion.
-        waiting = bool(path and state not in TERMINAL)
+        if official_resume_ready:
+            bridge = active_official_external.get()
+            if bridge is None or bridge.store is not self:
+                raise PermissionError('Official external operations are unavailable')
+            source = bridge.guard(item['task_id'])
+            _, context, contract = bridge._record(source, response)
+            if (state != 'awaiting_approval' or item['request']['path'] != '/v1/operations/prepare'
+                    or not bridge.granted(context, contract)):
+                raise PermissionError('Official external receipt is not ready')
+        waiting = bool(path and state not in TERMINAL and not official_resume_ready)
         if self.control(item["task_id"])["revision"] == item["revision"]:
             request = item.get("request") or json.loads(item.get("request_json") or "{}")
             ref = self.record_evidence(item["task_id"], item["run_id"], request.get("tool_name", ""),
@@ -98,7 +127,10 @@ class ExternalStoreMixin:
         """Repair a crash between the durable remote receipt and transcript commit."""
         task = self.get(task_id)
         if getattr(task, "endpoint", None) is not None and self.external_calls(task_id):
-            raise PermissionError("Official external operations are unavailable")
+            bridge = active_official_external.get()
+            if bridge is None or bridge.store is not self:
+                raise PermissionError("Official external operations are unavailable")
+            bridge.hydrate(task_id)
         identity = owner_fields(make_owner(task.requester_user_id,
             getattr(task, "endpoint", None), getattr(task, "requester_actor", None)))
         session = self.agent_session(task_id, run_id, scope_key=task.scope_key, **identity)
@@ -147,7 +179,10 @@ class ExternalCalls:
     async def request(self, method, path, body, *, actor, origin, perform):
         task = self.store.get(self.task_id)
         if getattr(task, "endpoint", None) is not None:
-            raise PermissionError("Official external operations are unavailable")
+            bridge = active_official_external.get()
+            if bridge is None or bridge.store is not self.store:
+                raise PermissionError("Official external operations are unavailable")
+            return await bridge.request(self, method, path, body, actor=actor, origin=origin, perform=perform)
         if not self.call_id or not ((method == "POST" and path in SUBMISSIONS)
                                    or (method == "GET" and READ_PATH.fullmatch(path))):
             return await perform(body)
@@ -181,7 +216,10 @@ class ExternalCalls:
 async def poll_external(store, task, client):
     """Called only by the task lease holder; never runs an LLM."""
     if getattr(task, "endpoint", None) is not None:
-        raise PermissionError("Official external operations are unavailable")
+        bridge = active_official_external.get()
+        if bridge is None or bridge.store is not store:
+            raise PermissionError("Official external operations are unavailable")
+        return await bridge.poll(task, client)
     from ..server_task_authorization import server_task
     control = store.control(task.task_id)
     actual_user = store.revision_actor(task.task_id)

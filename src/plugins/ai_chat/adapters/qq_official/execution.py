@@ -151,6 +151,12 @@ def _load(cursor, *, token, job, now, admission):
         (inbox_id, token.account_key)).fetchone()
     if inbox is None:
         raise ExecutionError("turn_inbox_unavailable")
+    if getattr(admission, 'lock_inbox', None) is not None:
+        from .migration_types import MigrationDenied
+        try:
+            admission.lock_inbox(cursor, inbox_id, operation='execute')
+        except MigrationDenied:
+            raise ExecutionFenceLost('migration_source_unavailable') from None
     endpoint_row = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=? AND account_key=? FOR UPDATE",
         (inbox["endpoint_key"], token.account_key)).fetchone()
     inbox = cursor.execute("SELECT * FROM qq_official_inbound_events WHERE inbox_id=? FOR UPDATE", (inbox_id,)).fetchone()
@@ -193,6 +199,13 @@ def _load(cursor, *, token, job, now, admission):
             or (endpoint.kind == "group" and endpoint_row["binding_state"] != "active")
             or not callable(admission) or admission(cursor, endpoint, actor) is not True):
         raise ExecutionFenceLost("turn_admission_changed")
+    require_source = getattr(admission, 'require_inbox', None)
+    if require_source is not None:
+        from .migration_types import MigrationDenied
+        try:
+            require_source(cursor, inbox_id, endpoint=endpoint, actor=actor, operation='execute')
+        except MigrationDenied:
+            raise ExecutionFenceLost('migration_source_unavailable') from None
     input_digest = _digest(_json([token.account_key, endpoint.key, actor.key, inbox_id,
         job.job_id, inbox["native_message_id"], inbox["event_id"], inbox["received_at"],
         message["canonical_message_id"], message["scope_key"], message["body_json"], message["occurred_at"],

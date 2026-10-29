@@ -10,7 +10,6 @@ from src.bot_storage import DatabaseError
 from src.project_content import project_path
 from src.sandbox_runtime.docker import NIX_ATTRIBUTE_PATTERN, SandboxError
 from .ai_tools import SANDBOX_TOOLS
-from .onebot_codec import scope_from_event
 from .project_access import project_access, projects_available
 from .project_executor import _store
 from .project_io import BROWSER_SESSION_TOOL, WRITE_TOOLS
@@ -49,6 +48,16 @@ def _identity(context, name, arguments):
     call_id = active_tool_call_id.get()
     if not isinstance(call_id, str) or not call_id or len(call_id) > 256:
         raise ProjectConflict("A stable host tool-call identity is required")
+    from .tools.state import structured_tool_source
+    structured = structured_tool_source(context)
+    if structured is not None:
+        inbound = getattr(context,'inbound',None)
+        marker = (['inbound',inbound.native_message_id] if inbound is not None else
+                  [structured.source_kind,structured.source_ref,structured.source_revision])
+        key = ['official-project-io-v1',structured.endpoint.key,structured.actor.key,*marker,call_id]
+        digest = hashlib.sha256(json.dumps([name,arguments],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+        return hashlib.sha256(json.dumps(key).encode()).hexdigest(),digest
+    from .onebot_codec import scope_from_event
     event, scope = context.event, scope_from_event(context.event)
     key = [
         scope.key,
@@ -119,7 +128,11 @@ async def _execute(context, name, args):
     runtime = context.app.project_runtime
     key, digest = _identity(context, name, args)
     access = await project_access(context)
-    if name in WRITE_TOOLS and not context.app.settings.is_sandbox_user_allowed(
+    from .project_authorization import official_project
+    official = official_project(access) is not None
+    if official and getattr(context,'inbound',None) is None:
+        raise PermissionError('Project task steps use their isolated pinned baseline, not the live workspace')
+    if name in WRITE_TOOLS and not official and not context.app.settings.is_sandbox_user_allowed(
         context.event.user_id
     ):
         raise PermissionError("Sandbox execution is not allowed")
@@ -148,7 +161,7 @@ async def _execute(context, name, args):
             return (await _store(runtime.io.receipt, access, grant))["result"]
     elif project["status"] != "active" or project["lifecycle_job_id"] is not None:
         if project["lifecycle_job_id"] is None:
-            if not context.app.settings.is_sandbox_user_allowed(context.event.user_id):
+            if not official and not context.app.settings.is_sandbox_user_allowed(context.event.user_id):
                 raise PermissionError("Sandbox execution is not allowed")
             await _store(
                 runtime.lifecycle.request,
@@ -168,7 +181,7 @@ async def _execute(context, name, args):
             await _settle(runtime, access, pending)
         project = await _store(runtime.store.get, access, pid)
         if name in WRITE_TOOLS:
-            await runtime.sampler.sample_one(project)
+            await runtime.sampler.sample_one(project, source=access) if official else await runtime.sampler.sample_one(project)
         grant = await _store(
             runtime.io.admit,
             access,
@@ -182,7 +195,8 @@ async def _execute(context, name, args):
             else 0,
             installing_dependencies=bool(args.get("packages")),
             journal_turn_id=context.journal_turn_id,
-            native_message_id=context.event.message_id,
+            native_message_id=(context.inbound.native_message_id if context.inbound is not None else None)
+            if official else context.event.message_id,
         )
     try:
         await runtime.backends[project["backend"]].io_evidence(project)
@@ -202,7 +216,13 @@ async def _execute(context, name, args):
             else:
                 access = await project_access(context)
                 try:
-                    result = await _store(runtime.files.queue, access, grant, content, args["path"], args.get("filename"))
+                    if official:
+                        delivery = getattr(runtime,'official_file_delivery',None)
+                        if delivery is None:
+                            raise PermissionError('Official project file delivery is unavailable')
+                        result = await delivery(access,grant,content,args['path'],args.get('filename'))
+                    else:
+                        result = await _store(runtime.files.queue, access, grant, content, args["path"], args.get("filename"))
                 except ProjectQuotaRejected as exc:
                     result = _error(exc.code, "会话用量尚未核实，未创建文件副本或投递。")
                 except ProjectQuotaExceeded:
@@ -228,7 +248,7 @@ async def _execute(context, name, args):
     if name in WRITE_TOOLS:
         try:
             project = await _store(runtime.store.get, access, pid)
-            await runtime.sampler.sample_one(project)
+            await runtime.sampler.sample_one(project, source=access) if official else await runtime.sampler.sample_one(project)
         except (
             PermissionError,
             JobDeferred,

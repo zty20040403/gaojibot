@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         from .cluster_credentials import cluster_credentials
         with cluster_credentials(cluster_token):
             import nonebot
-            from nonebot.adapters.onebot.v11 import Adapter
+            from src.plugins.ai_chat.adapters.onebot_route import RouteGuardedOneBotAdapter as Adapter
             nonebot.init(_env_file=(os.devnull,))
             nonebot.get_driver().register_adapter(Adapter)
             nonebot.load_plugin("src.plugins.ai_chat.onebot_plugin")

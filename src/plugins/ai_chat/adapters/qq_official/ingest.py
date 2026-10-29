@@ -214,6 +214,12 @@ def process_inbox(
         return IngestResult("missing", "inbox_not_found")
     if row["status"] != "pending":
         return _result(row)
+    if getattr(admission, 'lock_inbox', None) is not None:
+        from .migration_types import MigrationDenied
+        try:
+            admission.lock_inbox(cursor, inbox_id, operation='ingest')
+        except MigrationDenied:
+            return _finish(cursor, row, timestamp, status='revoked', reason='migration_source_unavailable')
     # Lock the actual endpoint before the inbox, matching the control reducers.
     endpoint_row = cursor.execute("""SELECT * FROM qq_official_endpoints
         WHERE endpoint_key=? AND account_key=? FOR UPDATE""", (row["endpoint_key"], account.key)).fetchone()
@@ -266,10 +272,18 @@ def process_inbox(
     # actor mappings require a full ActorKey and independently verified proof.
     if admission is None or admission(cursor, endpoint, decoded.actor) is not True:
         return _finish(cursor, row, timestamp, status="revoked", reason="policy_denied")
+    require_source = getattr(admission, 'require_inbox', None)
+    if require_source is not None:
+        from .migration_types import MigrationDenied
+        try:
+            require_source(cursor, inbox_id, endpoint=endpoint, actor=decoded.actor, operation='ingest')
+        except MigrationDenied:
+            return _finish(cursor, row, timestamp, status='revoked', reason='migration_source_unavailable')
     if existing is not None:
         return _finish(cursor, row, timestamp, reason="duplicate_message", canonical=existing["canonical_message_id"])
     prepared_input = normalize_input(dispatch)
-    if prepared_input.kind != "message":
+    from .approval_control import prepare_approval_input
+    if prepared_input.kind != "message" or prepare_approval_input(dispatch, endpoint).kind != "none":
         # Old/incorrect TxA admission must still never put a binding secret into
         # canonical history or leave its raw payload behind for later workers.
         cursor.execute("UPDATE qq_official_inbound_events SET payload_json=NULL WHERE inbox_id=?", (inbox_id,))

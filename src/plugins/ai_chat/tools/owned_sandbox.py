@@ -16,7 +16,7 @@ _NAMES = frozenset({'sandbox_create', 'sandbox_list', 'sandbox_destroy', 'sandbo
 def enabled(context):
     executor = context.agent_executor
     return ('sandbox' in context.capabilities and isinstance(executor, OwnedSandboxExecutor)
-            and executor.generation_enabled and executor.matches(context.inbound))
+            and executor.generation_enabled and executor.matches(context.inbound or context.background_source))
 
 
 async def execute(turn, arguments, *, name):

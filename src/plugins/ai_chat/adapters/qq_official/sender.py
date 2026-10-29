@@ -480,6 +480,14 @@ class OfficialSender:
         Preview metadata is sealed in its ordinary plan; outbox revalidates the
         exact pending candidate/version/grant on every subsequent retry.
         """
+        return await self.emit_ephemeral(self._binding_plan, effect)
+
+    async def emit_ephemeral(self, prepare, *args):
+        """Internal host plan port; no authority is conferred by this callback.
+
+        Outbox validates the persisted source and one-attempt constraints. This
+        is shared with binding OTP, never an independent queue or HTTP path.
+        """
         delivery_id = None
         try:
             async with asyncio.timeout(30):
@@ -487,7 +495,7 @@ class OfficialSender:
                     await self.recover()
                 await self._fence()
                 async with self._schedule_lock:
-                    work = asyncio.create_task(self._calls(self._binding_plan, effect))
+                    work = asyncio.create_task(self._calls(prepare, *args))
                     try:
                         ref = await asyncio.shield(work)
                     except asyncio.CancelledError:

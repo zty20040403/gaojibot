@@ -216,6 +216,22 @@ class DockerProjectBackend:
             **extra,
         }
 
+    async def _official_fence(self,job,access):
+        from .agent.control import assert_job_owned
+        assert_job_owned()
+        from .project_quota import QuotaAuthority
+        if type(access) is QuotaAuthority:
+            # Resize uses its own administrator audit and lifecycle checks;
+            # it never grants a chat actor access to project files or tools.
+            if access.job_id != job.job_id:
+                raise PermissionError('project_quota_job_mismatch')
+            return
+        from .project_authorization import official_project
+        if official_project(access) is not None:
+            if self.files is None:
+                raise PermissionError('project_authority_unavailable')
+            await _store(self.files.lifecycle.pre_rpc,job)
+
     async def execute(self, job, step, access):
         args, operation = step["arguments"], step["operation"]
         owner, pid, generation = args["owner"], args["project_id"], args["generation"]
@@ -234,6 +250,7 @@ class DockerProjectBackend:
             if action == "create":
                 options.pop("reservation")
                 options["quota_bytes"] = args["quota_bytes"]
+            await self._official_fence(job,access)
             observed = await self.client.project_volume(action, owner, pid, **options)
             self._identity(step, observed)
             if observed["fence"] != args["fence"]:
@@ -257,6 +274,7 @@ class DockerProjectBackend:
             return self._evidence(step, observed)
         if operation in self.WORKSPACES:
             action = self.WORKSPACES[operation]
+            await self._official_fence(job,access)
             observed = await self.client.project_workspace(
                 action, owner, pid, **options
             )
@@ -281,6 +299,7 @@ class DockerProjectBackend:
         if operation not in self.VERIFICATIONS:
             raise ProjectBackendUnavailable("Unknown project operation")
         state = operation.removeprefix("verify_")
+        await self._official_fence(job,access)
         volume = await self.client.project_volume(
             "status", owner, pid, generation=generation
         )
@@ -291,6 +310,7 @@ class DockerProjectBackend:
         if state == "archived":
             valid = volume.get("deleted") is True
         else:
+            await self._official_fence(job,access)
             workspace = await self.client.project_workspace(
                 "status", owner, pid, generation=generation
             )
@@ -349,12 +369,22 @@ class ProjectLifecycleExecutor:
                 step = await _store(self.lifecycle.next_step, job)
                 if step is None:
                     return await _store(self.lifecycle.finish, job, access=access)
+                if run.get('official_authority'):
+                    access = await self._access(project, run, job)
+                    await _store(self.lifecycle.context, job, access=access)
+                from .adapters.onebot_route_context import start_project_effect
+                managed_effect = (None if run['action'] == 'resize' else
+                    await _store(start_project_effect, access.scope,
+                        domain="project.lifecycle", reference=f"{job.job_id}:{step['step_index']}"))
                 evidence = await backend.execute(job, step, access)
-                # Membership can be revoked while a long helper operation runs.
+                if run.get('official_authority') or managed_effect is not None:
+                    # Historical receipt only: no authority for the next effect.
+                    await _store(self.lifecycle.acknowledge, job, step, evidence)
                 await _store(
                     self.lifecycle.context, job, access=await self._access(project, run, job)
                 )
-                await _store(self.lifecycle.acknowledge, job, step, evidence)
+                if not run.get('official_authority') and managed_effect is None:
+                    await _store(self.lifecycle.acknowledge, job, step, evidence)
         except JobDeferred:
             # A disconnected account is a wait, not a failed physical operation.
             # Keep the persisted step intact for the next leased attempt.
@@ -369,7 +399,8 @@ class ProjectLifecycleExecutor:
     async def _access(self, project, run, job=None):
         if run["action"] == "resize":
             return await _store(self.lifecycle.quota_authority, job)
-        access = self.resolve_access(project, run["actor_principal_id"])
+        access = (self.resolve_access(project, run["actor_principal_id"], job=job)
+                  if run.get('official_authority') else self.resolve_access(project, run["actor_principal_id"]))
         access = await access if inspect.isawaitable(access) else access
         if not isinstance(access, ProjectAccess):
             raise PermissionError(

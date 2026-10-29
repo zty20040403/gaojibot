@@ -16,11 +16,14 @@ from .file_links import (
     ArtifactRef,
     LinkError,
     Publication,
+    PublicationNotCreated,
     _digest,
     _origin,
     _ref,
     _timestamp,
 )
+
+from .project_authority import RecipientEvidenceUnavailable
 
 MAX_BIGINT = 2**63 - 1
 _SELECT = """SELECT p.publication_ref,p.credential_ref,p.request_key,p.token_digest,
@@ -58,6 +61,8 @@ class PgPublicationStore:
     async def _call(self, operation, *args):
         try:
             return await self._calls(operation, *args)
+        except PublicationNotCreated:
+            raise
         except Exception:  # noqa: BLE001 - no DB driver parameters/authority exceptions escape.
             raise LinkError("publication_storage_unavailable") from None
 
@@ -118,8 +123,13 @@ class PgPublicationStore:
             raise LinkError("invalid_publication_initial_state")
         with self._transaction() as cursor:
             # Callback owns account/endpoint/source locks BEFORE artifact lock.
-            if self._authority is None or self._authority(cursor, value.artifact, value.expires_at) is not True:
-                raise LinkError("publication_authority_unavailable")
+            try:
+                if self._authority is None or self._authority(cursor, value.artifact, value.expires_at) is not True:
+                    raise LinkError("publication_authority_unavailable")
+            except RecipientEvidenceUnavailable:
+                # No INSERT has run. The transaction manager rolls this back;
+                # a rollback failure is sanitized as unknown by _call instead.
+                raise PublicationNotCreated() from None
             artifact = cursor.execute("""SELECT artifact_id,sha256,byte_size,mime,filename,
                 bytes_state,retain_until,pending_deadline_at
                 FROM qq_official_file_artifacts WHERE artifact_id=? FOR SHARE""",

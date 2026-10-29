@@ -5,7 +5,7 @@ from src.plugins.ai_chat.agent.control import LeaseLost
 from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease
 from src.plugins.ai_chat.platform_types import AccountKey
 from src.plugins.ai_chat.adapters.qq_official.file_artifacts import file_job_kind
-from src.plugins.ai_chat.adapters.qq_official.file_authority import assert_file_current
+from src.plugins.ai_chat.adapters.qq_official.file_authority import assert_file_current, assert_file_read_current
 from tests.qq_official_file_fixture import FileFixture
 
 
@@ -31,6 +31,24 @@ class FileAuthorityTests(FileFixture):
         artifact,delivery=self.check()
         self.assertEqual(artifact['artifact_id'],self.item.artifact_id)
         self.assertEqual(delivery['job_id'],self.file_job.job_id)
+
+    def test_current_native_source_epoch_blocks_worker_but_retained_read_is_independent(self):
+        calls=[]
+        class Admission:
+            def __call__(inner,cursor,endpoint,actor):
+                return self.admission(cursor,endpoint,actor)
+            def require_execution(inner,cursor,execution_id,*,endpoint,actor,operation):
+                calls.append((execution_id,endpoint,actor,operation))
+                raise LeaseLost('TEST_logical_route_paused')
+        admission=Admission()
+        with self.assertRaisesRegex(LeaseLost,'TEST_logical_route_paused'):
+            self.check(admission=admission)
+        self.assertEqual(calls,[(self.handle.execution_id,self.endpoint,self.actor,'execute')])
+        with self.tx() as cursor:
+            record,_=assert_file_read_current(cursor,token=self.token,artifact_id=self.item.artifact_id,
+                admission=admission,now=self.now)
+        self.assertEqual(record['artifact_id'],self.item.artifact_id)
+        self.assertEqual(len(calls),1)
 
     def test_file_frozen_artifact_after_producer_completed(self):
         self.finish_producer()

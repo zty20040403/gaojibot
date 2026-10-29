@@ -38,6 +38,8 @@ class ProjectUsageStore:
         now = int(time.time()) if now is None else now
         with self.projects._transaction() as cursor:
             self.projects._scope_lock(cursor, access)
+            from .project_authorization import official_project
+            official=official_project(access) is not None
             project = self.projects._get(
                 cursor,
                 access,
@@ -45,6 +47,7 @@ class ProjectUsageStore:
                 owner=True,
                 expected=expected_version,
                 allow_trash=True,
+                operation='project.execute' if official else None,
             )
             if project["lifecycle_job_id"] is not None:
                 raise ProjectConflict(
@@ -200,6 +203,9 @@ class ProjectUsageStore:
         installing_dependencies=False, scope_reservation=None, now,
     ):
         """Admission and a subsequent I/O reservation share one scope transaction."""
+        # Callers already authorized this exact project. Migrated resources
+        # keep their original scope's quota, independently of the new endpoint.
+        scope_key=project['scope_key']
         row = cursor.execute(
             "SELECT * FROM project_usage WHERE project_id=?", (project["project_id"],)
         ).fetchone()
@@ -215,18 +221,18 @@ class ProjectUsageStore:
             peers = cursor.execute(
                 """SELECT p.*,u.complete,u.generation,u.fence,u.sample FROM projects p
                 LEFT JOIN project_usage u USING(project_id) WHERE p.scope_key=? AND p.status<>'purged'""",
-                (access.scope.key,),
+                (scope_key,),
             ).fetchall()
             if any(not self._fresh(peer, peer, now) for peer in peers):
                 code = "project_scope_usage_unknown"
-        reserved = self.projects._scope_reserved_bytes(cursor, access.scope.key)
+        reserved = self.projects._scope_reserved_bytes(cursor, scope_key)
         if (
             code is None
-            and self.projects._scope_bytes(cursor, access.scope.key) + reserved
+            and self.projects._scope_bytes(cursor, scope_key) + reserved
             + (expected_bytes if scope_reservation is None else scope_reservation)
             >= cursor.execute(
                 "SELECT quota_bytes FROM project_scope_limits WHERE scope_key=?",
-                (access.scope.key,),
+                (scope_key,),
             ).fetchone()[0]
         ):
             code = "project_scope_quota_full"
@@ -266,6 +272,12 @@ class ProjectUsageStore:
                 EXISTS(SELECT 1 FROM project_version_blobs r WHERE r.project_id=? AND r.sha256=b.sha256)""",
                 (project_id,),
             ).fetchone()[0]
+            official_copies = 0
+            if cursor.execute("SELECT to_regclass('qq_official_project_artifacts')").fetchone()[0] is not None:
+                official_copies = int(cursor.execute("""SELECT coalesce(sum(byte_size),0) FROM
+                    (SELECT DISTINCT a.sha256,a.byte_size FROM qq_official_project_artifacts p
+                     JOIN qq_official_file_artifacts a USING(artifact_id)
+                     WHERE p.project_id=? AND a.bytes_state='available') copies""",(project_id,)).fetchone()[0])
             return {
                 "project_id": project_id,
                 "quota_bytes": project["quota_bytes"],
@@ -280,7 +292,7 @@ class ProjectUsageStore:
                 "version_bytes": int(versions),
                 "delivery_bytes": int(cursor.execute("""SELECT coalesce(sum(byte_size),0) FROM project_blobs b
                     WHERE EXISTS(SELECT 1 FROM project_file_deliveries f WHERE f.project_id=? AND f.blob_sha256=b.sha256)""",
-                    (project_id,)).fetchone()[0]),
+                    (project_id,)).fetchone()[0]) + official_copies,
                 "sampled_at": project["sampled_at"],
                 "complete": fresh,
                 "error": row["error"] if row else "not_sampled",
@@ -354,7 +366,18 @@ class ProjectUsageSampler:
         )
         self._after, self._lock = 0, asyncio.Lock()
 
-    async def _access(self, project):
+    async def _access(self, project, *, source=None):
+        if source is not None:
+            from .project_authorization import official_project
+            proof = official_project(source)
+            if proof is None:
+                raise PermissionError('project_authority_denied')
+            def current():
+                with self.store.projects._transaction() as cursor:
+                    from .adapters.qq_official.project_authority import Operation
+                    proof.provider.require(cursor,proof,project_id=project['project_id'],operation=Operation.EXECUTE)
+            await _store(current)
+            return source
         access = self.resolve_access(project, project["creator_principal_id"])
         access = await access if inspect.isawaitable(access) else access
         if (
@@ -366,11 +389,11 @@ class ProjectUsageSampler:
             raise PermissionError("Usage sampling needs the live project owner")
         return access
 
-    async def sample_one(self, project):
+    async def sample_one(self, project, *, source=None):
         async with asyncio.timeout(30):
-            await self._access(project)
+            await self._access(project, source=source)
             sample = await self.backends[project["backend"]].sample_usage(project)
-        access = await self._access(project)
+        access = await self._access(project, source=source)
         await _store(
             self.store.record, access, project["project_id"], sample,
             expected_version=project["version"],
