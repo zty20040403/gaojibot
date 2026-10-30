@@ -1,9 +1,4 @@
-"""M4 draft: one execution's SDK-free TurnPlatform over the existing M3 outbox.
-
-No REST method or sender.send_delivery is available here. The runtime owns the
-single sender, credentials, account lease and trusted policy providers. This
-module is not installed in the repository and does not enable any runtime.
-"""
+"""Official turn output: streaming sections and final replies share the sender."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -12,7 +7,7 @@ import time
 from src.plugins.ai_chat.adapters.qq_official.identity_store import snapshot
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost, assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
-from src.plugins.ai_chat.message_ir import body_to_json
+from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_to_json
 from src.plugins.ai_chat.message_lowering import OutboundCapabilities
 from src.plugins.ai_chat.platform_types import (
     AccountKey, ActorKey, EffectiveCapabilities, EndpointKey, InboundMessage,
@@ -109,7 +104,7 @@ class ExecutionBinding:
 class OfficialTurnPlatform:
     capabilities = OutboundCapabilities(text=True, mention="native", max_native_media=0)
     features = PlatformFeatures(markdown=True)
-    stream_enabled = False
+    stream_enabled = True
     progress_enabled = True
 
     def __init__(self, inbound: InboundMessage, *, execution: ExecutionBinding,
@@ -288,7 +283,7 @@ class OfficialTurnPlatform:
                 return SendOutcome("failed", reason="delivery_expired")
             rendered = render_plan(frozen, self.endpoint, markdown=self.policy.markdown,
                 max_chars=self.policy.max_chars, max_parts=self.policy.max_parts, max_bytes=self.policy.max_bytes,
-                allowed_mentions=self._mentions(cursor, now), paragraphs=True)
+                allowed_mentions=self._mentions(cursor, now), paragraphs=True, math_mode="dollar_delimiters")
             if rendered.status != "ready":
                 return SendOutcome("failed", reason="needs_attachment")
             handle = self.execution.handle
@@ -299,6 +294,25 @@ class OfficialTurnPlatform:
                 source_native_message_id=self.inbound.native_message_id, transaction_cursor=cursor)
             self.execution.attach(cursor, ref.plan_id, now)
             return self._plan_outcome(cursor, ref.plan_id)
+
+    def _enqueue_fragment(self, text, index):
+        now = int(self._clock())
+        handle = self.execution.handle
+        with self.outbox.deliveries.transaction() as cursor:
+            current = self.execution.current(cursor, now)
+            rendered = render_plan(MessageBody((TextNode(0, text),)), self.endpoint,
+                markdown=self.policy.markdown, max_chars=self.policy.max_chars,
+                max_parts=16, max_bytes=self.policy.max_bytes,
+                paragraphs=True, math_mode="dollar_delimiters")
+            self.outbox.enqueue(self.execution.token, rendered=rendered, requester=handle.actor,
+                logical_key=f"{self.execution.logical_key()}:stream:{index}",
+                source_scope_key=handle.scope_key, source_native_message_id=self.inbound.native_message_id,
+                source_canonical_message_id=handle.canonical_message_id, turn_id=current["journal_turn_id"],
+                expires_at=handle.deadline_at, purpose=handle.result_purpose, transaction_cursor=cursor)
+
+    async def send_fragment(self, text, index):
+        await self._calls(self._enqueue_fragment, text, index)
+        self._sender_wake()
 
     async def send(self, request):
         if not isinstance(request, SendRequest):

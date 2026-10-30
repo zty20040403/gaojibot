@@ -18,8 +18,8 @@ from src.plugins.ai_chat.message_ir import (
     CardNode, EmoteNode, ForwardNode, MediaNode, MentionNode, MessageBody, TextNode,
 )
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
-from src.plugins.ai_chat.reply_paragraphs import paragraph_spans
 from src.qq_official.outgoing import escape_platform_tags
+from .sections import normalize_markdown, section_spans
 
 VERSION = "qq-render-v1"
 MAX_SOURCE_CHARS = 262144
@@ -362,7 +362,7 @@ def _content(units):
     markdown = (start.opener if start else "") + "".join(unit.markdown for unit in units)
     if end:
         markdown += ("" if markdown.endswith("\n") else "\n") + end.marker
-    return markdown, "".join(unit.text for unit in units), "".join(unit.canonical for unit in units)
+    return normalize_markdown(markdown), "".join(unit.text for unit in units), "".join(unit.canonical for unit in units)
 
 
 def _fits(text, max_chars, max_bytes):
@@ -405,7 +405,7 @@ def _make_plan(endpoint, parts, *, reason, warnings, markdown, max_chars, max_pa
     return plan
 
 
-def _paragraph_sources(source, spans, math_mode, warnings):
+def _paragraph_sources(source, spans, math_mode, warnings, max_chars):
     # Reuse the renderer's token boundaries so mentions, inline code, math and
     # graphemes cannot become paragraph control syntax. Code blocks keep the
     # same safe fence handling when a single block needs length fragmentation.
@@ -423,7 +423,7 @@ def _paragraph_sources(source, spans, math_mode, warnings):
         position = end
     if block_start is not None:
         blocks.append((block_start, len(source)))
-    for start, end in paragraph_spans(source, protected=protected, blocks=blocks):
+    for start, end in section_spans(source, protected=protected, blocks=blocks, max_chars=max_chars):
         yield source[start:end], {offset - start: (stop - start, actor)
             for offset, (stop, actor) in spans.items() if start <= offset and stop <= end}
 
@@ -460,7 +460,7 @@ def render_plan(body: MessageBody, endpoint: EndpointKey, *, max_chars=2000, max
         current.clear()
 
     if not reason:
-        groups = _paragraph_sources(source, spans, math_mode, warnings) if paragraphs else ((source, spans),)
+        groups = _paragraph_sources(source, spans, math_mode, warnings, max_chars) if paragraphs else ((source, spans),)
         for text, mentions in groups:
             units = _unicode_units(text, _units(text, mentions, math_mode, warnings))
             if current:
@@ -471,8 +471,8 @@ def render_plan(body: MessageBody, endpoint: EndpointKey, *, max_chars=2000, max
                     units = chain((_Unit("\n\n", "\n\n", "\n\n", None, None),), units)
             for unit in units:
                 candidate = [*current, unit]
-                md, plain, _ = _content(candidate)
-                if _fits(md, max_chars, max_bytes) and _fits(plain, max_chars, max_bytes):
+                md, plain, canonical = _content(candidate)
+                if len(canonical) <= max_chars and _fits(md, max_chars, max_bytes) and _fits(plain, max_chars, max_bytes):
                     current = candidate
                     continue
                 if not current:

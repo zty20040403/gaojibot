@@ -116,7 +116,7 @@ class OfficialSendStore:
             if manifest.get("v") != 1 or manifest.get("source_native_message_id") != row["reply_to_native_message_id"]:
                 raise OutboxInvariantError("delivery_manifest_conflict")
             rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
-                allowed_mentions=self.mention_authority(cursor, endpoint))
+                allowed_mentions=self.mention_authority(cursor, endpoint), max_chars=20000, max_parts=16)
         return content_payload(rendered, row["part_index"], plain_fallback=row["variant"] == "plain_fallback")
 
     def list_due(self, token, *, limit=100):

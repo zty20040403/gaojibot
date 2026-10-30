@@ -22,6 +22,33 @@ from src.plugins.ai_chat import turn_journal as journal_module
 
 
 class ConsumerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_streamed_section_is_queued_before_model_finishes_without_final_duplicate(self):
+        from src.plugins.ai_chat.agent_loop import _create_streaming_completion
+        sections = ["### 一\n表格\n\n- 列表", "\n\n### 二\n剩余回答"]
+
+        async def chunks():
+            for piece in sections:
+                yield SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content=piece, tool_calls=[]), finish_reason=None)])
+
+        async def model(_inbound, _platform, _text, **kwargs):
+            with patch("src.plugins.ai_chat.agent_loop._invoke_completion", AsyncMock(return_value=chunks())):
+                result, emitted = await _create_streaming_completion(kwargs['final_stream_sink'], self.profile)
+            self.assertEqual(emitted, sections[0] + "\n\n")
+            rows = self.f.query("SELECT body_json,turn_id FROM deliveries ORDER BY delivery_id")
+            self.assertEqual(len(rows), 1)
+            self.assertIn("列表", rows[0]['body_json'])
+            self.assertIsNotNone(rows[0]['turn_id'])
+            self.assertEqual(self.f.query("SELECT state FROM qq_official_turn_executions")[0]['state'], 'executing')
+            return result.choices[0].message.content[len(emitted):]
+
+        self.agent.side_effect = model
+        self.assertEqual(await self.consumer(self.f.job), {'status': 'handed_off'})
+        rows = self.f.query("SELECT body_json FROM deliveries ORDER BY delivery_id")
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("列表", rows[1]['body_json'])
+        self.assertIn("剩余回答", rows[1]['body_json'])
+
     def setUp(self):
         self.f = fixture.ExecutionTests("test_result_capture_is_exactly_idempotent_and_rejects_changed_body")
         self.f.setUp()

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from src.plugins.ai_chat.agent_loop import FinalStreamState
 
 from src.plugins.ai_chat.agent.control import active_job_fence, LeaseLost as ToolLeaseLost
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost
@@ -13,6 +14,7 @@ from .commands import route_command
 from .turn_lifecycle import OfficialTurnLifecycle
 from .turn_input import load_turn_input
 from .turn_platform import ExecutionBinding, OfficialTurnPlatform
+from .sections import ReplyStream
 
 
 class OfficialTurnConsumer:
@@ -135,7 +137,8 @@ class OfficialTurnConsumer:
                 else:
                     seconds = min(self.model_timeout_seconds, max(0, handle.deadline_at - self.clock()))
                     async with asyncio.timeout(seconds):
-                        await self.orchestrator.run(inbound, platform, text, durable_lifecycle=life)
+                        await self.orchestrator.run(inbound, platform, text, durable_lifecycle=life,
+                            final_stream_sink=ReplyStream(platform), final_stream_state=FinalStreamState())
             except BaseException:
                 try:
                     await life.interrupted(turn_id=None if handle.execution_kind == "command" else decision.journal_turn_id,
