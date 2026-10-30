@@ -22,6 +22,21 @@ def body(text):
 
 
 class ReplyParagraphTests(unittest.TestCase):
+    def test_headings_keep_tables_lists_and_code_together(self):
+        source = "引言\n\n背景\n\n### 数据\n|a|b|\n|-|-|\n|1|2|\n\n- 一\n- 二\n\n---\n\n### 代码\n```md\n### literal\n---\n```"
+        plan = self.render(source)
+        self.assertEqual(len(plan.parts), 4)
+        self.assertIn("|1|2|\n\n- 一", plan.parts[2].markdown_content)
+        self.assertNotIn("---", plan.parts[2].markdown_content)
+        self.assertIn("### literal\n---", plan.parts[3].markdown_content)
+        self.contents(plan)  # Frozen recovery retains the same chunks.
+
+    def test_qq_markdown_spacing_math_and_long_section(self):
+        plan = self.render("### 一\n**加粗** 空格  \n\\[x=1\\]", math_mode="dollar_delimiters")
+        self.assertEqual(plan.parts[0].markdown_content, "### 一\n**加粗**\u00a0空格\n$$x=1$$")
+        self.assertEqual(self.contents(self.render("### 长\n段落一\n\n段落二\n\n段落三", max_chars=12)),
+                         ["### 长\n段落一", "段落二", "段落三"])
+
     def render(self, text, **options):
         return render_plan(body(text), ENDPOINT, paragraphs=True, **options)
 

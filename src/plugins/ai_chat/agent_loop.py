@@ -1416,7 +1416,7 @@ async def _create_streaming_completion(
                         current["name"] += name
                     if isinstance(arguments, str):
                         current["arguments"] += arguments
-            safe, _held = ready_stream_prefix(content)
+            safe, _held = getattr(type(sink), "ready_prefix", ready_stream_prefix)(content)
             if len(safe) > emitted_length:
                 await sink(safe[emitted_length:])
                 emitted_length = len(safe)

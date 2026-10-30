@@ -225,7 +225,7 @@ class PlatformChatService:
                     context_parts.append(quote_evidence(prepared.replay_digest_prefix, "older_turn_digest"))
                 prompt = "[输出约定]\n直接用文字回答。不要编造原生 @、引用、媒体发送或工具成功回执。"
                 if platform.features.markdown:
-                    prompt += "可以使用 Markdown 排版。"
+                    prompt += "可以使用 Markdown 排版。长回答用 ### 标题分节，每一节会单独发出；同一节的表格和列表放在一起。"
                 skill_index = self.context.skill_registry.prompt_index()
                 if skill_index:
                     prompt += "\n\n" + skill_index

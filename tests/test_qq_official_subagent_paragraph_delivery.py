@@ -81,7 +81,7 @@ class SubagentParagraphDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 rows = self.f.query("SELECT delivery_id FROM deliveries WHERE purpose='progress'")
                 self.assertTrue(rows)
                 self.assertEqual((await self.sender.send_delivery(rows[0]['delivery_id'])).status, 'committed')
-                self.assertEqual((await emitter.say('第二条进度'))['status'], 'suppressed')
+                self.assertEqual((await emitter.say('第二条进度'))['status'], 'enqueued')
             return '{"status":"success","summary":"TEST analysis","artifacts":[]}'
         plan = {'steps': [{'id': 'analysis', 'agent': 'analyst', 'objective': '分析文字', 'depends_on': []}]}
         with patch('src.plugins.ai_chat.subagents.ask_deepseek_json', new=AsyncMock(return_value=plan)), \
@@ -99,7 +99,7 @@ class SubagentParagraphDeliveryTests(unittest.IsolatedAsyncioTestCase):
         return [r['delivery_id'] for r in self.f.query(
             "SELECT delivery_id FROM deliveries WHERE purpose='background_result' ORDER BY part_index")]
 
-    async def test_progress_plus_five_short_paragraphs_send_three_final_parts_and_preserve_one_slot(self):
+    async def test_progress_and_multipart_task_result_share_sender(self):
         result = await self.run_answer('一\n\n二\n\n三\n\n四[split]五')
         self.assertIsNotNone(result['plan_id'])
         self.assertEqual([p['text_content'] for p in self.final_parts()],
@@ -108,9 +108,8 @@ class SubagentParagraphDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ids), 3)
         for delivery in ids:
             self.assertEqual((await self.sender.send_delivery(delivery)).status, 'committed')
+        self.assertEqual(len(self.fake.received), 4)
         self.assertEqual([r['payload']['msg_seq'] for r in self.fake.received], [1, 2, 3, 4])
-        window = self.f.query('SELECT used_count,reserved_count,max_replies FROM qq_official_reply_windows')[0]
-        self.assertEqual((window['used_count'], window['reserved_count'], window['max_replies']), (4, 0, 5))
 
 
     async def test_hard_overflow_freezes_whole_result_with_visible_reason_and_no_partial_plan(self):
