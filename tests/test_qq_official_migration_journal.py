@@ -78,6 +78,18 @@ class JournalTests(JournalFixture):
                                       authorization=self.authorization, now=self.now)
         self.assertEqual(1, self.freeze(refreshed))
 
+    def test_rescheduling_plan_keeps_source_deadlines_and_mapping_expiry(self):
+        plan=self.plan()
+        self.ports.approved.add(plan.preview_digest)
+        columns='execution_deadline,result_deadline,mapping_expires_at,source_native_id'
+        original=dict(self.query('SELECT '+columns+' FROM migration_items')[0])
+        with self.tx() as cursor:
+            refreshed=self.migration.refresh_plan(cursor,migration_id=plan.migration_id,
+                authorization=self.authorization,now=self.now,deadline=self.now+800)
+        self.assertEqual(dict(self.query('SELECT '+columns+' FROM migration_items')[0]),original)
+        self.assertNotEqual(refreshed.preview_digest,plan.preview_digest)
+        self.assertEqual(self.route().route_epoch,0)
+
 
     def test_freeze_advances_epoch_and_denies_source_and_target_new_work(self):
         plan = self.plan()

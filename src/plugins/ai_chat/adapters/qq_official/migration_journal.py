@@ -170,16 +170,20 @@ class Journal(VerificationMethods, MigrationArtifactMethods):
                 raise MigrationDenied("migration_manifest_changed")
         return journal, row
 
-    def refresh_plan(self, cursor, *, migration_id, authorization, now):
+    def refresh_plan(self, cursor, *, migration_id, authorization, now, deadline=None):
         """Replace a stale planned preview; retain each earlier approved digest.
 
-        Same selection and original migration deadline only. This cannot renew
-        a deadline, alter phase or unfreeze any activity.
+        An administrator may explicitly reschedule an unfrozen plan. Every
+        source is re-read; task, mapping, file and reply deadlines are unchanged.
         """
         journal, route = self._load(cursor, migration_id)
-        if route["phase"] != "planned" or journal["deadline"] <= now:
+        if route["phase"] != "planned" or route["epoch"] != 0:
             raise MigrationDenied("migration_phase_mismatch")
         self._control(cursor, authorization, "refresh", journal["preview_digest"], now)
+        if deadline is None:
+            deadline = journal["deadline"]
+        if not now < positive(deadline) <= now+86400:
+            raise MigrationDenied("invalid_migration_deadline")
         baseline = self.routes._baseline(cursor, route["source_account_key"], now)
         source, target = EndpointKey.parse(route["source_endpoint_key"]), EndpointKey.parse(route["target_endpoint_key"])
         scope = ConversationScope.from_key(route["source_scope_key"])
@@ -189,7 +193,8 @@ class Journal(VerificationMethods, MigrationArtifactMethods):
         endpoint = cursor.execute("SELECT generation,route_epoch FROM qq_official_endpoints WHERE endpoint_key=?", (target.key,)).fetchone()
         source_row = (cursor.execute("SELECT generation,route_epoch FROM qq_official_endpoints WHERE endpoint_key=?", (source.key,)).fetchone()
                       if source.account.platform == "qq-official" else None)
-        preview = {**previous, "baseline_runtime_id": baseline["runtime_id"], "baseline_revision": baseline["revision"],
+        preview = {**previous, "deadline": deadline,
+                   "baseline_runtime_id": baseline["runtime_id"], "baseline_revision": baseline["revision"],
                    "source_generation": source_row["generation"] if source_row else None,
                    "source_endpoint_epoch": source_row["route_epoch"] if source_row else None,
                    "target_generation": endpoint["generation"], "target_endpoint_epoch": endpoint["route_epoch"],
@@ -210,8 +215,8 @@ class Journal(VerificationMethods, MigrationArtifactMethods):
                  mapping.expires_at if mapping else None, value.execution_deadline, value.result_deadline,
                  value.source_canonical_id, value.source_native_id, value.schedule_json,
                  migration_id, value.kind, value.source_ref))
-        cursor.execute("""UPDATE migration_journals SET preview_digest=?,preview_json=?,revision=revision+1,
-            approved_by=NULL,approved_version=NULL WHERE migration_id=?""", (fingerprint, encoded(preview), migration_id))
+        cursor.execute("""UPDATE migration_journals SET preview_digest=?,preview_json=?,deadline=?,revision=revision+1,
+            approved_by=NULL,approved_version=NULL WHERE migration_id=?""", (fingerprint, encoded(preview), deadline, migration_id))
         cursor.execute("INSERT INTO migration_preview_revisions VALUES (?,?,?,?,?)",
                        (migration_id, journal["revision"]+1, fingerprint, encoded(preview), now))
         self._event(cursor, migration_id, "planned", route["epoch"], "preview_refreshed", now)

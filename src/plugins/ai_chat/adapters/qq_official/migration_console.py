@@ -195,6 +195,8 @@ class MigrationConsoleService:
                 if current['preview_digest']!=preview_digest:
                     raise MigrationDenied('migration_review_stale')
                 kwargs=dict(migration_id=resource,authorization=grant,now=now)
+                if action=='refresh' and 'deadline' in request:
+                    kwargs['deadline']=request['deadline']
                 if action=='history_preview':
                     if self.history is None:
                         raise MigrationDenied()
