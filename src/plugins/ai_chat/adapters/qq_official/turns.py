@@ -27,6 +27,10 @@ from .commands import guarded_services
 from .commands import usage_callback
 from .lease import assert_epoch
 from .turn_platform import TransportState
+from ...observability import telemetry
+
+_turn_observation = ContextVar('qq_turn_observation', default=None)
+logger = logging.getLogger(__name__)
 
 
 class LifecycleError(RuntimeError):
@@ -74,6 +78,10 @@ class OfficialTurnLifecycle:
             yield cursor
 
     async def begin(self, *, inbound, selected_profile, objective, prompt_version):
+        observation = _turn_observation.get()
+        if observation is not None:
+            observation.update(kind=inbound.endpoint.kind, model=selected_profile.model, profile=selected_profile.name)
+            logger.info('QQ turn start kind=%s model=%s profile=%s',inbound.endpoint.kind,selected_profile.model,selected_profile.name)
         def begin():
             with self.transactions.transaction() as cursor:
                 row = self._current(cursor)
@@ -89,6 +97,12 @@ class OfficialTurnLifecycle:
         return await self._calls(begin)
 
     async def finish(self, *, turn_id, status, trace, final_text, error_code, scope_key):
+        observation = _turn_observation.get()
+        if observation is not None:
+            observation['status'] = status
+            if trace is not None:
+                observation.update(model=trace.model,profile=trace.profile,
+                    tools=sum(1 for message in trace.messages if message.get('role')=='tool'))
         if scope_key != self.handle.scope_key or not isinstance(final_text, str):
             raise LifecycleError("execution_result_mismatch")
         body = MessageBody() if status in {"silence", "aborted", "cancelled"} else MessageBody((TextNode(0, final_text),))
@@ -191,6 +205,22 @@ class OfficialTurnConsumer:
             return body
 
     async def __call__(self, job):
+        observation = dict(kind=None, model='', profile='', tools=0, status='crashed')
+        mark = _turn_observation.set(observation)
+        started = time.monotonic()
+        try:
+            return await self._run(job)
+        finally:
+            if observation['kind'] is not None:
+                elapsed = time.monotonic()-started
+                labels=dict(platform='qq-official',kind=observation['kind'],status=observation['status'])
+                telemetry.turns.labels(**labels).inc()
+                telemetry.turn_duration.labels(**labels).observe(elapsed)
+                logger.info('QQ turn end kind=%s seconds=%.2f status=%s model=%s profile=%s tools=%d',
+                    observation['kind'],elapsed,observation['status'],observation['model'],observation['profile'],observation['tools'])
+            _turn_observation.reset(mark)
+
+    async def _run(self, job):
         try:
             return await self._execute(job)
         except asyncio.CancelledError:

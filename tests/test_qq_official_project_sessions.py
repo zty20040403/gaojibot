@@ -277,6 +277,7 @@ class ProjectSessionTests(ProjectFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['plan_id'])
         owners={owner for name,owner,_ in self.manager.calls if name=='create'}
         self.assertEqual(len(owners),2)  # producer and project acceptance
+        self.assertEqual(self.manager.items,{})  # Temporary project VMs are released.
         self.assertEqual(self.query("SELECT state FROM qq_official_generation_capacity WHERE state='reserved'"),[])
 
     async def test_missing_project_port_and_changed_grant_never_start_model(self):

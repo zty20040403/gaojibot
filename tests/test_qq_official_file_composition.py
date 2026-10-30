@@ -150,6 +150,10 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(self.query('SELECT state FROM qq_official_file_deliveries')[0]['state'], 'message_accepted')
             self.assertEqual(self.query('SELECT state FROM qq_official_turn_executions')[0]['state'], 'handed_off')
+            from src.plugins.ai_chat.observability import telemetry
+            samples=telemetry.registry.get_sample_value('gaoji_ai_turns_total',
+                {'platform':'qq-official','kind':'group' if group else 'private','status':'succeeded'})
+            self.assertGreaterEqual(samples or 0,1)
             await self.wait_db("SELECT * FROM qq_official_file_deliveries WHERE state='message_accepted'")
             body = self.fake.uploaded[('groups', 'TEST_GROUP') if group else ('users', 'TEST_RUNTIME_OWNER')]
             self.assertEqual(hashlib.sha256(body).hexdigest(), rows[0]['sha256'])

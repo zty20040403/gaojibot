@@ -249,7 +249,7 @@ class RecipientTests(unittest.TestCase):
         from src.plugins.ai_chat.adapters.qq_official.project_commands import CommandProjectProvider
         self.source=message();self.now=400
         self.provider=CommandProjectProvider(token=object(),handle=SimpleNamespace(endpoint=self.source.endpoint,
-            actor=self.source.actor,endpoint_generation=2,route_epoch=3,execution_id='TEST_EXEC'),job=object(),
+            actor=self.source.actor,scope_key=self.source.scope.key,endpoint_generation=2,route_epoch=3,execution_id='TEST_EXEC'),job=object(),
             admission=object(),route_epoch=4,route_guard=lambda *a,**k:True,clock=lambda:self.now)
         self.current=patch.object(self.provider,'_current',return_value={'state':'executing'})
         self.current.start();self.addCleanup(self.current.stop)

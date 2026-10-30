@@ -35,7 +35,7 @@ def background_factory(*,schedule_configuration=None,schedule_profile=None,
             profile=app.model_catalog.resolve(schedule_profile)
             domain=build_native_schedules(configuration=schedule_configuration,database=runtime.database,token=token,
                 jobs=runtime.jobs,usage=app.usage_store,outbox=runtime.outbox,admission=runtime.store.admitted,
-                clock=runtime.store.clock,profile_for=lambda work:profile,database_calls=runtime._calls)
+                clock=runtime.store.clock,profile_for=lambda work, selected=profile:selected,database_calls=runtime._calls)
         proactive=None
         if proactive_configuration.enabled:
             if app is None or app.usage_store is None or not proactive_profile:

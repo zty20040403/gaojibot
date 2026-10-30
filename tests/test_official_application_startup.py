@@ -5,13 +5,12 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from src.plugins.ai_chat.platform_mode import PlatformMode, PlatformModeError
-from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration, HostConfigurationError
+from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration
 from src.plugins.ai_chat.application_workers import start_background_tasks
 
 
@@ -78,20 +77,10 @@ assert not any(n=='nonebot' or n.startswith('nonebot.') for n in sys.modules)
             self.assertIsNone(HostConfiguration.from_env({'AI_QQ_OFFICIAL_HOST_CONFIG_FILE':'/unread'}))
         read.assert_not_called()
 
-    def test_empty_baselines_are_not_fake_accounts(self):
+    def test_old_baseline_configuration_is_ignored(self):
         from src.plugins.ai_chat.platform_types import AccountKey
         raw={'version':1,'account':AccountKey('qq-official','TEST_APP','production').key,'onebot_accounts':[]}
-        config=HostConfiguration.parse(json.dumps(raw))
-        self.assertEqual(config.onebot_accounts,())
-        with TemporaryDirectory() as directory:
-            path=Path(directory)/'host.json';path.touch(mode=0o600);path.write_text(json.dumps(raw))
-            self.assertEqual(HostConfiguration.from_env({'AI_QQ_OFFICIAL_ENABLED':'true',
-                'AI_QQ_OFFICIAL_HOST_CONFIG_FILE':str(path)}).onebot_accounts,())
-            with patch('src.plugins.ai_chat.adapters.qq_official.host_config._read_secret') as read:
-                with self.assertRaises(HostConfigurationError):HostConfiguration.from_env({
-                    'AI_QQ_OFFICIAL_ENABLED':'true','AI_QQ_OFFICIAL_HOST_CONFIG_FILE':str(path),
-                    'AI_QQ_MIGRATION_ENABLED':'true','AI_QQ_MIGRATION_CONFIG_FILE':'/different'})
-            read.assert_not_called()
+        self.assertEqual(HostConfiguration.parse(json.dumps(raw)).account.app_id,'TEST_APP')
 
 
 class CommonWorkerTests(unittest.IsolatedAsyncioTestCase):

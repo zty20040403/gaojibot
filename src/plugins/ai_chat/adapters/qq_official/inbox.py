@@ -153,13 +153,7 @@ class OfficialInboxStore:
                 previous = cursor.execute("SELECT session_id FROM qq_official_accounts WHERE account_key=?", (token.account_key,)).fetchone()
                 if previous["session_id"] is None:
                     return
-                # A new Identify cannot prove lifecycle continuity. Retain the
-                # ordinary manual binding as desired configuration, but require
-                # fresh presence and retire all prior sensitive grants/routes.
-                cursor.execute("""UPDATE qq_official_endpoints SET membership_state='unknown',
-                    generation=generation+1,route_epoch=route_epoch+1,capability_revision=capability_revision+1,
-                    proactive_state='unknown',updated_at=? WHERE account_key=?""", (int(self.clock()), token.account_key))
-                self._retire_evidence(cursor, token.account_key, int(self.clock()))
+                # Reconnecting is not a membership or owner revocation.
                 cursor.execute("""UPDATE qq_official_accounts SET session_id=NULL,durable_seq=NULL,
                     gateway_state='connecting',updated_at=? WHERE account_key=?""",
                     (int(self.clock()), token.account_key))

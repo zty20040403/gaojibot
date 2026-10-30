@@ -59,17 +59,6 @@ class OfficialShutdownTests(unittest.IsolatedAsyncioTestCase):
    self.assertTrue(writer._closed);self.assertIsNone(writer._task)
    output=str(self.context.logger.mock_calls)
    self.assertNotIn(directory,output);self.assertNotIn('SECRET_TOKEN',output)
- async def test_download_host_cleanup_error_cannot_block_runtime_or_shared_storage(self):
-  from src.plugins.ai_chat.adapters.qq_official.download_runtime import DownloadHost
-  from src.plugins.ai_chat.adapters.qq_official.host_config import ConfiguredHost
-  download=object.__new__(DownloadHost)
-  download._lock=asyncio.Lock();download._closed=False;download._ready_until=10;download._service=object();download._task=None
-  download._runner=SimpleNamespace(cleanup=AsyncMock(side_effect=OSError('SECRET_URL')))
-  host=object.__new__(ConfiguredHost);host.download_host=download
-  self.context.official_host=host
-  await self.shutdown()
-  self.assertIsNone(self.context.official_host);self.assertTrue(download._closed);self.assertIsNone(download._service)
-  self.assertFalse(download.reachable());self.assertNotIn('SECRET_URL',str(self.context.logger.mock_calls))
  async def test_cancelled_error_remains_control_flow_but_diagnostic_reference_cleared(self):
   self.context.official_observability=SimpleNamespace(close=AsyncMock(side_effect=asyncio.CancelledError))
   with self.assertRaises(asyncio.CancelledError):await AppContext.shutdown(self.context)

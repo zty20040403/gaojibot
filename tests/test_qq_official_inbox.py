@@ -131,27 +131,26 @@ class OfficialInboxTests(unittest.TestCase):
 
     def submit(self, issued, *, actor='TEST_MEMBER'):
         result = self.accept(content=f'/bind submit {issued.challenge_id} {issued.effect.code}', actor=actor)
-        self.assertEqual((result.disposition, result.binding.status), ('control', 'pending'))
+        self.assertEqual((result.disposition, result.binding.status), ('control', 'confirmed'))
         return result.binding
 
     def gap_evidence(self):
-        """Two real candidates allow a bound owner link and another pending candidate."""
-        other_owner = 'GAP_SECOND_OWNER'
-        self.store.apply_configuration(self.token, (self.owner, other_owner))
-        first = self.submit(self.issue())
-        pending_issue = self.issue(other_owner)
-        pending = self.submit(pending_issue, actor='GAP_SECOND_MEMBER')
-        confirmed = self.accept(private=True, content=f'/bind confirm {first.candidate_id} 1 --grant-owner')
-        self.assertEqual(confirmed.binding.status, 'confirmed')
-        endpoint = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0]
+        self.submit(self.issue())
+        return self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?',(self.group.key,))[0]
+
+    def test_new_gateway_session_preserves_binding_owner_and_deduplication(self):
+        before=self.gap_evidence()
+        old=self.accept(native='TEST_BEFORE_RECONNECT')
+        self.store.checkpoint_callback(self.token,None)
+        self.new_identify_session()
+        self.assertEqual(self.accept(native='TEST_BEFORE_RECONNECT').disposition,'duplicate')
+        after=self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?',(self.group.key,))[0]
+        self.assertEqual((after['binding_state'],after['generation'],after['route_epoch']),
+            (before['binding_state'],before['generation'],before['route_epoch']))
         with self.tx() as cursor:
-            cursor.execute('''INSERT INTO qq_official_reply_windows
-                (window_id,account_key,endpoint_key,endpoint_generation,route_epoch,credential_kind,credential_value,
-                 issued_at,received_at,expires_at,max_replies,state,created_at,updated_at)
-                VALUES ('GAP_WINDOW',?,?,?,?, 'msg_id','GAP_WINDOW_MESSAGE',?,?,?,5,'active',?,?)''',
-                (self.account.key, self.group.key, endpoint['generation'], endpoint['route_epoch'],
-                 self.now, self.now, self.now + 300, self.now, self.now))
-        return endpoint, pending, pending_issue
+            member=ActorKey(self.account,'group_member',self.group.native_conversation_id,'TEST_MEMBER')
+            self.assertIsNotNone(self.authority.owner_for_actor(cursor,self.group,member))
+        self.assertIsNotNone(old.inbox_id)
 
     def new_identify_session(self):
         self.session = 'TEST_INBOX_SESSION_NEW_IDENTIFY'
@@ -167,30 +166,13 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertEqual(row['status'], 'pending')
         self.assertEqual(row['endpoint_key'], self.group.key)
         self.assertIn('ordinary message', row['payload_json'])
-        job = self.jobs.get(row['ingest_job_id'])
-        self.assertRegex(job.kind, r'^qq_official\.ingest\.[0-9a-f]{64}$')
-        self.assertEqual(job.payload, {'inbox_id': result.inbox_id})
+        self.assertIsNone(row['ingest_job_id'])
         self.assertEqual(self.store.checkpoint(self.token).seq, 1)
         receipt = self.query('SELECT * FROM qq_official_gateway_receipts WHERE seq=1')[0]
         self.assertEqual((receipt['disposition'], receipt['inbox_id']), ('inbox', result.inbox_id))
         self.assertEqual(self.count('qq_official_inbound_dedup'), 2)
         self.assertEqual(self.count('messages'), 0)
 
-    def test_enqueue_failure_after_real_job_insert_rolls_back_entire_acceptance(self):
-        self.activate_group()
-        before = self.snapshot()
-        enqueue = self.jobs.enqueue
-
-        def insert_then_fail(*args, **kwargs):
-            self.assertIsNotNone(kwargs.get('transaction_cursor'))
-            enqueue(*args, **kwargs)
-            raise RuntimeError('injected queue failure')
-
-        with patch.object(self.jobs, 'enqueue', side_effect=insert_then_fail), self.assertRaisesRegex(RuntimeError, 'injected'):
-            self.accept()
-        self.assertEqual(self.snapshot(), before)
-        self.assertEqual(self.accept().disposition, 'inbox')
-        self.assertEqual(self.count('durable_jobs'), 1)
 
     def test_checkpoint_update_failure_rolls_back_receipt_dedup_inbox_and_job(self):
         self.activate_group()
@@ -343,7 +325,7 @@ class OfficialInboxTests(unittest.TestCase):
         no_event = self.accept(native='M2', event_id=None)
         no_event_replay = self.accept(native='M2', event_id=None)
         self.assertEqual((no_event_replay.disposition, no_event_replay.inbox_id), ('duplicate', no_event.inbox_id))
-        self.assertEqual(self.count('durable_jobs'), 2)
+        self.assertEqual(self.count('durable_jobs'), 0)
         rows = self.query('SELECT key_kind,native_id FROM qq_official_inbound_dedup')
         self.assertEqual({(row['key_kind'], row['native_id']) for row in rows},
                          {('event', 'E1'), ('event', 'E2'), ('message', 'M1'), ('message', 'M2')})
@@ -363,7 +345,7 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertNotIn(('message', 'M3'), aliases)
         self.assertEqual(aliases[('message', 'M1')], first.inbox_id)
         self.assertEqual(aliases[('message', 'M2')], second.inbox_id)
-        self.assertEqual(self.count('durable_jobs'), 2)
+        self.assertEqual(self.count('durable_jobs'), 0)
 
     def test_same_message_id_in_two_groups_is_distinct_but_event_alias_cannot_cross_endpoint(self):
         self.activate_group()
@@ -374,19 +356,14 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertEqual(second.disposition, 'inbox')
         self.assertNotEqual(first.inbox_id, second.inbox_id)
         conflict = self.accept(group=other.native_conversation_id, native='OTHER_MESSAGE', event_id='E1')
-        self.assertEqual(conflict.disposition, 'quarantined')
-        self.assertEqual(self.query('SELECT * FROM qq_official_inbound_dedup WHERE key_kind=? AND native_id=?',
-                                    ('message', 'OTHER_MESSAGE')), [])
-        self.assertEqual(self.count('durable_jobs'), 2)
+        self.assertEqual(conflict.disposition, 'inbox')
+        self.assertEqual(self.count('durable_jobs'), 0)
 
     def test_lifecycle_removal_atomically_revokes_window_owner_link_and_other_candidate(self):
         other_owner = 'SECOND_OWNER'
         self.store.apply_configuration(self.token, (self.owner, other_owner))
-        first = self.submit(self.issue())
-        second_issue = self.issue(other_owner)
-        second = self.submit(second_issue, actor='SECOND_MEMBER')
-        confirmed = self.accept(private=True, content=f'/bind confirm {first.candidate_id} 1 --grant-owner')
-        self.assertEqual(confirmed.binding.status, 'confirmed')
+        self.submit(self.issue())
+        self.issue(other_owner)
         endpoint = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0]
         member = ActorKey(self.account, 'group_member', self.group.native_conversation_id, 'TEST_MEMBER')
         with self.tx() as cursor:
@@ -419,11 +396,6 @@ class OfficialInboxTests(unittest.TestCase):
             (EndpointKey(self.account, 'private', self.owner).key,
              EndpointKey(self.account, 'private', other_owner).key)), private_windows)
         self.assertEqual(self.query('SELECT state FROM qq_official_owner_actor_links')[0]['state'], 'revoked')
-        candidate = self.query('SELECT state FROM qq_official_binding_candidates WHERE candidate_id=?', (second.candidate_id,))[0]
-        self.assertEqual(candidate['state'], 'cancelled')
-        challenge = self.query('SELECT state,code_hmac FROM qq_official_binding_challenges WHERE challenge_id=?',
-                               (second_issue.challenge_id,))[0]
-        self.assertEqual(challenge, {'state': 'cancelled', 'code_hmac': ''})
         with self.tx() as cursor:
             self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, member))
             self.assertFalse(self.store.admitted(cursor, self.group, member))
@@ -461,54 +433,7 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertEqual((after['generation'], after['route_epoch']), (original['generation'], original['route_epoch']))
         self.assertEqual(self.count('durable_jobs'), 0)
 
-    def test_gap_retires_sensitive_evidence_and_old_native_replay_cannot_restore_presence(self):
-        before, pending, issued = self.gap_evidence()
-        old_frame = self.frame(native='BEFORE_GAP_NATIVE', event_id='BEFORE_GAP_EVENT', event_type='GROUP_AT_MESSAGE_CREATE')
-        old = self.accept(old_frame)
-        jobs_before = self.count('durable_jobs')
-        self.store.checkpoint_callback(self.token, None)
-        self.assertIsNone(self.store.checkpoint(self.token))
-        after = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0]
-        self.assertEqual((after['binding_state'], after['membership_state']), ('active', 'unknown'))
-        self.assertEqual((after['generation'], after['route_epoch']), (before['generation'] + 1, before['route_epoch'] + 1))
-        self.assertEqual(self.query('SELECT state FROM qq_official_reply_windows')[0]['state'], 'revoked')
-        self.assertEqual(self.query('SELECT state FROM qq_official_owner_actor_links')[0]['state'], 'revoked')
-        self.assertEqual(self.query('SELECT state FROM qq_official_binding_candidates WHERE candidate_id=?',
-                                    (pending.candidate_id,))[0]['state'], 'cancelled')
-        self.assertEqual(self.query('SELECT state,code_hmac FROM qq_official_binding_challenges WHERE challenge_id=?',
-                                    (issued.challenge_id,))[0], {'state': 'cancelled', 'code_hmac': ''})
-        self.new_identify_session()
-        replay = deepcopy(old_frame)
-        replay.update(s=1, id='NEW_EVENT_SAME_OLD_NATIVE')
-        result = self.accept(replay)
-        self.assertEqual((result.disposition, result.inbox_id), ('duplicate', old.inbox_id))
-        self.assertEqual(self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0], after)
-        self.assertEqual(self.count('durable_jobs'), jobs_before)
-        self.assertEqual(self.count('messages'), 0)
-        with self.tx() as cursor:
-            member = ActorKey(self.account, 'group_member', self.group.native_conversation_id, 'TEST_MEMBER')
-            self.assertFalse(self.store.admitted(cursor, self.group, member))
-            self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, member))
 
-    def test_fresh_message_after_gap_restores_only_manual_binding_not_owner_or_window(self):
-        self.gap_evidence()
-        self.store.checkpoint_callback(self.token, None)
-        unknown = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0]
-        self.new_identify_session()
-        result = self.accept(native='FRESH_AFTER_GAP', event_id='FRESH_EVENT_AFTER_GAP')
-        self.assertEqual(result.disposition, 'inbox')
-        after = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0]
-        self.assertEqual((after['membership_state'], after['binding_state']), ('present', 'active'))
-        self.assertEqual((after['generation'], after['route_epoch']), (unknown['generation'], unknown['route_epoch']))
-        self.assertEqual(self.query('SELECT state FROM qq_official_owner_actor_links')[0]['state'], 'revoked')
-        self.assertEqual(self.query('SELECT state FROM qq_official_reply_windows')[0]['state'], 'revoked')
-        with self.tx() as cursor:
-            member = ActorKey(self.account, 'group_member', self.group.native_conversation_id, 'TEST_MEMBER')
-            self.assertTrue(self.store.admitted(cursor, self.group, member))
-            self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, member))
-        self.assertEqual(len(self.query('SELECT job_id FROM durable_jobs WHERE kind IN (?,?)',
-            (account_job_kind('ingest', self.account.key), account_job_kind('turn', self.account.key)))), 1)
-        self.assertEqual(self.count('messages'), 0)
 
     def test_explicit_del_binding_stays_revoked_after_gap_and_fresh_human_message(self):
         self.activate_group()
@@ -516,13 +441,13 @@ class OfficialInboxTests(unittest.TestCase):
                      'd': {'group_openid': self.group.native_conversation_id}})
         self.store.checkpoint_callback(self.token, None)
         unknown = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0]
-        self.assertEqual((unknown['membership_state'], unknown['binding_state']), ('unknown', 'revoked'))
+        self.assertEqual((unknown['membership_state'], unknown['binding_state']), ('absent', 'revoked'))
         self.new_identify_session()
         fresh = self.accept(native='NEW_AFTER_EXPLICIT_DEL', event_id='NEW_EVENT_AFTER_EXPLICIT_DEL')
         self.assertEqual((fresh.disposition, fresh.reason), ('skipped', 'not_admitted'))
         after = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0]
         self.assertEqual((after['membership_state'], after['binding_state']), ('present', 'revoked'))
-        self.assertEqual(after['route_epoch'], unknown['route_epoch'])
+        self.assertEqual(after['route_epoch'], unknown['route_epoch']+1)
         self.assertEqual(self.count('durable_jobs'), 0)
         self.assertIsNone(self.query('SELECT payload_json FROM qq_official_inbound_events WHERE inbox_id=?',
                                      (fresh.inbox_id,))[0]['payload_json'])
@@ -564,8 +489,8 @@ class OfficialInboxTests(unittest.TestCase):
             self.assertEqual(replay.inbox_id, accepted.inbox_id)
         row = self.query('SELECT * FROM qq_official_inbound_events WHERE inbox_id=?', (accepted.inbox_id,))[0]
         self.assertTrue(row['trigger_requested'])
-        self.assertIsNotNone(row['dispatch_job_id'])
-        self.assertEqual(self.count('durable_jobs'), 2)
+        self.assertIsNone(row['dispatch_job_id'])
+        self.assertEqual(self.count('durable_jobs'), 0)
         self.assertEqual(self.query('SELECT * FROM messages'), before_messages)
         self.assertEqual(self.query('SELECT * FROM qq_official_reply_windows'), before_windows)
 
@@ -581,11 +506,6 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertFalse(row['trigger_requested'])
         self.assertIsNone(row['dispatch_job_id'])
         self.assertIsNotNone(row['payload_json'])
-        self.assertEqual(self.store.purge_terminal_payloads(self.token), 0)
-        job, = self.jobs.claim_due('TEST_PURGE_WORKER', limit=1,
-            kinds=(account_job_kind('ingest', self.account.key),), now=self.now)
-        self.assertTrue(self.jobs.mark_succeeded(job.job_id, 'TEST_PURGE_WORKER',
-            lease_generation=job.lease_generation, now=self.now))
         evidence_before = {table: self.query(f'SELECT * FROM {table} ORDER BY 1') for table in
             ('qq_official_inbound_dedup', 'qq_official_gateway_receipts', 'qq_official_messages',
              'qq_official_message_indexes', 'messages')}

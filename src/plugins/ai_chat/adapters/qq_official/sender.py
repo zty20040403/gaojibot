@@ -170,7 +170,8 @@ class OfficialSender:
         msg_id = source['native_message_id']
         current = self._passive.get(endpoint.key)
         if current is None or current['id'] != msg_id:
-            current = self._passive[endpoint.key] = {'id':msg_id, 'used':0, 'seq':0}
+            history = await self._calls(self.outbox.passive_history, endpoint, msg_id)
+            current = self._passive[endpoint.key] = {'id':msg_id, 'used':history['used'], 'seq':history['seq']}
         if current['used'] >= (5 if endpoint.kind == 'group' else 4):
             return None
         current['seq'] += 1
@@ -212,6 +213,7 @@ class OfficialSender:
             except QQAPIError as caught:
                 error = caught
             except (TimeoutError, asyncio.CancelledError) as caught:
+                log.info('QQ send mode=%s seconds=%.2f result=unknown code=timeout', mode, self.clock()-started)
                 error = QQAPIError('transport_ambiguous', stage='send')
                 await asyncio.shield(self._calls(self.outbox.fail, self.token, delivery_id,
                     'possibly_not_sent', reservation=reservation, error=error))

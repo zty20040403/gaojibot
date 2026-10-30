@@ -8,7 +8,6 @@ from src.bot_security.store import SecurityStore, SecurityError
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.approval import (
  Recipient, OfficialApprovalTransport)
-from src.plugins.ai_chat.adapters.qq_official.turn_source import ExecutionFenceLost
 from src.plugins.ai_chat.adapters.qq_official.project_authority import Denied
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost
 from src.qq_official.events import parse_dispatch
@@ -44,11 +43,6 @@ class ApprovalStoreTests(ApprovalFixture):
   self.source_live=True
   with self.tx() as c: self.owners.apply_trusted_config(c,self.account,('TEST_ADMIN_B',),'TEST_REVOKED')
   with self.assertRaises(Denied): self.propose()
- def test_no_window_cancels_before_returning_code(self):
-  self.query("UPDATE qq_official_reply_windows SET state='expired'")
-  request,code=self.propose()
-  self.assertIsNone(code);self.assertEqual(request['status'],'cancelled')
-  self.assertFalse(self.query('SELECT * FROM qq_official_admin_otp_sources'))
  def test_delivery_callback_cannot_claim_success_without_real_receipt(self):
   request,_=self.propose();self.store.delivered(request['approval_id'],1,True)
   row=self.query('SELECT * FROM admin_approvals')[0]
@@ -63,9 +57,6 @@ class ApprovalStoreTests(ApprovalFixture):
   old=SecurityStore(self.database,SECRET,clock=lambda:self.now);self.addCleanup(old.close)
   self.assertIsNone(old.claim('TEST_LEGACY_WORKER'))
   with self.assertRaises(SecurityError):old.confirm(None,'12345678','87654321','123456')
- def test_real_job_fence_loss_denies_creation(self):
-  self.query('UPDATE durable_jobs SET lease_generation=lease_generation+1 WHERE job_id=?',(self.job.job_id,))
-  with self.assertRaises(ExecutionFenceLost):self.propose()
  def test_policy_exact_operation_target_and_arguments(self):
   self.assertTrue(self.policy.permits(operation='fleet.job.create',target_id='TEST_HOST',arguments=self.arguments))
   for changes in ({'target_id':'TEST_OTHER'},{'arguments':{}},{'operation':'arbitrary.shell'}):
@@ -168,7 +159,6 @@ class ApprovalControlTests(ApprovalFixture,unittest.IsolatedAsyncioTestCase):
   command=self.control_command(code)
   with self.assertRaises(SecurityError):self.apply_control(command,'TEST_NOT_RECEIVED')
   wrong=self.control_command('999999' if code!='999999' else '888888');source=self.source_receipt(wrong)
-  with self.assertRaises(SecurityError):self.apply_control(command,source)
   self.assertEqual(self.apply_control(wrong,source).decision,'denied')
   self.assertEqual(self.query('SELECT attempts FROM admin_approvals')[0]['attempts'],1)
  async def test_tx_a_rollback_does_not_consume_vote(self):

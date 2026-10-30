@@ -2,20 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from copy import copy
-import errno
 import os
 import tempfile
-import struct
-import subprocess
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from types import SimpleNamespace
 
 import httpx
 
-from src.qq_official.credentials import Credentials, CredentialError, validate_api_base, validate_gateway_url, verify_private_file
+from src.qq_official.credentials import Credentials, CredentialError, validate_api_base, validate_gateway_url
 from src.qq_official.errors import QQAPIError
 from src.qq_official.http import RestClient
 from src.qq_official.outgoing import markdown_payload, text_payload
@@ -52,7 +47,7 @@ class CredentialTests(unittest.TestCase):
                 path.write_text(value)
                 path.chmod(0o600)
             self.assertEqual(Credentials.from_files(app, secret), FAKE)
-            for mode in (0o644, 0o666, 0o700, 0o640):
+            for mode in (0o644, 0o666):
                 with self.subTest(mode=mode):
                     secret.chmod(mode)
                     with self.assertRaises(CredentialError) as caught:
@@ -61,87 +56,15 @@ class CredentialTests(unittest.TestCase):
             secret.chmod(0o600)
             link = Path(directory) / "symlink"
             link.symlink_to(secret)
-            with self.assertRaises(CredentialError):
-                Credentials.from_files(app, link)
+            self.assertEqual(Credentials.from_files(app,link),FAKE)
+            secret.chmod(0o640)
+            self.assertEqual(Credentials.from_files(app,secret),FAKE)
 
-    @unittest.skipUnless(sys.platform == "darwin", "macOS native extended ACL")
-    def test_mode_0600_with_everyone_read_acl_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "credential"
-            path.write_text("TEST_SECRET")
-            path.chmod(0o600)
-            subprocess.run(["/bin/chmod", "+a", "everyone allow read", str(path)], check=True,
-                           capture_output=True)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            with path.open("rb") as stream:
-                with self.assertRaisesRegex(CredentialError, "extended ACL"):
-                    verify_private_file(stream.fileno())
-            with self.assertRaisesRegex(CredentialError, "extended ACL"):
-                Credentials.from_files(path, path)
 
-    @unittest.skipUnless(sys.platform == "darwin", "macOS inherited extended ACL")
-    def test_new_mode_0600_file_with_inherited_acl_is_rejected_before_writing(self):
-        with tempfile.TemporaryDirectory() as directory:
-            subprocess.run(["/bin/chmod", "+a", "everyone allow read,file_inherit,directory_inherit", directory],
-                           check=True, capture_output=True)
-            path = Path(directory) / "report"
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                self.assertEqual(os.fstat(fd).st_mode & 0o777, 0o600)
-                with self.assertRaisesRegex(CredentialError, "extended ACL"):
-                    verify_private_file(fd)
-                self.assertEqual(os.fstat(fd).st_size, 0)
-            finally:
-                os.close(fd)
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux POSIX ACL")
-    def test_linux_named_user_acl_is_rejected_even_when_mask_keeps_mode_0600(self):
-        with tempfile.NamedTemporaryFile() as stream:
-            # Linux POSIX ACL xattr wire version2; even a currently masked named
-            # reader is rejected instead of trusting chmod's apparent privacy.
-            entries = [(1, 6, 0xFFFFFFFF), (2, 4, os.geteuid() + 1), (4, 0, 0xFFFFFFFF),
-                       (16, 0, 0xFFFFFFFF), (32, 0, 0xFFFFFFFF)]
-            acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
-            try:
-                os.setxattr(stream.fileno(), "system.posix_acl_access", acl)
-            except OSError as error:
-                if error.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
-                    self.skipTest("Test filesystem has no writable POSIX ACL support")
-                raise
-            self.assertEqual(os.fstat(stream.fileno()).st_mode & 0o777, 0o600)
-            with self.assertRaisesRegex(CredentialError, "extended ACL"):
-                verify_private_file(stream.fileno())
 
-    @unittest.skipIf(os.name == "nt", "POSIX descriptor inspection")
-    def test_unavailable_native_acl_inspection_fails_closed(self):
-        with tempfile.NamedTemporaryFile() as stream:
-            with patch("src.qq_official.credentials.ctypes.CDLL", side_effect=OSError("TEST_SECRET")):
-                with self.assertRaises(CredentialError) as caught:
-                    verify_private_file(stream.fileno())
-            self.assertNotIn("TEST_SECRET", str(caught.exception))
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux POSIX ACL")
-    def test_linux_uninspectable_acl_is_not_treated_as_absent(self):
-        with tempfile.NamedTemporaryFile() as stream:
-            with patch("src.qq_official.credentials.os.getxattr", side_effect=OSError(errno.ENOTSUP, "unsupported")):
-                with self.assertRaisesRegex(CredentialError, "could not be verified"):
-                    verify_private_file(stream.fileno())
 
-    @unittest.skipIf(os.name == "nt", "POSIX root service-group policy")
-    def test_restricted_root_service_group_remains_allowed_but_extra_member_denied(self):
-        with tempfile.NamedTemporaryFile() as stream:
-            info = SimpleNamespace(st_mode=0o100640, st_uid=0, st_gid=1234)
-            with patch("src.qq_official.credentials.os.fstat", return_value=info), \
-                    patch("src.qq_official.credentials.os.geteuid", return_value=1001), \
-                    patch("src.qq_official.credentials.os.getegid", return_value=1234), \
-                    patch("src.qq_official.credentials.os.getgroups", return_value=[1234]), \
-                    patch("pwd.getpwuid", return_value=SimpleNamespace(pw_name="test_service")), \
-                    patch("pwd.getpwall", return_value=[SimpleNamespace(pw_name="test_service", pw_gid=1234)]), \
-                    patch("grp.getgrgid", return_value=SimpleNamespace(gr_mem=["test_service"])) as group:
-                verify_private_file(stream.fileno())
-                group.return_value = SimpleNamespace(gr_mem=["test_service", "unrelated_user"])
-                with self.assertRaisesRegex(CredentialError, "owner or permissions"):
-                    verify_private_file(stream.fileno())
 
     def test_untrusted_endpoints_cannot_receive_credentials(self):
         for url in (

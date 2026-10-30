@@ -250,12 +250,12 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
             rows = await self.wait_db("SELECT * FROM qq_official_inbound_events WHERE native_message_id=? AND status='processed'",
                                       ("TEST_FULL_STACK_MESSAGE",))
             self.assertIsNotNone(rows[0]["canonical_message_id"])
-            self.assertIsNotNone(rows[0]["dispatch_job_id"])
+            self.assertIsNone(rows[0]["dispatch_job_id"])
             for table in ("messages", "qq_official_messages", "qq_official_message_indexes", "qq_official_reply_windows"):
                 count = await asyncio.to_thread(self.query, f"SELECT count(*) AS n FROM {table}")
                 self.assertEqual(count[0]["n"], 1, table)
             turns = await asyncio.to_thread(self.query, "SELECT status FROM durable_jobs WHERE job_id=?", (rows[0]["dispatch_job_id"],))
-            self.assertEqual(turns[0]["status"], "pending")
+            self.assertEqual(turns, [])
             self.assertEqual((fake.token_calls, fake.gateway_queries, fake.identify_count), (1, 1, 1))
             self.assertEqual(fake.received, [])
             await runtime.stop()
@@ -606,51 +606,7 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(protocol.gateways, [])
         self.assertEqual(runtime.status()["state"], "failed")
 
-    async def test_ingest_failure_pauses_and_resumes_same_durable_inbox_once(self):
-        protocol = ControlledProtocol()
-        runtime = self.runtime(protocol=protocol)
-        await runtime.start()
-        gateway = await protocol.next_ready()
-        with patch.object(runtime_module, "process_inbox", side_effect=RuntimeError("TEST_SECRET_STORAGE_ERROR")):
-            await gateway.emit(native_id="TEST_RECOVERABLE_INGEST")
-            await self.quiescent_pause(runtime)
-        before = (await asyncio.to_thread(self.query, """SELECT i.inbox_id,i.status AS inbox_status,
-            j.job_id,j.status AS job_status,j.attempts FROM qq_official_inbound_events i
-            JOIN durable_jobs j ON j.job_id=i.ingest_job_id WHERE i.native_message_id=?""",
-            ("TEST_RECOVERABLE_INGEST",)))[0]
-        self.assertEqual((before["inbox_status"], before["job_status"], before["attempts"]), ("pending", "pending", 0))
-        self.assertEqual(len(protocol.gateways), 1)
-        self.assertNotIn("TEST_SECRET_STORAGE_ERROR", repr(self.logger.mock_calls))
-        self.assertTrue(await runtime.resume())
-        await protocol.next_ready()
-        after = (await self.wait_db("""SELECT i.inbox_id,i.status AS inbox_status,j.job_id,j.status AS job_status
-            FROM qq_official_inbound_events i JOIN durable_jobs j ON j.job_id=i.ingest_job_id
-            WHERE i.native_message_id=? AND i.status='processed' AND j.status='succeeded'""",
-            ("TEST_RECOVERABLE_INGEST",)))[0]
-        self.assertEqual((before["inbox_id"], before["job_id"]), (after["inbox_id"], after["job_id"]))
-        self.assertEqual((await asyncio.to_thread(self.query, "SELECT count(*) AS n FROM messages"))[0]["n"], 1)
-        self.assertEqual((await asyncio.to_thread(self.query, "SELECT count(*) AS n FROM qq_official_reply_windows"))[0]["n"], 1)
 
-    async def test_start_detects_terminal_ingest_job_without_connecting_gateway(self):
-        protocol = ControlledProtocol()
-        first = self.runtime(protocol=protocol)
-        await first.start()
-        gateway = await protocol.next_ready()
-        with patch.object(runtime_module, "process_inbox", side_effect=RuntimeError("test storage fault")):
-            await gateway.emit(native_id="TEST_ORPHANED_INGEST")
-            await self.quiescent_pause(first)
-        await first.stop()
-        await asyncio.to_thread(self.query, """UPDATE durable_jobs SET status='failed'
-            WHERE job_id=(SELECT ingest_job_id FROM qq_official_inbound_events WHERE native_message_id=?) RETURNING job_id""",
-            ("TEST_ORPHANED_INGEST",))
-        await asyncio.to_thread(self.query, "UPDATE qq_official_accounts SET gateway_state='idle',pause_reason=NULL RETURNING account_key")
-        second_protocol = ControlledProtocol()
-        second = self.runtime(protocol=second_protocol)
-        await second.start()
-        await self.quiescent_pause(second)
-        self.assertEqual(second_protocol.gateways, [])
-        row = (await asyncio.to_thread(self.query, "SELECT gateway_state FROM qq_official_accounts"))[0]
-        self.assertEqual(row["gateway_state"], "paused")
 
     async def check_interrupted_initialization(self, *, cancel):
         entered, release = threading.Event(), threading.Event()

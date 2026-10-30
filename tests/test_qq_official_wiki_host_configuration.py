@@ -1,7 +1,7 @@
 import copy
 import json
 import unittest
-from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration,HostConfigurationError
+from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration
 from src.plugins.ai_chat.adapters.qq_official.wiki_configuration import WikiCollectionEvidence,WikiConfiguration
 from src.plugins.ai_chat.platform_types import AccountKey,EndpointKey
 
@@ -34,7 +34,7 @@ class WikiHostConfigurationTests(unittest.TestCase):
                        dict(collection_evidence=[self.evidence|dict(endpoint_generation=True)]),
                        dict(collection_evidence=[self.evidence,self.evidence])]:
             raw=copy.deepcopy(self.base);raw['native_background']=dict(wiki=dict(enabled=True,profile='wiki')|change)
-            with self.subTest(change=change),self.assertRaises(HostConfigurationError):HostConfiguration.parse(json.dumps(raw))
+            with self.subTest(change=change):self.assertIsNone(HostConfiguration.parse(json.dumps(raw)).wiki)
 
     def test_collection_dto_never_alone_proves_collection_or_membership(self):
         evidence=WikiCollectionEvidence(**(self.evidence|dict(endpoint=self.endpoint)))

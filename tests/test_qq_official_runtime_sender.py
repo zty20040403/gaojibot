@@ -114,7 +114,7 @@ class OfficialRuntimeSenderIntegrationTests(unittest.IsolatedAsyncioTestCase):
             links = await asyncio.to_thread(self.query, "SELECT * FROM turn_send_links")
             self.assertEqual((len(links), links[0]["turn_id"]), (1, turn.turn_id))
             dispatch = await asyncio.to_thread(self.query, "SELECT status FROM durable_jobs WHERE job_id=?", (inbound["dispatch_job_id"],))
-            self.assertEqual(dispatch[0]["status"], "pending")
+            self.assertEqual(dispatch, [])
             with patch.object(ledger, "close", wraps=ledger.close) as ledger_close, patch.object(journal, "close", wraps=journal.close) as journal_close:
                 await runtime.stop()
                 ledger_close.assert_not_called()
@@ -133,7 +133,7 @@ class OfficialRuntimeSenderIntegrationTests(unittest.IsolatedAsyncioTestCase):
             sent = fake.received[0]
             self.assertEqual((sent["kind"], sent["target"]), ("user", "TEST_RUNTIME_OWNER"))
             self.assertEqual(sent["payload"]["msg_id"], "TEST_BIND_CREATE")
-            code = re.search(r"验证码：([0-9]{6})", sent["payload"]["content"]).group(1)
+            code = re.search(r"/bind ([0-9]{6})", sent["payload"]["content"]).group(1)
             self.assertTrue(challenge["code_hmac"])
             for table in ("delivery_plans", "deliveries", "delivery_attempts", "delivery_receipts", "messages", "qq_official_inbound_events"):
                 rows = await asyncio.to_thread(self.query, "SELECT * FROM " + table)
@@ -174,28 +174,25 @@ class OfficialRuntimeSenderIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(stopping, 5)
             receipts = await asyncio.to_thread(self.query, "SELECT applied_at FROM delivery_receipts ORDER BY observed_at,receipt_id")
             self.assertEqual(len(receipts), 2)
-            self.assertEqual(sum(row["applied_at"] is None for row in receipts), 1)
+            self.assertEqual(sum(row["applied_at"] is None for row in receipts), 0)
             replacement = await self.open_runtime(fake)
             await self.wait_db("SELECT delivery_id FROM deliveries WHERE plan_id=? AND status='committed'", (plan.plan_id,), lambda rows: len(rows) == 3)
             self.assertEqual(len(fake.received), 3)
             self.assertEqual([item["payload"]["msg_seq"] for item in fake.received], [1, 2, 3])
             rows = await asyncio.to_thread(self.query, "SELECT state FROM delivery_attempts ORDER BY attempt_id")
-            self.assertEqual([row["state"] for row in rows], ["committed"] * 3)
+            self.assertEqual([row["state"] for row in rows].count("committed"), 3)
+            self.assertEqual([row["state"] for row in rows].count("confirmed_unaccepted"), 1)
             self.assertEqual(len(await asyncio.to_thread(self.query, "SELECT * FROM messages WHERE direction='outbound'")), 3)
             await replacement.stop()
 
-    async def test_incomplete_ready_and_unsupported_self_api_never_guess_bot_identity(self):
+    async def test_authenticated_ready_without_optional_bot_flag_can_send(self):
         async with FakePlatform() as fake:
             runtime = self.runtime(loaded=runtime_fixture.loaded_config(fake.app_id, base=fake.base_url))
             self.assertTrue(await runtime.start())
-            await asyncio.wait_for(fake.wait_ready(), 5)
-            source = await self.incoming(fake)
-            await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id=? AND status='processed'", (source,))
-            plan = await self.enqueue(runtime, source)
-            await self.wait_db("SELECT delivery_id FROM deliveries WHERE delivery_id=? AND wait_reason='identity_unverified'", (plan.delivery_ids[0],))
-            row = (await asyncio.to_thread(self.query, "SELECT bot_native_id,bot_identity_revision FROM qq_official_accounts"))[0]
-            self.assertEqual(row, {"bot_native_id": None, "bot_identity_revision": 0})
-            self.assertEqual(await asyncio.to_thread(self.query, "SELECT * FROM delivery_attempts"), [])
-            self.assertEqual(fake.received, [])
-            self.assertEqual(runtime.state, "running")
+            await asyncio.wait_for(fake.wait_ready(),5)
+            source=await self.incoming(fake)
+            await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id=? AND status='processed'",(source,))
+            plan=await self.enqueue(runtime,source)
+            await self.wait_db("SELECT delivery_id FROM deliveries WHERE delivery_id=? AND status='committed'",(plan.delivery_ids[0],))
+            self.assertEqual(len(fake.received),1)
             await runtime.stop()

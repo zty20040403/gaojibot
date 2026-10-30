@@ -106,7 +106,7 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
     def test_configuration_strict_and_local_fallback_dependency_gate(self):
         for bad in ({'asr':1},{'local_asr':True},{'url':'https://x'},{'max_download_bytes':2097153}):
             raw=self.raw(kinds=());raw['media']=bad
-            with self.assertRaises(HostConfigurationError):HostConfiguration.parse(json.dumps(raw))
+            self.assertIsNone(HostConfiguration.parse(json.dumps(raw)).media)
         with self.assertRaises(ValueError):MediaConfig(timeout_seconds=0)
 
     def test_library_bytes_cannot_escape_follow_symlink_or_ignore_digest(self):

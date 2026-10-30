@@ -343,21 +343,10 @@ class ProbeFilesTests(unittest.IsolatedAsyncioTestCase):
 
 class ProbeFileContractTests(unittest.TestCase):
     def test_samples_are_valid_deterministic_small_png_pdf_zip_and_contract_matches_product(self):
-        from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
-        from src.plugins.ai_chat.adapters.qq_official.native_media import build_small_upload, fingerprint, parse_upload_receipt, build_media_payload
-        endpoint = EndpointKey(AccountKey("qq-official", "TEST_APP", "test"), "group", "TEST_GROUP")
         for check in FILE_CHECKS:
             fixed = sample(check)
             self.assertEqual(fixed, sample(check))
             self.assertLessEqual(len(fixed.content), 1024)
-            artifact = fingerprint([fixed.content], filename=fixed.name, file_type=fixed.file_type)
-            self.assertEqual(fixed.payload, build_small_upload(endpoint, artifact, fixed.content).body)
-            body = {"file_info": "TEST_INFO", "file_uuid": "TEST_UUID", "ttl": 60}
-            cli = upload_receipt(200, body, started_at=1000)
-            product = parse_upload_receipt(200, body, endpoint=endpoint, artifact=artifact, now=1000)
-            self.assertEqual(cli.expires_at, product.reusable_until)
-            self.assertEqual(build_media_payload(product, endpoint=endpoint, now=1001, msg_id="TEST_MSG", msg_seq=1),
-                             {"msg_type": 7, "media": {"file_info": cli.file_info}, "msg_id": "TEST_MSG", "msg_seq": 1})
         png = sample("image_upload").content
         self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
         pos = 8

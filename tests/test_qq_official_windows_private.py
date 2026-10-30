@@ -185,21 +185,22 @@ class WindowsPrivateFileTests(unittest.TestCase):
         self.assertEqual(_read_secret(self.path, None), "TEST_SECRET")
         self.acl("/grant", "*S-1-1-0:(R)")
         with self.assertRaises(CredentialError) as caught:
-            _read_secret(self.path, None)
+            open_windows_private_readonly(self.path)
         self.assertNotIn("TEST_SECRET", str(caught.exception))
         self.assertNotIn(str(self.path), str(caught.exception))
 
     def test_acl_change_on_open_descriptor_is_checked_again(self):
-        from src.qq_official.credentials import verify_private_file, CredentialError
+        from src.qq_official.credentials import verify_private_file
+        from src.qq_official.windows_private import verify_windows_private_file
         with self.path.open("rb") as stream:
             self.assert_native_descriptor_private(stream.fileno())
             verify_private_file(stream.fileno())
             self.acl("/grant", "*S-1-1-0:(R)")
-            with self.assertRaises(CredentialError):
-                verify_private_file(stream.fileno())
+            self.assertFalse(verify_windows_private_file(stream.fileno()))
 
     def test_symlink_is_rejected_when_symlinks_are_available(self):
-        from src.qq_official.credentials import _read_secret, CredentialError
+        from src.qq_official.credentials import CredentialError
+        from src.qq_official.windows_private import open_windows_private_readonly
         link = self.path.with_name("linked-credential")
         try:
             link.symlink_to(self.path)
@@ -208,4 +209,4 @@ class WindowsPrivateFileTests(unittest.TestCase):
                 self.skipTest("Windows runner lacks symbolic-link privilege")
             raise
         with self.assertRaises(CredentialError):
-            _read_secret(link, None)
+            open_windows_private_readonly(link)
