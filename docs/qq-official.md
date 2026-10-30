@@ -150,7 +150,7 @@ App 配置向导生成的 `qq-host.json` 只包含当前规范账号、空 `oneb
 | `AI_QQ_OFFICIAL_MAX_TEXT_PARTS` | `4` | 单次结果最多分成几条，每条分别记账 |
 | `AI_QQ_OFFICIAL_MAX_TEXT_BYTES` | 空 | 可选 UTF-8 字节上限，与字符限制同时检查 |
 | `AI_QQ_OFFICIAL_DEFER_MAX_HOURS` | `24` | 持久结果的原始等待上限，范围 1–24 小时 |
-| `AI_QQ_OFFICIAL_ALLOW_NEWER_WINDOWS` | `false` | 经授权的持久结果能否使用稍后真实消息的窗口 |
+| `AI_QQ_OFFICIAL_ALLOW_NEWER_WINDOWS` | `true` | 主动发送不可用时，能否借用这个会话里较新消息的回复窗口 |
 | `AI_QQ_OFFICIAL_CERTIFICATION` | `unknown` | `unknown / unverified / certified`；未知使用保守速率 |
 | `AI_QQ_OFFICIAL_PROJECT_GRANT_TTL_SECONDS` | `86400` | 新项目授权的最长有效秒数，范围 60–86400 |
 | `AI_QQ_OFFICIAL_FILE_LINK_TTL_SECONDS` | `3600` | 新链接的最长有效秒数，范围 60–3600；不改变已有链接 |

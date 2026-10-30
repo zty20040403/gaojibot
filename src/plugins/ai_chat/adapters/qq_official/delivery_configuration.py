@@ -31,7 +31,7 @@ class DeliveryConfiguration:
     max_text_parts: int = 4
     max_text_bytes: int | None = None
     defer_max_hours: int = 24
-    allow_newer_windows: bool = False
+    allow_newer_windows: bool = True
     certification: str = 'unknown'
     rate_caps: RateCaps = RateCaps()
     project_grant_ttl_seconds: int = 86400
@@ -58,7 +58,7 @@ class DeliveryConfiguration:
             max_text_parts=_integer(env, 'MAX_TEXT_PARTS', 4),
             max_text_bytes=_integer(env, 'MAX_TEXT_BYTES', None, optional=True),
             defer_max_hours=_integer(env, 'DEFER_MAX_HOURS', 24),
-            allow_newer_windows=_boolean(env, 'ALLOW_NEWER_WINDOWS', False),
+            allow_newer_windows=_boolean(env, 'ALLOW_NEWER_WINDOWS', True),
             certification=env.get('AI_QQ_OFFICIAL_CERTIFICATION', 'unknown').strip(),
             project_grant_ttl_seconds=_integer(env, 'PROJECT_GRANT_TTL_SECONDS', 86400),
             file_link_ttl_seconds=_integer(env, 'FILE_LINK_TTL_SECONDS', 3600),

@@ -39,6 +39,10 @@ def project(definition, context):
         'send_file_from_sandbox': '导出本次工作区的 PDF/ZIP 文件、独立校验并持久登记；stored/waiting 不表示消息已接受或用户已下载。',
     }
     function['description'] = descriptions[name]
+    if name in {'sandbox_write_file', 'sandbox_read_file', 'send_file_from_sandbox'}:
+        function['parameters']['properties']['path']['description'] = '工作区内文件路径，支持相对路径或 /workspace/ 开头的绝对路径。'
+    if name == 'sandbox_create':
+        function['description'] += 'Python 已预装 reportlab、pypdf；PDF 可用 gaoji-pdf。先直接使用，不必 pip install。'
     if name == 'sandbox_exec':
         function['parameters']['properties'].pop('background', None)
         function['parameters']['properties']['packages']['description'] = (

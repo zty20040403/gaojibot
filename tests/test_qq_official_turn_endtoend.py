@@ -69,6 +69,8 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         return runtime
 
     async def emit(self, fake, *, native, content, group=False):
+        if not group:
+            fake.proactive_allowed[('user', 'TEST_RUNTIME_OWNER')] = True
         data = {"id": native, "content": content,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "author": {"member_openid" if group else "user_openid": "TEST_MEMBER" if group else "TEST_RUNTIME_OWNER"},

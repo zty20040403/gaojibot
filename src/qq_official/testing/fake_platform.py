@@ -81,6 +81,10 @@ class FakePlatform:
         app.router.add_post("/app/getAppAccessToken", self._token)
         app.router.add_get("/gateway/bot", self._gateway)
         app.router.add_get("/gateway", self._gateway)
+        async def bot_state(request):
+            return web.json_response({'allow_proactive_msg': self.proactive_allowed.get(
+                ('group', request.match_info['target']), False)})
+        app.router.add_get('/v2/groups/{target}/bot_state', bot_state)
         app.router.add_get("/ws", self._websocket)
         app.router.add_post("/v2/{collection:groups|users}/{target}/messages", self._send)
         self._runner = web.AppRunner(app, access_log=None)

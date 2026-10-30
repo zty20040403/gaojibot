@@ -21,7 +21,7 @@ from .rate_policy import (
 )
 
 _PURPOSES = frozenset({'final', 'requested_artifact', 'background_result', 'progress', 'unsolicited', 'binding_otp', 'approval_otp'})
-_PROBE_PURPOSES = frozenset({'final', 'requested_artifact', 'background_result'})
+_PROBE_PURPOSES = frozenset({'final', 'requested_artifact', 'background_result', 'progress', 'unsolicited'})
 _LOW_PRIORITY = frozenset({'background_result', 'unsolicited', 'progress'})
 _MAX_TIME = 2**63 - 1
 
@@ -199,15 +199,20 @@ def check_send_policy(
     if control_view is None and endpoint.kind == 'group' and current['binding_state'] != 'active':
         return PolicyWait('endpoint_unbound')
     window = None
-    if source_native_id is not None:
+    # Proactive first once a group allows it: a passive window caps a whole
+    # answer at five messages and expires five minutes after the question.
+    prefer_proactive = control_view is None and (current['proactive_state'] == 'allowed' or (
+        current['proactive_state'] == 'unknown' and current['proactive_probe_attempt_id'] is None
+        and purpose in _PROBE_PURPOSES))
+    if source_native_id is not None and not prefer_proactive:
         candidate = cursor.execute('''SELECT * FROM qq_official_reply_windows
             WHERE account_key=? AND endpoint_key=? AND credential_kind='msg_id' AND credential_value=? FOR UPDATE''',
             (endpoint.account.key, endpoint.key, source_native_id)).fetchone()
         if (_available_window(candidate, current, now, purpose, reserve_final_slots)
                 and (purpose != 'progress' or not progress_window_used(cursor, account_key=token.account_key, window_id=candidate['window_id']))):
             window = candidate
-    if window is None and allow_newer_windows:
-        # Newer-window reuse is disabled without explicit trusted probe policy.
+    if window is None and allow_newer_windows and not prefer_proactive:
+        # Use the newest available conversation window when proactive is denied.
         candidates = cursor.execute('''SELECT * FROM qq_official_reply_windows
             WHERE account_key=? AND endpoint_key=? AND credential_kind='msg_id' AND state='active'
               AND expires_at>? ORDER BY issued_at DESC,window_id FOR UPDATE''',
@@ -223,7 +228,8 @@ def check_send_policy(
     elif current['proactive_state'] == 'allowed':
         mode = 'proactive'
     elif (current['proactive_state'] == 'unknown' and current['proactive_probe_attempt_id'] is None
-          and allow_proactive_probe and purpose in _PROBE_PURPOSES):
+          and purpose in _PROBE_PURPOSES):
+        # Try proactive once; acceptance marks the group allowed, 40034105 denied.
         mode, probe = 'proactive', True
     else:
         return PolicyWait('waiting_reply_window')
@@ -380,6 +386,14 @@ def settle_send_policy(
     attempt = _attempt(cursor, token, attempt_id)
     if result == 'proven_unsent' and attempt['fencing_epoch'] != token.epoch:
         raise SendPolicyError('stale_unsent_proof')
+    if attempt['send_mode'] == 'proactive':
+        # An accepted proactive message proves the group allows them. Allowing
+        # more never invalidates a frozen plan, so the revision stays put.
+        cursor.execute("""UPDATE qq_official_endpoints SET proactive_probe_attempt_id=NULL,proactive_probe_at=NULL,updated_at=?,
+            proactive_state=CASE WHEN ? AND proactive_state='unknown' THEN 'allowed' ELSE proactive_state END
+            WHERE endpoint_key=? AND account_key=?
+              AND (proactive_probe_attempt_id=? OR (? AND proactive_state='unknown'))""",
+            (now, result == 'accepted', attempt['endpoint_key'], token.account_key, attempt_id, result == 'accepted'))
     if attempt['window_id'] is not None:
         target = _settlement_target(attempt['window_charge_state'], result, release_confirmed_window)
         if target is not None:
@@ -416,7 +430,8 @@ def apply_policy_rejection(cursor: StoreCursor, *, token: LeaseToken, attempt_id
         cursor.execute("UPDATE qq_official_reply_windows SET state='expired',updated_at=? WHERE window_id=? AND account_key=? AND endpoint_key=? AND state='active'",
                        (now,attempt['window_id'],token.account_key,attempt['endpoint_key']))
     elif category == 'proactive_denied' and attempt['send_mode'] == 'proactive':
-        cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='denied',capability_revision=capability_revision+1,updated_at=?
+        cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='denied',proactive_probe_attempt_id=NULL,proactive_probe_at=NULL,
+            updated_at=?
             WHERE endpoint_key=? AND account_key=? AND proactive_state<>'denied'
               AND generation=? AND route_epoch=? AND capability_revision=?""",
             (now,attempt['endpoint_key'],token.account_key,attempt['endpoint_generation'],attempt['route_epoch'],attempt['capability_revision']))

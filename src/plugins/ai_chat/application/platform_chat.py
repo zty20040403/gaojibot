@@ -7,6 +7,7 @@ HandlerServices, a synthetic event, or a numeric identity substitute.
 from __future__ import annotations
 
 from contextlib import ExitStack
+from dataclasses import replace
 import json
 from types import SimpleNamespace
 
@@ -23,7 +24,7 @@ from ..model_catalog import ModelProfile
 from ..observability import telemetry
 from ..platform_types import InboundMessage, TurnPlatform
 from ..prompt_context import quote_evidence
-from ..tool_policy import approval_from_user_text
+from ..tool_policy import ToolCatalog, approval_from_user_text, policy_for_tool
 from ..tools import neutral_registry_for
 from ..tools.state import ToolContext, TurnState
 from ..web_search import render_search_sources
@@ -234,6 +235,9 @@ class PlatformChatService:
                     group_context=group_context, memory_context=memory_context,
                     tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",
                     profile=selected_profile,
+                    tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True, policies={
+                        'send_file_from_sandbox': replace(policy_for_tool('send_file_from_sandbox'), timeout_seconds=310),
+                    }),
                     max_tool_rounds=(
                         self.context.settings.tool_max_rounds if file_session is not None
                         else self.context.settings.tool_simple_max_rounds

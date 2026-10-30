@@ -97,7 +97,7 @@ from .agent_loop import (
 )
 from .model_catalog import ModelCatalog, ModelProfile
 from .prompt_context import escaped_evidence_size, quote_evidence
-from .tool_policy import tool_enabled
+from .tool_policy import ToolCatalog, tool_enabled
 
 
 @dataclass(frozen=True)
@@ -3232,6 +3232,7 @@ class SubAgentCoordinator:
                             session["messages"],
                             allowed_tools,
                             worker_execute_tool,
+                            tool_catalog=ToolCatalog(allowed_tools, ignore_unknown_fields=official_task(task)),
                             profile=profile,
                             max_tool_rounds=min(self.max_tool_rounds, spec.max_turns),
                             system_context=_worker_prompt(spec),

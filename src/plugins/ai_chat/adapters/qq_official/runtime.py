@@ -327,6 +327,8 @@ class OfficialRuntime:
                 await self.approval_service.consume(accepted.approval)
             if accepted.binding is not None and accepted.binding.effect is not None:
                 await self._deliver_binding(token, accepted.binding.effect)
+            if accepted.binding is not None and accepted.binding.status == 'confirmed' and self.sender is not None:
+                await self.sender.refresh_bound_groups()
 
         async def ingest(job):
             inbox_id = job.payload.get("inbox_id")
@@ -434,6 +436,7 @@ class OfficialRuntime:
                     rate_gate=LocalAccountRateGate(self.loaded.account,rate_caps=self.loaded.delivery.rate_caps),
                     ensure_current=lambda: self._ensure_current(token))
                 await self.sender.recover()
+                await self.sender.refresh_bound_groups()
                 from .control_handler import ControlJobHandler
                 from .control_receipts import control_job_kind
                 worker.register(control_job_kind(self.loaded.account.key), ControlJobHandler(
@@ -550,6 +553,7 @@ class OfficialRuntime:
                     concurrency=2, per_scope_limit=1, database_calls=self._calls)
                 turns.register(account_job_kind("turn", self.loaded.account.key), self.turn_consumer)
             self.state, self.reason = "running", "receiving_durable_events"
+            await self._calls(self._recover_interrupted_turns, token)
             tasks = [asyncio.create_task(gateway.run(on_dispatch)), asyncio.create_task(worker.run_forever()),
                      asyncio.create_task(monitor()), asyncio.create_task(failure())]
             if self.sender is not None:
@@ -584,6 +588,40 @@ class OfficialRuntime:
                     self.sender = None
                     self.turn_consumer = None
                     self.subagent_service = None
+
+    def _recover_interrupted_turns(self, token):
+        from src.plugins.ai_chat.message_ir import MessageBody, TextNode
+        from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
+        from .renderer import render_plan
+
+        now = int(self.store.clock())
+        notice = '刚才重启了，这条没处理完，麻烦再说一次'
+        with self.store.transaction() as cursor:
+            self.store.epoch_guard(cursor, token)
+            rows = cursor.execute('''SELECT x.* FROM qq_official_turn_executions x
+                LEFT JOIN agent_turns t ON t.turn_id=x.journal_turn_id
+                WHERE x.account_key=? AND x.account_fencing_epoch<?
+                AND (t.status='running' OR x.state='executing'
+                     OR x.reason_code='turn_execution_interrupted')
+                ORDER BY x.created_at DESC FOR UPDATE OF x''', (token.account_key, token.epoch)).fetchall()
+            notified = set()
+            for row in rows:
+                endpoint = EndpointKey.parse(row['endpoint_key'])
+                actor = ActorKey.parse(row['requester_actor_key'])
+                if endpoint.key not in notified and self.store.admitted(cursor, endpoint, actor):
+                    self.outbox.enqueue(token, rendered=render_plan(MessageBody((TextNode(0, notice),)), endpoint),
+                        requester=actor, logical_key='restart:' + row['execution_id'],
+                        source_scope_key=row['scope_key'], expires_at=now + 300,
+                        source_native_message_id=row['source_native_message_id'],
+                        source_canonical_message_id=row['canonical_message_id'], transaction_cursor=cursor)
+                    notified.add(endpoint.key)
+                if row['journal_turn_id'] is not None:
+                    self.journal.finish_turn(row['journal_turn_id'], status='crashed',
+                        final_text=notice, finished_at=now, transaction_cursor=cursor)
+                cursor.execute('''UPDATE qq_official_turn_executions SET state='cancelled',
+                    reason_code='restart_notified',updated_at=? WHERE execution_id=?''', (now, row['execution_id']))
+            if rows:
+                self.logger.info('QQ restart recovery: closed=%d conversations=%d', len(rows), len(notified))
 
     async def _deliver_binding(self, token, effect):
         outcome = "failed"

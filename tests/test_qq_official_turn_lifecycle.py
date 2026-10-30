@@ -49,6 +49,7 @@ class LifecycleTests(fixture.ExecutionTests):
             self.assertFalse(self.life.job_fence().check())
             turn = await self.begin_lifecycle()
             self.assertTrue(self.life.job_fence().check())
+            self.trace.model, self.trace.profile = 'TEST_FALLBACK_MODEL', 'TEST_FALLBACK_PROFILE'
             await self.finish_lifecycle(turn)
             await self.finish_lifecycle(turn)
             self.assertFalse(self.life.job_fence().check())
@@ -56,6 +57,8 @@ class LifecycleTests(fixture.ExecutionTests):
         self.assertEqual(self.query("SELECT state FROM qq_official_turn_executions")[0]["state"], "result_ready")
         self.assertEqual(self.query("SELECT status FROM agent_turns")[0]["status"], "succeeded")
         self.assertEqual(len(self.query("SELECT * FROM usage_events")), 1)
+        self.assertEqual(self.query("SELECT model,profile FROM agent_turns"),
+            [{"model": "TEST_FALLBACK_MODEL", "profile": "TEST_FALLBACK_PROFILE"}])
 
     def test_lifecycle_journal_failure_rolls_back_frozen_result_and_usage(self):
         async def run():

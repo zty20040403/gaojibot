@@ -112,6 +112,9 @@ class OfficialTurnLifecycle:
                     payload = trace.to_payload() if trace is not None else {}
                     if error_code:
                         payload["failure"] = {"code": error_code}
+                    if trace is not None and trace.model:
+                        cursor.execute("UPDATE agent_turns SET provider=?,model=?,profile=? WHERE turn_id=?",
+                            (trace.provider, trace.model, trace.profile, turn_id))
                     recorded = self.journal.finish_turn(turn_id, status=status, final_text=final_text,
                         trace_payload=payload or None, input_tokens=trace.input_tokens if trace else 0,
                         output_tokens=trace.output_tokens if trace else 0,

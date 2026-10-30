@@ -301,6 +301,10 @@ class RestClient:
     async def gateway(self) -> dict[str, Any]:
         return await self.request("GET", "/gateway/bot")
 
+    async def group_bot_state(self, target: str) -> dict[str, Any]:
+        path = self._message_path('group', target).removesuffix('/messages')
+        return await self.request('GET', path + '/bot_state')
+
     @staticmethod
     def _message_path(kind, target):
         if kind not in {"group", "c2c", "user", "private"} or not _TARGET.fullmatch(target):

@@ -796,7 +796,7 @@ class Settings:
                 20,
             ),
             postgres_pool_max_size=min(
-                max(integer("AI_POSTGRES_POOL_MAX_SIZE", 10), 1),
+                max(integer("AI_POSTGRES_POOL_MAX_SIZE", 24), 1),
                 100,
             ),
             postgres_pool_timeout_seconds=max(

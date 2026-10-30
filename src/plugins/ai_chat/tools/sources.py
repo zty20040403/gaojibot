@@ -100,7 +100,8 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
         "month": "m",
         "year": "y",
     }.get(str(arguments.get("freshness", "auto")))
-    freshness = search_freshness(query) or requested_freshness
+    freshness = (search_freshness(query) if arguments.get("freshness", "auto") == "auto"
+                 else requested_freshness)
     try:
         results = await search_web(
             query,
