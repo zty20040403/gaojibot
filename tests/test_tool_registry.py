@@ -76,6 +76,7 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "use_skill",
                 "inspect_source",
                 "web_search",
+                "web_fetch",
                 "read_image_text",
                 "view_image",
                 "view_video",

@@ -45,6 +45,7 @@ SANDBOX_TOOLS = frozenset(
 BROWSER_TOOLS = frozenset(
     {
         "web_search",
+        "web_fetch",
         "browser_navigate",
         "browser_snapshot",
         "browser_click",
@@ -76,8 +77,11 @@ AGENT_SPECS: dict[SubAgentRole, AgentSpec] = {
         title="搜索",
         description="搜索互联网、浏览网页并交叉核实来源。",
         instructions=(
-            "优先使用一手来源；区分事实、推断和未知信息。最终给出完整链接、"
-            "关键事实、冲突信息和仍未确认的内容。"
+            "先用 web_search 找候选来源，再用 web_fetch 打开关键页面核对原文，"
+            "不要只凭搜索摘要下结论。优先使用一手来源；区分事实、推断和未知信息。"
+            "拿不到完全符合要求的数据时，交付最接近的可用数据（如评测文章报价、"
+            "近期历史价），标明日期、来源和数据类型，并写清缺口；不要整段留空。"
+            "最终给出完整链接、关键事实、冲突信息和仍未确认的内容。"
         ),
         allowed_tools=COMMON_READ_TOOLS | BROWSER_TOOLS,
         model_policy="fast",

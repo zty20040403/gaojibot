@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from html.parser import HTMLParser
+import logging
 from urllib.parse import parse_qs, unquote, urlsplit
 from xml.etree import ElementTree
 
 import httpx
+
+_logger = logging.getLogger(__name__)
+SEARCH_PROVIDERS = frozenset({"scrape", "tavily", "bocha"})
+_BOCHA_FRESHNESS = {"d": "oneDay", "w": "oneWeek", "m": "oneMonth", "y": "oneYear"}
 
 
 @dataclass(frozen=True)
@@ -112,6 +117,9 @@ async def search_web(
     max_results: int = 5,
     timeout_seconds: int = 10,
     freshness: str | None = None,
+    provider: str = "scrape",
+    api_key: str = "",
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> list[SearchResult]:
     cleaned_query = query.strip()
     if not cleaned_query:
@@ -126,8 +134,17 @@ async def search_web(
     }
 
     async with httpx.AsyncClient(
-        timeout=timeout_seconds, follow_redirects=True, headers=headers
+        timeout=timeout_seconds, follow_redirects=True, headers=headers, transport=transport
     ) as client:
+        if provider in {"tavily", "bocha"} and api_key:
+            try:
+                return _unique_results(
+                    await _search_api(client, provider, api_key, cleaned_query, max_results, freshness),
+                    max_results,
+                )
+            except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+                # A paid API that is out of credit should not take search down with it.
+                _logger.warning("%s search failed, falling back to scraping: %s", provider, exc)
         try:
             params = {"q": cleaned_query}
             if freshness in {"d", "w", "m", "y"}:
@@ -161,6 +178,45 @@ async def search_web(
         _parse_bing_rss_results(response.text),
         max_results,
     )
+
+
+async def _search_api(
+    client: httpx.AsyncClient,
+    provider: str,
+    api_key: str,
+    query: str,
+    max_results: int,
+    freshness: str | None,
+) -> list[SearchResult]:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if provider == "tavily":
+        body: dict[str, object] = {"query": query, "max_results": min(max_results, 20)}
+        if freshness:
+            body["time_range"] = freshness
+        response = await client.post("https://api.tavily.com/search", json=body, headers=headers)
+        response.raise_for_status()
+        return [
+            SearchResult(_clean_text(row.get("title") or ""), str(row.get("url") or ""),
+                         _clean_text(row.get("content") or ""))
+            for row in response.json().get("results") or []
+        ]
+    body = {
+        "query": query,
+        "count": min(max_results, 50),
+        "summary": True,
+        "freshness": _BOCHA_FRESHNESS.get(freshness or "", "noLimit"),
+    }
+    response = await client.post("https://api.bochaai.com/v1/web-search", json=body, headers=headers)
+    response.raise_for_status()
+    pages = ((response.json().get("data") or {}).get("webPages") or {}).get("value") or []
+    results = []
+    for page in pages:
+        # The publish date is what tells a reader whether a quoted price is current.
+        date = str(page.get("datePublished") or page.get("dateLastCrawled") or "")[:10]
+        snippet = _clean_text(page.get("summary") or page.get("snippet") or "")
+        results.append(SearchResult(_clean_text(page.get("name") or ""), str(page.get("url") or ""),
+                                    f"[{date}] {snippet}" if date else snippet))
+    return results
 
 
 def _parse_duckduckgo_results(html: str) -> list[SearchResult]:
@@ -251,38 +307,11 @@ def render_direct_search_results(
 
 
 def search_freshness(text: str) -> str | None:
+    """Time filter for the direct search command; prices and specs stay unfiltered."""
     normalized = text.strip().lower()
-    if any(
-        keyword in normalized
-        for keyword in (
-            "今天",
-            "今日",
-            "刚刚",
-            "实时",
-            "现在",
-            "目前",
-            "此刻",
-            "天气",
-            "比分",
-            "价格",
-            "行情",
-        )
-    ):
+    if any(keyword in normalized for keyword in ("今天", "今日", "刚刚", "天气", "比分")):
         return "d"
-    if any(
-        keyword in normalized
-        for keyword in (
-            "最新",
-            "新闻",
-            "近期",
-            "最近",
-            "本周",
-            "发布",
-            "更新",
-            "新版",
-            "新版本",
-        )
-    ):
+    if any(keyword in normalized for keyword in ("新闻", "近期", "最近", "本周")):
         return "w"
     return None
 
@@ -301,6 +330,9 @@ def _clean_duckduckgo_url(href: str) -> str:
     redirected_url = query.get("uddg", [""])[0]
     if redirected_url:
         return unquote(redirected_url)
+    if parsed.hostname == "duckduckgo.com":
+        # Ad clicks (/y.js?ad_domain=...) only open through DuckDuckGo's redirector.
+        return ""
 
     return href
 
