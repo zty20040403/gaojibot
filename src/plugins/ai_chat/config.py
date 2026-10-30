@@ -368,6 +368,8 @@ class Settings:
     feedback_negative_emoji_ids: tuple[str, ...] = ()
     tool_intent_enabled: bool = True
     tool_intent_timeout_seconds: float = 3.0
+    search_provider: str = "scrape"
+    search_api_key: str = field(default="", repr=False)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -382,6 +384,9 @@ class Settings:
         sandbox_max_file_mb = integer("AI_SANDBOX_MAX_FILE_MB", 20)
         intent_timeout = floating("AI_TOOL_INTENT_TIMEOUT_SECONDS", 3.0)
         intent_timeout = min(max(intent_timeout, 0.1), 10.0) if math.isfinite(intent_timeout) else 3.0
+        search_provider = environment.get("AI_SEARCH_PROVIDER", "").strip().lower() or "scrape"
+        if search_provider not in {"scrape", "tavily", "bocha"}:
+            raise ValueError("AI_SEARCH_PROVIDER must be scrape, tavily or bocha")
         return cls(
             tool_intent_enabled=boolean("AI_TOOL_INTENT_ENABLED", True),
             tool_intent_timeout_seconds=intent_timeout,
@@ -540,6 +545,8 @@ class Settings:
             search_auto_enabled=boolean("AI_SEARCH_AUTO_ENABLED", True),
             search_max_results=integer("AI_SEARCH_MAX_RESULTS", 5),
             search_timeout_seconds=integer("AI_SEARCH_TIMEOUT_SECONDS", 10),
+            search_provider=search_provider,
+            search_api_key=environment.get("AI_SEARCH_API_KEY", "").strip(),
             ocr_enabled=boolean("AI_OCR_ENABLED", True),
             ocr_max_images=max(integer("AI_OCR_MAX_IMAGES", 2), 1),
             ocr_max_chars=max(integer("AI_OCR_MAX_CHARS", 4000), 200),

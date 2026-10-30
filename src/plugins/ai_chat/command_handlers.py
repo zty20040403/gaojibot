@@ -306,6 +306,8 @@ class CommandHandlers(HandlerService):
                 max_results=self.context.settings.search_max_results,
                 timeout_seconds=self.context.settings.search_timeout_seconds,
                 freshness=search_freshness(query),
+                provider=self.context.settings.search_provider,
+                api_key=self.context.settings.search_api_key,
             )
         except SearchError as exc:
             self.context.logger.warning(f"Direct web search failed: {exc}")

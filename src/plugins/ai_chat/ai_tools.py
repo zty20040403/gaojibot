@@ -9,6 +9,7 @@ ToolDefinition = dict[str, Any]
 ToolChoice = Union[str, dict[str, Any]]
 
 WEB_SEARCH_TOOL_NAME = "web_search"
+WEB_FETCH_TOOL_NAME = "web_fetch"
 QUERY_ALERTS_TOOL_NAME = "query_alerts"
 FLEET_OVERVIEW_TOOL_NAME = "fleet_overview"
 HOST_INSPECT_TOOL_NAME = "host_inspect"
@@ -169,12 +170,37 @@ WEB_SEARCH_TOOL: ToolDefinition = {
                     "type": "string",
                     "enum": ["auto", "day", "week", "month", "year"],
                     "description": (
-                        "时间范围。实时内容用 day，最新新闻通常用 week，"
-                        "不确定时用 auto。"
+                        "时间范围，默认 auto 即不限。只有天气、比分、当天新闻用 day，"
+                        "近期新闻用 week；价格、型号、资料、教程不要限定时间，"
+                        "结果的日期自己判断。"
                     ),
                 },
             },
             "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+WEB_FETCH_TOOL: ToolDefinition = {
+    "type": "function",
+    "function": {
+        "name": WEB_FETCH_TOOL_NAME,
+        "description": (
+            "打开一个公网网页并读取正文文字。搜索摘要不够用、需要核对价格、参数、"
+            "日期或原文时调用；只读，不执行网页脚本，靠脚本加载的内容可能读不到。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "完整的 http/https 网址，通常来自搜索结果。"},
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "从正文第几个字符开始读；正文太长时用上次返回的 next_offset 继续。",
+                },
+            },
+            "required": ["url"],
             "additionalProperties": False,
         },
     },
@@ -1856,6 +1882,7 @@ RECENT_SPEAKERS_TOOL: ToolDefinition = {
 
 TOOL_DEFINITIONS = (
     WEB_SEARCH_TOOL,
+    WEB_FETCH_TOOL,
     QUERY_ALERTS_TOOL,
     OPS_CATALOG_TOOL, OPS_CALL_TOOL, SERVICE_CONTROL_TOOL, HOST_REBOOT_TOOL,
     FLEET_OVERVIEW_TOOL, HOST_INSPECT_TOOL, SERVICE_INSPECT_TOOL, MODEL_STATUS_TOOL,

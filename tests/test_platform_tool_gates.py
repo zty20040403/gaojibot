@@ -184,7 +184,8 @@ class PlatformToolGatesTests(unittest.IsolatedAsyncioTestCase):
             (root / "README.md").write_text("Test public source snapshot")
             self.app.skill_registry = SkillRegistry(root / "skills")
             self.app.self_source = SelfSource(root)
-            self.app.settings = SimpleNamespace(max_input_chars=1000, search_max_results=3, search_timeout_seconds=1)
+            self.app.settings = SimpleNamespace(max_input_chars=1000, search_max_results=3, search_timeout_seconds=1,
+                                                search_provider="scrape", search_api_key="")
             # These broad capability names cannot revive unmigrated tools.
             context = replace(self.context, event=PoisonEvent(), capabilities=frozenset({
                 "self", "web", "conversation", "shared_content", "members", "ocr",
@@ -192,7 +193,7 @@ class PlatformToolGatesTests(unittest.IsolatedAsyncioTestCase):
             }))
             registry = registry_for(context)
             self.assertEqual({tool["function"]["name"] for tool in registry.definitions(context)},
-                             {"use_skill", "inspect_source", "web_search"})
+                             {"use_skill", "inspect_source", "web_search", "web_fetch"})
             turn = TurnState(context, user_text="public query")
             skill = json.loads(await registry.execute(turn, "use_skill", {"name": "test"}))
             self.assertIn("Safe instructions", skill["instructions"])

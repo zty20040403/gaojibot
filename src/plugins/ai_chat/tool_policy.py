@@ -57,6 +57,7 @@ _READ_TOOLS = {
     "read_task_evidence",
     "read_task_evidence_batch",
     "web_search",
+    "web_fetch",
     "query_alerts",
     "fleet_overview",
     "host_inspect",
