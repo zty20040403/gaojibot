@@ -237,6 +237,7 @@ class PlatformChatService:
                     profile=selected_profile,
                     tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True, policies={
                         'send_file_from_sandbox': replace(policy_for_tool('send_file_from_sandbox'), timeout_seconds=310),
+                        'send_file': replace(policy_for_tool('send_file_from_sandbox'), timeout_seconds=310),
                     }),
                     max_tool_rounds=(
                         self.context.settings.tool_max_rounds if file_session is not None

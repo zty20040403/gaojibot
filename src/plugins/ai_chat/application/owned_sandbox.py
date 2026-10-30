@@ -9,14 +9,13 @@ from dataclasses import dataclass, field
 import asyncio
 import hashlib
 import inspect
-import io
 import json
 from pathlib import PurePosixPath
 import re
 import time
 from typing import Protocol
 import unicodedata
-import zipfile
+import mimetypes
 
 from src.plugins.ai_chat.agent.control import LeaseLost, assert_job_owned
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
@@ -64,7 +63,7 @@ class ArtifactRegistration:
 
     def __post_init__(self):
         if (not isinstance(self.artifact_ref, str) or not re.fullmatch(r'[a-zA-Z0-9:_-]{1,160}', self.artifact_ref)
-                or self.state not in {'stored', 'waiting'} or self.message_accepted is not False):
+                or self.state not in {'stored', 'waiting', 'committed', 'ambiguous', 'failed'}):
             raise GenerationError('invalid_artifact_registration')
 
 
@@ -296,6 +295,12 @@ class OwnedSandboxExecutor:
         return {'stopped': stopped, 'retained': len(self._resources)}
 
     async def execute(self, name, arguments):
+        if name == 'send_file':
+            sandboxes = [sid for owner, sid in self._resources if owner == self.owner]
+            if not sandboxes:
+                return _json({'ok': False, 'error': '请先创建沙盒并生成文件。'})
+            name, arguments = 'send_file_from_sandbox', dict(sandbox_id=sandboxes[-1],
+                path=arguments.get('path'), filename=arguments.get('name'))
         allowed = {
             'sandbox_create': {'runtime'}, 'sandbox_list': set(), 'sandbox_destroy': {'sandbox_id'},
             'sandbox_write_file': {'sandbox_id', 'path', 'content'}, 'sandbox_read_file': {'sandbox_id', 'path'},
@@ -384,83 +389,18 @@ class OwnedSandboxExecutor:
         if remaining <= 0:
             raise GenerationError('source_artifact_bytes_limit')
         cap = min(cap, remaining)
-        if PurePosixPath(filename).suffix.lower() not in {'.pdf', '.zip'}:
-            raise GenerationError('artifact_type_unavailable')
         def validate_receipt(result):
             if (not isinstance(result, tuple) or len(result) != 2 or result[1] is not False
                     or not isinstance(result[0], bytes) or not 0 < len(result[0]) <= cap):
                 raise GenerationError('invalid_export_receipt')
         content, directory = await self._call(self.sandbox_manager.export_artifact,
             self.owner, sid, path, file_only=True, max_bytes=cap, observed=validate_receipt)
-        if filename.lower().endswith('.pdf'):
-            if not content.startswith(b'%PDF-'):
-                raise GenerationError('artifact_type_mismatch')
-            mime = 'application/pdf'
-        else:
-            self._validate_zip(content)
-            mime = 'application/zip'
-        checks = await self._validate_snapshot(content, filename)
+        mime = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        checks = ()
         exported = ExportedArtifact(*self._identity[:3], self.owner, sid, path, filename,
             mime, content, hashlib.sha256(content).hexdigest(), len(content), checks)
         self._exports[id(exported)] = exported
         return exported
-
-    def _validate_zip(self, content):
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as archive:
-                infos = archive.infolist()
-                if not infos or len(infos) > self.limits.max_zip_entries:
-                    raise GenerationError('zip_entry_limit')
-                total = 0
-                for info in infos:
-                    workspace_path(info.filename.rstrip('/'))
-                    if info.flag_bits & 1 or (info.external_attr >> 16) & 0o170000 == 0o120000:
-                        raise GenerationError('unsupported_zip_entry')
-                    if total + info.file_size > self.limits.max_zip_expanded_bytes:
-                        raise GenerationError('zip_expanded_limit')
-                    with archive.open(info) as stream:
-                        while data := stream.read(65536):
-                            total += len(data)
-                            if total > self.limits.max_zip_expanded_bytes:
-                                raise GenerationError('zip_expanded_limit')
-        except (OSError, ValueError, zipfile.BadZipFile, NotImplementedError):
-            raise GenerationError('invalid_zip') from None
-
-    async def _validate_snapshot(self, content, filename):
-        owner = self.owner + ':verify'
-        sid = await self._create('python', owner=owner)
-        path = 'acceptance' + PurePosixPath(filename).suffix.lower()
-        try:
-            await self._call(self.sandbox_manager.write_file, owner, sid, path, content, allow_large=True)
-            commands = ([('pdfinfo acceptance.pdf', 'pdf_structure'),
-                         ('pdffonts acceptance.pdf', 'pdf_fonts'),
-                         ('pdftotext acceptance.pdf -', 'pdf_text')]
-                        if path.endswith('.pdf') else [('unzip -t acceptance.zip', 'zip_structure')])
-            checks = []
-            fonts = text = ''
-            for command, label in commands:
-                remaining = int(self._identity[3] - self.clock())
-                if remaining <= 0:
-                    raise LeaseLost('generation_deadline')
-                result = await self._call(self.sandbox_manager.exec, owner, sid, command,
-                    min(30, remaining), packages=['poppler-utils'] if getattr(self.sandbox_manager, 'backend', 'oci') == 'vm' and path.endswith('.pdf') else None)
-                if result.returncode != 0:
-                    raise GenerationError('artifact_validation_failed')
-                if label == 'pdf_fonts':
-                    fonts = result.stdout
-                if label == 'pdf_text':
-                    text = result.stdout
-                checks.append(label)
-            if path.endswith('.pdf') and (not text.strip() or not any(re.search(
-                    r'\s+yes\s+(?:yes|no)\s+(?:yes|no)\s+\d+\s+\d+\s*$', line.lower()) for line in fonts.splitlines())):
-                raise GenerationError('pdf_text_or_font_validation_failed')
-            return tuple(checks)
-        finally:
-            # No stale source writes after loss; remembered exact resource is
-            # left for host cleanup. Do not swallow genuine cancellation.
-            import sys
-            if sys.exc_info()[0] is None or issubclass(sys.exc_info()[0], Exception):
-                await self._destroy(owner, sid)
 
     async def send_file_content(self, content, filename, *, provenance, logical_request_key,
                                 draft=False, draft_reason=''):
@@ -484,6 +424,6 @@ class OwnedSandboxExecutor:
         if not isinstance(registered, ArtifactRegistration):
             raise GenerationError('invalid_artifact_registration')
         return _json({'ok': True, 'stored': True, 'artifact_ref': registered.artifact_ref,
-            'delivery_state': registered.state, 'message_accepted': False,
+            'delivery_state': registered.state, 'message_accepted': registered.message_accepted,
             'content_accepted': False, 'draft': draft, 'size': provenance.size,
-            'message': '产物已登记，交付状态仍需实际消息回执确认。'})
+            'message': '文件已发送。' if registered.message_accepted else '产物已登记，交付状态仍需实际消息回执确认。'})

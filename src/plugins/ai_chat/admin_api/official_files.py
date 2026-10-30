@@ -16,7 +16,7 @@ from fastapi.responses import Response, StreamingResponse
 from src.bot_security.service import principal
 from src.bot_security.store import SecurityError
 from ..admin_security import SESSION_COOKIE
-from ..adapters.qq_official.file_links import ArtifactRef, LinkError, VerifiedStream
+from ..adapters.qq_official.file_access import ArtifactRef, LinkError, VerifiedStream
 from .context import AdminRouteContext, authorize
 
 

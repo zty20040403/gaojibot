@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
+from pathlib import PurePath
 import unicodedata
 from typing import Any
 
@@ -33,15 +34,14 @@ def canonical_artifact_filename(filename: str, *, draft: bool) -> str:
     """
     if (not isinstance(filename, str) or not filename or type(draft) is not bool
             or filename != filename.strip() or len(filename.encode("utf-8")) > 4096
-            or any(c in "/\\" or unicodedata.category(c) in {"Cc", "Cf", "Cs"} for c in filename)
-            or filename[-4:].lower() not in {".pdf", ".zip"}):
+            or any(c in "/\\" or unicodedata.category(c) in {"Cc", "Cf", "Cs"} for c in filename)):
         raise ArtifactDeliveryError("invalid_artifact_name")
     prefix = "草稿-" if draft else ""
     if draft and filename.startswith(prefix):
         filename = filename[len(prefix):]
-    suffix = filename[-4:]
+    suffix = PurePath(filename).suffix
     budget = 180 - len((prefix + suffix).encode("utf-8"))
-    stem = filename[:-4].encode("utf-8")[:budget].decode("utf-8", "ignore")
+    stem = (filename[:-len(suffix)] if suffix else filename).encode("utf-8")[:budget].decode("utf-8", "ignore")
     if not stem or stem in {".", ".."}:
         raise ArtifactDeliveryError("invalid_artifact_name")
     return prefix + stem + suffix

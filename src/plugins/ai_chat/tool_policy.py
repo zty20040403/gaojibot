@@ -100,6 +100,7 @@ _READ_TOOLS = {
 
 _SEND_TOOLS = {
     "send_file_from_sandbox",
+    "send_file",
     "send_image_from_sandbox",
     "say",
     "send_sticker",

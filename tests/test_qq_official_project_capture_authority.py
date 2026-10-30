@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from tests import test_qq_official_project_sessions as session_fixture
-from tests.test_qq_official_file_dispatcher import FileMediaFake
+from tests.qq_official_file_http_fixture import FileMediaFake
 from tests.qq_official_file_fixture import PDF
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingReducer
 from src.plugins.ai_chat.adapters.qq_official.inbox import OfficialInboxStore

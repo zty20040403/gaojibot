@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import io
+import mimetypes
 import heapq
 import os
 import stat
@@ -17,11 +17,10 @@ import threading
 import time
 import unicodedata
 import weakref
-import zipfile
 
 from src.plugins.ai_chat.adapters.qq_official import execution, subagent_runtime
 from src.plugins.ai_chat.agent.control import LeaseLost
-from .image_formats import artifact_filename as canonical_artifact_filename, detect_image, ImageFormatError
+from .image_formats import artifact_filename as canonical_artifact_filename
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 
 MAX_BYTES = 100 * 1024 * 1024
@@ -66,32 +65,7 @@ def detect_content(content, filename, max_bytes):
             or type(content) is not bytes or not 1 <= len(content) <= max_bytes):
         raise ArtifactError('artifact_size_unavailable')
     _clean_filename(filename)
-    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-        try:
-            return detect_image(content, filename, max_bytes=max_bytes)
-        except ImageFormatError:
-            raise ArtifactError('artifact_image_invalid') from None
-    if filename.lower().endswith('.pdf') and content.startswith(b'%PDF-'):
-        return 'application/pdf'
-    if filename.lower().endswith('.zip') and content.startswith(b'PK\x03\x04'):
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as archive:
-                entries = archive.infolist()
-                if not 1 <= len(entries) <= 10000 or sum(x.file_size for x in entries) > MAX_BYTES:
-                    raise ArtifactError('artifact_zip_limits')
-                # This is an attachment, never unpacked on the host. Reject
-                # traversal, links and encrypted entries before storing it.
-                for entry in entries:
-                    path = entry.filename.replace('\\', '/')
-                    if (path.startswith('/') or '..' in path.split('/') or ':' in path.split('/')[0]
-                            or entry.flag_bits & 1 or ((entry.external_attr >> 16) & 0o170000) == 0o120000):
-                        raise ArtifactError('artifact_zip_unsafe')
-        except (zipfile.BadZipFile, UnicodeError, ValueError) as exc:
-            if isinstance(exc, ArtifactError):
-                raise
-            raise ArtifactError('artifact_zip_invalid') from None
-        return 'application/zip'
-    raise ArtifactError('artifact_type_unavailable')
+    return mimetypes.guess_type(filename)[0] or 'application/octet-stream'
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True, eq=False, repr=False)

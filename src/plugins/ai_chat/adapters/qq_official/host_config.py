@@ -2,8 +2,7 @@
 
 Only deployment configuration can select these factories. It contains no
 Python import paths, credential values, identity mappings or project grants.
-Native file evidence is an exact, expiring administrator-reviewed observation;
-loading it does not probe the platform or extend its validity.
+File uploads use the configured account directly, without route proofs.
 """
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ from src.bot_security.store import SecurityError
 from src.qq_official.credentials import _read_secret
 from ...platform_types import AccountKey, EndpointKey
 from .config import _boolean
-from .file_services import FileServiceConfig, NativeRouteEvidence, file_services_factory
+from .file_services import FileServiceConfig, file_services_factory
 from .migration_services import MigrationServices, OneBotAccount, ExportDeadline
 
 
@@ -84,7 +83,7 @@ class HostConfiguration:
     subagent_profile: str | None = None
     deadlines: tuple = ()
     files: dict | None = field(default=None,repr=False)
-    native_routes: tuple[NativeRouteEvidence,...] = field(default=(),repr=False)
+    native_routes: tuple = field(default=(),repr=False)
     host_services: tuple = field(default=(),repr=False)
     media: object | None = field(default=None,repr=False)
     native_schedule: object | None = field(default=None,repr=False)
@@ -127,42 +126,10 @@ class HostConfiguration:
             evidence=[]
             download=None
             if files is not None:
-                _object(files,('private_directory','native_routes'),
-                    ('generation_enabled','max_file_bytes','quota_bytes','max_artifacts','min_free_bytes',
-                     'account_capacity','actor_capacity','destroy_expired_resources','download','multipart'))
                 files=dict(files)
-                raw_multipart=files.pop('multipart',None)
-                if raw_multipart is not None:
-                    from .native_part_transport import MultipartConfiguration
-                    data=dict(_object(raw_multipart,('allowed_part_hosts',),('max_parts','max_session_seconds')))
-                    hosts=_list(data.pop('allowed_part_hosts'),16)
-                    if len(set(hosts))!=len(hosts):raise ValueError
-                    files['multipart_configuration']=MultipartConfiguration(frozenset(hosts),**data)
-                raw_download=files.pop('download',None)
-                if raw_download is not None:
-                    from .download_runtime import DownloadConfiguration,LinkRouteEvidence
-                    data=dict(_object(raw_download,('origin','listen_host','listen_port','routes')))
-                    links=[]
-                    for entry in _list(data.pop('routes'),128):
-                        entry=dict(_object(entry,('endpoint','endpoint_generation','route_epoch','capability_revision',
-                            'verified_at','expires_at','contract')))
-                        entry['endpoint']=EndpointKey.parse(entry['endpoint'])
-                        if entry['endpoint'].account!=account:raise ValueError
-                        links.append(LinkRouteEvidence(**entry))
-                    download=DownloadConfiguration(**data,routes=tuple(links))
-                for item in _list(files.pop('native_routes'),128):
-                    _object(item,('endpoint','endpoint_generation','route_epoch','capability_revision','max_bytes','verified_at','expires_at','contract','file_type'),('multipart',))
-                    item=dict(item);item['endpoint']=EndpointKey.parse(item['endpoint'])
-                    if item['endpoint'].account!=account:raise ValueError
-                    for key in ('endpoint_generation','route_epoch','capability_revision','max_bytes','expires_at'):
-                        if type(item[key]) is not int or item[key]<=0:raise ValueError
-                    if type(item['verified_at']) is not int or not 0<=item['verified_at']<item['expires_at']:raise ValueError
-                    if (type(item['contract']) is not str or not 1<=len(item['contract'].encode())<=256
-                            or any(ord(c)<32 or ord(c)==127 for c in item['contract'])
-                            or type(item['file_type']) is not int or item['file_type'] not in {1,4}):raise ValueError
-                    if type(item.get('multipart',False)) is not bool or item.get('multipart',False) and item['file_type']!=4:raise ValueError
-                    evidence.append(NativeRouteEvidence(**item))
-                if len({(x.endpoint.key,x.file_type) for x in evidence})!=len(evidence):raise ValueError
+                # Accepted for existing deployment files, no longer consulted.
+                for obsolete in ('native_routes', 'multipart', 'download'):
+                    files.pop(obsolete, None)
                 files['private_directory']=Path(files['private_directory'])
                 FileServiceConfig(manager=None,**files)  # Validate without opening files or creating a manager.
             from .host_authority import AllowedService
@@ -226,22 +193,8 @@ class ConfiguredHost:
         if type(file_link_ttl_seconds) is not int or not 60<=file_link_ttl_seconds<=3600:
             raise HostConfigurationError('invalid_file_link_lifetime')
         self.file_link_ttl_seconds=file_link_ttl_seconds
-        if config.download is not None:
-            from urllib.parse import urlsplit
-            configured_admin=getattr(getattr(context,'settings',None),'admin_origin','')
-            if configured_admin:
-                def origin(value):
-                    parsed=urlsplit(value)
-                    return (parsed.scheme.lower(),(parsed.hostname or '').lower(),
-                        parsed.port or (443 if parsed.scheme.lower()=='https' else 80))
-                if origin(config.download.origin)==origin(configured_admin):
-                    raise HostConfigurationError('download_requires_independent_origin')
         self.config,self.context,self.migration=config,context,migration
-        self.evidence={(value.endpoint.key,value.file_type):value for value in config.native_routes}
         self.download_host=None
-        if config.download is not None:
-            from .download_runtime import DownloadHost
-            self.download_host=DownloadHost(config.download,config.account)
 
     def download_status(self):
         if self.download_host is None:
@@ -314,25 +267,13 @@ class ConfiguredHost:
             project_scope_guard=self.migration.project_grants.project_scope_guard,
             read_route_guard=lambda cursor,artifact,project_binding,**kwargs:
                 kwargs['canonical_scope'].key==kwargs['endpoint'].scope.key)
-        download=self.download_host
-        def route_authority(cursor,endpoint,actor,route):
-            if route=='native':return any(key[0]==endpoint.key for key in self.evidence)
-            return download is not None and download.route_allowed(cursor,endpoint,actor,route)
         config=FileServiceConfig(manager=self.context.sandbox_manager,**self.config.files,
-            link_ttl_seconds=self.file_link_ttl_seconds,
-            source_authority=authority,native_media_evidence=lambda cursor,endpoint,kind:self.evidence.get((endpoint.key,kind)),
-            route_authority=route_authority,
-            link_origin=download.config.origin if download is not None else None,
-            link_reachable=download.reachable if download is not None else None,
-            retained_link_authority=download.retained if download is not None else None)
+            source_authority=authority)
         if config.generation_enabled and config.manager is None:
             raise HostConfigurationError('official_host_sandbox_unavailable')
         files=await file_services_factory(session.file_configuration(config))(runtime,token,rest)
         try:
             session.attach_file_services(files)
-            if download is not None:
-                await download.start()
-                download.attach(files)
         except BaseException:
             await files.close()
             raise

@@ -2,46 +2,13 @@
 from __future__ import annotations
 
 from src.plugins.ai_chat.agent.artifact_delivery import ArtifactDeliveryView
-from .protected_plans import load_protected_ref
 from .send_types import OutboxInvariantError
 
 
 def apply_file_receipt(cursor, *, delivery, attempt, now):
-    """Called after genuine M3 evidence was atomically applied to the ledger.
-
-    Keep the historical fact even after cancellation, credential expiration or
-    byte deletion. No source lease, local vault or publication read is needed.
-    """
-    if delivery['payload_mode'] != 'protected':
-        return
-    row = cursor.execute('''SELECT * FROM qq_official_file_message_plans
-        WHERE plan_id=? AND delivery_id=? FOR SHARE''',
-        (delivery['plan_id'], delivery['delivery_id'])).fetchone()
-    if row is None:
-        # A generic protected port need not be an official file catalog. Absence
-        # never invents an artifact or advances any file projection.
-        return
-    ref = load_protected_ref(cursor, delivery)
-    if (row['artifact_id'] != ref.artifact_id or row['credential_ref'] != ref.credential_ref
-            or row['account_key'] != delivery['account_key'] or row['endpoint_key'] != delivery['endpoint_key']
-            or row['requester_actor_key'] != delivery['requester_actor_key']):
-        raise OutboxInvariantError('file_receipt_association_conflict')
-    evidence = cursor.execute('''SELECT 1 FROM delivery_receipts r
-        JOIN delivery_attempts a ON a.attempt_id=r.attempt_id
-        JOIN deliveries d ON d.delivery_id=a.delivery_id AND d.current_attempt_id=a.attempt_id
-        WHERE r.attempt_id=? AND r.applied_at IS NOT NULL AND d.delivery_id=?
-          AND a.state='committed' AND a.acceptance='confirmed_yes' AND d.status='committed'
-          AND r.account_key=d.account_key AND r.endpoint_key=d.endpoint_key
-          AND r.native_message_id=d.native_message_id LIMIT 1''',
-        (attempt['attempt_id'], delivery['delivery_id'])).fetchone()
-    if evidence is None:
-        raise OutboxInvariantError('file_receipt_not_applied')
-    cursor.execute('''UPDATE qq_official_file_deliveries
-        SET state='message_accepted',reason_code='',updated_at=?
-        WHERE artifact_id=? AND active_plan_id=? AND credential_ref=?''',
-        (now, ref.artifact_id, delivery['plan_id'], ref.credential_ref))
-    if cursor.rowcount != 1:
-        raise OutboxInvariantError('file_receipt_active_plan_conflict')
+    cursor.execute("""UPDATE qq_official_file_deliveries
+        SET state='message_accepted',reason_code='',updated_at=? WHERE active_plan_id=?""",
+        (now, delivery['plan_id']))
 
 
 def project_task_files(cursor, task, revision):

@@ -25,7 +25,7 @@ from src.qq_official.credentials import Credentials
 from src.qq_official.http import RestClient
 from src.qq_official.token import TokenManager
 from tests.test_qq_official_migration_services import MigrationServicesFixture
-from tests.test_qq_official_file_dispatcher import FileMediaFake
+from tests.qq_official_file_http_fixture import FileMediaFake
 from tests.qq_official_file_fixture import PDF
 
 

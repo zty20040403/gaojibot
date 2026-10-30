@@ -36,7 +36,7 @@ def project(definition, context):
         'sandbox_exec': '在本次隔离工作区中生成或检验文件。不可执行宿主操作或分离后台命令。',
         'sandbox_write_file': '写入本次工作区内的 UTF-8 文件。',
         'sandbox_read_file': '有界读取本次工作区内的普通文件。',
-        'send_file_from_sandbox': '导出本次工作区的 PDF/ZIP 文件、独立校验并持久登记；stored/waiting 不表示消息已接受或用户已下载。',
+        'send_file_from_sandbox': '从工作区导出任意格式文件并发送。以 message_accepted 判断是否确认送达。',
     }
     function['description'] = descriptions[name]
     if name in {'sandbox_write_file', 'sandbox_read_file', 'send_file_from_sandbox'}:
@@ -49,10 +49,18 @@ def project(definition, context):
             '本次运行所需的 Debian 软件包名。' if getattr(context.agent_executor.sandbox_manager, 'backend', 'oci') == 'vm'
             else '本次运行所需的 Nix 属性名。')
     if name == 'send_file_from_sandbox':
-        function['parameters']['properties']['filename']['description'] = '安全显示文件名，必须为 PDF 或 ZIP；不接受路径或 URL。'
+        function['parameters']['properties']['filename']['description'] = '显示文件名，保留实际扩展名。'
 
 
 HANDLERS = tuple(FunctionTool(deepcopy(definition), enabled,
     partial(execute, name=definition['function']['name']), project=project,
     platform_neutral=True, required_features=frozenset())
     for definition in SANDBOX_TOOLS if definition['function']['name'] in _NAMES)
+
+HANDLERS += (FunctionTool({'type': 'function', 'function': {
+    'name': 'send_file', 'description': '发送当前会话沙盒中的文件。支持任意格式，图片包括 GIF 原样发送，单个文件最多 100 MB。',
+    'parameters': {'type': 'object', 'properties': {
+        'path': {'type': 'string', 'description': '文件的相对路径或工作区内绝对路径。'},
+        'name': {'type': 'string', 'description': '可选的显示文件名。'},
+    }, 'required': ['path']}}}, enabled, partial(execute, name='send_file'),
+    platform_neutral=True, required_features=frozenset()),)

@@ -85,9 +85,11 @@ def _neutral_registry() -> ToolRegistry:
                 for handler in (*ALERT_HANDLERS, *CONTEXT_HANDLERS, *RECENT_SPEAKERS_HANDLERS, *NATIVE_REMINDER_HANDLERS, *MEMORY_HANDLERS,
                                 *SOURCE_HANDLERS, *STICKER_HANDLERS, *OWNED_SANDBOX_HANDLERS, *PROJECT_HANDLERS, *PROGRESS_HANDLERS)
                 if handler.platform_neutral}
+    names = {definition['function']['name'] for definition in TOOL_DEFINITIONS}
+    catalog = [*TOOL_DEFINITIONS, *(handler.definition for name, handler in migrated.items() if name not in names)]
     return ToolRegistry((migrated.get(definition["function"]["name"])
                          or FunctionTool(definition, _unavailable, _reject)
-                         for definition in TOOL_DEFINITIONS), catalog=TOOL_DEFINITIONS)
+                         for definition in catalog), catalog=catalog)
 
 
 def neutral_registry_for(context: ToolContext) -> ToolRegistry:

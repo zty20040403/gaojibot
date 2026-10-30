@@ -8,8 +8,8 @@ import binascii
 from pathlib import PurePath
 import struct
 import zlib
-
 from src.plugins.ai_chat.agent.artifact_delivery import canonical_artifact_filename
+
 
 MAX_IMAGE_BYTES = 3_500_000
 MAX_IMAGE_PIXELS = 16_000_000
@@ -23,11 +23,7 @@ class ImageFormatError(ValueError):
 
 
 def file_type_for_mime(mime):
-    if mime in IMAGE_MIMES:
-        return 1
-    if mime in {'application/pdf', 'application/zip'}:
-        return 4
-    raise ImageFormatError('artifact_mime_unavailable')
+    return 1 if mime.startswith('image/') else 4
 
 
 def mime_matches_filename(mime, filename):
@@ -37,16 +33,7 @@ def mime_matches_filename(mime, filename):
 
 
 def artifact_filename(filename, *, draft):
-    if not isinstance(filename, str):
-        raise ImageFormatError('invalid_artifact_name')
-    suffix = PurePath(filename).suffix
-    if suffix.lower() not in {'.png', '.jpg', '.jpeg'}:
-        return canonical_artifact_filename(filename, draft=draft)
-    # Reuse the established no-control/path checks and 180-byte draft mapping.
-    stem = filename[:-len(suffix)]
-    normalized = canonical_artifact_filename(stem + '.pdf', draft=draft)
-    budget = 180 - len(suffix.encode())
-    return normalized[:-4].encode()[:budget].decode('utf-8', errors='ignore') + suffix
+    return canonical_artifact_filename(filename, draft=draft)
 
 
 def _dimensions(width, height):

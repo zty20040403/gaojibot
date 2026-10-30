@@ -218,13 +218,6 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         finally:
             active_tool_call_id.reset(token)
         self.assertTrue(retry['stored'])
-        self.setUp()
-        sid = await self.produce()
-        self.manager.items[sid]['files']['result.pdf'] = b'not a PDF'
-        result = await self.send(sid)
-        self.assertEqual(result['code'],'artifact_type_mismatch')
-        self.assertFalse(self.executor._uncertain)
-        self.assertTrue(json.loads(await self.executor.execute('sandbox_destroy',{'sandbox_id':sid}))['ok'])
 
     async def test_pdf_bytes_hash_size_are_exported_and_only_registered(self):
         sid = await self.produce()
@@ -237,8 +230,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(artifact.content, self.manager.items[sid]['files']['result.pdf'])
         self.assertEqual(artifact.sha256, hashlib.sha256(artifact.content).hexdigest())
         self.assertEqual(artifact.size, len(artifact.content))
-        self.assertEqual(artifact.checks, ('pdf_structure', 'pdf_fonts', 'pdf_text'))
-        self.assertTrue(any(owner.endswith(':verify') for action, owner, _ in self.manager.calls if action == 'exec'))
+        self.assertFalse(any(owner.endswith(':verify') for action, owner, _ in self.manager.calls if action == 'exec'))
         self.assertNotIn('TEST_ACTOR', self.executor.owner)
         for hidden in (artifact.sha256, 'TEST content', 'TEST_GROUP', 'result.pdf'):
             self.assertNotIn(hidden, repr(artifact))
@@ -251,7 +243,6 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         with zipfile.ZipFile(io.BytesIO(artifact.content)) as archive:
             self.assertEqual(archive.read('main.py'), b'TEST content')
         self.assertEqual(artifact.mime, 'application/zip')
-        self.assertEqual(artifact.checks, ('zip_structure',))
         self.assertEqual(self.delivery.route_kind, 'link')
 
     async def test_no_route_rejects_before_capacity_or_sandbox_creation(self):
@@ -321,13 +312,6 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.binding.reservations), count)
         self.assertFalse(self.delivery.calls)
 
-    async def test_loss_during_verifier_write_blocks_exec(self):
-        sid = await self.produce()
-        self.manager.after = lambda name, owner, *_: setattr(self.binding, 'valid', False) if name == 'write' and owner.endswith(':verify') else None
-        with self.assertRaises(LeaseLost):
-            await self.send(sid)
-        self.assertFalse(any(action == 'exec' and owner.endswith(':verify') for action, owner, _ in self.manager.calls))
-        self.assertFalse(self.delivery.calls)
 
     async def test_loss_after_register_never_reports_success_or_reexecutes(self):
         sid = await self.produce()
@@ -377,21 +361,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
                 provenance=artifact, logical_request_key='generated:' + 'a' * 64)
         self.assertFalse(self.delivery.calls)
 
-    async def test_validation_failure_is_not_delivery_success(self):
-        sid = await self.produce()
-        self.manager.unembedded = True
-        result = await self.send(sid)
-        self.assertEqual(result['code'], 'pdf_text_or_font_validation_failed')
-        self.assertFalse(self.delivery.calls)
-        self.assertEqual(len(self.binding.released), 1)
 
-    async def test_invalid_and_traversal_zip_is_rejected(self):
-        sid = await self.create()
-        for content in (b'not zip', self.bad_zip()):
-            self.manager.items[sid]['files']['result.zip'] = content
-            result = await self.send(sid, 'zip')
-            self.assertFalse(result['ok'])
-        self.assertFalse(self.delivery.calls)
     @staticmethod
     def bad_zip():
         result = io.BytesIO()
@@ -512,10 +482,6 @@ class PureTests(unittest.TestCase):
                 owners.add(OwnedSandboxExecutor(manager=FakeManager(), binding=Binding(endpoint=endpoint, actor=actor), delivery=Delivery()).owner)
         self.assertEqual(len(owners), 20)
 
-    def test_cannot_return_accepted_or_url_as_registration(self):
-        for args in (('https://bad.invalid',), ('artifact_ok', 'message_accepted'), ('artifact_ok', 'stored', True)):
-            with self.assertRaises(GenerationError):
-                ArtifactRegistration(*args)
 
     def test_clean_process_imports_no_nonebot_or_legacy_executor(self):
         code = "import sys;sys.path[:0]=%r;import src.plugins.ai_chat.application.owned_sandbox,src.plugins.ai_chat.tools.owned_sandbox;assert not any(n=='nonebot' or n.startswith('nonebot.') for n in sys.modules);assert 'src.plugins.ai_chat.agent_tools' not in sys.modules" % [str(ROOT)]
