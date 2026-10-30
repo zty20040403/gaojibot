@@ -1,6 +1,7 @@
 """Narrow Linux tmpfs ACL-disabled contract; real Linux probe is separate."""
 import ctypes
 import errno
+import struct
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -18,7 +19,30 @@ class LinuxPrivateACLTests(unittest.TestCase):
              patch.object(credentials.os, 'listxattr', create=True, return_value=list(attributes), side_effect=enumeration_error), \
              patch.object(credentials.os, 'getxattr', create=True, return_value=value,
                           side_effect=OSError(error, 'TEST ACL unavailable') if error else None):
-            credentials._verify_posix_acl(17)
+            return credentials._verify_posix_acl(17)
+
+    def test_systemd_read_acl_allows_only_the_current_service_user(self):
+        entries = [(1, 4, 0xFFFFFFFF), (2, 4, 1004), (4, 0, 0xFFFFFFFF),
+                   (16, 4, 0xFFFFFFFF), (32, 0, 0xFFFFFFFF)]
+        def encoded(values):
+            return struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *x) for x in values)
+        with patch.object(credentials.os, 'geteuid', return_value=1004):
+            self.assertIs(self.check(0x01021994, error=None, value=encoded(entries)), True)
+            for index, entry in ((1, (2, 4, 1005)), (2, (4, 4, 0xFFFFFFFF)),
+                                 (4, (32, 4, 0xFFFFFFFF))):
+                changed = entries.copy()
+                changed[index] = entry
+                with self.subTest(entry=entry), self.assertRaises(credentials.CredentialError):
+                    self.check(0x01021994, error=None, value=encoded(changed))
+            with self.assertRaises(credentials.CredentialError):
+                self.check(0xEF53, error=None, value=encoded(entries))
+
+    def test_root_read_only_credential_accepts_verified_service_acl(self):
+        info = SimpleNamespace(st_mode=0o100440, st_uid=0, st_gid=0)
+        with patch.object(credentials.os, 'fstat', return_value=info), \
+             patch.object(credentials.os, 'geteuid', return_value=1004), \
+             patch.object(credentials, '_verify_posix_acl', return_value=True):
+            credentials.verify_private_file(17)
 
     def test_verified_tmpfs_acl_disabled_uses_checked_mode(self):
         self.check(0x01021994)
