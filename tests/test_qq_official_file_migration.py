@@ -454,7 +454,7 @@ class FileMigrationTests(ExecutionFixture):
 
     def test_file_task_profile_is_additive_and_prevents_evidence_downgrade(self):
         from unittest.mock import Mock
-        from src.plugins.ai_chat.adapters.qq_official import execution, subagent_runtime
+        from src.plugins.ai_chat.adapters.qq_official import turn_source as execution, subagent_runtime
         from src.plugins.ai_chat.agent.contracts import ContextPacket
         from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
         from src.plugins.ai_chat.subagents import SubAgentStore, SubAgentCoordinator

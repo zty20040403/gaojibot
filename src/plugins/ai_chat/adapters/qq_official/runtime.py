@@ -7,6 +7,7 @@ import inspect
 import logging
 import re
 import traceback
+from types import SimpleNamespace
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.delivery import DeliveryStore
@@ -14,7 +15,7 @@ from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.lifecycle import BackgroundTaskSupervisor
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.plugins.ai_chat.turn_journal import TurnJournal
-from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker, JobDeferred
+from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker
 from src.qq_official.gateway import GatewayConnection
 from src.qq_official.http import RestClient
 from src.qq_official.errors import QQAPIError
@@ -23,7 +24,6 @@ from src.qq_official.token import TokenManager
 from .binding import BindingReducer
 from .config import OfficialConfig
 from .inbox import OfficialInboxStore
-from .ingest import process_inbox
 from .keys import account_job_kind
 from .lease import DedicatedAccountLease, LeaseLost, LeaseUnavailable, advisory_key_for
 from .identity_store import observe_ready, observe_self_api
@@ -245,7 +245,6 @@ class OfficialRuntime:
                         self._token = token
                         await self._calls(self.store.apply_configuration, token, self.loaded.owner_openids)
                         await self._calls(self._recover_binding, token)
-                        await self._calls(self.store.check_pending_ingest, token)
                         checkpoint = await self._calls(self.store.checkpoint, token)
                         await self._serve(lease, token, checkpoint)
                 except asyncio.CancelledError:
@@ -287,7 +286,8 @@ class OfficialRuntime:
 
     async def _serve(self, lease, token, checkpoint):
         session_id = checkpoint.session_id if checkpoint is not None else None
-        ingest_failed = asyncio.Event()
+        active_turns = set()
+        turn_locks = {}
         self_identity_attempted = False
 
         async def on_checkpoint(value):
@@ -299,7 +299,7 @@ class OfficialRuntime:
                 data = frame.get("d")
                 session_id = data.get("session_id") if isinstance(data, dict) else None
             await self._ensure_current(token)
-            accepted = await self._calls(self.store.accept, frame, token=token, session_id=session_id)
+            accepted = await self._calls(self.store.accept, frame, token=token, session_id=session_id, ledger=self.ledger)
             observe(self.observer, 'inbox', accepted.disposition)
             if frame.get("t") == "READY":
                 def record_ready():
@@ -321,6 +321,8 @@ class OfficialRuntime:
                             with self.store.transaction() as cursor:
                                 return observe_self_api(cursor, token, own, int(self.store.clock()))
                         await self._calls(record_self)
+            if accepted.ingested is not None:
+                await run_inbox(accepted.inbox_id, accepted.ingested)
             if self.sender is not None:
                 self.sender.wake()
             if accepted.approval is not None and self.approval_service is not None:
@@ -330,32 +332,32 @@ class OfficialRuntime:
             if accepted.binding is not None and accepted.binding.status == 'confirmed' and self.sender is not None:
                 await self.sender.refresh_bound_groups()
 
-        async def ingest(job):
-            inbox_id = job.payload.get("inbox_id")
-
-            def execute():
+        async def run_inbox(inbox_id, result):
+            observe(self.observer, 'ingest', result.status)
+            if result.status != 'processed' or result.echo_state != 'not_echo':
+                return
+            def endpoint_key():
                 with self.store.transaction() as cursor:
-                    return process_inbox(cursor, inbox_id=inbox_id, lease_token=token, ledger=self.ledger,
-                        jobs=self.jobs, epoch_guard=self.store.epoch_guard, admission=self.store.admitted)
-
-            try:
-                await self._ensure_current(token)
-                result = await self._calls(execute)
-                observe(self.observer, 'ingest', result.status)
-            except LeaseLost:
-                raise JobDeferred("official_account_lease_lost", 3) from None
-            except Exception:
-                # Queue diagnostics are persisted and logged. Database errors
-                # can include opaque IDs or payloads, so only a fixed code leaves.
-                ingest_failed.set()
-                # Preserve the durable continuation. A terminal failed job with
-                # a pending inbox would block every later message in its lane.
-                raise JobDeferred("official_ingest_unavailable", 0) from None
-            if result.status == "deferred":
-                raise JobDeferred("official_endpoint_order", 1)
-            if self.background_service is not None and result.status == "processed" and result.dispatch_job_id is None:
-                await self.background_service.on_ingested(job)
-            return {"status": result.status, "inbox_id": inbox_id}
+                    return cursor.execute('SELECT endpoint_key FROM qq_official_inbound_events WHERE inbox_id=?', (inbox_id,)).fetchone()['endpoint_key']
+            endpoint = await self._calls(endpoint_key)
+            source = SimpleNamespace(job_id=None, payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
+                lease_generation=1, attempts=1, kind=account_job_kind('turn', token.account_key))
+            async def run():
+                try:
+                    if result.reply_requested:
+                        if self.turn_consumer is not None:
+                            async with turn_locks.setdefault(endpoint, asyncio.Lock()):
+                                await self.turn_consumer(source)
+                    elif self.background_service is not None:
+                        await self.background_service.on_ingested(source)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    self.logger.warning('QQ turn error=%s frames=%s', type(error).__name__,
+                        [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)[-4:]])
+            task = asyncio.create_task(run())
+            active_turns.add(task)
+            task.add_done_callback(active_turns.discard)
 
         async def monitor():
             loop = asyncio.get_running_loop()
@@ -366,7 +368,6 @@ class OfficialRuntime:
                 if not await self._calls(lease.probe):
                     raise LeaseLost("Official account lease was lost")
                 if loop.time() >= next_purge:
-                    await self._calls(self.store.check_pending_ingest, token)
                     try:
                         deleted = await self._calls(self.store.purge_terminal_payloads, token)
                     except Exception:
@@ -386,13 +387,8 @@ class OfficialRuntime:
                     next_file_scan = loop.time() + 30
                 await asyncio.sleep(self.probe_seconds)
 
-        async def failure():
-            await ingest_failed.wait()
-            raise RuntimeError("official_ingest_unavailable")
-
         worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
                                   concurrency=2, per_scope_limit=1, database_calls=self._calls)
-        worker.register(account_job_kind("ingest", self.loaded.account.key), ingest)
         async with self.protocol_factory(self.loaded, checkpoint=checkpoint, on_checkpoint=on_checkpoint,
                                          ensure_current=lambda: self._ensure_current(token)) as gateway, AsyncExitStack() as resources:
             self._gateway = gateway
@@ -542,24 +538,18 @@ class OfficialRuntime:
                     concurrency=2, per_scope_limit=1, database_calls=self._calls)
                 subagent_worker.register(account_job_kind("subagent", self.loaded.account.key), self.subagent_service.execute)
             if factory is None and self.application is not None:
-                from .turn_runtime import build_turn_consumer
+                from .turns import build_turn_consumer
                 factory = lambda current, lease_token: build_turn_consumer(current, lease_token, self.application)
-            turns = None
             if factory is not None:
                 self.turn_consumer = factory(self, token)
-                turns = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
-                    concurrency=2, per_scope_limit=1, database_calls=self._calls)
-                turns.register(account_job_kind("turn", self.loaded.account.key), self.turn_consumer)
-            self.state, self.reason = "running", "receiving_durable_events"
+            self.state, self.reason = "running", "receiving_events"
             await self._calls(self._recover_interrupted_turns, token)
             tasks = [asyncio.create_task(gateway.run(on_dispatch)), asyncio.create_task(worker.run_forever()),
-                     asyncio.create_task(monitor()), asyncio.create_task(failure())]
+                     asyncio.create_task(monitor())]
             if self.sender is not None:
                 tasks.append(asyncio.create_task(self.sender.run()))
             if self.approval_service is not None:
                 tasks.append(asyncio.create_task(self.approval_service.run()))
-            if turns is not None:
-                tasks.append(asyncio.create_task(turns.run_forever()))
             if subagent_worker is not None:
                 tasks.append(asyncio.create_task(subagent_worker.run_forever()))
             if file_worker is not None:
@@ -574,6 +564,9 @@ class OfficialRuntime:
                     await self._calls(self.store.pause, token, reason)
                     self.state, self.reason = "paused", reason
             finally:
+                for turn in tuple(active_turns):
+                    turn.cancel()
+                await asyncio.gather(*tuple(active_turns), return_exceptions=True)
                 self._gateway = None
                 self._token = None
                 try:
@@ -588,7 +581,7 @@ class OfficialRuntime:
                     self.subagent_service = None
 
     def _recover_interrupted_turns(self, token):
-        from src.plugins.ai_chat.message_ir import MessageBody, TextNode
+        from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json
         from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
         from .renderer import render_plan
 
@@ -596,16 +589,30 @@ class OfficialRuntime:
         notice = '刚才重启了，这条没处理完，麻烦再说一次'
         with self.store.transaction() as cursor:
             self.store.epoch_guard(cursor, token)
+            cursor.execute("UPDATE durable_jobs SET status='cancelled',lease_owner='',lease_until=NULL,finished_at=?,updated_at=? WHERE kind IN (?,?) AND status IN ('pending','running')",
+                (now, now, account_job_kind('ingest', token.account_key), account_job_kind('turn', token.account_key)))
+            cursor.execute("UPDATE qq_official_inbound_events SET status='skipped',reason_code='restart_interrupted',processed_at=?,updated_at=? WHERE account_key=? AND status='pending'",
+                (now, now, token.account_key))
             rows = cursor.execute('''SELECT x.* FROM qq_official_turn_executions x
                 LEFT JOIN agent_turns t ON t.turn_id=x.journal_turn_id
                 WHERE x.account_key=? AND x.account_fencing_epoch<?
                 AND (t.status='running' OR x.state='executing'
-                     OR x.reason_code='turn_execution_interrupted')
+                     OR x.state IN ('prepared','needs_attention','result_ready'))
                 ORDER BY x.created_at DESC FOR UPDATE OF x''', (token.account_key, token.epoch)).fetchall()
             notified = set()
             for row in rows:
                 endpoint = EndpointKey.parse(row['endpoint_key'])
                 actor = ActorKey.parse(row['requester_actor_key'])
+                if row['state'] == 'result_ready' and row['result_body_json'] and row['plan_id'] is None:
+                    plan = self.outbox.enqueue(token,
+                        rendered=render_plan(body_from_json(row['result_body_json']), endpoint), requester=actor,
+                        logical_key='qq-turn-result:' + row['execution_id'], source_scope_key=row['scope_key'],
+                        expires_at=max(now + 300, row['deadline_at']),
+                        source_native_message_id=row['source_native_message_id'],
+                        source_canonical_message_id=row['canonical_message_id'], transaction_cursor=cursor)
+                    cursor.execute("UPDATE qq_official_turn_executions SET state='handed_off',plan_id=?,handed_off_at=?,updated_at=? WHERE execution_id=?",
+                        (plan.plan_id, now, now, row['execution_id']))
+                    continue
                 if endpoint.key not in notified and self.store.admitted(cursor, endpoint, actor):
                     self.outbox.enqueue(token, rendered=render_plan(MessageBody((TextNode(0, notice),)), endpoint),
                         requester=actor, logical_key='restart:' + row['execution_id'],
@@ -616,7 +623,7 @@ class OfficialRuntime:
                 if row['journal_turn_id'] is not None:
                     self.journal.finish_turn(row['journal_turn_id'], status='crashed',
                         final_text=notice, finished_at=now, transaction_cursor=cursor)
-                cursor.execute('''UPDATE qq_official_turn_executions SET state='cancelled',
+                cursor.execute('''UPDATE qq_official_turn_executions SET state=CASE WHEN plan_id IS NULL THEN 'cancelled' ELSE 'handed_off' END,
                     reason_code='restart_notified',updated_at=? WHERE execution_id=?''', (now, row['execution_id']))
             if rows:
                 self.logger.info('QQ restart recovery: closed=%d conversations=%d', len(rows), len(notified))

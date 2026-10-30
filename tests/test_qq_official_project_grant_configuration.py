@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 import json
 import unittest
 
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.host_config import configured_migration_factory
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
 from src.plugins.ai_chat.adapters.qq_official.project_authority import Denied, ProjectAuthority

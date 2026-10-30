@@ -10,7 +10,7 @@ import tempfile
 from tests.qq_official_outbox_fixture import OutboxFixture
 from src.plugins.ai_chat.adapters.qq_official.ingest import turn_dispatch_key, turn_dispatch_lane
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
-from src.plugins.ai_chat.adapters.qq_official.execution import begin_execution, capture_result, claim_execution
+from src.plugins.ai_chat.adapters.qq_official.turn_source import begin_execution, capture_result, claim_execution
 from src.plugins.ai_chat.adapters.qq_official.file_artifacts import ArtifactStore, foreground_source
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode

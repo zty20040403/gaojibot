@@ -10,7 +10,7 @@ from src.plugins.ai_chat.adapters.qq_official.approval_transport import (
  ApprovalContext, ApprovalOtpSender, FrozenSource, HostAction, TaskPolicy, Recipient, OfficialApprovalTransport)
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
-from src.plugins.ai_chat.adapters.qq_official.execution import assert_execution_current
+from src.plugins.ai_chat.adapters.qq_official.turn_source import assert_execution_current
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore

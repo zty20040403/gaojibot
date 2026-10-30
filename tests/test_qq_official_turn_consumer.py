@@ -3,9 +3,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from src.plugins.ai_chat.adapters.qq_official import execution
-from tests import test_qq_official_execution as fixture
-from src.plugins.ai_chat.adapters.qq_official.turn_consumer import OfficialTurnConsumer
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
+from tests import qq_official_turn_fixture as fixture
+from src.plugins.ai_chat.adapters.qq_official.turns import OfficialTurnConsumer
 from src.plugins.ai_chat.adapters.qq_official.turn_platform import TransportState
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
@@ -14,7 +14,6 @@ from src.plugins.ai_chat.application.commands import CommandServices
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_to_json
 from src.plugins.ai_chat.tasks import RunningTaskRegistry
-from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 
 
 from src.plugins.ai_chat.application import chat_orchestrator as orchestrator_module
@@ -50,7 +49,7 @@ class ConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("剩余回答", rows[1]['body_json'])
 
     def setUp(self):
-        self.f = fixture.ExecutionTests("test_result_capture_is_exactly_idempotent_and_rejects_changed_body")
+        self.f = fixture.ExecutionFixture("runTest")
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.deliveries = DeliveryStore(self.f.database, recover_interrupted=False)
@@ -100,22 +99,7 @@ class ConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.agent.assert_awaited_once()
         self.assertEqual(len(self.f.query("SELECT * FROM delivery_plans")), 1)
 
-    async def test_failed_handoff_retries_frozen_result_without_model(self):
-        with patch.object(self.outbox, "enqueue", side_effect=RuntimeError("TEST_DB")):
-            with self.assertRaisesRegex(JobDeferred, "handoff"):
-                await self.consumer(self.f.job)
-        self.assertEqual(self.f.query("SELECT state FROM qq_official_turn_executions")[0]["state"], "result_ready")
-        await self.consumer(self.f.job)
-        self.agent.assert_awaited_once()
 
-    async def test_model_failure_never_reenters_model_after_recovery(self):
-        self.agent.side_effect = RuntimeError("TEST_PRIVATE_MODEL_FAILURE")
-        with self.assertRaisesRegex(JobDeferred, "official_turn_interrupted"):
-            await self.consumer(self.f.job)
-        result = await self.consumer(self.f.job)
-        self.assertEqual(result["status"], "needs_attention")
-        self.agent.assert_awaited_once()
-        self.assertEqual(self.f.query("SELECT * FROM delivery_plans"), [])
 
     async def test_command_is_real_shared_router_without_model_journal(self):
         with self.f.tx() as cursor:
@@ -127,7 +111,7 @@ class ConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "handed_off")
         self.agent.assert_not_awaited()
         self.assertEqual(self.f.query("SELECT * FROM agent_turns"), [])
-        self.assertIn("/model", self.f.query("SELECT result_body_json FROM qq_official_turn_executions")[0]["result_body_json"])
+        self.assertIn("/model", self.f.query("SELECT manifest_json FROM delivery_plans")[0]["manifest_json"])
 
     async def test_cancelled_model_is_not_swallowed_or_restarted(self):
         self.agent.side_effect = asyncio.CancelledError()

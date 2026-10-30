@@ -142,7 +142,7 @@ class ProjectHostCompositionTests(HostCompositionFixture):
     async def test_factory_engine_routes_real_console_migration_and_rechecks_original_grant(self):
         from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
         from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
-        from src.plugins.ai_chat.adapters.qq_official import execution
+        from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
         from src.plugins.ai_chat.adapters.qq_official.file_artifacts import foreground_source,file_job_kind
         from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
         from src.plugins.ai_chat.adapters.qq_official.native_media import CONTRACT

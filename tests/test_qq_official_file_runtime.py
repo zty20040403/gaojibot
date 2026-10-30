@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import Mock
 
 from src.bot_storage import DatabaseCalls
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.file_runtime import OfficialFileRuntime, GENERATION_TOOLS
 from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import submit, job_kind
 from src.plugins.ai_chat.agent.artifact_delivery import (

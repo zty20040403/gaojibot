@@ -23,7 +23,6 @@ from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 
 from .codec import DecodedMessage, RejectedMessage, decode_message
-from .keys import account_job_kind
 from .lease import LeaseToken
 from .input_normalization import normalize_input
 
@@ -40,6 +39,7 @@ class IngestResult:
     canonical_message_id: int | None = None
     dispatch_job_id: int | None = None
     echo_state: str = "unknown"
+    reply_requested: bool = False
 
 
 class IngestInvariantError(RuntimeError):
@@ -59,44 +59,9 @@ def turn_dispatch_lane(account_key: str, endpoint_key: str) -> str:
     return _queue_key("qq.turn.lane", account_key, endpoint_key)
 
 
-def ensure_turn_dispatch(cursor: StoreCursor, inbox_row: StoreRow, endpoint_row: StoreRow,
-                         jobs: DurableJobStore, now: int) -> int:
-    """Ensure the same intent for initial ingestion or a later authentic @ event.
-
-    Caller must fence the account, lock the actual endpoint, and recheck current
-    admission before calling. This helper changes only the durable job and inbox
-    dispatch pointer; it never rebuilds message content, ledger or reply windows.
-    """
-    if (inbox_row["canonical_message_id"] is None or inbox_row["status"] not in {"pending", "processed"}
-            or inbox_row["echo_state"] != "not_echo"
-            or inbox_row["account_key"] != endpoint_row["account_key"]
-            or inbox_row["endpoint_key"] != endpoint_row["endpoint_key"]
-            or inbox_row["endpoint_generation"] != endpoint_row["generation"]
-            or inbox_row["route_epoch"] != endpoint_row["route_epoch"]):
-        raise IngestInvariantError("official turn requires a current human message")
-    account, endpoint, inbox_id = inbox_row["account_key"], inbox_row["endpoint_key"], inbox_row["inbox_id"]
-    payload = {"inbox_id": inbox_id}
-    lane = turn_dispatch_lane(account, endpoint)
-    kind = account_job_kind("turn", account)
-    job, _ = jobs.enqueue(kind=kind, payload=payload, scope_key=lane,
-                          idempotency_key=turn_dispatch_key(account, endpoint, inbox_id),
-                          now=now, transaction_cursor=cursor)
-    if job.kind != kind or job.payload != payload or job.scope_key != lane:
-        raise IngestInvariantError("official turn job identity conflict")
-    if inbox_row["dispatch_job_id"] is not None and inbox_row["dispatch_job_id"] != job.job_id:
-        raise IngestInvariantError("official turn job pointer conflict")
-    cursor.execute("""UPDATE qq_official_inbound_events SET dispatch_job_id=?,updated_at=?
-        WHERE inbox_id=? AND account_key=? AND endpoint_key=? AND canonical_message_id=?
-          AND status IN ('pending','processed') AND echo_state='not_echo'""",
-        (job.job_id, now, inbox_id, account, endpoint, inbox_row["canonical_message_id"]))
-    if cursor.rowcount != 1:
-        raise IngestInvariantError("official turn inbox changed")
-    return job.job_id
-
-
 def _result(row: StoreRow) -> IngestResult:
     return IngestResult(str(row["status"]), str(row["reason_code"] or ""),
-                        row["canonical_message_id"], row["dispatch_job_id"], str(row["echo_state"]))
+                        row["canonical_message_id"], row["dispatch_job_id"], str(row["echo_state"]), bool(row["trigger_requested"]))
 
 
 def _finish(cursor, row, now, *, status="processed", reason="", canonical=None, job=None, echo="not_echo"):
@@ -199,7 +164,6 @@ def process_inbox(
     ``admission(cursor, endpoint, actor)`` rechecks current policy; no callback
     means deny. It must be synchronous and must not commit, open transactions,
     or perform network I/O. The epoch guard acquires the account row first.
-    ``deferred`` leaves the inbox untouched so the existing queue may defer it.
     """
     if not isinstance(inbox_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", inbox_id):
         raise ValueError("invalid inbox identifier")
@@ -243,11 +207,6 @@ def process_inbox(
             or (endpoint.kind == "group" and (endpoint_row["binding_state"] != "active"
                                               or endpoint_row["membership_state"] != "present"))):
         return _finish(cursor, row, timestamp, status="revoked", reason="endpoint_no_longer_admitted")
-    earlier = cursor.execute("""SELECT inbox_id FROM qq_official_inbound_events
-        WHERE endpoint_key=? AND account_key=? AND status='pending' AND accepted_order<?
-        ORDER BY accepted_order LIMIT 1""", (endpoint.key, account.key, row["accepted_order"])).fetchone()
-    if earlier is not None:
-        return IngestResult("deferred", "earlier_inbox_pending")
     if row["payload_expires_at"] is not None and row["payload_expires_at"] <= timestamp:
         return _finish(cursor, row, timestamp, status="skipped", reason="payload_expired")
     try:
@@ -311,10 +270,7 @@ def process_inbox(
          decoded.reference.message_index, decoded.reference.referenced_index, inbox_id, timestamp))
     _record_index(cursor, decoded, canonical, timestamp)
     observe_reply_window(cursor, decoded, endpoint_row, timestamp)
-    job_id = None
-    if endpoint.kind == "private" or row["trigger_requested"] or decoded.mentions_bot or reply_target is not None:
-        cursor.execute("""UPDATE qq_official_inbound_events SET canonical_message_id=?,echo_state='not_echo'
-            WHERE inbox_id=? AND account_key=?""", (canonical, inbox_id, account.key))
-        dispatch_row = cursor.execute("SELECT * FROM qq_official_inbound_events WHERE inbox_id=?", (inbox_id,)).fetchone()
-        job_id = ensure_turn_dispatch(cursor, dispatch_row, endpoint_row, jobs, timestamp)
-    return _finish(cursor, row, timestamp, canonical=canonical, job=job_id)
+    reply = endpoint.kind == 'private' or row['trigger_requested'] or decoded.mentions_bot or reply_target is not None
+    cursor.execute('UPDATE qq_official_inbound_events SET trigger_requested=? WHERE inbox_id=?', (bool(reply), inbox_id))
+    result = _finish(cursor, row, timestamp, canonical=canonical)
+    return IngestResult(result.status, result.reason_code, canonical, echo_state=result.echo_state, reply_requested=reply)

@@ -4,8 +4,8 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 import json
 
-from src.plugins.ai_chat.adapters.qq_official import execution
-from tests import test_qq_official_execution as fixtures
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
+from tests import qq_official_turn_fixture as fixtures
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.agent.contracts import ContextPacket
@@ -32,7 +32,7 @@ from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import OfficialSu
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.f = fixtures.ExecutionTests('test_result_capture_is_exactly_idempotent_and_rejects_changed_body')
+        self.f = fixtures.ExecutionFixture('runTest')
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.handle = self.f.claim().handle

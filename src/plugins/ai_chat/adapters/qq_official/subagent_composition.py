@@ -13,7 +13,7 @@ from src.plugins.ai_chat.tools import neutral_registry_for
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 
-from . import execution
+from . import turn_source as execution
 from .subagent_actions import SubmissionBinding, text_coordinator, file_coordinator
 from .subagent_runtime import OfficialSubAgentDispatcher, TaskToolSession, FILE_TOOLS, TEXT_TOOLS, assert_current
 

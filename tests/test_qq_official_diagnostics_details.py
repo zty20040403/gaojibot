@@ -47,7 +47,7 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.assertTrue(self.reader.read(section='bindings')['checkpoint']['session_present'])
  async def test_real_ingest_execution_deadline_and_safe_reason(self):
   from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
-  from src.plugins.ai_chat.adapters.qq_official.execution import claim_execution
+  from src.plugins.ai_chat.adapters.qq_official.turn_source import claim_execution
   from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
   from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
   from src.plugins.ai_chat.ledger import MessageLedger
@@ -63,7 +63,7 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   for private in ('SECRET_MODEL_BODY','https://private','private_sentinel',result.handle.execution_id,self.owner):self.assertNotIn(private,json.dumps(value))
  async def test_actual_background_task_has_own_execution_deadline_and_no_fabricated_result_deadline(self):
   from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
-  from src.plugins.ai_chat.adapters.qq_official import execution
+  from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
   from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
   from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
   from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import submit

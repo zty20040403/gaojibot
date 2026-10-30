@@ -13,7 +13,7 @@ from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.native_media import CONTRACT
-from src.plugins.ai_chat.adapters.qq_official.turn_runtime import build_turn_consumer
+from src.plugins.ai_chat.adapters.qq_official.turns import build_turn_consumer
 from tests.qq_official_file_fixture import PDF
 from tests.test_qq_official_host_composition import HostCompositionFixture
 from tests import test_project_runtime as project_fixture

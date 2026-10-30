@@ -13,7 +13,7 @@ import time
 import uuid
 import weakref
 
-from src.plugins.ai_chat.adapters.qq_official import execution, identity_store
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution, identity_store
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseUnavailable
 from src.plugins.ai_chat.conversation_scope import ConversationScope

@@ -13,7 +13,7 @@ from unittest.mock import patch
 from tests.qq_official_outbox_fixture import OutboxFixture
 from tests import test_qq_official_migration_files as files_fixture
 from tests import test_project_runtime as runtime_fixture
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingReducer
 from src.plugins.ai_chat.adapters.qq_official.inbox import OfficialInboxStore
 from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox

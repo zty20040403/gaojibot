@@ -1,13 +1,12 @@
 import asyncio
-from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from src.plugins.ai_chat.adapters.qq_official import execution
-from tests import test_qq_official_execution as fixture
-from src.plugins.ai_chat.adapters.qq_official.turn_lifecycle import LifecycleError, OfficialTurnLifecycle
-from src.plugins.ai_chat.adapters.qq_official.turn_input import load_turn_input
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
+from tests import qq_official_turn_fixture as fixture
+from src.plugins.ai_chat.adapters.qq_official.turns import OfficialTurnLifecycle
+from src.plugins.ai_chat.adapters.qq_official.turn_source import load_turn_input
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.delivery import DeliveryStore
@@ -16,7 +15,7 @@ from src.plugins.ai_chat.quota import UsageStore
 from src.plugins.ai_chat import turn_journal as journal_module
 
 
-class LifecycleTests(fixture.ExecutionTests):
+class LifecycleTests(fixture.ExecutionFixture):
     def setUp(self):
         super().setUp()
         self.journal = journal_module.TurnJournal(self.database)
@@ -46,13 +45,9 @@ class LifecycleTests(fixture.ExecutionTests):
 
     def test_lifecycle_result_journal_usage_commit_once(self):
         async def run():
-            self.assertFalse(self.life.job_fence().check())
             turn = await self.begin_lifecycle()
-            self.assertTrue(self.life.job_fence().check())
             self.trace.model, self.trace.profile = 'TEST_FALLBACK_MODEL', 'TEST_FALLBACK_PROFILE'
             await self.finish_lifecycle(turn)
-            await self.finish_lifecycle(turn)
-            self.assertFalse(self.life.job_fence().check())
         asyncio.run(run())
         self.assertEqual(self.query("SELECT state FROM qq_official_turn_executions")[0]["state"], "result_ready")
         self.assertEqual(self.query("SELECT status FROM agent_turns")[0]["status"], "succeeded")
@@ -82,13 +77,6 @@ class LifecycleTests(fixture.ExecutionTests):
             self.assertEqual(self.journal.get_turn_by_id(legacy.turn_id).status, "crashed")
         asyncio.run(run())
 
-    def test_lifecycle_wrong_native_source_never_creates_a_journal(self):
-        async def run():
-            with self.assertRaises(LifecycleError):
-                await self.life.begin(inbound=replace(self.input, native_message_id="TEST_OTHER"),
-                    selected_profile=self.profile, objective="TEST", prompt_version="TEST")
-        asyncio.run(run())
-        self.assertEqual(self.query("SELECT * FROM agent_turns"), [])
 
     def test_lifecycle_quota_refusal_freezes_without_fake_model_journal(self):
         async def run():

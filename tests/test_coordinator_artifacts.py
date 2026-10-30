@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from tests import test_qq_official_execution as fixtures
+from tests import qq_official_turn_fixture as fixtures
 from src.plugins.ai_chat.agent.contracts import ContextPacket
 from src.plugins.ai_chat.agent.control import JobFence, LeaseLost, active_job_fence
 from src.plugins.ai_chat.agent.artifact_delivery import ArtifactDeliveryView, ArtifactDeliveryError
@@ -24,7 +24,7 @@ from src.plugins.ai_chat.subagents import AgentExecutionHooks, SubAgentCoordinat
 
 class CoordinatorArtifacts(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.f = fixtures.ExecutionTests('test_result_capture_is_exactly_idempotent_and_rejects_changed_body')
+        self.f = fixtures.ExecutionFixture('runTest')
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.store = SubAgentStore(self.f.database)

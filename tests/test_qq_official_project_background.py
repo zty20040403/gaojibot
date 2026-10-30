@@ -11,7 +11,7 @@ from src.plugins.ai_chat import project_tasks as task_module
 from src.plugins.ai_chat import project_runtime as runtime
 from src.plugins.ai_chat import project_file_executor as files
 from src.plugins.ai_chat.project_usage import ProjectUsageStore
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.project_authority import Operation
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 

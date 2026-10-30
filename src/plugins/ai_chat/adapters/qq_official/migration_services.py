@@ -611,7 +611,7 @@ class OfficialMigrationSession:
 
     async def project_context(self,inbound,platform,*,expected_execution_kind="chat"):
         """Issue the current foreground provider from its ORIGINAL admitted epoch."""
-        from . import execution
+        from . import turn_source as execution
         from .turn_platform import ExecutionBinding
         from src.plugins.ai_chat.project_authorization import ForegroundProjectProvider
         if expected_execution_kind not in {"chat", "command"}:
@@ -693,7 +693,7 @@ class OfficialMigrationSession:
                 continue
 
     def _reader(self,cursor,*,endpoint,source,now):
-        from . import execution
+        from . import turn_source as execution
         from .turn_platform import ExecutionBinding
         if (not isinstance(source,ExecutionBinding) or source.token is not self.token
                 or source.api is not execution or source.admission is not self.admission

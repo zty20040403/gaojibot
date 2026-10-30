@@ -6,7 +6,7 @@ from unittest.mock import patch
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingReducer
 from src.plugins.ai_chat.adapters.qq_official.inbox import OfficialInboxStore
 from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
-from src.plugins.ai_chat.adapters.qq_official.execution import claim_execution
+from src.plugins.ai_chat.adapters.qq_official.turn_source import claim_execution
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.migration_native_sources import NativeSources, SourceAdmission
 from src.plugins.ai_chat.adapters.qq_official.migration_host_ports import MigrationPlanGuard

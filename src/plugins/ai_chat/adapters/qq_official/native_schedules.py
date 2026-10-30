@@ -14,7 +14,7 @@ import math
 import secrets
 import weakref
 
-from src.plugins.ai_chat.adapters.qq_official.execution import assert_execution_current
+from src.plugins.ai_chat.adapters.qq_official.turn_source import assert_execution_current
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.identity_store import snapshot
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind

@@ -18,7 +18,7 @@ from ...application.owned_sandbox import (
 )
 from ...platform_types import AccountKey
 from ...subagents import AgentExecutionHooks
-from . import execution, subagent_runtime
+from . import turn_source as execution, subagent_runtime
 from .file_artifacts import BLOB_LOCK, current_source, foreground_source, task_source
 from .file_generation import GenerationBindingAdapter
 
