@@ -30,6 +30,9 @@ class PlatformFileToolBudgetTests(HandlerTestCaseMixin, unittest.IsolatedAsyncio
 
         async def execute(_turn, name, _arguments):
             order.append(name)
+            self.assertEqual(_arguments, {})
+            if name == 'send_file_from_sandbox' and order.count(name) == 1:
+                return '{"retryable":true,"message_accepted":false}'
             return '{"ok":true}'
 
         async def close():
@@ -40,13 +43,14 @@ class PlatformFileToolBudgetTests(HandlerTestCaseMixin, unittest.IsolatedAsyncio
         service = PlatformChatService(self.app_context, scope_enabled=lambda _: True,
             generation_factory=AsyncMock(return_value=session),
             registry_factory=lambda _: registry, llm=ask_deepseek_with_tools)
-        responses = [completion(tool=name) for name in names] + [completion('File registered.')]
+        responses = [completion(tool=name) for name in names + ['send_file_from_sandbox']] + [completion('File registered.')]
         for index, response in enumerate(responses[:-1]):
             response.choices[0].message.tool_calls[0].id = f'test-call-{index}'
+            response.choices[0].message.tool_calls[0].function.arguments = '{"reason":"test"}'
         inbound, platform = official(kind='private', target='TEST_FILE_BUDGET')
         with patch('src.plugins.ai_chat.agent_loop._create_completion',
                    new=AsyncMock(side_effect=responses)):
             answer = await service.ask(inbound, platform, 'Create and send a PDF')
         self.assertEqual(answer, 'File registered.')
-        self.assertEqual(order, names + ['close'])
+        self.assertEqual(order, names + ['send_file_from_sandbox', 'close'])
         session.close.assert_awaited_once()

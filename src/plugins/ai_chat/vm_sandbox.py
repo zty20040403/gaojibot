@@ -918,7 +918,7 @@ class VmSandboxManager:
                 await self._owned_running(owner, sandbox_id)
                 target = self._workspace_path(path).removeprefix("/workspace/")
                 code, content, _ = await self._guest_exec(sandbox_id, "/usr/bin/python3",
-                    ["-I", "-c", EXPORT_FILE_SCRIPT, target, str(limit)], timeout=60)
+                    ["-I", "-c", EXPORT_FILE_SCRIPT, target, str(limit)], timeout=300)
                 if code or not 0 < len(content) <= limit:
                     raise SandboxError("Bounded regular-file export failed")
                 return content, False

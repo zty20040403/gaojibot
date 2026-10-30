@@ -222,12 +222,14 @@ class GatewayUnitTests(unittest.IsolatedAsyncioTestCase):
         clock = FastClock()
         gateway = GatewayConnection(StubRest(), connector=connector_for([a, b]), clock=clock, sleep=clock.sleep)
         delivered = []
+        async def saved(checkpoint):
+            if checkpoint is not None and checkpoint.seq == 2:
+                await gateway.stop()
+        gateway.on_checkpoint = saved
         async def callback(event):
             delivered.append(event)
-            if event["t"] == "RESUMED":
-                await gateway.stop()
         await gateway.run(callback)
-        self.assertEqual(delivered[1], frame)
+        self.assertEqual(delivered, [READY, frame])
         self.assertEqual(b.sent[0], {"op": 6, "d": {"token": "QQBot TEST_ACCESS_TOKEN", "session_id": "TEST_SESSION", "seq": 1}})
         self.assertEqual(gateway.checkpoint.seq, 2)
 
@@ -269,14 +271,14 @@ class GatewayUnitTests(unittest.IsolatedAsyncioTestCase):
         clock, observed, checkpoints = FastClock(), [], []
         async def save(checkpoint):
             checkpoints.append(checkpoint)
+            if checkpoint is not None and checkpoint.seq == 3:
+                await gateway.stop()
         gateway = GatewayConnection(StubRest(), connector=connector_for([a, b]),
                                     clock=clock, sleep=clock.sleep, on_checkpoint=save)
         async def callback(frame):
             observed.append(frame)
-            if frame["t"] == "RESUMED":
-                await gateway.stop()
         await gateway.run(callback)
-        self.assertEqual([frame["s"] for frame in observed], [0, 1, 2, 3])
+        self.assertEqual([frame["s"] for frame in observed], [0, 1, 2])
         self.assertEqual([checkpoint.seq for checkpoint in checkpoints], [0, 1, 2, 3])
         self.assertEqual(b.sent[0]["op"], 6)
         self.assertEqual(b.sent[0]["d"]["seq"], 0)
@@ -303,8 +305,12 @@ class GatewayUnitTests(unittest.IsolatedAsyncioTestCase):
                 clock, rest = FastClock(), StubRest()
                 gateway = GatewayConnection(rest, checkpoint=GatewayCheckpoint("TEST_SESSION", 0),
                                             connector=connector_for([a, b]), clock=clock, sleep=clock.sleep)
+                async def saved(value):
+                    if value is not None:
+                        await gateway.stop()
+                gateway.on_checkpoint = saved
                 async def callback(_):
-                    await gateway.stop()
+                    pass
                 await gateway.run(callback)
                 self.assertEqual(b.sent[0]["op"], expected_op)
                 self.assertEqual(rest.token_manager.invalidations, expected_invalidations)
@@ -468,8 +474,11 @@ class GatewayUnitTests(unittest.IsolatedAsyncioTestCase):
         checkpoints = []
         async def save(checkpoint):
             checkpoints.append(checkpoint)
+        async def saved(value):
+            await save(value)
+            await gateway.stop()
         gateway = GatewayConnection(rest, checkpoint=GatewayCheckpoint("TEST_SESSION", 0),
-                                    on_checkpoint=save, connector=connector_for([socket]),
+                                    on_checkpoint=saved, connector=connector_for([socket]),
                                     clock=clock, sleep=clock.sleep)
         async def callback(_):
             await gateway.stop()
@@ -642,10 +651,12 @@ class GatewayFakeServerTests(unittest.IsolatedAsyncioTestCase):
         gateway = GatewayConnection(self.rest, checkpoint=GatewayCheckpoint("TEST_SESSION_1", 0),
                                     clock=clock, sleep=clock.sleep)
         observed = []
+        async def saved(value):
+            if value is not None and value.seq > frame["s"]:
+                await gateway.stop()
+        gateway.on_checkpoint = saved
         async def resumed(event):
             observed.append(event)
-            if event["t"] == "RESUMED":
-                await gateway.stop()
         await asyncio.wait_for(gateway.run(resumed), 2)
         self.assertEqual(observed[0], frame)
         self.assertEqual(self.fake.resume_count, 1)
@@ -675,11 +686,13 @@ class GatewayFakeServerTests(unittest.IsolatedAsyncioTestCase):
         clock = FastClock()
         gateway = GatewayConnection(self.rest, clock=clock, sleep=clock.sleep)
         ready = asyncio.Event()
+        async def saved(value):
+            if self.fake.resume_count:
+                await gateway.stop()
+        gateway.on_checkpoint = saved
         async def callback(event):
             if event["t"] == "READY":
                 ready.set()
-            if event["t"] == "RESUMED":
-                await gateway.stop()
         task = asyncio.create_task(gateway.run(callback))
         try:
             self.assertEqual(await asyncio.wait_for(self.fake.wait_ready(), 2), 2)

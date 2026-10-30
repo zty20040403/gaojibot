@@ -60,8 +60,8 @@ class OfficialSendPolicyTests(unittest.TestCase):
             (account_key,enabled,gateway_state,created_at,updated_at) VALUES (?,TRUE,'idle',100,100)
             ON CONFLICT(account_key) DO NOTHING''', (endpoint.account.key,))
         cursor.execute('''INSERT INTO qq_official_endpoints
-            (endpoint_key,account_key,kind,native_conversation_id,canonical_scope_key,binding_state,membership_state,created_at,updated_at)
-            VALUES (?,?,?,?,?,'active','present',100,100) ON CONFLICT(endpoint_key) DO NOTHING''',
+            (endpoint_key,account_key,kind,native_conversation_id,canonical_scope_key,binding_state,membership_state,proactive_state,created_at,updated_at)
+            VALUES (?,?,?,?,?,'active','present','denied',100,100) ON CONFLICT(endpoint_key) DO NOTHING''',
             (endpoint.key,endpoint.account.key,endpoint.kind,endpoint.native_conversation_id,endpoint.scope.key))
 
     def permit(self, endpoint=None, mode='passive'):
@@ -298,17 +298,17 @@ class OfficialSendPolicyTests(unittest.TestCase):
             self.assertEqual(tuple(row.values()),(1,0))
             self.assertEqual(self.check(cursor,rate_permit=self.permit(mode='proactive')).reason,'quota_reset_unverified')
 
-    def test_unknown_proactive_probe_is_single_use_and_never_for_otp_or_unsolicited(self):
+    def test_unknown_tries_proactive_before_window_and_acceptance_enables_it(self):
         with self.tx() as cursor:
-            for purpose in ('binding_otp','unsolicited'):
-                self.assertEqual(self.check(cursor,purpose=purpose,allow_proactive_probe=True,rate_permit=self.permit(mode='proactive')).reason,'waiting_reply_window')
-            self.assertEqual(self.check(cursor,rate_permit=self.permit(mode='proactive')).reason,'waiting_reply_window')
-            choice=self.check(cursor,allow_proactive_probe=True,rate_permit=self.permit(mode='proactive'))
+            cursor.execute("UPDATE qq_official_endpoints SET proactive_state='unknown'")
+            self.window(cursor)
+            choice = self.check(cursor, rate_permit=self.permit(mode='proactive'))
             self.assertTrue(choice.requires_probe)
-            attempt=self.reserve(cursor,choice)
-            settle_send_policy(cursor,token=self.token,attempt_id=attempt,result='proven_unsent',now=101)
-            self.assertEqual(self.check(cursor,allow_proactive_probe=True,rate_permit=self.permit(mode='proactive')).reason,'waiting_reply_window')
-            self.assertEqual(cursor.execute('SELECT proactive_probe_attempt_id FROM qq_official_endpoints').fetchone()[0],attempt)
+            self.assertEqual(choice.send_mode, 'proactive')
+            attempt = self.reserve(cursor, choice)
+            settle_send_policy(cursor, token=self.token, attempt_id=attempt, result='accepted', now=101)
+            self.assertEqual(cursor.execute('SELECT proactive_state FROM qq_official_endpoints').fetchone()[0], 'allowed')
+            self.assertFalse(self.check(cursor, rate_permit=self.permit(mode='proactive')).requires_probe)
 
     def test_server_cooldown_is_monotonic_per_mode_and_persistent(self):
         with self.tx() as cursor:
@@ -349,7 +349,7 @@ class OfficialSendPolicyTests(unittest.TestCase):
             apply_policy_rejection(cursor,token=self.token,attempt_id=attempt,category='proactive_denied',now=101)
             apply_policy_rejection(cursor,token=self.token,attempt_id=attempt,category='proactive_denied',now=102)
             row=cursor.execute('SELECT proactive_state,capability_revision,membership_state FROM qq_official_endpoints').fetchone()
-            self.assertEqual(tuple(row.values()),('denied',2,'present'))
+            self.assertEqual(tuple(row.values()),('denied',1,'present'))
             cursor.execute("UPDATE qq_official_endpoints SET proactive_state='allowed',capability_revision=3")
             apply_policy_rejection(cursor,token=self.token,attempt_id=attempt,category='proactive_denied',now=103)
             self.assertEqual(cursor.execute('SELECT proactive_state FROM qq_official_endpoints').fetchone()[0],'allowed')

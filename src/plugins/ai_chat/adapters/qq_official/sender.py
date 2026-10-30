@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 import re
 import time
+import traceback
 
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
@@ -79,6 +81,38 @@ class OfficialSender:
 
     def wake(self):
         self._wake.set()
+
+    async def refresh_group_state(self, endpoint):
+        if endpoint.kind != 'group':
+            return
+        try:
+            state = await self.rest.group_bot_state(endpoint.native_conversation_id)
+            allowed = state.get('allow_proactive_msg')
+            if type(allowed) is not bool:
+                return
+            def save():
+                with self.outbox.deliveries.transaction() as cursor:
+                    assert_epoch(cursor, self.token)
+                    cursor.execute('''UPDATE qq_official_endpoints SET proactive_state=?,
+                        proactive_probe_attempt_id=NULL,proactive_probe_at=NULL,updated_at=? WHERE endpoint_key=? AND account_key=?''',
+                        ('allowed' if allowed else 'denied', int(self.wall_clock()), endpoint.key, self.account.key))
+            await self._calls(save)
+            self.wake()
+        except LeaseLost:
+            raise
+        except Exception as error:
+            frames = traceback.extract_tb(error.__traceback__)[-4:]
+            logging.getLogger(__name__).warning('QQ bot_state failed: %s %s', type(error).__name__,
+                ' > '.join(f'{frame.name}:{frame.lineno}' for frame in frames))
+
+    async def refresh_bound_groups(self):
+        def groups():
+            with self.outbox.deliveries.transaction() as cursor:
+                return cursor.execute('''SELECT endpoint_key FROM qq_official_endpoints
+                    WHERE account_key=? AND kind='group' AND binding_state='active'
+                    AND membership_state='present' ''', (self.account.key,)).fetchall()
+        for row in await self._calls(groups):
+            await self.refresh_group_state(EndpointKey.parse(row['endpoint_key']))
 
     async def _fence(self):
         if self._stopping:
@@ -318,7 +352,10 @@ class OfficialSender:
                     request_result = 'accepted'
                 except QQAPIError as error:
                     request_result = 'confirmed_no' if error.accepted is False else 'unknown'
-                    return await self._calls(self.outbox.fail, self.token, reservation, error)
+                    result = await self._calls(self.outbox.fail, self.token, reservation, error)
+                    if error.code == 40034105:
+                        await self.refresh_group_state(reservation.endpoint)
+                    return result
                 except TimeoutError:
                     return await self._calls(self.outbox.fail, self.token, reservation,
                         QQAPIError("transport_ambiguous", stage="send"))

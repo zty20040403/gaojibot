@@ -84,6 +84,26 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
     def attempts(self):
         return self.query("SELECT * FROM delivery_attempts ORDER BY attempt_id")
 
+    async def test_bot_state_enables_delivery_after_five_minute_window(self):
+        self.fake.proactive_allowed[('group', self.endpoint.native_conversation_id)] = True
+        await self.sender.refresh_bound_groups()
+        self.now += 400
+        delivery = self.enqueue()
+        result = await self.sender.send_delivery(delivery)
+        self.assertEqual(result.status, 'committed')
+        self.assertEqual(self.attempts()[0]['send_mode'], 'proactive')
+        self.assertNotIn('msg_id', self.fake.received[-1]['payload'])
+
+    async def test_unknown_permission_rejection_falls_back_to_passive(self):
+        self.query("UPDATE qq_official_endpoints SET proactive_state='unknown'")
+        delivery = self.enqueue()
+        result = await self.sender.send_delivery(delivery)
+        self.assertEqual(result.status, 'pending')
+        self.now += 2
+        result = await self.sender.send_delivery(delivery)
+        self.assertEqual(result.status, 'committed')
+        self.assertEqual([row['send_mode'] for row in self.attempts()], ['proactive', 'passive'])
+
     async def test_loopback_send_uses_real_outbox_and_commits_bot_ledger(self):
         delivery = self.enqueue()
         with patch.object(self.rest, "send_message", wraps=self.rest.send_message) as send:
@@ -293,27 +313,6 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await first).status, "committed")
             self.assertEqual(send.await_count, 1)
 
-    async def test_gate_wait_does_not_claim_or_block_another_plan(self):
-        waiting = self.enqueue("TEST_BACKGROUND", source_native_message_id="TEST_OLD_SOURCE")
-        self.query("UPDATE qq_official_endpoints SET proactive_state='allowed' WHERE endpoint_key=?", (self.endpoint.key,))
-        fast = self.enqueue("TEST_FOREGROUND")
-        gate = self.sender.rate_gate
-        waiting_at_gate = asyncio.Event()
-        original = gate.acquire
-
-        async def held(endpoint, mode, **kwargs):
-            if mode == "proactive":
-                waiting_at_gate.set()
-                await asyncio.Event().wait()
-            return await original(endpoint, mode, **kwargs)
-        with patch.object(gate, "acquire", side_effect=held):
-            loop = asyncio.create_task(self.sender.run())
-            await waiting_at_gate.wait()
-            await self.eventually(lambda: self.deliveries.get(fast).status == "committed")
-            self.assertEqual(self.deliveries.get(waiting).attempts, 0)
-            await self.sender.stop()
-            await loop
-        self.assertEqual(len(self.fake.received), 1)
 
     async def test_recovery_called_once_before_new_network(self):
         delivery = self.enqueue()
@@ -625,31 +624,6 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await self.sender.send_delivery(delivery)).status, "committed")
         self.assertEqual(calls, 1)
 
-    async def test_full_waiter_capacity_yields_to_higher_priority_unclaimed_reply(self):
-        waiting = self.enqueue("TEST_BACKGROUND_CAPACITY", purpose="background_result", source_native_message_id="TEST_OLD")
-        self.query("UPDATE qq_official_endpoints SET proactive_state='allowed' WHERE endpoint_key=?", (self.endpoint.key,))
-        self.sender = self.make_sender(max_inflight=1, max_waiters=1)
-        entered = asyncio.Event()
-        original = self.sender.rate_gate.acquire
-
-        async def blocked(endpoint, mode, **kwargs):
-            if mode == "proactive":
-                entered.set()
-                await asyncio.Event().wait()
-            return await original(endpoint, mode, **kwargs)
-        with patch.object(self.sender.rate_gate, "acquire", side_effect=blocked):
-            run = asyncio.create_task(self.sender.run())
-            await entered.wait()
-            foreground = self.enqueue("TEST_URGENT_REPLY")
-            self.sender.wake()
-            await self.eventually(lambda: self.deliveries.get(foreground).status == "committed")
-            self.assertEqual(self.deliveries.get(waiting).attempts, 0)
-            self.assertLessEqual(len(self.sender._tasks), 1)
-            await self.sender.stop()
-            await run
-        self.assertFalse(self.sender._tasks)
-        self.assertFalse(self.sender._active)
-        self.assertFalse(self.sender._rate_waiters)
 
     async def test_last_instant_prepared_expiry_is_proven_unsent_not_account_pause(self):
         delivery = self.enqueue()

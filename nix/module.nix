@@ -285,8 +285,8 @@ in {
 
       allowNewerWindows = lib.mkOption {
         type = lib.types.bool;
-        default = false;
-        description = "Permit an authorized durable result to use a later actual inbound window before its original deadline; never refresh authority.";
+        default = true;
+        description = "When proactive sending is unavailable, let a pending result use a newer inbound reply window in the same conversation.";
       };
 
       certification = lib.mkOption {

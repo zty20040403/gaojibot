@@ -174,7 +174,7 @@ WEB_SEARCH_TOOL: ToolDefinition = {
                     ),
                 },
             },
-            "required": ["query", "freshness"],
+            "required": ["query"],
             "additionalProperties": False,
         },
     },

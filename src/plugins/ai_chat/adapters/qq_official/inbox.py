@@ -167,8 +167,12 @@ class OfficialInboxStore:
                 return
             row = cursor.execute("SELECT session_id,durable_seq FROM qq_official_accounts WHERE account_key=?",
                                  (token.account_key,)).fetchone()
-            if row["session_id"] != checkpoint.session_id or row["durable_seq"] != checkpoint.seq:
-                raise IngressError("Official checkpoint was not atomically accepted")
+            if row["session_id"] != checkpoint.session_id:
+                raise IngressError("Official checkpoint session changed")
+            # Message dispatches already advance this in accept(); RESUMED is
+            # acknowledged by the gateway directly, without an inbox record.
+            cursor.execute('''UPDATE qq_official_accounts SET durable_seq=GREATEST(durable_seq,?),updated_at=?
+                WHERE account_key=?''', (checkpoint.seq, int(self.clock()), token.account_key))
 
     def pause(self, token, reason: str):
         if not re.fullmatch(r"[a-z0-9_]{1,80}", reason):
@@ -506,12 +510,12 @@ class OfficialInboxStore:
             cursor.execute("""UPDATE qq_official_binding_candidates SET state='cancelled',updated_at=?,consumed_at=?
                 WHERE endpoint_key=? AND state='pending'""", (now, now, endpoint.key))
         elif dispatch.event_type.endswith("_MSG_REJECT"):
-            cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='denied',capability_revision=capability_revision+1,
+            cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='denied',proactive_probe_attempt_id=NULL,proactive_probe_at=NULL,
                 updated_at=? WHERE endpoint_key=?""", (now, endpoint.key))
         elif dispatch.event_type.endswith("_MSG_RECEIVE"):
-            # A lifecycle permission signal remains separate from implemented
-            # support and from unverified permission for a particular payload.
-            cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='unknown',capability_revision=capability_revision+1,
+            # The owner turned proactive messages on; a later 40034105 still
+            # marks the group denied.
+            cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='allowed',proactive_probe_attempt_id=NULL,proactive_probe_at=NULL,
                 updated_at=? WHERE endpoint_key=?""", (now, endpoint.key))
         inbox_id = self._insert(cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=row,
                                 event_id=dispatch.event_id if valid_identifier(dispatch.event_id) else None,

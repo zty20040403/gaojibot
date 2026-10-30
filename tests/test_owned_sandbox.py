@@ -188,7 +188,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             await self.executor.execute('sandbox_create', {})
         self.assertEqual(len([c for c in self.manager.calls if c[0] == 'create']), 1)
 
-    async def test_unknown_export_preserves_workspace_and_capacity(self):
+    async def test_invalid_export_is_unsent_and_allows_workspace_cleanup(self):
         class UnknownExport(FakeManager):
             async def export_artifact(self, owner, sandbox_id, path, *, file_only=False, max_bytes=None):
                 await super().export_artifact(owner,sandbox_id,path,file_only=file_only,max_bytes=max_bytes)
@@ -198,18 +198,26 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         sid = await self.produce()
         result = await self.send(sid)
         self.assertEqual(result['code'],'invalid_export_receipt')
-        self.assertFalse(self.executor.generation_enabled)
-        with self.assertRaises(LeaseLost):
-            await self.executor.execute('sandbox_destroy',{'sandbox_id':sid})
-        self.assertIn(sid,self.manager.items)
-        self.assertFalse(self.binding.released)
+        self.assertTrue(result['retryable'])
+        self.assertFalse(result['message_accepted'])
+        self.assertTrue(json.loads(await self.executor.execute('sandbox_destroy',{'sandbox_id':sid}))['ok'])
 
-    async def test_export_exception_is_unknown_but_known_invalid_pdf_is_not(self):
+    async def test_export_failure_is_unsent_and_can_retry_with_absolute_path(self):
         sid = await self.produce()
         self.manager.fail = 'export'
         result = await self.send(sid)
-        self.assertEqual(result['code'],'generation_operation_failed')
-        self.assertTrue(self.executor._uncertain)
+        self.assertEqual(result['code'],'file_export_failed')
+        self.assertTrue(result['retryable'])
+        self.assertFalse(result['message_accepted'])
+        self.assertFalse(self.executor._uncertain)
+        self.manager.fail = None
+        token = active_tool_call_id.set('TEST_RETRY')
+        try:
+            retry = json.loads(await self.executor.execute('send_file_from_sandbox', {
+                'sandbox_id': sid, 'path': '/workspace/result.pdf'}))
+        finally:
+            active_tool_call_id.reset(token)
+        self.assertTrue(retry['stored'])
         self.setUp()
         sid = await self.produce()
         self.manager.items[sid]['files']['result.pdf'] = b'not a PDF'
@@ -399,7 +407,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_host_paths_and_project_parameters_never_reach_io(self):
         sid = await self.create()
-        for path in ('/etc/passwd', '/workspace/x', '../x', 'a/../b', 'a\\b', 'a//b'):
+        for path in ('/etc/passwd', '/workspace/../x', '../x', 'a/../b', 'a\\b', 'a//b'):
             result = json.loads(await self.executor.execute('sandbox_read_file', {'sandbox_id': sid, 'path': path}))
             self.assertFalse(result['ok'])
         result = json.loads(await self.executor.execute('sandbox_create', {'owner': 'OTHER', 'project_id': 1}))

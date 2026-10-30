@@ -47,8 +47,8 @@ class OutboxFixture(unittest.TestCase):
                 (endpoint.account.key, self.now, self.now))
             cursor.execute("""INSERT INTO qq_official_endpoints
                 (endpoint_key,account_key,kind,native_conversation_id,canonical_scope_key,
-                 binding_state,membership_state,created_at,updated_at)
-                VALUES (?,?,?,?,?,'active','present',?,?)""",
+                 binding_state,membership_state,proactive_state,created_at,updated_at)
+                VALUES (?,?,?,?,?,'active','present','denied',?,?)""",
                 (endpoint.key, endpoint.account.key, endpoint.kind, endpoint.native_conversation_id,
                  endpoint.scope.key, self.now, self.now))
 

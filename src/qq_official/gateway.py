@@ -366,7 +366,8 @@ class GatewayConnection:
             self.reason = "noncontiguous_dispatch"
             raise GatewaySequenceGap()
         try:
-            await on_dispatch(frame)
+            if event != "RESUMED":
+                await on_dispatch(frame)
             next_checkpoint = GatewayCheckpoint(self._session_id, max(previous or 0, seq))
             if self.on_checkpoint is not None:
                 await self.on_checkpoint(next_checkpoint)

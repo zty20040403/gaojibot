@@ -553,6 +553,7 @@ async def ask_deepseek_with_tools(
     resume_messages: list[ChatMessage] | None = None,
     resume_history_length: int = 0,
     checkpoint_sink: CheckpointSink | None = None,
+    tool_catalog: ToolCatalog | None = None,
 ) -> str:
     async def publish_transcript(items):
         if transcript_sink is None and checkpoint_sink is None:
@@ -707,7 +708,7 @@ async def ask_deepseek_with_tools(
     tools = enabled_tool_definitions(tools)
     if not tools:
         next_tool_choice = "none"
-    catalog = ToolCatalog(tools)
+    catalog = tool_catalog or ToolCatalog(tools)
     stop_reason = "工具调用轮次已达到系统上限。"
     fingerprint_history: list[str] = []
     fingerprint_counts: dict[str, int] = {}
@@ -820,6 +821,7 @@ async def ask_deepseek_with_tools(
             arguments, parse_error = _parse_tool_arguments_checked(
                 getattr(function, "arguments", "")
             )
+            arguments = catalog.normalize(name, arguments)
             policy = catalog.policy(name)
             fingerprint = _tool_call_fingerprint(name, arguments)
             event_fields = _policy_event_fields(
@@ -1026,6 +1028,16 @@ async def ask_deepseek_with_tools(
                 completion_state = "failed"
             finally:
                 active_tool_call_id.reset(invocation)
+            # A failed local file read cannot have sent a message. Permit its
+            # next attempt; successful/uncertain deliveries still cannot replay.
+            if name == 'send_file_from_sandbox':
+                try:
+                    result = json.loads(str(tool_result))
+                except (TypeError, ValueError):
+                    result = {}
+                if isinstance(result, dict) and result.get('retryable') is True and result.get('message_accepted') is False:
+                    fingerprint_history.pop()
+                    fingerprint_counts[fingerprint] -= 1
             remaining_context = max(
                 settings.tool_max_context_chars - tool_context_chars,
                 0,

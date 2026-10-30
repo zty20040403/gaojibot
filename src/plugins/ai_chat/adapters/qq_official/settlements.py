@@ -76,7 +76,7 @@ def settle_failure(cursor, *, token, reservation, error, now, frozen_plain_diges
     retry_at = now
     auth_used, transient_used = row["auth_retries_used"], row["transient_retries_used"]
     switch_plain = False
-    if not ephemeral and row["purpose"] != "progress" and control_id_for_delivery(cursor, row) is None and not unknown:
+    if not ephemeral and control_id_for_delivery(cursor, row) is None and not unknown:
         if row["payload_mode"] == "persistent" and fallback.action == "select_frozen_plain_once":
             retry, switch_plain = True, True
         elif policy.action == "refresh_token_once":

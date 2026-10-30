@@ -230,9 +230,11 @@ class MobileAuthorization:
                     await poller()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as error:
                 # Never log payloads or exception locals containing credentials.
-                logging.getLogger(__name__).warning("Mobile authorization background check failed; retrying safely")
+                import traceback
+                frames = ' > '.join(f'{frame.name}:{frame.lineno}' for frame in traceback.extract_tb(error.__traceback__)[-6:])
+                logging.getLogger(__name__).warning("Mobile authorization background check failed: %s at %s", type(error).__name__, frames)
             try:
                 await asyncio.wait_for(self.wake.wait(), timeout=2)
             except asyncio.TimeoutError:

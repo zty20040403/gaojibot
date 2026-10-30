@@ -67,7 +67,12 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
                 "web_search", query="x" * 80, freshness="year"
             )
             self.assertEqual(search.call_args.args, ("x" * 40,))
+            self.assertEqual(response["freshness"], "y")
+            response = await self.execute("web_search", query="目前价格")
             self.assertEqual(response["freshness"], "d")
+            response = await self.execute("web_search", query="目前价格", freshness="all")
+            self.assertEqual(response["freshness"], "all")
+            self.assertIsNone(search.call_args.kwargs["freshness"])
             self.assertEqual(self.turn.search_results, [result])
             self.assertEqual(TurnState(self.turn.context).search_results, [])
 

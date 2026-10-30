@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import logging
 import threading
 from dataclasses import dataclass, replace
 from typing import Any, Literal
@@ -513,7 +514,9 @@ class ToolValidation:
 class ToolCatalog:
     """Host-owned lookup and a conservative JSON-schema validator."""
 
-    def __init__(self, tools: list[dict[str, Any]]) -> None:
+    def __init__(self, tools: list[dict[str, Any]], *, ignore_unknown_fields=False, policies=None) -> None:
+        self.ignore_unknown_fields = ignore_unknown_fields
+        self._policies = policies or {}
         self._functions: dict[str, dict[str, Any]] = {}
         for tool in tools:
             function = tool.get("function")
@@ -527,7 +530,30 @@ class ToolCatalog:
         return name in self._functions
 
     def policy(self, name: str) -> ToolPolicy:
-        return policy_for_tool(name)
+        return self._policies.get(name) or policy_for_tool(name)
+
+    def normalize(self, name, arguments):
+        if not self.ignore_unknown_fields or name not in self._functions:
+            return arguments
+        dropped = 0
+        def trim(value, schema):
+            nonlocal dropped
+            if isinstance(value, dict):
+                properties = schema.get('properties', {})
+                result = {}
+                for key, item in value.items():
+                    if schema.get('additionalProperties') is False and key not in properties:
+                        dropped += 1
+                    else:
+                        result[key] = trim(item, properties.get(key, {}))
+                return result
+            if isinstance(value, list):
+                return [trim(item, schema.get('items', {})) for item in value]
+            return value
+        result = trim(arguments, self._functions[name].get('parameters', {}))
+        if dropped:
+            logging.getLogger(__name__).warning('Ignored %d extra argument fields for tool %s', dropped, name)
+        return result
 
     def validate(
         self,

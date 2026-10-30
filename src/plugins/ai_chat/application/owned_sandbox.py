@@ -124,6 +124,8 @@ def _text(value, *, maximum, blank=False):
 
 def workspace_path(value):
     value = _text(value, maximum=1024)
+    if value.startswith('/workspace/'):
+        value = value[len('/workspace/'):]
     path = PurePosixPath(value)
     if (path.is_absolute() or any(p in {'', '.', '..'} for p in value.split('/'))
             or '\\' in value or any(unicodedata.category(c).startswith('C') for c in value)):
@@ -214,7 +216,7 @@ class OwnedSandboxExecutor:
             # A guest mutation may have happened even without a result. A new
             # tool call must not replay it under this live source automatically.
             if ((getattr(operation, '__self__', None) is self.sandbox_manager
-                    and getattr(operation, '__name__', '') in {'create', 'start_owned', 'exec', 'write_file', 'destroy', 'export_artifact'})
+                    and getattr(operation, '__name__', '') in {'create', 'start_owned', 'exec', 'write_file', 'destroy'})
                     or getattr(operation, '__self__', None) is self.delivery
                     and getattr(operation, '__name__', '') == 'register'):
                 self._uncertain = True
@@ -353,7 +355,12 @@ class OwnedSandboxExecutor:
             if not isinstance(call_id, str) or not call_id:
                 raise GenerationError('host_tool_call_required')
             logical = 'generated:' + hashlib.sha256(_json([self._identity[2], call_id]).encode()).hexdigest()
-            exported = await self.export_file(sid, path, arguments.get('filename') or PurePosixPath(path).name)
+            try:
+                async with asyncio.timeout(300):
+                    exported = await self.export_file(sid, path, arguments.get('filename') or PurePosixPath(path).name)
+            except Exception as error:
+                return _json({'ok': False, 'code': str(error) if isinstance(error, GenerationError) else 'file_export_failed',
+                    'error': '文件尚未发送，读取或校验失败，可以重试。', 'retryable': True, 'message_accepted': False})
             return await self.send_file_content(exported.content, exported.filename,
                 provenance=exported, logical_request_key=logical)
         except GenerationError as error:
