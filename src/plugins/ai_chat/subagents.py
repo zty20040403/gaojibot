@@ -2008,7 +2008,7 @@ class SubAgentCoordinator:
                 delivery_failed = not official_task(task) and any(not bool(item.get("ok")) for item in deliveries)
                 if outcome.state == "failed":
                     status = "failed"
-                elif outcome.state == "partial" or delivery_failed or acceptance_blocks_completion(validation):
+                elif outcome.state == "partial" or delivery_failed or (not official_task(task) and acceptance_blocks_completion(validation)):
                     status = "partial"
                 else:
                     status = "completed"
@@ -2248,7 +2248,7 @@ class SubAgentCoordinator:
             delivery_failed = not official_task(task) and any(not bool(item.get("ok")) for item in deliveries)
             if outcome.state == "failed":
                 status = "failed"
-            elif outcome.state == "partial" or delivery_failed or acceptance_blocks_completion(validation):
+            elif outcome.state == "partial" or delivery_failed or (not official_task(task) and acceptance_blocks_completion(validation)):
                 status = "partial"
             else:
                 status = "completed"
@@ -2413,7 +2413,7 @@ class SubAgentCoordinator:
             and isinstance(validation.get("task_outcome"), Mapping)
         )
         draft = validation.get("report_draft")
-        if file_report:
+        if official_task(task) or file_report:
             final_text = ""
         elif draft:
             final_text = str(draft["text"])
@@ -2451,7 +2451,7 @@ class SubAgentCoordinator:
             },
         }
         result["validation"]["acceptance"] = validation
-        status = _settled_task_status(list(completed.values()), [] if official_task(task) else delivery_results, validation)
+        status = _settled_task_status(list(completed.values()), [] if official_task(task) else delivery_results, {} if official_task(task) else validation)
         if status == "completed" and validation.get("status") == "passed":
             result["execution_state"] = "succeeded"
             result["validation"]["result_contract"] = "passed"
@@ -2494,6 +2494,17 @@ class SubAgentCoordinator:
     async def _validate_workflow(self, task, completed, *, context, selected_profile, tools_by_name,
                                  execute_tool, hooks, parent_trace, progress, prepare_draft=False):
         contract = (self.store.get(task.task_id) or task).plan.get("contract", {})
+        if official_task(task) and task.project_id is None:
+            checks = []
+            for outcome in completed.values():
+                for artifact in outcome.result.get('artifacts', []):
+                    try:
+                        check = await hooks.workspaces.validate(task.task_id, artifact)
+                    except Exception as error:
+                        check = {'ok': False, 'error': type(error).__name__}
+                    checks.append({'artifact': artifact.get('name'), **check})
+            return {'status': 'advisory', 'checks': checks,
+                    'notes': [warning for item in completed.values() for warning in item.result.get('warnings', [])]}
         outcome_v2 = contract.get("version", 1) >= 2
         has_artifacts = any(item.result.get("artifacts") for item in completed.values())
         if (has_artifacts or not outcome_v2) and (not hooks or not hooks.workspaces):
@@ -2852,6 +2863,9 @@ class SubAgentCoordinator:
         acceptance_ok: bool = True,
         validation: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        if official_task(task) and task.project_id is None:
+            # The foreground model receives every outcome and chooses attachments.
+            return []
         current_task = self.store.get(task.task_id) or task
         contract = current_task.plan.get("contract")
         requires_delivery = (
@@ -3193,6 +3207,26 @@ class SubAgentCoordinator:
         worker_input += "\n[宿主证据索引，必要时用 read_task_evidence 读取]\n" + json.dumps(evidence_index(allowed_evidence()), ensure_ascii=False)
         worker_input += "\n报告中每个 evidence# 必须使用本轮工具返回或当前索引中的完整编号；不要复制上一修订的编号。来源观测时间以证据原文为准，不把收取时间当作采样时间。"
 
+        file_feedback_attempts = 0
+        needs_file = (official_task(task) and not review_only and step.role in {'document', 'coder'}
+                      and task.plan.get('contract', {}).get('delivery_required'))
+        if needs_file:
+            worker_input += ('\n用户要求实际文件。使用沙盒工具将文件生成到 /work，确认文件存在，'
+                             '在 artifacts 中返回 sandbox_id:/work/文件名；仅输出正文不算完成。')
+
+        def file_feedback(answer):
+            nonlocal file_feedback_attempts
+            if file_feedback_attempts >= 2:
+                return None
+            try:
+                files = _parse_worker_result(answer).get('artifacts')
+            except (ValueError, TypeError):
+                files = None
+            if files:
+                return None
+            file_feedback_attempts += 1
+            return '用户要求文件，但报告没有文件。请实际调用沙盒生成并检查 /work 下的文件，在 artifacts 中返回真实 handle 和 name。'
+
         def review_feedback(answer: str) -> str | None:
             assert_job_owned()
             contract = task.plan.get("contract", {})
@@ -3234,7 +3268,9 @@ class SubAgentCoordinator:
                             worker_execute_tool,
                             tool_catalog=ToolCatalog(allowed_tools, ignore_unknown_fields=official_task(task)),
                             profile=profile,
-                            max_tool_rounds=min(self.max_tool_rounds, spec.max_turns),
+                            max_calls_per_round=24 if official_task(task) else None,
+                            max_total_calls=160 if official_task(task) else None,
+                            max_tool_rounds=max(48, self.max_tool_rounds) if official_task(task) else min(self.max_tool_rounds, spec.max_turns),
                             system_context=_worker_prompt(spec),
                             trace=trace,
                             event_sink=record_agent_event,
@@ -3243,7 +3279,7 @@ class SubAgentCoordinator:
                             compensate_tool=(hooks.compensate_tool if hooks else None),
                             transcript_sink=save_transcript,
                             after_tool_round=external.pause if external else None,
-                            final_feedback=review_feedback if review_only else None,
+                            final_feedback=review_feedback if review_only else file_feedback if needs_file else None,
                         )
                     result = _normalize_worker_scope_result(_parse_worker_result(answer))
                     result = separate_cluster_artifacts(result, allowed_evidence())
@@ -3266,11 +3302,12 @@ class SubAgentCoordinator:
                 result = separate_review_artifacts(result, {
                     key: upstream[key] for key in step.dependencies if key in upstream
                 })
-            result = await self._correct_worker_report(
-                task, run, result, evidence=allowed_evidence(), spec=spec,
-                profile=profile, trace=trace,
-                event_sink=record_agent_event,
-            )
+            if not official_task(task):
+                result = await self._correct_worker_report(
+                    task, run, result, evidence=allowed_evidence(), spec=spec,
+                    profile=profile, trace=trace,
+                    event_sink=record_agent_event,
+                )
             result["evidence_index"] = evidence_index(allowed_evidence())
             if hooks and hooks.workspaces and result.get("artifacts"):
                 try:

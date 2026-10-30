@@ -46,10 +46,32 @@ class OfficialSubAgentCompositionTests(unittest.IsolatedAsyncioTestCase):
             self_source=Mock(),
         )
         self.service = OfficialSubAgentService(self.runtime, self.f.token, self.app)
+        mocked = patch('src.plugins.ai_chat.adapters.qq_official.task_result.ask_deepseek_with_tools',
+                       new=AsyncMock(return_value='TEST foreground result'))
+        mocked.start()
+        self.addCleanup(mocked.stop)
 
     def complete_task(self):
         self.fixture.store.set_task_state(self.task.task_id, 'completed',
                                          result={'answer': 'TEST restored result'})
+
+    async def test_timeout_report_returns_to_foreground(self):
+        with patch.object(self.service.coordinator, 'resume', side_effect=TimeoutError), \
+             patch('src.plugins.ai_chat.adapters.qq_official.task_result.ask_deepseek_with_tools',
+                   new=AsyncMock(return_value='TEST task timed out')) as frontend:
+            result = await self.service.execute(self.job)
+        self.assertTrue(result['plan_id'])
+        self.assertEqual(json.loads(frontend.await_args.args[0])['status'], 'failed')
+        self.assertTrue(self.fixture.store.get(self.task.task_id).result['frontend_answer'])
+
+    async def test_cancelled_report_returns_without_reopening_tools(self):
+        self.fixture.store.set_task_state(self.task.task_id, 'cancelled')
+        with patch('src.plugins.ai_chat.adapters.qq_official.task_result.ask_deepseek_with_tools',
+                   new=AsyncMock(return_value='TEST task cancelled')) as frontend:
+            result = await self.service.execute(self.job)
+        self.assertTrue(result['plan_id'])
+        self.assertEqual(json.loads(frontend.await_args.args[0])['status'], 'cancelled')
+        self.assertEqual(frontend.await_args.args[2], [])
 
     async def test_web_tool_falls_back_to_restored_objective(self):
         async def run(task_id, **kwargs):
@@ -125,12 +147,15 @@ class OfficialSubAgentCompositionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_restart_reconciles_terminal_result_even_when_model_was_removed(self):
         self.complete_task()
+        self.f.jobs.mark_succeeded(self.job.job_id, self.job.lease_owner, now=self.f.now)
         other = replace(self.fixture.profile, name='other', model='TEST_OTHER_MODEL')
         self.app.model_catalog = ModelCatalog({'other': other}, default_profile='other')
         self.runtime.sender = SimpleNamespace(wake=Mock())
         restarted = OfficialSubAgentService(self.runtime, self.f.token, self.app)
         with patch.object(restarted.coordinator, 'resume', new_callable=AsyncMock) as resume:
             await restarted.reconcile()
+            job = self.f.jobs.claim_due('TEST_RESTART', kinds=(job_kind(self.f.account),), now=self.f.now)[0]
+            await restarted.execute(job)
             await restarted.reconcile()
         resume.assert_not_awaited()
         self.runtime.sender.wake.assert_called_once()

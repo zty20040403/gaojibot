@@ -529,6 +529,8 @@ async def ask_deepseek_with_tools(
     current_user: str = "",
     tool_choice: ToolChoice = "auto",
     max_tool_rounds: int | None = 3,
+    max_calls_per_round: int | None = None,
+    max_total_calls: int | None = None,
     model: str | None = None,
     profile: ModelProfile | str | None = None,
     tool_context: str = "",
@@ -812,7 +814,7 @@ async def ask_deepseek_with_tools(
                     note=model_note,
                 ),
             )
-        max_calls = settings.tool_max_calls_per_round
+        max_calls = max_calls_per_round or settings.tool_max_calls_per_round
         budget_exhausted = False
         for call in tool_calls[:max_calls]:
             function = getattr(call, "function", None)
@@ -837,7 +839,7 @@ async def ask_deepseek_with_tools(
                 arguments,
                 parse_error=parse_error,
             )
-            if total_tool_calls > settings.tool_max_total_calls:
+            if total_tool_calls > (max_total_calls or settings.tool_max_total_calls):
                 validation_error = "本回合工具调用总数已达到系统预算。"
                 budget_exhausted = True
                 stop_reason = validation_error
@@ -1030,7 +1032,7 @@ async def ask_deepseek_with_tools(
                 active_tool_call_id.reset(invocation)
             # A failed local file read cannot have sent a message. Permit its
             # next attempt; successful/uncertain deliveries still cannot replay.
-            if name == 'send_file_from_sandbox':
+            if name in {'send_file_from_sandbox', 'send_file'}:
                 try:
                     result = json.loads(str(tool_result))
                 except (TypeError, ValueError):
@@ -1084,10 +1086,10 @@ async def ask_deepseek_with_tools(
             total_tool_calls += 1
             rejection = (
                 "本回合工具调用总数已达到系统预算。"
-                if total_tool_calls > settings.tool_max_total_calls
+                if total_tool_calls > (max_total_calls or settings.tool_max_total_calls)
                 else "单轮工具调用次数过多。"
             )
-            if total_tool_calls > settings.tool_max_total_calls:
+            if total_tool_calls > (max_total_calls or settings.tool_max_total_calls):
                 budget_exhausted = True
                 stop_reason = rejection
             rejected_result = json.dumps(

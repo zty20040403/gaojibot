@@ -229,7 +229,7 @@ class _OwnedWorkspaces:
             try:
                 if not isinstance(item, dict):
                     raise GenerationError("artifact_capture_unavailable")
-                match = re.fullmatch(r"(s[0-9a-f]{6}):/workspace/(.+)", str(item.get("handle", "")))
+                match = re.fullmatch(r"(s[0-9a-f]{6}):/(?:workspace|work)/(.+)", str(item.get("handle", "")))
                 if match is None:
                     raise GenerationError("artifact_capture_unavailable")
                 sid, path = match.groups()

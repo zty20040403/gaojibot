@@ -239,9 +239,10 @@ class PlatformChatService:
                         'send_file_from_sandbox': replace(policy_for_tool('send_file_from_sandbox'), timeout_seconds=310),
                         'send_file': replace(policy_for_tool('send_file_from_sandbox'), timeout_seconds=310),
                     }),
+                    max_calls_per_round=24, max_total_calls=160,
                     max_tool_rounds=(
-                        self.context.settings.tool_max_rounds if file_session is not None
-                        else self.context.settings.tool_simple_max_rounds
+                        max(48, self.context.settings.tool_max_rounds) if file_session is not None
+                        else max(16, self.context.settings.tool_simple_max_rounds)
                     ),
                     tool_context="\n\n".join(context_parts), system_context=prompt,
                     trace=turn_trace, feedback_provider=feedback_provider,

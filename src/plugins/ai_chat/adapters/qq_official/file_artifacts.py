@@ -117,12 +117,11 @@ def task_source(cursor, *, token, task_id, job, admission, now, pending_deadline
     binding, task = subagent_runtime.assert_current(cursor, token=token, task_id=task_id,
         job=job, admission=admission, now=_time(now))
     _time(pending_deadline_at)
-    if (task['status'] in {'cancelled','failed'} or task['cancel_requested'] or now >= binding['execution_deadline_at']
-            or not now < pending_deadline_at <= now + 86400):
+    if not now < pending_deadline_at <= now + 86400:
         raise LeaseLost('artifact_task_source_unavailable')
     return _issue(SourceBinding(token, job, admission, None, task_id, pending_deadline_at,
         EndpointKey.parse(binding['endpoint_key']), ActorKey.parse(binding['requester_actor_key']),
-        binding['source_execution_id'], 'task:' + str(task_id) + ':1', binding['execution_deadline_at'],
+        binding['source_execution_id'], 'task:' + str(task_id) + ':1', pending_deadline_at,
         binding['source_native_message_id']))
 
 
@@ -149,8 +148,6 @@ def current_source(cursor, binding, now):
     else:
         source, task = subagent_runtime.assert_current(cursor, token=binding.token,
             task_id=binding.task_id, job=binding.job, admission=binding.admission, now=now)
-        if task['status'] in {'cancelled','failed'} or task['cancel_requested']:
-            raise LeaseLost('artifact_task_cancelled')
         source['source_scope_key'] = task['scope_key']
     if (source['endpoint_key'] != binding.endpoint.key or source['requester_actor_key'] != binding.actor.key
             or source['account_key'] != binding.endpoint.account.key

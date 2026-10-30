@@ -30,8 +30,8 @@ def project(definition, context):
     function = definition['function']
     name = function['name']
     descriptions = {
-        'sandbox_create': '创建本次来源独占的临时隔离工作区，不提供项目或宿主访问。',
-        'sandbox_list': '列出本次执行实际创建的工作区。',
+        'sandbox_create': '创建或恢复当前会话的沙盒；重复调用复用已有工作区，文件保留在 /work（也可用 /workspace）。',
+        'sandbox_list': '列出当前会话已有的工作区，可继续使用之前生成的文件。',
         'sandbox_destroy': '删除本次执行的工作区；正式产物须已登记后再清理。',
         'sandbox_exec': '在本次隔离工作区中生成或检验文件。不可执行宿主操作或分离后台命令。',
         'sandbox_write_file': '写入本次工作区内的 UTF-8 文件。',

@@ -9,6 +9,8 @@ import asyncio
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
+import traceback
 import time
 from types import SimpleNamespace
 
@@ -28,7 +30,7 @@ TERMINAL = frozenset({'completed', 'partial', 'failed', 'cancelled'})
 TEXT_TOOLS = frozenset({'context_search', 'context_expand', 'get_message_by_id',
     'search_messages', 'memory_list', 'web_search', 'inspect_source', 'use_skill', 'say'})
 FILE_TOOLS = frozenset({'sandbox_create', 'sandbox_list', 'sandbox_destroy', 'sandbox_exec',
-    'sandbox_write_file', 'sandbox_read_file', 'send_file_from_sandbox'})
+    'sandbox_write_file', 'sandbox_read_file', 'send_file_from_sandbox', 'send_file'})
 FILE_ROLES = frozenset({'researcher', 'analyst', 'coder', 'document'})
 
 
@@ -199,11 +201,11 @@ def freeze_and_enqueue(cursor, *, token, task_id, now, outbox, admission, job=No
         projection_task = SimpleNamespace(task_id=task_id, endpoint=endpoint, requester_actor=actor)
         files = [view.for_task(projection_task, 1)['payload']
                  for view in project_task_files(cursor, projection_task, 1)]
-        if files:
+        if files and not result.get('frontend_answer'):
             acceptance = result.get('validation', {}).get('acceptance')
             text = outcome_report(acceptance if isinstance(acceptance, dict) else {},
                                   str(result.get('report_narrative') or ''), files)
-        if task['status'] in {'failed', 'cancelled'}:
+        if task['status'] in {'failed', 'cancelled'} and not result.get('frontend_answer'):
             prefix = '任务未完成。' if task['status'] == 'failed' else '任务已取消。'
             text = prefix + ('\n' + text if files else '')
         body = MessageBody((TextNode(0, f'task#{task_id}\n{text}'),))
@@ -225,7 +227,7 @@ def freeze_and_enqueue(cursor, *, token, task_id, now, outbox, admission, job=No
             SET suppressed_reason='result_expired',updated_at=? WHERE task_id=?''', (now, task_id))
         return None
     rendered = render_plan(body, endpoint, allowed_mentions=frozenset(),
-                           paragraphs=True, paragraph_parts=3)
+                           paragraphs=True, paragraph_parts=16, max_parts=16)
     if rendered.status != 'ready':
         # Commit the complete result and its first absolute deadline even when
         # no wire plan can represent it. Retrying may not refreeze/extend it or
@@ -355,6 +357,7 @@ class OfficialSubAgentDispatcher:
     migration_authority: object = None
     project_finalizer: object = None
     project_authority: object = None
+    present_result: object = None
 
     async def authority_lost(self, job):
         def settle():
@@ -440,12 +443,16 @@ class OfficialSubAgentDispatcher:
                             return '{"ok":false,"error":"tool_unavailable"}'
                         return await executor(name, args)
 
-                    async with asyncio.timeout(remaining):
-                        await self.coordinator.resume(task_id, scope_key=task.scope_key,
-                            requester_user_id=None, endpoint=task.endpoint,
-                            requester_actor=task.requester_actor, selected_profile=profile,
-                            tools=tools, execute_tool=execute_tool, progress=progress.report if progress is not None else None,
-                            hooks=session.hooks if session else None)
+                    try:
+                        async with asyncio.timeout(remaining):
+                            await self.coordinator.resume(task_id, scope_key=task.scope_key,
+                                requester_user_id=None, endpoint=task.endpoint,
+                                requester_actor=task.requester_actor, selected_profile=profile,
+                                tools=tools, execute_tool=execute_tool, progress=progress.report if progress is not None else None,
+                                hooks=session.hooks if session else None)
+                    except TimeoutError:
+                        self.coordinator.store.set_task_state(task_id, 'failed', error='任务超时，已保留完成的工作。')
+
 
             if (self.coordinator.store.get(task_id).status == 'waiting_external'
                     and self.coordinator.store.control(task_id)['dispatch'].get('tool_profile') == 'official-host-v1'):
@@ -459,6 +466,9 @@ class OfficialSubAgentDispatcher:
                     raise JobDeferred('official_task_projects_unavailable', 30)
                 if await self.project_finalizer(job,terminal) is False:
                     return {'task_id': task_id, 'status': 'needs_attention', 'reason': 'project_update_not_accepted'}
+
+            if self.present_result is not None:
+                await self.present_result(job, self.coordinator.store.get(task_id), session)
 
             def finish():
                 with self.transaction() as cursor:
@@ -478,7 +488,9 @@ class OfficialSubAgentDispatcher:
             raise
         except JobDeferred:
             raise
-        except Exception:
+        except Exception as error:
+            logging.getLogger(__name__).warning('subagent error=%s frames=%s', type(error).__name__,
+                [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)[-4:]])
             # The generic DurableJobWorker logs exception text. Keep database,
             # model and persisted-context diagnostics inside the trusted store.
             raise JobDeferred('official_subagent_unavailable', 3) from None
@@ -503,6 +515,15 @@ class OfficialSubAgentDispatcher:
                     ORDER BY b.task_id LIMIT ?''', (self.token.account_key, after_task_id, limit)).fetchall())
         result = []
         for task_id in await self.database_calls(candidates):
+            if self.present_result is not None:
+                # Requeue the existing durable task instead of bypassing the foreground.
+                def requeue():
+                    with self.transaction() as cursor:
+                        row = cursor.execute('SELECT job_id FROM qq_official_subagent_dispatches WHERE task_id=?', (task_id,)).fetchone()
+                        cursor.execute("UPDATE durable_jobs SET status='pending', attempts=0, next_attempt_at=?, lease_owner='', lease_until=NULL, finished_at=NULL WHERE job_id=? AND status IN ('failed','succeeded')", (int(self.clock()), row['job_id']))
+                await self.database_calls(requeue)
+                result.append((task_id, 'queued', None))
+                continue
             def finish():
                 with self.transaction() as cursor:
                     return freeze_and_enqueue(cursor, token=self.token, task_id=task_id,
