@@ -83,3 +83,33 @@ def usage_callback(transaction, db_call):
             f"回合：{totals['turns']}\n输入 Token：{totals['input_tokens']}\n"
             f"输出 Token：{totals['output_tokens']}\n合计 Token：{totals['total_tokens']}")
     return callback
+
+
+from ...agent.control import LeaseLost
+
+
+class CommandEffectDenied(LeaseLost):
+    pass
+
+
+class _CommandTasks:
+    def __init__(self, tasks, inbound, scope):
+        self.tasks, self.inbound, self.scope = tasks, inbound, scope
+
+    def list_for_endpoint(self, *args):
+        with self.scope(self.inbound):
+            return self.tasks.list_for_endpoint(*args)
+
+    def cancel_for_endpoint(self, *args):
+        with self.scope(self.inbound):
+            return self.tasks.cancel_for_endpoint(*args)
+
+
+def guarded_services(services, inbound, *, effect_scope, database_call, settings_authority=None):
+    async def call(function, *args):
+        def run():
+            with effect_scope(inbound):
+                return function(*args)
+        return await database_call(run)
+    tasks = _CommandTasks(services.running_tasks, inbound, effect_scope) if services.running_tasks is not None else None
+    return replace(services, db_call=call, running_tasks=tasks)

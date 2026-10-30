@@ -13,7 +13,7 @@ from typing import Protocol
 
 from src.bot_security.store import SecurityError
 from src.plugins.ai_chat.platform_types import BackgroundToolSource
-from .approval_transport import FrozenSource, TaskPolicy
+from .approval import FrozenSource, TaskPolicy
 from .lease import assert_epoch
 from .keys import account_job_kind
 

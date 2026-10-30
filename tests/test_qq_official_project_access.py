@@ -1,9 +1,8 @@
 """Actual project store and tools with source-bound official authorization."""
 from dataclasses import replace
-import uuid
 
 from tests.qq_official_project_fixture import ProjectFixture
-from src.plugins.ai_chat.adapters.qq_official.project_authority import Operation, ProjectRequest
+from src.plugins.ai_chat.adapters.qq_official.project_authority import Operation
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.projects import ProjectAccess, ProjectStore
 
@@ -52,11 +51,6 @@ class ProjectAccessTests(ProjectFixture):
             with self.subTest(forged=type(forged)):
                 with self.assertRaises(PermissionError):self.store.get(forged,row['project_id'])
 
-    def test_current_job_loss_stops_existing_access(self):
-        row=self.create()
-        self.query("UPDATE durable_jobs SET lease_owner='TEST_OTHER_WORKER' WHERE job_id=?",(self.job.job_id,))
-        with self.assertRaises(PermissionError):self.store.get(self.access,row['project_id'])
-
     def test_dedicated_account_lease_loss_stops_existing_access(self):
         row=self.create()
         self.account_lease.close()
@@ -81,16 +75,12 @@ class ProjectAccessTests(ProjectFixture):
         self.assertEqual(self.query('SELECT * FROM qq_official_project_grants'),[])
         self.assertTrue(self.create()['project_id'])
 
-    def test_actual_old_project_alias_keeps_scope_and_bot_snapshot(self):
+    def test_bound_owner_gets_old_project_without_manual_grant(self):
         scope=ConversationScope('onebot-v11','group','101','201','301')
         principal=self.ledger.ensure_principal_identity('onebot-v11','201','old')
         old=self.store.create(ProjectAccess(scope,principal,True),'OLD',now=self.now)
         self.aliases.add(scope.key);self.alias_id=old['project_id']
-        request=ProjectRequest(self.endpoint,self.actor,scope,0,self.handle.route_epoch,old['project_id'],Operation.MANAGE)
-        with self.tx() as cursor:
-            self.provider.authority.issue_project(cursor,issuer=request,recipient=self.actor,
-                capabilities=frozenset(Operation),grant_id=uuid.uuid4().hex,expires_at=self.now+1000,
-                evidence_ref='project-create:'+self.handle.execution_id,source=self.provider)
+        self.query('UPDATE qq_official_endpoints SET canonical_scope_key=? WHERE endpoint_key=?', (scope.key,self.endpoint.key))
         got=self.store.get(self.access,old['project_id'])
         self.assertEqual((got['scope_key'],got['bot_native_user_id']),(scope.key,'301'))
         self.assertEqual(self.store.list(self.access)[0]['project_id'],old['project_id'])

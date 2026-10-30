@@ -216,16 +216,6 @@ class OneBotRuntime:
             from .adapters.qq_official.host_config import configured_migration_factory
             self.migration_service_factory = configured_migration_factory()
         if self.migration_service_factory is None:
-            database = getattr(context, "database", None)
-            if database is not None:
-                def managed():
-                    connection = database.store_connection()
-                    try:
-                        return connection.execute("SELECT 1 FROM migration_routes LIMIT 1").fetchone() is not None
-                    finally:
-                        connection.close()
-                if await context.db_call(managed):
-                    raise RuntimeError("Managed OneBot routes require migration_service_factory")
             return
         service = self.migration_service_factory(context, self)
         if inspect.isawaitable(service):
@@ -234,12 +224,7 @@ class OneBotRuntime:
             raise RuntimeError("Migration service factory returned no service")
         self.migration_routes = service
         context.migration_service = service
-        if getattr(service, "baselines", None) == {}:
-            def managed_without_sources():
-                with context.delivery_store.transaction() as cursor:
-                    return cursor.execute("SELECT 1 FROM migration_routes LIMIT 1").fetchone() is not None
-            if await context.db_call(managed_without_sources):
-                raise RuntimeError("Managed OneBot routes require explicit source baselines")
+        if getattr(service, 'native_only', False) or getattr(service, "baselines", None) == {}:
             await service.start_native()
             self.migration_routes = None
             return

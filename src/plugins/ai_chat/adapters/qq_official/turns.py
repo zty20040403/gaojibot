@@ -23,7 +23,7 @@ from src.plugins.ai_chat.conversation_keys import conversation_key
 from src.plugins.ai_chat.model_catalog import SUPPORTED_REASONING_EFFORTS
 from src.plugins.ai_chat.platform_types import EndpointKey
 from . import turn_source as execution
-from .command_fence import guarded_services
+from .commands import guarded_services
 from .commands import usage_callback
 from .lease import assert_epoch
 from .turn_platform import TransportState
@@ -392,20 +392,6 @@ def build_turn_consumer(runtime, token, app):
                     return policy(cursor)
             return await runtime._calls(read)
 
-        def settings_authority(cursor, _inbound, domain, method, args):
-            # Recompute from the actual storage operation at the effect fence,
-            # including group defaults independently of an owner's own model.
-            current = policy(cursor, group_default="_scope_" in method)
-            if domain not in {"model", "effort"}:
-                return False
-            if method.startswith("get"):
-                return True
-            if "_scope_" in method and not current.allow_group_default:
-                return False
-            if method.startswith("set"):
-                return args[1] in (current.models if domain == "model" else current.efforts)
-            return method.startswith("clear")
-
         tasks = app.running_tasks
         if subagents is not None:
             from .subagent_commands import TaskRegistryAdapter
@@ -414,7 +400,7 @@ def build_turn_consumer(runtime, token, app):
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
             host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls))
         return guarded_services(services, inbound, effect_scope=effect_scope,
-            database_call=runtime._calls, settings_authority=settings_authority)
+            database_call=runtime._calls)
 
     def transport_state():
         gateway = runtime._gateway

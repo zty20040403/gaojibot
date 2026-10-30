@@ -93,7 +93,7 @@ def build_official_mobile_authorization(*, database, transport, sender):
     `sender` is the configured existing M3 sender. Credentials/source identity
     were already loaded/verified by the host; this never reads model paths.
     """
-    from .adapters.qq_official.approval_transport import ApprovalOtpSender
+    from .adapters.qq_official.approval import ApprovalOtpSender
     if (getattr(sender, 'token', None) != transport.token
             or getattr(getattr(sender, 'account', None), 'key', None) != transport.token.account_key
             or getattr(getattr(sender, 'outbox', None), 'approval_authority', None) is not transport):

@@ -346,7 +346,7 @@ class OfficialSender:
                     source_scope_key=endpoint.scope.key, expires_at=expires,
                     source_native_message_id=source["native_message_id"], transaction_cursor=cursor,
                     binding_preview=(effect.candidate_id, effect.candidate_version))
-            text = f"绑定挑战：{effect.challenge_id}\n一次性验证码：{effect.code}\n请在有效期内到目标群提交绑定请求。"
+            text = f"请在目标群里 @ 我并发送：\n/bind {effect.code}\n验证码 10 分钟内有效，提交后立即绑定。"
             rendered = render_plan(MessageBody((TextNode(0, text),)), endpoint, markdown=False, max_parts=1)
             return self.outbox.enqueue(self.token, rendered=rendered, requester=actor,
                 logical_key="binding_otp:" + effect.challenge_id, source_scope_key=endpoint.scope.key,

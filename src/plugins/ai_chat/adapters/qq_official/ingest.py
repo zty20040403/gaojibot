@@ -23,6 +23,7 @@ from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 
 from .codec import DecodedMessage, RejectedMessage, decode_message
+from ...conversation_scope import ConversationScope
 from .lease import LeaseToken
 from .input_normalization import normalize_input
 
@@ -94,7 +95,7 @@ def _reply_target(cursor: StoreCursor, decoded: DecodedMessage) -> str | None:
             return None
         if row["canonical_message_id"] is not None and (
             row["source_endpoint_key"] != decoded.endpoint.key
-            or row["scope_key"] != decoded.endpoint.scope.key
+            or row["scope_key"] != cursor.execute("SELECT canonical_scope_key FROM qq_official_endpoints WHERE endpoint_key=?", (decoded.endpoint.key,)).fetchone()["canonical_scope_key"]
             or row["ledger_native"] != row["native_message_id"]
         ):
             return None
@@ -199,7 +200,7 @@ def process_inbox(
         return _finish(cursor, row, timestamp, status="quarantined", reason="invalid_endpoint")
     if (endpoint.account != account or endpoint.kind != endpoint_row["kind"]
             or endpoint.native_conversation_id != endpoint_row["native_conversation_id"]
-            or endpoint.scope.key != endpoint_row["canonical_scope_key"]):
+):
         return _finish(cursor, row, timestamp, status="quarantined", reason="endpoint_identity_mismatch")
     if (row["endpoint_generation"] != endpoint_row["generation"]
             or row["route_epoch"] != endpoint_row["route_epoch"]
@@ -241,7 +242,7 @@ def process_inbox(
     if existing is not None:
         return _finish(cursor, row, timestamp, reason="duplicate_message", canonical=existing["canonical_message_id"])
     prepared_input = normalize_input(dispatch)
-    from .approval_control import prepare_approval_input
+    from .approval import prepare_approval_input
     if prepared_input.kind != "message" or prepare_approval_input(dispatch, endpoint).kind != "none":
         # Old/incorrect TxA admission must still never put a binding secret into
         # canonical history or leave its raw payload behind for later workers.
@@ -252,7 +253,7 @@ def process_inbox(
         (prepared_input.input_text, prepared_input.version, inbox_id, account.key))
     reply_target = _reply_target(cursor, decoded)
     recorded = ledger.record_message(
-        endpoint.scope, native_message_id=decoded.native_message_id,
+        ConversationScope.from_key(endpoint_row["canonical_scope_key"]), native_message_id=decoded.native_message_id,
         sender_native_user_id=decoded.actor.native_user_id, sender_display=decoded.sender_display,
         body=_ledger_body(decoded), occurred_at=decoded.occurred_at,
         reply_to_native_message_id=reply_target, actor=decoded.actor, source_endpoint=endpoint,

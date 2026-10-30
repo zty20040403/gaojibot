@@ -69,10 +69,7 @@ class AuthorityFixture(unittest.TestCase):
             candidate = reducer.apply(cursor, context=self.context(self.endpoint, self.issuer),
                 command=parse_binding_command(f'/bind submit {issue.challenge_id} {issue.effect.code}'),
                 lease_token=self.token)
-            confirm = reducer.apply(cursor, context=self.context(self.private, self.owner_actor),
-                command=parse_binding_command(f'/bind confirm {candidate.candidate_id} 1 --grant-owner'),
-                lease_token=self.token)
-            self.assertEqual(confirm.status, 'confirmed')
+            self.assertEqual(candidate.status, 'confirmed')
         self.authority = self.new_authority()
         self.ref = None
 

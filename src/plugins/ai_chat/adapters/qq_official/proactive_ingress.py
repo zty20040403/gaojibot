@@ -49,7 +49,6 @@ class ProactiveIngress:
         actor=ActorKey.parse(message['sender_actor_key'])
         if getattr(self.admission,'require_inbox',None) is not None:
             self.admission.require_inbox(c,inbox_id,endpoint=ep,actor=actor,operation='execute' if job else 'send')
-        elif c.execute('SELECT 1 FROM migration_routes LIMIT 1').fetchone():raise MigrationDenied('logical_source_provider_required')
         physical=c.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=? FOR UPDATE',(ep.key,)).fetchone()
         if (ep.kind!='group' or not actor.matches_endpoint(ep) or actor.identity_kind=='bot' or inbox['status']!='processed'
                 or inbox['echo_state']!='not_echo' or inbox['trigger_requested'] or inbox['dispatch_job_id'] is not None

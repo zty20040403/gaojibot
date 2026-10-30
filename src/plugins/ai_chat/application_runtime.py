@@ -42,12 +42,6 @@ class OfficialApplicationRuntime:
         from .adapters.qq_official.host_config import configured_migration_factory
         factory=configured_migration_factory(self.env)
         if factory is None:
-            def managed():
-                connection=context.database.store_connection()
-                try:return connection.execute('SELECT 1 FROM migration_routes LIMIT 1').fetchone() is not None
-                finally:connection.close()
-            if await context.db_call(managed):
-                raise RuntimeError('managed_routes_require_official_host_configuration')
             return
         service=factory(context,self)
         context.migration_service=service

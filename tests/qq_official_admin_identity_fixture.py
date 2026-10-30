@@ -30,9 +30,6 @@ class IdentityFixture:
   self.login=self.security.login('test_admin',PASSWORD,'127.0.0.1')
   self.auth=ConsoleAuthorization(self.admin['account_id'],self.admin['version'],hashlib.sha256(self.login['session'].encode()).hexdigest())
   self.runtime=SimpleNamespace(_token=self.token,_stopping=False,store=self.store,loaded=SimpleNamespace(account=self.account,binding_pepper=self.pepper))
-  from src.plugins.ai_chat.adapters.qq_official.migration_routes import RouteService
-  from src.plugins.ai_chat.adapters.qq_official.migration_native_sources import NativeSources
-  self.routes=RouteService(tokens={self.account.key:self.token});self.store.source_authority=NativeSources(self.routes)
   self.service=AdminIdentityBinding(self.runtime,self.token);self.store.admin_identity_service=self.service
  @contextmanager
  def tx(self):

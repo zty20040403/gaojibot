@@ -19,7 +19,7 @@ import time
 from src.bot_security.service import assert_approved
 from src.bot_security.store import SecurityError,canonical,digest
 from src.cluster_control.execution_contracts import OperationProposal,content_hash,OPERATION_ACTIONS
-from .approval_transport import ApprovalContext,FrozenSource,HostAction,Recipient,TaskPolicy,task_effect_scope
+from .approval import ApprovalContext,FrozenSource,HostAction,Recipient,TaskPolicy,task_effect_scope
 
 _OPERATION=re.compile(r'/v1/operations/(op_[a-f0-9]{32})(/approve)?')
 _CONTRACT=('task_ref','step_ref','actor_id','origin_scope','host_id','resource_ref','operation','operation_version',

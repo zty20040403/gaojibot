@@ -460,12 +460,12 @@ class OfficialSubAgentDispatcher:
 
             if task.project_id is not None:
                 terminal = self.coordinator.store.get(task_id)
-                if terminal.status in {'failed','cancelled'}:
-                    return {'task_id': task_id, 'status': 'needs_attention', 'reason': 'project_update_not_accepted'}
-                if self.project_finalizer is None:
-                    raise JobDeferred('official_task_projects_unavailable', 30)
-                if await self.project_finalizer(job,terminal) is False:
-                    return {'task_id': task_id, 'status': 'needs_attention', 'reason': 'project_update_not_accepted'}
+                if terminal.status not in {'failed', 'cancelled'}:
+                    if self.project_finalizer is None:
+                        raise JobDeferred('official_task_projects_unavailable', 30)
+                    if await self.project_finalizer(job, terminal) is False:
+                        self.coordinator.store.set_task_state(task_id, 'partial',
+                            result={**terminal.result, 'delivery_note': '项目保存未完成；请明确告知用户，已生成的结果仍可查看。'})
 
             if self.present_result is not None:
                 await self.present_result(job, self.coordinator.store.get(task_id), session)

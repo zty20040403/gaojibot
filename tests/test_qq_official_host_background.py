@@ -209,7 +209,7 @@ class BackgroundTests(host_fixture.approval_fixtures.ApprovalFixture,unittest.Is
   from unittest.mock import AsyncMock,patch
   from src.plugins.ai_chat.adapters.qq_official.host_session import HostTaskSessionFactory
   from src.plugins.ai_chat.adapters.qq_official.subagent_composition import OfficialSubAgentService
-  from src.plugins.ai_chat.adapters.qq_official.approval_runtime import OfficialApprovalService
+  from src.plugins.ai_chat.adapters.qq_official.approval import OfficialApprovalService
   from src.plugins.ai_chat.agent_loop import AgentLoopEvent
   from src.plugins.ai_chat.tool_invocation import active_tool_call_id
   from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker

@@ -19,11 +19,12 @@ from src.plugins.ai_chat.message_ir import MessageBody, MediaNode
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey, InboundMessage, PlatformFeatures
 from src.plugins.ai_chat.tools import neutral_registry_for
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
-from tests import test_qq_official_image_config as fixtures
 
 
 class WiringTests(unittest.IsolatedAsyncioTestCase):
-    raw = fixtures.ImageConfigTests.raw
+    def raw(self, kinds=()):
+        return dict(version=1, account=self.account.key, onebot_accounts=[],
+                    files={'private_directory':'/tmp/TEST_MEDIA', 'generation_enabled':False})
 
     def setUp(self):
         self.account = AccountKey('qq-official','TEST_IMAGE_CONFIG','test')

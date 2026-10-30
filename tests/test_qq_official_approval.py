@@ -6,14 +6,14 @@ import unittest
 
 from src.bot_security.store import SecurityStore, SecurityError
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
-from src.plugins.ai_chat.adapters.qq_official.approval_transport import (
+from src.plugins.ai_chat.adapters.qq_official.approval import (
  Recipient, OfficialApprovalTransport)
 from src.plugins.ai_chat.adapters.qq_official.turn_source import ExecutionFenceLost
 from src.plugins.ai_chat.adapters.qq_official.project_authority import Denied
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost
 from src.qq_official.events import parse_dispatch
-from src.plugins.ai_chat.adapters.qq_official.approval_control import prepare_approval_input,apply_control
-from src.plugins.ai_chat.adapters.qq_official.approval_transport import task_effect_scope
+from src.plugins.ai_chat.adapters.qq_official.approval import prepare_approval_input,apply_control
+from src.plugins.ai_chat.adapters.qq_official.approval import task_effect_scope
 
 from tests.qq_official_approval_fixture import ApprovalFixture, ApprovalLoopbackFixture, SourcePort, SECRET
 

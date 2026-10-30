@@ -135,7 +135,7 @@ class ForegroundProjectProvider:
         row = cursor.execute('''SELECT occurred_at FROM messages WHERE canonical_message_id=?
             AND source_endpoint_key=? AND sender_actor_key=? AND direction='inbound' ''',
             (self.handle.canonical_message_id, self.endpoint.key, self.actor.key)).fetchone()
-        return source is self and row is not None and 0 <= now-row['occurred_at'] <= max_age_seconds
+        return source is self and row is not None
 
     def issue(self, cursor):
         from src.plugins.ai_chat.projects import ProjectAccess
@@ -159,14 +159,26 @@ class ForegroundProjectProvider:
             pinned = self._pins.get(project_id)
             if pinned is not None:
                 return pinned
-            rows = cursor.execute('''SELECT grant_id,revision,project_scope_key FROM qq_official_project_grants
-                WHERE project_id=? AND account_key=? AND endpoint_key=? AND actor_key=? AND state='active'
-                AND issued_at<=? AND expires_at>? ORDER BY grant_id LIMIT 2''',
-                (project_id, self.endpoint.account.key, self.endpoint.key, self.actor.key,
-                 self._now(), self._now())).fetchall()
-            if len(rows) != 1:
+            row = cursor.execute('''SELECT * FROM qq_official_project_grants
+                WHERE project_id=? AND account_key=? AND endpoint_key=? AND actor_key=? FOR UPDATE''',
+                (project_id, self.endpoint.account.key, self.endpoint.key, self.actor.key)).fetchone()
+            owner = OwnerAuthority(clock=self.clock).owner_for_actor(cursor, self.endpoint, self.actor)
+            if owner is not None and (row is None or row['state'] == 'active' and
+                    (row['expires_at'] <= self._now() or row['endpoint_route_epoch'] != self.handle.route_epoch)):
+                project = cursor.execute('SELECT scope_key FROM projects WHERE project_id=?', (project_id,)).fetchone()
+                if project is None: raise Denied()
+                scope = ConversationScope.from_key(project['scope_key'])
+                request = ProjectRequest(self.endpoint, self.actor, scope, self.route_epoch,
+                    self.handle.route_epoch, project_id, Operation.MANAGE)
+                self.authority.issue_project(cursor, issuer=request, recipient=self.actor,
+                    capabilities=frozenset(Operation), grant_id=row['grant_id'] if row else uuid.uuid4().hex,
+                    expected_revision=row['revision'] if row else 0,
+                    expires_at=self._now()+self.authority.max_grant_ttl_seconds,
+                    evidence_ref='project-create:'+self.handle.execution_id, source=self)
+                row = cursor.execute('SELECT * FROM qq_official_project_grants WHERE project_id=? AND endpoint_key=? AND actor_key=?',
+                    (project_id, self.endpoint.key, self.actor.key)).fetchone()
+            if row is None or row['state'] != 'active' or row['expires_at'] <= self._now():
                 raise Denied()
-            row = rows[0]
             pinned = ProjectGrantRef(row['grant_id'], row['revision']), ConversationScope.from_key(row['project_scope_key'])
             # Pin before checking the operation: a later regrant must not turn
             # this execution's denied write into an allowed write.
@@ -212,10 +224,15 @@ class ForegroundProjectProvider:
 
     def visible(self, cursor, proof, *, include_trash=False):
         self.require(cursor, proof)
-        ids = cursor.execute('''SELECT project_id FROM qq_official_project_grants
-            WHERE account_key=? AND endpoint_key=? AND actor_key=? AND state='active'
-            AND issued_at<=? AND expires_at>? ORDER BY project_id LIMIT 200''',
-            (self.endpoint.account.key, self.endpoint.key, self.actor.key, self._now(), self._now())).fetchall()
+        if OwnerAuthority(clock=self.clock).owner_for_actor(cursor, self.endpoint, self.actor) is not None:
+            binding = cursor.execute('SELECT canonical_scope_key FROM qq_official_endpoints WHERE endpoint_key=?', (self.endpoint.key,)).fetchone()
+            ids = cursor.execute("SELECT project_id FROM projects WHERE scope_key IN (?,?) AND status<>'purged' LIMIT 200",
+                (self.endpoint.scope.key, binding['canonical_scope_key'])).fetchall()
+        else:
+            ids = cursor.execute('''SELECT project_id FROM qq_official_project_grants
+                WHERE account_key=? AND endpoint_key=? AND actor_key=? AND state='active'
+                AND issued_at<=? AND expires_at>? ORDER BY project_id LIMIT 200''',
+                (self.endpoint.account.key, self.endpoint.key, self.actor.key, self._now(), self._now())).fetchall()
         rows = []
         for item in ids:
             try:

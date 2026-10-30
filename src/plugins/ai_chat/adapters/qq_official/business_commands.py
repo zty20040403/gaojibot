@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from ...application.commands import CommandResult
 from ...tools.state import ToolContext
-from .command_fence import CommandEffectDenied
+from .commands import CommandEffectDenied
 from .memory_commands import MemoryCommands
 from .project_commands import ProjectCommands
 

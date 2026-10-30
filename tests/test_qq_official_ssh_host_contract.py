@@ -13,7 +13,7 @@ from src.cluster_control.adapters.ssh import SSHOperationsClient
 from src.cluster_control.api import create_app
 from src.cluster_control.execution_contracts import content_hash
 from src.cluster_control.ops_management import OpsManagementService
-from src.plugins.ai_chat.adapters.qq_official.approval_transport import FrozenSource
+from src.plugins.ai_chat.adapters.qq_official.approval import FrozenSource
 from src.plugins.ai_chat.adapters.qq_official.host_authority import AllowedService, OfficialHostAuthority
 from src.plugins.ai_chat.fleet_client import FleetControlClient, FleetControlError
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey

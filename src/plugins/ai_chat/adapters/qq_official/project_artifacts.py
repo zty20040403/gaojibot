@@ -20,7 +20,6 @@ from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.project_authorization import ForegroundProjectProvider, official_project
 from src.plugins.ai_chat.project_background import BackgroundProjectProvider
 from . import identity_store
-from .actor_evidence import recent_actor_evidence
 from .file_artifacts import ArtifactError, SourceBinding, _issue
 from .project_authority import Denied, Operation, ProjectAuthority, ProjectGrantRef, ProjectRequest
 
@@ -60,15 +59,10 @@ def _fingerprint(artifact, io_row):
 class ProjectArtifactAuthority:
     kind = 'project'
 
-    def __init__(self, *, token, clock, route_guard=_deny, read_route_guard=_deny, project_scope_guard=_deny, migration_projects=None):
+    def __init__(self, *, token, clock, route_guard=_deny, read_route_guard=_deny, project_scope_guard=_deny):
         self.token,self.clock = token,clock
         self.route_guard,self.read_route_guard,self.project_scope_guard = route_guard,read_route_guard,project_scope_guard
         self._sources,self._lock = weakref.WeakKeyDictionary(),threading.Lock()
-        self.migration_projects=migration_projects
-        if migration_projects is not None:
-            from .migration_project_artifacts import ProjectMigrationArtifacts
-            self.migration_artifacts=ProjectMigrationArtifacts(self,migration_projects)
-        else:self.migration_artifacts=None
 
     def _matches_provider(self, binding, provider):
         # Identity only; this does not validate or cache current authority.
@@ -128,15 +122,6 @@ class ProjectArtifactAuthority:
             if (task is None or task['project_id'] != project_id
                     or source['tool_profile'] != 'official-projects-v1' or source['job_id'] != provider.job.job_id):
                 raise Denied()
-            if source['migration_item_id'] is not None:
-                if (self.migration_projects is None or provider.migration_authority is not self.migration_projects
-                        or any(source[key] is not None for key in ('source_execution_id','source_canonical_message_id','source_native_message_id'))):
-                    raise Denied()
-                # The exact BackgroundProvider owns this same task/job/purpose
-                # check. Within this synchronous composition it can reuse that
-                # check; crossing a validation second forces a full recheck.
-                provider._current(cursor)
-            elif source['source_execution_id'] is None:raise Denied()
             source.update(source_task_id=provider.binding_id,source_scope_key=task['scope_key'],
                           deadline_at=source['execution_deadline_at'])
             source_kind = 'project_task'
@@ -221,29 +206,8 @@ class ProjectArtifactAuthority:
             cursor.execute('INSERT INTO qq_official_project_artifacts ('+','.join(fields)+') VALUES ('+
                 ','.join('?' for _ in fields)+')', tuple(fields.values()))
 
-        if binding.source_migration_item_id is not None:
-            self.migration_artifacts.bind(cursor,binding,artifact,now=now,existing=existing)
-
     def __call__(self,cursor,*,token,artifact,now,read_only):
         self._project_current(cursor,token=token,artifact=artifact,now=now,read_only=read_only)
-        if artifact.get('source_migration_item_id') is not None:
-            if self.migration_artifacts is None:raise LeaseLost('project_migration_host_unavailable')
-            if read_only:
-                item=self.migration_artifacts.journal._issue_item(cursor,item_id=artifact['source_migration_item_id'],operation='artifact',now=now)
-                self.migration_artifacts.validate_bound_artifact(cursor,item,artifact['artifact_id'],now=now,read_only=True)
-            else:self.migration_artifacts.journal.current_artifact_source(cursor,artifact['artifact_id'],now=now)
-
-    def validate_bound_artifact(self,cursor,item,artifact_id,*,now):
-        if self.migration_artifacts is None:raise LeaseLost('project_migration_host_unavailable')
-        return self.migration_artifacts.validate_bound_artifact(cursor,item,artifact_id,now=now)
-
-    def enqueue_proof(self,cursor,*,token,artifact,job,now):
-        self(cursor,token=token,artifact=artifact,now=now,read_only=False)
-        return self.migration_artifacts.journal.issue_artifact(cursor,artifact_id=artifact['artifact_id'],job=job,now=now)
-
-    def bind_plan(self,cursor,proof,*,plan_id,now):
-        if self.migration_artifacts is None:raise LeaseLost('project_migration_host_unavailable')
-        return self.migration_artifacts.journal.bind_artifact_plan(cursor,proof,plan_id=plan_id,now=now)
 
     def _project_current(self, cursor, *, token, artifact, now, read_only):
         if token is not self.token or artifact.get('source_extension_kind')!='project':
@@ -293,8 +257,7 @@ class ProjectArtifactAuthority:
 
         marker=source
         authority=ProjectAuthority(clock=self.clock,route_guard=route_guard,source_guard=source_guard,
-            fresh_actor_evidence=lambda c,**kw: read_only or recent_actor_evidence(c,endpoint=endpoint,
-                actor=actor,now=kw['now'],max_age_seconds=300))
+            fresh_actor_evidence=lambda c,**kw: True)
         authority.require_project(cursor,request=request,grant=ProjectGrantRef(row['grant_id'],row['grant_revision']),source=source)
 
 

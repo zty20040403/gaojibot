@@ -13,7 +13,7 @@ from src.plugins.ai_chat.application.project_grant_commands import parse_grant, 
 from src.plugins.ai_chat.application.memory_commands import parse_memory, MemorySyntax
 from src.plugins.ai_chat.application.wiki_commands import format_page
 from src.plugins.ai_chat.adapters.qq_official.memory_commands import MemoryCommands
-from src.plugins.ai_chat.adapters.qq_official.command_fence import CommandEffectDenied
+from src.plugins.ai_chat.adapters.qq_official.commands import CommandEffectDenied
 from src.plugins.ai_chat.adapters.qq_official.project_authority import Denied
 from src.plugins.ai_chat.project_authorization import ForegroundProjectProvider
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey, InboundMessage

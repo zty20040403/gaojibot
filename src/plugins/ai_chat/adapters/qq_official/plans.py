@@ -56,7 +56,7 @@ def binding_preview_deadline(cursor, endpoint, requester, preview, now):
     return min(row["challenge_expiry"], row["candidate_expiry"]) if row else None
 
 
-from .control_receipts import validate_plan_authority, bind_control_plan
+from .binding import control_authorized
 
 
 def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
@@ -107,13 +107,9 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         WHERE account_key=? AND endpoint_key=? FOR UPDATE""", (token.account_key, endpoint.key)).fetchone()
     if endpoint_row is None or EndpointKey.parse(endpoint_row["endpoint_key"]) != endpoint:
         raise OutboxInvariantError("delivery_endpoint_unavailable")
-    control_view = None
-    if control_reply_id is not None:
-        if challenge_id is not None or approval_source_id is not None or binding_preview is not None or turn_id is not None or source_canonical_message_id is not None:
-            raise OutboxInvariantError("control_plan_not_exact")
-        control_view = validate_plan_authority(cursor, token, control_id=control_reply_id, rendered=rendered,
-            requester=requester, logical_key=logical_key, source_scope_key=source_scope_key,
-            source_native_message_id=source_native_message_id, expires_at=expires_at, purpose=purpose, now=now)
+    control_view = control_reply_id is not None and control_authorized(cursor, control_reply_id, endpoint, requester)
+    if control_reply_id is not None and not control_view:
+        raise OutboxInvariantError('control_source_unavailable')
     protected = protected_ref is not None
     if protected and (not isinstance(protected_ref, ProtectedContentRef)
             or purpose != "requested_artifact" or len(rendered.parts) != 1
@@ -125,7 +121,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     if ((purpose == 'binding_otp') != (challenge_id is not None)
             or (purpose == 'approval_otp') != (approval_source_id is not None)
             or (ephemeral and pepper is None) or (not ephemeral and pepper is not None)
-            or (control_view is None and not admission(cursor, endpoint, requester))):
+            or (not control_view and not admission(cursor, endpoint, requester))):
         raise OutboxInvariantError("delivery_not_authorized")
     challenge_expires = None
     approval_expires = None
@@ -148,12 +144,12 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", digest_key_id)):
             raise OutboxInvariantError("binding_delivery_unavailable")
         challenge_expires = challenge["expires_at"]
-    elif control_view is None and endpoint.kind == "group" and (endpoint_row["binding_state"] != "active"
+    elif not control_view and endpoint.kind == "group" and (endpoint_row["binding_state"] != "active"
                                          or endpoint_row["membership_state"] != "present"):
         raise OutboxInvariantError("delivery_endpoint_unavailable")
     # Include the original source in the frozen manifest, independently of a
     # later legal window. A newer credential never fabricates a quote target.
-    control = {"kind": "authenticated_control", "control_id": control_reply_id} if control_view is not None else None
+    control = {"kind": "authenticated_control", "control_id": control_reply_id} if control_view else None
     if binding_preview is not None:
         boundary = binding_preview_deadline(cursor, endpoint, requester, binding_preview, now)
         if ephemeral or purpose != "final" or boundary is None or expires_at > min(boundary, now + 30):
@@ -185,9 +181,6 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     existing = cursor.execute("SELECT * FROM delivery_plans WHERE idempotency_key=?", (idem,)).fetchone()
     if existing is not None:
         rows = cursor.execute("SELECT delivery_id FROM deliveries WHERE plan_id=? ORDER BY part_index", (existing["plan_id"],)).fetchall()
-        if control_view is not None:
-            bind_control_plan(cursor, token, control_id=control_reply_id, plan_id=existing["plan_id"],
-                delivery_id=rows[0]["delivery_id"], now=now)
         if approval_source_id is not None:
             approval_authority.bind_plan(cursor, source_id=approval_source_id, plan_id=existing['plan_id'], delivery_id=rows[0]['delivery_id'])
         require_source(existing["plan_id"])
@@ -221,8 +214,6 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             digest_scheme=scheme, digest_key_id=key_id, priority=PURPOSE_PRIORITIES[purpose], expires_at=expires_at)
         row = cursor.execute("INSERT INTO deliveries (" + ",".join(fields) + ") VALUES (" + ",".join("?" for _ in fields) + ") RETURNING delivery_id", tuple(fields.values())).fetchone()
         delivery_ids.append(row["delivery_id"])
-    if control_view is not None:
-        bind_control_plan(cursor, token, control_id=control_reply_id, plan_id=plan_id, delivery_id=delivery_ids[0], now=now)
     if approval_source_id is not None:
         approval_authority.bind_plan(cursor, source_id=approval_source_id, plan_id=plan_id, delivery_id=delivery_ids[0])
     require_source(plan_id)

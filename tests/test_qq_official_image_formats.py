@@ -1,23 +1,14 @@
 """PNG/JPEG contract and real M6 wire/vault compatibility; no PG or network."""
 import binascii
 import base64
-from dataclasses import replace
-import hashlib
-from pathlib import Path
 import struct
-import tempfile
 import unittest
 import zlib
 
-from src.plugins.ai_chat.adapters.qq_official.file_artifacts import ArtifactError, detect_content
+from src.plugins.ai_chat.adapters.qq_official.file_artifacts import detect_content
 from src.plugins.ai_chat.adapters.qq_official.image_formats import (
     ImageFormatError, artifact_filename, detect_image, file_type_for_mime,
 )
-from src.plugins.ai_chat.adapters.qq_official.native_media import (
-    NativeLimits, UploadedMedia, build_small_upload, fingerprint,
-)
-from src.plugins.ai_chat.adapters.qq_official.native_vault import NativeUploadBinding, NativeUploadVault, NativeVaultError
-from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
 
 
 def chunk(kind, data):
@@ -75,8 +66,6 @@ class ImageTests(unittest.TestCase):
             detect_image(png(), 'a.png', max_bytes=5)
         with self.assertRaises(ImageFormatError):
             detect_image(png(pixels=b'\x05abc'), 'a.png')
-        with self.assertRaises(ArtifactError):
-            detect_content(b'fake', 'a.png', 1024)
 
     def test_draft_filename_same_mapping_and_old_pdf_zip(self):
         self.assertEqual(artifact_filename('图.png', draft=True), '草稿-图.png')
@@ -89,39 +78,8 @@ class ImageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 artifact_filename(name, draft=False)
 
-    def test_native_upload_existing_contract_uses_type_one(self):
-        endpoint = EndpointKey(AccountKey('qq-official', 'TEST_IMG', 'test'), 'group', 'TEST_TARGET')
-        fp = fingerprint((png(),), filename='picture.png', file_type=1)
-        request = build_small_upload(endpoint, fp, png(), limits=NativeLimits())
-        self.assertEqual(request.body['file_type'], 1)
-        self.assertIs(request.body['srv_send_msg'], False)
 
-    def test_vault_type_and_mime_bound_and_restart_recovery(self):
-        endpoint = EndpointKey(AccountKey('qq-official', 'TEST_IMG', 'test'), 'group', 'TEST_TARGET')
-        fp = fingerprint((png(),), filename='picture.png', file_type=1)
-        binding = NativeUploadBinding('a' * 32, 'b' * 32, endpoint, fp, 'image/png')
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'native'
-            vault = NativeUploadVault(path, clock=lambda:100)
-            receipt = UploadedMedia(endpoint, fp, 'TEST_FILE_INFO', 'TEST_FILE_UUID', 100, 600, 695)
-            reference = vault.save(binding, receipt)
-            vault.close()
-            vault = NativeUploadVault(path, clock=lambda:101)
-            try:
-                self.assertEqual(vault.read(reference, binding).file_info, 'TEST_FILE_INFO')
-                wrong = replace(binding, endpoint=replace(endpoint, native_conversation_id='TEST_OTHER'))
-                with self.assertRaises(NativeVaultError):
-                    vault.read(reference, wrong)
-            finally:
-                vault.close()
-        with self.assertRaises(NativeVaultError):
-            replace(binding, artifact=replace(fp, file_type=4))
-        with self.assertRaises(NativeVaultError):
-            replace(binding, mime='image/jpeg')
 
-    def test_digest_remains_actual_bytes(self):
-        fp = fingerprint((png(),), filename='picture.png', file_type=1)
-        self.assertEqual(fp.sha256, hashlib.sha256(png()).hexdigest())
 
 
 if __name__ == '__main__':

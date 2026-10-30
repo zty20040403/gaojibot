@@ -11,7 +11,7 @@ import time
 
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.message_ir import MediaNode, MessageBody, TextNode, body_to_json
-from .control_receipts import ControlEvidenceError, control_id_for_delivery, delivery_authorized, sync_control_terminal
+from .binding import control_for_delivery, control_authorized
 from .protected_payload import envelope_for_wire, validate_content
 from .protected_plans import ProtectedBinding, protected_rendered, load_protected_ref, binding_for
 from .identity_store import snapshot
@@ -50,6 +50,7 @@ class OfficialSendStore:
         self.mention_authority = mention_authority or (lambda cursor, endpoint: frozenset())
         self.max_wait_seconds = max_wait_seconds
         self.protected_payloads, self.approval_authority, self.source_guard = protected_payloads, approval_authority, source_guard
+        self.file_authority = None
         self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
@@ -143,6 +144,9 @@ class OfficialSendStore:
             if manifest.get("v") != 1 or manifest.get("source_native_message_id") != row["reply_to_native_message_id"]:
                 raise OutboxInvariantError("delivery_manifest_conflict")
             if 'media' in manifest:
+                from .file_authority import assert_file_current
+                assert_file_current(cursor, token=token, artifact_id=manifest['artifact_id'],
+                    admission=self.admission, now=now, plan_id=row['plan_id'], source_authority=self.file_authority)
                 return {'msg_type': 7, 'media': manifest['media']}
             rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
                 allowed_mentions=self.mention_authority(cursor, endpoint), max_chars=20000, max_parts=16)
@@ -199,11 +203,8 @@ class OfficialSendStore:
             endpoint = EndpointKey.parse(row['endpoint_key'])
             actor = ActorKey.parse(row['requester_actor_key'])
             route = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
-            try:
-                authorized = ((row['attempts'] > 0 or delivery_authorized(cursor, token, row, now)) if control_id_for_delivery(cursor, row)
-                    else self.admission(cursor, endpoint, actor))
-            except ControlEvidenceError:
-                authorized = False
+            control = control_for_delivery(cursor, row)
+            authorized = control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor)
             if row['purpose'] == 'approval_otp':
                 authorized = authorized and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now)
             if not authorized or route['membership_state'] != 'present' or route['binding_state'] == 'revoked':
@@ -241,17 +242,12 @@ class OfficialSendStore:
             if row['purpose'] == 'approval_otp' and row['attempts'] == 0:
                 self.approval_authority.bind_attempt(cursor, token=token, delivery=row,
                     attempt_id=claimed.current_attempt_id, now=now)
-            control = control_id_for_delivery(cursor, row)
-            if control and row['attempts'] == 0:
-                cursor.execute("UPDATE qq_official_control_decisions SET state='attempted',attempt_id=?,updated_at=? WHERE control_id=?",
-                    (claimed.current_attempt_id, now, control))
             return SendReservation(delivery_id, claimed.current_attempt_id, claimed.attempts, token.epoch,
                 endpoint, wire, wire_digest, now + 30, row['payload_mode'])
 
     def _finish(self, cursor, token, row, status, reason, now):
         cursor.execute('UPDATE deliveries SET status=?,wait_reason=?,last_error=?,lease_until=NULL,updated_at=? WHERE delivery_id=?',
             (status, reason or None, '' if row['payload_mode']=='ephemeral' else reason, now, row['delivery_id']))
-        sync_control_terminal(cursor, token, row['delivery_id'], now)
         return SendOutcome(status, reason, row['delivery_id'])
 
     def fail(self, token, delivery_id, reason, *, reservation=None, error=None, retry=False, plain=False):
@@ -280,7 +276,6 @@ class OfficialSendStore:
         from .send_ledger import finalize_receipt
         with self.deliveries.transaction() as cursor:
             result = finalize_receipt(cursor, token=token, receipt_id=receipt_id, ledger=ledger, journal=journal, now=int(self.clock()))
-            sync_control_terminal(cursor, token, result.delivery_id, int(self.clock()))
             return result
 
     def recover(self, token):

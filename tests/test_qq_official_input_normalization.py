@@ -18,7 +18,7 @@ from tests.test_qq_official_inbox import OfficialInboxTests
 
 from src.plugins.ai_chat.adapters.qq_official.commands import route_command
 from src.plugins.ai_chat.adapters.qq_official.input_normalization import normalize_input
-from tests.test_qq_official_commands import RouterTests, inbound, require_control_schema
+from tests.test_qq_official_commands import RouterTests, inbound
 
 
 def _router_fixture(cls=RouterTests):
@@ -115,7 +115,6 @@ class IngressNormalizationTests(OfficialInboxTests):
     # Reuse fixture methods without duplicating its broad test suite.
     def setUp(self):
         super().setUp()
-        require_control_schema(self)
         self.ingest = official_module('ingest')
         self.ledger = MessageLedger(self.database)
         self.addCleanup(self.ledger.close)
