@@ -111,7 +111,7 @@ class OfficialTurnPlatform:
     capabilities = OutboundCapabilities(text=True, mention="native", max_native_media=0)
     features = PlatformFeatures(markdown=True)
     stream_enabled = False
-    progress_enabled = False
+    progress_enabled = True
 
     def __init__(self, inbound: InboundMessage, *, execution: ExecutionBinding,
                  outbox, database_calls, transport_state, capability_evidence=None,
@@ -128,6 +128,13 @@ class OfficialTurnPlatform:
             raise PlatformBoundaryError("turn_binding_mismatch")
         self.account, self.endpoint, self.inbound = inbound.endpoint.account, inbound.endpoint, inbound
         self.execution, self.outbox, self._calls = execution, outbox, database_calls
+        from .progress import ProgressContext, ProgressEmitter
+        def current_progress(cursor, now):
+            row = execution.current(cursor, now)
+            if row["state"] != "executing":
+                raise PlatformBoundaryError("progress_execution_unavailable")
+            return ProgressContext("execution:" + handle.execution_id, handle.endpoint, handle.actor,
+                handle.scope_key, handle.deadline_at, handle.source_native_message_id, handle.canonical_message_id)
         self._transport_state, self._clock = transport_state, clock
         self._capability_evidence = capability_evidence
         self._membership_evidence = membership_evidence or (lambda *_: ())
@@ -138,6 +145,9 @@ class OfficialTurnPlatform:
         if (outbox.allow_newer_windows != self.policy.allow_newer_windows
                 or outbox.allow_proactive_probe != self.policy.allow_proactive_probe):
             raise PlatformBoundaryError("outbox_policy_mismatch")
+        self.progress = ProgressEmitter(token=execution.token, outbox=outbox,
+            current=current_progress, database_calls=database_calls, wake=sender_wake,
+            reserve_final_slots=self.policy.max_parts)
 
     def _endpoint(self, endpoint):
         if endpoint != self.endpoint:
@@ -288,7 +298,7 @@ class OfficialTurnPlatform:
                 return SendOutcome("failed", reason="delivery_expired")
             rendered = render_plan(frozen, self.endpoint, markdown=self.policy.markdown,
                 max_chars=self.policy.max_chars, max_parts=self.policy.max_parts, max_bytes=self.policy.max_bytes,
-                allowed_mentions=self._mentions(cursor, now))
+                allowed_mentions=self._mentions(cursor, now), paragraphs=True)
             if rendered.status != "ready":
                 return SendOutcome("failed", reason="needs_attachment")
             handle = self.execution.handle

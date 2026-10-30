@@ -24,10 +24,10 @@ class TaskPlatform:
     features = PlatformFeatures()
     capabilities = OutboundCapabilities(text=False)
     stream_enabled = False
-    progress_enabled = False
-
-    def __init__(self, endpoint):
+    def __init__(self, endpoint, progress=None):
         self.endpoint, self.account = endpoint, endpoint.account
+        self.progress = progress
+        self.progress_enabled = progress is not None
 
     async def ready(self, endpoint):
         if endpoint != self.endpoint:
@@ -133,6 +133,24 @@ class OfficialSubAgentService:
         except Exception:
             raise JobDeferred("official_subagent_context_unavailable", 3) from None
 
+    def _progress_for(self, job, task):
+        from .progress import ProgressContext, ProgressEmitter
+        from ...platform_types import EndpointKey, ActorKey
+        def current(cursor, now):
+            binding, row = assert_current(cursor, token=self.token, task_id=task.task_id,
+                now=now, admission=self.runtime.store.admitted, job=job,
+                migration_authority=self.migration_authority,
+                project_authority=self.projects.assert_current if self.projects is not None else None)
+            if row["status"] in {"completed", "partial", "failed", "cancelled"}:
+                raise LeaseLost("progress_task_unavailable")
+            return ProgressContext("task:" + str(task.task_id) + ":1",
+                EndpointKey.parse(binding["endpoint_key"]), ActorKey.parse(binding["requester_actor_key"]),
+                row["scope_key"], binding["execution_deadline_at"],
+                binding["source_native_message_id"] or "", binding["source_canonical_message_id"])
+        return ProgressEmitter(token=self.token, outbox=self.runtime.outbox, current=current,
+            database_calls=self.runtime._calls,
+            wake=lambda: self.runtime.sender.wake() if self.runtime.sender is not None else None)
+
     async def _prepare_tool_session(self, job, task, files_enabled):
         # Invoked by the dispatcher only while its actual job fence is active.
         def selected_profile():
@@ -141,14 +159,19 @@ class OfficialSubAgentService:
                     (task.task_id,)).fetchone()
                 return row['tool_profile'] if row else None
         selected = await self.runtime._calls(selected_profile)
+        progress = self._progress_for(job, task)
         if selected == 'official-projects-v1':
             if self.projects is None:
                 raise JobDeferred('official_project_context_unavailable', 30)
-            return await self.projects.prepare(job,task,files_enabled)
+            session = await self.projects.prepare(job,task,files_enabled)
+            session.progress = progress
+            return session
         if selected == 'official-host-v1':
             if self.approval is None or self.approval.host_session_factory is None:
                 raise JobDeferred('official_host_context_unavailable', 3)
-            return await self.approval.host_session_factory(job, task, files_enabled)
+            session = await self.approval.host_session_factory(job, task, files_enabled)
+            session.progress = progress
+            return session
         inbound, objective = await self.runtime._calls(self._restore, job)
         capabilities = {"self", "context"}
         if self.app.long_term_memory is not None:
@@ -159,7 +182,7 @@ class OfficialSubAgentService:
             capabilities=frozenset(capabilities),
             inbound=inbound if isinstance(inbound, InboundMessage) else None,
             background_source=inbound if isinstance(inbound, BackgroundToolSource) else None,
-            platform=TaskPlatform(inbound.endpoint))
+            platform=TaskPlatform(inbound.endpoint, progress=progress))
         file_session = None
         try:
             if files_enabled:
@@ -185,7 +208,7 @@ class OfficialSubAgentService:
             return TaskToolSession(definitions, execute_tool,
                 hooks=file_session.hooks if file_session is not None else None,
                 close=file_session.close if file_session is not None else None,
-                files_enabled=file_session is not None)
+                files_enabled=file_session is not None, progress=progress)
         except BaseException:
             if file_session is not None:
                 await file_session.close()

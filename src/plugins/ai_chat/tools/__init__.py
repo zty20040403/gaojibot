@@ -79,10 +79,11 @@ def _neutral_registry() -> ToolRegistry:
     from .projects import HANDLERS as PROJECT_HANDLERS
 
     from .native_reminders import HANDLERS as NATIVE_REMINDER_HANDLERS
+    from .progress import HANDLERS as PROGRESS_HANDLERS
 
     migrated = {handler.definition["function"]["name"]: handler
                 for handler in (*ALERT_HANDLERS, *CONTEXT_HANDLERS, *RECENT_SPEAKERS_HANDLERS, *NATIVE_REMINDER_HANDLERS, *MEMORY_HANDLERS,
-                                *SOURCE_HANDLERS, *STICKER_HANDLERS, *OWNED_SANDBOX_HANDLERS, *PROJECT_HANDLERS)
+                                *SOURCE_HANDLERS, *STICKER_HANDLERS, *OWNED_SANDBOX_HANDLERS, *PROJECT_HANDLERS, *PROGRESS_HANDLERS)
                 if handler.platform_neutral}
     return ToolRegistry((migrated.get(definition["function"]["name"])
                          or FunctionTool(definition, _unavailable, _reject)

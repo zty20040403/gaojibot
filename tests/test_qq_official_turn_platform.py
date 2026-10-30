@@ -231,7 +231,7 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
         self.f.query("UPDATE qq_official_endpoints SET capability_revision=2")
         self.assertFalse((await self.platform.effective_capabilities(self.f.endpoint)).allows("markdown",self.f.now))
         self.assertFalse(self.platform.stream_enabled)
-        self.assertFalse(self.platform.progress_enabled)
+        self.assertTrue(self.platform.progress_enabled)
         self.assertFalse(await self.platform.recall(self.f.endpoint,"TEST_MESSAGE"))
 
     async def test_unverified_new_window_policy_cannot_be_enabled_implicitly(self):

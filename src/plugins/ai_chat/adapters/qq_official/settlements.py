@@ -45,7 +45,7 @@ def cancel_before_invocation(cursor, *, token, reservation, now, reason="request
     settle_send_policy(cursor, token=token, attempt_id=reservation.attempt_id, result="proven_unsent", now=now)
     cursor.execute("""UPDATE delivery_attempts SET state='cancelled_unsent',acceptance='confirmed_no',finished_at=?
         WHERE attempt_id=? AND state IN ('reserved','dispatched')""", (now, reservation.attempt_id))
-    state = "cancelled" if row["payload_mode"] == "ephemeral" or control_id_for_delivery(cursor, row) is not None or row["expires_at"] <= now else "pending"
+    state = "cancelled" if row["payload_mode"] == "ephemeral" or row["purpose"] == "progress" or control_id_for_delivery(cursor, row) is not None or row["expires_at"] <= now else "pending"
     cursor.execute("""UPDATE deliveries SET status=?,wait_reason=?,next_attempt_at=?,lease_until=NULL,
         updated_at=? WHERE delivery_id=? AND current_attempt_id=?""",
         (state, reason, now + 1, now, reservation.delivery_id, reservation.attempt_id))
@@ -76,7 +76,7 @@ def settle_failure(cursor, *, token, reservation, error, now, frozen_plain_diges
     retry_at = now
     auth_used, transient_used = row["auth_retries_used"], row["transient_retries_used"]
     switch_plain = False
-    if not ephemeral and control_id_for_delivery(cursor, row) is None and not unknown:
+    if not ephemeral and row["purpose"] != "progress" and control_id_for_delivery(cursor, row) is None and not unknown:
         if row["payload_mode"] == "persistent" and fallback.action == "select_frozen_plain_once":
             retry, switch_plain = True, True
         elif policy.action == "refresh_token_once":
@@ -128,7 +128,7 @@ def settle_failure(cursor, *, token, reservation, error, now, frozen_plain_diges
     return SendOutcome(state, reason, reservation.delivery_id, retry_at if state == "pending" else None)
 
 
-def recover_account_sends(cursor, *, token, now):
+def recover_account_sends(cursor, *, token, now, live_progress=()):
     """Restart recovery never equates a reserved intent with proof of no send."""
     assert_epoch(cursor, token)
     receipt_ids = tuple(row["receipt_id"] for row in cursor.execute("""SELECT r.receipt_id FROM delivery_receipts r
@@ -145,6 +145,14 @@ def recover_account_sends(cursor, *, token, now):
         sync_control_terminal(cursor, token, row["delivery_id"], now)
     cursor.execute("""UPDATE deliveries SET status='cancelled',wait_reason='ephemeral_payload_lost',updated_at=?
         WHERE account_key=? AND payload_mode='ephemeral' AND status='pending'""", (now, token.account_key))
+    # Current-process emissions may have been queued just before sender.start.
+    # A fresh process has no such host capabilities and cancels every unsent
+    # progress plan. Unknown/sending rows remain governed by attempt evidence.
+    keep = tuple(live_progress)
+    extra = " AND plan_id NOT IN (" + ",".join("?" for _ in keep) + ")" if keep else ""
+    cursor.execute("UPDATE deliveries SET status='cancelled',wait_reason='ephemeral_payload_lost',updated_at=? "
+        "WHERE account_key=? AND purpose='progress' AND status='pending'" + extra,
+        (now, token.account_key, *keep))
     cursor.execute("""UPDATE deliveries SET status='cancelled',wait_reason='delivery_expired',updated_at=?
         WHERE account_key=? AND status='pending' AND expires_at<=?""", (now, token.account_key, now))
     return receipt_ids

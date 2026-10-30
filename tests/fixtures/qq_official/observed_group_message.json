@@ -1,0 +1,31 @@
+{
+  "op": 0,
+  "t": "GROUP_MESSAGE_CREATE",
+  "s": 2,
+  "id": "event_74ac94fb622fe937",
+  "d": {
+    "author": {
+      "member_openid": "actor_31840e836296ab48",
+      "nickname": "测试发言者",
+      "member_role": "admin",
+      "bot": false
+    },
+    "id": "message_d54956e628a61c8b",
+    "group_openid": "group_010fa3eec0bbbd40",
+    "content": "已脱敏消息文本",
+    "timestamp": "2000-01-01T00:00:00Z",
+    "message_type": 0,
+    "mentions": [
+      {
+        "is_you": true,
+        "id": "actor_f9436d675f96568f",
+        "member_openid": "actor_f9436d675f96568f"
+      }
+    ],
+    "message_scene": {
+      "ext": [
+        "msg_idx=reference_d1fce1e219b5d48d"
+      ]
+    }
+  }
+}

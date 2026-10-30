@@ -16,6 +16,7 @@ from src.plugins.ai_chat.agent.control import JobFence, LeaseLost, active_job_fe
 from src.plugins.ai_chat.agent.task_identity import object_owner, require_same_owner, StructuredTaskOwner
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch, LeaseLost as AccountLeaseLost
 from .keys import account_job_kind
+from .host_tools import HOST_TOOLS
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_to_json, body_from_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
@@ -25,10 +26,9 @@ from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 
 TERMINAL = frozenset({'completed', 'partial', 'failed', 'cancelled'})
 TEXT_TOOLS = frozenset({'context_search', 'context_expand', 'get_message_by_id',
-    'search_messages', 'memory_list', 'web_search', 'inspect_source', 'use_skill'})
+    'search_messages', 'memory_list', 'web_search', 'inspect_source', 'use_skill', 'say'})
 FILE_TOOLS = frozenset({'sandbox_create', 'sandbox_list', 'sandbox_destroy', 'sandbox_exec',
     'sandbox_write_file', 'sandbox_read_file', 'send_file_from_sandbox'})
-HOST_TOOLS = frozenset({'operation_prepare','operation_status','operation_approve'})
 FILE_ROLES = frozenset({'researcher', 'analyst', 'coder', 'document'})
 
 
@@ -224,7 +224,15 @@ def freeze_and_enqueue(cursor, *, token, task_id, now, outbox, admission, job=No
         cursor.execute('''UPDATE qq_official_subagent_dispatches
             SET suppressed_reason='result_expired',updated_at=? WHERE task_id=?''', (now, task_id))
         return None
-    rendered = render_plan(body, endpoint, allowed_mentions=frozenset())
+    rendered = render_plan(body, endpoint, allowed_mentions=frozenset(),
+                           paragraphs=True, paragraph_parts=3)
+    if rendered.status != 'ready':
+        # Commit the complete result and its first absolute deadline even when
+        # no wire plan can represent it. Retrying may not refreeze/extend it or
+        # send a truncated prefix; the owner's task status exposes this result.
+        cursor.execute('''UPDATE qq_official_subagent_dispatches
+            SET suppressed_reason='result_needs_attachment',updated_at=? WHERE task_id=?''', (now, task_id))
+        return None
     source_proof = (migration_authority.enqueue_proof(cursor, binding=binding, job=job, now=now)
         if binding.get('migration_item_id') is not None else None)
     ref = outbox.enqueue(token, rendered=rendered, requester=actor,
@@ -327,6 +335,7 @@ class TaskToolSession:
     files_enabled: bool = False
     host_enabled: bool = False
     project_enabled: bool = False
+    progress: object = None
 
 
 @dataclass
@@ -406,7 +415,12 @@ class OfficialSubAgentDispatcher:
                     allowed = TEXT_TOOLS | FILE_TOOLS if files_enabled else TEXT_TOOLS
                     if host_enabled:
                         allowed |= HOST_TOOLS
-                    tools = tuple(t for t in (session.tools if session else self.tools)
+                    progress = session.progress if session is not None else None
+                    session_tools = session.tools if session is not None else self.tools
+                    if progress is not None:
+                        from ...ai_tools import SAY_TOOL
+                        session_tools = (*[t for t in session_tools if t['function']['name'] != 'say'], SAY_TOOL)
+                    tools = tuple(t for t in session_tools
                                   if t['function']['name'] in allowed)
                     saved_profile = self.coordinator.store.control(task_id)['dispatch'].get('profile')
                     profile = self.profile(saved_profile) if callable(self.profile) else self.profile
@@ -417,6 +431,10 @@ class OfficialSubAgentDispatcher:
                         await self.database_calls(owned)
                         if name not in allowed or name not in {t['function']['name'] for t in tools}:
                             return '{"ok":false,"error":"tool_unavailable"}'
+                        if name == "say":
+                            if progress is None:
+                                return '{"ok":false,"status":"suppressed","reason":"progress_unavailable"}'
+                            return json.dumps(await progress.say(args.get("text")), ensure_ascii=False)
                         executor = session.execute_tool if session else self.execute_tool
                         if executor is None:
                             return '{"ok":false,"error":"tool_unavailable"}'
@@ -426,7 +444,7 @@ class OfficialSubAgentDispatcher:
                         await self.coordinator.resume(task_id, scope_key=task.scope_key,
                             requester_user_id=None, endpoint=task.endpoint,
                             requester_actor=task.requester_actor, selected_profile=profile,
-                            tools=tools, execute_tool=execute_tool, progress=None,
+                            tools=tools, execute_tool=execute_tool, progress=progress.report if progress is not None else None,
                             hooks=session.hooks if session else None)
 
             if (self.coordinator.store.get(task_id).status == 'waiting_external'
@@ -444,10 +462,16 @@ class OfficialSubAgentDispatcher:
 
             def finish():
                 with self.transaction() as cursor:
-                    return freeze_and_enqueue(cursor, token=self.token, task_id=task_id,
+                    plan_id = freeze_and_enqueue(cursor, token=self.token, task_id=task_id,
                         now=int(self.clock()), outbox=self.outbox, admission=self.admission, job=job, migration_authority=self.migration_authority, project_authority=self.project_authority)
-            plan_id = await self.database_calls(finish)
-            return {'task_id': task_id, 'plan_id': plan_id}
+                    result = {'task_id': task_id, 'plan_id': plan_id}
+                    if plan_id is None:
+                        row = cursor.execute('''SELECT suppressed_reason FROM qq_official_subagent_dispatches
+                            WHERE task_id=?''', (task_id,)).fetchone()
+                        if row['suppressed_reason'] == 'result_needs_attachment':
+                            result.update(delivery_status='not_sent', reason='result_needs_attachment')
+                    return result
+            return await self.database_calls(finish)
         except LeaseLost:
             return await self.authority_lost(job)
         except asyncio.CancelledError:

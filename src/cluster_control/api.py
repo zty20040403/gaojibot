@@ -452,7 +452,7 @@ def create_app(
                     raise ValueError("Use ops_catalog and ops_call for upstream service preconditions; custom checks cannot be silently dropped")
                 result = await management.call(body.operation.replace("service.", "units."),
                     {"host": body.host_id, "unit": body.resource_ref}, actor=actor, origin=origin,
-                    idempotency_key=body.idempotency_key)
+                    idempotency_key=body.idempotency_key, deadline_at=body.deadline_at)
                 return result["operation"]
             return await asyncio.to_thread(
                 execution_service().prepare_operation,

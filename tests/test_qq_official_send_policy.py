@@ -165,12 +165,12 @@ class OfficialSendPolicyTests(unittest.TestCase):
             row=cursor.execute('SELECT next_seq,reserved_count,used_count FROM qq_official_reply_windows').fetchone()
             self.assertEqual(tuple(row.values()),(6,5,0))
 
-    def test_background_keeps_final_slot_and_progress_is_suppressed(self):
+    def test_background_and_progress_keep_final_slot(self):
         with self.tx() as cursor:
             self.window(cursor,used_count=3,next_seq=4)
             for purpose in ('background_result','unsolicited'):
                 self.assertEqual(self.check(cursor,purpose=purpose).reason,'waiting_reply_window')
-            self.assertEqual(self.check(cursor,purpose='progress').reason,'progress_suppressed')
+            self.assertEqual(self.check(cursor,purpose='progress').reason,'waiting_reply_window')
             choice=self.check(cursor)
             self.assertEqual(choice.msg_seq,4)
             self.reserve(cursor,choice)

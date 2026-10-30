@@ -150,7 +150,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content,tool_calls=calls))],usage=None)
         return complete
 
-    async def test_real_asr_forward_emoji_tools_finish_in_single_m3_message(self):
+    async def test_real_asr_forward_emoji_tools_finish_in_ordered_m3_parts(self):
         complete=self.completion([('transcribe_voice',{}),('view_forward',{}),('send_forward_summary',{}),
                                   ('send_qq_face',{'expression':'306'})])
         with patch('src.plugins.ai_chat.agent_loop._create_completion',new=complete):
@@ -161,14 +161,39 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                                   'asr_refer_text':'TEST attributed ASR'}],
                     msg_elements=[{'content':'TEST forward first','author':{'user_openid':'TEST_UNVERIFIED_AUTHOR'}},
                                   {'content':'TEST forward second','msg_elements':[{'content':'TEST nested'}]}])
-                await self.complete('TEST_MEDIA_VOICE')
-                self.assertEqual(len(fake.received),1)
-                wire=fake.received[0]['payload']['markdown']['content']
-                self.assertIn('[表情306]',wire);self.assertIn('TEST forward first',wire)
-                self.assertIn('TEST nested',wire);self.assertNotIn('TEST_UNVERIFIED_AUTHOR',wire)
+                # A paragraph reply is complete only after every frozen part
+                # commits; the shared helper intentionally waits for one part.
+                rows=await self.wait_db('''SELECT p.plan_id,p.part_count,p.manifest_json,
+                    d.part_index,d.status FROM qq_official_inbound_events i
+                    JOIN qq_official_turn_executions x ON x.inbox_id=i.inbox_id
+                    JOIN delivery_plans p ON p.plan_id=x.plan_id
+                    JOIN deliveries d ON d.plan_id=p.plan_id
+                    WHERE i.native_message_id=? ORDER BY d.part_index''',('TEST_MEDIA_VOICE',),
+                    predicate=lambda rows: bool(rows) and len(rows)==rows[0]['part_count']
+                    and all(row['status']=='committed' for row in rows))
+                frozen=json.loads(json.loads(rows[0]['manifest_json'])['rendered'])['parts']
+                self.assertEqual([row['part_index'] for row in rows],[0,1,2])
+                self.assertEqual([part['index'] for part in frozen],[0,1,2])
+                payloads=[message['payload'] for message in fake.received]
+                wires=[payload['markdown']['content'] for payload in payloads]
+                self.assertEqual(wires,[part['markdown_content'] for part in frozen])
+                self.assertEqual([payload['msg_seq'] for payload in payloads],[1,2,3])
+                self.assertEqual([payload['msg_id'] for payload in payloads],['TEST_MEDIA_VOICE']*3)
+                forward='\n'.join([
+                    '1. 未提供署名（转发署名，未验证身份）','TEST forward first',
+                    '2. 未提供署名（转发署名，未验证身份）','TEST forward second',
+                    '  3. 未提供署名（转发署名，未验证身份）','TEST nested'])
+                self.assertEqual([part['canonical_text'] for part in frozen],
+                                 ['TEST final',forward,'[表情306]'])
+                self.assertNotIn('TEST_UNVERIFIED_AUTHOR','\n\n'.join(wires))
                 self.assertIn('TEST attributed ASR',str(self.model_calls[-1]['messages']))
                 self.assertFalse(self.downloads or self.vision_calls)
-                self.assertTrue(self.query('SELECT * FROM delivery_receipts WHERE applied_at IS NOT NULL'))
+                receipts=self.query('''SELECT d.part_index FROM delivery_receipts r
+                    JOIN delivery_attempts a ON a.attempt_id=r.attempt_id
+                    JOIN deliveries d ON d.delivery_id=a.delivery_id
+                    WHERE d.plan_id=? AND r.applied_at IS NOT NULL ORDER BY d.part_index''',
+                    (rows[0]['plan_id'],))
+                self.assertEqual([receipt['part_index'] for receipt in receipts],[0,1,2])
                 await runtime.stop()
 
     async def test_real_ocr_document_tools_charge_usage_and_original_model_gateway(self):
