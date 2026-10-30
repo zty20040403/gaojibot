@@ -14,9 +14,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import inspect
+import logging
 import math
 import random as random_module
 import time
+import traceback
 from typing import Any
 
 import aiohttp
@@ -25,6 +27,7 @@ from .credentials import validate_gateway_url
 from .errors import QQAPIError
 
 GROUP_AND_C2C = 1 << 25
+logger = logging.getLogger(__name__)
 
 
 class GatewayError(Exception):
@@ -548,8 +551,12 @@ class GatewayConnection:
                     raise
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     # Network/HTTP details may contain credential-bearing URLs.
+                    frames = " > ".join(
+                        f"{frame.name}:{frame.lineno}"
+                        for frame in traceback.extract_tb(exc.__traceback__)[-6:])
+                    logger.warning("QQ gateway failed: %s at %s", type(exc).__name__, frames)
                     failure = GatewayDisconnected(1006)
                 if self._stop.is_set():
                     break
@@ -557,6 +564,8 @@ class GatewayConnection:
                     self.last_close_code = failure.code
                     policy = classify_close_code(failure.code)
                 self.reason = policy.reason
+                logger.info("QQ gateway reconnect: reason=%s close_code=%s attempt=%s",
+                            policy.reason, self.last_close_code, attempts)
                 self.message_gap = self.message_gap or policy.gap
                 if policy.action == "stop":
                     break
