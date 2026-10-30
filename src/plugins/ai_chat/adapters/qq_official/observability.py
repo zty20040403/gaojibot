@@ -164,7 +164,7 @@ class OfficialObservability:
             'queue_limit':_count(health.get('dispatch_queue_limit'))}
         sender=getattr(runtime,'sender',None)
         value['sender']={'running':getattr(sender,'_running',False) is True and not getattr(sender,'_stopping',False),
-            'active':len(getattr(sender,'_active',())), 'rate_waiters':len(getattr(sender,'_rate_waiters',())),
+            'active':len(getattr(sender,'_workers',())), 'rate_waiters':len(getattr(sender,'_rate_waiters',())),
             'unrecorded':len(getattr(sender,'_unrecorded',()))}
         healthy=(current and health.get('state')=='ready' and not health.get('message_gap')
             and value['sender']['running'] and getattr(sender,'reason',None)=='ready'

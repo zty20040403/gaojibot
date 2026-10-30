@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.bot_storage import DatabaseCalls
@@ -95,6 +96,32 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
             (secrets.token_hex(16), self.account.key, endpoint.key,
              'GROUP_AT_MESSAGE_CREATE' if endpoint.kind=='group' else 'C2C_MESSAGE_CREATE', message,
              self.now,self.now,self.now))
+
+    async def test_health_tracks_real_sender_start_delivery_and_shutdown(self):
+        from prometheus_client import CollectorRegistry
+        from src.plugins.ai_chat.adapters.qq_official.observability import OfficialObservability
+        runtime = SimpleNamespace(config=SimpleNamespace(enabled=True), _token=self.token,
+            _stopping=False, store=SimpleNamespace(transaction=self.tx), _calls=self.calls,
+            _gateway=SimpleNamespace(health={'state':'ready'}), sender=self.sender)
+        health = OfficialObservability(SimpleNamespace(official_runtime=runtime),
+            registry=CollectorRegistry(), clock=lambda: self.now)
+        runner = None
+        try:
+            self.assertFalse((await health.sample())['healthy'])
+            delivery = self.enqueue()
+            runner = asyncio.create_task(self.sender.run())
+            await self.eventually(lambda: self.sender._running)
+            self.assertTrue((await health.sample())['healthy'])
+            outcome = await self.sender.send_delivery(delivery)
+            self.assertEqual(outcome.status, 'committed')
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+            self.assertEqual((await health.sample())['reason'], 'sender_unavailable')
+        finally:
+            if runner is not None:
+                runner.cancel()
+                await asyncio.gather(runner, return_exceptions=True)
+            await health.close()
 
     async def test_default_proactive_delivers_after_five_minutes_and_records_reference(self):
         self.now += 400
