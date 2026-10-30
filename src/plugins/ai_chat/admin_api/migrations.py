@@ -76,6 +76,7 @@ class TransitionRequest(StrictRequest):
     preview_digest: str=Field(pattern=r'^[a-f0-9]{64}$')
     activity_id: str | None=Field(default=None,pattern=r'^[a-f0-9]{32}$')
     finish: bool=False
+    deadline: int | None=Field(default=None,ge=1,le=2**63-1)
 
 
 def create_router(context: AdminRouteContext):
@@ -164,6 +165,7 @@ def create_router(context: AdminRouteContext):
     async def transition(migration_id:str,request:Request,body:TransitionRequest):
         if ((body.action=='quarantine')!=(body.activity_id is not None)
                 or 'finish' in body.model_fields_set and body.action!='rollback'
+                or 'deadline' in body.model_fields_set and (body.action!='refresh' or body.deadline is None)
                 or 'activity_id' in body.model_fields_set and body.action!='quarantine'):
             raise HTTPException(422,'Invalid transition fields')
         payload={'migration_id':identity(migration_id)}
@@ -171,6 +173,8 @@ def create_router(context: AdminRouteContext):
             payload['activity_id']=body.activity_id
         if body.action=='rollback':
             payload['finish']=body.finish
+        if body.action=='refresh' and body.deadline is not None:
+            payload['deadline']=body.deadline
         return await mutate(request,body.action,payload,body.preview_digest)
 
     return router

@@ -87,6 +87,30 @@ class MigrationConsoleTests(JournalFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post(self.path,json=self.plan_request())).status_code,404)
         self.assertEqual(0,self.query('SELECT count(*) FROM migration_journals')[0][0])
 
+    async def test_admin_reschedules_expired_unfrozen_plan_with_new_review(self):
+        response=await self.client.post(self.path,json={**self.plan_request(),'items':[],'deadline':self.now+10})
+        self.assertEqual(response.status_code,200,response.text)
+        plan=response.json();path=self.path+'/'+plan['migration_id']+'/actions'
+        original=self.query('SELECT deadline FROM migration_journals')[0][0]
+        self.now+=11
+        body=dict(action='refresh',preview_digest=plan['preview_digest'])
+        self.assertEqual((await self.client.post(path,json=body)).status_code,409)
+        for deadline in (True,None,self.now,self.now+86401):
+            self.assertIn((await self.client.post(path,json={**body,'deadline':deadline})).status_code,(409,422))
+        request={**body,'deadline':self.now+500}
+        self.assertEqual((await self.client.post(path,json=request,headers={'x-csrf-token':'WRONG'})).status_code,403)
+        response=await self.client.post(path,json=request)
+        self.assertEqual(response.status_code,200,response.text)
+        refreshed=response.json();self.assertNotEqual(refreshed['preview_digest'],plan['preview_digest'])
+        self.assertEqual(self.query('SELECT deadline FROM migration_journals')[0][0],self.now+500)
+        old=self.query('SELECT preview_json FROM migration_preview_revisions ORDER BY revision')[0][0]
+        import json
+        self.assertEqual(json.loads(old)['deadline'],original)
+        self.assertEqual((await self.client.post(path,json=dict(action='freeze',preview_digest=plan['preview_digest']))).status_code,409)
+        self.assertEqual((await self.client.post(path,json=dict(action='freeze',preview_digest=refreshed['preview_digest']))).status_code,200)
+        self.assertEqual((await self.client.post(path,json={**request,'preview_digest':refreshed['preview_digest']})).status_code,409)
+
+
     async def test_mapping_put_and_revoke_real_versions_no_query_overrides(self):
         body=mapping_request(selection=Selection(self.source,self.source_scope,self.endpoint),
             source_actor=self.source_actor,target_actor=self.actor,evidence_inbox_id=self.mapping_inbox,
