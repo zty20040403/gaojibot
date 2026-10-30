@@ -13,7 +13,7 @@ import re
 from src.bot_security.store import SecurityError, canonical
 from src.plugins.ai_chat.agent.control import JobFence, active_job_fence
 from src.plugins.ai_chat.platform_types import BackgroundToolSource
-from .approval_transport import HostAction, TaskPolicy, task_effect_scope
+from .approval import HostAction, TaskPolicy, task_effect_scope
 
 _PATH = re.compile(r'/v1/operations/(op_[a-f0-9]{32})(/approve)?')
 

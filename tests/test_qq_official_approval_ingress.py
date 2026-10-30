@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from src.plugins.ai_chat.adapters.qq_official.approval_runtime import OfficialApprovalService
+from src.plugins.ai_chat.adapters.qq_official.approval import OfficialApprovalService
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingReducer
 from src.plugins.ai_chat.adapters.qq_official.inbox import OfficialInboxStore
 from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
@@ -140,7 +140,7 @@ class ApprovalIngressTests(HostFixture):
         from unittest.mock import Mock
         from src.plugins.ai_chat.adapters.qq_official.runtime import OfficialRuntime
         from src.plugins.ai_chat.adapters.qq_official.config import OfficialConfig, LoadedOfficialConfig
-        from src.plugins.ai_chat.adapters.qq_official.approval_transport import ApprovalOtpSender
+        from src.plugins.ai_chat.adapters.qq_official.approval import ApprovalOtpSender
         from tests.test_qq_official_runtime import ControlledGateway
         opened=asyncio.Queue();created=[]
         @asynccontextmanager

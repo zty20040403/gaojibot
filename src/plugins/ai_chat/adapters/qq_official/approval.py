@@ -1,9 +1,4 @@
-"""Official transport for the existing SecurityStore approval state machine.
-
-Internal host ports only. These dataclasses do not authenticate a user, execution
-or model request. The source port must resolve real persisted handles and route
-proofs; its default denies. No operation queue or network client lives here.
-"""
+"""Owner private-code approval using the shared authorization store and sender."""
 from __future__ import annotations
 
 import hashlib
@@ -308,15 +303,8 @@ class OfficialApprovalTransport:
         if (not self.current(cursor,request) or request['expires_at']<=now
                 or not hmac.compare_digest(request['code_hash'],code_hasher(request,code))):
             return False
-        window = cursor.execute('''SELECT w.* FROM qq_official_reply_windows w
-            JOIN qq_official_endpoints e ON e.endpoint_key=w.endpoint_key
-            WHERE w.account_key=? AND w.endpoint_key=? AND w.credential_kind='msg_id'
-            AND w.state='active' AND w.expires_at>? AND w.endpoint_generation=e.generation
-            AND w.route_epoch=e.route_epoch AND w.used_count+w.reserved_count<w.max_replies
-            ORDER BY w.issued_at DESC,w.window_id LIMIT 1 FOR SHARE OF w''',
-            (self.token.account_key,request['official_endpoint_key'],now)).fetchone()
-        if window is None:
-            return False
+        window = cursor.execute("SELECT window_id FROM qq_official_reply_windows WHERE account_key=? AND endpoint_key=? ORDER BY received_at DESC LIMIT 1",
+            (self.token.account_key, request['official_endpoint_key'])).fetchone()
         rendered = self.render_code(request,code)
         if rendered.status!='ready' or len(rendered.parts)!=1:
             return False
@@ -325,9 +313,9 @@ class OfficialApprovalTransport:
             account_key,endpoint_key,actor_key,window_id,account_epoch,body_commitment,
             approval_expires_at,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
             (source_id,request['approval_id'],request['code_generation'],self.token.account_key,
-             request['official_endpoint_key'],request['official_actor_key'],window['window_id'],self.token.epoch,
+             request['official_endpoint_key'],request['official_actor_key'],window['window_id'] if window else None,self.token.epoch,
              self.body_commitment(source_id,request,rendered),request['expires_at'],now,
-             min(now+30,request['expires_at'],window['expires_at'])))
+             min(now+30,request['expires_at'])))
         return True
 
     def delivered(self,cursor,approval_id,generation,success,current):
@@ -376,14 +364,10 @@ class OfficialApprovalTransport:
         if token != self.token:
             denied()
         source, request = self._source(cursor,source_id,now=now)
-        window = cursor.execute('SELECT * FROM qq_official_reply_windows WHERE window_id=?',
-                                (source['window_id'],)).fetchone()
         endpoint = EndpointKey.parse(source['endpoint_key'])
         if (rendered.endpoint != endpoint or requester.key != source['actor_key']
                 or logical_key != 'approval_otp:'+source_id or source_scope_key != endpoint.scope.key
-                or expires_at != source['expires_at'] or window is None
-                or window['credential_value'] != source_native_message_id
-                or window['endpoint_key']!=endpoint.key or window['account_key']!=token.account_key
+                or expires_at != source['expires_at']
                 or not hmac.compare_digest(self.body_commitment(source_id,request,rendered),source['body_commitment'])):
             denied()
         return source
@@ -451,12 +435,10 @@ class ApprovalOtpSender:
                 denied()
             window=cursor.execute('SELECT * FROM qq_official_reply_windows WHERE window_id=?',
                                   (source['window_id'],)).fetchone()
-            if window is None:
-                denied()
             return self.sender.outbox.enqueue(self.transport.token,rendered=rendered,
                 requester=ActorKey.parse(source['actor_key']),logical_key='approval_otp:'+source['source_id'],
                 source_scope_key=rendered.endpoint.scope.key,expires_at=source['expires_at'],purpose='approval_otp',
-                source_native_message_id=window['credential_value'],transaction_cursor=cursor,
+                source_native_message_id=window['credential_value'] if window else '',transaction_cursor=cursor,
                 approval_source_id=source['source_id'])
 
     async def send_code(self,request,code,text):
@@ -497,3 +479,264 @@ def task_effect_scope(store, *, context, operation, target_id, arguments):
         transport.source_port.require_current(cursor,source=context.source,policy=context.policy,
             operation='execute',now=transport.now())
         yield cursor
+
+from dataclasses import dataclass,field
+
+from src.bot_security.service import approval_command
+from .input_normalization import normalize_input
+
+_VERBS={'确认':'confirm','confirm':'confirm','取消':'cancel','cancel':'cancel','重发':'resend','resend':'resend',
+        '复核':'review','review':'review','撤销复核':'revoke_review','审批状态':'status'}
+_EMBEDDED=re.compile(r'(?:^|[\s>])/?(?:确认|取消|重发|审批状态|复核|撤销复核|confirm|cancel|resend|review)\s+AP-',re.I)
+_ID=re.compile(r'AP-[0-9A-F]{12}')
+
+@dataclass(frozen=True)
+class ApprovalInput:
+ kind:str
+ text:str=field(default='',repr=False)
+ action:str='invalid'
+ approval_id:str|None=field(default=None,repr=False)
+ code:str=field(default='',repr=False)
+
+@dataclass(frozen=True)
+class ControlResult:
+ decision:str
+ duplicate:bool=False
+ # Only the post-commit runtime may hand these RAM fields to MobileAuthorization.
+ request:dict|None=field(default=None,repr=False)
+ code:str|None=field(default=None,repr=False)
+
+
+def prepare_approval_input(dispatch,endpoint):
+ normalized=normalize_input(dispatch)
+ if normalized.kind!='message': return ApprovalInput('none')
+ text=normalized.input_text
+ private=endpoint.kind=='private'
+ if not approval_command(text,private=private):
+  original=dispatch.message.content
+  if (_EMBEDDED.search(original) or re.fullmatch(r'[0-9]{6}',original.strip())
+      or re.fullmatch(r'(?:\s*<@[^>]{1,257}>){1,16}\s*[0-9]{6}\s*',original)):
+   return ApprovalInput('quarantine')
+  return ApprovalInput('none')
+ if not private: return ApprovalInput('quarantine')
+ if re.fullmatch(r'[0-9]{6}',text.strip()):return ApprovalInput('control',text,'confirm',code=text.strip())
+ parts=text.strip().lstrip('/').split()
+ action=_VERBS.get(parts[0].lower(),'invalid') if parts else 'invalid'
+ identifier=parts[1].upper() if len(parts)>1 else ''
+ if not _ID.fullmatch(identifier):return ApprovalInput('control',text)
+ if action=='confirm':
+  if len(parts)!=3 or not re.fullmatch(r'[0-9]{6}',parts[2]):return ApprovalInput('control',text)
+  return ApprovalInput('control',text,action,identifier,parts[2])
+ if len(parts)!=2:return ApprovalInput('control',text)
+ return ApprovalInput('control',text,action,identifier)
+
+
+def control_commitment(secret,*,inbox_id,endpoint,actor,command):
+ if not isinstance(secret,bytes) or len(secret)<32 or not isinstance(command,ApprovalInput) or command.kind!='control':
+  raise SecurityError('approval_control_invalid')
+ data=[inbox_id,endpoint.key,actor.key,command.text,command.action,command.approval_id,command.code]
+ return hmac.new(secret,b'approval-control-v1:'+canonical(data).encode(),hashlib.sha256).hexdigest()
+
+
+def apply_control(cursor,*,store,inbox_id,session_id,seq,command,now):
+ transport=store.transport
+ if transport is None:raise SecurityError('approval_control_unavailable')
+ transport.begin(cursor)
+ row=cursor.execute("SELECT endpoint_key,admin_control_actor_key FROM qq_official_inbound_events WHERE inbox_id=? AND account_key=?",
+   (inbox_id,transport.token.account_key)).fetchone()
+ if row is None:raise SecurityError('approval_source_unavailable')
+ recipient=Recipient(EndpointKey.parse(row['endpoint_key']),ActorKey.parse(row['admin_control_actor_key']))
+ prior=cursor.execute('SELECT decision FROM qq_official_admin_control_receipts WHERE inbox_id=?',(inbox_id,)).fetchone()
+ if prior:return ControlResult(prior['decision'],True)
+ result=ControlResult('denied')
+ associated=None
+ try:
+  with store.enlist(cursor):
+   # Same actual admin binding as console/bootstrap; C2C presence is not admin.
+   account=transport.account_for_recipient(cursor,recipient)
+   action=command.action
+   if action=='confirm':
+    request=store.confirm(command.approval_id,None,None,command.code,recipient=recipient)
+    associated=request['approval_id'];result=ControlResult('accepted')
+   elif action in {'review','resend'}:
+    function=store.request_review if action=='review' else store.resend
+    request,code=function(command.approval_id,None,None,recipient=recipient)
+    associated=request['approval_id'];result=ControlResult('sending' if code else 'status',request=request,code=code)
+   elif action in {'cancel','revoke_review'}:
+    function=store.cancel if action=='cancel' else store.revoke_review
+    function(command.approval_id,None,None,recipient=recipient)
+    associated=command.approval_id;result=ControlResult('cancelled')
+   elif action=='status':
+    request=store.get(command.approval_id,account['account_id'])
+    associated=request['approval_id'];result=ControlResult('status')
+ except (SecurityError,PermissionError):
+  # No raw exception/code/argument is persisted. Inner savepoints retain the
+  # original SecurityStore semantics, including committed failed-code counts.
+  result=ControlResult('denied')
+ cursor.execute('''INSERT INTO qq_official_admin_control_receipts
+   (inbox_id,account_key,endpoint_key,actor_key,source_session_id,source_seq,action,decision,approval_id,created_at)
+   VALUES (?,?,?,?,?,?,?,?,?,?)''',(inbox_id,transport.token.account_key,recipient.endpoint.key,recipient.actor.key,
+    session_id,seq,command.action,result.decision,associated,now))
+ return result
+
+
+import asyncio
+import inspect
+
+
+
+class OfficialApprovalService:
+    def __init__(self, *, token, mobile, host_admission=None, host_session_factory=None, close=None):
+        transport = mobile.store.transport
+        if (not isinstance(transport, OfficialApprovalTransport) or transport.token != token
+                or not isinstance(mobile.official_sender, ApprovalOtpSender)
+                or mobile.official_sender.transport is not transport
+                or mobile.official_sender.store is not mobile.store
+                or (host_admission is None) != (host_session_factory is None)
+                or host_admission is not None and (not callable(host_admission) or not callable(host_session_factory))
+                or close is not None and not callable(close)):
+            raise SecurityError('official_approval_service_invalid')
+        self.token, self.mobile, self.transport = token, mobile, transport
+        self.host_admission, self.host_session_factory = host_admission, host_session_factory
+        self._close, self._closed = close, False
+
+    def attach(self, runtime, token):
+        if (self._closed or token != self.token or runtime.sender is not self.mobile.official_sender.sender
+                or runtime.outbox is not runtime.sender.outbox
+                or runtime.outbox.approval_authority not in (None, self.transport)):
+            raise SecurityError('official_approval_service_mismatch')
+        runtime.outbox.approval_authority = self.transport
+        runtime.store.approval_store = self.mobile.store
+        # Restart never reconstructs an OTP. Only fresh commands can create a
+        # new approved source; old sending codes are cancelled under the epoch.
+        with runtime.store.transaction() as cursor:
+            self.transport.recover(cursor)
+
+    async def consume(self, result):
+        if self._closed or not isinstance(result, ControlResult) or result.duplicate:
+            return
+        if result.decision == 'sending' and result.request is not None and result.code is not None:
+            try:
+                await self.mobile._send_code(result.request, result.code)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # _send_code settles failed/unknown; neither event nor exception
+                # is logged, persisted or retried with the raw code.
+                pass
+        self.mobile.wake.set()
+
+    async def run(self):
+        if self._closed:
+            raise SecurityError('official_approval_service_closed')
+        await self.mobile.run_forever()
+
+    async def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._close is not None:
+                result = self._close()
+                if inspect.isawaitable(result):
+                    await result
+        finally:
+            await asyncio.to_thread(self.mobile.store.close)
+
+
+from copy import copy
+from types import SimpleNamespace
+
+from src.bot_security.service import MobileAuthorization
+from src.bot_security.store import SecurityStore
+
+
+class _NativeRoute:
+    def __init__(self,session):self.session=session
+
+    def epoch(self,cursor,task):
+        row=cursor.execute('SELECT source_execution_id,route_epoch FROM qq_official_subagent_dispatches WHERE task_id=? AND account_key=?',
+            (task.task_id,self.session.token.account_key)).fetchone()
+        if row is None: raise SecurityError('official_host_source_unavailable')
+        source=self.session.admission.require_execution(cursor,row['source_execution_id'],endpoint=task.endpoint,
+            actor=task.requester_actor,operation='execute')
+        return source['route_epoch']
+
+    def require_current(self,cursor,*,source,operation,now):
+        if operation!='execute' or source.task_id is None or not self.session._attached:
+            raise SecurityError('official_host_source_unavailable')
+        task=SimpleNamespace(task_id=source.task_id,endpoint=source.endpoint,requester_actor=source.actor)
+        if self.epoch(cursor,task)!=source.route_epoch:
+            raise SecurityError('official_host_route_changed')
+
+
+def approval_services_factory(*,security=None,services=(),fleet_client=None):
+    """Return OfficialRuntime.approval_factory; None is zero-work disabled.
+
+    security is the existing trusted console SecurityStore. The new store is a
+    transport-scoped view of that SAME database/secret, never a new approval
+    queue. A shallow Fleet client view keeps account-local authorization while
+    sharing the host-owned HTTP pool; closing this service never closes it.
+    """
+    from .background_host import NativeTaskSourcePort
+    from .host_authority import AllowedService, OfficialHostAuthority
+    from .host_external import OfficialExternalOperations
+    from .host_session import HostTaskSessionFactory
+    allowed=tuple(services)
+    if any(type(item) is not AllowedService for item in allowed):
+        raise SecurityError('official_host_configuration_invalid')
+    if security is None:
+        if allowed or fleet_client is not None:raise SecurityError('official_security_unavailable')
+        return lambda runtime,token:None
+    if not isinstance(security,SecurityStore):raise SecurityError('official_security_unavailable')
+
+    def create(runtime,token):
+        from src.plugins.ai_chat.fleet_client import FleetControlClient
+        from src.plugins.ai_chat.fleet_authorization import FleetAuthorization
+        from src.plugins.ai_chat.server_task_authorization import ServerTaskAuthorization
+        session=getattr(runtime,'migration_service',None)
+        if (runtime.database is not security._database or runtime.sender is None
+                or session is None or session.token is not token):
+            raise SecurityError('official_approval_source_unavailable')
+        route=_NativeRoute(session)
+        source=NativeTaskSourcePort(token=token,admission=runtime.store.admitted,route=route)
+        transport=OfficialApprovalTransport(token=token,secret=security.secret,
+            source_port=source,clock=runtime.store.clock)
+        store=OwnerApprovalStore(runtime.database,security.secret,transport=transport,clock=runtime.store.clock)
+        try:
+            otp=ApprovalOtpSender(sender=runtime.sender,transport=transport,store=store)
+            async def no_legacy(*args,**kwargs):raise SecurityError('official_legacy_transport_denied')
+            mobile=MobileAuthorization(store,sender=no_legacy,bot_selector=lambda:None,official_sender=otp)
+            host_admission=host_session=None
+            if allowed:
+                app=runtime.application
+                if (not isinstance(fleet_client,FleetControlClient) or app is None
+                        or getattr(app,'subagent_store',None) is None):
+                    raise SecurityError('official_host_configuration_unavailable')
+                host=OfficialHostAuthority(transport=transport,mobile=mobile,services=allowed,clock=runtime.store.clock)
+                ServerTaskAuthorization(SimpleNamespace(mobile_authorization=mobile),official_authority=host)
+                client=copy(fleet_client)
+                client.authorization=FleetAuthorization(client,mobile,official_authority=host)
+                bridge=OfficialExternalOperations(store=app.subagent_store,authority=host,
+                    source_port=source,transaction_factory=runtime.deliveries.transaction)
+                host_session=HostTaskSessionFactory(bridge=bridge,client=client,app=app,route_epoch=route.epoch)
+                def admitted(cursor,handle):
+                    session.admission.require_execution(cursor,handle.execution_id,endpoint=handle.endpoint,
+                        actor=handle.actor,operation='execute')
+                    from .project_authority import Denied
+                    try:transport.admins.resolve_admin(cursor,endpoint=handle.endpoint,actor=handle.actor)
+                    except Denied:return False
+                    return True
+                host_admission=admitted
+            return OfficialApprovalService(token=token,mobile=mobile,
+                host_admission=host_admission,host_session_factory=host_session)
+        except BaseException:
+            store.close()
+            raise
+    return create
+
+
+class OwnerApprovalStore(SecurityStore):
+    @staticmethod
+    def required_quorum(kind, requested=1):
+        return 1

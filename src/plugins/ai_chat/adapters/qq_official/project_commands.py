@@ -13,7 +13,7 @@ from ...platform_types import ActorKey
 from ...project_authorization import ForegroundProjectProvider
 from ...tools import neutral_registry_for
 from ...tools.state import TurnState
-from .command_fence import CommandEffectDenied
+from .commands import CommandEffectDenied
 from .project_authority import Denied, Operation, ProjectAuthority, ProjectGrantRef, ProjectRequest
 
 
@@ -42,7 +42,7 @@ class CommandProjectProvider(ForegroundProjectProvider):
             (message_id,self.endpoint.key,self.endpoint.scope.key,self.endpoint.account.key,self.endpoint.key,
              self.handle.endpoint_generation,self.handle.route_epoch)).fetchone()
         if (row is None or row['source_endpoint_key']!=self.endpoint.key or row['endpoint_key']!=self.endpoint.key
-                or row['account_key']!=self.endpoint.account.key or row['scope_key']!=self.endpoint.scope.key
+                or row['account_key']!=self.endpoint.account.key or row['scope_key']!=self.handle.scope_key
                 or row['endpoint_generation']!=self.handle.endpoint_generation or row['route_epoch']!=self.handle.route_epoch
                 or row['sender_actor_key']!=row['actor_key'] or row['echo_state']!='not_echo' or row['status']!='processed'
                 or type(row['occurred_at']) is not int or not 0<=self._now()-row['occurred_at']<=300):

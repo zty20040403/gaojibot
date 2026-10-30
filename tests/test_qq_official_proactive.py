@@ -11,11 +11,7 @@ from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingReducer
 from src.plugins.ai_chat.adapters.qq_official.inbox import OfficialInboxStore
 from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
-from src.plugins.ai_chat.adapters.qq_official.migration_native_sources import NativeSources,SourceAdmission
-from src.plugins.ai_chat.adapters.qq_official.migration_host_ports import MigrationPlanGuard
-from src.plugins.ai_chat.adapters.qq_official.migration_routes import RouteService
-from src.plugins.ai_chat.adapters.qq_official.migration_journal import Journal
-from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
+from src.plugins.ai_chat.adapters.qq_official.host_services import SourceAdmission
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.send_types import SendReservation
 from src.plugins.ai_chat.model_catalog import ModelProfile
@@ -39,16 +35,10 @@ class ProactivePGTests(NativeFixture):
             threshold=90,max_reply_chars=120,record_usage=self.usage_calls)
         self.proactive=ProactiveIngress(token=self.token,transaction=self.tx,admission=self.admission,outbox=self.outbox,
             scorer=self.scorer,clock=lambda:self.now,database_calls=asyncio.to_thread,threshold=90,percent=100,max_checks_per_hour=5,random_value=lambda:0)
-        # Actual configured-host selector, not a fixture with no prior guard.
-        # TxA must record the original native source before its first receipt.
-        self.routes=RouteService(tokens={self.account.key:self.token})
-        self.native_sources=NativeSources(self.routes)
-        self.inbox.source_authority=self.native_sources
-        self.admission=SourceAdmission(self.admission,self.native_sources)
+        self.admission=SourceAdmission(self.admission)
         self.inbox.admitted=self.admission
         self.proactive.admission=self.admission
         self.outbox.admission=self.admission
-        self.outbox.source_guard=MigrationPlanGuard(native=self.native_sources,journal=Journal(self.routes))
         runtime=SimpleNamespace(outbox=self.outbox,migration_service=None,store=SimpleNamespace(transaction=self.tx),_calls=asyncio.to_thread)
         self.background=NativeBackgroundService(runtime=runtime,token=self.token,domain=self.engine,proactive=self.proactive)
         self.background.attach()
@@ -61,7 +51,7 @@ class ProactivePGTests(NativeFixture):
                  'author':{'member_openid':self.actor.native_user_id},'content':'这是实际未点名的讨论消息',
                  'timestamp':datetime.fromtimestamp(self.now,timezone.utc).isoformat()}}
         accepted=self.inbox.accept(frame,token=self.token,session_id='TEST_NEW_SESSION')
-        job=self.jobs.claim_due('TEST_INGEST',kinds=(account_job_kind('ingest',self.account.key),),now=self.now)[0]
+        job=SimpleNamespace(job_id=None,payload={'inbox_id':accepted.inbox_id},lease_owner=self.token.holder_id,lease_generation=1,attempts=1)
         with self.tx() as c:
             result=process_inbox(c,inbox_id=accepted.inbox_id,lease_token=self.token,ledger=self.ledger,jobs=self.jobs,
                 epoch_guard=assert_epoch,admission=self.admission,now=self.now)
@@ -76,9 +66,6 @@ class ProactivePGTests(NativeFixture):
             self.assertEqual(asyncio.run(self.background.on_ingested(job))['status'],'discarded')
             self.assertEqual(llm.await_count,1)
         self.assertEqual(self.usage_calls.await_count,1)
-        self.assertIsInstance(self.background.previous_guard,MigrationPlanGuard)
-        self.assertEqual(len(self.query('SELECT * FROM qq_migration_native_sources')),1)
-        self.assertTrue(self.jobs.mark_succeeded(job.job_id,job.lease_owner,now=self.now,lease_generation=job.lease_generation))
         observation=self.query('SELECT * FROM qq_official_proactive_observations')[0]
         self.assertEqual(observation['deadline_at'],self.now+30)
         delivery=self.query('SELECT * FROM deliveries WHERE plan_id=?',(observation['plan_id'],))[0]
@@ -108,7 +95,7 @@ class ProactivePGTests(NativeFixture):
         self.assertEqual(self.query('SELECT state FROM qq_official_proactive_observations')[0][0],'queued')
 
     def test_actual_mentioned_chat_never_proactively_scores(self):
-        _,job,result=self.ingress(mention=True);self.assertIsNotNone(result.dispatch_job_id)
+        _,job,result=self.ingress(mention=True);self.assertTrue(result.reply_requested)
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',new=AsyncMock()) as llm:
             self.assertEqual(asyncio.run(self.background.on_ingested(job))['status'],'discarded')
             llm.assert_not_awaited()

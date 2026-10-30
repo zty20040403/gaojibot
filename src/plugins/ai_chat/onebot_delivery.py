@@ -268,7 +268,7 @@ class OneBotDelivery(HandlerService):
                     if delivery.target_platform == "onebot-v11":
                         selected_bot = bots[0] if bots else None
                         migration = getattr(self.context, "migration_service", None)
-                        if migration is not None:
+                        if migration is not None and not getattr(migration, 'native_only', False):
                             try:
                                 account = await self.context.db_call(migration.outgoing_account, "delivery", delivery.delivery_id)
                             except Exception:

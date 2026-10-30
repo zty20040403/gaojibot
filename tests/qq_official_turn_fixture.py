@@ -79,4 +79,3 @@ class ExecutionFixture(OutboxFixture):
     def reclaim_job(self):
         self.now += 301
         self.job = self.jobs.claim_due("TEST_NEW_WORKER", kinds=(self.kind,), now=self.now)[0]
-

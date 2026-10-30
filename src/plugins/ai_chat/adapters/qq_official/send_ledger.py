@@ -4,6 +4,7 @@ import json
 import secrets
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json, body_to_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
+from src.plugins.ai_chat.conversation_scope import ConversationScope
 from .protected_plans import load_protected_ref, verify_protected_attempt
 from .lease import assert_epoch
 from .send_types import OutboxInvariantError, SendOutcome, digest, stable_json
@@ -72,17 +73,11 @@ def _context_projection(cursor, delivery, attempt):
     if (digest(plan["manifest_json"]) != plan["manifest_digest"]
             or set(control) != {"kind", "control_id"} or not isinstance(control["control_id"], str)):
         raise OutboxInvariantError("control_projection_integrity_conflict")
-    decision = cursor.execute("""SELECT reply_kind,action,decision_code,body_digest
-        FROM qq_official_control_decisions WHERE control_id=? AND account_key=? AND endpoint_key=?
-          AND requester_actor_key=? AND plan_id=? AND delivery_id=?""",
-        (control["control_id"], delivery["account_key"], delivery["endpoint_key"], delivery["requester_actor_key"],
-         delivery["plan_id"], delivery["delivery_id"])).fetchone()
-    if decision is None or decision["body_digest"] != digest(body_to_json(body)):
-        raise OutboxInvariantError("control_projection_integrity_conflict")
-    if decision["reply_kind"] != "whoami":
+    decision = cursor.execute("""SELECT control_action FROM qq_official_inbound_events
+        WHERE inbox_id=? AND account_key=? AND endpoint_key=? AND control_actor_key=?""",
+        (control["control_id"], delivery["account_key"], delivery["endpoint_key"], delivery["requester_actor_key"])).fetchone()
+    if decision is None or decision['control_action'] != 'whoami':
         return body, {}
-    if decision["action"] != "whoami" or decision["decision_code"] != "identity":
-        raise OutboxInvariantError("control_projection_integrity_conflict")
     return MessageBody((TextNode(0, "[身份查询已回复：具体平台身份标识已从会话上下文隐去，仅保留于受保护发送审计。]"),)), {
         "content_redacted": True, "redaction_reason": "qq_official_whoami_identity", "control_kind": "whoami",
     }
@@ -149,7 +144,8 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     body, metadata = _context_projection(cursor, delivery, attempt)
     reply_target, quoted_index = _quote(cursor, attempt, delivery, endpoint)
     native = receipt['native_message_id']
-    stored = ledger.record_message(endpoint.scope, native_message_id=native, sender_native_user_id=actor.native_user_id,
+    scope_key = cursor.execute('SELECT source_scope_key FROM delivery_plans WHERE plan_id=?', (delivery['plan_id'],)).fetchone()['source_scope_key']
+    stored = ledger.record_message(ConversationScope.from_key(scope_key), native_message_id=native, sender_native_user_id=actor.native_user_id,
         sender_display='Bot', body=body, occurred_at=receipt['observed_at'], direction='outbound',
         message_kind='command' if delivery['payload_mode']=='ephemeral' or metadata else 'chat',
         reply_to_native_message_id=reply_target, actor=actor, source_endpoint=endpoint,

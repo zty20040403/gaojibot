@@ -32,7 +32,7 @@ from src.plugins.ai_chat.adapters.qq_official.project_sessions import ProjectTas
 from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import OfficialSubAgentDispatcher
 from tests import test_qq_official_project_background as task_fixture
 from tests.qq_official_project_fixture import ProjectFixture
-from tests.qq_official_migration_mapping_fixture import record_evidence
+from tests.qq_official_message_fixture import record_evidence
 from tests.test_owned_sandbox import FakeManager
 
 
@@ -113,8 +113,7 @@ class ProjectSessionTests(ProjectFixture, unittest.IsolatedAsyncioTestCase):
             _stopping=False,_token=self.token,store=SimpleNamespace(admitted=self.admission,clock=lambda:self.now))
         self.authority=ProjectArtifactAuthority(token=self.token,clock=lambda:self.now,route_guard=self.route_guard)
         self.config=FileServiceConfig(Path(self.temp.name),self.manager,generation_enabled=True,
-            route_authority=lambda *_:True,source_authority=self.authority,min_free_bytes=0,
-            link_origin='https://files.example',link_reachable=lambda:True)
+            source_authority=self.authority,min_free_bytes=0)
         self.files=FileServices(self.runtime,self.token,None,self.config)
         self.runtime.file_service=self.files
         lifecycle=ProjectLifecycle(self.store,self.jobs)
@@ -244,7 +243,8 @@ class ProjectSessionTests(ProjectFixture, unittest.IsolatedAsyncioTestCase):
             execution_factory=self.sessions.prepare,project_finalizer=self.sessions.finalize,project_authority=self.sessions.assert_current)
 
     async def pipeline(self):
-        with patch('src.plugins.ai_chat.subagents.ask_deepseek_with_tools',new=self.project_model), \
+        with patch('src.plugins.ai_chat.adapters.qq_official.task_result.ask_deepseek_with_tools',new=AsyncMock(return_value='TEST foreground result')), \
+             patch('src.plugins.ai_chat.subagents.ask_deepseek_with_tools',new=self.project_model), \
              patch('src.plugins.ai_chat.subagents.ask_deepseek',new=AsyncMock(return_value='TEST update accepted; workspace restore pending')), \
              patch('src.plugins.ai_chat.storage.jobs.time',SimpleNamespace(time=lambda:self.now)), \
              patch('src.plugins.ai_chat.project_publication.time',SimpleNamespace(time=lambda:self.now)), \
@@ -276,9 +276,7 @@ class ProjectSessionTests(ProjectFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.query('SELECT * FROM subagent_deliveries'),[])
         self.assertTrue(result['plan_id'])
         owners={owner for name,owner,_ in self.manager.calls if name=='create'}
-        self.assertEqual(len(owners),4)  # producer, capture format check, host recheck, independent acceptance
-        self.assertEqual(len({owner for owner in owners if not owner.endswith(':verify')}),2)
-        self.assertEqual(self.manager.items,{})
+        self.assertEqual(len(owners),2)  # producer and project acceptance
         self.assertEqual(self.query("SELECT state FROM qq_official_generation_capacity WHERE state='reserved'"),[])
 
     async def test_missing_project_port_and_changed_grant_never_start_model(self):
@@ -293,11 +291,11 @@ class ProjectSessionTests(ProjectFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.query('SELECT * FROM project_task_publications'),[])
         self.assertEqual(self.query('SELECT * FROM delivery_plans'),[])
 
-    async def test_failed_task_retains_project_lock_and_has_terminal_attention(self):
+    async def test_failed_project_task_reports_result_and_keeps_recovery_lock(self):
         self.ready_pipeline()
         self.tasks.set_task_state(self.task.task_id,'failed',error='TEST failure')
         result=await self.pipeline()
-        self.assertEqual(result['status'],'needs_attention')
+        self.assertTrue(result['plan_id'])
         self.assertEqual(self.model_calls,0)
         self.assertEqual(self.query('SELECT locked_task_id FROM projects WHERE project_id=?',
             (self.project['project_id'],))[0]['locked_task_id'],self.task.task_id)

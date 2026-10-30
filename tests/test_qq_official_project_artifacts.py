@@ -22,7 +22,7 @@ from src.plugins.ai_chat.project_io import ProjectIOStore
 from src.plugins.ai_chat.projects import ProjectQuotaExceeded
 from src.plugins.ai_chat.project_usage import ProjectUsageStore
 from tests.qq_official_file_fixture import PDF
-from tests.qq_official_migration_mapping_fixture import record_evidence
+from tests.qq_official_message_fixture import record_evidence
 from tests.qq_official_project_fixture import ProjectFixture
 
 
@@ -55,7 +55,7 @@ class ProjectArtifactTests(ProjectFixture):
         self.read_live=True
         self.authority=ProjectArtifactAuthority(token=self.token,clock=lambda:self.now,route_guard=self.route_guard,
             read_route_guard=lambda c,**kw:self.read_live)
-        self.config=FileServiceConfig(Path(temp.name),SimpleNamespace(),route_authority=lambda *_:self.routes_live,
+        self.config=FileServiceConfig(Path(temp.name),SimpleNamespace(),
             source_authority=self.authority,min_free_bytes=0)
         self.files=FileServices(self.runtime,self.token,None,self.config)
         self.addCleanup(lambda:asyncio.run(self.files.close()))
@@ -127,11 +127,11 @@ class ProjectArtifactTests(ProjectFixture):
         self.query("UPDATE qq_official_project_grants SET state='revoked',revision=revision+1,revoked_at=issued_at")
         with self.assertRaises((PermissionError,LeaseLost)):self.check(artifact,read=True)
 
-    def test_stale_actor_and_regrant_cannot_send_old_copy(self):
+    def test_old_message_can_deliver_but_revoked_grant_cannot(self):
         artifact=self.put()['artifact_handle'].split(':',1)[1]
         self.file_job=self.jobs.claim_due('TEST_PROJECT_FILE',kinds=(file_job_kind(self.account),),now=self.now)[0]
         self.query('UPDATE qq_official_inbound_events SET received_at=received_at-301')
-        with self.assertRaises((PermissionError,LeaseLost)):self.check(artifact)
+        self.assertEqual(self.check(artifact)[0]['artifact_id'],artifact)
         self.assertEqual(self.check(artifact,read=True)[0]['artifact_id'],artifact)
         self.query('UPDATE qq_official_project_grants SET revision=revision+1')
         with self.assertRaises((PermissionError,LeaseLost)):self.check(artifact,read=True)
@@ -165,9 +165,7 @@ class ProjectArtifactTests(ProjectFixture):
                                    (self.grant.operation_id,))[0]['result'],{'ok':True})
 
     async def physical_delivery(self,*,revoke_before_send=False):
-        from src.plugins.ai_chat.adapters.qq_official.file_services import NativeRouteEvidence
         from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
-        from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker
         from src.qq_official.credentials import Credentials
         from src.qq_official.http import RestClient
         from src.qq_official.token import TokenManager
@@ -175,52 +173,35 @@ class ProjectArtifactTests(ProjectFixture):
         fake=FileMediaFake()
         fake.app_id=self.account.app_id
         fake.clock=lambda:self.now
-        fake.receipt_ttl=1800
+        fake.proactive_allowed[('group',self.endpoint.native_conversation_id)]=True
+        self.query("UPDATE qq_official_endpoints SET proactive_state='allowed' WHERE endpoint_key=?",(self.endpoint.key,))
         await fake.start()
         tokens=TokenManager(Credentials(self.account.app_id,fake.app_secret),fake.base_url,allow_test_server=True)
         rest=RestClient(tokens,allow_test_server=True)
-        async def current():
-            await self.calls(self.files._fence_sync)
         sender=OfficialSender(self.account,self.token,self.outbox,rest,self.ledger,
-            database_calls=self.calls,ensure_current=current,wall_clock=lambda:self.now)
-        try:
-            route=self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?',(self.endpoint.key,))[0]
-            proof=NativeRouteEvidence(self.endpoint,route['generation'],route['route_epoch'],
-                route['capability_revision'],1024*1024,self.now,self.now+3600)
-            self.files.config=replace(self.config,native_evidence=lambda *_:proof)
-            self.files.dispatcher.rest=rest
-            self.window(source=self.handle.source_native_message_id)
-            self.query('UPDATE qq_official_reply_windows SET endpoint_generation=?,route_epoch=? WHERE endpoint_key=?',
-                (route['generation'],route['route_epoch'],self.endpoint.key))
-            fake.add_window('group',self.endpoint.native_conversation_id,self.handle.source_native_message_id)
-            result=await self.bridge(self.access,self.grant,PDF,'report.pdf')
-            artifact=result['artifact_handle'].split(':',1)[1]
-            worker=DurableJobWorker(self.jobs,logger=SimpleNamespace(error=lambda *_:None,warning=lambda *_:None),database_calls=self.calls)
-            worker.register(file_job_kind(self.account),self.files.dispatcher)
-            with patch('src.plugins.ai_chat.storage.jobs.time',SimpleNamespace(time=lambda:self.now)):
-                self.assertEqual(await worker.run_once(),1)
-            record=self.query('SELECT * FROM qq_official_file_deliveries WHERE artifact_id=?',(artifact,))[0]
-            self.assertEqual(record['state'],'handed_off')
-            self.assertEqual(len(fake.media_calls),1)
-            self.assertEqual(fake.received,[])
-            delivery=self.query('SELECT delivery_id FROM qq_official_file_message_plans WHERE artifact_id=?',(artifact,))[0]['delivery_id']
+            journal=self.journal,database_calls=self.calls,ensure_current=self.files._fence,wall_clock=lambda:self.now)
+        self.runtime.sender=sender
+        self.files.uploader.rest=rest
+        original_upload=self.files.uploader.upload
+        async def upload(*args):
+            result=await original_upload(*args)
             if revoke_before_send:
                 self.query("UPDATE qq_official_project_grants SET state='revoked',revision=revision+1,revoked_at=issued_at")
-                try:
-                    outcome=await sender.send_delivery(delivery)
-                except (PermissionError,LeaseLost):
-                    pass
-                else:
-                    self.assertNotEqual(outcome.status,'committed')
+            return result
+        self.files.uploader.upload=upload
+        try:
+            result=await self.bridge(self.access,self.grant,PDF,'report.pdf')
+            artifact=result['artifact_handle'].split(':',1)[1]
+            if revoke_before_send:
+                with self.assertRaises(Exception):
+                    await self.files.dispatcher.send_artifact(artifact)
                 self.assertEqual(fake.received,[])
-                self.assertEqual(self.query('SELECT * FROM messages WHERE direction=\'outbound\''),[])
             else:
-                outcome=await sender.send_delivery(delivery)
-                self.assertEqual(outcome.status,'committed',outcome)
+                self.assertEqual((await self.files.dispatcher.send_artifact(artifact)).status,'committed')
                 self.assertEqual(len(fake.received),1)
                 self.assertEqual(fake.received[0]['payload']['msg_type'],7)
-                record=self.query('SELECT * FROM qq_official_file_deliveries WHERE artifact_id=?',(artifact,))[0]
-                self.assertEqual(record['state'],'message_accepted')
+                self.assertEqual(self.query('SELECT state FROM qq_official_file_deliveries WHERE artifact_id=?',(artifact,))[0]['state'],'message_accepted')
+            self.assertEqual(len(fake.media_calls),1)
         finally:
             await sender.stop()
             await rest.aclose()

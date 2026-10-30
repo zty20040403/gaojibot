@@ -19,7 +19,7 @@ from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.identity_store import snapshot
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
-from src.plugins.ai_chat.adapters.qq_official.migration_continuation import ScheduledWork
+from src.plugins.ai_chat.adapters.qq_official.scheduled_model import ScheduledWork
 from src.plugins.ai_chat.agent.control import JobFence, active_job_fence, LeaseLost
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_to_json, body_from_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey, InboundMessage
@@ -139,8 +139,6 @@ class NativeSchedules:
         if check is not None:
             found = check(cursor, execution_id, endpoint=endpoint, actor=actor, operation=operation)
             return found['logical_route_epoch']
-        if cursor.execute('SELECT 1 FROM migration_routes LIMIT 1').fetchone():
-            raise NativeScheduleDenied('logical_source_provider_required')
         return 0
 
     def _approve(self, cursor, source, spec):

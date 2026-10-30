@@ -15,7 +15,7 @@ from src.qq_official.credentials import _read_secret
 from ...platform_types import AccountKey, EndpointKey
 from .config import _boolean
 from .file_services import FileServiceConfig, file_services_factory
-from .migration_services import MigrationServices, OneBotAccount, ExportDeadline
+from .host_services import HostServices, OneBotAccount, ExportDeadline
 
 
 class HostConfigurationError(ValueError):
@@ -178,7 +178,7 @@ class HostConfiguration:
             if not getattr(runtime,'onebot_enabled',True):
                 raise HostConfigurationError('legacy_source_unavailable')
             return runtime.handlers.chat._conversation_scope(event)
-        service=MigrationServices(database=context.database,transaction=context.delivery_store.transaction,
+        service=HostServices(database=context.database,transaction=context.delivery_store.transaction,
             database_calls=context.db_call,security=mobile.store,onebot_accounts=self.onebot_accounts,
             canonical_scope=canonical_scope,
             deadlines=self.deadlines,scheduled_profile=self.scheduled_profile,subagent_profile=self.subagent_profile,
@@ -242,7 +242,7 @@ class ConfiguredHost:
 
     def approval_factory(self,runtime,token):
         self._session(runtime,token)
-        from .approval_services import approval_services_factory
+        from .approval import approval_services_factory
         return approval_services_factory(security=self.context.mobile_authorization.store,
             services=self.config.host_services,fleet_client=self.context.fleet_client)(runtime,token)
 
@@ -265,8 +265,7 @@ class ConfiguredHost:
             return True
         authority=ProjectArtifactAuthority(token=token,clock=runtime.store.clock,route_guard=route_guard,
             project_scope_guard=self.migration.project_grants.project_scope_guard,
-            read_route_guard=lambda cursor,artifact,project_binding,**kwargs:
-                kwargs['canonical_scope'].key==kwargs['endpoint'].scope.key)
+            read_route_guard=lambda cursor,artifact,project_binding,**kwargs: route_guard(cursor,**kwargs))
         config=FileServiceConfig(manager=self.context.sandbox_manager,**self.config.files,
             source_authority=authority)
         if config.generation_enabled and config.manager is None:

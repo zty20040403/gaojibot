@@ -41,7 +41,7 @@ class SubAgentDispatcher:
         self.coordinator = self.context.subagent_coordinator
         self.worker = DurableJobWorker(self.jobs, logger=self.context.logger, concurrency=2, per_scope_limit=1)
         migration = getattr(self.context, "migration_service", None)
-        if migration is not None:
+        if migration is not None and not getattr(migration, 'native_only', False):
             self.worker.source_context = migration.job_context
         self.worker.register(self.kind, self.execute, compensator=self.settle_failed_dispatch)
         self._next_artifact_prune = 0.0

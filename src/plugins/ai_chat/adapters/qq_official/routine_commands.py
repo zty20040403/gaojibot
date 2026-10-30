@@ -8,7 +8,7 @@ import re
 
 from ...application.commands import CommandResult
 from ...application.routine_commands import command_result
-from .command_fence import CommandEffectDenied
+from .commands import CommandEffectDenied
 from .native_schedules import NativeCommandSource, NativeScheduleDenied
 
 

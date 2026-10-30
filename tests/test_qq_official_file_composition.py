@@ -77,10 +77,18 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
         runtime = self.runtime(loaded=runtime_fixture.loaded_config(self.fake.app_id, base=self.fake.base_url),
             application=app, ledger=app.message_ledger, journal=app.turn_journal,
             file_services_factory=file_services_factory(self.config()), **kwargs)
+        from src.plugins.ai_chat.adapters.qq_official.host_services import HostServices
+        def host(current, token):
+            service = HostServices(database=current.database, transaction=current.deliveries.transaction, database_calls=current._calls)
+            return service.official_factory(current, token)
+        runtime.migration_factory = host
         self.assertTrue(await runtime.start())
         await asyncio.wait_for(self.fake.wait_ready(), 5)
         await self.wait_db("SELECT bot_native_id FROM qq_official_accounts WHERE bot_identity_source='ready'")
         return runtime
+
+    async def test_bound_group_file_reply_keeps_original_timeline(self):
+        await self.test_foreground_gets_file_receipt_before_final_answer()
 
     async def test_foreground_gets_file_receipt_before_final_answer(self):
         app = self.application()
@@ -117,7 +125,16 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=completion):
             runtime = await self.open(app)
-            await self.emit(self.fake, native='TEST_FILE_SOURCE', content='TEST generate and send PDF')
+            group = self._testMethodName == 'test_bound_group_file_reply_keeps_original_timeline'
+            if group:
+                from src.plugins.ai_chat.platform_types import EndpointKey
+                from src.plugins.ai_chat.conversation_scope import ConversationScope
+                endpoint = EndpointKey(runtime.loaded.account, 'group', 'TEST_GROUP')
+                scope = ConversationScope('onebot-v11', 'group', '1234567')
+                self.query("INSERT INTO qq_official_endpoints (endpoint_key,account_key,kind,native_conversation_id,canonical_scope_key,binding_state,membership_state,proactive_state,created_at,updated_at) VALUES (?,?,'group','TEST_GROUP',?,'active','present','allowed',?,?) RETURNING endpoint_key",
+                    (endpoint.key, endpoint.account.key, scope.key, int(time.time()), int(time.time())))
+                self.fake.proactive_allowed[('group', 'TEST_GROUP')] = True
+            await self.emit(self.fake, native='TEST_FILE_SOURCE', content='TEST generate and send PDF', group=group)
             await self.complete('TEST_FILE_SOURCE')
             try:
                 await asyncio.wait_for(self.fake.files_seen.wait(), 5)
@@ -134,7 +151,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.query('SELECT state FROM qq_official_file_deliveries')[0]['state'], 'message_accepted')
             self.assertEqual(self.query('SELECT state FROM qq_official_turn_executions')[0]['state'], 'handed_off')
             await self.wait_db("SELECT * FROM qq_official_file_deliveries WHERE state='message_accepted'")
-            body = self.fake.uploaded[('users', 'TEST_RUNTIME_OWNER')]
+            body = self.fake.uploaded[('groups', 'TEST_GROUP') if group else ('users', 'TEST_RUNTIME_OWNER')]
             self.assertEqual(hashlib.sha256(body).hexdigest(), rows[0]['sha256'])
             media = [item for item in self.fake.received if item['payload']['msg_type'] == 7]
             self.assertEqual(len(media), 1)
@@ -146,6 +163,8 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.query('SELECT * FROM delivery_receipts WHERE applied_at IS NOT NULL')), 2)
             # Private upload receipt never enters context or model replay.
             self.assertNotIn('TEST_FILE_INFO', json.dumps(self.query('SELECT body_json FROM messages')))
+            if group:
+                self.assertEqual(self.query('SELECT DISTINCT scope_key FROM conversations'), [{'scope_key': scope.key}])
             outbox = runtime.outbox
             await runtime.stop()
             self.assertIsNone(runtime.file_service)

@@ -327,6 +327,20 @@ class OfficialRuntime:
                 self.sender.wake()
             if accepted.approval is not None and self.approval_service is not None:
                 await self.approval_service.consume(accepted.approval)
+            if accepted.binding is not None and accepted.binding.effect is None and self.sender is not None:
+                from ...message_ir import MessageBody, TextNode
+                from ...platform_types import EndpointKey, ActorKey
+                from .renderer import render_plan
+                def reply_binding():
+                    with self.store.transaction() as cursor:
+                        source = cursor.execute('SELECT * FROM qq_official_inbound_events WHERE inbox_id=?', (accepted.inbox_id,)).fetchone()
+                        endpoint = EndpointKey.parse(source['endpoint_key'])
+                        self.outbox.enqueue(token, rendered=render_plan(MessageBody((TextNode(0, accepted.binding.message),)), endpoint, markdown=False),
+                            requester=ActorKey.parse(source['control_actor_key']), logical_key='binding-reply:'+accepted.inbox_id,
+                            source_scope_key=endpoint.scope.key, expires_at=int(self.store.clock())+300,
+                            source_native_message_id=source['native_message_id'], control_reply_id=accepted.inbox_id, transaction_cursor=cursor)
+                await self._calls(reply_binding)
+                self.sender.wake()
             if accepted.binding is not None and accepted.binding.effect is not None:
                 await self._deliver_binding(token, accepted.binding.effect)
             if accepted.binding is not None and accepted.binding.status == 'confirmed' and self.sender is not None:
@@ -401,11 +415,11 @@ class OfficialRuntime:
                 self.admin_identity_service = None
             resources.push_async_callback(close_identity)
             if self.migration_factory is not None:
-                from .migration_services import OfficialMigrationSession
+                from .host_services import OfficialHostSession
                 migration = self.migration_factory(self, token)
                 if inspect.isawaitable(migration):
                     migration = await migration
-                if not isinstance(migration, OfficialMigrationSession):
+                if not isinstance(migration, OfficialHostSession):
                     raise RuntimeError('official_migration_service_invalid')
                 async def close_migration():
                     try:
@@ -415,14 +429,6 @@ class OfficialRuntime:
                 resources.push_async_callback(close_migration)
                 await self._calls(migration.attach)
                 self.migration_service = migration
-            else:
-                def require_unmanaged():
-                    with self.store.transaction() as cursor:
-                        if cursor.execute('''SELECT 1 FROM migration_routes
-                            WHERE source_account_key=? OR target_account_key=? LIMIT 1''',
-                            (token.account_key,token.account_key)).fetchone():
-                            raise RuntimeError('managed_official_route_requires_migration_host')
-                await self._calls(require_unmanaged)
             rest = getattr(gateway, "rest_client", None)
             if isinstance(rest, RestClient):
                 from .sender import OfficialSender
@@ -431,13 +437,8 @@ class OfficialRuntime:
                     ensure_current=lambda: self._ensure_current(token))
                 await self.sender.recover()
                 await self.sender.refresh_bound_groups()
-                from .control_handler import ControlJobHandler
-                from .control_receipts import control_job_kind
-                worker.register(control_job_kind(self.loaded.account.key), ControlJobHandler(
-                    token=token, outbox=self.outbox, sender=self.sender, database_calls=self._calls,
-                    ensure_current=lambda: self._ensure_current(token), clock=self.store.clock))
             if self.approval_factory is not None and self.sender is not None:
-                from .approval_runtime import OfficialApprovalService
+                from .approval import OfficialApprovalService
                 async def reset_approval_bindings():
                     self.approval_service = None
                     self.store.approval_store = None

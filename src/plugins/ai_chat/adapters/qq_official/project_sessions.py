@@ -264,6 +264,16 @@ class ProjectTaskSessions:
         if (token is not self.token or job is None or binding['job_id'] != job.job_id
                 or binding['tool_profile'] != 'official-projects-v1' or task['project_id'] is None):
             raise LeaseLost('project_task_identity_changed')
+        if task['status'] in {'failed','cancelled'}:
+            # Reporting a terminal result needs read access, not a running task.
+            allowed=cursor.execute("""SELECT 1 FROM qq_official_project_task_authority a
+                JOIN qq_official_project_grants g ON g.grant_id=a.grant_id
+                WHERE a.task_id=? AND a.project_id=? AND a.grant_revision=g.revision
+                AND g.state='active' AND g.expires_at>? AND 'project.read'=ANY(g.capabilities)""",
+                (task['task_id'],task['project_id'],now)).fetchone()
+            if allowed is None:
+                raise LeaseLost('project_result_access_revoked')
+            return True
         record=self.app.subagent_store._task_row(task)
         self._provider(cursor,job,record,purpose='finalize' if task['status'] in {'completed','partial'} else 'execute')
         return True

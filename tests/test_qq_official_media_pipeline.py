@@ -17,7 +17,6 @@ from src.bot_security.store import SecurityStore
 from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration
 from src.plugins.ai_chat.adapters.qq_official.content_reader import PinnedContentReader, PinnedMediaTransport
 from src.plugins.ai_chat.adapters.qq_official.media_runtime import MediaSession
-from src.plugins.ai_chat.adapters.qq_official.native_media import CONTRACT
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.llm_gateway import LLMGateway
 from src.plugins.ai_chat.media_library import MediaLibrary
@@ -103,7 +102,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
             raw['files']={'private_directory':str(Path(self.temp.name)/'files'),'min_free_bytes':0,
                 'native_routes':[dict(endpoint=endpoint.key,endpoint_generation=1,route_epoch=1,
                     capability_revision=1,max_bytes=3500000,verified_at=int(time.time())-1,
-                    expires_at=int(time.time())+120,contract=CONTRACT,file_type=1)]}
+                    expires_at=int(time.time())+120,contract='unused-legacy-contract',file_type=1)]}
         path=Path(self.temp.name)/'host.json';path.touch(mode=0o600);path.write_text(json.dumps(raw))
         config=HostConfiguration.from_env({'AI_QQ_MIGRATION_ENABLED':'true','AI_QQ_MIGRATION_CONFIG_FILE':str(path)})
         self.migration=config.build(self.app,SimpleNamespace(handlers=SimpleNamespace(

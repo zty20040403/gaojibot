@@ -102,12 +102,6 @@ class AdminIdentityBinding:
         if row['source_inbox_id'] is None:return
         endpoint=EndpointKey.parse(row['endpoint_key']);actor=ActorKey.parse(row['actor_key'])
         if endpoint.account!=self.account or not actor.matches_endpoint(endpoint):raise IdentityBindingDenied()
-        provider=self.runtime.store.source_authority
-        if provider is not None:
-            try:provider.require_inbox(c,row['source_inbox_id'],endpoint=endpoint,actor=actor,operation='ingest')
-            except Exception:raise IdentityBindingDenied() from None
-        elif c.execute('SELECT 1 FROM migration_routes WHERE target_endpoint_key=? OR source_endpoint_key=? LIMIT 1',(endpoint.key,endpoint.key)).fetchone():
-            raise IdentityBindingDenied()
         c.execute('SELECT endpoint_key FROM qq_official_endpoints WHERE endpoint_key=? AND account_key=? FOR UPDATE',
             (endpoint.key,self.account.key)).fetchone()
 

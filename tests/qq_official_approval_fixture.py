@@ -6,7 +6,7 @@ from src.bot_security.store import SecurityStore, SecurityError, canonical, dige
 from src.bot_security.service import MobileAuthorization
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
-from src.plugins.ai_chat.adapters.qq_official.approval_transport import (
+from src.plugins.ai_chat.adapters.qq_official.approval import (
  ApprovalContext, ApprovalOtpSender, FrozenSource, HostAction, TaskPolicy, Recipient, OfficialApprovalTransport)
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
@@ -17,7 +17,7 @@ from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStor
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.qq_official.events import parse_dispatch
-from src.plugins.ai_chat.adapters.qq_official.approval_control import prepare_approval_input,control_commitment,apply_control
+from src.plugins.ai_chat.adapters.qq_official.approval import prepare_approval_input,control_commitment,apply_control
 from src.qq_official.credentials import Credentials
 from src.qq_official.http import RestClient
 from src.qq_official.token import TokenManager

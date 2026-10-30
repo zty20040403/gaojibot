@@ -12,7 +12,7 @@ import json
 import re
 import secrets
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
@@ -93,6 +93,8 @@ def parse_binding_command(text: str) -> BindingCommand | None:
     if len(text) > 1024:
         return BindingCommand("invalid", valid=False)
     words = text.strip().split()[1:]
+    if len(words) == 1 and words[0].isdigit():
+        return BindingCommand("create", code=words[0])
     if words == ["create"]:
         return BindingCommand("create")
     if words == ["whoami"]:
@@ -140,10 +142,13 @@ class BindingReducer:
         if not valid:
             return BindingDecision("syntax", "绑定命令参数无效。")
         if command.action == "whoami":
-            return BindingDecision("identity", "以下仅为当前发令身份，不授予管理权限。",
-                effect=BindingEffect("identity", context.endpoint, actual_submitter=context.actor))
+            return BindingDecision("identity", "当前身份：" + context.actor.native_user_id
+                + ("\n当前群：" + context.endpoint.native_conversation_id if context.endpoint.kind == 'group' else '')
+                + "\n此查询不授予管理权限。")
         if command.action == "create":
-            return self._create(cursor, context, lease_token, now)
+            if context.endpoint.kind == 'group' and command.code:
+                return self._submit(cursor, context, replace(command, action='submit'), now)
+            return self._create(cursor, context, lease_token, now, old_group=command.code)
         if command.action == "submit":
             return self._submit(cursor, context, command, now)
         if command.action in {"status", "cancel"}:
@@ -259,19 +264,25 @@ class BindingReducer:
         return hmac.new(self._pepper, (json.dumps(fields, separators=(",", ":")) + ":" + code).encode(),
                         hashlib.sha256).hexdigest()
 
-    def _create(self, cursor, context, token, now) -> BindingDecision:
+    def _create(self, cursor, context, token, now, old_group="") -> BindingDecision:
         if context.endpoint.kind != "private":
             return BindingDecision("denied", "请由已配置的 owner 在原私聊申请绑定。")
         grant = self.authority.c2c_grant(cursor, context.actor, lock=True)
         if grant is None:
             return BindingDecision("denied", "当前身份没有绑定管理权限。")
+        scope = None
+        if old_group:
+            from ...conversation_scope import ConversationScope
+            scope = ConversationScope('onebot-v11', 'group', old_group).key
+            if cursor.execute('SELECT 1 FROM conversations WHERE scope_key=?', (scope,)).fetchone() is None:
+                return BindingDecision('invalid', '没有找到这个旧群的历史，请核对群号。')
         self._lock_endpoints(cursor, [context.endpoint.key])
         self._expire_owner(cursor, grant.grant_id, now)
         previous = cursor.execute("""SELECT * FROM qq_official_binding_challenges
             WHERE owner_grant_id=? AND state IN ('sending','issued','candidate') FOR UPDATE""",
             (grant.grant_id,)).fetchone()
         if previous is not None:
-            return BindingDecision("pending", "已有待处理挑战，请查看状态或先取消。", previous["challenge_id"])
+            self._terminal(cursor, previous, 'cancelled', now)
         if not self._rate(cursor, ("qq-binding:v1", "issue-owner", grant.grant_id), maximum=3, seconds=600, now=now):
             return BindingDecision("limited", "挑战申请过于频繁，请稍后重试。")
         if not self._rate(cursor, ("qq-binding:v1", "issue-account", context.endpoint.account.key), maximum=20, seconds=600, now=now):
@@ -286,6 +297,7 @@ class BindingReducer:
             VALUES (?,?,?,?,?,?,?,?,'sending',0,?,?,?)""",
             (row["challenge_id"], row["account_key"], row["issuer_actor_key"], row["issuer_endpoint_key"],
              grant.grant_id, grant.revision, self._code_hash(row, code), row["expires_at"], now, now, token.epoch))
+        cursor.execute('UPDATE qq_official_binding_challenges SET source_scope_key=? WHERE challenge_id=?', (scope, row['challenge_id']))
         audit(cursor, account=context.endpoint.account, action="challenge.created", actor=context.actor.key,
               target=row["challenge_id"], outcome="sending", now=now)
         return BindingDecision("sending", "挑战已创建，等待私聊发送确认。", row["challenge_id"],
@@ -295,8 +307,14 @@ class BindingReducer:
     def _submit(self, cursor, context, command, now) -> BindingDecision:
         if context.endpoint.kind != "group":
             return BindingDecision("denied", "绑定码只能在待绑定的群内提交。")
-        row = cursor.execute("SELECT * FROM qq_official_binding_challenges WHERE account_key=? AND challenge_id=?",
-                             (context.endpoint.account.key, command.challenge_id)).fetchone()
+        if command.challenge_id:
+            row = cursor.execute("SELECT * FROM qq_official_binding_challenges WHERE account_key=? AND challenge_id=?",
+                                 (context.endpoint.account.key, command.challenge_id)).fetchone()
+        else:
+            candidates = cursor.execute("SELECT * FROM qq_official_binding_challenges WHERE account_key=? AND state='issued' AND expires_at>?",
+                (context.endpoint.account.key, now)).fetchall()
+            row = next((value for value in candidates if hmac.compare_digest(value['code_hmac'], self._code_hash(value, command.code))), None)
+            if row is not None: command = replace(command, challenge_id=row['challenge_id'])
         if row is None:
             return self._invalid()
         grant = self.authority.c2c_grant(cursor, ActorKey.parse(row["issuer_actor_key"]), lock=True)
@@ -319,7 +337,7 @@ class BindingReducer:
             if candidate and candidate["endpoint_key"] == context.endpoint.key and candidate["actor_key"] == context.actor.key:
                 return BindingDecision("pending", "候选已固定，等待原 owner 确认。", row["challenge_id"], candidate["candidate_id"])
             return self._invalid()
-        if row["state"] != "issued" or endpoint["binding_state"] == "active":
+        if row["state"] != "issued":
             return self._invalid()
         if not _CODE.fullmatch(command.code) or not hmac.compare_digest(row["code_hmac"], self._code_hash(row, command.code)):
             attempts = int(row["attempts"]) + 1
@@ -340,9 +358,11 @@ class BindingReducer:
             consumed_at=?,updated_at=? WHERE challenge_id=?""", (now, now, row["challenge_id"]))
         audit(cursor, account=context.endpoint.account, action="candidate.created", actor=context.actor.key,
               target=candidate_id, outcome="pending", now=now)
-        # No owner notification is scheduled: the owner can query from their
-        # original C2C, avoiding a second queue and unwanted proactive sends.
-        return BindingDecision("pending", "候选已固定，等待原 owner 确认。", row["challenge_id"], candidate_id)
+        owner = BindingContext(EndpointKey.parse(row['issuer_endpoint_key']), ActorKey.parse(row['issuer_actor_key']),
+            context.receipt_id, context.received_at)
+        return self._decide_candidate(cursor, context.endpoint.account,
+            BindingCommand('confirm', candidate_id=candidate_id, candidate_version=1, grant_submitter_owner=True),
+            context=owner, authorization=None, now=now)
 
     def _status_or_cancel(self, cursor, context, command, now):
         if context.endpoint.kind != "private":
@@ -425,8 +445,9 @@ class BindingReducer:
             audit(cursor, account=account, action="candidate.rejected", actor=confirmer,
                   target=candidate["candidate_id"], outcome="rejected", now=now)
             return BindingDecision("rejected", "候选已拒绝，原码失效。", row["challenge_id"], candidate["candidate_id"])
-        if endpoint["binding_state"] == "active":
-            return BindingDecision("conflict", "该群已由其他确认绑定。")
+        other = cursor.execute("SELECT owner_grant_id FROM qq_official_owner_actor_links WHERE endpoint_key=? AND state='active'", (endpoint['endpoint_key'],)).fetchall()
+        if any(link['owner_grant_id'] != grant.grant_id for link in other):
+            return BindingDecision('conflict', '这个群已绑定其他 owner。')
         target = EndpointKey.parse(candidate["endpoint_key"])
         submitter = ActorKey.parse(candidate["actor_key"])
         if target.kind != "group" or not submitter.matches_endpoint(target):
@@ -434,7 +455,7 @@ class BindingReducer:
             return self._invalid()
         cursor.execute("""UPDATE qq_official_endpoints SET binding_state='active',canonical_scope_key=?,
             route_epoch=route_epoch+1,updated_at=? WHERE endpoint_key=?""",
-            (target.scope.key, now, target.key))
+            (row["source_scope_key"] or endpoint["canonical_scope_key"], now, target.key))
         if command.grant_submitter_owner:
             cursor.execute("""INSERT INTO qq_official_owner_actor_links
                 (endpoint_key,account_key,actor_key,owner_grant_id,owner_revision,endpoint_generation,revision,state,
@@ -451,7 +472,7 @@ class BindingReducer:
                        (now, row["challenge_id"]))
         audit(cursor, account=account, action="candidate.confirmed", actor=confirmer,
               target=candidate["candidate_id"], outcome="bound_owner_granted" if command.grant_submitter_owner else "bound_only", now=now)
-        return BindingDecision("confirmed", "新群已绑定。" + ("已明确授予该群身份 owner 权限。" if command.grant_submitter_owner else "未授予群发令者 owner 权限。"),
+        return BindingDecision("confirmed", "群已绑定。" + ("已接入旧群历史。" if row["source_scope_key"] else ""),
                                row["challenge_id"], candidate["candidate_id"])
 
     @staticmethod
@@ -487,3 +508,15 @@ class BindingReducer:
             (grant_id, now)).fetchall()
         for row in rows:
             self._terminal(cursor, row, "expired", now)
+
+
+def control_authorized(cursor, inbox_id, endpoint, actor):
+    row = cursor.execute("SELECT 1 FROM qq_official_inbound_events WHERE inbox_id=? AND endpoint_key=? AND control_actor_key=? AND reason_code='binding_control' AND status='processed'",
+        (inbox_id, endpoint.key, actor.key)).fetchone()
+    return row is not None
+
+
+def control_for_delivery(cursor, delivery):
+    row = cursor.execute('SELECT manifest_json FROM delivery_plans WHERE plan_id=?', (delivery['plan_id'],)).fetchone()
+    control = json.loads(row['manifest_json']).get('control') if row else None
+    return control.get('control_id') if isinstance(control, dict) else None

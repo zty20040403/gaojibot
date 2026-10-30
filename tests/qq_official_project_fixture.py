@@ -42,10 +42,7 @@ class ProjectFixture(ExecutionFixture):
                 outcome='success', lease_token=self.token)
             submitted = reducer.apply(cursor, context=context(self.endpoint,self.actor),
                 command=parse_binding_command(f'/bind submit {issued.challenge_id} {issued.effect.code}'), lease_token=self.token)
-            self.assertEqual(submitted.status,'pending')
-            confirmed = reducer.apply(cursor, context=context(self.private,self.owner_actor),
-                command=parse_binding_command(f'/bind confirm {submitted.candidate_id} 1 --grant-owner'), lease_token=self.token)
-            self.assertEqual(confirmed.status,'confirmed')
+            self.assertEqual(submitted.status,'confirmed')
             # This synthetic inbound fixture is now admitted under the bound
             # endpoint, exactly as production TxA snapshots its current route.
             cursor.execute('''UPDATE qq_official_inbound_events SET endpoint_generation=e.generation,route_epoch=e.route_epoch

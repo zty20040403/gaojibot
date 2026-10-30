@@ -23,8 +23,7 @@ from src.qq_official.gateway import GatewayCheckpoint
 from .authority import OwnerAuthority
 from .binding import BindingContext, BindingDecision, BindingReducer
 from .input_normalization import normalize_input
-from .approval_control import (ControlResult, prepare_approval_input, control_commitment, apply_control)
-from .control_receipts import record_decision, enqueue_control_job
+from .approval import (ControlResult, prepare_approval_input, control_commitment, apply_control)
 from .codec import DecodedMessage, decode_message
 from .lease import assert_epoch
 from .admin_identity import prepare_identity_input, command_commitment
@@ -238,10 +237,6 @@ class OfficialInboxStore:
                 control = apply_control(cursor, store=self.approval_store, inbox_id=result.inbox_id,
                     session_id=session_id, seq=seq, command=result._approval_input, now=now)
                 result = replace(result, approval=control, _approval_input=None)
-            if result.binding is not None and result.inbox_id is not None:
-                control_id = record_decision(cursor, token, inbox_id=result.inbox_id,
-                    source_session_id=session_id, source_seq=seq, now=now)
-                enqueue_control_job(cursor, token, control_id, self.jobs, now)
             if ledger is not None and result.disposition == 'inbox':
                 from .ingest import process_inbox
                 ingested = process_inbox(cursor, inbox_id=result.inbox_id, lease_token=token,
@@ -424,7 +419,7 @@ class OfficialInboxStore:
                 store = self.approval_store
                 if store is not None:
                     from src.bot_security.store import SecurityError
-                    from .approval_transport import Recipient
+                    from .approval import Recipient
                     if store.transport is None or store.transport.token != token:
                         raise IngressError('Official approval epoch mismatch')
                     status, reason, approval_input = 'processed', 'admin_control', admin_input

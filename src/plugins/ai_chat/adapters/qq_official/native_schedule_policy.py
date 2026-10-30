@@ -61,7 +61,7 @@ def build_native_schedules(*,configuration,database,token,jobs,usage,outbox,admi
     if type(configuration) is not NativeScheduleConfiguration:raise ValueError('native_schedule_configuration_required')
     if not configuration.enabled:return None
     from src.plugins.ai_chat.adapters.qq_official.native_schedules import NativeSchedules
-    from src.plugins.ai_chat.adapters.qq_official.migration_continuation import SharedScheduledModel
+    from src.plugins.ai_chat.adapters.qq_official.scheduled_model import SharedScheduledModel
     domain=NativeSchedules(database=database,token=token,jobs=jobs,usage=usage,outbox=outbox,admission=admission,
         clock=clock,policy=DeploymentSchedulePolicy(configuration),
         **({'database_calls':database_calls} if database_calls is not None else {}))

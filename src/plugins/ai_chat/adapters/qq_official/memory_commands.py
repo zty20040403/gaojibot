@@ -9,7 +9,7 @@ from ...long_term_memory import LongTermMemoryError
 from ...memory_scopes import memory_scopes_for_inbound, group_memory_scope
 from ...platform_types import InboundMessage
 from ...tools.memory import _looks_like_secret
-from .command_fence import CommandEffectDenied
+from .commands import CommandEffectDenied
 
 
 class MemoryCommands:

@@ -2,7 +2,7 @@ from src.plugins.ai_chat.adapters.qq_official.actor_evidence import recent_actor
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.platform_types import ActorKey
 from tests.qq_official_outbox_fixture import OutboxFixture
-from tests.qq_official_migration_mapping_fixture import record_evidence
+from tests.qq_official_message_fixture import record_evidence
 
 
 class ActorEvidenceTests(OutboxFixture):
