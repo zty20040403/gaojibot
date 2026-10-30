@@ -38,6 +38,7 @@ class OfficialSender:
         self._receipts, self._unrecorded = set(), {}
         self._wake, self._recover_lock = asyncio.Event(), asyncio.Lock()
         self._stopping = self._recovered = False
+        self._running = False
         self.reason = 'ready'
 
     def wake(self):
@@ -265,6 +266,7 @@ class OfficialSender:
 
     async def run(self):
         await self.recover()
+        self._running = True
         try:
             while not self._stopping:
                 self._wake.clear()
@@ -277,6 +279,7 @@ class OfficialSender:
                 except TimeoutError:
                     pass
         finally:
+            self._running = False
             await self.stop()
 
     async def stop(self):
