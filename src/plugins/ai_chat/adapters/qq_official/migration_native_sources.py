@@ -12,6 +12,7 @@ import json
 import weakref
 
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
+from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 from .lease import assert_epoch
 from .migration_types import MigrationDenied
 
@@ -64,9 +65,44 @@ class SourceAdmission:
         verifier=self.sources.verifier
         if verifier is not None and verifier.file_proof(cursor,artifact=artifact,plan_id=plan_id,now=now) is not None:
             return
+        if job is not None and plan_id is None:
+            self._hold_unattempted_file(cursor, artifact, now)
         self.require_execution(cursor,artifact['source_execution_id'],
             endpoint=EndpointKey.parse(artifact['endpoint_key']),actor=ActorKey.parse(artifact['requester_actor_key']),
             operation='execute' if job is not None else 'send')
+
+    def _hold_unattempted_file(self, cursor, artifact, now):
+        """Delay only; the caller already checked account, endpoint and file job.
+
+        Planned routes still admit normal generation. Keep its untouched file
+        job available for the real verification request before ordinary logical
+        source checks reject the frozen route. No new sending authority, deadline
+        or retry is created here. Already attempted/unknown files retain their
+        original recovery rules. Do not acquire additional source route locks
+        after the caller's endpoint/job locks for this read-only denial.
+        """
+        if (artifact.get('source_migration_item_id') is not None
+                or artifact.get('source_execution_id') is None
+                or artifact['bytes_state'] != 'available'
+                or now >= min(artifact['pending_deadline_at'], artifact['retain_until'])):
+            return
+        row = cursor.execute("""SELECT j.deadline FROM migration_routes r
+            JOIN migration_journals j USING(route_id)
+            JOIN qq_official_file_deliveries d ON d.artifact_id=?
+            WHERE r.target_account_key=? AND r.target_endpoint_key=?
+              AND r.target_generation=? AND r.target_endpoint_epoch=?
+              AND r.phase IN ('planned','frozen','draining','switching','verifying')
+              AND j.deadline>? AND d.state='stored'
+              AND d.active_plan_id IS NULL AND d.credential_ref IS NULL
+              AND d.publication_request_key IS NULL
+              AND NOT EXISTS (SELECT 1 FROM qq_official_file_stage_attempts s
+                              WHERE s.artifact_id=d.artifact_id)
+            LIMIT 1""",
+            (artifact['artifact_id'], artifact['account_key'], artifact['endpoint_key'],
+             artifact['endpoint_generation'], artifact['route_epoch'], now)).fetchone()
+        if row is not None:
+            deadline = min(row['deadline'], artifact['pending_deadline_at'], artifact['retain_until'])
+            raise JobDeferred('migration_file_verification_pending', min(15, deadline-now))
 
     def file_verification(self,cursor,*,artifact,now):
         verifier=self.sources.verifier
