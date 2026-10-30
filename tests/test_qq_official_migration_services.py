@@ -11,7 +11,7 @@ from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.migration_services import MigrationServices,OneBotAccount
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode
@@ -33,7 +33,7 @@ class MigrationServicesFixture(JournalFixture,unittest.IsolatedAsyncioTestCase):
         self.store=OfficialInboxStore(self.database,jobs=self.jobs,clock=lambda:self.now,
             binding=BindingReducer(self.pepper,epoch_guard=assert_epoch,clock=lambda:self.now))
         self.addCleanup(self.store.close)
-        self.outbox=OfficialOutbox(self.deliveries,admission=self.store.admitted,pepper=self.pepper,clock=lambda:self.now)
+        self.outbox=OfficialSendStore(self.deliveries,admission=self.store.admitted,pepper=self.pepper,clock=lambda:self.now)
         self.runtime=SimpleNamespace(store=self.store,outbox=self.outbox,application=None,
             deliveries=self.deliveries,jobs=self.jobs,database=self.database,_calls=self.calls)
         self.session=self.service.official_factory(self.runtime,self.token)

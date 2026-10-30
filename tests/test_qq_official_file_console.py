@@ -17,7 +17,7 @@ from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.admin import AdminServices, register_admin
 from src.plugins.ai_chat.adapters.qq_official.file_links import VerifiedStream
 from src.plugins.ai_chat.adapters.qq_official.file_services import FileServiceConfig, FileServices
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
 from tests.qq_official_file_fixture import FileFixture, PDF, KEY
@@ -33,7 +33,7 @@ class ConsoleArtifactTests(FileFixture, unittest.IsolatedAsyncioTestCase):
         self.private = Path(temp.name)
         self.deliveries = DeliveryStore(self.database, recover_interrupted=False)
         self.addCleanup(self.deliveries.close)
-        self.outbox = OfficialOutbox(self.deliveries, admission=self.admission,
+        self.outbox = OfficialSendStore(self.deliveries, admission=self.admission,
             pepper=b'TEST_CONSOLE_PEPPER' * 3, clock=lambda: self.now)
         self.security = SecurityStore(self.database, b'TEST_CONSOLE_SECURITY' * 2, clock=lambda: self.now)
         self.addCleanup(self.security.close)

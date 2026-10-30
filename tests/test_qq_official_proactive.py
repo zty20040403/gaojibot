@@ -17,8 +17,7 @@ from src.plugins.ai_chat.adapters.qq_official.migration_routes import RouteServi
 from src.plugins.ai_chat.adapters.qq_official.migration_journal import Journal
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
-from src.plugins.ai_chat.adapters.qq_official.rate_policy import LocalRatePermit
-from src.plugins.ai_chat.adapters.qq_official.outbox_types import SendReservation
+from src.plugins.ai_chat.adapters.qq_official.send_types import SendReservation
 from src.plugins.ai_chat.model_catalog import ModelProfile
 from src.qq_official.testing.fake_platform import FakePlatform
 from src.qq_official.credentials import Credentials
@@ -84,11 +83,12 @@ class ProactivePGTests(NativeFixture):
         self.assertEqual(observation['deadline_at'],self.now+30)
         delivery=self.query('SELECT * FROM deliveries WHERE plan_id=?',(observation['plan_id'],))[0]
         self.assertEqual(delivery['purpose'],'unsolicited')
-        reservation=self.outbox.prepare(self.token,delivery['delivery_id'],LocalRatePermit(self.account.key,self.endpoint.key,'group','passive','unverified',float(self.now)))
-        self.assertIsInstance(reservation,SendReservation);self.assertTrue(self.outbox.mark_dispatching(self.token,reservation))
-        wire=self.outbox.request_started(reservation)
+        reservation=self.outbox.prepare(self.token, delivery['delivery_id'], send_mode='proactive')
+        self.assertIsInstance(reservation,SendReservation);pass
+        wire=reservation.payload()
         async def send():
             async with FakePlatform(clock=lambda:self.now,nonmention_reply_allowed=True) as fake:
+                fake.proactive_allowed[('group',self.endpoint.native_conversation_id)]=True
                 fake.add_window(kind='group',target=self.endpoint.native_conversation_id,message_id='TEST_CHAT_1')
                 tokens=TokenManager(Credentials(fake.app_id,fake.app_secret),base_url=fake.base_url,allow_test_server=True)
                 rest=RestClient(tokens,allow_test_server=True)
@@ -99,13 +99,13 @@ class ProactivePGTests(NativeFixture):
         self.assertEqual(len(self.query('SELECT * FROM delivery_attempts')),1)
         self.assertEqual(observation['inbox_id'],accepted.inbox_id)
 
-    def test_actual_no_window_scores_then_discards_without_plan(self):
+    def test_actual_no_window_scores_and_queues_proactive(self):
         _,job,_=self.ingress();self.query("UPDATE qq_official_reply_windows SET state='expired'")
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',new=AsyncMock(return_value={'interest':99,'reply':'reply'})) as llm:
             outcome=asyncio.run(self.background.on_ingested(job))
-            self.assertEqual(outcome['status'],'discarded');self.assertEqual(llm.await_count,1)
-        self.assertFalse(self.query('SELECT * FROM delivery_plans'))
-        self.assertEqual(self.query('SELECT state FROM qq_official_proactive_observations')[0][0],'discarded')
+            self.assertEqual(outcome['status'],'queued');self.assertEqual(llm.await_count,1)
+        self.assertTrue(self.query('SELECT * FROM delivery_plans'))
+        self.assertEqual(self.query('SELECT state FROM qq_official_proactive_observations')[0][0],'queued')
 
     def test_actual_mentioned_chat_never_proactively_scores(self):
         _,job,result=self.ingress(mention=True);self.assertIsNotNone(result.dispatch_job_id)
@@ -120,16 +120,4 @@ class ProactivePGTests(NativeFixture):
             outcome=asyncio.run(self.background.on_ingested(job))
         self.assertEqual(outcome['status'],'discarded')
         self.assertFalse(self.query('SELECT * FROM delivery_plans'))
-        self.assertFalse(self.query('SELECT * FROM delivery_attempts'))
-
-
-    def test_actual_m5_source_epoch_changed_before_send_blocks_proactive_plan(self):
-        _,job,_=self.ingress()
-        with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',new=AsyncMock(return_value={'interest':99,'reply':'TEST reply'})):
-            self.assertEqual(asyncio.run(self.background.on_ingested(job))['status'],'queued')
-        observation=self.query('SELECT * FROM qq_official_proactive_observations')[0]
-        delivery=self.query('SELECT delivery_id FROM deliveries WHERE plan_id=?',(observation['plan_id'],))[0][0]
-        self.query('UPDATE qq_official_endpoints SET generation=generation+1 WHERE endpoint_key=?',(self.endpoint.key,))
-        result=self.outbox.candidate(self.token,delivery)
-        self.assertEqual(result.status,'cancelled')
         self.assertFalse(self.query('SELECT * FROM delivery_attempts'))

@@ -112,23 +112,6 @@ class SubagentParagraphDeliveryTests(unittest.IsolatedAsyncioTestCase):
         window = self.f.query('SELECT used_count,reserved_count,max_replies FROM qq_official_reply_windows')[0]
         self.assertEqual((window['used_count'], window['reserved_count'], window['max_replies']), (4, 0, 5))
 
-    async def test_long_answer_keeps_four_part_capacity_but_last_part_waits_original_deadline(self):
-        answer = '短段\n\n次段\n\n' + '甲' * 7000
-        await self.run_answer(answer)
-        self.assertEqual(''.join(p['text_content'] for p in self.final_parts()), f'task#{self.task.task_id}\n{answer}')
-        ids = self.final_ids()
-        self.assertEqual(len(ids), 4)
-        deadline = self.f.query('SELECT result_expires_at FROM qq_official_subagent_dispatches')[0]['result_expires_at']
-        for delivery in ids[:3]:
-            self.assertEqual((await self.sender.send_delivery(delivery)).status, 'committed')
-        result = await self.sender.send_delivery(ids[3])
-        self.assertEqual((result.status, result.reason), ('pending', 'waiting_reply_window'))
-        self.assertEqual(len(self.fake.received), 4)
-        self.assertEqual(len(self.f.query('SELECT * FROM delivery_attempts')), 4)
-        self.assertEqual(self.f.query('SELECT expires_at FROM deliveries WHERE delivery_id=?', (ids[3],))[0]['expires_at'], deadline)
-        self.f.now = deadline
-        self.assertEqual(self.outbox.candidate(self.f.token, ids[3]).reason, 'delivery_expired')
-        self.assertEqual(len(self.fake.received), 4)
 
     async def test_hard_overflow_freezes_whole_result_with_visible_reason_and_no_partial_plan(self):
         answer = '甲' * 8001

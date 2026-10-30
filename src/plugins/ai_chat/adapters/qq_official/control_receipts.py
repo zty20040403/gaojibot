@@ -215,53 +215,8 @@ def bind_control_plan(cursor, token, *, control_id, plan_id, delivery_id, now):
         raise ControlEvidenceError("control_plan_conflict")
 
 
-def claim_control_attempt(cursor, token, *, control_id, attempt_id, now):
-    """M3 prepare hook AFTER allocating attempt/window, BEFORE committing it.
-
-    A failure rolls back the allocation. Existing historical attempts make a
-    second attempt ineligible even when one was proven unsent. No retry budget
-    or fallback may clear this binding; mark must recheck the exact first ID.
-    """
-    assert_epoch(cursor, token)
-    row = cursor.execute("SELECT * FROM qq_official_control_decisions WHERE control_id=? AND account_key=? FOR UPDATE",
-                         (control_id,token.account_key)).fetchone()
-    if row is None:
-        raise ControlEvidenceError("control_reply_unavailable")
-    if row["attempt_id"] == attempt_id:
-        return assert_control_attempt(cursor, token, control_id=control_id, attempt_id=attempt_id, now=now)
-    view = _load_authority(cursor, token, control_id=control_id, now=now, reserved_window=True)
-    if view is None or row["state"] != "handed_off":
-        raise ControlEvidenceError("control_attempt_already_used")
-    _delivery(cursor, view, row["plan_id"], row["delivery_id"])
-    attempt = cursor.execute("SELECT * FROM delivery_attempts WHERE attempt_id=? AND delivery_id=? AND account_key=?",
-        (attempt_id,row["delivery_id"],token.account_key)).fetchone()
-    count = cursor.execute("SELECT COUNT(*) AS count FROM delivery_attempts WHERE delivery_id=?", (row["delivery_id"],)).fetchone()["count"]
-    if (count != 1 or attempt is None or attempt["endpoint_key"] != view.endpoint.key
-            or attempt["fencing_epoch"] != token.epoch or attempt["state"] != "reserved"
-            or attempt["send_mode"] != "passive" or attempt["window_id"] != view.window_id
-            or attempt["send_by_at"] > view.expires_at or attempt["send_by_at"] <= now):
-        raise ControlEvidenceError("control_attempt_not_exact")
-    cursor.execute("""UPDATE qq_official_control_decisions SET attempt_id=?,state='attempted',updated_at=?
-        WHERE control_id=? AND account_key=? AND state='handed_off' AND attempt_id IS NULL""",
-        (attempt_id,now,control_id,token.account_key))
-    if cursor.rowcount != 1:
-        raise ControlEvidenceError("control_attempt_already_used")
 
 
-def assert_control_attempt(cursor, token, *, control_id, attempt_id, now):
-    """M3 mark-dispatching hook, before the sole physical request."""
-    view = _load_authority(cursor, token, control_id=control_id, now=now,
-                           expected_attempt=attempt_id, reserved_window=True)
-    if view is None:
-        raise ControlEvidenceError("control_attempt_unavailable")
-    row = cursor.execute("SELECT * FROM qq_official_control_decisions WHERE control_id=?", (control_id,)).fetchone()
-    _delivery(cursor, view, row["plan_id"], row["delivery_id"])
-    attempt = cursor.execute("SELECT * FROM delivery_attempts WHERE attempt_id=? AND delivery_id=? AND account_key=?",
-        (attempt_id,row["delivery_id"],token.account_key)).fetchone()
-    if (attempt is None or attempt["state"] not in {"reserved", "dispatched"}
-            or attempt["fencing_epoch"] != token.epoch or attempt["send_mode"] != "passive"
-            or attempt["window_id"] != view.window_id or not now < attempt["send_by_at"] <= view.expires_at):
-        raise ControlEvidenceError("control_attempt_not_exact")
 
 
 def control_job_kind(account_key):
@@ -332,9 +287,6 @@ def delivery_authorized(cursor, token, row, now):
     control_id = control_id_for_delivery(cursor, row)
     if control_id is None:
         return False
-    if row["status"] == "sending":
-        assert_control_attempt(cursor, token, control_id=control_id, attempt_id=row["current_attempt_id"], now=now)
-        return True
     view = load_authority(cursor, token, control_id=control_id, now=now)
     if view is None:
         return False
@@ -343,17 +295,6 @@ def delivery_authorized(cursor, token, row, now):
     return (bound["plan_id"], bound["delivery_id"]) == (row["plan_id"], row["delivery_id"])
 
 
-def control_policy_authority(cursor, token, *, control_id, endpoint, source_native_id, deadline, now):
-    """Same-transaction policy check before the first attempt CAS/charge commit."""
-    view = _load_authority(cursor, token, control_id=control_id, now=now, reserved_window=True)
-    row = cursor.execute("SELECT * FROM qq_official_control_decisions WHERE control_id=? AND account_key=?",
-                         (control_id, token.account_key)).fetchone()
-    if (view is None or row is None or view.endpoint != endpoint
-            or row["source_native_message_id"] != source_native_id or deadline > view.expires_at
-            or row["plan_id"] is None or row["delivery_id"] is None):
-        raise ControlEvidenceError("control_policy_unavailable")
-    _delivery(cursor, view, row["plan_id"], row["delivery_id"])
-    return view
 
 
 def sync_control_terminal(cursor, token, delivery_id, now):

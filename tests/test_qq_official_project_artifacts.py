@@ -14,7 +14,7 @@ from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.file_artifacts import file_job_kind
 from src.plugins.ai_chat.adapters.qq_official.file_authority import assert_file_current, assert_file_read_current
 from src.plugins.ai_chat.adapters.qq_official.file_services import FileServiceConfig, FileServices
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.project_artifacts import ProjectArtifactAuthority, ProjectFileBridge
 from src.plugins.ai_chat.agent.control import LeaseLost
 from src.plugins.ai_chat.delivery import DeliveryStore
@@ -47,7 +47,7 @@ class ProjectArtifactTests(ProjectFixture):
         self.addCleanup(lambda:asyncio.run(self.calls.close()))
         self.deliveries=DeliveryStore(self.database,recover_interrupted=False)
         self.addCleanup(self.deliveries.close)
-        self.outbox=OfficialOutbox(self.deliveries,admission=self.admission,pepper=b'TEST_PROJECT_FILES_PEPPER'*2,clock=lambda:self.now)
+        self.outbox=OfficialSendStore(self.deliveries,admission=self.admission,pepper=b'TEST_PROJECT_FILES_PEPPER'*2,clock=lambda:self.now)
         self.runtime=SimpleNamespace(_calls=self.calls,deliveries=self.deliveries,jobs=self.jobs,outbox=self.outbox,
             _stopping=False,_token=self.token,store=SimpleNamespace(admitted=self.admission,clock=lambda:self.now))
         temp=tempfile.TemporaryDirectory(prefix='TEST_project_files_')

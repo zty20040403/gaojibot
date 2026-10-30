@@ -410,15 +410,9 @@ class OfficialApprovalTransport:
             return (source['plan_id']==delivery['plan_id'] and source['delivery_id']==delivery['delivery_id']
                 and source['account_key']==delivery['account_key'] and source['endpoint_key']==delivery['endpoint_key']
                 and source['actor_key']==delivery['requester_actor_key']
-                and source['expires_at']==delivery['expires_at']==plan['approval_source_expires_at']
-                and (source['attempt_id'] is None or source['attempt_id']==delivery['current_attempt_id']))
+                and source['expires_at']==delivery['expires_at']==plan['approval_source_expires_at'])
         except (SecurityError,PermissionError,ValueError,TypeError):
             return False
-
-    def choice_current(self,cursor,*,delivery,choice):
-        row = cursor.execute('SELECT window_id FROM qq_official_admin_otp_sources WHERE delivery_id=? AND plan_id=?',
-                             (delivery['delivery_id'],delivery['plan_id'])).fetchone()
-        return row is not None and choice.send_mode=='passive' and choice.window_id==row['window_id']
 
     def bind_attempt(self,cursor,*,token,delivery,attempt_id,now):
         if not self.delivery_current(cursor,token=token,delivery=delivery,now=now):

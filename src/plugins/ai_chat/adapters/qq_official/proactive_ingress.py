@@ -12,7 +12,6 @@ import weakref
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
-from src.plugins.ai_chat.adapters.qq_official.send_policy import check_send_policy
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
 from src.plugins.ai_chat.agent.control import JobFence,active_job_fence,LeaseLost
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode
@@ -126,9 +125,7 @@ class ProactiveIngress:
         with self.tx() as c:
             row,(inbox,ep,_,_,physical)=self._candidate(c,source)
             if deadline!=row['deadline_at'] or purpose!='unsolicited':raise MigrationDenied('proactive_deadline_changed')
-            return check_send_policy(c,token=self.token,endpoint=ep,endpoint_row=physical,source_native_id=inbox['native_message_id'],
-                purpose=purpose,deadline=deadline,now=self._now(),allow_newer_windows=False,allow_proactive_probe=False,
-                certification=self.outbox.certification,verified_boundary=self.outbox.verified_boundary)
+            return physical['membership_state']=='present' and physical['binding_state']=='active'
 
     async def send_policy(self,*args,**kwargs):return await self.calls(self._send_policy,*args,**kwargs)
 

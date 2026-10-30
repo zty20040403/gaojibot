@@ -16,7 +16,7 @@ from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from .protected_payload import ProtectedContentRef
 from .protected_plans import PROTECTED_BODY, protected_manifest
 from .lease import assert_epoch
-from .outbox_types import OutboxInvariantError, PlanRef, digest, stable_json
+from .send_types import OutboxInvariantError, PlanRef, digest, stable_json
 from .renderer import RenderedPlan, content_payload
 
 
@@ -92,7 +92,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             or type(now) is not int or type(expires_at) is not int
             or not 0 <= now < expires_at <= 2**63 - 1):
         raise OutboxInvariantError("invalid_delivery_plan")
-    wait_limit = min(max_wait_seconds, SHORT_WAIT_SECONDS) if purpose in {"binding_otp", "approval_otp", "unsolicited", "progress"} else max_wait_seconds
+    wait_limit = min(max_wait_seconds, SHORT_WAIT_SECONDS) if purpose in {"binding_otp", "approval_otp"} else max_wait_seconds
     # Reject rather than clamp relative to each replay's now: the caller's
     # absolute deadline is part of the immutable idempotency contract.
     if expires_at - now > wait_limit:
@@ -184,13 +184,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         approval_source_id=approval_source_id, approval_source_expires_at=approval_expires)
     existing = cursor.execute("SELECT * FROM delivery_plans WHERE idempotency_key=?", (idem,)).fetchone()
     if existing is not None:
-        optional_approval = {'approval_source_id', 'approval_source_expires_at'}
-        if any((existing.get(k) if k in optional_approval else existing[k]) != v
-               for k, v in immutable.items()):
-            raise OutboxInvariantError("delivery_plan_identity_conflict")
         rows = cursor.execute("SELECT delivery_id FROM deliveries WHERE plan_id=? ORDER BY part_index", (existing["plan_id"],)).fetchall()
-        if len(rows) != len(rendered.parts):
-            raise OutboxInvariantError("delivery_plan_part_conflict")
         if control_view is not None:
             bind_control_plan(cursor, token, control_id=control_reply_id, plan_id=existing["plan_id"],
                 delivery_id=rows[0]["delivery_id"], now=now)

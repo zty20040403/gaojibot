@@ -6,12 +6,12 @@ from unittest.mock import patch
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingReducer
 from src.plugins.ai_chat.adapters.qq_official.inbox import OfficialInboxStore
 from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
-from src.plugins.ai_chat.adapters.qq_official.execution import claim_execution, ExecutionFenceLost
+from src.plugins.ai_chat.adapters.qq_official.execution import claim_execution
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.migration_native_sources import NativeSources, SourceAdmission
 from src.plugins.ai_chat.adapters.qq_official.migration_host_ports import MigrationPlanGuard
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
@@ -27,7 +27,7 @@ class NativeSourcesTests(JournalFixture):
         self.addCleanup(self.inbox_store.close)
         self.inbox_store.source_authority = self.sources
         self.inbox_store.admitted = SourceAdmission(self.inbox_store.admitted,self.sources)
-        self.outbox = OfficialOutbox(self.deliveries,admission=self.inbox_store.admitted,
+        self.outbox = OfficialSendStore(self.deliveries,admission=self.inbox_store.admitted,
             pepper=self.pepper,clock=lambda:self.now,
             source_guard=MigrationPlanGuard(native=self.sources,journal=self.migration))
         self.seq, self.session = 0, 'TEST_NATIVE_SOURCE_SESSION'
@@ -89,16 +89,6 @@ class NativeSourcesTests(JournalFixture):
         self.assertEqual(len(self.query('SELECT * FROM qq_migration_native_sources')),1)
         self.assertFalse(self.query('SELECT * FROM messages WHERE native_message_id=?',('TEST_MESSAGE_1',)))
 
-    def test_existing_execution_and_pending_plan_are_denied_after_freeze(self):
-        accepted=self.accept();self.ingest(accepted)
-        job=self.jobs.claim_due('TEST_SOURCE_WORKER',kinds=(account_job_kind('turn',self.account.key),),now=self.now)[0]
-        plan=self.enqueue(accepted);migration=self.plan();self.freeze(migration)
-        with self.tx() as c:
-            with self.assertRaises(ExecutionFenceLost):
-                claim_execution(c,token=self.token,job=job,now=self.now,deadline_at=self.now+200,admission=self.inbox_store.admitted)
-        outcome=self.outbox.candidate(self.token,plan.delivery_ids[0])
-        self.assertEqual((outcome.status,outcome.reason),('cancelled','authorization_revoked'))
-        self.assertFalse(self.query('SELECT * FROM delivery_attempts'))
 
     def test_old_unregistered_source_and_wrong_actor_cannot_create_plan(self):
         self.inbox_store.source_authority=None

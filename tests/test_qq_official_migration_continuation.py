@@ -21,7 +21,7 @@ from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.delivery import DeliveryStore
@@ -188,7 +188,7 @@ class ContinuationTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
         self.usage = self.owned(UsageStore(self.database))
         self.reminders = self.owned(ReminderStore(self.database))
         self.routines = self.owned(RoutineStore(self.database,jobs=self.jobs,outbox=self.deliveries,usage=self.usage))
-        self.outbox = OfficialOutbox(self.deliveries,admission=lambda c,e,a: e==self.endpoint and a==self.actor,
+        self.outbox = OfficialSendStore(self.deliveries,admission=lambda c,e,a: e==self.endpoint and a==self.actor,
             pepper=b'TEST_PEPPER'*5,clock=lambda:self.now,allow_newer_windows=True)
         with self.tx() as cursor:
             observe_ready(cursor,self.token,{'op':0,'t':'READY','d':{'session_id':'TEST_SESSION','user':{'id':'TEST_BOT','bot':True}}},self.now)

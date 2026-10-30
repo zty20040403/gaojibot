@@ -1,8 +1,7 @@
 """Trusted startup delivery limits; never loaded from a chat or model tool."""
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 import re
 
-from .rate_policy import RateCaps
 from .turn_platform import TurnDeliveryPolicy, PlatformBoundaryError
 
 
@@ -33,7 +32,6 @@ class DeliveryConfiguration:
     defer_max_hours: int = 24
     allow_newer_windows: bool = True
     certification: str = 'unknown'
-    rate_caps: RateCaps = RateCaps()
     project_grant_ttl_seconds: int = 86400
     file_link_ttl_seconds: int = 3600
 
@@ -42,8 +40,7 @@ class DeliveryConfiguration:
                 or type(self.defer_max_hours) is not int or not 1 <= self.defer_max_hours <= 24
                 or type(self.project_grant_ttl_seconds) is not int
                 or not 60 <= self.project_grant_ttl_seconds <= 86400
-                or type(self.file_link_ttl_seconds) is not int or not 60 <= self.file_link_ttl_seconds <= 3600
-                or type(self.rate_caps) is not RateCaps):
+                or type(self.file_link_ttl_seconds) is not int or not 60 <= self.file_link_ttl_seconds <= 3600):
             raise ValueError('invalid_official_delivery_configuration')
         try:
             self.turn_policy()
@@ -62,8 +59,6 @@ class DeliveryConfiguration:
             certification=env.get('AI_QQ_OFFICIAL_CERTIFICATION', 'unknown').strip(),
             project_grant_ttl_seconds=_integer(env, 'PROJECT_GRANT_TTL_SECONDS', 86400),
             file_link_ttl_seconds=_integer(env, 'FILE_LINK_TTL_SECONDS', 3600),
-            rate_caps=RateCaps(**{field.name: _integer(env, 'RATE_'+field.name.upper(), None, optional=True)
-                                 for field in fields(RateCaps)}),
         )
 
     @property

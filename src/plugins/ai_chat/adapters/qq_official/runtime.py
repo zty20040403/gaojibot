@@ -27,7 +27,7 @@ from .ingest import process_inbox
 from .keys import account_job_kind
 from .lease import DedicatedAccountLease, LeaseLost, LeaseUnavailable, advisory_key_for
 from .identity_store import observe_ready, observe_self_api
-from .outbox import OfficialOutbox
+from .send_store import OfficialSendStore
 from .official_metrics import observe
 
 
@@ -191,7 +191,7 @@ class OfficialRuntime:
                 private_policy=self.loaded.private_policy, private_allowed_openids=self.loaded.private_allowed_openids,
                 payload_retention_hours=self.loaded.payload_retention_hours)
             await self._calls(self.store.ensure_account, self.loaded.account)
-            self.outbox = OfficialOutbox(self.deliveries, admission=self.store.admitted,
+            self.outbox = OfficialSendStore(self.deliveries, admission=self.store.admitted,
                 pepper=self.loaded.binding_pepper, certification=self.loaded.delivery.certification,
                 max_wait_seconds=self.loaded.delivery.max_wait_seconds,
                 allow_newer_windows=self.loaded.delivery.allow_newer_windows)
@@ -430,10 +430,8 @@ class OfficialRuntime:
             rest = getattr(gateway, "rest_client", None)
             if isinstance(rest, RestClient):
                 from .sender import OfficialSender
-                from .rate_policy import LocalAccountRateGate
                 self.sender = OfficialSender(self.loaded.account, token, self.outbox, rest, self.ledger,
                     journal=self.journal, database_calls=self._calls, observer=self.observer,
-                    rate_gate=LocalAccountRateGate(self.loaded.account,rate_caps=self.loaded.delivery.rate_caps),
                     ensure_current=lambda: self._ensure_current(token))
                 await self.sender.recover()
                 await self.sender.refresh_bound_groups()

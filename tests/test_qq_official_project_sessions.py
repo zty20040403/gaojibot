@@ -26,7 +26,7 @@ from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id
 from src.plugins.ai_chat.adapters.qq_official.file_services import FileServiceConfig, FileServices
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.project_artifacts import ProjectArtifactAuthority
 from src.plugins.ai_chat.adapters.qq_official.project_sessions import ProjectTaskSessions
 from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import OfficialSubAgentDispatcher
@@ -96,7 +96,7 @@ class ProjectSessionTests(ProjectFixture, unittest.IsolatedAsyncioTestCase):
         self.manager.baseline=self.query('SELECT manifest_sha256 FROM project_versions WHERE project_id=?',(self.project['project_id'],))[0]['manifest_sha256']
         self.deliveries=DeliveryStore(self.database,recover_interrupted=False)
         self.addCleanup(self.deliveries.close)
-        self.outbox=OfficialOutbox(self.deliveries,admission=self.admission,
+        self.outbox=OfficialSendStore(self.deliveries,admission=self.admission,
             pepper=b'TEST_PROJECT_SESSION_PEPPER'*2,clock=lambda:self.now)
         self.temp=tempfile.TemporaryDirectory(prefix='TEST_project_sessions_')
         self.addCleanup(self.temp.cleanup)

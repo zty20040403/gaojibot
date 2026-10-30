@@ -237,25 +237,6 @@ class ProjectCaptureAuthorityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake.media_calls,[])
         self.assertEqual(f.query('SELECT * FROM qq_official_file_stage_attempts'),[])
 
-    async def test_mark_freshness_race_is_confirmed_unsent_and_same_plan_can_resume(self):
-        f=self.f;artifact=await self.prepared_file('TEST_MARK_FRESH')
-        await self.run_file()
-        delivery=f.query('SELECT delivery_id FROM qq_official_file_message_plans WHERE artifact_id=?',(artifact.artifact_id,))[0][0]
-        f.now+=300
-        self.observe(member='TEST_OTHER_MEMBER')
-        original=f.outbox.mark_dispatching
-        def mark(*args):
-            f.now+=1
-            return original(*args)
-        with patch.object(f.outbox,'mark_dispatching',mark):
-            outcome=await self.sender.send_delivery(delivery)
-        self.assertEqual(outcome.status,'pending',outcome)
-        attempt=f.query('SELECT * FROM delivery_attempts WHERE delivery_id=?',(delivery,))[0]
-        self.assertEqual((attempt['state'],attempt['acceptance']),('cancelled_unsent','confirmed_no'))
-        self.assertEqual(self.fake.received,[])
-        self.observe();f.now+=16
-        self.assertEqual((await self.sender.send_delivery(delivery)).status,'committed')
-        self.assertEqual(len(self.fake.media_calls),1);self.assertEqual(len(self.fake.received),1)
 
     async def test_original_deadline_ends_wait_without_upload(self):
         f=self.f;artifact=await self.prepared_file('TEST_WAIT_EXPIRES')

@@ -409,7 +409,7 @@ class RestTests(unittest.IsolatedAsyncioTestCase):
             (200, {"code": 0, "err_code": 40034105}, "proactive_denied", False),
             (429, {}, "rate_limited", False),
             (401, {}, "authentication", False),
-            (403, {"code": 9999}, "unknown", None),
+            (403, {"code": 9999}, "platform_rejected", False),
             (500, {}, "unknown", None),
             (200, {"code": "unrecognized"}, "unknown", None),
             (200, {"code": 40034128, "err_code": 999}, "unknown", None),

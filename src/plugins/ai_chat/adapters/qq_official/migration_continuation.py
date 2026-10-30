@@ -21,7 +21,7 @@ from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.identity_store import snapshot
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
-from src.plugins.ai_chat.adapters.qq_official.outbox_types import stable_json
+from src.plugins.ai_chat.adapters.qq_official.send_types import stable_json
 from src.plugins.ai_chat.agent.control import JobFence, active_job_fence, LeaseLost as ModelLeaseLost
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json, body_to_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey

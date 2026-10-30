@@ -18,7 +18,7 @@ from src.plugins.ai_chat.adapters.qq_official.plans import enqueue_plan
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.plugins.ai_chat.turn_journal import TurnJournal
 from tests.qq_official_outbox_fixture import OutboxFixture
-from tests import test_qq_official_receipts as receipt_fixture
+from tests import qq_official_receipt_fixture as receipt_fixture
 from tests.qq_official_migration_mapping_fixture import install_mapping,rotate_mapping
 
 
@@ -178,9 +178,9 @@ class JournalFixture(OutboxFixture):
                 return created
 
             with patch.object(receipt_fixture, "enqueue_plan", side_effect=register_plan):
-                attempt = receipt_fixture.OfficialReceiptTests.attempt(self)
-            receipt = receipt_fixture.OfficialReceiptTests.capture(self, attempt, {"id": "NATIVE_"+kind})
-            self.assertEqual("committed", receipt_fixture.OfficialReceiptTests.finalize(self, receipt, journal=False).status)
+                attempt = receipt_fixture.ReceiptFixture.attempt(self)
+            receipt = receipt_fixture.ReceiptFixture.capture(self, attempt, {"id": "NATIVE_"+kind})
+            self.assertEqual("committed", receipt_fixture.ReceiptFixture.finalize(self, receipt, journal=False).status)
             source = object()
             self.verifications[source] = VerificationEvidence(receipt, attempt.delivery_id, kind, nonce)
             with self.tx() as cursor:

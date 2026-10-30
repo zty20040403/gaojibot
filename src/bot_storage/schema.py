@@ -1,4 +1,4 @@
 from __future__ import annotations
 
 
-HEAD_REVISION = "0068_qq_official_operations"
+HEAD_REVISION = "0069_qq_simple_sender"

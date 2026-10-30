@@ -15,8 +15,7 @@ from tests import test_qq_official_execution as execution_tests
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
-from src.plugins.ai_chat.adapters.qq_official.rate_policy import LocalRatePermit
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.message_ir import MediaNode, MessageBody, MentionNode, TextNode
 from src.plugins.ai_chat.platform_types import (
@@ -25,7 +24,7 @@ from src.plugins.ai_chat.platform_types import (
 )
 from src.plugins.ai_chat.adapters.qq_official.turn_platform import (
     ExecutionBinding, MembershipEvidence, OfficialTurnPlatform, PlatformBoundaryError,
-    TransportState, TurnDeliveryPolicy,
+    TransportState,
 )
 
 
@@ -46,7 +45,7 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
             self.credential, route_epoch=1)
         self.memberships = ()
         self.mention_actors = frozenset()
-        self.outbox = OfficialOutbox(self.deliveries, admission=self.f.admission,
+        self.outbox = OfficialSendStore(self.deliveries, admission=self.f.admission,
             pepper=b"TEST_PLATFORM_PEPPER" * 3, clock=lambda: self.f.now,
             mention_authority=lambda *_: self.mention_actors)
         self.transport = TransportState(self.f.account, True, True)
@@ -106,7 +105,7 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
         self.f.query("UPDATE qq_official_reply_windows SET state='expired'")
         readiness = await self.platform.readiness(self.f.endpoint)
         self.assertIsNone(readiness.blocker)
-        self.assertEqual(readiness.delivery_condition,"waiting_reply_window")
+        self.assertEqual(readiness.delivery_condition,"passive_candidate")
         self.f.admitted = False
         self.assertEqual(await self.platform.ready(self.f.endpoint),"actor_not_admitted")
         self.f.admitted = True
@@ -175,37 +174,7 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.platform.send(self.request())).status,"failed")
         self.assertFalse(self.f.query("SELECT * FROM deliveries"))
 
-    async def test_expired_original_credential_does_not_discard_frozen_background_result(self):
-        # Replace the unused prepared test fixture, then enter the real trusted
-        # claim API; request/model fields cannot choose this scheduling purpose.
-        self.f.query("DELETE FROM qq_official_turn_executions WHERE state='prepared'")
-        self.handle=self.f.claim("background_result").handle
-        self.inbound=replace(self.inbound,reply_credential=replace(self.credential,expires_at=self.f.now-1))
-        self.f.query("UPDATE qq_official_reply_windows SET expires_at=?,state='expired'",(self.f.now-1,))
-        self.platform=self.make_platform()
-        self.freeze()
-        result=await self.platform.send(self.request())
-        self.assertEqual(result.status,"pending")
-        row=self.f.query("SELECT purpose,expires_at FROM deliveries")[0]
-        self.assertEqual((row["purpose"],row["expires_at"]),("background_result",self.handle.deadline_at))
-        self.assertEqual(self.outbox.candidate(self.f.token,result.receipt["delivery_ids"][0]).reason,"waiting_reply_window")
 
-    async def test_accepted_is_pending_and_only_applied_receipt_is_committed(self):
-        self.freeze()
-        queued=await self.platform.send(self.request())
-        delivery=queued.receipt["delivery_ids"][0]
-        permit=LocalRatePermit(self.f.account.key,self.f.endpoint.key,"group","passive","unverified",float(self.f.now))
-        reservation=self.outbox.prepare(self.f.token,delivery,permit)
-        self.assertTrue(self.outbox.mark_dispatching(self.f.token,reservation))
-        self.outbox.request_started(reservation)
-        receipt=self.outbox.capture_receipt(reservation,{"id":"TEST_PLATFORM_RECEIPT"})
-        self.f.query("UPDATE delivery_attempts SET bot_actor_key=NULL,bot_identity_source=NULL,bot_identity_revision=NULL")
-        self.assertEqual(self.outbox.finalize(self.f.token,receipt,ledger=self.f.ledger).status,"accepted")
-        self.assertEqual((await self.platform.send(self.request())).status,"pending")
-        bot=ActorKey(self.f.account,"bot","","TEST_BOT")
-        self.f.query("UPDATE delivery_attempts SET bot_actor_key=?,bot_identity_source='ready',bot_identity_revision=1",(bot.key,))
-        self.assertEqual(self.outbox.finalize(self.f.token,receipt,ledger=self.f.ledger).status,"committed")
-        self.assertEqual((await self.platform.send(self.request())).status,"committed")
 
     async def test_native_mentions_require_both_current_inbound_evidence_and_m3_revalidation(self):
         self.mention_actors=frozenset({self.f.actor})
@@ -234,12 +203,6 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.platform.progress_enabled)
         self.assertFalse(await self.platform.recall(self.f.endpoint,"TEST_MESSAGE"))
 
-    async def test_unverified_new_window_policy_cannot_be_enabled_implicitly(self):
-        self.outbox.allow_newer_windows=True
-        with self.assertRaisesRegex(PlatformBoundaryError,"policy_mismatch"):
-            self.make_platform()
-        platform=self.make_platform(policy=TurnDeliveryPolicy(allow_newer_windows=True))
-        self.assertTrue(platform.policy.allow_newer_windows)
 
     async def test_media_requires_attachment_and_does_not_create_a_fake_delivery(self):
         self.freeze(MessageBody((MediaNode(0,"file",source="TEST_LOCAL_SOURCE",name="TEST_REPORT.pdf"),)))

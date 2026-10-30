@@ -34,8 +34,8 @@ class QQAPIError(Exception):
 
 
 def classify_error(status: int, code: int | None, *, stage: str = "request", **details) -> QQAPIError:
-    # These are deliberately small, explicit evidence rules. A new numeric code
-    # is NOT a safe retry merely because the response was HTTP 4xx/200.
+    # A parsed message error code is an explicit rejection. Transport/parse
+    # failures remain unknown; uploads retain their separate S3 contract.
     known = {
         40034006: "content_rejected",
         40034128: "window_exhausted",
@@ -52,6 +52,8 @@ def classify_error(status: int, code: int | None, *, stage: str = "request", **d
         category, accepted = "authentication", False
     elif status == 429:
         category, accepted = "rate_limited", False
+    elif code is not None and stage != "upload":
+        category, accepted = "platform_rejected", False
     else:
         category, accepted = "unknown", None
     return QQAPIError(category, accepted=accepted, status=status, code=code, stage=stage, **details)
