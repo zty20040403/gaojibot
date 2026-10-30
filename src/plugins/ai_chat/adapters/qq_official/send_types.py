@@ -62,5 +62,3 @@ def stable_json(value) -> str:
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
