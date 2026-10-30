@@ -35,11 +35,11 @@ def _project(definition, context):
     files = enabled(context)
     function = definition['function']
     if function['name'] == 'delegate_agent':
-        function['description'] = ('提交独立研究、分析或 PDF/ZIP 文件任务；产物登记后由持久队列投递，上传不等于消息已接受。'
+        function['description'] = ('提交独立研究、分析或 文件任务；产物登记后由持久队列投递，上传不等于消息已接受。'
             if files else '提交一个独立文字研究或分析任务，完成后由持久队列把结果送回当前会话。')
         function['parameters']['properties']['role']['enum'] = sorted(FILE_ROLES) if files else ['researcher', 'analyst']
     else:
-        function['description'] = ('提交多步骤研究、分析或 PDF/ZIP 文件任务；工作区只属于本次来源；文件任务不附带宿主权限，服务器任务另按当前准入执行。'
+        function['description'] = ('提交多步骤研究、分析或 文件任务；工作区在当前会话中复用；文件任务不附带宿主权限，服务器任务另按当前准入执行。'
             if files else '提交有多个步骤的文字研究或分析任务；文件和项目另需对应能力，服务器任务另按当前准入执行。')
 
 

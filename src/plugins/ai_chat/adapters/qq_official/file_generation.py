@@ -30,4 +30,3 @@ class GenerationBindingAdapter:
             with self.store.transaction() as cursor:
                 current_source(cursor,self.source,self.store._now())
         await self.calls(check)
-

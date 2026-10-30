@@ -121,7 +121,35 @@ class OfficialSubAgentService:
             tools=tools, execute_tool=execute_tool, clock=self.runtime.store.clock,
             execution_factory=self._prepare_tool_session, migration_authority=self.migration_authority,
             project_finalizer=self.projects.finalize if self.projects is not None else None,
-            project_authority=self.projects.assert_current if self.projects is not None else None)
+            project_authority=self.projects.assert_current if self.projects is not None else None,
+            present_result=self._present_result)
+
+    async def _present_result(self, job, task, previous_session=None):
+        if task.result.get('frontend_answer'):
+            return
+        from .task_result import present_task_result
+        control = await self.runtime._calls(self.coordinator.store.control, task.task_id)
+        profile = self.app.model_catalog.try_resolve(control['dispatch'].get('profile'))
+        from ...subagents import _checkpoint_context_packet
+        checkpoints = await self.runtime._calls(self.coordinator.store.checkpoints, task.task_id)
+        context = _checkpoint_context_packet(checkpoints)
+        session = None
+        try:
+            if task.status != 'cancelled':
+                files = control['dispatch'].get('tool_profile') in {'official-files-v1', 'official-projects-v1'}
+                if task.project_id is None and control['dispatch'].get('tool_profile') != 'official-host-v1':
+                    session = await self._prepare_tool_session(job, task, files)
+                # Result delivery may read the workspace and send attachments, but
+                # does not reopen host or project mutations after terminal state.
+                if session is not None:
+                    session.tools = tuple(item for item in session.tools if item['function']['name'] in TEXT_TOOLS | FILE_TOOLS)
+            answer = await present_task_result(task, profile=profile, session=session,
+                context=context.as_payload() if context is not None else None)
+            await self.runtime._calls(self.coordinator.store.set_task_state, task.task_id, task.status,
+                result={**task.result, 'answer': answer, 'frontend_answer': True}, error=task.last_error)
+        finally:
+            if session is not None and session.close is not None:
+                await session.close()
 
     async def execute(self, job):
         try:
@@ -141,11 +169,9 @@ class OfficialSubAgentService:
                 now=now, admission=self.runtime.store.admitted, job=job,
                 migration_authority=self.migration_authority,
                 project_authority=self.projects.assert_current if self.projects is not None else None)
-            if row["status"] in {"completed", "partial", "failed", "cancelled"}:
-                raise LeaseLost("progress_task_unavailable")
             return ProgressContext("task:" + str(task.task_id) + ":1",
                 EndpointKey.parse(binding["endpoint_key"]), ActorKey.parse(binding["requester_actor_key"]),
-                row["scope_key"], binding["execution_deadline_at"],
+                row["scope_key"], max(binding["execution_deadline_at"], now + 600),
                 binding["source_native_message_id"] or "", binding["source_canonical_message_id"])
         return ProgressEmitter(token=self.token, outbox=self.runtime.outbox, current=current,
             database_calls=self.runtime._calls,

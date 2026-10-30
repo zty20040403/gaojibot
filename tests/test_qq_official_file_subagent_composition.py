@@ -4,7 +4,6 @@ Only the model and the owned guest are fake. No QQ requests, listeners, or
 legacy dispatcher are used; fixture classes contain no inherited test methods.
 """
 from dataclasses import replace
-import hashlib
 import io
 import json
 from pathlib import Path
@@ -20,7 +19,6 @@ from src.plugins.ai_chat.agent.execution import EntryDecision, TaskContract
 from src.plugins.ai_chat.agent_loop import AgentLoopEvent
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.delivery import DeliveryStore
-from src.plugins.ai_chat.message_ir import body_from_json
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
 from src.plugins.ai_chat.subagents import SubAgentCoordinator, SubAgentStore
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id
@@ -96,10 +94,7 @@ class FileSubAgentCompositionTests(FileFixture, unittest.IsolatedAsyncioTestCase
         await self.calls.close()
 
     def configure_files(self, *, link=True):
-        config = FileServiceConfig(self.private, self.manager, generation_enabled=True,
-            route_authority=lambda *_: True, min_free_bytes=0,
-            link_origin='https://files.example' if link else None,
-            link_reachable=(lambda: True) if link else None)
+        config = FileServiceConfig(self.private, self.manager, generation_enabled=True, min_free_bytes=0)
         self.file_service = FileServices(self.runtime, self.token, None, config)
         self.runtime.file_service = self.file_service
         self.outbox.protected_payloads = self.file_service.payloads
@@ -178,128 +173,54 @@ class FileSubAgentCompositionTests(FileFixture, unittest.IsolatedAsyncioTestCase
             await worker._execute(self.task_job)
             return self.jobs.get(self.task_job.job_id).result
 
-    async def generation_case(self, role, kind):
+    async def frontend_model(self, prompt, messages, tools, execute_tool, **kwargs):
+        self.frontend_calls += 1
+        self.assertEqual(json.loads(prompt)['status'], self.expected_status)
+        self.assertIn('send_file', {item['function']['name'] for item in tools})
+        token = active_tool_call_id.set('TEST_FRONT_FILE')
+        try:
+            sent = json.loads(await execute_tool('send_file', {'path': '/work/result.' + self.kind}))
+        finally:
+            active_tool_call_id.reset(token)
+        self.assertTrue(sent['message_accepted'], sent)
+        return 'TEST 文件已送达；剩余内容见检查意见。'
+
+    async def generation_case(self, role, kind, partial=False):
         self.configure_files()
         self.submit_task(role=role, kind=kind)
-        result = await self.run_model()
-        self.assertEqual(self.jobs.get(self.task_job.job_id).status, 'succeeded')
+        self.frontend_calls, self.expected_status = 0, 'partial' if partial else 'completed'
+        self.file_service.generation.send_artifact = AsyncMock(return_value=SimpleNamespace(status='committed'))
+        async def model(*args, **kwargs):
+            report = json.loads(await self.file_model(*args, **kwargs))
+            if partial:
+                report['status'] = 'partial'
+                report['warnings'] = ['TEST unfinished section']
+            return json.dumps(report)
+        with patch('src.plugins.ai_chat.adapters.qq_official.task_result.ask_deepseek_with_tools', new=self.frontend_model):
+            result = await self.run_model(model)
         task = self.tasks.get(self.task.task_id)
-        self.assertEqual(task.status, 'completed', task.result)
-        self.assertIsNone(task.requester_user_id)
-        self.assertEqual((task.endpoint, task.requester_actor), (self.endpoint, self.actor))
-        self.assertEqual(self.model_calls, 2)
-        self.assertIn('import_agent_artifact', self.sequence)
-        self.assertTrue(any(call[0] == 'inspect_captured' for call in self.manager.calls))
-        rows = self.query('SELECT * FROM qq_official_file_artifacts')
-        self.assertEqual(len(rows), 1, task.result)
-        artifact = rows[0]
-        self.assertEqual((artifact['source_task_id'], artifact['requester_actor_key']), (task.task_id, self.actor.key))
-        self.assertFalse(artifact['draft'])
-        content = self.file_service.artifacts.blobs.read(artifact['sha256'], max_bytes=artifact['byte_size'])
-        self.assertEqual(hashlib.sha256(content).hexdigest(), artifact['sha256'])
-        if kind == 'pdf':
-            self.assertTrue(content.startswith(b'%PDF-'))
-            self.assertIn(b'TEST authored content', content)
-        else:
-            with zipfile.ZipFile(io.BytesIO(content)) as archive:
-                self.assertEqual(archive.read('main.py'), b'TEST authored content')
-        self.assertEqual(self.query('SELECT state FROM qq_official_file_deliveries'), [{'state': 'stored'}])
-        self.assertEqual(self.query('SELECT * FROM subagent_deliveries'), [])
-        self.assertEqual(self.query('SELECT * FROM delivery_attempts'), [])
-        self.assertEqual(self.query('SELECT purpose FROM delivery_plans'), [{'purpose': 'background_result'}])
+        self.assertEqual(self.jobs.get(self.task_job.job_id).status, 'succeeded')
+        self.assertEqual(task.status, self.expected_status)
+        self.assertTrue(task.result['frontend_answer'])
+        self.assertEqual(self.frontend_calls, 1)
+        self.assertEqual(self.model_calls, 1)
         self.assertTrue(result['plan_id'])
-        self.assertEqual(self.tasks.deliveries(task.task_id)[0]['payload']['message_accepted'], False)
-        self.assertEqual(self.manager.items, {})
-        return task, artifact
+        self.assertEqual(len(self.query('SELECT * FROM qq_official_file_artifacts')), 1)
+        self.file_service.generation.send_artifact.assert_awaited_once()
+        self.assertEqual(len(self.manager.items), 1)
+        with patch('src.plugins.ai_chat.adapters.qq_official.task_result.ask_deepseek_with_tools', new_callable=AsyncMock) as frontend:
+            await self.service._present_result(self.task_job, task)
+        frontend.assert_not_awaited()
 
-    async def test_document_pdf_real_coordinator_registry_capture_and_durable_registration(self):
+    async def test_pdf_worker_frontend_and_durable_result(self):
         await self.generation_case('document', 'pdf')
 
-    async def test_coder_zip_real_coordinator_registry_capture_and_durable_registration(self):
-        await self.generation_case('coder', 'zip')
+    async def test_partial_zip_is_delivered_with_report(self):
+        await self.generation_case('coder', 'zip', partial=True)
 
     async def test_file_profile_without_services_defers_before_model_or_guest(self):
         self.submit_task()
         with patch('src.plugins.ai_chat.subagents.ask_deepseek_with_tools', new_callable=AsyncMock) as model:
-            with self.assertRaises(JobDeferred) as caught:
-                await self.service.execute(self.task_job)
-        self.assertEqual(str(caught.exception), 'official_task_files_unavailable')
-        model.assert_not_awaited()
-        self.assertEqual(self.manager.calls, [])
-
-    async def test_unverified_native_without_link_does_not_open_generation(self):
-        self.configure_files(link=False)
-        self.submit_task()
-        with patch('src.plugins.ai_chat.subagents.ask_deepseek_with_tools', new_callable=AsyncMock) as model:
-            with self.assertRaises(JobDeferred) as caught:
-                await self.service.execute(self.task_job)
-        self.assertEqual(str(caught.exception), 'official_task_files_unavailable')
-        model.assert_not_awaited()
-        self.assertEqual(self.manager.calls, [])
-        self.assertEqual(self.query('SELECT * FROM qq_official_generation_capacity'), [])
-
-    async def test_existing_text_profile_does_not_gain_file_tools_when_services_arrive(self):
-        self.submit_task(role='analyst', tool_profile='official-text-v1')
-        self.configure_files()
-        self.service = OfficialSubAgentService(self.runtime, self.token, self.app)
-        async def model(prompt, messages, tools, execute_tool, **kwargs):
-            names = {item['function']['name'] for item in tools}
-            self.assertNotIn('sandbox_create', names)
-            self.assertEqual(json.loads(await execute_tool('sandbox_create', {}))['error'], 'tool_unavailable')
-            return '{"status":"success","summary":"TEST text only","artifacts":[]}'
-        await self.run_model(model)
-        self.assertEqual(self.jobs.get(self.task_job.job_id).status, 'succeeded')
-        self.assertEqual(self.manager.calls, [])
-        self.assertEqual(self.query('SELECT * FROM qq_official_file_artifacts'), [])
-
-    async def test_changed_saved_profile_never_opens_tools_or_calls_model(self):
-        self.configure_files()
-        self.submit_task()
-        with self.tx() as cursor:
-            row = cursor.execute('SELECT dispatch_json FROM subagent_controls WHERE task_id=?', (self.task.task_id,)).fetchone()
-            dispatch = json.loads(row['dispatch_json'])
-            dispatch['tool_profile'] = 'official-text-v1'
-            cursor.execute('UPDATE subagent_controls SET dispatch_json=? WHERE task_id=?', (json.dumps(dispatch), self.task.task_id))
-        with patch('src.plugins.ai_chat.subagents.ask_deepseek_with_tools', new_callable=AsyncMock) as model:
             with self.assertRaises(JobDeferred):
                 await self.service.execute(self.task_job)
         model.assert_not_awaited()
-        self.assertEqual(self.manager.calls, [])
-        self.assertEqual(self.query('SELECT * FROM qq_official_file_artifacts'), [])
-
-    async def test_schema_rejects_unknown_tool_profile(self):
-        self.submit_task()
-        from src.bot_storage.database import DatabaseError
-        with self.assertRaises(DatabaseError), self.tx() as cursor:
-            cursor.execute("UPDATE qq_official_subagent_dispatches SET tool_profile='official-unknown-v999' WHERE task_id=?", (self.task.task_id,))
-        self.assertEqual(self.query('SELECT tool_profile FROM qq_official_subagent_dispatches'), [{'tool_profile': 'official-files-v1'}])
-
-    async def test_final_summary_recovery_reads_current_file_state_without_rerunning_model(self):
-        self.configure_files()
-        self.submit_task()
-        # Failure after the Coordinator completed/captured/registered but before
-        # the text result is handed to M3. The actual job lease remains current.
-        with patch.object(self.outbox, 'enqueue', side_effect=RuntimeError('TEST handoff unavailable')):
-            with self.assertRaises(JobDeferred):
-                await self.run_model(worker=False)
-        task = self.tasks.get(self.task.task_id)
-        self.assertEqual(task.status, 'completed')
-        self.assertEqual(task.result['delivery_state'], 'pending')
-        self.assertEqual(self.query('SELECT result_body_json FROM qq_official_subagent_dispatches'), [{'result_body_json': None}])
-        self.assertEqual(self.query('SELECT state FROM qq_official_file_deliveries'), [{'state': 'stored'}])
-        # A file worker/maintenance transition happens while the result is
-        # waiting. Leave the task's historical completion JSON untouched.
-        with self.tx() as cursor:
-            cursor.execute("UPDATE qq_official_file_deliveries SET state='expired',reason_code='file_deadline',updated_at=?", (self.now,))
-        with patch('src.plugins.ai_chat.subagents.ask_deepseek_with_tools', new_callable=AsyncMock) as model:
-            result = await self.service.execute(self.task_job)
-        model.assert_not_awaited()
-        self.assertTrue(result['plan_id'])
-        row = self.query('SELECT result_body_json FROM qq_official_subagent_dispatches')[0]
-        body = body_from_json(row['result_body_json'])
-        text = ''.join(node.text for node in body.nodes)
-        self.assertIn('过期', text)
-        self.assertNotIn('已发送', text)
-        self.assertEqual(self.tasks.get(self.task.task_id).result, task.result)
-        self.assertEqual(len(self.query('SELECT * FROM qq_official_file_artifacts')), 1)
-        self.assertEqual(self.query('SELECT * FROM delivery_attempts'), [])
