@@ -233,7 +233,11 @@ class PlatformChatService:
                     ports=ports, prepared=prepared, llm=self.llm,
                     group_context=group_context, memory_context=memory_context,
                     tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",
-                    profile=selected_profile, max_tool_rounds=self.context.settings.tool_simple_max_rounds,
+                    profile=selected_profile,
+                    max_tool_rounds=(
+                        self.context.settings.tool_max_rounds if file_session is not None
+                        else self.context.settings.tool_simple_max_rounds
+                    ),
                     tool_context="\n\n".join(context_parts), system_context=prompt,
                     trace=turn_trace, feedback_provider=feedback_provider,
                     event_sink=(
