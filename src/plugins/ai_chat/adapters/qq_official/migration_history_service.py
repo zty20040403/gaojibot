@@ -115,7 +115,13 @@ class MigrationHistoryService:
         route = self.routes._route(cursor,endpoint.scope.key)
         if route is None:
             return None
-        if route['target_endpoint_key'] != endpoint.key or route['phase'] != 'completed':
+        if route['target_endpoint_key'] != endpoint.key:
+            raise HistoryUnavailable('history_route_not_completed')
+        if route['phase'] == 'planned':
+            # Planning leaves normal target chat open. Its historical view is
+            # simply absent until the reviewed migration has completed.
+            return None
+        if route['phase'] != 'completed':
             raise HistoryUnavailable('history_route_not_completed')
         journal = cursor.execute('SELECT * FROM migration_journals WHERE route_id=?', (route['route_id'],)).fetchone()
         approved = json.loads(journal['preview_json']).get('public_history')
