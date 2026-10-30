@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from tests import test_qq_official_migration_subagents as base
 from tests import test_qq_official_file_subagent_composition as files_fixture
 from tests.qq_official_outbox_fixture import OutboxFixture
-from tests.test_qq_official_file_dispatcher import FileMediaFake
+from tests.qq_official_file_http_fixture import FileMediaFake
 from src.plugins.ai_chat.adapters.qq_official.file_artifacts import file_job_kind
 from src.plugins.ai_chat.adapters.qq_official.file_authority import ArtifactSourceAuthorities, assert_file_current
 from src.plugins.ai_chat.adapters.qq_official.file_payloads import TrustedFilePayloads

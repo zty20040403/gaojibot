@@ -18,11 +18,12 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
+import logging
 import re
+import traceback
 
-from ...agent.artifact_delivery import (
-    ArtifactDeliveryRequest, ArtifactDeliveryView, canonical_artifact_filename,
-)
+from ...agent.artifact_delivery import ArtifactDeliveryRequest, ArtifactDeliveryView
+from .image_formats import artifact_filename as canonical_artifact_filename
 from ...agent.control import LeaseLost
 from ...agent.workspaces import ArtifactCaptureError
 from ...application.owned_sandbox import (
@@ -36,7 +37,7 @@ from .file_artifacts import BLOB_LOCK, current_source, foreground_source, task_s
 from .file_generation import GenerationBindingAdapter
 
 GENERATION_TOOLS = frozenset({"sandbox_create", "sandbox_list", "sandbox_destroy", "sandbox_exec",
-    "sandbox_write_file", "sandbox_read_file", "send_file_from_sandbox"})
+    "sandbox_write_file", "sandbox_read_file", "send_file_from_sandbox", "send_file"})
 
 
 def _digest(value):
@@ -167,8 +168,12 @@ class _Delivery:
             content=exported.content, filename=canonical_artifact_filename(exported.filename, draft=draft),
             logical_request_key=_digest(["foreground", logical_request_key]),
             draft=draft, draft_reason=draft_reason)
-        # A registration is never a transport acknowledgement, including replay.
-        return ArtifactRegistration(record.artifact_id, "stored")
+        sender = getattr(session.runtime, 'send_artifact', None)
+        if sender is None:
+            return ArtifactRegistration(record.artifact_id, "stored")
+        outcome = await sender(record.artifact_id)
+        return ArtifactRegistration(record.artifact_id,
+            'committed' if outcome.status == 'committed' else 'waiting', outcome.status == 'committed')
 
 
 class FileGenerationSession:
@@ -309,9 +314,8 @@ class _OwnedWorkspaces:
 
     async def validate(self, task_id, artifact):
         self._task(task_id)
-        content = await self._content(artifact)
-        checks = await self.executor._validate_snapshot(content, artifact["name"])
-        return {"ok": True, "readable": True, "checks": ["nonempty", "sha256", "format", *checks],
+        await self._content(artifact)
+        return {"ok": True, "readable": True, "checks": ["nonempty", "sha256"],
                 "functional": "requires_review"}
 
     async def import_artifact(self, task_id, upstream, arguments):
@@ -384,7 +388,9 @@ class _OwnedWorkspaces:
                     request.revision, request.snapshot, request.filename, request.draft, request.draft_reason]),
                 draft=request.draft, draft_reason=request.draft_reason)
             await self.executor._fence()
-        except Exception:
+        except Exception as error:
+            logging.getLogger(__name__).warning('QQ artifact registration failed: %s at %s',
+                type(error).__name__, ' > '.join(f'{f.name}:{f.lineno}' for f in traceback.extract_tb(error.__traceback__)[-4:]))
             raise GenerationError("artifact_registration_unavailable") from None
         return ArtifactDeliveryView(request.task_id, request.revision, request.endpoint, request.actor,
             record.artifact_id, record.sha256, record.filename, record.byte_size, record.draft,

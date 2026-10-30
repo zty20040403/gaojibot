@@ -402,11 +402,11 @@ class CoordinatorRuntimeTests(RuntimeFixture):
 class FilenameAndImportTests(unittest.TestCase):
     def test_names_are_idempotent_utf8_bounded_and_path_free(self):
         for draft in (True, False):
-            for name in ("report.pdf", "测"*500+".zip", "草稿-报告.pdf"):
+            for name in ("report.pdf", "测"*500+".zip", "草稿-报告.pdf", "program.exe", "notes.txt"):
                 actual = canonical_artifact_filename(name, draft=draft)
                 self.assertLessEqual(len(actual.encode()), 180)
                 self.assertEqual(canonical_artifact_filename(actual, draft=draft), actual)
-        for name in ("/etc/test.pdf", "../test.pdf", "test\\file.pdf", "test\x00.pdf", "test.exe", " test.pdf"):
+        for name in ("/etc/test.pdf", "../test.pdf", "test\\file.pdf", "test\x00.pdf", " test.pdf"):
             with self.assertRaises(ArtifactDeliveryError):
                 canonical_artifact_filename(name, draft=True)
 

@@ -26,7 +26,7 @@ from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
 from src.plugins.ai_chat.vision_worker import VisionWorker
 from tests import test_qq_official_turn_endtoend as turn_fixture
 from tests import test_qq_official_runtime as runtime_fixture
-from tests.test_qq_official_file_dispatcher import FileMediaFake
+from tests.qq_official_file_http_fixture import FileMediaFake
 from tests.test_qq_official_image_formats import png
 
 

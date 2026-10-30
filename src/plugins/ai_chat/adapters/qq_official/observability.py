@@ -177,35 +177,10 @@ class OfficialObservability:
 
     @staticmethod
     def _file_evidence(cursor,runtime,token,now):
-        from src.plugins.ai_chat.platform_types import EndpointKey
-        from src.plugins.ai_chat.adapters.qq_official.file_services import NativeRouteEvidence
-        from src.plugins.ai_chat.adapters.qq_official.file_dispatcher import native_rejected
-        from src.plugins.ai_chat.adapters.qq_official.native_media import CONTRACT
         service=getattr(runtime,'file_service',None)
-        kinds=((1,'native_image'),(4,'native_file'))
-        result=[]
-        rows=cursor.execute('SELECT * FROM qq_official_endpoints WHERE account_key=? ORDER BY endpoint_key LIMIT 101',
-            (token.account_key,)).fetchall()
-        for file_type,kind in kinds:
-            valid=[];expired=0
-            for row in rows[:100]:
-                if service is None:break
-                endpoint=EndpointKey.parse(row['endpoint_key'])
-                proof=service._native_evidence(cursor,endpoint,file_type)
-                if not isinstance(proof,NativeRouteEvidence) or proof.endpoint!=endpoint or proof.contract!=CONTRACT or proof.file_type!=file_type:
-                    continue
-                if (proof.endpoint_generation,proof.route_epoch,proof.capability_revision)!=(row['generation'],row['route_epoch'],row['capability_revision']):
-                    continue
-                if not 0<=proof.verified_at<=now<proof.expires_at:
-                    expired+=1;continue
-                if not native_rejected(cursor,endpoint,endpoint_generation=row['generation'],route_epoch=row['route_epoch'],
-                    verified_at=proof.verified_at,contract=CONTRACT,file_type=file_type):valid.append(proof)
-            result.append({'kind':kind,'status':'verified' if valid else 'unknown',
-                'verified_at':max((p.verified_at for p in valid),default=None),
-                'expires_at':min((p.expires_at for p in valid),default=None),
-                'valid_evidence':len(valid),'expired_evidence':expired,'bounded_endpoints':100,
-                'truncated':len(rows)>100,'authority_required':True})
-        return result
+        return [{'kind':kind,'status':'available' if service is not None else 'disabled',
+                 'verified_at':None,'expires_at':None,'max_bytes':service.config.max_file_bytes if service else 0}
+                for kind in ('native_image','native_file')]
 
 
 def register_official_http(app,context):

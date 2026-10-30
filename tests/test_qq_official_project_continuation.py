@@ -332,7 +332,7 @@ class ProjectContinuationFixture(MigrationServicesFixture):
         from src.qq_official.credentials import Credentials
         from src.qq_official.http import RestClient
         from src.qq_official.token import TokenManager
-        from tests.test_qq_official_file_dispatcher import FileMediaFake
+        from tests.qq_official_file_http_fixture import FileMediaFake
         fake=FileMediaFake();fake.app_id=self.account.app_id
         fake.clock=lambda:self.now;fake.receipt_ttl=1800
         await fake.start()

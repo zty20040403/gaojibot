@@ -10,6 +10,7 @@ import json
 import time
 
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
+from src.plugins.ai_chat.message_ir import MediaNode, MessageBody, TextNode, body_to_json
 from .control_receipts import ControlEvidenceError, control_id_for_delivery, delivery_authorized, sync_control_terminal
 from .protected_payload import envelope_for_wire, validate_content
 from .protected_plans import ProtectedBinding, protected_rendered, load_protected_ref, binding_for
@@ -17,7 +18,7 @@ from .identity_store import snapshot
 from .lease import assert_epoch
 from .send_types import OfficialAttemptContext, OutboxInvariantError, SendOutcome, SendReservation, digest, stable_json
 from .plans import DEFAULT_MAX_WAIT_SECONDS, enqueue_plan, keyed_digest
-from .renderer import content_payload, restore_plan
+from .renderer import content_payload, render_plan, restore_plan
 
 
 def begin_official_attempt(cursor, delivery_id, context, now):
@@ -93,6 +94,32 @@ class OfficialSendStore:
                 admission=self.admission, max_wait_seconds=self.max_wait_seconds, protected_ref=content_ref,
                 source_guard=self.source_guard, source_proof=source_proof)
 
+    def enqueue_file(self, token, *, artifact, uploaded, transaction_cursor):
+        cursor = transaction_cursor
+        endpoint = EndpointKey.parse(artifact['endpoint_key'])
+        now = int(self.clock())
+        turn = cursor.execute('SELECT journal_turn_id FROM qq_official_turn_executions WHERE execution_id=?',
+                              (artifact['source_execution_id'],)).fetchone()
+        ref = enqueue_plan(cursor, token=token,
+            rendered=render_plan(MessageBody((TextNode(0, '文件：' + artifact['filename']),)), endpoint),
+            requester=ActorKey.parse(artifact['requester_actor_key']),
+            logical_key='file:' + artifact['artifact_id'], source_scope_key=artifact['source_scope_key'],
+            source_native_message_id=artifact['source_native_message_id'] or '',
+            source_canonical_message_id=artifact['source_canonical_message_id'],
+            turn_id=turn['journal_turn_id'] if turn else None,
+            expires_at=min(artifact['pending_deadline_at'], uploaded.expires_at), now=now,
+            purpose='requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds)
+        if ref.created:
+            manifest = stable_json({'v': 1, 'media': {'file_info': uploaded.file_info},
+                'artifact_id': artifact['artifact_id'], 'source_native_message_id': artifact['source_native_message_id'] or ''})
+            body = body_to_json(MessageBody((MediaNode(0, 'file', name=artifact['filename'], mime=artifact['mime'],
+                source_type='qq_official_file', raw_data={'artifact_id': artifact['artifact_id'],
+                    'sha256': artifact['sha256'], 'size': artifact['byte_size']}),)))
+            cursor.execute('UPDATE delivery_plans SET manifest_json=?,manifest_digest=? WHERE plan_id=?',
+                           (manifest, digest(manifest), ref.plan_id))
+            cursor.execute('UPDATE deliveries SET body_json=? WHERE plan_id=?', (body, ref.plan_id))
+        return ref
+
     def _content(self, cursor, row, endpoint, *, token=None, now=None):
         if row["payload_mode"] == "protected":
             if self.protected_payloads is None or token is None or now is None:
@@ -115,6 +142,8 @@ class OfficialSendStore:
             manifest = json.loads(plan["manifest_json"])
             if manifest.get("v") != 1 or manifest.get("source_native_message_id") != row["reply_to_native_message_id"]:
                 raise OutboxInvariantError("delivery_manifest_conflict")
+            if 'media' in manifest:
+                return {'msg_type': 7, 'media': manifest['media']}
             rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
                 allowed_mentions=self.mention_authority(cursor, endpoint), max_chars=20000, max_parts=16)
         return content_payload(rendered, row["part_index"], plain_fallback=row["variant"] == "plain_fallback")

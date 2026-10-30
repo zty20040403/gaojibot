@@ -14,12 +14,12 @@ from unittest.mock import patch
 from aiohttp import web
 
 from src.plugins.ai_chat.adapters.qq_official.file_services import (
-    FileServiceConfig, NativeRouteEvidence, file_services_factory,
+    FileServiceConfig, file_services_factory,
 )
 from src.plugins.ai_chat.application.owned_sandbox import GenerationLimits
 from tests import test_qq_official_runtime as runtime_fixture
 from tests import test_qq_official_turn_endtoend as turn_fixture
-from tests.test_qq_official_file_dispatcher import FileMediaFake
+from tests.qq_official_file_http_fixture import FileMediaFake
 from tests.test_owned_sandbox import FakeManager
 
 
@@ -69,14 +69,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.ready_patch.stop)
 
     def config(self):
-        def evidence(cursor, endpoint):
-            if not self.verified:
-                return None
-            row = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
-            return NativeRouteEvidence(endpoint, row['generation'], row['route_epoch'], row['capability_revision'],
-                1024*1024, self.proof_time, self.proof_time + 3600)
         return FileServiceConfig(Path(self.temporary.name), self.manager,
-            route_authority=lambda cursor, endpoint, actor, route: route == 'native', native_evidence=evidence,
             generation_enabled=True, max_file_bytes=1024*1024, min_free_bytes=0,
             generation_limits=GenerationLimits(max_file_bytes=1024*1024))
 
@@ -89,10 +82,9 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_db("SELECT bot_native_id FROM qq_official_accounts WHERE bot_identity_source='ready'")
         return runtime
 
-    async def test_foreground_real_source_generates_uploads_and_commits_one_file_after_parent_finishes(self):
+    async def test_foreground_gets_file_receipt_before_final_answer(self):
         app = self.application()
         calls, sandbox = [], None
-        self.fake.files_release = asyncio.Event()
         async def completion(**kwargs):
             nonlocal sandbox
             calls.append(kwargs)
@@ -108,16 +100,21 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             elif len(calls) == 3:
                 name, args = 'sandbox_exec', {'sandbox_id': sandbox, 'command': 'generate-pdf'}
             elif len(calls) == 4:
-                name, args = 'send_file_from_sandbox', {'sandbox_id': sandbox, 'path': 'result.pdf', 'filename': 'report.pdf'}
+                name, args = 'send_file', {'path': '/workspace/result.pdf', 'name': 'report.pdf'}
             else:
                 receipt = json.loads(responses[-1][responses[-1].index('{'):responses[-1].rindex('}')+1])
                 self.assertTrue(receipt['stored'])
-                self.assertFalse(receipt['message_accepted'])
+                self.assertTrue(receipt['message_accepted'])
                 name, args = None, None
             tool_calls = [SimpleNamespace(id='TEST_GENERATE_' + str(len(calls)), type='function',
                 function=SimpleNamespace(name=name, arguments=json.dumps(args)))] if name else []
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-                content='' if name else 'TEST document stored; waiting for delivery', tool_calls=tool_calls))], usage=None)
+            message = SimpleNamespace(content='' if name else 'TEST file delivered', tool_calls=tool_calls)
+            if kwargs.get('stream'):
+                async def stream():
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=message, finish_reason='stop')])
+                return stream()
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=completion):
             runtime = await self.open(app)
             await self.emit(self.fake, native='TEST_FILE_SOURCE', content='TEST generate and send PDF')
@@ -131,15 +128,14 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
                     'responses': [m['content'] for c in calls for m in c['messages'] if m['role'] == 'tool']}))
             rows = self.query('SELECT * FROM qq_official_file_artifacts')
             self.assertEqual(len(rows), 1)
-            self.assertEqual(self.query('SELECT state FROM qq_official_file_deliveries')[0]['state'], 'uploading')
+            self.assertEqual(self.query('SELECT state FROM qq_official_file_deliveries')[0]['state'], 'message_accepted')
             self.assertEqual(self.query('SELECT state FROM qq_official_turn_executions')[0]['state'], 'handed_off')
-            self.fake.files_release.set()
             await self.wait_db("SELECT * FROM qq_official_file_deliveries WHERE state='message_accepted'")
             body = self.fake.uploaded[('users', 'TEST_RUNTIME_OWNER')]
             self.assertEqual(hashlib.sha256(body).hexdigest(), rows[0]['sha256'])
             media = [item for item in self.fake.received if item['payload']['msg_type'] == 7]
             self.assertEqual(len(media), 1)
-            self.assertEqual(media[0]['payload']['msg_id'], 'TEST_FILE_SOURCE')
+            self.assertNotIn('msg_id', media[0]['payload'])
             self.assertEqual(len(self.fake.media_calls), 1)
             self.assertEqual(len(calls), 5)
             self.assertFalse(self.manager.items)
@@ -152,11 +148,11 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(runtime.file_service)
             self.assertIsNone(outbox.protected_payloads)
 
-    async def test_unverified_native_route_never_advertises_generation(self):
+    async def test_generation_does_not_require_native_route_proof(self):
         self.verified = False
         async def completion(**kwargs):
             names = {t['function']['name'] for t in kwargs['tools']}
-            self.assertFalse(names & {'sandbox_exec', 'sandbox_create', 'send_file_from_sandbox'})
+            self.assertTrue({'sandbox_exec', 'sandbox_create', 'send_file'} <= names)
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
                 content='TEST unavailable route', tool_calls=[]))], usage=None)
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=completion):

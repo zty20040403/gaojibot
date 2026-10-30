@@ -15,7 +15,7 @@ from src.bot_security.service import MobileAuthorization
 from src.bot_security.store import SecurityStore
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.admin import AdminServices, register_admin
-from src.plugins.ai_chat.adapters.qq_official.file_links import VerifiedStream
+from src.plugins.ai_chat.adapters.qq_official.file_access import VerifiedStream
 from src.plugins.ai_chat.adapters.qq_official.file_services import FileServiceConfig, FileServices
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.delivery import DeliveryStore

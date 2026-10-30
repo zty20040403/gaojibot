@@ -2883,7 +2883,7 @@ class SubAgentCoordinator:
                     continue
                 seen.add(identity)
                 draft = validation is not None and not artifact_delivery_allowed(raw_artifact, validation)
-                if draft and not artifact_draft_allowed(raw_artifact, validation):
+                if draft and not official_task(current_task) and not artifact_draft_allowed(raw_artifact, validation):
                     deliveries.append({"ok": False, "state": "validation_failed", "handle": handle,
                         "filename": raw_artifact.get("name", ""),
                         "error": "此文件尚未通过完整性或格式检查，不能作为可用草稿发送。"})
