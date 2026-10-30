@@ -14,9 +14,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import inspect
+import logging
 import math
 import random as random_module
 import time
+import traceback
 from typing import Any
 
 import aiohttp
@@ -25,6 +27,7 @@ from .credentials import validate_gateway_url
 from .errors import QQAPIError
 
 GROUP_AND_C2C = 1 << 25
+logger = logging.getLogger(__name__)
 
 
 class GatewayError(Exception):
@@ -167,11 +170,11 @@ class GatewayConnection:
         random: Callable[[], float] = random_module.random,
         checkpoint: GatewayCheckpoint | None = None,
         on_checkpoint: Callable[[GatewayCheckpoint | None], Awaitable[None]] | None = None,
-        connector=None, max_reconnects: int = 8, max_auth_failures: int = 2,
+        connector=None, max_reconnects: int | None = None, max_auth_failures: int = 2,
         hello_timeout: float = 30, max_frame_bytes: int = 2 * 1024 * 1024,
         max_dispatch_queue: int = 64,
     ):
-        if (max_reconnects < 0 or max_auth_failures < 1 or hello_timeout <= 0
+        if ((max_reconnects is not None and max_reconnects < 0) or max_auth_failures < 1 or hello_timeout <= 0
                 or type(max_dispatch_queue) is not int or not 1 <= max_dispatch_queue <= 1024):
             raise ValueError("invalid gateway retry settings")
         self.rest_client = rest_client
@@ -548,8 +551,12 @@ class GatewayConnection:
                     raise
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     # Network/HTTP details may contain credential-bearing URLs.
+                    frames = " > ".join(
+                        f"{frame.name}:{frame.lineno}"
+                        for frame in traceback.extract_tb(exc.__traceback__)[-6:])
+                    logger.warning("QQ gateway failed: %s at %s", type(exc).__name__, frames)
                     failure = GatewayDisconnected(1006)
                 if self._stop.is_set():
                     break
@@ -557,6 +564,8 @@ class GatewayConnection:
                     self.last_close_code = failure.code
                     policy = classify_close_code(failure.code)
                 self.reason = policy.reason
+                logger.info("QQ gateway reconnect: reason=%s close_code=%s attempt=%s",
+                            policy.reason, self.last_close_code, attempts)
                 self.message_gap = self.message_gap or policy.gap
                 if policy.action == "stop":
                     break
@@ -574,7 +583,7 @@ class GatewayConnection:
                 # Brief READY-then-close loops must still exhaust the budget.
                 if self._ready_at is not None and self.clock() - self._ready_at >= 60:
                     attempts = auth_failures = 0
-                if attempts >= self.max_reconnects:
+                if self.max_reconnects is not None and attempts >= self.max_reconnects:
                     self.reason = "reconnect_budget_exhausted"
                     break
                 base = min(60.0, 2.0 ** min(attempts, 6))
