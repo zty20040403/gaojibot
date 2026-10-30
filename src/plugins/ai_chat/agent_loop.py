@@ -1420,7 +1420,8 @@ async def _create_streaming_completion(
             type=value["type"],
             function=SimpleNamespace(
                 name=value["name"],
-                arguments=value["arguments"],
+                # Some providers omit argument deltas for parameterless tools.
+                arguments=value["arguments"] or "{}",
             ),
         )
         for _index, value in sorted(calls.items())

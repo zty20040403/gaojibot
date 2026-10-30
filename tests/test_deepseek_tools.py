@@ -217,6 +217,32 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
             '{"query":"x"}',
         )
 
+    async def test_stream_accepts_tool_call_without_argument_deltas(self) -> None:
+        async def stream(*, call=None, content="", finish="stop"):
+            yield SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=content, tool_calls=[call] if call else []),
+                finish_reason=finish,
+            )], usage=None)
+
+        # The live proxy emits the tool name, then finishes without an argument
+        # delta for a parameterless call such as sandbox_list.
+        call = SimpleNamespace(index=0, id="call-empty", type="function",
+            function=SimpleNamespace(name="sandbox_list", arguments=""))
+        execute = AsyncMock(return_value='{"ok":true,"sandboxes":[]}')
+        with patch("src.plugins.ai_chat.agent_loop._create_completion", new=AsyncMock(
+            side_effect=[stream(call=call, finish="tool_calls"), stream(content="No sandboxes.")],
+        )) as model:
+            answer = await ask_deepseek_with_tools("List sandboxes", [], [{
+                "type": "function", "function": {"name": "sandbox_list", "parameters": {
+                    "type": "object", "properties": {}, "additionalProperties": False,
+                }},
+            }], execute, final_text_sink=AsyncMock())
+
+        self.assertEqual(answer, "No sandboxes.")
+        execute.assert_awaited_once_with("sandbox_list", {})
+        assistant = model.await_args_list[1].kwargs["messages"][-2]
+        self.assertEqual(assistant["tool_calls"][0]["function"]["arguments"], "{}")
+
     async def test_cancelling_stream_closes_transport(self) -> None:
         import asyncio
 
