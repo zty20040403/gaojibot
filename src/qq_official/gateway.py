@@ -170,11 +170,11 @@ class GatewayConnection:
         random: Callable[[], float] = random_module.random,
         checkpoint: GatewayCheckpoint | None = None,
         on_checkpoint: Callable[[GatewayCheckpoint | None], Awaitable[None]] | None = None,
-        connector=None, max_reconnects: int = 8, max_auth_failures: int = 2,
+        connector=None, max_reconnects: int | None = None, max_auth_failures: int = 2,
         hello_timeout: float = 30, max_frame_bytes: int = 2 * 1024 * 1024,
         max_dispatch_queue: int = 64,
     ):
-        if (max_reconnects < 0 or max_auth_failures < 1 or hello_timeout <= 0
+        if ((max_reconnects is not None and max_reconnects < 0) or max_auth_failures < 1 or hello_timeout <= 0
                 or type(max_dispatch_queue) is not int or not 1 <= max_dispatch_queue <= 1024):
             raise ValueError("invalid gateway retry settings")
         self.rest_client = rest_client
@@ -583,7 +583,7 @@ class GatewayConnection:
                 # Brief READY-then-close loops must still exhaust the budget.
                 if self._ready_at is not None and self.clock() - self._ready_at >= 60:
                     attempts = auth_failures = 0
-                if attempts >= self.max_reconnects:
+                if self.max_reconnects is not None and attempts >= self.max_reconnects:
                     self.reason = "reconnect_budget_exhausted"
                     break
                 base = min(60.0, 2.0 ** min(attempts, 6))

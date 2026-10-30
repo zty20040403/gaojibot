@@ -605,6 +605,30 @@ class GatewayUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(socket.closed for socket in sockets))
         self.assertTrue(all(delay <= 60 for delay in clock.delays))
 
+    async def test_default_reconnect_survives_extended_outage(self):
+        from unittest.mock import AsyncMock
+
+        gateway = GatewayConnection(StubRest(), sleep=AsyncMock())
+        checkpoint = GatewayCheckpoint("TEST_SESSION", 8)
+        gateway.checkpoint = checkpoint
+        failures = 0
+
+        async def session(url, callback):
+            nonlocal failures
+            if failures < 12:
+                failures += 1
+                raise ConnectionError("PRIVATE_NETWORK_DETAILS")
+            await gateway.stop()
+
+        gateway._session = session
+        with self.assertLogs("src.qq_official.gateway", level="WARNING") as logs:
+            await gateway.run(AsyncMock())
+        self.assertEqual(failures, 12)
+        self.assertIs(gateway.checkpoint, checkpoint)
+        self.assertEqual(gateway.reason, "stopped")
+        self.assertNotIn("PRIVATE_NETWORK_DETAILS", "\n".join(logs.output))
+        self.assertTrue(all(call.args[0] <= 60 for call in gateway.sleep.call_args_list))
+
 
 class GatewayFakeServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
