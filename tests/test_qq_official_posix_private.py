@@ -48,7 +48,9 @@ class LinuxPrivateACLTests(unittest.TestCase):
         self.check(0x01021994)
 
     def test_no_acl_on_supported_local_fs_remains_valid(self):
-        self.check(0xEF53, error=errno.ENODATA)
+        for filesystem in (0xEF53, 0xCA451A4E):
+            with self.subTest(filesystem=filesystem):
+                self.check(filesystem, error=errno.ENODATA)
 
     def test_enotsup_not_generalized_to_other_filesystems(self):
         for filesystem in (0xEF53, 0x794C7630, 0x6969, 0x65735546):

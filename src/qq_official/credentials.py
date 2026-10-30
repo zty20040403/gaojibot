@@ -67,6 +67,7 @@ def _verify_posix_acl(fd: int) -> bool | None:
             0x794C7630,   # overlayfs
             0x2FC12FC1,   # ZFS with POSIX ACLs
             0xF2F52010,   # F2FS
+            0xCA451A4E,   # bcachefs
         }
         try:
             native = ctypes.CDLL(None, use_errno=True)

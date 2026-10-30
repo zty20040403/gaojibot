@@ -6,6 +6,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 import inspect
 import logging
 import re
+import traceback
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.delivery import DeliveryStore
@@ -251,7 +252,9 @@ class OfficialRuntime:
                     raise
                 except LeaseLost:
                     self.state, self.reason = "paused", "account_lease_lost"
-                except Exception:
+                except Exception as error:
+                    frames = ' > '.join(f'{x.name}:{x.lineno}' for x in traceback.extract_tb(error.__traceback__)[-6:])
+                    self.logger.warning(f'Official ingress paused: {type(error).__name__} at {frames}')
                     self.state, self.reason = "paused", "ingress_unavailable"
                     if token is not None:
                         try:
