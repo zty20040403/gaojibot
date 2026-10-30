@@ -6,6 +6,7 @@ import errno
 import os
 import re
 import stat
+import struct
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,7 +25,7 @@ class CredentialError(ValueError):
     """Safe diagnostic; intentionally excludes filesystem paths and values."""
 
 
-def _verify_posix_acl(fd: int) -> None:
+def _verify_posix_acl(fd: int) -> bool | None:
     """Inspect the opened object, never re-open a potentially replaced path.
 
     Mode 0600 is insufficient on macOS: an extended allow ACL can still grant
@@ -85,7 +86,7 @@ def _verify_posix_acl(fd: int) -> None:
                    for name in attributes):
                 raise CredentialError("Private file has a non-POSIX ACL")
             try:
-                os.getxattr(fd, "system.posix_acl_access")
+                acl = os.getxattr(fd, "system.posix_acl_access")
             except OSError as error:
                 if error.errno == errno.ENODATA:
                     return
@@ -98,6 +99,16 @@ def _verify_posix_acl(fd: int) -> None:
                         and 'system.posix_acl_access' not in attributes):
                     return
                 raise CredentialError("Private file ACL could not be verified") from None
+            # systemd LoadCredential uses root-owned 0440 tmpfs files with
+            # exactly one read-only grant to the service UID, and no group access.
+            read_acl = struct.pack('<I', 2) + b''.join(
+                struct.pack('<HHI', *entry) for entry in (
+                    (1, 4, 0xFFFFFFFF), (2, 4, os.geteuid()),
+                    (4, 0, 0xFFFFFFFF), (16, 4, 0xFFFFFFFF), (32, 0, 0xFFFFFFFF),
+                )
+            )
+            if filesystem_type == 0x01021994 and acl == read_acl:
+                return True
             raise CredentialError("Private file has an extended ACL")
         except (OSError, AttributeError):
             raise CredentialError("Private file ACL could not be verified") from None
@@ -132,7 +143,10 @@ def verify_private_file(
         return
     mode = stat.S_IMODE(info.st_mode)
     uid = os.geteuid()
+    private_read_acl = _verify_posix_acl(fd)
     permitted = info.st_uid in {uid, 0} and mode & ~0o600 == 0
+    if info.st_uid == 0 and mode == 0o440 and private_read_acl is True:
+        permitted = True
     if not permitted and info.st_uid == 0 and mode in {0o440, 0o640}:
         import grp
         import pwd
@@ -152,7 +166,6 @@ def verify_private_file(
             permitted = False
     if not permitted:
         raise CredentialError("Private file owner or permissions are unsafe")
-    _verify_posix_acl(fd)
 
 
 def _read_secret(path: str | Path, acl_validator: Callable[[int], bool] | None) -> str:
