@@ -8,6 +8,7 @@ from contextvars import ContextVar
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -31,6 +32,7 @@ from .sandbox import (
 
 PACKAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,79}$")
 VM_PREFIX = "gaoji-vm-"
+logger = logging.getLogger(__name__)
 INSTALL_FILE_SCRIPT = """
 import os, shutil, sys, uuid
 source, target, readonly = sys.argv[1], sys.argv[2], sys.argv[3] == '1'
@@ -117,7 +119,7 @@ class VmSandboxManager:
     backend = "vm"
 
     @staticmethod
-    def _cloud_config(*, project_disk=None, initialize_project=False) -> str:
+    def _cloud_config(*, project_disk=None, initialize_project=False, conversation=False, prepared=False) -> str:
         # Keep the PDF helper identical in OCI and VM sandboxes.
         helper = Path(__file__).with_name("sandbox_pdf.py").read_text(encoding="utf-8")
         config = {
@@ -131,6 +133,12 @@ class VmSandboxManager:
             "runcmd": [["systemctl", "enable", "--now", "qemu-guest-agent"],
                 ["mkdir", "-p", "/workspace"], ["chown", "sandbox:sandbox", "/workspace"]],
         }
+        if conversation:
+            config["packages"].append("python3-pip")
+            config["runcmd"].append(["ln", "-sfn", "/workspace", "/work"])
+        if prepared:
+            config.pop("packages")
+            config["package_update"] = False
         if project_disk is not None:
             from src.sandbox_runtime import project_vm_browser_guest, project_vm_gate, project_vm_guest, project_vm_resize_guest
             from src.sandbox_runtime.project_browser_bundle import build_bundle as browser_bundle, guest_requirements
@@ -215,6 +223,8 @@ class VmSandboxManager:
         self._create_lock = asyncio.Lock()
         self._active_execs: dict[str, SandboxExecutionActivity] = {}
         self._last_execs: dict[str, SandboxExecutionActivity] = {}
+        self._conversation_locks = {}
+        self._conversation_guests = set()
         self.project_mounts = None
         self._io_scope = ContextVar("vm_project_io", default=None)
 
@@ -284,6 +294,8 @@ class VmSandboxManager:
 
     @staticmethod
     def _workspace_path(path: str) -> str:
+        if path.startswith("/work/"):
+            path = "/workspace/" + path[len("/work/"):]
         source = PurePosixPath(path)
         if source.is_absolute():
             try:
@@ -376,6 +388,8 @@ class VmSandboxManager:
         self, sandbox_id: str, path: str, args: list[str], *, timeout: int = 60,
         input_bytes: bytes | None = None,
     ) -> tuple[int, bytes, bytes]:
+        if sandbox_id in self._conversation_guests:
+            await self._wait_guest(sandbox_id, timeout=60)
         scope = self._io_scope.get()
         if scope and scope["id"] == sandbox_id and "epoch" in scope:
             from src.sandbox_runtime.project_vm_gate import HELPER_PATH, MAX_REQUEST_BYTES
@@ -429,7 +443,7 @@ class VmSandboxManager:
                 await self._agent(sandbox_id, {"execute": "guest-ping"}, timeout=5)
                 return
             except (SandboxError, asyncio.TimeoutError):
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
         raise SandboxError("VM 启动超时，客体代理未就绪。")
 
     def _domain_xml(self, sandbox_id: str, directory: Path, *, project_disk=None,
@@ -549,7 +563,10 @@ class VmSandboxManager:
                 raise SandboxError("VM 沙盒总数已达到上限。")
             if sum(item.get("owner_hash") == self._owner_hash(owner) for item in running) >= self.max_per_owner:
                 raise SandboxError("你正在运行的 VM 沙盒已达到上限。")
-            if not self.image.is_file():
+            conversation = owner.startswith('qqo:conversation:')
+            prepared = conversation and self.conversation_image.is_file()
+            image = self.conversation_image if prepared else self.image
+            if not image.is_file():
                 raise SandboxError("VM 基础镜像不可用。")
             sandbox_id = "s" + secrets.token_hex(3)
             directory = self._directory(sandbox_id)
@@ -565,10 +582,11 @@ class VmSandboxManager:
             defined = started = False
             try:
                 await self._checked(
-                    "qemu-img", "create", "-f", "qcow2", "-b", str(self.image),
+                    "qemu-img", "create", "-f", "qcow2", "-b", str(image),
                     "-F", "qcow2", str(directory / "disk.qcow2"), f"{self.disk_gib}G",
                 )
-                (directory / "user-data").write_text(self._cloud_config(), encoding="utf-8")
+                (directory / "user-data").write_text(self._cloud_config(
+                    conversation=conversation or owner == 'qqo:template', prepared=prepared), encoding="utf-8")
                 (directory / "meta-data").write_text(
                     f"instance-id: {self._name(sandbox_id)}\n"
                     f"local-hostname: {self._name(sandbox_id)}\n", encoding="utf-8",
@@ -584,13 +602,14 @@ class VmSandboxManager:
                 defined = True
                 await self._virsh("start", self._name(sandbox_id))
                 started = True
-                await self._wait_guest(sandbox_id)
+                await self._wait_guest(sandbox_id, timeout=900 if owner == 'qqo:template' else 300)
                 code, _, err = await self._guest_exec(
-                    sandbox_id, "/bin/sh", ["-lc", "cloud-init status --wait"], timeout=180,
+                    sandbox_id, "/bin/sh", ["-lc", "cloud-init status --wait"], timeout=900 if owner == 'qqo:template' else 180,
                 )
                 if code:
                     raise SandboxError(f"VM 初始化失败：{err.decode(errors='replace')[-500:]}")
                 metadata["state"] = "ready"
+                metadata["last_used"] = int(time.time())
                 self._save_metadata(sandbox_id, metadata)
                 return {
                     "sandbox_id": sandbox_id, "runtime": runtime,
@@ -638,6 +657,10 @@ class VmSandboxManager:
         metadata = await self._metadata(owner, sandbox_id)
         if not await self._running(sandbox_id):
             raise SandboxError("VM 沙盒没有运行。")
+        if owner.startswith('qqo:conversation:'):
+            self._conversation_guests.add(sandbox_id)
+            metadata['last_used'] = int(time.time())
+            self._save_metadata(sandbox_id, metadata)
         if metadata.get("purpose") == "project":
             if self.project_mounts is None:
                 raise SandboxError("项目 VM 生命周期适配器尚未启用。")
@@ -963,7 +986,13 @@ class VmSandboxManager:
             metadata = await self._metadata(owner, sandbox_id)
             if metadata.get("purpose") == "project":
                 raise SandboxError("持久项目必须通过项目生命周期启动。")
+            if owner.startswith('qqo:conversation:'):
+                self._conversation_guests.add(sandbox_id)
+                metadata['last_used'] = int(time.time())
+                self._save_metadata(sandbox_id, metadata)
             if await self._running(sandbox_id):
+                if owner.startswith('qqo:conversation:'):
+                    await self._wait_guest(sandbox_id, timeout=60)
                 return
             existing = await self._all_metadata()
             running = [item for item in existing if await self._running(str(item["id"]))]
@@ -1014,6 +1043,53 @@ class VmSandboxManager:
                 await self._virsh("undefine", self._name(sandbox_id))
             shutil.rmtree(self._directory(sandbox_id))
         self._exec_locks.pop(sandbox_id, None)
+
+    @property
+    def conversation_image(self):
+        version = hashlib.sha256((str(self.image) + self._cloud_config(conversation=True)).encode()).hexdigest()[:16]
+        return self.root / ('conversation-base-' + version + '.qcow2')
+
+    async def prepare_conversation_image(self):
+        """Provision once during deployment, outside a user's message timeout."""
+        target = self.conversation_image
+        if target.is_file():
+            return target
+        item = await self.create('qqo:template', purpose='task')
+        sid = item['sandbox_id']
+        temporary = target.with_suffix('.partial')
+        try:
+            code, _, _ = await self._guest_exec(sid, '/bin/sh', ['-lc',
+                'cloud-init clean --logs --machine-id && sync'])
+            if code:
+                raise SandboxError('沙盒模板初始化失败。')
+            await self.stop_owned('qqo:template', sid)
+            await self._checked('qemu-img', 'convert', '-O', 'qcow2',
+                str(self._directory(sid) / 'disk.qcow2'), str(temporary), timeout=300)
+            temporary.replace(target)
+        finally:
+            await self.destroy('qqo:template', sid)
+            temporary.unlink(missing_ok=True)
+        return target
+
+    async def maintain_conversations(self, *, now=None, idle_seconds=7200, retention_seconds=30*86400):
+        now = int(time.time()) if now is None else now
+        for item in await self._all_metadata():
+            owner, sid = str(item.get('owner_ref', '')), str(item['id'])
+            if not owner.startswith('qqo:conversation:'):
+                continue
+            lock = self._conversation_locks.setdefault(owner, asyncio.Lock())
+            if lock.locked() or self._exec_locks.get(sid, asyncio.Lock()).locked():
+                continue
+            async with lock:
+                item = await self._metadata(owner, sid)
+                age = now - int(item.get('last_used', item.get('last_started', item['created_at'])))
+                try:
+                    if age >= retention_seconds:
+                        await self.destroy(owner, sid)
+                    elif age >= idle_seconds:
+                        await self.stop_owned(owner, sid)
+                except Exception as error:
+                    logger.warning('sandbox maintenance error=%s', type(error).__name__)
 
     async def reclaim_stopped(
         self, owner: str, sandbox_id: str, *, eligible: Callable[[], bool],

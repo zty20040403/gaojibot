@@ -3,15 +3,12 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import hashlib
-import json
-import re
 from pathlib import Path
 
 from src.plugins.ai_chat.agent.control import LeaseLost
 from src.plugins.ai_chat.application.owned_sandbox import ArtifactAvailability, GenerationLimits
 from src.plugins.ai_chat.project_blobs import ProjectBlobStore
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
-from src.sandbox_runtime.source_fence import active_sandbox_source
 from .file_artifacts import ArtifactStore, current_source
 from .file_authority import assert_file_read_current
 from .file_access import ArtifactRef, LinkError, VerifiedStream
@@ -50,7 +47,7 @@ class FileServices:
         self.admission, self.clock = runtime.store.admitted, runtime.store.clock
         self.closed = False
         self._maintenance_lock = asyncio.Lock()
-        self._orphan_cursor = self._capacity_cursor = None
+        self._orphan_cursor = None
         self.payloads = None
         self.directory = config.private_directory / hashlib.sha256(token.account_key.encode()).hexdigest()
         (self.directory / 'objects').mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -133,53 +130,14 @@ class FileServices:
         except (Exception,LeaseLost):
             raise LinkError('console_artifact_unavailable') from None
 
-    def _expired_capacity(self):
-        with self.transaction() as cursor:
-            self._account(cursor)
-            return [dict(r) for r in cursor.execute("SELECT * FROM qq_official_generation_capacity WHERE account_key=? AND state='reserved' AND expires_at<=? AND (CAST(? AS TEXT) IS NULL OR reservation_id>?) ORDER BY reservation_id LIMIT 20",(self.token.account_key,int(self.clock()),self._capacity_cursor,self._capacity_cursor)).fetchall()]
-
-    def _release_absent(self,row):
-        with self.transaction() as cursor:
-            self._account(cursor)
-            cursor.execute("UPDATE qq_official_generation_capacity SET state='released',released_at=?,release_evidence='host_verified_absent' WHERE reservation_id=? AND account_key=? AND owner=? AND source_key=? AND state='reserved' AND expires_at<=?",(int(self.clock()),row['reservation_id'],self.token.account_key,row['owner'],row['source_key'],int(self.clock())))
-
-    async def _capacity(self):
-        rows=await self.calls(self._expired_capacity)
-        for row in rows:
-            endpoint,actor=EndpointKey.parse(row['endpoint_key']),ActorKey.parse(row['requester_actor_key'])
-            if endpoint.account.key!=self.token.account_key or not actor.matches_endpoint(endpoint):continue
-            raw=json.dumps([endpoint.account.key,endpoint.key,actor.key],ensure_ascii=False,separators=(',',':'))
-            owner='qqo:v1:'+hashlib.sha256(raw.encode()).hexdigest()+':x:'+hashlib.sha256(row['source_key'].encode()).hexdigest()[:32]
-            if row['owner'] not in {owner,owner+':verify'}:continue
-            await self._fence()
-            guard=active_sandbox_source.set(self._fence)
-            try:
-                items=await self.config.manager.list(row['owner'])
-                await self._fence()
-                if not isinstance(items,list):continue
-                if items and self.config.destroy_expired_resources:
-                    for item in items:
-                        sid=item.get('sandbox_id') if isinstance(item,dict) else None
-                        if not isinstance(sid,str) or not re.fullmatch('s[0-9a-f]{6}',sid):break
-                        await self._fence()
-                        await self.config.manager.destroy(row['owner'],sid)
-                        await self._fence()
-                    items=await self.config.manager.list(row['owner'])
-                    await self._fence()
-                if items==[]:await self.calls(self._release_absent,row)
-            except Exception:
-                # Unknown host outcomes retain capacity. Other expired owners
-                # can still be checked; cancellation/authority loss propagate.
-                continue
-            finally:active_sandbox_source.reset(guard)
-        self._capacity_cursor=rows[-1]['reservation_id'] if len(rows)==20 else None
-
     async def maintain(self):
         async with self._maintenance_lock:
             await self.calls(self.artifacts.collect_expired, limit=50)
             _, self._orphan_cursor = await self.calls(self.artifacts.collect_orphans,
                 after_sha=self._orphan_cursor, limit=50)
-            await self._capacity()
+            cleanup = getattr(self.config.manager, 'maintain_conversations', None)
+            if cleanup is not None:
+                await cleanup()
 
     async def close(self):
         self.closed = True
