@@ -224,6 +224,7 @@ class PlatformChatService:
                 if prepared.replay_digest_prefix:
                     context_parts.append(quote_evidence(prepared.replay_digest_prefix, "older_turn_digest"))
                 prompt = "[输出约定]\n直接用文字回答。不要编造原生 @、引用、媒体发送或工具成功回执。"
+                prompt += "\n制作文件、启动沙盒或执行较长的多步任务时，先调用 say 告诉用户你已开始；有实际进展再简短汇报，最后照常交付文件和结果。"
                 if platform.features.markdown:
                     prompt += "可以使用 Markdown 排版。长回答用 ### 标题分节，每一节会单独发出；同一节的表格和列表放在一起。"
                 skill_index = self.context.skill_registry.prompt_index()

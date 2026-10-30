@@ -307,9 +307,9 @@ class OfficialRuntime:
                 group=data.get('group_openid')
                 author=data.get('author') if isinstance(data.get('author'),dict) else {}
                 native=group or author.get('user_openid','')
-                self.logger.info('QQ receive kind=%s endpoint=%s type=%s at=%s result=%s',
-                    'group' if group else 'private', hashlib.sha256(str(native).encode()).hexdigest()[:12],
-                    frame.get('t'), frame.get('t')=='GROUP_AT_MESSAGE_CREATE', accepted.disposition)
+                self.logger.info(f"QQ receive kind={'group' if group else 'private'} "
+                    f"endpoint={hashlib.sha256(str(native).encode()).hexdigest()[:12]} "
+                    f"type={frame.get('t')} at={frame.get('t')=='GROUP_AT_MESSAGE_CREATE'} result={accepted.disposition}")
             if frame.get("t") == "READY":
                 def record_ready():
                     with self.store.transaction() as cursor:
@@ -376,8 +376,8 @@ class OfficialRuntime:
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    self.logger.warning('QQ turn error=%s frames=%s', type(error).__name__,
-                        [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)[-4:]])
+                    frames = [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)[-4:]]
+                    self.logger.warning(f'QQ turn error={type(error).__name__} frames={frames}')
             task = asyncio.create_task(run())
             active_turns.add(task)
             task.add_done_callback(active_turns.discard)
@@ -623,7 +623,7 @@ class OfficialRuntime:
                 cursor.execute('''UPDATE qq_official_turn_executions SET state=CASE WHEN plan_id IS NULL THEN 'cancelled' ELSE 'handed_off' END,
                     reason_code='restart_notified',updated_at=? WHERE execution_id=?''', (now, row['execution_id']))
             if rows:
-                self.logger.info('QQ restart recovery: closed=%d conversations=%d', len(rows), len(notified))
+                self.logger.info(f'QQ restart recovery: closed={len(rows)} conversations={len(notified)}')
 
     async def _optional_feature(self, name, factory, *args):
         try:
@@ -632,8 +632,8 @@ class OfficialRuntime:
         except (LeaseLost, DatabaseError):
             raise
         except Exception as error:
-            self.logger.warning('QQ feature disabled feature=%s error=%s frames=%s', name,
-                type(error).__name__, [(f.name,f.lineno) for f in traceback.extract_tb(error.__traceback__)[-4:]])
+            frames = [(f.name,f.lineno) for f in traceback.extract_tb(error.__traceback__)[-4:]]
+            self.logger.warning(f'QQ feature disabled feature={name} error={type(error).__name__} frames={frames}')
             return None
 
     async def _deliver_binding(self, token, effect):
@@ -656,8 +656,8 @@ class OfficialRuntime:
         except LeaseLost:
             raise
         except Exception as error:
-            self.logger.warning('QQ binding send error=%s frames=%s',type(error).__name__,
-                [(f.name,f.lineno) for f in traceback.extract_tb(error.__traceback__)[-4:]])
+            frames = [(f.name,f.lineno) for f in traceback.extract_tb(error.__traceback__)[-4:]]
+            self.logger.warning(f'QQ binding send error={type(error).__name__} frames={frames}')
             outcome = "unknown"
         if effect.kind == "issue_code":
             def mark():
