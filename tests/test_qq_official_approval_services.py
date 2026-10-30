@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import httpx
 
 from src.bot_security.store import SecurityError
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
 from src.plugins.ai_chat.adapters.qq_official.approval_services import approval_services_factory
 from src.plugins.ai_chat.adapters.qq_official.host_authority import AllowedService

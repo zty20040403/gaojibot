@@ -27,7 +27,6 @@ from .approval_control import (ControlResult, prepare_approval_input, control_co
 from .control_receipts import record_decision, enqueue_control_job
 from .codec import DecodedMessage, decode_message
 from .lease import assert_epoch
-from .keys import account_job_kind
 from .admin_identity import prepare_identity_input, command_commitment
 
 
@@ -59,6 +58,7 @@ class Acceptance:
     _approval_input: object = field(default=None, repr=False)
     _native_admission: object = field(default=None, repr=False)
     _identity_input: object = field(default=None, repr=False)
+    ingested: object = field(default=None, repr=False)
 
 
 class OfficialInboxStore:
@@ -182,7 +182,7 @@ class OfficialInboxStore:
             cursor.execute("""UPDATE qq_official_accounts SET gateway_state='paused',pause_reason=?,updated_at=?
                 WHERE account_key=?""", (reason, int(self.clock()), token.account_key))
 
-    def accept(self, frame: dict, *, token, session_id: str, received_at: int | None = None) -> Acceptance:
+    def accept(self, frame: dict, *, token, session_id: str, received_at: int | None = None, ledger=None) -> Acceptance:
         account = AccountKey.parse(token.account_key)
         now = int(self.clock()) if received_at is None else received_at
         if (not isinstance(frame, dict) or frame.get("op") != 0 or type(frame.get("s")) is not int
@@ -242,6 +242,11 @@ class OfficialInboxStore:
                 control_id = record_decision(cursor, token, inbox_id=result.inbox_id,
                     source_session_id=session_id, source_seq=seq, now=now)
                 enqueue_control_job(cursor, token, control_id, self.jobs, now)
+            if ledger is not None and result.disposition == 'inbox':
+                from .ingest import process_inbox
+                ingested = process_inbox(cursor, inbox_id=result.inbox_id, lease_token=token,
+                    ledger=ledger, jobs=self.jobs, epoch_guard=self.epoch_guard, admission=self.admitted, now=now)
+                result = replace(result, ingested=ingested)
             cursor.execute("""UPDATE qq_official_accounts SET session_id=?,durable_seq=?,gateway_state='active',updated_at=?
                 WHERE account_key=?""", (session_id, seq, now, account.key))
             return result
@@ -259,7 +264,7 @@ class OfficialInboxStore:
     def _aliases(self, account, endpoint, event_id, native_id):
         aliases = []
         if valid_identifier(event_id):
-            aliases.append((durable_key("event", account.key, event_id), "event", None, event_id))
+            aliases.append((durable_key("event", account.key, endpoint.key if endpoint else "", event_id), "event", endpoint.key if endpoint else None, event_id))
         if endpoint is not None and valid_identifier(native_id):
             aliases.append((durable_key("message", account.key, endpoint.key, native_id), "message", endpoint.key, native_id))
         return aliases
@@ -290,7 +295,7 @@ class OfficialInboxStore:
             if not isinstance(first, DecodedMessage) or first.actor != actor:
                 return self._terminal(cursor, account, event_type, now, "conflicting_message_aliases")
         self._save_aliases(cursor, account, aliases, inbox_id, now)
-        if (trigger_requested and actor is not None and original["echo_state"] == "not_echo"
+        if (trigger_requested and not original["trigger_requested"] and actor is not None and original["echo_state"] == "not_echo"
                 and original["payload_json"] is not None
                 and original["payload_expires_at"] is not None and original["payload_expires_at"] > now
                 and original["status"] in {"pending", "processed"}
@@ -306,9 +311,7 @@ class OfficialInboxStore:
                     except MigrationDenied:
                         return Acceptance('duplicate', inbox_id, 'migration_route_unavailable')
                 cursor.execute("UPDATE qq_official_inbound_events SET trigger_requested=TRUE,updated_at=? WHERE inbox_id=?", (now, inbox_id))
-                if original["status"] == "processed":
-                    from .ingest import ensure_turn_dispatch
-                    ensure_turn_dispatch(cursor, original, target, self.jobs, now)
+                return Acceptance('inbox', inbox_id, 'new_at_event')
         return Acceptance("duplicate", inbox_id, "duplicate_message")
 
     @staticmethod
@@ -458,17 +461,6 @@ class OfficialInboxStore:
                 SET control_actor_key=?,control_action=?,control_decision_code=? WHERE inbox_id=?""",
                 (decoded.actor.key, command.action, decision.status, inbox_id))
         self._save_aliases(cursor, account, aliases, inbox_id, now)
-        if status == "pending":
-            kind = account_job_kind("ingest", account.key)
-            lane = "qq-endpoint:" + durable_key("endpoint", endpoint.key)
-            job_payload = {"inbox_id": inbox_id}
-            job, _ = self.jobs.enqueue(kind=kind,
-                idempotency_key="qq-ingest:" + durable_key("ingest", account.key, inbox_id),
-                scope_key=lane, payload=job_payload,
-                resume_on_lease_loss=True, now=now, transaction_cursor=cursor)
-            if job.kind != kind or job.scope_key != lane or job.payload != job_payload:
-                raise IngressError("Official ingest job identity conflict")
-            cursor.execute("UPDATE qq_official_inbound_events SET ingest_job_id=? WHERE inbox_id=?", (job.job_id, inbox_id))
         disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision or approval or identity_input else "skipped"
         return Acceptance(disposition, inbox_id, reason or "", decision, approval, approval_input, native_admission, identity_input)
 
@@ -533,24 +525,6 @@ class OfficialInboxStore:
                   AND NOT EXISTS (SELECT 1 FROM durable_jobs j WHERE j.job_id IN (i.ingest_job_id,i.dispatch_job_id)
                       AND j.status IN ('pending','running'))""", (timestamp, token.account_key, timestamp))
             return max(cursor.rowcount, 0)
-
-    def check_pending_ingest(self, token):
-        """Do not advertise a healthy receiver with an unrecoverable queue gap.
-
-        Cancelled/failed jobs require an explicit operator decision; silently
-        recreating them could undo that decision. Active leases recover through
-        the existing durable queue, including its crash-resume policy.
-        """
-        with self.transaction() as cursor:
-            self.epoch_guard(cursor, token)
-            broken = cursor.execute("""SELECT i.inbox_id FROM qq_official_inbound_events i
-                LEFT JOIN durable_jobs j ON j.job_id=i.ingest_job_id
-                WHERE i.account_key=? AND i.status='pending' AND
-                  (j.job_id IS NULL OR j.status NOT IN ('pending','running')
-                   OR (j.status='pending' AND j.attempts>=j.max_attempts)) LIMIT 1""",
-                (token.account_key,)).fetchone()
-            if broken is not None:
-                raise IngressError("Official pending inbox requires queue recovery")
 
     @staticmethod
     def _retire_evidence(cursor, account_key, now, *, endpoint_key=None):

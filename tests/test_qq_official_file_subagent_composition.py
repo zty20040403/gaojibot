@@ -23,7 +23,7 @@ from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
 from src.plugins.ai_chat.subagents import SubAgentCoordinator, SubAgentStore
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id
 from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker, JobDeferred
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.file_services import FileServiceConfig, FileServices
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.subagent_composition import OfficialSubAgentService

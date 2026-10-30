@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from src.bot_storage import DatabaseCalls
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.host_session import host_coordinator
 from src.plugins.ai_chat.adapters.qq_official.subagent_actions import SubmissionBinding
 from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import assert_current, job_kind

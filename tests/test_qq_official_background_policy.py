@@ -9,7 +9,7 @@ from src.plugins.ai_chat.adapters.qq_official.native_schedules import NativeSche
 from src.plugins.ai_chat.adapters.qq_official.optional_capabilities import optional_operation, reaction_reward
 from src.plugins.ai_chat.adapters.qq_official.proactive_delivery import score_and_deliver, ProactiveLifetime
 from src.plugins.ai_chat.adapters.qq_official.recent_speakers import recent_speakers
-from src.plugins.ai_chat.adapters.qq_official.execution import ExecutionFenceLost
+from src.plugins.ai_chat.adapters.qq_official.turn_source import ExecutionFenceLost
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey, ActorKey, InboundMessage, EffectiveCapabilities, CapabilityEvidence
 from src.plugins.ai_chat.proactive import ProactiveDecision

@@ -160,13 +160,13 @@ class ProjectResourcePGTests(MigrationServicesFixture):
     async def test_actual_command_source_new_recipient_and_single_m3_loopback_reply(self):
         from datetime import datetime,timezone
         from unittest.mock import AsyncMock
-        from src.plugins.ai_chat.adapters.qq_official import execution
+        from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
         from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
         from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
         from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
         from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
         from src.plugins.ai_chat.adapters.qq_official.project_commands import ProjectCommands
-        from src.plugins.ai_chat.adapters.qq_official.turn_consumer import OfficialTurnConsumer
+        from src.plugins.ai_chat.adapters.qq_official.turns import OfficialTurnConsumer
         from src.plugins.ai_chat.adapters.qq_official.turn_platform import TransportState
         from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
         from src.plugins.ai_chat.application.commands import CommandServices

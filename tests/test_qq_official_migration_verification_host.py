@@ -6,7 +6,7 @@ import tempfile
 
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingContext,parse_binding_command
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.file_artifacts import ArtifactStore,foreground_source,file_job_kind
 from src.plugins.ai_chat.adapters.qq_official.file_dispatcher import OfficialFileDispatcher
 from src.plugins.ai_chat.adapters.qq_official.file_links import FileCredentialVault

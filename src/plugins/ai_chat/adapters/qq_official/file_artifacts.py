@@ -18,7 +18,7 @@ import time
 import unicodedata
 import weakref
 
-from src.plugins.ai_chat.adapters.qq_official import execution, subagent_runtime
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution, subagent_runtime
 from src.plugins.ai_chat.agent.control import LeaseLost
 from .image_formats import artifact_filename as canonical_artifact_filename
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey

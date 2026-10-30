@@ -10,8 +10,8 @@ import sys
 import unittest
 from unittest.mock import Mock, patch
 
-from src.plugins.ai_chat.adapters.qq_official import execution
-from tests import test_qq_official_execution as execution_tests
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
+from tests import qq_official_turn_fixture as execution_tests
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
@@ -30,7 +30,7 @@ from src.plugins.ai_chat.adapters.qq_official.turn_platform import (
 
 class PlatformTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.f = execution_tests.ExecutionTests("test_result_capture_is_exactly_idempotent_and_rejects_changed_body")
+        self.f = execution_tests.ExecutionFixture("runTest")
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.deliveries = DeliveryStore(self.f.database, recover_interrupted=False)

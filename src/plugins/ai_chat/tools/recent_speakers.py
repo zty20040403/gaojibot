@@ -1,6 +1,6 @@
 """A neutral local-ledger query; no platform member-list capability is claimed."""
 import json
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.platform_types import InboundMessage
 from src.plugins.ai_chat.tools.registry import FunctionTool
 from src.plugins.ai_chat.adapters.qq_official.recent_speakers import recent_speakers

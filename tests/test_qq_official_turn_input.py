@@ -1,12 +1,12 @@
 import unittest
 
-from src.plugins.ai_chat.adapters.qq_official import execution
-from tests import test_qq_official_execution as fixture
-from src.plugins.ai_chat.adapters.qq_official.turn_input import load_turn_input
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
+from tests import qq_official_turn_fixture as fixture
+from src.plugins.ai_chat.adapters.qq_official.turn_source import load_turn_input
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 
 
-class TurnInputTests(fixture.ExecutionTests):
+class TurnInputTests(fixture.ExecutionFixture):
     def load(self, handle):
         with self.tx() as cursor:
             return load_turn_input(cursor, execution_api=execution, **self.args(handle))

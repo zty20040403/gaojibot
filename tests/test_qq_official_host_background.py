@@ -16,7 +16,7 @@ from src.plugins.ai_chat.agent.external import ExternalCalls,active_external,pol
 from src.plugins.ai_chat.platform_types import BackgroundToolSource
 from src.plugins.ai_chat.subagents import SubAgentStore,SubAgentCoordinator,TaskStep
 from src.plugins.ai_chat.model_catalog import ModelCatalog,ModelProfile
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import submit,job_kind
 from src.plugins.ai_chat.adapters.qq_official.background_host import NativeTaskSourcePort
 from src.plugins.ai_chat.adapters.qq_official.host_external import OfficialExternalOperations

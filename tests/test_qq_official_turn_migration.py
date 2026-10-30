@@ -20,8 +20,8 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 
-from src.plugins.ai_chat.adapters.qq_official import execution
-from tests import test_qq_official_execution as fixtures
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
+from tests import qq_official_turn_fixture as fixtures
 
 
 class UnifiedMigrationTests(OutboxFixture):

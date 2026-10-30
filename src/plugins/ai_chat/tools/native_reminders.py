@@ -7,7 +7,7 @@ from jsonschema import validate,ValidationError
 from src.plugins.ai_chat.ai_tools import REMINDER_SET_TOOL,REMINDER_LIST_TOOL,REMINDER_CANCEL_TOOL
 from src.plugins.ai_chat.tools.registry import FunctionTool
 from src.plugins.ai_chat.platform_types import InboundMessage
-from src.plugins.ai_chat.adapters.qq_official.execution import ExecutionFenceLost
+from src.plugins.ai_chat.adapters.qq_official.turn_source import ExecutionFenceLost
 from src.plugins.ai_chat.adapters.qq_official.native_schedules import NativeCommandSource,NativeScheduleDenied,canonical,digest
 
 DEFINITIONS=(REMINDER_SET_TOOL,REMINDER_LIST_TOOL,REMINDER_CANCEL_TOOL)

@@ -9,7 +9,6 @@ import json
 import math
 import weakref
 
-from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
@@ -62,13 +61,6 @@ class ProactiveIngress:
                 or self.admission(c,ep,actor) is not True
                 or not c.execute('SELECT 1 FROM qq_official_gateway_receipts WHERE inbox_id=? AND account_key=?',(inbox_id,self.token.account_key)).fetchone()):
             raise MigrationDenied('proactive_source_unavailable')
-        if job is not None:
-            actual=c.execute('SELECT * FROM durable_jobs WHERE job_id=? FOR UPDATE',(job.job_id,)).fetchone()
-            if (inbox['ingest_job_id']!=job.job_id or job.kind!=account_job_kind('ingest',self.token.account_key)
-                    or job.payload!={'inbox_id':inbox_id} or actual is None or actual['status']!='running'
-                    or actual['lease_owner']!=job.lease_owner or actual['lease_generation']!=job.lease_generation
-                    or actual['lease_until']<=self._now() or json.loads(actual['payload_json'])!=job.payload):
-                raise MigrationDenied('proactive_job_lost')
         return inbox,ep,actor,message,physical
 
     def begin(self,job):

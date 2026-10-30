@@ -1,8 +1,8 @@
 
 from tests.qq_official_file_fixture import ExecutionFixture
-from src.plugins.ai_chat.adapters.qq_official import execution
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
-from src.plugins.ai_chat.adapters.qq_official.turn_input import load_turn_input
+from src.plugins.ai_chat.adapters.qq_official.turn_source import load_turn_input
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode

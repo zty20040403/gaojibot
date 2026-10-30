@@ -113,7 +113,7 @@ class SubAgentFileAuthorityTests(FileFixture):
     def setUp(self):
         super().setUp()
         from unittest.mock import Mock
-        from src.plugins.ai_chat.adapters.qq_official import execution
+        from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
         from src.plugins.ai_chat.adapters.qq_official.file_artifacts import task_source
         from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import submit, job_kind
         from src.plugins.ai_chat.agent.contracts import ContextPacket

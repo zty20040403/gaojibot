@@ -10,7 +10,7 @@ import httpx
 from tests import qq_official_approval_fixture as approval_fixtures
 from src.bot_security.store import SecurityError
 from src.plugins.ai_chat.adapters.qq_official.approval_transport import TaskPolicy
-from src.plugins.ai_chat.adapters.qq_official.execution import assert_execution_current
+from src.plugins.ai_chat.adapters.qq_official.turn_source import assert_execution_current
 from src.plugins.ai_chat.adapters.qq_official.host_authority import AllowedService,OfficialHostAuthority
 from src.plugins.ai_chat.server_task_authorization import ServerTaskAuthorization
 from src.plugins.ai_chat.qq_action_authorization import bind_official_host_source
