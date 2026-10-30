@@ -25,7 +25,7 @@ from src.plugins.ai_chat.adapters.qq_official.file_links import ArtifactRef, Lin
 from src.plugins.ai_chat.adapters.qq_official.file_services import (
     FileServiceConfig, FileServices, NativeRouteEvidence, _DownloadStore, file_services_factory,
 )
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from tests.qq_official_file_fixture import FileFixture, PDF, KEY
 
 ORIGIN='https://download.example'
@@ -55,7 +55,7 @@ class FileServiceTests(FileFixture):
         self.addCleanup(lambda:asyncio.run(self.calls.close()))
         self.deliveries=DeliveryStore(self.database,recover_interrupted=False)
         self.addCleanup(self.deliveries.close)
-        self.outbox=OfficialOutbox(self.deliveries,admission=self.admission,
+        self.outbox=OfficialSendStore(self.deliveries,admission=self.admission,
             pepper=b'TEST_SERVICES_PEPPER'*2,clock=lambda:self.now)
         self.manager=FakeManager()
         self.runtime=SimpleNamespace(_calls=self.calls,deliveries=self.deliveries,jobs=self.jobs,

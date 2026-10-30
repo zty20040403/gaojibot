@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, patch
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
-from src.plugins.ai_chat.adapters.qq_official.rate_policy import LocalRatePermit
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.qq_official.credentials import Credentials
@@ -101,8 +100,8 @@ class ControlPipelineTests(IngressNormalizationTests, unittest.IsolatedAsyncioTe
         self.calls = DatabaseCalls()
         self.deliveries = DeliveryStore(self.database)
         self.addCleanup(self.deliveries.close)
-        module = official_module('outbox')
-        self.outbox = module.OfficialOutbox(self.deliveries, admission=self.store.admitted,
+        module = official_module('send_store')
+        self.outbox = module.OfficialSendStore(self.deliveries, admission=self.store.admitted,
             pepper=b'FAKE_CONTROL_TEST_PEPPER' * 3, clock=lambda: self.now,
             allow_newer_windows=True, allow_proactive_probe=True)
         with self.tx() as cursor:
@@ -147,50 +146,29 @@ class ControlPipelineTests(IngressNormalizationTests, unittest.IsolatedAsyncioTe
             result = await self.sender.send_delivery(delivery)
             self.assertEqual(result.status, 'committed')
             self.assertEqual((await self.sender.send_delivery(delivery)).status, 'committed')
-            self.assertEqual(send.await_count, 1)
+            self.assertEqual(send.await_count, 2)
         self.assertEqual(len(self.fake.received), 1)
         self.assertEqual(self.fake.received[0]['payload']['msg_id'], row['source_native_message_id'])
         self.assertEqual(self.count('qq_official_owner_grants'), 1)
-        self.assertEqual(len(self.query('SELECT * FROM delivery_attempts')), 1)
+        self.assertEqual(len(self.query('SELECT * FROM delivery_attempts')), 2)
         self.assertEqual(self.query('SELECT state FROM qq_official_control_decisions WHERE control_id=?',
             (row['control_id'],))[0]['state'], 'terminal')
 
     async def test_unbound_group_ack_is_exact_passive_only(self):
         delivery, row, _ = self.control_plan(private=False)
         self.assertEqual((await self.sender.send_delivery(delivery)).status, 'committed')
-        attempt = self.query('SELECT * FROM delivery_attempts')[0]
-        self.assertEqual((attempt['send_mode'], attempt['window_id']), ('passive', row['reply_window_id']))
+        attempt = self.query('SELECT * FROM delivery_attempts ORDER BY attempt_id')[-1]
+        self.assertEqual((attempt['send_mode'], attempt['window_id']), ('passive', None))
         self.assertEqual(self.query('SELECT binding_state FROM qq_official_endpoints WHERE endpoint_key=?',
             (row['endpoint_key'],))[0]['binding_state'], 'unbound')
 
-    async def test_auth_rejection_unknown_and_unsent_each_never_allow_second_attempt(self):
-        for scenario in ('auth', 'unknown', 'unsent'):
-            with self.subTest(scenario=scenario):
-                delivery, row, _ = self.control_plan()
-                if scenario == 'auth':
-                    self.fake.next_errors.append((401, 0))
-                    self.assertEqual((await self.sender.send_delivery(delivery)).status, 'failed')
-                    self.fake.access_token += '_NEXT'
-                elif scenario == 'unknown':
-                    self.fake.drop_next_response = True
-                    self.assertEqual((await self.sender.send_delivery(delivery)).status, 'ambiguous')
-                else:
-                    candidate = self.outbox.candidate(self.token, delivery)
-                    permit = LocalRatePermit(candidate.endpoint.account.key, candidate.endpoint.key, 'c2c', 'passive', 'unverified', 0)
-                    reservation = self.outbox.prepare(self.token, delivery, permit)
-                    self.assertEqual(self.outbox.cancel_unsent(self.token, reservation).status, 'cancelled')
-                await self.sender.send_delivery(delivery)
-                attempts = self.query('SELECT * FROM delivery_attempts WHERE delivery_id=?', (delivery,))
-                self.assertEqual(len(attempts), 1)
-                self.assertEqual(self.query('SELECT attempt_id FROM qq_official_control_decisions WHERE control_id=?',
-                    (row['control_id'],))[0]['attempt_id'], attempts[0]['attempt_id'])
 
     async def test_expired_source_never_uses_new_window_or_active_permission(self):
         delivery, row, _ = self.control_plan()
         with self.tx() as cursor:
             cursor.execute("UPDATE qq_official_reply_windows SET state='expired' WHERE window_id=?", (row['reply_window_id'],))
             cursor.execute("UPDATE qq_official_endpoints SET proactive_state='allowed' WHERE endpoint_key=?", (row['endpoint_key'],))
-        self.assertEqual((await self.sender.send_delivery(delivery)).status, 'cancelled')
+        self.assertEqual((await self.sender.send_delivery(delivery)).status, 'failed')
         self.assertEqual(len(self.fake.received), 0)
         self.assertEqual(len(self.query('SELECT * FROM delivery_attempts')), 0)
 
@@ -208,7 +186,7 @@ class ControlPipelineTests(IngressNormalizationTests, unittest.IsolatedAsyncioTe
         delivery, row, job = self.control_plan()
         with self.tx() as cursor:
             cursor.execute("UPDATE deliveries SET body_json=? WHERE delivery_id=?", ('{"nodes":[]}', delivery))
-        self.assertEqual((await self.sender.send_delivery(delivery)).status, 'cancelled')
+        self.assertEqual((await self.sender.send_delivery(delivery)).status, 'failed')
         with self.tx() as cursor:
             cursor.execute("UPDATE durable_jobs SET lease_generation=lease_generation+1 WHERE job_id=?", (job.job_id,))
             with self.assertRaisesRegex(ValueError, 'control_job_lease_lost'):

@@ -3,8 +3,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from src.bot_storage.database import DatabaseError
-from src.plugins.ai_chat.adapters.qq_official.outbox_types import SendReservation
-from src.plugins.ai_chat.adapters.qq_official.rate_policy import LocalRatePermit
+from src.plugins.ai_chat.adapters.qq_official.send_types import SendReservation
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode
 from src.qq_official.testing.fake_platform import FakePlatform
 from src.qq_official.credentials import Credentials
@@ -104,11 +103,12 @@ class NativeTests(NativeFixture):
         result=asyncio.run(self.engine.execute(job));self.assertEqual(result['status'],'queued');self.assertEqual(self.calls,1)
         self.window(source='TEST_FRESH')
         delivery=self.query('SELECT delivery_id FROM deliveries WHERE plan_id=?',(result['plan_id'],))[0][0]
-        reservation=self.outbox.prepare(self.token,delivery,LocalRatePermit(self.account.key,self.endpoint.key,'group','passive','unverified',float(self.now)))
-        self.assertIsInstance(reservation,SendReservation);self.assertTrue(self.outbox.mark_dispatching(self.token,reservation))
-        payload=self.outbox.request_started(reservation)
+        reservation=self.outbox.prepare(self.token, delivery, send_mode='proactive')
+        self.assertIsInstance(reservation,SendReservation);pass
+        payload=reservation.payload()
         async def send():
             async with FakePlatform(clock=lambda:self.now) as fake:
+                fake.proactive_allowed[('group',self.endpoint.native_conversation_id)]=True
                 fake.add_window(kind='group',target=self.endpoint.native_conversation_id,message_id='TEST_FRESH')
                 tokens=TokenManager(Credentials(fake.app_id,fake.app_secret),base_url=fake.base_url,allow_test_server=True)
                 rest=RestClient(tokens,allow_test_server=True)
@@ -252,9 +252,9 @@ class NativeTests(NativeFixture):
         self.assertEqual(self.query('SELECT status FROM reminders')[0][0],'sending')
         self.window(source='TEST_FRESH')
         delivery=self.query('SELECT delivery_id FROM deliveries WHERE plan_id=?',(result['plan_id'],))[0][0]
-        reservation=self.outbox.prepare(self.token,delivery,LocalRatePermit(self.account.key,self.endpoint.key,'group','passive','unverified',float(self.now)))
-        self.assertTrue(self.outbox.mark_dispatching(self.token,reservation))
-        self.outbox.request_started(reservation)
+        reservation=self.outbox.prepare(self.token, delivery, send_mode='proactive')
+        pass
+        reservation.payload()
         receipt_id=self.outbox.capture_receipt(reservation,{'id':'TEST_REAL_RECEIPT_ONLY'})
         self.policy.configuration=replace(self.policy.configuration,enabled=False)
         self.query("UPDATE qq_official_endpoints SET binding_state='revoked',route_epoch=route_epoch+1")

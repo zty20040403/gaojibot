@@ -13,7 +13,7 @@ from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.execution import assert_execution_current
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.qq_official.events import parse_dispatch
@@ -106,10 +106,13 @@ class ApprovalFixture(ExecutionFixture):
 class ApprovalLoopbackFixture(ApprovalFixture,unittest.IsolatedAsyncioTestCase):
  async def asyncSetUp(self):
   self.calls=DatabaseCalls();self.deliveries=DeliveryStore(self.database);self.addCleanup(self.deliveries.close)
-  self.outbox=OfficialOutbox(self.deliveries,admission=lambda c,e,a:self.owners.owner_for_actor(c,e,a) is not None,
+  self.outbox=OfficialSendStore(self.deliveries,admission=lambda c,e,a:self.owners.owner_for_actor(c,e,a) is not None,
    pepper=SECRET,clock=lambda:self.now,approval_authority=self.transport)
   self.fake=FakePlatform(clock=lambda:self.now);self.fake.app_id=self.account.app_id;await self.fake.start()
-  for endpoint in (self.endpoint,self.other):self.fake.add_window('user',endpoint.native_conversation_id,'TEST_SOURCE')
+  self.query("UPDATE qq_official_endpoints SET proactive_state='unknown'")
+  for endpoint in (self.endpoint,self.other):
+   self.fake.add_window('user',endpoint.native_conversation_id,'TEST_SOURCE')
+   self.fake.proactive_allowed[('user',endpoint.native_conversation_id)]=True
   self.tokens=TokenManager(Credentials(self.account.app_id,self.fake.app_secret),self.fake.base_url,allow_test_server=True)
   self.rest=RestClient(self.tokens,allow_test_server=True)
   async def ensure():

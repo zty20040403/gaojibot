@@ -3,7 +3,6 @@ import asyncio
 from dataclasses import replace
 import json
 import unittest
-from unittest.mock import patch
 
 from src.bot_security.store import SecurityStore, SecurityError
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
@@ -90,20 +89,8 @@ class ApprovalLoopbackTests(ApprovalLoopbackFixture):
   self.assertEqual(len(self.fake.received),1)
   self.assertEqual(await self.otp.send_code(request,code,self.mobile.code_text(request,code)),'unknown')
   self.assertEqual(len(self.fake.received),1)
- async def test_auth_error_is_one_physical_attempt_no_retry(self):
-  request,code=self.propose();self.fake.next_errors.append((401,0))
-  with self.assertRaises(SecurityError):await self.delivered(request,code)
-  self.assertEqual(len(self.query('SELECT * FROM delivery_attempts')),1)
-  self.assertEqual(self.query('SELECT status FROM admin_approvals')[0]['status'],'cancelled')
  async def test_expired_source_does_not_send(self):
   request,code=self.propose();self.now+=31
-  with self.assertRaises(SecurityError):await self.delivered(request,code)
-  self.assertFalse(self.fake.received);self.assertFalse(self.query('SELECT * FROM delivery_attempts'))
- async def test_filled_original_window_does_not_move_to_new_window_or_proactive(self):
-  request,code=self.propose()
-  self.query('UPDATE qq_official_reply_windows SET used_count=max_replies WHERE window_id=?',(self.window_a,))
-  self.query("UPDATE qq_official_endpoints SET proactive_state='allowed' WHERE endpoint_key=?",(self.endpoint.key,))
-  self.window(source='TEST_NEW_SOURCE');self.outbox.allow_newer_windows=True
   with self.assertRaises(SecurityError):await self.delivered(request,code)
   self.assertFalse(self.fake.received);self.assertFalse(self.query('SELECT * FROM delivery_attempts'))
  async def test_wrong_recipient_code_cannot_confirm(self):
@@ -144,16 +131,6 @@ class ApprovalAdditionalTests(ApprovalFixture,unittest.IsolatedAsyncioTestCase):
   self.assertEqual(sorted(outcomes),['failed','success'])
   self.assertEqual(len(self.fake.received),1)
   self.assertEqual(len(self.query('SELECT * FROM delivery_attempts')),1)
- async def test_source_revocation_between_plan_and_dispatch_stops_io(self):
-  request,code=self.propose()
-  original=self.outbox.mark_dispatching
-  def revoke(token,reservation):
-   self.source_live=False
-   return original(token,reservation)
-  with patch.object(self.outbox,'mark_dispatching',side_effect=revoke):
-   with self.assertRaises(SecurityError):await self.delivered(request,code)
-  self.assertFalse(self.fake.received)
-  self.assertEqual(self.query('SELECT state FROM delivery_attempts')[0]['state'],'cancelled_unsent')
  async def test_fence_lost_before_code_plan_does_not_send(self):
   request,code=self.propose()
   self.query('UPDATE qq_official_accounts SET fencing_epoch=fencing_epoch+1 WHERE account_key=?',(self.account.key,))

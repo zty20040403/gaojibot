@@ -30,7 +30,6 @@ from .image_formats import file_type_for_mime
 from .native_media import CONTRACT
 from .official_metrics import observe
 from .native_vault import NativeUploadVault
-from .send_policy import SendPolicyChoice, check_send_policy
 
 
 @dataclass(frozen=True)
@@ -311,12 +310,7 @@ class FileServices:
         row=cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=? AND account_key=? FOR UPDATE',
             (endpoint.key,self.token.account_key)).fetchone()
         if row is None:return False
-        choice=check_send_policy(cursor,token=self.token,endpoint=endpoint,endpoint_row=row,
-            source_native_id=artifact['source_native_message_id'],purpose='requested_artifact',
-            deadline=min(artifact['retain_until'],artifact['pending_deadline_at']),now=now,
-            certification=self.runtime.outbox.certification,allow_newer_windows=self.runtime.outbox.allow_newer_windows,
-            allow_proactive_probe=False,verified_boundary=self.runtime.outbox.verified_boundary)
-        return isinstance(choice,SendPolicyChoice)
+        return row['membership_state']=='present' and row['binding_state']=='active'
 
     async def readiness(self,binding):
         def check():

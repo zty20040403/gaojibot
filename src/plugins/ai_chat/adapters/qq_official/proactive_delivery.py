@@ -1,10 +1,5 @@
-"""Score first, then keep only a currently deliverable unsolicited response.
-
-Host ports bind the actual immutable ingress source and existing scorer/outbox.
-This helper does not manufacture an execution or relax a send window.
-"""
+"""Score eligible unsolicited messages and enqueue replies in the normal sender."""
 from dataclasses import dataclass
-from src.plugins.ai_chat.adapters.qq_official.send_policy import PolicyWait, SendPolicyChoice
 
 
 @dataclass(frozen=True)
@@ -37,14 +32,10 @@ async def score_and_deliver(*, source, scorer, current, send_policy, enqueue, no
     observed=now()
     if observed>=lifetime.deadline_at:return ProactiveOutcome('discarded','source_expired')
     choice=await send_policy(source,purpose='unsolicited',deadline=lifetime.deadline_at)
-    if isinstance(choice,PolicyWait):
-        return ProactiveOutcome('discarded','send_unavailable')
-    if (not isinstance(choice,SendPolicyChoice) or choice.purpose!='unsolicited'
-            or choice.requires_probe or choice.send_by_at<=observed):
+    if not choice:
         return ProactiveOutcome('discarded','send_unavailable')
     if await current(source)!=lifetime:raise PermissionError('proactive_source_changed')
     if now()>=lifetime.deadline_at:return ProactiveOutcome('discarded','source_expired')
-    # The actual enqueue and M3 prepare independently recheck source/window;
-    # an expired window yields unsolicited_window_unavailable, never a backlog.
-    await enqueue(source,decision.reply,purpose='unsolicited',expires_at=min(lifetime.deadline_at,choice.send_by_at))
+    # Permission and rate waits belong to the shared sender.
+    await enqueue(source,decision.reply,purpose='unsolicited',expires_at=lifetime.deadline_at)
     return ProactiveOutcome('queued','current_send_authority')

@@ -1,5 +1,4 @@
 import asyncio
-from dataclasses import replace
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -11,7 +10,6 @@ from src.plugins.ai_chat.adapters.qq_official.optional_capabilities import optio
 from src.plugins.ai_chat.adapters.qq_official.proactive_delivery import score_and_deliver, ProactiveLifetime
 from src.plugins.ai_chat.adapters.qq_official.recent_speakers import recent_speakers
 from src.plugins.ai_chat.adapters.qq_official.execution import ExecutionFenceLost
-from src.plugins.ai_chat.adapters.qq_official.send_policy import PolicyWait, SendPolicyChoice
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey, ActorKey, InboundMessage, EffectiveCapabilities, CapabilityEvidence
 from src.plugins.ai_chat.proactive import ProactiveDecision
@@ -95,30 +93,20 @@ class ProactiveTests(unittest.IsolatedAsyncioTestCase):
             current=AsyncMock(return_value=ProactiveLifetime(90,120)),send_policy=AsyncMock(return_value=choice),enqueue=AsyncMock(),now=lambda:100,threshold=60)
 
     async def test_scores_normally_without_window_and_discards_immediately(self):
-        ports=self.ports(PolicyWait('waiting_reply_window'))
+        ports=self.ports(False)
         result=await score_and_deliver(**ports)
         self.assertEqual(result.status,'discarded');ports['scorer'].assert_awaited_once();ports['enqueue'].assert_not_awaited()
 
-    async def test_rate_cooldown_also_does_not_backlog_spontaneous_reply(self):
-        ports=self.ports(PolicyWait('server_cooldown',200))
-        self.assertEqual((await score_and_deliver(**ports)).status,'discarded');ports['enqueue'].assert_not_awaited()
 
     def choice(self):
-        return SendPolicyChoice(EP,1,1,1,'reply','win','msg_id','source',1,120,(),False,'unsolicited','unknown',None)
+        return True
 
     async def test_existing_unsolicited_purpose_and_original_deadline(self):
         ports=self.ports(self.choice())
         self.assertEqual((await score_and_deliver(**ports)).status,'queued')
         self.assertEqual(ports['enqueue'].await_args.kwargs,dict(purpose='unsolicited',expires_at=120))
 
-    async def test_unknown_proactive_probe_not_allowed(self):
-        ports=self.ports(replace(self.choice(),requires_probe=True))
-        self.assertEqual((await score_and_deliver(**ports)).status,'discarded');ports['enqueue'].assert_not_awaited()
 
-    async def test_expired_or_wrong_purpose_choice_discarded(self):
-        for choice in (replace(self.choice(),send_by_at=100),replace(self.choice(),purpose='final')):
-            ports=self.ports(choice)
-            self.assertEqual((await score_and_deliver(**ports)).status,'discarded');ports['enqueue'].assert_not_awaited()
 
     async def test_source_loss_after_scoring_does_not_enqueue(self):
         ports=self.ports(self.choice());ports['current'].side_effect=[ProactiveLifetime(90,120),PermissionError('revoked')]

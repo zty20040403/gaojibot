@@ -286,7 +286,7 @@ class TrustedFilePayloads:
             raise PermissionError('file_selected_credential_conflict')
         if delivery['active_plan_id'] is not None:
             # An unknown message may never cause a second plan/credential.
-            from .outbox_types import PlanRef
+            from .send_types import PlanRef
             row = cursor.execute('''SELECT delivery_id,credential_ref FROM qq_official_file_message_plans
                 WHERE plan_id=? AND artifact_id=?''', (delivery['active_plan_id'], grant.artifact_id)).fetchone()
             if row is None or row['credential_ref'] != content_ref.credential_ref:

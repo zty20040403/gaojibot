@@ -12,7 +12,6 @@ import time
 from src.plugins.ai_chat.adapters.qq_official.identity_store import snapshot
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost, assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
-from src.plugins.ai_chat.adapters.qq_official.send_policy import PolicyWait, check_send_policy
 from src.plugins.ai_chat.message_ir import body_to_json
 from src.plugins.ai_chat.message_lowering import OutboundCapabilities
 from src.plugins.ai_chat.platform_types import (
@@ -142,9 +141,6 @@ class OfficialTurnPlatform:
         self.policy = policy or TurnDeliveryPolicy()
         if not isinstance(self.policy, TurnDeliveryPolicy):
             raise PlatformBoundaryError("invalid_delivery_policy")
-        if (outbox.allow_newer_windows != self.policy.allow_newer_windows
-                or outbox.allow_proactive_probe != self.policy.allow_proactive_probe):
-            raise PlatformBoundaryError("outbox_policy_mismatch")
         self.progress = ProgressEmitter(token=execution.token, outbox=outbox,
             current=current_progress, database_calls=database_calls, wake=sender_wake,
             reserve_final_slots=self.policy.max_parts)
@@ -184,16 +180,7 @@ class OfficialTurnPlatform:
                 return TurnReadiness("transport_not_authenticated")
             if snapshot(cursor, self.account) is None:
                 return TurnReadiness("bot_identity_unverified")
-            choice = check_send_policy(cursor, token=self.execution.token, endpoint=self.endpoint,
-                endpoint_row=route, source_native_id=self.inbound.native_message_id,
-                purpose=handle.result_purpose, deadline=handle.deadline_at, now=now,
-                certification=self.outbox.certification,
-                allow_newer_windows=self.policy.allow_newer_windows,
-                allow_proactive_probe=self.policy.allow_proactive_probe,
-                verified_boundary=self.outbox.verified_boundary)
-            # Legal execution can finish after an old credential expires. The
-            # sender chooses delivery later; ready must not discard that result.
-            condition = choice.reason if isinstance(choice, PolicyWait) else choice.send_mode + "_candidate"
+            condition = 'passive_candidate' if route['proactive_state']=='denied' else 'proactive_candidate'
             return TurnReadiness(None, condition)
 
     async def readiness(self, endpoint):
@@ -260,7 +247,7 @@ class OfficialTurnPlatform:
         return frozenset(allowed.intersection(current))
 
     def _plan_outcome(self, cursor, plan_id):
-        rows = cursor.execute("""SELECT d.delivery_id,d.status,d.native_message_id,a.state AS attempt_state,
+        rows = cursor.execute("""SELECT d.delivery_id,d.status,d.native_message_id,d.wait_reason,a.state AS attempt_state,
             a.acceptance,EXISTS(SELECT 1 FROM delivery_receipts r WHERE r.attempt_id=a.attempt_id
                 AND r.account_key=d.account_key AND r.endpoint_key=d.endpoint_key
                 AND r.native_message_id=d.native_message_id AND r.applied_at IS NOT NULL) AS has_receipt
@@ -272,9 +259,12 @@ class OfficialTurnPlatform:
         evidence = {"plan_id": plan_id, "delivery_ids": tuple(row["delivery_id"] for row in rows)}
         statuses = {row["status"] for row in rows}
         if "ambiguous" in statuses:
-            return SendOutcome("ambiguous", receipt=evidence, reason="delivery_outcome_unknown")
+            return SendOutcome("ambiguous", receipt=evidence, reason="（可能没发出去）")
         if statuses.intersection({"failed", "cancelled"}):
-            return SendOutcome("failed", receipt=evidence, reason="delivery_stopped")
+            reason = next((r['wait_reason'] for r in rows if r['wait_reason']), 'delivery_stopped')
+            if reason == 'proactive_disabled_no_reply_window':
+                reason = '这个群没开主动发言，请群主打开'
+            return SendOutcome("failed", receipt=evidence, reason=reason)
         if all(row["status"] == "committed" and row["attempt_state"] == "committed"
                and row["acceptance"] == "confirmed_yes" and row["has_receipt"] for row in rows):
             ids = tuple(row["native_message_id"] for row in rows)

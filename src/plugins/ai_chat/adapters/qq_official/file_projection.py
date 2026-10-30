@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from src.plugins.ai_chat.agent.artifact_delivery import ArtifactDeliveryView
 from .protected_plans import load_protected_ref
-from .outbox_types import OutboxInvariantError
+from .send_types import OutboxInvariantError
 
 
 def apply_file_receipt(cursor, *, delivery, attempt, now):

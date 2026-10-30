@@ -238,11 +238,11 @@ class DeliveryStore:
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
             if official_context is not None:
                 # One attempt creation route for both adapters. The official
-                # branch uses a fenced caller transaction with window/quota
-                # accounting; legacy callers cannot create official attempts.
+                # branch records the prepared send in the caller transaction;
+                # legacy callers cannot create official attempts.
                 if transaction_cursor is None:
                     raise ValueError("official attempts require the reservation transaction")
-                from .adapters.qq_official.outbox import begin_official_attempt
+                from .adapters.qq_official.send_store import begin_official_attempt
                 official_row = begin_official_attempt(cursor, int(delivery_id), official_context, timestamp)
                 return self._row(official_row) if official_row is not None else None
             row = cursor.execute(

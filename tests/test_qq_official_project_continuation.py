@@ -124,7 +124,7 @@ class ProjectContinuationFixture(MigrationServicesFixture):
 
 
     async def verified(self):
-        from tests import test_qq_official_receipts as receipts
+        from tests import qq_official_receipt_fixture as receipts
         constructor=receipts.OfficialAttemptContext
         physical=dict(self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?',(self.endpoint.key,))[0])
         def context(token,expected,fields):

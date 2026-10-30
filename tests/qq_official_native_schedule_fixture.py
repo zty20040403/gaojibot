@@ -3,7 +3,7 @@ from tests.qq_official_file_fixture import ExecutionFixture
 from src.plugins.ai_chat.adapters.qq_official import execution
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.turn_input import load_turn_input
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode
 from src.plugins.ai_chat.quota import UsageStore
@@ -16,7 +16,7 @@ class NativeFixture(ExecutionFixture):
         super().setUp()
         self.deliveries=DeliveryStore(self.database,recover_interrupted=False);self.addCleanup(self.deliveries.close)
         self.usage=UsageStore(self.database);self.addCleanup(self.usage.close)
-        self.outbox=OfficialOutbox(self.deliveries,admission=self.admission,pepper=b'TEST_NATIVE_ONLY'*3,
+        self.outbox=OfficialSendStore(self.deliveries,admission=self.admission,pepper=b'TEST_NATIVE_ONLY'*3,
             clock=lambda:self.now,allow_newer_windows=True)
         with self.tx() as c:
             observe_ready(c,self.token,{'op':0,'t':'READY','d':{'session_id':'TEST_SESSION','user':{'id':'TEST_REAL_BOT','bot':True}}},self.now)

@@ -12,7 +12,7 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.plans import enqueue_plan
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
-from tests import test_qq_official_receipts as receipt_fixture
+from tests import qq_official_receipt_fixture as receipt_fixture
 
 
 
@@ -232,7 +232,7 @@ class JournalTests(JournalFixture):
                 authorization=self.authorization, now=self.now)
             proof = self.migration.issue_verification(cursor, migration_id=migration.migration_id,
                 kind="text", actor=self.actor, source=self.verification_request_source, now=self.now)
-        attempted = receipt_fixture.OfficialReceiptTests.attempt(self)
+        attempted = receipt_fixture.ReceiptFixture.attempt(self)
         plan_id = self.query("SELECT plan_id FROM deliveries WHERE delivery_id=?", (attempted.delivery_id,))[0][0]
         self.verification_plans[plan_id] = (proof.migration_id, proof.kind, proof.request_id)
         with self.assertRaisesRegex(MigrationDenied, "already_attempted"):

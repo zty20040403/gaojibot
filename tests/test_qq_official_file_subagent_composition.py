@@ -27,7 +27,7 @@ from src.plugins.ai_chat.tool_invocation import active_tool_call_id
 from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker, JobDeferred
 from src.plugins.ai_chat.adapters.qq_official import execution
 from src.plugins.ai_chat.adapters.qq_official.file_services import FileServiceConfig, FileServices
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.subagent_composition import OfficialSubAgentService
 from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import job_kind, submit
 from tests.qq_official_file_fixture import FileFixture
@@ -63,7 +63,7 @@ class FileSubAgentCompositionTests(FileFixture, unittest.IsolatedAsyncioTestCase
         self.deliveries = DeliveryStore(self.database, recover_interrupted=False)
         self.addCleanup(self.tasks.close)
         self.addCleanup(self.deliveries.close)
-        self.outbox = OfficialOutbox(self.deliveries, admission=self.admission,
+        self.outbox = OfficialSendStore(self.deliveries, admission=self.admission,
             pepper=b'TEST_FILE_SUBAGENT_PEPPER' * 2, clock=lambda: self.now)
         self.profile = ModelProfile(name='test', provider='test', protocol='openai-chat',
             model='test', base_url='http://127.0.0.1', api_key_required=False)

@@ -209,7 +209,7 @@ class MigrationFileTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         return plan
 
     def complete_project(self,plan,item):
-        from tests import test_qq_official_receipts as receipt_fixture
+        from tests import qq_official_receipt_fixture as receipt_fixture
         # The real owner binding advanced the actual endpoint epoch. Preserve
         # that fact in this existing synthetic transport receipt fixture.
         epoch=self.query('SELECT route_epoch FROM qq_official_endpoints WHERE endpoint_key=?',(self.endpoint.key,))[0][0]

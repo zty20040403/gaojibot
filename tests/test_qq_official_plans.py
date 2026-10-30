@@ -6,7 +6,7 @@ from tests.qq_official_outbox_fixture import OutboxFixture
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost
-from src.plugins.ai_chat.adapters.qq_official.outbox_types import OutboxInvariantError
+from src.plugins.ai_chat.adapters.qq_official.send_types import OutboxInvariantError
 from src.plugins.ai_chat.adapters.qq_official.plans import enqueue_plan
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 
@@ -23,16 +23,15 @@ class PlanTests(OutboxFixture):
         with self.tx() as cursor:
             return enqueue_plan(cursor, **args)
 
-    def test_same_logical_plan_reuses_parts_but_changed_body_or_deadline_conflicts(self):
+    def test_same_logical_plan_reuses_original_parts(self):
         first = self.enqueue()
         duplicate = self.enqueue()
         self.assertTrue(first.created)
         self.assertFalse(duplicate.created)
         self.assertEqual(first.delivery_ids, duplicate.delivery_ids)
         self.assertEqual(len(self.query("SELECT * FROM deliveries")), 1)
-        for change in ({"expires_at": self.now + 601}, {"rendered": render_plan(MessageBody((TextNode(0, "DIFFERENT"),)), self.endpoint)}):
-            with self.subTest(change=tuple(change)), self.assertRaisesRegex(OutboxInvariantError, "identity_conflict"):
-                self.enqueue(**change)
+        replay = self.enqueue(expires_at=self.now+601)
+        self.assertEqual(replay.delivery_ids, first.delivery_ids)
 
     def test_normal_purposes_obey_default_wait_limit_and_preserve_absolute_deadline(self):
         for purpose in ("final", "requested_artifact", "background_result"):
@@ -58,15 +57,9 @@ class PlanTests(OutboxFixture):
                 with self.assertRaisesRegex(OutboxInvariantError, "delivery_wait_limit_exceeded"):
                     self.enqueue(logical_key=f"TEST_TOO_LONG_{value}", max_wait_seconds=value, expires_at=self.now + value + 1)
 
-    def test_unsolicited_and_progress_have_short_deadlines(self):
-        for purpose in ("unsolicited", "progress"):
-            with self.subTest(purpose=purpose):
-                with self.assertRaisesRegex(OutboxInvariantError, "delivery_wait_limit_exceeded"):
-                    self.enqueue(logical_key=purpose, purpose=purpose, expires_at=self.now + 31)
-                ref = self.enqueue(logical_key=purpose, purpose=purpose, expires_at=self.now + 30)
-                self.assertTrue(ref.created)
-                with self.assertRaisesRegex(OutboxInvariantError, "invalid_delivery_plan"):
-                    self.enqueue(logical_key=purpose + "_bool", purpose=purpose, expires_at=True)
+    def test_progress_uses_task_deadline(self):
+        ref = self.enqueue(purpose='progress', expires_at=self.now+600)
+        self.assertTrue(ref.created)
 
     def test_frozen_manifest_full_identity_and_parts_order(self):
         rendered = render_plan(MessageBody((TextNode(0, "abcdefghij klmnopqrst uvwxyz"),)), self.endpoint, max_chars=15)

@@ -25,7 +25,7 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_to_json
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from tests.qq_official_file_fixture import ExecutionFixture
 from tests.test_qq_official_plans import PlanTests
-from tests.test_qq_official_receipts import OfficialReceiptTests
+from tests.qq_official_receipt_fixture import ReceiptFixture
 
 ROOT = Path(__file__).resolve().parents[1]
 TABLES = ("qq_official_file_artifacts", "qq_official_file_deliveries", "qq_official_file_publications",
@@ -96,10 +96,10 @@ class FileMigrationTests(ExecutionFixture):
             target_scope=scope, body=MessageBody((TextNode(0, "TEST legacy reply"),)), now=self.now)
         return self.deliveries.begin_direct_attempt(delivery.delivery_id, now=self.now)
 
-    challenge = OfficialReceiptTests.challenge
+    challenge = ReceiptFixture.challenge
 
     def normal_attempt(self, **kwargs):
-        return OfficialReceiptTests.attempt(self, **kwargs)
+        return ReceiptFixture.attempt(self, **kwargs)
 
     def normal_plan(self):
         return PlanTests.enqueue(self, logical_key=secrets.token_hex(16), purpose="requested_artifact")

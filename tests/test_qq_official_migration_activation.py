@@ -106,9 +106,9 @@ class MigrationActivationTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
                 self.migration.bind_verification_plan(cursor,proof,plan_id=plan.plan_id,now=self.now)
                 return plan
             with patch.object(verification.receipt_fixture,'enqueue_plan',side_effect=register):
-                attempt=verification.receipt_fixture.OfficialReceiptTests.attempt(self)
-            receipt=verification.receipt_fixture.OfficialReceiptTests.capture(self,attempt,{'id':'TEST_VERIFY_'+kind})
-            self.assertEqual(verification.receipt_fixture.OfficialReceiptTests.finalize(self,receipt,journal=False).status,'committed')
+                attempt=verification.receipt_fixture.ReceiptFixture.attempt(self)
+            receipt=verification.receipt_fixture.ReceiptFixture.capture(self,attempt,{'id':'TEST_VERIFY_'+kind})
+            self.assertEqual(verification.receipt_fixture.ReceiptFixture.finalize(self,receipt,journal=False).status,'committed')
             source=object()
             self.verifications[source]=VerificationEvidence(receipt,attempt.delivery_id,kind,nonce)
             with self.tx() as cursor:

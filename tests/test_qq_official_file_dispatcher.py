@@ -19,7 +19,7 @@ from src.plugins.ai_chat.adapters.qq_official.file_publications import PgPublica
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.native_vault import NativeUploadVault
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
@@ -67,7 +67,7 @@ class FileDispatcherTests(FileFixture, unittest.IsolatedAsyncioTestCase):
             native_vault=self.native_vault, link_vault=self.link_vault, link_origin='https://download.example.test')
         self.deliveries = DeliveryStore(self.database, recover_interrupted=False)
         self.addCleanup(self.deliveries.close)
-        self.outbox = OfficialOutbox(self.deliveries, admission=self.admission, pepper=b'TEST'*8,
+        self.outbox = OfficialSendStore(self.deliveries, admission=self.admission, pepper=b'TEST'*8,
             clock=lambda:self.now, protected_payloads=self.payloads)
         self.fake = FileMediaFake()
         self.fake.app_id = self.account.app_id

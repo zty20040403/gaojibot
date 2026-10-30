@@ -11,7 +11,7 @@ from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.agent.contracts import ContextPacket
 from src.plugins.ai_chat.agent.control import JobFence, LeaseLost, active_job_fence
 from src.plugins.ai_chat.agent.task_identity import object_owner, owner_fields
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
@@ -41,7 +41,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.store.close)
         self.deliveries = DeliveryStore(self.f.database, recover_interrupted=False)
         self.addCleanup(self.deliveries.close)
-        self.outbox = OfficialOutbox(self.deliveries, admission=self.f.admission,
+        self.outbox = OfficialSendStore(self.deliveries, admission=self.f.admission,
             pepper=b'TEST_SUBAGENT_PEPPER' * 3, clock=lambda: self.f.now)
         self.profile = ModelProfile(name='test', provider='test', protocol='openai-chat',
             model='test', base_url='http://127.0.0.1', api_key_required=False)
@@ -116,7 +116,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         # Explicit trusted test policy: lifecycle RECEIVE is still unknown in
         # production and only this controlled fixture authorizes its one probe.
         # Newer windows are explicitly enabled for this fake-contract test.
-        self.outbox = OfficialOutbox(self.deliveries, admission=self.f.admission,
+        self.outbox = OfficialSendStore(self.deliveries, admission=self.f.admission,
             pepper=b'TEST_SUBAGENT_PEPPER' * 3, clock=lambda: self.f.now,
             allow_proactive_probe=proactive, allow_newer_windows=True)
         self.f.window(source='TEST_INPUT', expires=self.f.now+295)

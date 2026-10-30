@@ -12,14 +12,14 @@ from unittest.mock import patch
 
 from src.plugins.ai_chat.adapters.qq_official.project_authority import ProjectAuthority,ProjectRequest,ProjectGrantRef,Operation,Denied
 from src.plugins.ai_chat.adapters.qq_official.project_commands import CommandProjectProvider
-from src.plugins.ai_chat.adapters.qq_official.outbox_types import OfficialAttemptContext
+from src.plugins.ai_chat.adapters.qq_official.send_types import OfficialAttemptContext
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
 from src.plugins.ai_chat.platform_types import ActorKey,EndpointKey
 from src.plugins.ai_chat.projects import ProjectStore,ProjectAccess
 from src.plugins.ai_chat.message_ir import MediaNode,MessageBody
 from tests.test_qq_official_migration_services import MigrationServicesFixture
 from tests.qq_official_migration_project_fixture import install_project_owner
-from tests import test_qq_official_receipts as receipts
+from tests import qq_official_receipt_fixture as receipts
 
 
 class ProjectResourcePGTests(MigrationServicesFixture):

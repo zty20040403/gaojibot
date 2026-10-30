@@ -8,7 +8,7 @@ import json
 
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
-from src.plugins.ai_chat.adapters.qq_official.outbox_types import PlanRef
+from src.plugins.ai_chat.adapters.qq_official.send_types import PlanRef
 from src.plugins.ai_chat.storage.jobs import DurableJob
 from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 from .control_receipts import ControlEvidenceError, control_job_kind, load_authority

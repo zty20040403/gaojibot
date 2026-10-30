@@ -6,7 +6,7 @@ import json
 
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_to_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
-from .outbox_types import OutboxInvariantError, digest, stable_json
+from .send_types import OutboxInvariantError, digest, stable_json
 from .protected_payload import ProtectedContentRef, verify_envelope
 from .renderer import render_plan
 
@@ -85,14 +85,7 @@ def verify_protected_attempt(cursor, row, attempt, *, reservation=None):
         _, routing = verify_envelope(attempt['wire_payload_json'],
             storage_digest=attempt['wire_storage_digest'], wire_digest=attempt['payload_digest'], ref=ref,
             wire_json=reservation.wire_json if reservation is not None else None)
-        if attempt['send_mode'] == 'passive':
-            window = cursor.execute('''SELECT credential_kind,credential_value FROM qq_official_reply_windows
-                WHERE window_id=? AND account_key=? AND endpoint_key=?''',
-                (attempt['window_id'],attempt['account_key'],attempt['endpoint_key'])).fetchone()
-            if (window is None or routing.get('msg_seq') != attempt['msg_seq']
-                    or routing.get(window['credential_kind']) != window['credential_value']):
-                raise ValueError
-        elif any(key in routing for key in ('msg_id','event_id','msg_seq')):
+        if attempt['send_mode'] == 'passive' and routing.get('msg_seq') != attempt['msg_seq']:
             raise ValueError
         return ref, routing
     except (ValueError, TypeError, KeyError, AttributeError):

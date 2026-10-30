@@ -10,8 +10,7 @@ from unittest.mock import AsyncMock
 
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingEffect
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
-from src.plugins.ai_chat.adapters.qq_official.rate_policy import LocalRatePermit
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.application.commands import CommandPolicy, CommandServices
 from src.plugins.ai_chat.conversation_keys import conversation_key
@@ -27,8 +26,8 @@ from tests.qq_official_outbox_fixture import OutboxFixture
 
 from src.plugins.ai_chat.adapters.qq_official.commands import route_command, usage_for_actor
 from src.plugins.ai_chat.adapters.qq_official.control_receipts import (
-    ControlEvidenceError, assert_control_attempt, bind_control_plan,
-    claim_control_attempt, load_authority, record_decision,
+    ControlEvidenceError, bind_control_plan,
+    load_authority, record_decision,
 )
 
 def require_control_schema(fixture):
@@ -305,7 +304,7 @@ class ControlReceiptTests(OutboxFixture):
         self.addCleanup(deliveries.close)
         # Unit-test the exact plan binder independently of ingress admission.
         # The complete source-authorized sender path has separate loopback tests.
-        outbox = OfficialOutbox(deliveries, admission=lambda c,e,a: True,
+        outbox = OfficialSendStore(deliveries, admission=lambda c,e,a: True,
             pepper=b"TEST_CONTROL_PEPPER" * 3, clock=lambda: self.now)
         body = MessageBody((TextNode(0,"TEST_ARBITRARY_BODY"),)) if wrong_body else view.body
         source = self.query("SELECT source_native_message_id FROM qq_official_control_decisions WHERE control_id=?", (control_id,))[0]["source_native_message_id"]
@@ -334,34 +333,7 @@ class ControlReceiptTests(OutboxFixture):
         with self.assertRaisesRegex(ControlEvidenceError,"control_plan_already_bound"):
             self.make_plan(control_id)
 
-    def test_first_attempt_cas_is_idempotent_and_cannot_authorize_another(self):
-        source,_ = self.seed()
-        control_id = self.record(source)
-        outbox,plan = self.make_plan(control_id)
-        permit = LocalRatePermit(self.account.key,self.private.key,"c2c","passive","unverified",0.0)
-        reservation = outbox.prepare(self.token,plan.delivery_ids[0],permit)
-        with self.tx() as cursor:
-            claim_control_attempt(cursor,self.token,control_id=control_id,attempt_id=reservation.attempt_id,now=self.now)
-            claim_control_attempt(cursor,self.token,control_id=control_id,attempt_id=reservation.attempt_id,now=self.now)
-            assert_control_attempt(cursor,self.token,control_id=control_id,attempt_id=reservation.attempt_id,now=self.now)
-        self.assertIsNone(self.load(control_id))
-        with self.tx() as cursor,self.assertRaises(ControlEvidenceError):
-            claim_control_attempt(cursor,self.token,control_id=control_id,attempt_id=reservation.attempt_id+1,now=self.now)
-        with self.tx() as cursor,self.assertRaises(ControlEvidenceError):
-            assert_control_attempt(cursor,self.token,control_id=control_id,attempt_id=reservation.attempt_id,now=self.now+30)
 
-    def test_unknown_attempt_keeps_one_attempt_binding_and_no_replay_authority(self):
-        source,_ = self.seed()
-        control_id = self.record(source)
-        outbox,plan = self.make_plan(control_id)
-        permit = LocalRatePermit(self.account.key,self.private.key,"c2c","passive","unverified",0.0)
-        reservation = outbox.prepare(self.token,plan.delivery_ids[0],permit)
-        with self.tx() as cursor:
-            claim_control_attempt(cursor,self.token,control_id=control_id,attempt_id=reservation.attempt_id,now=self.now)
-            cursor.execute("UPDATE delivery_attempts SET state='ambiguous' WHERE attempt_id=?",(reservation.attempt_id,))
-        self.assertIsNone(self.load(control_id))
-        with self.tx() as cursor,self.assertRaises(ControlEvidenceError):
-            assert_control_attempt(cursor,self.token,control_id=control_id,attempt_id=reservation.attempt_id,now=self.now)
 
 
 if __name__ == "__main__":

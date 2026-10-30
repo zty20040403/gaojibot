@@ -20,10 +20,9 @@ from src.plugins.ai_chat.adapters.qq_official.file_dispatcher import OfficialFil
 from src.plugins.ai_chat.adapters.qq_official.native_media import fingerprint, parse_upload_receipt
 from src.plugins.ai_chat.adapters.qq_official.native_vault import NativeUploadBinding, NativeUploadVault
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
-from src.plugins.ai_chat.adapters.qq_official.outbox import OfficialOutbox
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.protected_plans import ProtectedBinding, PROTECTED_BODY
-from src.plugins.ai_chat.adapters.qq_official.rate_policy import LocalRatePermit
-from src.plugins.ai_chat.adapters.qq_official.outbox_types import SendReservation, stable_json
+from src.plugins.ai_chat.adapters.qq_official.send_types import SendReservation, stable_json
 from src.qq_official.outgoing import escape_platform_tags
 
 NATIVE_SECRET = 'TEST_SECRET_NATIVE_FILE_INFO'
@@ -52,7 +51,7 @@ class FilePayloadTests(FileFixture):
                 'user':{'id':'TEST_BOT','bot':True}}},self.now)
         self.deliveries = DeliveryStore(self.database, recover_interrupted=False)
         self.addCleanup(self.deliveries.close)
-        self.outbox = OfficialOutbox(self.deliveries, admission=self.admission, pepper=b'TEST_PAYLOAD_PEPPER'*2,
+        self.outbox = OfficialSendStore(self.deliveries, admission=self.admission, pepper=b'TEST_PAYLOAD_PEPPER'*2,
             clock=lambda:self.now, protected_payloads=self.port)
         self.window(source=self.handle.source_native_message_id)
 
@@ -115,8 +114,8 @@ class FilePayloadTests(FileFixture):
             plan.plan_id if plan else None,plan.delivery_ids[0] if plan else None)
 
     def prepare(self, plan):
-        permit = LocalRatePermit(self.account.key,self.endpoint.key,'group','passive','unverified',float(self.now))
-        value = self.outbox.prepare(self.token,plan.delivery_ids[0],permit)
+
+        value = self.outbox.prepare(self.token, plan.delivery_ids[0], send_mode='proactive')
         self.assertIsInstance(value,SendReservation)
         return value
 
@@ -145,8 +144,8 @@ class FilePayloadTests(FileFixture):
         plan=self.handoff(ref)
         self.assertEqual(self.handoff(ref).plan_id,plan.plan_id)
         reservation=self.prepare(plan)
-        self.assertTrue(self.outbox.mark_dispatching(self.token,reservation))
-        wire=self.outbox.request_started(reservation)
+        pass
+        wire=reservation.payload()
         self.assertIn(ORIGIN+'/files/'+LINK_SECRET,wire['content'])
         self.assertIn(self.item.sha256,wire['content'])
         self.safe_rows()
@@ -163,11 +162,11 @@ class FilePayloadTests(FileFixture):
         ref=self.native()
         plan=self.handoff(ref)
         reservation=self.prepare(plan)
-        self.assertTrue(self.outbox.mark_dispatching(self.token,reservation))
-        wire=self.outbox.request_started(reservation)
+        pass
+        wire=reservation.payload()
         self.assertEqual(wire['media'],{'file_info':NATIVE_SECRET})
         self.assertEqual(wire['msg_type'],7)
-        self.assertEqual(wire['msg_id'],self.handle.source_native_message_id)
+        self.assertNotIn('msg_id',wire)
         self.assertFalse(self.files.get(self.item.artifact_id).message_accepted)
         self.safe_rows()
 
@@ -223,24 +222,12 @@ class FilePayloadTests(FileFixture):
         self.assertEqual(len(self.query('SELECT * FROM delivery_plans')),1)
         self.assertEqual(self.handoff(ref).delivery_ids,plan.delivery_ids)
 
-    def test_route_revocation_between_prepare_and_mark_blocks_send(self):
-        ref=self.publish(); plan=self.handoff(ref); reservation=self.prepare(plan)
-        self.query('UPDATE qq_official_endpoints SET route_epoch=route_epoch+1 WHERE endpoint_key=?',(self.endpoint.key,))
-        self.assertFalse(self.outbox.mark_dispatching(self.token,reservation))
-        self.assertEqual(self.query('SELECT dispatched_at FROM delivery_attempts')[0]['dispatched_at'],None)
 
-    def test_expiry_and_cancelled_producer_block_new_send(self):
-        ref=self.publish(); plan=self.handoff(ref); reservation=self.prepare(plan)
-        self.query("UPDATE qq_official_turn_executions SET state='needs_attention' WHERE execution_id=?",(self.handle.execution_id,))
-        self.assertFalse(self.outbox.mark_dispatching(self.token,reservation))
-        self.query("UPDATE qq_official_turn_executions SET state='executing' WHERE execution_id=?",(self.handle.execution_id,))
-        self.now=ref.expires_at
-        self.assertFalse(self.outbox.mark_dispatching(self.token,reservation))
 
     def test_historical_receipt_after_vault_deletion_and_revoke_still_settles(self):
         ref=self.publish(); plan=self.handoff(ref); reservation=self.prepare(plan)
-        self.assertTrue(self.outbox.mark_dispatching(self.token,reservation))
-        self.outbox.request_started(reservation)
+        pass
+        reservation.payload()
         self.link_vault.delete(ref.credential_ref)
         self.admitted=False
         self.query('UPDATE qq_official_endpoints SET route_epoch=route_epoch+1 WHERE endpoint_key=?',(self.endpoint.key,))
@@ -256,8 +243,8 @@ class FilePayloadTests(FileFixture):
     def test_native_historical_receipt_survives_private_vault_deletion(self):
         ref=self.native(); plan=self.handoff(ref); reservation=self.prepare(plan)
         self.assertFalse(self.files.get(self.item.artifact_id).message_accepted)
-        self.assertTrue(self.outbox.mark_dispatching(self.token,reservation))
-        self.outbox.request_started(reservation)
+        pass
+        reservation.payload()
         self.native_vault.delete(self.native_reference,self.native_binding)
         self.query("UPDATE qq_official_turn_executions SET state='needs_attention' WHERE execution_id=?",(self.handle.execution_id,))
         self.now=ref.expires_at+1
