@@ -3,6 +3,7 @@
 This module is intentionally not part of the candidate's pure test invocation.
 """
 import unittest
+from unittest.mock import patch
 
 from tests import test_qq_official_turn_platform as platform_fixture
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
@@ -83,7 +84,7 @@ class OfficialFileSayIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         from tests import test_qq_official_file_subagent_composition as fixtures
         self.f = fixtures.FileSubAgentCompositionTests(
-            'test_document_pdf_real_coordinator_registry_capture_and_durable_registration')
+            'test_pdf_worker_frontend_and_durable_result')
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
 
@@ -136,7 +137,12 @@ class OfficialFileSayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.f.tasks.get(self.f.task.task_id).status, 'running')
                 observed.append(delivery)
             return await self.f.file_model(prompt, messages, tools, execute_tool, **kwargs)
-        await self.f.run_model(model)
+        from unittest.mock import AsyncMock
+        from types import SimpleNamespace
+        self.f.frontend_calls,self.f.expected_status=0,'completed'
+        self.f.file_service.generation.send_artifact=AsyncMock(return_value=SimpleNamespace(status='committed'))
+        with patch('src.plugins.ai_chat.adapters.qq_official.task_result.ask_deepseek_with_tools',new=self.f.frontend_model):
+            await self.f.run_model(model)
         self.assertEqual(len(observed), 1)
         self.assertEqual(self.f.tasks.get(self.f.task.task_id).status, 'completed')
         self.assertEqual(len(self.f.query('SELECT * FROM qq_official_file_artifacts')), 1)

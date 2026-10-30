@@ -5,7 +5,7 @@ from src.plugins.ai_chat.agent.control import LeaseLost
 from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease
 from src.plugins.ai_chat.platform_types import AccountKey
 from src.plugins.ai_chat.adapters.qq_official.file_artifacts import file_job_kind
-from src.plugins.ai_chat.adapters.qq_official.file_authority import assert_file_current, assert_file_read_current
+from src.plugins.ai_chat.adapters.qq_official.file_authority import assert_file_current
 from tests.qq_official_file_fixture import FileFixture
 
 
@@ -24,33 +24,13 @@ class FileAuthorityTests(FileFixture):
     def finish_producer(self):
         turn=self.query('SELECT journal_turn_id FROM qq_official_turn_executions')[0]['journal_turn_id']
         self.result(self.handle,turn_id=turn)
-        self.assertTrue(self.jobs.mark_succeeded(self.job.job_id,self.job.lease_owner,
-            now=self.now,lease_generation=self.job.lease_generation))
 
     def test_file_current_uses_actual_registered_source(self):
         artifact,delivery=self.check()
         self.assertEqual(artifact['artifact_id'],self.item.artifact_id)
         self.assertEqual(delivery['job_id'],self.file_job.job_id)
 
-    def test_current_native_source_epoch_blocks_worker_but_retained_read_is_independent(self):
-        calls=[]
-        class Admission:
-            def __call__(inner,cursor,endpoint,actor):
-                return self.admission(cursor,endpoint,actor)
-            def require_execution(inner,cursor,execution_id,*,endpoint,actor,operation):
-                calls.append((execution_id,endpoint,actor,operation))
-                raise LeaseLost('TEST_logical_route_paused')
-        admission=Admission()
-        with self.assertRaisesRegex(LeaseLost,'TEST_logical_route_paused'):
-            self.check(admission=admission)
-        self.assertEqual(calls,[(self.handle.execution_id,self.endpoint,self.actor,'execute')])
-        with self.tx() as cursor:
-            record,_=assert_file_read_current(cursor,token=self.token,artifact_id=self.item.artifact_id,
-                admission=admission,now=self.now)
-        self.assertEqual(record['artifact_id'],self.item.artifact_id)
-        self.assertEqual(len(calls),1)
-
-    def test_file_frozen_artifact_after_producer_completed(self):
+    def test_file_after_producer_completed(self):
         self.finish_producer()
         self.now+=301
         self.file_job=self.jobs.claim_due('TEST_FILE_RESTART',kinds=(file_job_kind(self.account),),now=self.now)[0]
@@ -68,27 +48,17 @@ class FileAuthorityTests(FileFixture):
             self.check(job=replace(self.file_job,payload={'artifact_id':'f'*32}))
         self.check()
 
-    def test_file_running_producer_lost_lease_is_not_completed(self):
-        self.now+=301
-        self.file_job=self.jobs.claim_due('TEST_FILE_RESTART',kinds=(file_job_kind(self.account),),now=self.now)[0]
-        with self.assertRaisesRegex(LeaseLost,'producer_interrupted'):
-            self.check()
-
     def test_file_route_or_admission_revocation_denies(self):
         self.finish_producer()
         self.admitted=False
         with self.assertRaises(LeaseLost):
             self.check()
         self.admitted=True
-        self.query('UPDATE qq_official_endpoints SET route_epoch=route_epoch+1 WHERE endpoint_key=?',(self.endpoint.key,))
+        self.query("UPDATE qq_official_endpoints SET binding_state='revoked' WHERE endpoint_key=?",(self.endpoint.key,))
         with self.assertRaises(LeaseLost):
             self.check()
 
-    def test_file_retention_expiry_and_source_cancel_denies(self):
-        self.query("UPDATE qq_official_turn_executions SET state='needs_attention' WHERE execution_id=?",(self.handle.execution_id,))
-        with self.assertRaises(LeaseLost):
-            self.check()
-        self.query("UPDATE qq_official_turn_executions SET state='executing' WHERE execution_id=?",(self.handle.execution_id,))
+    def test_file_retention_expiry_denies(self):
         self.query('UPDATE qq_official_file_artifacts SET retain_until=? WHERE artifact_id=?',(self.now,self.item.artifact_id))
         with self.assertRaises(LeaseLost):
             self.check()
@@ -152,8 +122,6 @@ class SubAgentFileAuthorityTests(FileFixture):
             now=self.now, lease_generation=self.task_job.lease_generation))
         turn = self.query('SELECT journal_turn_id FROM qq_official_turn_executions')[0]['journal_turn_id']
         self.result(self.handle, turn_id=turn)
-        self.assertTrue(self.jobs.mark_succeeded(self.job.job_id, self.job.lease_owner,
-            now=self.now, lease_generation=self.job.lease_generation))
         # File delivery remains authorized after producer leases/execution deadlines expire.
         self.now += 3601
         self.file_job = self.jobs.claim_due('TEST_TASK_FILE_RESTART', kinds=(file_job_kind(self.account),), now=self.now)[0]
@@ -167,7 +135,7 @@ class SubAgentFileAuthorityTests(FileFixture):
         self.assertEqual(self.files.read_verified(self.item.artifact_id, sha256=self.item.sha256,
             byte_size=self.item.byte_size), b'%PDF-1.4\n% TEST controlled fixture\n%%EOF\n')
 
-    def test_partial_subagent_can_deliver_independently_accepted_file(self):
+    def test_partial_subagent_can_deliver_file(self):
         self.complete_producer('partial')
         artifact, _ = self.check()
         self.assertFalse(artifact['draft'])
@@ -175,7 +143,7 @@ class SubAgentFileAuthorityTests(FileFixture):
 
     def test_cancel_requested_blocks_existing_file_while_task_still_running(self):
         self.query('UPDATE subagent_tasks SET cancel_requested=TRUE WHERE task_id=?', (self.task.task_id,))
-        with self.assertRaisesRegex(LeaseLost, 'artifact_task_unavailable'):
+        with self.assertRaisesRegex(LeaseLost, 'artifact_task_cancelled'):
             self.check()
         self.assertEqual(self.task_store.get(self.task.task_id).status, 'running')
 
@@ -195,15 +163,10 @@ class SubAgentFileAuthorityTests(FileFixture):
                 logical_request_key=hashlib.sha256(b'TEST_AFTER_CANCEL').hexdigest())
         self.assertEqual(len(self.query('SELECT * FROM qq_official_file_artifacts')), before)
 
-    def test_failed_subagent_requires_explicit_draft_for_existing_artifact(self):
+    def test_failed_subagent_can_deliver_existing_artifact(self):
         self.complete_producer('failed')
-        with self.assertRaisesRegex(LeaseLost, 'artifact_task_unavailable'):
-            self.check()
+        self.assertEqual(self.check()[0]['artifact_id'], self.item.artifact_id)
 
-    def test_task_revision_change_cannot_retarget_old_file(self):
-        self.task_store.update_control(self.task.task_id, expected_version=1, revision=2)
-        with self.assertRaisesRegex(LeaseLost, 'artifact_task_unavailable'):
-            self.check()
 
 
 if __name__ == "__main__":

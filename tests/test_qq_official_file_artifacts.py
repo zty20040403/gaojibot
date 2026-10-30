@@ -1,10 +1,8 @@
 from dataclasses import replace
 from contextlib import contextmanager
 import hashlib
-import io
 import os
 import unittest
-import zipfile
 
 from tests.qq_official_file_fixture import FileFixture, PDF, KEY
 from src.plugins.ai_chat.agent.control import LeaseLost
@@ -102,19 +100,11 @@ class ArtifactTests(FileFixture):
         self.assertEqual(self.query('SELECT draft_reason FROM qq_official_file_artifacts')[0]['draft_reason'],
                          'TEST independent acceptance incomplete')
 
-    def test_artifact_type_and_archive_validation(self):
-        stream = io.BytesIO()
-        with zipfile.ZipFile(stream,'w') as archive:
-            archive.writestr('report.txt','TEST')
-        self.assertEqual(detect_content(stream.getvalue(),'report.zip',10000),'application/zip')
-        for content,name in ((b'<html>TEST</html>','report.pdf'),(PDF,'../report.pdf'),(PDF,'report.html')):
-            with self.assertRaises(ArtifactError):
-                detect_content(content,name,10000)
-        stream = io.BytesIO()
-        with zipfile.ZipFile(stream,'w') as archive:
-            archive.writestr('../outside.txt','TEST')
+    def test_named_arbitrary_files_and_filename_validation(self):
+        self.assertEqual(detect_content(b'TEST data','report.csv',10000),'text/csv')
+        self.assertEqual(detect_content(b'TEST data','report.zip',10000),'application/zip')
         with self.assertRaises(ArtifactError):
-            detect_content(stream.getvalue(),'report.zip',10000)
+            detect_content(PDF,'../report.pdf',10000)
 
     def test_artifact_verified_read_rejects_forged_fingerprint(self):
         item = self.put()

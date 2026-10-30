@@ -146,7 +146,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                     function=SimpleNamespace(name=name,arguments=json.dumps(args)))]
                 content=None
             else: calls=[];content='TEST final'
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content,tool_calls=calls))],usage=None)
+            return turn_fixture.model_response(content,calls,kwargs)
         return complete
 
     async def test_real_asr_forward_emoji_tools_finish_in_ordered_m3_parts(self):

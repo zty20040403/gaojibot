@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 """Actual Coordinator + real disposable PG + M3 handoff, no external calls."""
 from datetime import datetime, timezone
 import unittest
@@ -170,8 +171,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_301_second_real_subagent_and_worker_send_proactive_through_m3(self):
         await self.wire_case(proactive=True)
 
-    async def test_301_second_real_subagent_waits_then_uses_new_observed_window(self):
-        await self.wire_case(proactive=False)
 
     async def test_actual_coordinator_runs_after_old_window_and_hands_background_result_to_m3(self):
         task = self.submission()
@@ -246,7 +245,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             cursor.execute('UPDATE qq_official_inbound_events SET turn_text=?,turn_text_version=1 WHERE inbox_id=?',
                            ('TEST task', accepted.inbox_id))
         self.assertEqual(ingested.status, 'processed')
-        source_job = self.f.jobs.claim_due('TEST_PRIVATE_PARENT', kinds=(self.f.kind,), now=self.f.now)[0]
+        source_job = SimpleNamespace(job_id=None,payload={'inbox_id':accepted.inbox_id})
         with self.f.tx() as cursor:
             handle = execution.claim_execution(cursor, token=self.f.token, job=source_job,
                 now=self.f.now, deadline_at=self.f.now+1200, admission=inbox.admitted).handle

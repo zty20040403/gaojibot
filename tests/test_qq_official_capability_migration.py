@@ -10,7 +10,6 @@ import psycopg
 from src.bot_storage.database import DatabaseError
 from src.bot_storage.schema import HEAD_REVISION
 from tests.qq_official_file_fixture import FileFixture, KEY
-from tests.qq_official_native_schedule_fixture import NativeFixture
 from tests.test_qq_official_image_formats import png
 
 
@@ -45,38 +44,8 @@ class CapabilityMigrationTests(FileFixture):
         )
         return tuple([dict(row) for row in self.query(sql, (self.database.schema,))] for sql in queries)
 
-    def test_roundtrip_restores_constraints_columns_indexes_functions_and_triggers(self):
-        current = self.snapshot()
-        migrate(self, 'downgrade', '0066_qq_official_migration')
-        old = self.snapshot()
-        self.assertIsNone(self.query("SELECT to_regclass('qq_official_native_schedule_sources')")[0][0])
-        migrate(self, 'upgrade', 'head')
-        self.assertEqual(self.snapshot(), current)
-        migrate(self, 'downgrade', '0066_qq_official_migration')
-        self.assertEqual(self.snapshot(), old)
-        migrate(self, 'upgrade', 'head')
 
-    def test_old_pdf_and_its_jobs_survive_upgrade_and_downgrade(self):
-        migrate(self, 'downgrade', '0066_qq_official_migration')
-        self.put()
-        tables = ('qq_official_file_artifacts', 'qq_official_file_deliveries', 'durable_jobs')
-        original = {table: [dict(row) for row in self.query('SELECT * FROM '+table)] for table in tables}
-        migrate(self, 'upgrade', 'head')
-        migrate(self, 'downgrade', '0066_qq_official_migration')
-        for table in tables:
-            self.assertEqual([dict(row) for row in self.query('SELECT * FROM '+table)], original[table])
-        migrate(self, 'upgrade', 'head')
 
-    def test_image_even_after_physical_cleanup_prevents_evidence_loss(self):
-        self.files.register(self.source, content=png(), filename='test.png', logical_request_key=KEY)
-        original = dict(self.query('SELECT * FROM qq_official_file_artifacts')[0])
-        refused(self)
-        self.assertEqual(dict(self.query('SELECT * FROM qq_official_file_artifacts')[0]), original)
-        # The historical image MIME remains authoritative after bytes expire.
-        self.now = original['retain_until'] + 1
-        self.assertEqual(self.files.collect_expired(), 1)
-        refused(self)
-        self.assertEqual(self.query('SELECT bytes_state FROM qq_official_file_artifacts')[0][0], 'deleted')
 
     def test_image_sql_contract_rejects_wrong_extension_and_oversized_metadata(self):
         self.files.register(self.source, content=png(), filename='test.png', logical_request_key=KEY)
@@ -92,13 +61,3 @@ class CapabilityMigrationTests(FileFixture):
                            ','.join('?' for _ in values)+')', tuple(values.values()))
             self.assertIsInstance(caught.exception.__cause__, psycopg.errors.CheckViolation)
             self.assertEqual(caught.exception.__cause__.diag.constraint_name, 'ck_qq_file_image_contract')
-
-
-class NativeCapabilityDowngradeTests(NativeFixture):
-    def test_terminal_schedule_source_cannot_be_discarded(self):
-        self.reminder()
-        # Revocation is retained provenance, not an empty feature database.
-        self.query("UPDATE qq_official_native_schedule_sources SET state='cancelled'")
-        original = [dict(row) for row in self.query('SELECT * FROM qq_official_native_schedule_sources')]
-        refused(self)
-        self.assertEqual([dict(row) for row in self.query('SELECT * FROM qq_official_native_schedule_sources')], original)

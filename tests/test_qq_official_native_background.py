@@ -125,6 +125,6 @@ class FactoryPGTests(NativeFixture):
         self.assertEqual(result['scanned_message_limit'],500)
         self.assertEqual(len(result['speakers']),1)
         self.assertEqual(result['speakers'][0]['sample_message_count'],1)
-        self.query("UPDATE qq_official_endpoints SET binding_state='revoked'")
+        self.admitted=False
         from src.plugins.ai_chat.adapters.qq_official.turn_source import ExecutionFenceLost
         with self.assertRaises(ExecutionFenceLost):query(context,{})

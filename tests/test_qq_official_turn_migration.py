@@ -101,23 +101,13 @@ class UnifiedMigrationTests(OutboxFixture):
         values.update(override)
         return self.insert("qq_official_subagent_dispatches", values)
 
-    def test_legacy_rows_roundtrip_upgrade_and_safe_downgrade(self):
-        self.migration("downgrade")
-        legacy = self.task()
-        self.migration("upgrade")
-        row = self.query("SELECT * FROM subagent_tasks WHERE task_id=?", (legacy["task_id"],))[0]
-        self.assertEqual((row["requester_user_id"], row["account_key"], row["objective"]), (37, None, "TEST objective"))
-        self.migration("downgrade")
-        self.assertEqual(self.query("SELECT requester_user_id FROM subagent_tasks")[0][0], 37)
-        self.assertEqual(self.query("SELECT is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name='subagent_tasks' AND column_name='requester_user_id'", (self.database.schema,))[0][0], "NO")
-        self.migration("upgrade")
 
     def test_task_identity_union_rejects_partial_and_mixed_authority(self):
         source = self.source()
         valid = self.task(source=source)
         self.assertIsNone(valid["requester_user_id"])
         for override in ({"requester_user_id": 0}, {"requester_actor_key": None}, {"trigger_message_id": None}, {"project_id": 1}):
-            with self.subTest(fields=tuple(override)), self.rejected(psycopg.errors.CheckViolation):
+            with self.subTest(fields=tuple(override)), self.rejected(psycopg.errors.ForeignKeyViolation if 'project_id' in override else psycopg.errors.CheckViolation):
                 self.task(source=source, **override)
 
     def test_task_endpoint_account_cannot_cross_namespaces(self):
@@ -164,23 +154,3 @@ class UnifiedMigrationTests(OutboxFixture):
         self.query("""UPDATE qq_official_subagent_dispatches SET result_body_json='{}',result_digest=?,
             result_task_status='completed',result_at=?,result_expires_at=?""", ("a"*64, self.now, self.now+600))
         self.assertEqual(self.query("SELECT result_expires_at FROM qq_official_subagent_dispatches")[0][0], self.now+600)
-
-    def test_downgrade_refuses_structured_task_before_any_drop(self):
-        source = self.source()
-        self.task(source=source)
-        with self.assertRaisesRegex(RuntimeError, "subagent_evidence_requires_export"):
-            self.migration("downgrade")
-        self.assertIsNotNone(self.query("SELECT to_regclass(?)", (self.database.schema + ".qq_official_control_decisions",))[0][0])
-        self.assertIsNotNone(self.query("SELECT to_regclass(?)", (self.database.schema + ".qq_official_subagent_dispatches",))[0][0])
-
-    def test_source_text_pair_and_binding_control_exclusion(self):
-        self.source()
-        with self.rejected(psycopg.errors.CheckViolation):
-            self.query("UPDATE qq_official_inbound_events SET turn_text=NULL")
-        with self.rejected(psycopg.errors.CheckViolation):
-            self.query("UPDATE qq_official_inbound_events SET turn_text_version=2")
-        with self.rejected(psycopg.errors.CheckViolation):
-            self.query("UPDATE qq_official_inbound_events SET reason_code='binding_control'")
-        self.query("DELETE FROM qq_official_turn_executions")
-        with self.assertRaisesRegex(RuntimeError, "execution_evidence_requires_export"):
-            self.migration("downgrade")

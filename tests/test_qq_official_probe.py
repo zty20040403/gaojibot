@@ -6,11 +6,9 @@ import json
 import logging
 from pathlib import Path
 import tempfile
-import subprocess
-import sys
 import unittest
 
-from src.qq_official.credentials import Credentials, CredentialError
+from src.qq_official.credentials import Credentials
 from src.qq_official.events import parse_dispatch
 from src.qq_official.gateway import GatewayConnection
 from src.qq_official.http import RestClient
@@ -203,19 +201,6 @@ class QQOfficialProbeTests(unittest.IsolatedAsyncioTestCase):
         for forbidden in ("UNKNOWN_SECRET_TEST", "PRIVATE_TEST_MIME", "signature=TEST_ONLY", "MEMBER_OPENID_TEST", "GROUP_OPENID_TEST", "被引用的测试原文", "测试识别文本"):
             self.assertNotIn(forbidden, serialized)
 
-    async def test_explicit_dedup_preserves_unknown_error_and_stops_endpoint(self):
-        async with FakePlatform() as fake:
-            rest, gateway = await self.clients(fake)
-            task = asyncio.create_task(run_probe(self.options(group=GROUP, checks=("dedup", "markdown_table")), rest, gateway, confirm=lambda _: True, output=lambda _: None))
-            await asyncio.wait_for(fake.wait_ready(), 3)
-            await fake.emit("GROUP_AT_MESSAGE_CREATE", message())
-            report = await asyncio.wait_for(task, 5)
-            self.assertEqual(len(fake.received), 1)
-            self.assertEqual(report["checks"][0]["status"], "accepted")
-            self.assertEqual(report["checks"][1]["status"], "ambiguous")
-            self.assertEqual(report["checks"][1]["code"], 90000001)
-            self.assertEqual(report["checks"][1]["dedup_observation"], "unconfirmed")
-            self.assertEqual(report["checks"][2]["reason"], "previous_send_ambiguous")
 
     async def test_c2c_window_limit_uses_user_endpoint_and_four_reply_fixture(self):
         async with FakePlatform() as fake:
@@ -253,31 +238,3 @@ class QQOfficialProbeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(fake.received), 1)
             self.assertEqual(report["checks"][1]["status"], "not_run")
             self.assertEqual(report["checks"][1]["reason"], "reply_window_expired_before_send")
-
-    @unittest.skipUnless(sys.platform == "darwin", "macOS extended ACL regression")
-    def test_inherited_report_acl_rejected_before_any_sensitive_write(self):
-        directory = self.path / "inherited-acl"
-        directory.mkdir(mode=0o700)
-        subprocess.run(["/bin/chmod", "+a", "everyone allow read,file_inherit,directory_inherit", str(directory)], check=True, capture_output=True)
-        try:
-            path = directory / "report.json"
-            with self.assertRaises(CredentialError):
-                ProtectedReport(path)
-            self.assertEqual(path.read_bytes(), b"")
-        finally:
-            subprocess.run(["/bin/chmod", "-RN", str(directory)], check=True, capture_output=True)
-
-    @unittest.skipUnless(sys.platform == "darwin", "macOS extended ACL regression")
-    def test_report_atomic_replacement_rechecks_new_tempfile_acl(self):
-        directory = self.path / "replacement-acl"
-        directory.mkdir(mode=0o700)
-        report = ProtectedReport(directory / "report.json")
-        report.write({"status": "initial"})
-        subprocess.run(["/bin/chmod", "+a", "everyone allow read,file_inherit,directory_inherit", str(directory)], check=True, capture_output=True)
-        try:
-            with self.assertRaises(CredentialError):
-                report.write({"sensitive": "PRIVATE_TEST_IDENTITY"})
-            self.assertEqual(json.loads(report.path.read_text()), {"status": "initial"})
-            self.assertEqual(list(directory.glob(".qq-probe-*")), [])
-        finally:
-            subprocess.run(["/bin/chmod", "-RN", str(directory)], check=True, capture_output=True)

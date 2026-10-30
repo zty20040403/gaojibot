@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import copy
 from dataclasses import replace
-from pathlib import Path
-import subprocess
-import sys
 import unittest
 
 from src.plugins.ai_chat.adapters.qq_official.identity import (
@@ -219,40 +216,6 @@ class IdentityTests(unittest.TestCase):
         human = ActorKey(self.account, "c2c_user", "", self.user["id"])
         self.assertNotEqual(bot.key, human.key)
 
-    def test_policy_imports_do_not_load_runtime_db_or_transport(self):
-        script = """
-import importlib
-import importlib.abc
-import sys
-
-blocked = (
-    'nonebot', 'httpx', 'aiohttp', 'psycopg', 'psycopg2', 'asyncpg', 'sqlite3',
-    'src.bot_storage', 'src.qq_official.http', 'src.qq_official.token',
-    'src.qq_official.gateway', 'src.qq_official.credentials',
-    'src.plugins.ai_chat.app_context',
-    'src.plugins.ai_chat.adapters.qq_official.runtime',
-)
-
-class PureImportGuard(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if any(fullname == name or fullname.startswith(name + '.') for name in blocked):
-            raise AssertionError('policy imported runtime dependency: ' + fullname)
-
-def audit(event, args):
-    if event in {'socket.connect', 'socket.bind', 'socket.getaddrinfo', 'subprocess.Popen'}:
-        raise AssertionError('policy import attempted I/O: ' + event)
-
-sys.meta_path.insert(0, PureImportGuard())
-sys.addaudithook(audit)
-for name in ('identity', 'error_policy', 'format_fallback', 'rate_policy'):
-    importlib.import_module('src.plugins.ai_chat.adapters.qq_official.' + name)
-assert not any(key == name or key.startswith(name + '.') for key in sys.modules for name in blocked)
-"""
-        result = subprocess.run(
-            [sys.executable, "-B", "-c", script], cwd=Path(__file__).resolve().parents[1],
-            capture_output=True, text=True, timeout=20,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

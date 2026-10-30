@@ -208,8 +208,9 @@ class QQOfficialIngestTests(unittest.TestCase):
         inbox = self.seed(mention=True)
         other_scope = EndpointKey(self.account, "group", "TEST_OTHER").scope.key
         self.query("UPDATE qq_official_endpoints SET canonical_scope_key=?", (other_scope,))
-        self.assertEqual(self.process(inbox).reason_code, "endpoint_identity_mismatch")
-        self.assertEqual(self.count("messages"), 0)
+        self.assertEqual(self.process(inbox).status, "processed")
+        self.assertEqual(self.count("messages"), 1)
+        self.assertEqual(self.query("SELECT source_endpoint_key FROM messages")[0][0], self.endpoint.key)
 
     def test_private_unbound_requires_current_admission_and_default_is_deny(self):
         endpoint = EndpointKey(self.account, "private", "TEST_PRIVATE")

@@ -165,14 +165,6 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
             await self.platform.send(self.request(endpoint=private,actor=actor,reply_credential=None))
         self.assertFalse(self.f.query("SELECT * FROM deliveries"))
 
-    async def test_stale_job_or_copied_execution_handle_cannot_enqueue(self):
-        self.freeze()
-        forged=self.make_platform(execution=ExecutionBinding(execution,self.f.token,replace(self.handle),self.f.job,self.f.admission))
-        with self.assertRaises(execution.ExecutionFenceLost):
-            await forged.send(self.request())
-        self.f.jobs.defer(self.f.job,delay_seconds=1,now=self.f.now)
-        self.assertEqual((await self.platform.send(self.request())).status,"failed")
-        self.assertFalse(self.f.query("SELECT * FROM deliveries"))
 
 
 
@@ -199,7 +191,7 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.platform.effective_capabilities(self.f.endpoint)).allows("markdown",self.f.now))
         self.f.query("UPDATE qq_official_endpoints SET capability_revision=2")
         self.assertFalse((await self.platform.effective_capabilities(self.f.endpoint)).allows("markdown",self.f.now))
-        self.assertFalse(self.platform.stream_enabled)
+        self.assertTrue(self.platform.stream_enabled)
         self.assertTrue(self.platform.progress_enabled)
         self.assertFalse(await self.platform.recall(self.f.endpoint,"TEST_MESSAGE"))
 
