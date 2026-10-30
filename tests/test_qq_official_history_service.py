@@ -64,9 +64,33 @@ class MigrationHistoryServiceTests(JournalFixture,unittest.IsolatedAsyncioTestCa
         with self.assertRaises(Exception):self.freeze(initial)
         with self.tx() as cursor:
             with self.assertRaises(HistoryUnavailable):self.history.activate(cursor,migration_id=plan.migration_id)
+        self.assertEqual(self.session().prompt(), '')
+        self.freeze(plan)
         with self.assertRaises(HistoryUnavailable):self.session().prompt()
         stored=json.loads(self.query('SELECT preview_json FROM migration_journals')[0][0])
         self.assertEqual(stored['public_history']['manifest_digest'],preview.manifest_digest)
+
+    async def test_planned_history_does_not_block_current_group_chat(self):
+        self.prepared()
+        self.logger=Mock()
+        app=turn_fixture.OfficialTurnEndToEndTests.application(self)
+        app.semantic_recall=None
+        inbound=InboundMessage(self.endpoint,self.actor,'TEST_EVENT','TEST_NEW_MESSAGE','Current author','member',
+            MessageBody((TextNode(0,'活着吗'),)),True,None,self.now,None)
+        platform=SimpleNamespace(account=self.account,features=PlatformFeatures(),capabilities=OutboundCapabilities())
+        service=PlatformChatService(app,scope_enabled=lambda _:True,public_history_factory=lambda i,p:self.session())
+
+        async def model(**kwargs):
+            messages=str(kwargs['messages'])
+            self.assertNotIn('PUBLIC original history',messages)
+            self.assertNotIn('migrated_public_history',messages)
+            return completion('在的。')
+
+        with patch('src.plugins.ai_chat.agent_loop._create_completion',side_effect=model) as create:
+            self.assertEqual(await service.ask(inbound,platform,'活着吗'),'在的。')
+        create.assert_awaited_once()
+        self.assertEqual(self.query('SELECT state FROM qq_migration_public_history_grants')[0][0],'prepared')
+        self.assertIsNone(active_route_fence.get())
 
     def test_issued_capture_never_merges_author_or_native_lookup(self):
         _,_,preview=self.approved();session=self.session()
