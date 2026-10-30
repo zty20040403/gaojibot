@@ -23,4 +23,3 @@ def record_evidence(test,*,endpoint=None,actor=None,received_at=None,status='pro
                 VALUES (?,?,0,'GROUP_AT_MESSAGE_CREATE','inbox',?,?)''',
                 (endpoint.account.key,'TEST_SESSION_'+inbox,inbox,received))
     return inbox
-

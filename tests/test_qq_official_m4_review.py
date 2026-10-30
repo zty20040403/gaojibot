@@ -2,7 +2,6 @@
 from datetime import datetime, timezone
 import json
 import re
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -34,15 +33,16 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
             (challenge["challenge_id"],),
         ))[0]
         sent = next(item for item in fake.received if item["receipt"]["id"] == delivery["native_message_id"])
-        code = re.search(r"一次性验证码：(\d{6})", sent["payload"]["content"]).group(1)
+        code = re.search(r"/bind (\d{6})", sent["payload"]["content"]).group(1)
         await self.group_message(fake, "TEST_REVIEW_SUBMIT", f"/bind submit {challenge['challenge_id']} {code}")
-        candidate = (await self.wait_db("SELECT candidate_id,version FROM qq_official_binding_candidates WHERE state='pending'"))[0]
-        suffix = " --grant-owner" if grant_owner else ""
-        await self.emit(fake, native="TEST_REVIEW_CONFIRM", content=f"/bind confirm {candidate['candidate_id']} {candidate['version']}{suffix}")
         await self.wait_db("SELECT candidate_id FROM qq_official_binding_candidates WHERE state='confirmed'")
+        await self.wait_db("SELECT delivery_id FROM deliveries WHERE reply_to_native_message_id='TEST_REVIEW_SUBMIT' AND status='committed'")
         endpoint = EndpointKey(runtime.loaded.account, "group", "TEST_GROUP")
         row = self.query("SELECT binding_state FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,))[0]
         self.assertEqual(row["binding_state"], "active")
+        if not grant_owner:
+            with runtime.store.transaction() as cursor:
+                cursor.execute("UPDATE qq_official_owner_actor_links SET state='revoked' WHERE endpoint_key=?",(endpoint.key,))
         return endpoint
 
     async def group_message(self, fake, native, content, *, reference=None):
@@ -64,8 +64,7 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
 
         async def completion(**kwargs):
             calls.append(kwargs)
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-                content="TEST bound group answer", tool_calls=[]))], usage=None)
+            return fixture.model_response("TEST bound group answer", [], kwargs)
 
         with patch("src.plugins.ai_chat.agent_loop._create_completion", new=completion):
             async with verified_ready_platform() as fake:
@@ -75,7 +74,7 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                                         ("TEST_REVIEW_NO_OWNER_EFFORT", "/effort group high")):
                     await self.emit(fake, native=native, content=content, group=True)
                     await self.complete(native)
-                    reply = next(item["payload"]["markdown"]["content"] for item in fake.received if item["payload"].get("msg_id") == native)
+                    reply = next(item["payload"].get("markdown",{}).get("content",item["payload"].get("content","")) for item in fake.received if item["payload"].get("msg_id") == native)
                     self.assertIn("未授权", reply)
                 self.assertIsNone(app.model_preferences.get_scope_default(endpoint.scope))
                 self.assertIsNone(app.reasoning_preferences.get_scope_member_default(endpoint.scope))
@@ -83,15 +82,14 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                 await self.complete("TEST_REVIEW_BOUND")
                 await runtime.stop()
                 self.assertEqual(len(calls), 1, "An explicitly admitted official group must have a reachable chat-enable path")
-                self.assertEqual(next(item["payload"]["markdown"]["content"] for item in fake.received if item["payload"].get("msg_id") == "TEST_REVIEW_BOUND"), "TEST bound group answer")
+                self.assertEqual(next(item["payload"].get("markdown",{}).get("content",item["payload"].get("content","")) for item in fake.received if item["payload"].get("msg_id") == "TEST_REVIEW_BOUND"), "TEST bound group answer")
 
     async def test_non_at_context_and_exact_bot_quote_continue_through_real_pipeline(self):
         app, calls = self.application(), []
 
         async def completion(**kwargs):
             calls.append(kwargs)
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-                content=f"TEST answer {len(calls)}", tool_calls=[]))], usage=None)
+            return fixture.model_response(f"TEST answer {len(calls)}", [], kwargs)
 
         with patch("src.plugins.ai_chat.agent_loop._create_completion", new=completion):
             async with verified_ready_platform() as fake:
@@ -134,7 +132,7 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                 app.model_preferences.set_scope_enabled(endpoint.scope, False)
                 await self.emit(fake, native="TEST_REVIEW_DISABLED", content="TEST disabled question", group=True)
                 await self.complete("TEST_REVIEW_DISABLED")
-                self.assertIn("没有开启 AI", next(item["payload"]["markdown"]["content"] for item in fake.received if item["payload"].get("msg_id") == "TEST_REVIEW_DISABLED"))
+                self.assertIn("没有开启 AI", next(item["payload"].get("markdown",{}).get("content",item["payload"].get("content","")) for item in fake.received if item["payload"].get("msg_id") == "TEST_REVIEW_DISABLED"))
                 app.model_preferences.set_scope_enabled(endpoint.scope, True)
 
                 def revoke():
@@ -167,7 +165,7 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                     native = f"TEST_REVIEW_EFFORT_{ordinal}"
                     await self.emit(fake, native=native, content=text, group=group)
                     await self.complete(native)
-                    return next(item["payload"]["markdown"]["content"] for item in fake.received if item["payload"].get("msg_id") == native)
+                    return fake.received[-1]["payload"]["markdown"]["content"]
 
                 await command("/model unsupported")
                 self.assertIn("不在宿主授权范围", await command("/effort high"))

@@ -164,14 +164,14 @@ class ConsoleArtifactTests(FileFixture, unittest.IsolatedAsyncioTestCase):
         self.account_lease.close()
         self.assertEqual((await self.client.get(self.path)).status_code, 404)
 
-    async def test_transport_failure_allows_console_but_source_cancellation_does_not(self):
+    async def test_transport_failure_and_finished_source_preserve_console_read(self):
         await self.login()
         with self.tx() as cursor:
             cursor.execute("UPDATE qq_official_file_deliveries SET state='failed',reason_code='no_delivery_route' WHERE artifact_id=?", (self.item.artifact_id,))
         self.assertEqual((await self.client.get(self.path)).content, PDF)
         with self.tx() as cursor:
             cursor.execute("UPDATE qq_official_turn_executions SET state='cancelled' WHERE execution_id=?", (self.handle.execution_id,))
-        self.assertEqual((await self.client.get(self.path)).status_code, 404)
+        self.assertEqual((await self.client.get(self.path)).content, PDF)
 
     async def test_session_revocation_between_chunks_stops_and_closes_source(self):
         await self.login()

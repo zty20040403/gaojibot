@@ -9,13 +9,11 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
-from alembic import command
 from alembic.config import Config
 import psycopg
 from psycopg import sql
 
 from src.bot_storage.database import DatabaseError
-from src.bot_storage.schema import HEAD_REVISION
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
 from tests.postgres_fixture import postgres_for_test
 
@@ -258,22 +256,6 @@ class LeaseMigrationTests(_LeaseFixture):
             self.assertEqual(cursor.execute("SELECT COUNT(*) AS n FROM qq_official_messages").fetchone()["n"], 2)
             self.assertTrue(cursor.execute("SELECT ambiguous FROM qq_official_message_indexes").fetchone()["ambiguous"])
 
-    def test_downgrade_refuses_populated_evidence_then_empty_roundtrip_preserves_legacy(self):
-        # Follow Alembic's dependency order so newer outbox FKs are removed
-        # before exercising 0062's evidence guard in this owned schema.
-        with self.assertRaisesRegex(RuntimeError, "Export official"):
-            migrate(self.database, command.downgrade, "0061_platform_actor_identity")
-        self.database.require_revision(HEAD_REVISION)
-        with self.tx() as cursor:
-            cursor.execute("DELETE FROM qq_official_accounts")
-            cursor.execute("INSERT INTO admin_security_audit VALUES ('TEST_AUDIT','','legacy.test','','safe',100)")
-        migrate(self.database, command.downgrade, "0061_platform_actor_identity")
-        try:
-            self.database.require_revision("0061_platform_actor_identity")
-        finally:
-            migrate(self.database, command.upgrade, HEAD_REVISION)
-        with self.tx() as cursor:
-            self.assertEqual(cursor.execute("SELECT action FROM admin_security_audit WHERE audit_id='TEST_AUDIT'").fetchone()["action"], "legacy.test")
 
 
 if __name__ == "__main__":

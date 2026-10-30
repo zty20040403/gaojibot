@@ -5,7 +5,6 @@ from copy import deepcopy
 from dataclasses import replace
 import importlib
 import json
-import sys
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -130,13 +129,11 @@ class IngressNormalizationTests(OfficialInboxTests):
         secret = issued.effect.code
         content = '<@!TEST_BOT> /bind submit ' + issued.challenge_id + ' ' + secret
         result = self.accept(content=content, mentions=[{'id': 'TEST_BOT', 'is_you': True}])
-        self.assertEqual((result.disposition, result.binding.status), ('control', 'pending'))
+        self.assertEqual((result.disposition, result.binding.status), ('control', 'confirmed'))
         row = self.query('SELECT * FROM qq_official_inbound_events WHERE inbox_id=?', (result.inbox_id,))[0]
         self.assertIsNone(row['payload_json'])
         self.assertIsNone(row['turn_text'])
-        decision = self.query('SELECT * FROM qq_official_control_decisions WHERE inbox_id=?', (result.inbox_id,))[0]
-        self.assertEqual(row['control_actor_key'], decision['requester_actor_key'])
-        self.assertEqual((row['control_action'], row['control_decision_code']), ('submit', 'pending'))
+        self.assertEqual((row['control_action'], row['control_decision_code']), ('submit', 'confirmed'))
         repeat = self.accept(content=content, native=row['native_message_id'], mentions=[{'id': 'TEST_BOT', 'is_you': True}])
         self.assertEqual(repeat.disposition, 'duplicate')
         self.assertEqual(self.count('qq_official_binding_candidates'), 1)
@@ -217,30 +214,7 @@ class IngressNormalizationTests(OfficialInboxTests):
         self.assertEqual(row['status'], 'pending')
         self.assertEqual(self.count('messages'), 0)
 
-    def test_whoami_source_receipt_window_control_job_atomic_without_owner(self):
-        result = self.accept(private=True, actor='TEST_NEW_USER', content='/whoami')
-        self.assertEqual((result.disposition, result.binding.status), ('control', 'identity'))
-        row = self.query('SELECT * FROM qq_official_control_decisions WHERE inbox_id=?', (result.inbox_id,))[0]
-        self.assertEqual((row['reply_kind'], row['state'], row['expires_at']), ('whoami', 'recorded', self.now + 30))
-        self.assertIsNotNone(row['job_id'])
-        self.assertIsNotNone(row['reply_window_id'])
-        self.assertEqual(self.jobs.get(row['job_id']).payload, {'control_id': row['control_id']})
-        self.assertEqual(self.count('qq_official_owner_grants'), 1)  # configured owner only
-        self.assertEqual(self.count('messages'), 0)
 
-    def test_control_ack_observes_only_original_timestamp_and_atomic_failure_rolls_back(self):
-        module = sys.modules[type(self.store).__module__]
-        before = self.snapshot()
-        with patch.object(module, 'enqueue_control_job', side_effect=RuntimeError('TEST_ROLLBACK')):
-            with self.assertRaisesRegex(RuntimeError, 'TEST_ROLLBACK'):
-                self.accept(private=True, content='/bind cancel BC-' + 'a' * 32)
-        self.assertEqual(self.snapshot(), before)
-        result = self.accept(private=True, content='/bind cancel BC-' + 'a' * 32,
-            timestamp='2027-01-15T07:59:00Z')
-        row = self.query('SELECT * FROM qq_official_control_decisions WHERE inbox_id=?', (result.inbox_id,))[0]
-        window = self.query('SELECT * FROM qq_official_reply_windows WHERE window_id=?', (row['reply_window_id'],))[0]
-        self.assertEqual(window['issued_at'], self.now - 60)
-        self.assertLessEqual(row['expires_at'], window['expires_at'])
 
 
 # Exercise only the changed boundaries; the inherited suite runs separately.

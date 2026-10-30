@@ -4,12 +4,13 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
 import inspect
+import hashlib
 import logging
 import re
 import traceback
 from types import SimpleNamespace
 
-from src.bot_storage import DatabaseCalls
+from src.bot_storage import DatabaseCalls, DatabaseError
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.lifecycle import BackgroundTaskSupervisor
@@ -301,6 +302,14 @@ class OfficialRuntime:
             await self._ensure_current(token)
             accepted = await self._calls(self.store.accept, frame, token=token, session_id=session_id, ledger=self.ledger)
             observe(self.observer, 'inbox', accepted.disposition)
+            if accepted.inbox_id:
+                data=frame.get('d') if isinstance(frame.get('d'),dict) else {}
+                group=data.get('group_openid')
+                author=data.get('author') if isinstance(data.get('author'),dict) else {}
+                native=group or author.get('user_openid','')
+                self.logger.info('QQ receive kind=%s endpoint=%s type=%s at=%s result=%s',
+                    'group' if group else 'private', hashlib.sha256(str(native).encode()).hexdigest()[:12],
+                    frame.get('t'), frame.get('t')=='GROUP_AT_MESSAGE_CREATE', accepted.disposition)
             if frame.get("t") == "READY":
                 def record_ready():
                     with self.store.transaction() as cursor:
@@ -416,19 +425,18 @@ class OfficialRuntime:
             resources.push_async_callback(close_identity)
             if self.migration_factory is not None:
                 from .host_services import OfficialHostSession
-                migration = self.migration_factory(self, token)
-                if inspect.isawaitable(migration):
-                    migration = await migration
-                if not isinstance(migration, OfficialHostSession):
-                    raise RuntimeError('official_migration_service_invalid')
-                async def close_migration():
-                    try:
-                        await migration.close()
-                    finally:
-                        self.migration_service = None
-                resources.push_async_callback(close_migration)
-                await self._calls(migration.attach)
-                self.migration_service = migration
+                migration = await self._optional_feature('projects', self.migration_factory, self, token)
+                if migration is not None:
+                    if not isinstance(migration, OfficialHostSession):
+                        raise RuntimeError('official_migration_service_invalid')
+                    async def close_migration():
+                        try:
+                            await migration.close()
+                        finally:
+                            self.migration_service = None
+                    resources.push_async_callback(close_migration)
+                    await self._calls(migration.attach)
+                    self.migration_service = migration
             rest = getattr(gateway, "rest_client", None)
             if isinstance(rest, RestClient):
                 from .sender import OfficialSender
@@ -446,9 +454,7 @@ class OfficialRuntime:
                 # A host factory must clean up construction failures of its own
                 # resources; partially installed authority never reaches next epoch.
                 resources.push_async_callback(reset_approval_bindings)
-                service = self.approval_factory(self, token)
-                if inspect.isawaitable(service):
-                    service = await service
+                service = await self._optional_feature('approval', self.approval_factory, self, token)
                 if service is not None:
                     if not isinstance(service, OfficialApprovalService):
                         raise RuntimeError('official_approval_service_invalid')
@@ -465,9 +471,7 @@ class OfficialRuntime:
                     self.approval_service = service
             file_worker = None
             if self.file_services_factory is not None and isinstance(rest, RestClient):
-                service = self.file_services_factory(self, token, rest)
-                if inspect.isawaitable(service):
-                    service = await service
+                service = await self._optional_feature('files', self.file_services_factory, self, token, rest)
                 if service is not None:
                     self.file_service = service
                     self.outbox.protected_payloads = service.payloads
@@ -478,6 +482,7 @@ class OfficialRuntime:
                         finally:
                             self.file_service = None
                             self.outbox.protected_payloads = None
+                            self.outbox.file_authority = None
 
                     resources.push_async_callback(close_files)
                     migration=self.migration_service
@@ -490,9 +495,7 @@ class OfficialRuntime:
                     if imports is not None:
                         file_worker.register(account_job_kind('file_import',token.account_key), imports.execute)
             if self.media_factory is not None:
-                media = self.media_factory(self, token)
-                if inspect.isawaitable(media):
-                    media = await media
+                media = await self._optional_feature('media', self.media_factory, self, token)
                 self.media_service = media
                 if media is not None:
                     async def close_media():
@@ -501,19 +504,12 @@ class OfficialRuntime:
                         finally:
                             self.media_service = None
                     resources.push_async_callback(close_media)
-            if self.background_factory is None:
-                # Removing feature configuration must not remove the persistent
-                # plan fence. This service only denies native work; it creates
-                # no model, schedule, wiki store, listener, or extra queue.
+            background = (await self._optional_feature('background', self.background_factory, self, token)
+                if self.background_factory is not None else None)
+            if background is None:
                 from .native_background import NativeBackgroundService
                 background = NativeBackgroundService(runtime=self, token=token)
                 background.attach()
-            else:
-                background = self.background_factory(self, token)
-                if inspect.isawaitable(background):
-                    background = await background
-                if background is None:
-                    raise RuntimeError('official_background_guard_required')
             self.background_service = background
             async def close_background():
                 try:
@@ -629,6 +625,17 @@ class OfficialRuntime:
             if rows:
                 self.logger.info('QQ restart recovery: closed=%d conversations=%d', len(rows), len(notified))
 
+    async def _optional_feature(self, name, factory, *args):
+        try:
+            result = factory(*args)
+            return await result if inspect.isawaitable(result) else result
+        except (LeaseLost, DatabaseError):
+            raise
+        except Exception as error:
+            self.logger.warning('QQ feature disabled feature=%s error=%s frames=%s', name,
+                type(error).__name__, [(f.name,f.lineno) for f in traceback.extract_tb(error.__traceback__)[-4:]])
+            return None
+
     async def _deliver_binding(self, token, effect):
         outcome = "failed"
         try:
@@ -648,7 +655,9 @@ class OfficialRuntime:
             raise
         except LeaseLost:
             raise
-        except Exception:
+        except Exception as error:
+            self.logger.warning('QQ binding send error=%s frames=%s',type(error).__name__,
+                [(f.name,f.lineno) for f in traceback.extract_tb(error.__traceback__)[-4:]])
             outcome = "unknown"
         if effect.kind == "issue_code":
             def mark():

@@ -50,5 +50,3 @@ class SharedScheduledModel:
                 await self.usage_callback(work, budget.summary())
         assert_job_owned()
         return MessageBody((TextNode(0, answer),))
-
-

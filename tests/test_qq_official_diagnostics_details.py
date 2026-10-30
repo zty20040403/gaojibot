@@ -48,13 +48,12 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
  async def test_real_ingest_execution_deadline_and_safe_reason(self):
   from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
   from src.plugins.ai_chat.adapters.qq_official.turn_source import claim_execution
-  from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
   from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
   from src.plugins.ai_chat.ledger import MessageLedger
   ledger=MessageLedger(self.database);self.addCleanup(ledger.close)
   receipt=self.receive('SECRET_MODEL_BODY https://private/?token=TEST_SECRET')
   with self.tx() as c:process_inbox(c,inbox_id=receipt.inbox_id,lease_token=self.token,ledger=ledger,jobs=self.jobs,epoch_guard=assert_epoch,admission=lambda *args:True,now=self.now)
-  job=self.jobs.claim_due('TEST_DETAIL_WORKER',kinds=(account_job_kind('turn',self.account.key),),now=self.now)[0]
+  job=SimpleNamespace(job_id=None,payload={'inbox_id':receipt.inbox_id})
   with self.tx() as c:
    result=claim_execution(c,token=self.token,job=job,now=self.now,deadline_at=self.now+600,admission=lambda *args:True)
    c.execute("UPDATE qq_official_turn_executions SET reason_code='private_sentinel' WHERE execution_id=?",(result.handle.execution_id,))
@@ -64,7 +63,6 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
  async def test_actual_background_task_has_own_execution_deadline_and_no_fabricated_result_deadline(self):
   from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
   from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
-  from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
   from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
   from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import submit
   from src.plugins.ai_chat.ledger import MessageLedger
@@ -74,7 +72,7 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.addCleanup(ledger.close);self.addCleanup(store.close)
   receipt=self.receive('SECRET_SUBTASK_OBJECTIVE')
   with self.tx() as c:process_inbox(c,inbox_id=receipt.inbox_id,lease_token=self.token,ledger=ledger,jobs=self.jobs,epoch_guard=assert_epoch,admission=lambda *args:True,now=self.now)
-  job=self.jobs.claim_due('TEST_DETAIL_TASK_WORKER',kinds=(account_job_kind('turn',self.account.key),),now=self.now)[0]
+  job=SimpleNamespace(job_id=None,payload={'inbox_id':receipt.inbox_id})
   with self.tx() as c:
    handle=execution.claim_execution(c,token=self.token,job=job,now=self.now,deadline_at=self.now+600,admission=lambda *args:True,execution_kind='command').handle
    execution.begin_command_execution(c,token=self.token,handle=handle,job=job,now=self.now,admission=lambda *args:True)
@@ -107,11 +105,13 @@ class DetailHTTPTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
 class DetailReceiptTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
  asyncSetUp=sender_support.SenderMetricsTests.asyncSetUp
  asyncTearDown=sender_support.SenderMetricsTests.asyncTearDown
+ fast_sleep=sender_support.SenderMetricsTests.fast_sleep
+ inbound=sender_support.SenderMetricsTests.inbound
  make_sender=sender_support.SenderMetricsTests.make_sender
  ensure_current=sender_support.SenderMetricsTests.ensure_current
  enqueue=sender_support.SenderMetricsTests.enqueue
  window=sender_support.SenderMetricsTests.window
- query=IdentityFixture.rows
+ query=sender_support.SenderMetricsTests.query
  async def test_actual_parts_receipts_and_unknown_are_separate_from_execution(self):
   from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
   from src.plugins.ai_chat.message_ir import MessageBody,TextNode

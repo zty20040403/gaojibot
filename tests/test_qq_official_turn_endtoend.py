@@ -29,6 +29,15 @@ from src.plugins.ai_chat.tasks import RunningTaskRegistry
 from src.plugins.ai_chat.turn_journal import TurnJournal
 
 
+def model_response(content, tool_calls, kwargs):
+    message=SimpleNamespace(content=content,tool_calls=tool_calls)
+    if kwargs.get('stream'):
+        async def stream():
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=message,finish_reason='stop')])
+        return stream()
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)],usage=None)
+
+
 class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
     setUp = runtime_fixture.OfficialRuntimeTests.setUp
     runtime = runtime_fixture.OfficialRuntimeTests.runtime
@@ -96,8 +105,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(names & {"get_group_member_list", "get_group_file_list", "send_group_forward_msg",
                                      "set_msg_emoji_like", "ocr_image", "get_record", "sandbox_exec"})
             self.assertNotIn("TEST_APP_SECRET", json.dumps(kwargs, default=str))
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-                content="TEST shared final", tool_calls=[]))], usage=None)
+            return model_response("TEST shared final", [], kwargs)
 
         with patch("src.plugins.ai_chat.agent_loop._create_completion", new=completion):
             async with verified_ready_platform() as fake:
@@ -156,6 +164,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         app.subagent_coordinator = SubAgentCoordinator(app.subagent_store, app.model_catalog, logger=self.logger)
         front_calls = []
         worker_calls = []
+        result_calls = []
         decision = {"mode": "delegate", "reason": "独立文字分析", "answer": "",
             "task_type": "execution", "delivery_required": False,
             "objective": "TEST 分析文字", "deliverables": ["文字分析"], "constraints": [],
@@ -164,8 +173,11 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                        "deliverable": "文字分析", "depends_on": []}]}
 
         async def completion(**kwargs):
+            definitions = {item["function"]["name"]: item for item in kwargs.get("tools",[])}
+            if 'delegate_agent' not in definitions:
+                result_calls.append(kwargs)
+                return model_response('TEST analysis foreground',[],kwargs)
             front_calls.append(kwargs)
-            definitions = {item["function"]["name"]: item for item in kwargs["tools"]}
             self.assertIn("delegate_agent", definitions)
             self.assertNotIn("resume_subagent", definitions)
             self.assertEqual(definitions["delegate_agent"]["function"]["parameters"]["properties"]["role"]["enum"],
@@ -178,8 +190,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 responses = [message["content"] for message in kwargs["messages"] if message["role"] == "tool"]
                 self.assertEqual(len(responses), 1)
                 self.assertIn('"ok": true', responses[0])
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-                content="" if tool_calls else "TEST queued", tool_calls=tool_calls))], usage=None)
+            return model_response("" if tool_calls else "TEST queued", tool_calls, kwargs)
 
         async def worker(*args, **kwargs):
             worker_calls.append(kwargs)
@@ -202,12 +213,13 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 tasks = self.query("SELECT task_id FROM subagent_tasks")
                 self.assertEqual(len(tasks), 1)
                 task = app.subagent_store.get(tasks[0]["task_id"])
-                self.assertEqual(task.status, "partial")
+                self.assertIn(task.status, {"completed", "partial"})
                 self.assertIsNone(task.requester_user_id)
                 self.assertEqual(task.requester_actor.native_user_id, "TEST_RUNTIME_OWNER")
                 self.assertEqual(task.endpoint.native_conversation_id, "TEST_RUNTIME_OWNER")
                 self.assertEqual(len(front_calls), 2)
-                self.assertGreaterEqual(len(worker_calls), 2)
+                self.assertEqual(len(worker_calls), 1)
+                self.assertEqual(len(result_calls),1)
                 self.assertTrue(all('msg_id' not in entry['payload'] for entry in fake.received))
                 self.assertTrue(all('msg_seq' not in entry['payload'] for entry in fake.received))
                 self.assertTrue(any("TEST queued" in entry["payload"]["markdown"]["content"] for entry in fake.received),

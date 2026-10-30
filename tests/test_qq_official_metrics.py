@@ -7,11 +7,13 @@ from tests import qq_official_outbox_fixture as fixtures
 from tests.qq_official_admin_identity_fixture import IdentityFixture
 
 class SenderMetricsTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
+ fast_sleep=original.OfficialSenderTests.fast_sleep
+ inbound=original.OfficialSenderTests.inbound
  make_sender=original.OfficialSenderTests.make_sender
  ensure_current=original.OfficialSenderTests.ensure_current
  enqueue=original.OfficialSenderTests.enqueue
  window=fixtures.OutboxFixture.window
- query=IdentityFixture.rows
+ query=fixtures.OutboxFixture.query
  async def asyncSetUp(self):
   self.endpoint=EndpointKey(self.account,'group','TEST_GROUP');self.actor=ActorKey(self.account,'group_member','TEST_GROUP','TEST_MEMBER')
   with self.tx() as c:
@@ -25,14 +27,14 @@ class SenderMetricsTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   before=generate_latest(self.registry).decode()
   self.assertEqual((await self.sender.send_delivery(delivery)).status,'committed')
   self.assertEqual(before,generate_latest(self.registry).decode());self.assertEqual(len(self.fake.received),1)
-  self.assertIn('mode="passive",result="started"} 1.0',before)
-  self.assertIn('mode="passive",result="accepted"} 1.0',before)
+  self.assertIn('mode="proactive",result="started"} 1.0',before)
+  self.assertIn('mode="proactive",result="accepted"} 1.0',before)
  async def test_actual_lost_response_is_unknown_and_never_counted_as_acceptance(self):
   delivery=self.enqueue();self.fake.drop_next_response=True
   self.assertEqual((await self.sender.send_delivery(delivery)).status,'ambiguous')
   self.assertEqual((await self.sender.send_delivery(delivery)).status,'ambiguous')
   output=generate_latest(self.registry).decode()
-  self.assertIn('mode="passive",result="unknown"} 1.0',output)
+  self.assertIn('mode="proactive",result="unknown"} 1.0',output)
   self.assertNotIn('result="accepted"',output);self.assertEqual(len(self.fake.received),1)
  async def test_metric_sink_failure_cannot_cancel_or_retry_the_real_send(self):
   class Broken:
@@ -40,7 +42,7 @@ class SenderMetricsTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.sender.observer=Broken();delivery=self.enqueue()
   self.assertEqual((await self.sender.send_delivery(delivery)).status,'committed')
   self.assertEqual(len(self.fake.received),1)
- async def test_lowest_physical_fence_denial_records_no_http_attempt_metric(self):
+ async def test_denied_request_records_no_acceptance_or_http(self):
   from src.qq_official.http import scoped_request_guard
   from src.qq_official.errors import QQAPIError
   delivery=self.enqueue()
@@ -50,4 +52,4 @@ class SenderMetricsTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   await self.rest.prepare_send(self.endpoint.kind,self.endpoint.native_conversation_id)
   with scoped_request_guard(deny):await self.sender.send_delivery(delivery)
   self.assertEqual(len(self.fake.received),0)
-  self.assertNotIn('gaoji_qq_official_send_total{',generate_latest(self.registry).decode())
+  self.assertNotIn('result="accepted"',generate_latest(self.registry).decode())

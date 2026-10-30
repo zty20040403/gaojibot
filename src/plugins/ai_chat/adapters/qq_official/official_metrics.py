@@ -28,7 +28,7 @@ class OfficialMetrics:
     def __init__(self, registry):
         self.events = Counter('gaoji_qq_official_events_total','Observed official boundary events.',
             ('boundary','result'),registry=registry)
-        self.sends = Counter('gaoji_qq_official_send_total','Physical message request boundaries.',
+        self.sends = Counter('gaoji_qq_official_send_total','Message send attempts and outcomes.',
             ('mode','result'),registry=registry)
         self.duration = Histogram('gaoji_qq_official_send_seconds','Physical message request duration.',
             ('mode','result'),buckets=(.05,.1,.25,.5,1,2,5,10,30),registry=registry)

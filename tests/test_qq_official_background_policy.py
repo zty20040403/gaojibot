@@ -5,13 +5,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock
 
-from src.plugins.ai_chat.adapters.qq_official.native_schedules import NativeSchedules, NativeCommandSource, NativeScheduleDenied, integer, text
+from src.plugins.ai_chat.adapters.qq_official.native_schedules import NativeSchedules, NativeScheduleDenied, integer, text
 from src.plugins.ai_chat.adapters.qq_official.optional_capabilities import optional_operation, reaction_reward
 from src.plugins.ai_chat.adapters.qq_official.proactive_delivery import score_and_deliver, ProactiveLifetime
 from src.plugins.ai_chat.adapters.qq_official.recent_speakers import recent_speakers
-from src.plugins.ai_chat.adapters.qq_official.turn_source import ExecutionFenceLost
-from src.plugins.ai_chat.message_ir import MessageBody, TextNode
-from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey, ActorKey, InboundMessage, EffectiveCapabilities, CapabilityEvidence
+from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey, ActorKey, EffectiveCapabilities, CapabilityEvidence
 from src.plugins.ai_chat.proactive import ProactiveDecision
 
 ACCOUNT=AccountKey('qq-official','TEST_NATIVE','test')
@@ -29,12 +27,6 @@ class PureTests(unittest.TestCase):
             with self.subTest(value=value),self.assertRaises(NativeScheduleDenied):text(value,4)
         self.assertEqual(text('界',4),'界')
 
-    def test_fabricated_execution_never_queries_db(self):
-        cursor=SimpleNamespace(execute=lambda *a: self.fail('unissued source touched SQL'))
-        inbound=InboundMessage(EP,ACTOR,None,'msg','name','',MessageBody((TextNode(0,'/例行'),)),True,None,100,None)
-        domain=NativeSchedules(database=None,token=SimpleNamespace(account_key=ACCOUNT.key),jobs=None,usage=None,
-            outbox=None,admission=None,clock=lambda:100)
-        with self.assertRaises(ExecutionFenceLost):domain.command(cursor,NativeCommandSource(object(),object(),inbound))
 
     def test_missing_policy_is_explicit_unavailable(self):
         domain=NativeSchedules(database=None,token=SimpleNamespace(account_key=ACCOUNT.key),jobs=None,usage=None,

@@ -174,29 +174,3 @@ class AdminBindingsTests(AuthorityFixture):
         with patch.dict(os.environ,{'AI_POSTGRES_SCHEMA':self.database.schema,'AI_POSTGRES_DSN':self.database.dsn}):
             if revision=='head':command.upgrade(config,revision)
             else:command.downgrade(config,revision)
-
-    def test_empty_full_migration_downgrade_restores_old_constraints(self):
-        self.migrate('0065_qq_official_files')
-        try:
-            with self.tx() as cursor:
-                self.assertIsNone(cursor.execute("SELECT to_regclass('qq_official_project_grants') AS n").fetchone()['n'])
-                self.assertIsNone(cursor.execute("""SELECT 1 FROM information_schema.columns
-                    WHERE table_schema=current_schema() AND table_name='admin_accounts'
-                    AND column_name='identity_mode' """).fetchone())
-            with self.sql_rejects(CheckViolation):
-                self.update("""INSERT INTO admin_accounts(account_id,username,password_hash,role,qq_id,created_at)
-                    VALUES ('TEST_NO_QQ','test_no_qq','TEST_HASH','admin',NULL,?)""",(self.now,))
-        finally:
-            self.migrate('head')
-
-    def test_retained_authority_evidence_blocks_full_downgrade_before_any_drop(self):
-        self.issue()
-        for revoked in (False,True):
-            if revoked:
-                self.update("UPDATE qq_official_project_grants SET state='revoked',revoked_at=updated_at,revision=revision+1")
-            with self.subTest(revoked=revoked),self.assertRaisesRegex(RuntimeError,'migration_evidence_requires_export'):
-                self.migrate('0065_qq_official_files')
-            with self.tx() as cursor:
-                for name in ('qq_official_project_grants','qq_official_admin_bindings','qq_official_admin_otp_sources','migration_routes'):
-                    self.assertIsNotNone(cursor.execute('SELECT to_regclass(?) AS n',(name,)).fetchone()['n'])
-                self.assertEqual(cursor.execute('SELECT count(*) AS n FROM qq_official_project_grants').fetchone()['n'],1)

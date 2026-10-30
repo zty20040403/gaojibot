@@ -185,10 +185,19 @@ class FileGenerationSession:
         return replace(context, capabilities=context.capabilities | {"sandbox"}, agent_executor=self.executor)
 
     async def close(self):
-        """End the turn; the conversation VM and files remain available."""
+        """Keep conversation files; release temporary project step VMs."""
         self.closed = True
         self.executor.generation_enabled = False
-        return {"released": 0, "retained": len(self.executor.retained_resources)}
+        released = 0
+        if not self.executor.owner.startswith("qqo:conversation:"):
+            for owner, sid in self.executor.retained_resources:
+                try:
+                    await self.executor._destroy(owner, sid)
+                except (Exception, LeaseLost) as exc:
+                    logging.getLogger(__name__).warning("Project workspace cleanup failed: %s", type(exc).__name__)
+                    break
+                released += 1
+        return {"released": released, "retained": len(self.executor.retained_resources)}
 
 
 class _OwnedWorkspaces:

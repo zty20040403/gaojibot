@@ -116,6 +116,8 @@ def foreground_source(cursor, *, token, handle, job, admission, now, pending_dea
 def task_source(cursor, *, token, task_id, job, admission, now, pending_deadline_at):
     binding, task = subagent_runtime.assert_current(cursor, token=token, task_id=task_id,
         job=job, admission=admission, now=_time(now))
+    if task['cancel_requested'] or task['status'] == 'cancelled':
+        raise LeaseLost('artifact_task_cancelled')
     _time(pending_deadline_at)
     if not now < pending_deadline_at <= now + 86400:
         raise LeaseLost('artifact_task_source_unavailable')
@@ -148,6 +150,8 @@ def current_source(cursor, binding, now):
     else:
         source, task = subagent_runtime.assert_current(cursor, token=binding.token,
             task_id=binding.task_id, job=binding.job, admission=binding.admission, now=now)
+        if task['cancel_requested'] or task['status'] == 'cancelled':
+            raise LeaseLost('artifact_task_cancelled')
         source['source_scope_key'] = task['scope_key']
     if (source['endpoint_key'] != binding.endpoint.key or source['requester_actor_key'] != binding.actor.key
             or source['account_key'] != binding.endpoint.account.key

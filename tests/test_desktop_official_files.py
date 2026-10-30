@@ -115,7 +115,6 @@ class FileConfigurationTests(unittest.TestCase):
 
     def test_materialized_file_config_parses_with_actual_download_host_contract(self):
         from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration
-        from src.plugins.ai_chat.adapters.qq_official.download_runtime import DownloadHost
         with TemporaryDirectory() as temp:
             root=Path(temp);root.chmod(0o700);(root/'config').mkdir(mode=0o700);target=root/'runtime-config';target.mkdir(mode=0o700)
             self.value['native_routes']=[self.route(native=True)]
@@ -125,8 +124,5 @@ class FileConfigurationTests(unittest.TestCase):
             config=HostConfiguration.from_env({'AI_QQ_OFFICIAL_ENABLED':'true','AI_QQ_OFFICIAL_HOST_CONFIG_FILE':str(target/name/'host.json')})
             self.assertEqual(config.account,self.account)
             self.assertEqual(config.files['private_directory'],Path(PRIVATE_DIRECTORY))
-            self.assertEqual(config.native_routes[0].verified_at,100)
-            self.assertEqual(config.download.routes[0].endpoint,self.endpoint)
-            self.assertEqual(config.download.routes[0].expires_at,500)
-            host=DownloadHost(config.download,self.account)
-            self.assertEqual(host.status(),dict(configured=True,listening=False,proxy_reachable=False,evidence_configured=True))
+            self.assertNotIn('native_routes',config.files)
+            self.assertNotIn('download',config.files)

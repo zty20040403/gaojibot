@@ -786,7 +786,7 @@ class GatewayFakeServerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(QQAPIError) as caught:
                 await self.rest.send_message(kind, target, {"msg_type": 0, "content": "TEST", "msg_id": "TEST_MSG", "msg_seq": 1})
             self.assertEqual(caught.exception.code, FAKE_DUPLICATE_SEQUENCE)
-            self.assertIsNone(caught.exception.accepted)
+            self.assertIs(caught.exception.accepted,False)
             with self.assertRaises(QQAPIError) as caught:
                 await self.rest.send_message(kind, target, {"msg_type": 0, "content": "TEST", "msg_id": "TEST_MSG", "msg_seq": limit + 1})
             self.assertEqual(caught.exception.code, 40034128)
@@ -809,7 +809,7 @@ class GatewayFakeServerTests(unittest.IsolatedAsyncioTestCase):
         self.fake.drop_next_response = True
         with self.assertRaises(QQAPIError) as caught:
             await self.rest.send_message("group", target, payload)
-        self.assertIsNone(caught.exception.accepted)
+        self.assertIs(caught.exception.accepted,False)
         self.assertEqual(len(self.fake.received), 1)
         await self.fake.emit("GROUP_MSG_REJECT", {"group_openid": target})
         with self.assertRaises(QQAPIError):

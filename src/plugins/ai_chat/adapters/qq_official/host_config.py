@@ -6,8 +6,9 @@ File uploads use the configured account directly, without route proofs.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
+import logging
 from pathlib import Path
 
 from src.bot_security.store import SecurityError
@@ -15,7 +16,7 @@ from src.qq_official.credentials import _read_secret
 from ...platform_types import AccountKey, EndpointKey
 from .config import _boolean
 from .file_services import FileServiceConfig, file_services_factory
-from .host_services import HostServices, OneBotAccount, ExportDeadline
+from .host_services import HostServices
 
 
 class HostConfigurationError(ValueError):
@@ -75,15 +76,37 @@ def _native_background(raw,account):
     return schedule,schedule_profile,proactive,proactive_profile,wiki
 
 
+logger = logging.getLogger(__name__)
+
+
+def _optional(name, load, default=None):
+    try:
+        return load()
+    except (ValueError, TypeError, KeyError, OSError, SecurityError) as error:
+        logger.warning('QQ feature disabled feature=%s error=%s', name, type(error).__name__)
+        return default
+
+
+def _files(raw):
+    if raw is None:
+        return None
+    if not isinstance(raw,dict):raise ValueError('invalid_file_settings')
+    allowed = set(FileServiceConfig.__dataclass_fields__) - {'manager','source_authority','existing_artifact_authority'}
+    value = {k:v for k,v in raw.items() if k in allowed}
+    value['private_directory'] = Path(value['private_directory'])
+    if not value['private_directory'].is_absolute():
+        raise ValueError('file_directory_must_be_absolute')
+    if 'generation_limits' in value:
+        from ...application.owned_sandbox import GenerationLimits
+        value['generation_limits'] = GenerationLimits(**value['generation_limits'])
+    FileServiceConfig(manager=None, **value)
+    return value
+
+
 @dataclass(frozen=True,repr=False)
 class HostConfiguration:
     account: AccountKey
-    onebot_accounts: tuple[OneBotAccount,...]
-    scheduled_profile: str | None = None
-    subagent_profile: str | None = None
-    deadlines: tuple = ()
     files: dict | None = field(default=None,repr=False)
-    native_routes: tuple = field(default=(),repr=False)
     host_services: tuple = field(default=(),repr=False)
     media: object | None = field(default=None,repr=False)
     native_schedule: object | None = field(default=None,repr=False)
@@ -91,100 +114,53 @@ class HostConfiguration:
     proactive: object | None = field(default=None,repr=False)
     proactive_profile: str | None = None
     wiki: object | None = field(default=None,repr=False)
-    download: object | None = field(default=None,repr=False)
 
     @classmethod
     def parse(cls,text):
         try:
-            raw=_object(json.loads(text,object_pairs_hook=_pairs),
-                ('version','account','onebot_accounts'),
-                ('scheduled_profile','subagent_profile','deadlines','files','host_services','media','native_background'))
-            if type(raw['version']) is not int or raw['version']!=1:raise ValueError
+            raw=json.loads(text)
+            if raw.get('version',1)!=1:raise ValueError
             account=AccountKey.parse(raw['account'])
             if account.platform!='qq-official':raise ValueError
-            sources=[]
-            for item in _list(raw['onebot_accounts'],16):
-                _object(item,('account','deployment_digest'))
-                sources.append(OneBotAccount(AccountKey.parse(item['account']),item['deployment_digest']))
-            if len({x.account.key for x in sources})!=len(sources):raise ValueError
-            profiles=[]
-            for name in ('scheduled_profile','subagent_profile'):
-                value=raw.get(name)
-                if value is not None and (type(value) is not str or not value.strip() or len(value)>128):raise ValueError
-                profiles.append(value)
-            deadlines={}
-            for item in _list(raw.get('deadlines',[]),128):
-                _object(item,('source_endpoint','kind','reference','execution','result'),('schedule_json',))
-                endpoint=EndpointKey.parse(item['source_endpoint'])
-                if endpoint.account not in {x.account for x in sources}:raise ValueError
-                if item['kind'] not in {'reminder','routine','subagent','project_task','file'}:raise ValueError
-                if type(item['reference']) is not str or not 1<=len(item['reference'])<=256:raise ValueError
-                key=(endpoint.key,item['kind'],item['reference'])
-                if key in deadlines:raise ValueError
-                deadlines[key]=ExportDeadline(item['execution'],item['result'],item.get('schedule_json'))
-            files=raw.get('files')
-            evidence=[]
-            download=None
-            if files is not None:
-                files=dict(files)
-                # Accepted for existing deployment files, no longer consulted.
-                for obsolete in ('native_routes', 'multipart', 'download'):
-                    files.pop(obsolete, None)
-                files['private_directory']=Path(files['private_directory'])
-                FileServiceConfig(manager=None,**files)  # Validate without opening files or creating a manager.
-            from .host_authority import AllowedService
-            services=[]
-            for item in _list(raw.get('host_services',[]),64):
-                _object(item,('host_id','resource_ref','backend_ref','backend_binding_version','actions'))
-                item=dict(item);item['actions']=frozenset(_list(item['actions'],16))
-                services.append(AllowedService(**item))
-            from .media_runtime import MediaConfig
-            media=None
-            if raw.get('media') is not None:
-                value=_object(raw['media'],(),tuple(MediaConfig.__dataclass_fields__))
-                media=MediaConfig(**value)
-            schedule,schedule_profile,proactive,proactive_profile,wiki=_native_background(raw.get('native_background'),account)
-            return cls(account,tuple(sources),*profiles,tuple(deadlines.items()),files,tuple(evidence),tuple(services),
-                media=media,native_schedule=schedule,native_schedule_profile=schedule_profile,
-                proactive=proactive,proactive_profile=proactive_profile,wiki=wiki,download=download)
-        except (ValueError,TypeError,KeyError,OverflowError,RecursionError,SecurityError):
-            raise HostConfigurationError('invalid_official_host_configuration') from None
+        except (ValueError,TypeError,KeyError,AttributeError):
+            raise HostConfigurationError('invalid_official_host_account') from None
+        from .host_authority import AllowedService
+        from .media_runtime import MediaConfig
+        def services():
+            return tuple(AllowedService(**{**entry,'actions':frozenset(entry['actions'])})
+                         for entry in raw.get('host_services',[]))
+        values=dict(files=_optional('files',lambda:_files(raw.get('files'))),
+            host_services=_optional('host_services',services,()),
+            media=_optional('media',lambda:MediaConfig(**raw['media']) if raw.get('media') is not None else None))
+        background=_optional('background',lambda:dict(raw.get('native_background') or {}),{})
+        for key in ('schedules','proactive','wiki'):
+            if key not in background:continue
+            parsed=_optional(key,lambda:_native_background({key:background[key]},account))
+            if parsed is None:continue
+            schedule,sp,proactive,pp,wiki=parsed
+            if key=='schedules':values.update(native_schedule=schedule,native_schedule_profile=sp)
+            elif key=='proactive':values.update(proactive=proactive,proactive_profile=pp)
+            else:values['wiki']=wiki
+        return cls(account,**values)
 
     @classmethod
     def from_env(cls,env):
         migration=_boolean(env.get('AI_QQ_MIGRATION_ENABLED','false'),'migration')
         official=_boolean(env.get('AI_QQ_OFFICIAL_ENABLED','false'),'enabled')
-        old=env.get('AI_QQ_MIGRATION_CONFIG_FILE','') if migration else ''
-        native=env.get('AI_QQ_OFFICIAL_HOST_CONFIG_FILE','') if official else ''
-        if not migration and not native:return None
-        try:
-            if migration and not old:raise ValueError
-            if old and native and Path(old)!=Path(native):
-                raise HostConfigurationError('conflicting_official_host_configuration')
-            path=old or native
-            if not path or not Path(path).is_absolute():raise ValueError
-            return cls.parse(_read_secret(path,None))
-        except (ValueError,OSError):
-            raise HostConfigurationError('official_host_configuration_unavailable') from None
+        path=(env.get('AI_QQ_OFFICIAL_HOST_CONFIG_FILE') if official else None) or (
+            env.get('AI_QQ_MIGRATION_CONFIG_FILE') if migration else None)
+        if not path:return None
+        return _optional('host_configuration',lambda:cls.parse(_read_secret(path,None)))
 
     def build(self,context,runtime,*,project_grant_ttl_seconds=86400,file_link_ttl_seconds=3600):
-        mobile=getattr(context,'mobile_authorization',None)
-        if context.database is None or context.delivery_store is None or mobile is None:
-            raise HostConfigurationError('official_host_requires_durable_security_services')
-        for profile in (self.scheduled_profile,self.subagent_profile,self.native_schedule_profile,self.proactive_profile,
-                        self.wiki.profile if self.wiki is not None and self.wiki.enabled else None):
-            if profile is not None:context.model_catalog.resolve(profile)
-        def canonical_scope(event):
-            if not getattr(runtime,'onebot_enabled',True):
-                raise HostConfigurationError('legacy_source_unavailable')
-            return runtime.handlers.chat._conversation_scope(event)
+        config=self
+        for feature,profile in (('native_schedule',self.native_schedule_profile),('proactive',self.proactive_profile),
+                ('wiki',self.wiki.profile if self.wiki is not None and self.wiki.enabled else None)):
+            if profile is not None and _optional(feature,lambda:context.model_catalog.resolve(profile)) is None:
+                config=replace(config,**{feature:None})
         service=HostServices(database=context.database,transaction=context.delivery_store.transaction,
-            database_calls=context.db_call,security=mobile.store,onebot_accounts=self.onebot_accounts,
-            canonical_scope=canonical_scope,
-            deadlines=self.deadlines,scheduled_profile=self.scheduled_profile,subagent_profile=self.subagent_profile,
-            project_grant_ttl_seconds=project_grant_ttl_seconds)
-        context.official_host=ConfiguredHost(self,context,service,file_link_ttl_seconds=file_link_ttl_seconds)
-        service.file_admission=context.official_host.file_admission
+            database_calls=context.db_call,project_grant_ttl_seconds=project_grant_ttl_seconds)
+        context.official_host=ConfiguredHost(config,context,service)
         return service
 
 
@@ -243,18 +219,8 @@ class ConfiguredHost:
     def approval_factory(self,runtime,token):
         self._session(runtime,token)
         from .approval import approval_services_factory
-        return approval_services_factory(security=self.context.mobile_authorization.store,
+        return approval_services_factory(security=getattr(getattr(self.context,'mobile_authorization',None),'store',None),
             services=self.config.host_services,fleet_client=self.context.fleet_client)(runtime,token)
-
-    def file_admission(self,cursor,*,item_id,endpoint,actor,now):
-        session=self.migration.official.get(endpoint.account.key)
-        files=session._files if session is not None else None
-        # This is the configured profile policy, not proof of deliverability.
-        # Every source still passes the journal/mapping/task guards. M6 checks
-        # the exact route before generation/upload/send; expired upload evidence
-        # must not revoke an independently authorized retained-copy read.
-        return (files is not None and session._attached and files.generation.enabled
-                and endpoint.account==self.config.account and session.admission(cursor,endpoint,actor) is True)
 
     async def files_factory(self,runtime,token,rest):
         session=self._session(runtime,token)

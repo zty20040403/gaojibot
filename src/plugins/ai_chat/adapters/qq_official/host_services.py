@@ -1,24 +1,9 @@
 """Official host wiring: existing owner bindings and projects, no migration gate."""
-from dataclasses import dataclass
 from contextlib import nullcontext
 import time
 
-from ...platform_types import AccountKey
 from .migration_types import MigrationDenied
 from .project_resource_origins import ProjectResourceOrigins
-
-
-@dataclass(frozen=True)
-class OneBotAccount:
-    account: AccountKey
-    deployment_digest: str = ''
-
-
-@dataclass(frozen=True)
-class ExportDeadline:
-    execution: int
-    result: int
-    schedule_json: str | None = None
 
 
 class BoundRoutes:

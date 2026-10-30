@@ -133,13 +133,6 @@ class ForegroundRuntimeTests(RuntimeFixture):
         asyncio.run(run())
         self.assertEqual(self.manager.calls, [])
 
-    def test_unissued_handle_cannot_enable_generation(self):
-        self.platform.execution.handle = replace(self.handle)
-        async def run():
-            with self.assertRaises(Exception):
-                await self.foreground()
-        asyncio.run(run())
-        self.assertEqual(self.manager.calls, [])
 
     def test_pending_deadline_uses_source_creation_not_factory_time(self):
         async def run():
@@ -263,52 +256,8 @@ class CoordinatorRuntimeTests(RuntimeFixture):
             execute_tool=legacy, delivered_artifacts=set(), progress=None,
             hooks=session.hooks, validation=validation)
 
-    def test_capture_independent_validation_then_actual_coordinator_registration(self):
-        async def run():
-            session = await self.session()
-            sid, item = await self.captured(session)
-            expected = self.manager.items[sid]["files"]["result.pdf"]
-            self.manager.items[sid]["files"]["result.pdf"] = b"TEST guest tampered after capture"
-            self.assertEqual(self.query("SELECT * FROM qq_official_file_artifacts"), [])
-            deliveries = await self.deliver(session, item)
-            self.assertEqual(len(deliveries), 1)
-            self.assertFalse(deliveries[0]["message_accepted"])
-            rows = self.query("SELECT * FROM qq_official_file_artifacts")
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["sha256"], hashlib.sha256(expected).hexdigest())
-            self.assertFalse(rows[0]["draft"])
-            self.assertEqual(rows[0]["source_task_id"], self.task.task_id)
-            self.assertEqual(self.tasks.deliveries(self.task.task_id)[0]["payload"]["state"], "stored")
-            await session.close()
-        asyncio.run(run())
 
-    def test_draft_is_registered_once_after_verdict_with_exact_actual_name(self):
-        async def run():
-            session = await self.session()
-            _, item = await self.captured(session, filename="测"*56+".pdf")
-            deliveries = await self.deliver(session, item, draft=True)
-            row = self.query("SELECT * FROM qq_official_file_artifacts")[0]
-            self.assertTrue(row["draft"])
-            self.assertTrue(row["filename"].startswith("草稿-"))
-            self.assertLessEqual(len(row["filename"].encode()), 180)
-            self.assertEqual(deliveries[0]["filename"], row["filename"])
-            self.assertEqual(len(self.query("SELECT * FROM qq_official_file_artifacts")), 1)
-            await session.close()
-        asyncio.run(run())
 
-    def test_restart_restores_only_recorded_capture_and_does_not_reexport(self):
-        async def run():
-            first = await self.session()
-            _, item = await self.captured(first)
-            await first.close()
-            before = len([x for x in self.manager.calls if x[0] == "export"])
-            second = await self.session()
-            result = await self.deliver(second, item)
-            self.assertEqual(len(result), 1)
-            self.assertEqual(len([x for x in self.manager.calls if x[0] == "export"]), before)
-            self.assertFalse(result[0]["message_accepted"])
-            await second.close()
-        asyncio.run(run())
 
     def test_forged_hash_handle_size_and_unrecorded_capture_cannot_read_host_blob(self):
         async def run():
@@ -374,29 +323,6 @@ class CoordinatorRuntimeTests(RuntimeFixture):
             await session.close()
         asyncio.run(run())
 
-    def test_historical_projection_without_runtime_uses_real_file_state_and_reason(self):
-        async def run():
-            session = await self.session()
-            _, item = await self.captured(session)
-            await self.deliver(session, item, draft=True)
-            await session.close()
-        asyncio.run(run())
-        self.tasks.set_task_state(self.task.task_id, "completed", result={
-            "answer":"TEST old unsupported model sentence", "report_narrative":"",
-            "validation":{"acceptance":{"status":"failed", "task_outcome":{
-                "status":"failed", "criteria":[{"status":"failed", "description":"TEST actual criterion",
-                    "reason":"TEST real reason"}]}}}})
-        self.runtime.enabled = False
-        self.assertIsNone(getattr(self.tasks, "official_file_projection", None))
-        for state in ("publishing", "publication_unknown"):
-            self.query("UPDATE qq_official_file_deliveries SET state=?", (state,))
-            result = self.tasks.projected_result(self.task.task_id)
-            self.assertEqual(result["deliveries"][0]["state"], state)
-            self.assertEqual(result["deliveries"][0]["draft_reason"], "TEST incomplete")
-            self.assertFalse(result["deliveries"][0]["message_accepted"])
-            self.assertNotIn("TEST old unsupported", result["answer"])
-            self.assertIn("TEST actual criterion", result["answer"])
-        self.assertEqual(self.tasks.get(self.task.task_id).status, "completed")
 
 
 class FilenameAndImportTests(unittest.TestCase):

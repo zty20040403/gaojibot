@@ -180,6 +180,17 @@ class OfficialSendStore:
                 AND echo_state='not_echo' AND status NOT IN ('quarantined','revoked')
                 ORDER BY accepted_order DESC LIMIT 1""", (endpoint.key,)).fetchone()
 
+    def passive_history(self, endpoint, msg_id):
+        # Seed RAM counters after restart from actual attempts; no quota table.
+        with self.deliveries.transaction() as cursor:
+            return cursor.execute("""SELECT COALESCE(MAX(a.msg_seq),0) AS seq,
+                COUNT(*) FILTER (WHERE a.acceptance<>'confirmed_no') AS used
+                FROM delivery_attempts a JOIN deliveries d USING(delivery_id)
+                WHERE a.endpoint_key=? AND a.send_mode='passive'
+                AND COALESCE(a.wire_payload_json::jsonb->>'msg_id',
+                    a.wire_payload_json::jsonb#>>'{routing,msg_id}',d.reply_to_native_message_id)=?""",
+                (endpoint.key,msg_id)).fetchone()
+
     def route(self, endpoint):
         with self.deliveries.transaction() as cursor:
             return cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
