@@ -364,7 +364,9 @@ class GatewayConnection:
             raise GatewayError("unexpected RESUMED for current session")
         # A duplicate is still handed to the durable inbox, which owns dedup.
         previous = self.checkpoint.seq if self.checkpoint else None
-        if previous is not None and seq > previous + 1:
+        # Tencent's Resume acknowledgement can jump over sequence numbers
+        # without replaying a message for each one (observed 108 -> 141).
+        if event != "RESUMED" and previous is not None and seq > previous + 1:
             self.message_gap = True
             self.reason = "noncontiguous_dispatch"
             raise GatewaySequenceGap()
@@ -564,7 +566,7 @@ class GatewayConnection:
                     self.last_close_code = failure.code
                     policy = classify_close_code(failure.code)
                 self.reason = policy.reason
-                logger.info("QQ gateway reconnect: reason=%s close_code=%s attempt=%s",
+                logger.warning("QQ gateway reconnect: reason=%s close_code=%s attempt=%s",
                             policy.reason, self.last_close_code, attempts)
                 self.message_gap = self.message_gap or policy.gap
                 if policy.action == "stop":

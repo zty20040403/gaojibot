@@ -185,6 +185,24 @@ class GatewayPolicyTests(unittest.TestCase):
 
 
 class GatewayUnitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resumed_can_advance_over_unreplayed_sequences(self):
+        socket = ScriptSocket([HELLO, {"op": 0, "t": "RESUMED", "s": 141, "d": {}},
+                               {"op": 0, "t": "GROUP_AT_MESSAGE_CREATE", "s": 142, "d": {}}])
+        clock, observed, checkpoints = FastClock(), [], []
+        async def save(value):
+            checkpoints.append(value.seq)
+        gateway = GatewayConnection(StubRest(), checkpoint=GatewayCheckpoint("TEST_SESSION", 108),
+                                    on_checkpoint=save, connector=connector_for([socket]),
+                                    clock=clock, sleep=clock.sleep, max_reconnects=0)
+        async def callback(frame):
+            observed.append(frame["s"])
+            self.assertEqual(gateway.state, "ready")
+            await gateway.stop()
+        await gateway.run(callback)
+        self.assertEqual(observed, [142])
+        self.assertEqual(checkpoints, [141, 142])
+        self.assertFalse(gateway.message_gap)
+
     async def test_callback_failure_does_not_advance_resume(self):
         event = {"op": 0, "t": "GROUP_MESSAGE_CREATE", "s": 1, "id": "TEST_EVENT_1", "d": {"id": "TEST_MESSAGE_1"}}
         socket = ScriptSocket([HELLO, READY, event])
