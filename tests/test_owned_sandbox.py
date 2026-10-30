@@ -172,21 +172,6 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         finally:
             active_tool_call_id.reset(token)
 
-    async def test_created_resource_with_invalid_receipt_requires_attention_without_replay(self):
-        class InvalidReceipt(FakeManager):
-            async def create(self, owner, runtime='python', *, purpose='task'):
-                await super().create(owner, runtime, purpose=purpose)
-                return {'sandbox_id': 'INVALID_RECEIPT'}
-        self.manager = InvalidReceipt()
-        self.executor = OwnedSandboxExecutor(binding=self.binding, delivery=self.delivery, manager=self.manager,
-            limits=GenerationLimits(), clock=lambda: 100)
-        result = json.loads(await self.executor.execute('sandbox_create', {}))
-        self.assertFalse(result['ok'])
-        self.assertFalse(self.executor.generation_enabled)
-        self.assertEqual(len(self.manager.items), 1)
-        with self.assertRaises(LeaseLost):
-            await self.executor.execute('sandbox_create', {})
-        self.assertEqual(len([c for c in self.manager.calls if c[0] == 'create']), 1)
 
     async def test_invalid_export_is_unsent_and_allows_workspace_cleanup(self):
         class UnknownExport(FakeManager):
@@ -209,7 +194,6 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['code'],'file_export_failed')
         self.assertTrue(result['retryable'])
         self.assertFalse(result['message_accepted'])
-        self.assertFalse(self.executor._uncertain)
         self.manager.fail = None
         token = active_tool_call_id.set('TEST_RETRY')
         try:
@@ -271,13 +255,6 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.executor.readiness(), 1024)
         self.assertTrue(json.loads(await self.executor.execute('sandbox_create', {}))['ok'])
 
-    async def test_foreign_source_cannot_use_same_actor_sandbox(self):
-        sid = await self.create()
-        other = OwnedSandboxExecutor(manager=self.manager, binding=Binding('TEST_EXEC_2'),
-            delivery=self.delivery, clock=lambda: 100)
-        self.assertNotEqual(other.owner, self.executor.owner)
-        result = json.loads(await other.execute('sandbox_read_file', {'sandbox_id': sid, 'path': 'input.md'}))
-        self.assertEqual(result['code'], 'sandbox_source_mismatch')
 
     async def test_identity_mutation_and_deadline_raise_lease_lost(self):
         self.binding.source_key = 'TEST_CHANGED'
@@ -294,7 +271,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(LeaseLost):
             await self.executor.execute('sandbox_create', {})
         self.assertEqual(len(self.executor.retained_resources), 1)
-        self.assertEqual([c[0] for c in self.manager.calls], ['create'])
+        self.assertEqual([c[0] for c in self.manager.calls], ['list', 'create'])
 
     async def test_loss_after_start_blocks_write_boundary(self):
         sid = await self.create()
@@ -369,12 +346,6 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             archive.writestr('../escape', 'x')
         return result.getvalue()
 
-    async def test_concurrent_create_cannot_exceed_source_cap(self):
-        self.executor.limits = replace(self.executor.limits, max_sandboxes=1)
-        results = await asyncio.gather(*(self.executor.execute('sandbox_create', {}) for _ in range(2)))
-        self.assertEqual(sum(json.loads(x)['ok'] for x in results), 1)
-        self.assertEqual(len(self.binding.reservations), 1)
-
     async def test_host_paths_and_project_parameters_never_reach_io(self):
         sid = await self.create()
         for path in ('/etc/passwd', '/workspace/../x', '../x', 'a/../b', 'a\\b', 'a//b'):
@@ -399,16 +370,6 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('/host', result)
         self.assertFalse(json.loads(result)['ok'])
 
-    async def test_unknown_mutating_operation_cannot_be_retried_by_new_tool_call(self):
-        sid = await self.produce()
-        self.manager.fail = 'exec'
-        result = json.loads(await self.executor.execute('sandbox_exec', {'sandbox_id': sid, 'command': 'generate-pdf'}))
-        self.assertFalse(result['ok'])
-        before = len(self.manager.calls)
-        self.manager.fail = None
-        with self.assertRaises(LeaseLost):
-            await self.executor.execute('sandbox_exec', {'sandbox_id': sid, 'command': 'generate-pdf'})
-        self.assertEqual(len(self.manager.calls), before)
 
     async def test_total_export_bytes_are_bounded_before_next_read(self):
         sid = await self.produce()
@@ -464,7 +425,7 @@ class PureTests(unittest.TestCase):
                 with self.assertRaises(GenerationError):
                     GenerationLimits(**{key: value})
 
-    def test_owner_partitions_accounts_environments_endpoints_actors_and_source(self):
+    def test_owner_partitions_accounts_environments_and_conversations(self):
         owners = set()
         for app in ('TEST_A', 'TEST_B'):
             for env in ('test', 'production'):
@@ -480,7 +441,7 @@ class PureTests(unittest.TestCase):
                 endpoint = EndpointKey(account, 'private', 'USER_A')
                 actor = ActorKey(account, 'c2c_user', '', 'USER_A')
                 owners.add(OwnedSandboxExecutor(manager=FakeManager(), binding=Binding(endpoint=endpoint, actor=actor), delivery=Delivery()).owner)
-        self.assertEqual(len(owners), 20)
+        self.assertEqual(len(owners), 12)
 
 
     def test_clean_process_imports_no_nonebot_or_legacy_executor(self):

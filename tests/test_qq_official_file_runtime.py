@@ -115,7 +115,7 @@ class ForegroundRuntimeTests(RuntimeFixture):
             self.assertEqual(self.files.read_verified(rows[0]["artifact_id"],
                 sha256=rows[0]["sha256"], byte_size=rows[0]["byte_size"]), original)
             self.assertEqual(self.query("SELECT * FROM deliveries"), [])
-            self.assertEqual(await session.close(), {"released":1, "retained":0})
+            self.assertEqual(await session.close(), {"released":0, "retained":1})
             self.assertFalse(GENERATION_TOOLS & {x["function"]["name"] for x in registry.definitions(context)})
         asyncio.run(run())
         self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity WHERE state='reserved'"), [])
@@ -182,7 +182,7 @@ class ForegroundRuntimeTests(RuntimeFixture):
             await session.close()
             self.assertEqual(len(self.manager.items), 1)
         asyncio.run(run())
-        self.assertEqual(len(self.query("SELECT * FROM qq_official_generation_capacity WHERE state='reserved'")), 1)
+        self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity"), [])
 
     def test_lost_source_close_never_destroys_or_refunds(self):
         async def run():
@@ -192,7 +192,7 @@ class ForegroundRuntimeTests(RuntimeFixture):
             self.assertEqual(await session.close(), {"released":0, "retained":1})
         asyncio.run(run())
         self.assertFalse(any(x[0] == "destroy" for x in self.manager.calls))
-        self.assertEqual(len(self.query("SELECT * FROM qq_official_generation_capacity WHERE state='reserved'")), 1)
+        self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity"), [])
 
     def test_loss_after_durable_registration_preserves_evidence_without_claiming_send(self):
         register = self.files.register
@@ -210,7 +210,7 @@ class ForegroundRuntimeTests(RuntimeFixture):
             self.assertEqual(self.query("SELECT * FROM deliveries"), [])
             self.assertEqual(await session.close(), {"released":0, "retained":1})
         asyncio.run(run())
-        self.assertEqual(len(self.query("SELECT * FROM qq_official_generation_capacity WHERE state='reserved'")), 1)
+        self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity"), [])
 
 
 class CoordinatorRuntimeTests(RuntimeFixture):
@@ -348,7 +348,7 @@ class CoordinatorRuntimeTests(RuntimeFixture):
             await session.close()
         asyncio.run(run())
         self.assertEqual(self.query("SELECT * FROM qq_official_file_artifacts"), [])
-        self.assertEqual(len(self.query("SELECT * FROM qq_official_generation_capacity WHERE state='reserved'")), 1)
+        self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity"), [])
 
     def test_authorized_upstream_import_reads_snapshot_not_mutated_guest(self):
         async def install(owner, sid, path, content):
@@ -361,14 +361,14 @@ class CoordinatorRuntimeTests(RuntimeFixture):
             self.manager.items[sid]["files"]["result.pdf"] = b"TEST mutated guest"
             target = json.loads(await session.executor.execute("sandbox_create", {}))["sandbox_id"]
             args = {"step_id":"document", "artifact_index":0, "sandbox_id":target}
-            with self.assertRaises(GenerationError):
+            with self.assertRaises((GenerationError, ValueError)):
                 await session.workspaces.import_artifact(self.task.task_id, {}, args)
             result = json.loads(await session.workspaces.import_artifact(self.task.task_id,
                 {"document":{"artifacts":[item]}}, args))
             actual = self.manager.items[target]["files"][result["path"].removeprefix("/workspace/")]
             self.assertTrue(result["read_only"])
             self.assertEqual(hashlib.sha256(actual).hexdigest(), item["snapshot"])
-            with self.assertRaises(GenerationError):
+            with self.assertRaises((GenerationError, ValueError)):
                 await session.workspaces.import_artifact(self.task.task_id,
                     {"document":{"artifacts":[item]}}, {**args, "sandbox_id":"s999999"})
             await session.close()

@@ -138,7 +138,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('msg_id', media[0]['payload'])
             self.assertEqual(len(self.fake.media_calls), 1)
             self.assertEqual(len(calls), 5)
-            self.assertFalse(self.manager.items)
+            self.assertEqual(len(self.manager.items), 1)
             self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity WHERE state='reserved'"), [])
             self.assertEqual(len(self.query('SELECT * FROM delivery_receipts WHERE applied_at IS NOT NULL')), 2)
             # Private upload receipt never enters context or model replay.

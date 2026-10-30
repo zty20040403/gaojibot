@@ -1,18 +1,4 @@
-"""Default-off composition of the existing owned executor and Coordinator.
-
-Only the host constructs this object. Source issuance uses the actual running
-turn/job; tool arguments cannot supply an endpoint, authority, URL or host path.
-Captured Coordinator bytes are private immutable CAS objects, not deliverable
-artifacts until its existing independent acceptance phase requests registration.
-
-Unknown resources keep their durable capacity reservations. Expiry/restart is
-not evidence of destruction: maintenance must inspect the exact recorded owner
-and positively confirm absence before recording ``host_verified_absent``. This
-module neither adopts model-supplied sandbox IDs nor creates another LLM loop.
-Pre-acceptance CAS captures are charged to the same physical storage quota as
-registered artifacts, including rollback orphans and abandoned staging files.
-Unreferenced capture bytes use the existing blob GC grace, not an early delete.
-"""
+"""Bind foreground and durable tasks to reusable conversation workspaces."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -199,21 +185,10 @@ class FileGenerationSession:
         return replace(context, capabilities=context.capabilities | {"sandbox"}, agent_executor=self.executor)
 
     async def close(self):
-        """Destroy only remembered owned resources; unknown/lost source retains.
-
-        Best-effort cleanup never restores a stale source and never refunds on
-        exception. Cancellation itself remains cancellation.
-        """
+        """End the turn; the conversation VM and files remain available."""
         self.closed = True
         self.executor.generation_enabled = False
-        released = 0
-        for owner, sid in self.executor.retained_resources:
-            try:
-                await self.executor._destroy(owner, sid)
-            except (Exception, LeaseLost):
-                break
-            released += 1
-        return {"released": released, "retained": len(self.executor.retained_resources)}
+        return {"released": 0, "retained": len(self.executor.retained_resources)}
 
 
 class _OwnedWorkspaces:
@@ -331,12 +306,7 @@ class _OwnedWorkspaces:
         content = await self._content(item)
         sid = await self.executor._owned(arguments["sandbox_id"])
         target = workspace_path("upstream/" + item["snapshot"] + "/" + item["name"])
-        try:
-            await self.executor._call(self.manager.install_readonly_file, self.executor.owner, sid, target, content)
-        except BaseException:
-            self.executor._uncertain = True
-            self.executor.generation_enabled = False
-            raise
+        await self.executor._call(self.manager.install_readonly_file, self.executor.owner, sid, target, content)
         return json.dumps({"ok": True, "path": "/workspace/" + target,
                            "sha256": item["snapshot"], "read_only": True})
 

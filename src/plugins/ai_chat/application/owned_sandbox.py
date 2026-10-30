@@ -1,8 +1,4 @@
-"""SDK-free, source-bound PDF/ZIP generation using the existing sandbox API.
-
-No deployment configuration, model loop, HTTP client, shell-on-host API,
-project grants or queue lives in this module.
-"""
+"""Official conversation workspaces and native file delivery."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -16,6 +12,10 @@ import time
 from typing import Protocol
 import unicodedata
 import mimetypes
+import logging
+import traceback
+
+logger = logging.getLogger(__name__)
 
 from src.plugins.ai_chat.agent.control import LeaseLost, assert_job_owned
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
@@ -91,10 +91,6 @@ class GenerationBinding(Protocol):
     source_native_message_id: str | None
 
     async def assert_current(self) -> None: ...
-    # Host implementation atomically reserves aggregate actor/account capacity;
-    # a model cannot choose the owner, reservation or quota principal.
-    async def reserve_capacity(self, owner: str) -> object: ...
-    async def release_capacity(self, reservation: object) -> None: ...
 
 
 class ArtifactDeliveryPort(Protocol):
@@ -123,8 +119,10 @@ def _text(value, *, maximum, blank=False):
 
 def workspace_path(value):
     value = _text(value, maximum=1024)
-    if value.startswith('/workspace/'):
-        value = value[len('/workspace/'):]
+    for root in ('/workspace/', '/work/'):
+        if value.startswith(root):
+            value = value[len(root):]
+            break
     path = PurePosixPath(value)
     if (path.is_absolute() or any(p in {'', '.', '..'} for p in value.split('/'))
             or '\\' in value or any(unicodedata.category(c).startswith('C') for c in value)):
@@ -159,20 +157,16 @@ class OwnedSandboxExecutor:
                 or not valid_native
                 or not isinstance(limits, GenerationLimits)):
             raise GenerationError('invalid_generation_source')
-        if any(not callable(getattr(binding, name, None)) for name in
-               ('assert_current', 'reserve_capacity', 'release_capacity')):
-            raise GenerationError('source_capacity_port_required')
         self.binding, self.delivery, self.sandbox_manager = binding, delivery, manager
         self.limits, self.clock, self._identity = limits, clock, identity
-        actor_digest = hashlib.sha256(_json([endpoint.account.key, endpoint.key, actor.key]).encode()).hexdigest()
-        source_digest = hashlib.sha256(source.encode()).hexdigest()[:32]
-        self.base_owner = 'qqo:v1:' + actor_digest
-        self.owner = self.base_owner + ':x:' + source_digest
+        self.owner = 'qqo:conversation:' + hashlib.sha256(endpoint.key.encode()).hexdigest()
         self.generation_enabled = False
-        self._uncertain = False
-        self._allocation_lock = asyncio.Lock()
+        locks = getattr(manager, '_conversation_locks', None)
+        if locks is None:
+            manager._conversation_locks = locks = {}
+        self._allocation_lock = locks.setdefault(self.owner, asyncio.Lock())
         self._export_lock = asyncio.Lock()
-        self._resources = {}  # (owner,sandbox_id) -> host capacity reservation
+        self._resources = {}  # Workspaces owned by this conversation.
         self._exports = {}
         self._logical = {}
 
@@ -192,8 +186,6 @@ class OwnedSandboxExecutor:
 
     async def _fence(self):
         assert_job_owned()
-        if self._uncertain:
-            raise LeaseLost('generation_operation_requires_attention')
         if _identity(self.binding) != self._identity or self.clock() >= self._identity[3]:
             raise LeaseLost('generation_source_changed_or_expired')
         await self.binding.assert_current()
@@ -211,16 +203,6 @@ class OwnedSandboxExecutor:
                 observed(result)  # Remember resources before a post-source check can fail.
             await self._fence()
             return result
-        except BaseException:
-            # A guest mutation may have happened even without a result. A new
-            # tool call must not replay it under this live source automatically.
-            if ((getattr(operation, '__self__', None) is self.sandbox_manager
-                    and getattr(operation, '__name__', '') in {'create', 'start_owned', 'exec', 'write_file', 'destroy'})
-                    or getattr(operation, '__self__', None) is self.delivery
-                    and getattr(operation, '__name__', '') == 'register'):
-                self._uncertain = True
-                self.generation_enabled = False
-            raise
         finally:
             active_sandbox_source.reset(token)
 
@@ -255,48 +237,36 @@ class OwnedSandboxExecutor:
         await self.readiness()
         if runtime not in {'python', 'node', 'debian'}:
             raise GenerationError('unsupported_runtime')
-        if sum(resource[0] == self.owner for resource in self._resources) >= self.limits.max_sandboxes and owner == self.owner:
-            raise GenerationError('source_sandbox_limit')
-        capacity = await self._call(self.binding.reserve_capacity, owner)
-        if capacity is None:
-            raise GenerationError('generation_capacity_unavailable')
-        # Unknown create/cancel does not refund capacity: the host must reconcile.
+        items = await self._call(self.sandbox_manager.list, owner)
+        if items:
+            sid = items[0]['sandbox_id']
+            self._resources[(owner, sid)] = True
+            await self._call(self.sandbox_manager.start_owned, owner, sid)
+            return sid
         def remember(result):
-            sid = result.get('sandbox_id') if isinstance(result, dict) else None
-            if not isinstance(sid, str) or not re.fullmatch(r's[0-9a-f]{6}', sid):
-                raise GenerationError('invalid_sandbox_receipt')
-            self._resources[(owner, sid)] = capacity
+            self._resources[(owner, result['sandbox_id'])] = True
         result = await self._call(self.sandbox_manager.create, owner, runtime, purpose='task', observed=remember)
         return result['sandbox_id']
 
     async def _owned(self, value):
         if not isinstance(value, str) or not re.fullmatch(r's[0-9a-f]{6}', value):
             raise GenerationError('invalid_sandbox_id')
-        # Current objects originate only from this executor's creation. Restart
-        # restoration needs a host capacity/source reconciliation, not model IDs.
-        if (self.owner, value) not in self._resources:
-            raise GenerationError('sandbox_source_mismatch')
+        # The manager verifies the stable conversation owner, including after restart.
         await self._call(self.sandbox_manager.start_owned, self.owner, value)
+        self._resources[(self.owner, value)] = True
         return value
 
     async def _destroy(self, owner, sid):
-        reservation = self._resources.get((owner, sid))
-        if reservation is None:
-            raise GenerationError('sandbox_source_mismatch')
         await self._call(self.sandbox_manager.destroy, owner, sid)
-        await self._call(self.binding.release_capacity, reservation)
-        self._resources.pop((owner, sid))
+        self._resources.pop((owner, sid), None)
 
     async def retain_task_sandboxes(self):
-        stopped = 0
-        for owner, sid in tuple(self._resources):
-            await self._call(self.sandbox_manager.stop_owned, owner, sid)
-            stopped += 1
-        return {'stopped': stopped, 'retained': len(self._resources)}
+        return {'stopped': 0, 'retained': len(self._resources)}
 
     async def execute(self, name, arguments):
         if name == 'send_file':
-            sandboxes = [sid for owner, sid in self._resources if owner == self.owner]
+            items = await self._call(self.sandbox_manager.list, self.owner)
+            sandboxes = [item['sandbox_id'] for item in items]
             if not sandboxes:
                 return _json({'ok': False, 'error': '请先创建沙盒并生成文件。'})
             name, arguments = 'send_file_from_sandbox', dict(sandbox_id=sandboxes[-1],
@@ -318,8 +288,8 @@ class OwnedSandboxExecutor:
                 return _json({'ok': True, 'sandbox_id': sid, 'purpose': 'task'})
             if name == 'sandbox_list':
                 items = await self._call(self.sandbox_manager.list, self.owner)
-                visible = [item['sandbox_id'] for item in items if isinstance(item, dict)
-                    and (self.owner, item.get('sandbox_id')) in self._resources]
+                visible = [item['sandbox_id'] for item in items]
+                self._resources.update({(self.owner, sid): True for sid in visible})
                 return _json({'ok': True, 'sandbox_ids': visible})
             sid = await self._owned(arguments.get('sandbox_id'))
             if name == 'sandbox_destroy':
@@ -370,9 +340,10 @@ class OwnedSandboxExecutor:
                 provenance=exported, logical_request_key=logical)
         except GenerationError as error:
             return _json({'ok': False, 'code': str(error), 'message_accepted': False})
-        except Exception:
-            # Includes driver errors: do not leak stdout/host paths/credentials
-            # through arbitrary exception text. LeaseLost/CancelledError escape.
+        except Exception as error:
+            frames = traceback.extract_tb(error.__traceback__)[-4:]
+            logger.warning('sandbox operation=%s error=%s frames=%s', name, type(error).__name__,
+                           [(frame.name, frame.lineno) for frame in frames])
             return _json({'ok': False, 'code': 'generation_operation_failed', 'message_accepted': False})
 
     async def export_file(self, sid, path, filename):
