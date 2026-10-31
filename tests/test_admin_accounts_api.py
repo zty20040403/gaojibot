@@ -92,7 +92,7 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
             status = await self.client.get(prefix + "/status")
             self.assertEqual(status.status_code, 200)
             self.assertEqual(set(status.json()), {"version", "uptime_seconds", "process", "qq_connected"})
-            for resource in ("overview", "traces", "context-debug", "accounts", "audit", "events", "security-audit", "approvals"):
+            for resource in ("overview", "traces", "accounts", "audit", "events", "security-audit", "approvals"):
                 self.assertEqual((await self.client.get(prefix + "/" + resource)).status_code, 403, resource)
             response = await self.client.post(prefix + "/sandboxes/s123abc/action", json={"action": "destroy"})
             self.assertEqual(response.status_code, 403)

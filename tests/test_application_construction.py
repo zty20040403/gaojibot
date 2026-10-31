@@ -110,8 +110,7 @@ class OwnedConstructionTests(unittest.IsolatedAsyncioTestCase):
                 with patch('src.plugins.ai_chat.runtime.PostgresDatabase',return_value=database):
                     with self.assertRaises(type(failure)) as raised:
                         build_app_context(replace(settings,postgres_dsn='TEST_NOT_CONNECTED'),
-                            state_dir=Path(directory)/'state',project_root=Path(directory),logger=Mock(),
-                            historian_generator=Mock(),dream_generator=Mock(),evidence_provider=Mock())
+                            state_dir=Path(directory)/'state',project_root=Path(directory),logger=Mock())
                 self.assertIs(raised.exception,failure)
                 database.close.assert_called_once()
                 self.assertEqual(asyncio.all_tasks(),tasks)

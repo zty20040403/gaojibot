@@ -85,7 +85,7 @@ class FileSubAgentCompositionTests(FileFixture, unittest.IsolatedAsyncioTestCase
             model_catalog=self.catalog, logger=Mock(),
             settings=replace(settings, search_enabled=False, subagent_max_parallelism=1),
             db_call=self.calls, long_term_memory=None, message_ledger=self.ledger,
-            context_store=None, pin_store=None, semantic_recall=None,
+            conversations=None, semantic_recall=None,
             skill_registry=SimpleNamespace(get=lambda _name: None, list=lambda: []), self_source=Mock())
 
     async def asyncTearDown(self):

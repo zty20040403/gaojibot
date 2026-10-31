@@ -41,7 +41,7 @@ class OfficialSubAgentCompositionTests(unittest.IsolatedAsyncioTestCase):
             model_catalog=self.fixture.coordinator.model_catalog, logger=Mock(),
             settings=replace(settings, search_enabled=True), db_call=self.fixture.calls,
             long_term_memory=None, message_ledger=self.f.ledger,
-            context_store=None, pin_store=None, semantic_recall=None,
+            conversations=None, semantic_recall=None,
             skill_registry=SimpleNamespace(get=lambda _name: None, list=lambda: []),
             self_source=Mock(),
         )

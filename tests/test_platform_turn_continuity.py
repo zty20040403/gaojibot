@@ -4,11 +4,10 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 
 from tests.postgres_fixture import postgres_for_test
 from src.plugins.ai_chat.application.platform_turn_ports import (
-    current_turn_context, platform_turn_ports, reply_target_turn,
+    current_turn_context, reply_target_turn,
 )
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.ledger import MessageLedger
@@ -92,20 +91,6 @@ class PlatformTurnContinuityTests(unittest.TestCase):
         self.assertNotEqual(self.edges()[0]["to_turn_id"], foreign.turn_id)
         self.assertEqual(self.edges()[0]["to_turn_id"], previous.turn_id)
 
-    def test_refresh_never_creates_or_recreates_fork_edge(self):
-        previous = self.previous(self.own)
-        current, _ = self.current()
-        ports = platform_turn_ports(self.app, self.own, reference_resolver=None)
-        with patch.object(self.journal, "add_fork_edge", side_effect=AssertionError("refresh created edge")):
-            refreshed = ports.refresh_turn_context(current.turn_id)
-        self.assertIn(previous.handle, refreshed)
-        self.assertEqual(self.edges(), [])
-        current_turn_context(self.app, self.own, current.turn_id)
-        original = [dict(row) for row in self.edges()]
-        with patch.object(self.journal, "add_fork_edge", side_effect=AssertionError("refresh recreated edge")):
-            ports.refresh_turn_context(current.turn_id)
-            ports.refresh_turn_context(current.turn_id)
-        self.assertEqual([dict(row) for row in self.edges()], original)
 
     def test_ambient_delta_keeps_other_endpoint_same_id_but_excludes_current_source(self):
         self.previous(self.own)

@@ -5,7 +5,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import patch
 
 import nonebot
 
@@ -166,9 +166,6 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
                     state_dir=Path(tmp),
                     project_root=Path(tmp),
                     logger=RecordingLogger(),
-                    historian_generator=AsyncMock(),
-                    dream_generator=AsyncMock(),
-                    evidence_provider=Mock(),
                 )
             database.assert_not_called()
             self.assertEqual(list(Path(tmp).rglob("*.sqlite3")), [])
@@ -187,9 +184,6 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
                     state_dir=Path(tmp),
                     project_root=Path(tmp),
                     logger=RecordingLogger(),
-                    historian_generator=AsyncMock(),
-                    dream_generator=AsyncMock(),
-                    evidence_provider=Mock(),
                 )
             database.return_value.close.assert_called_once_with()
 
@@ -208,12 +202,6 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
             media_enabled=False,
         )
 
-        async def historian(_candidate):
-            raise AssertionError("disabled historian should not run")
-
-        async def dream(_scope, _entries, _evidence):
-            raise AssertionError("disabled dream should not run")
-
         with TemporaryDirectory() as tmp, patch(
             "src.plugins.ai_chat.runtime.PostgresDatabase", return_value=database
         ):
@@ -225,20 +213,15 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
                 state_dir=root / "state",
                 project_root=project_root,
                 logger=logger,
-                historian_generator=historian,
-                dream_generator=dream,
-                evidence_provider=lambda _entry: "",
                 started_at=123,
             )
 
             self.assertEqual(context.started_at, 123)
             self.assertIsNotNone(context.message_ledger)
-            self.assertIsNotNone(context.context_store)
+            self.assertIsNotNone(context.conversations)
             self.assertIsNotNone(context.turn_journal)
             self.assertIsNotNone(context.delivery_store)
             self.assertIsNotNone(context.usage_store)
-            self.assertIsNone(context.historian_service)
-            self.assertIsNone(context.dream_service)
 
             await context.shutdown()
             await context.shutdown()

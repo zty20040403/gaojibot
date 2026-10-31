@@ -28,12 +28,10 @@ from src.bot_storage import DatabaseCalls
 from src.bot_storage.disposable import IsolatedPostgres
 from src.plugins.ai_chat.application.platform_conversation import build_platform_chat_orchestrator
 from src.plugins.ai_chat.config import settings
-from src.plugins.ai_chat.context_store import ContextStore
+from src.plugins.ai_chat.conversation_window import ConversationStore
 from src.plugins.ai_chat.conversation_keys import conversation_key
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.ledger import MessageLedger
-from src.plugins.ai_chat.long_term_memory import LongTermMemoryStore
-from src.plugins.ai_chat.memory import ConversationMemory
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.message_lowering import OutboundCapabilities
 from src.plugins.ai_chat.model_catalog import ModelCatalog
@@ -49,8 +47,7 @@ async def main():
     temporary = TemporaryDirectory()
     ledger = MessageLedger(fixture.database)
     journal = TurnJournal(fixture.database)
-    projection = ContextStore(fixture.database)
-    memories = LongTermMemoryStore(None)
+    conversations = ConversationStore(fixture.database)
     account = AccountKey("qq-official", "TEST_NO_SDK_APP", "test")
     endpoint = EndpointKey(account, "group", "TEST_GROUP:非数字")
     actor = ActorKey(account, "group_member", endpoint.native_conversation_id, "TEST_ACTOR:非数字")
@@ -83,9 +80,7 @@ async def main():
                 "wrong_history": {"model": "TEST_WRONG_HISTORY_MODEL", "api_key_required": False},
             },
         }), default_profile="test", environ={}),
-        message_ledger=ledger, turn_journal=journal, context_store=projection,
-        pin_store=None, source_store=None, topic_graph_store=None, semantic_index=None,
-        long_term_memory=memories, memory=ConversationMemory(8),
+        message_ledger=ledger, turn_journal=journal, conversations=conversations,
         skill_registry=SkillRegistry(Path(temporary.name) / "skills"),
     )
     orchestrator = build_platform_chat_orchestrator(app)
@@ -102,9 +97,9 @@ async def main():
         assert "TEST_SENSITIVE_REPLY_CREDENTIAL" not in json.dumps(kwargs, ensure_ascii=False, default=str)
         if len(calls) == 1:
             names = {item["function"]["name"] for item in kwargs["tools"]}
-            assert "memory_add" in names and "sandbox_exec" not in names
+            assert "memory_append" in names and "sandbox_exec" not in names
             call = SimpleNamespace(id="TEST_TOOL_CALL", function=SimpleNamespace(
-                name="memory_add", arguments=json.dumps({"scope": "user", "content": "喜欢绿茶"}),
+                name="memory_append", arguments=json.dumps({"line": "测试用户：喜欢绿茶"}),
             ))
             message = SimpleNamespace(content="", tool_calls=[call])
         else:
@@ -124,15 +119,12 @@ async def main():
         trigger = ledger.get_in_scope(inbound.scope, saved.trigger_canonical_message_id)
         assert trigger is not None and trigger.sender_actor_key == actor.key
         assert trigger.source_endpoint_key == endpoint.key
-        assert app.memory.get(conversation_key(inbound))[-1]["content"] == result.reply
-        personal = memories.list_entries([actor.key])
-        assert len(personal) == 1 and personal[0].creator_actor_key == actor.key
-        assert personal[0].creator_user_id is None
+        assert "绿茶" in conversations.memory(inbound.scope.key)
         assert tasks.list_all() == []
         assert not any(name == "nonebot" or name.startswith("nonebot.") for name in sys.modules)
         print(json.dumps({"status": result.status, "model_calls": len(calls), "tool_calls": saved.tool_call_count}))
     finally:
-        projection.close()
+        conversations.close()
         journal.close()
         ledger.close()
         fixture.close()

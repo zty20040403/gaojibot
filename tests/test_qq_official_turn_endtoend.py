@@ -15,10 +15,8 @@ from tests import test_qq_official_runtime as runtime_fixture
 from tests.test_qq_official_runtime_sender import verified_ready_platform
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.config import settings
-from src.plugins.ai_chat.context_store import ContextStore
+from src.plugins.ai_chat.conversation_window import ConversationStore
 from src.plugins.ai_chat.ledger import MessageLedger
-from src.plugins.ai_chat.long_term_memory import LongTermMemoryStore
-from src.plugins.ai_chat.memory import ConversationMemory
 from src.plugins.ai_chat.model_catalog import ModelCatalog
 from src.plugins.ai_chat.model_preferences import ModelPreferenceStore
 from src.plugins.ai_chat.platform_types import EndpointKey
@@ -48,7 +46,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         ledger, journal = MessageLedger(self.database), TurnJournal(self.database)
-        projection, usage = ContextStore(self.database), UsageStore(self.database)
+        projection, usage = ConversationStore(self.database), UsageStore(self.database)
         for store in (ledger, journal, projection, usage):
             self.addCleanup(store.close)
         calls = DatabaseCalls()
@@ -61,9 +59,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 "test": {"provider": "openai", "model": "TEST_MODEL", "api_key_required": False},
                 "other": {"provider": "openai", "model": "TEST_OTHER_MODEL", "api_key_required": False},
             }}), default_profile="test", environ={}),
-            message_ledger=ledger, turn_journal=journal, context_store=projection, usage_store=usage,
-            pin_store=None, source_store=None, topic_graph_store=None, semantic_index=None,
-            long_term_memory=LongTermMemoryStore(None), memory=ConversationMemory(8),
+            message_ledger=ledger, turn_journal=journal, conversations=projection, usage_store=usage,
             skill_registry=SkillRegistry(Path(temporary.name) / "skills"),
         )
 
