@@ -4,6 +4,7 @@ import json
 
 from src.plugins.ai_chat.ai_tools import TOOL_DEFINITIONS
 from src.plugins.ai_chat.tools.registry import FunctionTool, ToolRegistry
+from .image_formats import IMAGE_MIMES
 from .media_refs import ExternalText, MediaDenied
 
 NAMES = frozenset({'read_image_text','transcribe_voice','view_forward','send_forward_summary',
@@ -44,25 +45,45 @@ def _definition(name):
     return definition
 
 
+# What the native image route takes; GIFs stay animated.
+SENDABLE_STICKERS = IMAGE_MIMES
+_UNSENDABLE = frozenset({'sticker_content_unavailable', 'sticker_bytes_unavailable'})
+
+
 async def _send_sticker(session, turn, arguments):
-    handle = arguments.get('media_handle')
-    if not handle:
-        query = str(arguments.get('query') or '').strip()
-        library = turn.context.app.media_library
-        if not query or library is None:
-            raise MediaDenied('sticker_query_required')
-        records = await library.search_stickers(query, limit=5)
-        used = turn.sticker_handles_this_turn
-        record = next((item for item in records if item.handle not in used), None)
-        if record is None:
-            return {'state':'not_found','message':'表情包库里没有合适的，换个说法或者不发。'}
-        handle = record.handle
-        turn.sticker_handles_this_turn.add(handle)
     if turn.sticker_sent:
         return {'state':'skipped','message':'这次回复已经发过一张表情包了。'}
-    result = await session.sticker({'media_handle':handle},frozenset(turn.sticker_handles_this_turn))
-    turn.sticker_sent = True
-    return result
+    handle = arguments.get('media_handle')
+    if handle:
+        # An exact handle must come from this turn's find_stickers; the session checks that.
+        return await _deliver_sticker(session, turn, [handle], chosen=False)
+    # No query is "just send one": the library then offers the least-sent stickers first.
+    query = str(arguments.get('query') or '').strip()
+    library = turn.context.app.media_library
+    if library is None:
+        return {'state':'unavailable','message':'表情包库没有启用，这次发不了表情包。'}
+    records = await library.search_stickers(query, limit=20)
+    used = turn.sticker_handles_this_turn
+    candidates = [item.handle for item in records
+                  if item.mime_type in SENDABLE_STICKERS and item.handle not in used][:3]
+    if not candidates:
+        return {'state':'not_found','message':'表情包库里没有合适的，换个说法或者不发。'}
+    return await _deliver_sticker(session, turn, candidates, chosen=True)
+
+
+async def _deliver_sticker(session, turn, candidates, *, chosen):
+    # A chosen sticker whose file turns out unusable (too large, changed on disk) yields to the next.
+    for handle in candidates:
+        if chosen:
+            turn.sticker_handles_this_turn.add(handle)
+        try:
+            result = await session.sticker({'media_handle':handle},frozenset(turn.sticker_handles_this_turn))
+        except MediaDenied as exc:
+            if not chosen or str(exc) not in _UNSENDABLE or handle == candidates[-1]:
+                raise
+            continue
+        turn.sticker_sent = True
+        return result
 
 
 def media_registry(registry, context):

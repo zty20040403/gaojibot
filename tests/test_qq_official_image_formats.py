@@ -25,6 +25,13 @@ def jpeg():
     return base64.b64decode('/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAQABAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/Peiiiv6UPys/9k=')
 
 
+def gif(width=1, height=1, frames=1):
+    # A 1x1 GIF89a frame with a global palette, repeated for animation.
+    frame = (b'!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00'
+             + struct.pack('<HH', width, height) + b'\x00\x02\x02D\x01\x00')
+    return b'GIF89a' + struct.pack('<HH', width, height) + b'\x80\x00\x00\x00\x00\x00\xff\xff\xff' + frame * frames + b';'
+
+
 class ImageTests(unittest.TestCase):
     def test_png_structure_size_and_existing_artifact_detection(self):
         self.assertEqual(detect_image(png(), '实际.PNG'), 'image/png')
@@ -41,6 +48,14 @@ class ImageTests(unittest.TestCase):
                               (png() + b'<html>', 'a.png'), (jpeg() + b'junk', 'a.jpg'),
                               (b'<svg/>', 'a.png'), (b'GIF89a', 'a.gif')):
             with self.subTest(name=name), self.assertRaises(ImageFormatError):
+                detect_image(content, name)
+
+    def test_gif_frames_stay_and_broken_gifs_are_rejected(self):
+        self.assertEqual(detect_image(gif(frames=3), 'sticker.gif'), 'image/gif')
+        self.assertEqual(file_type_for_mime('image/gif'), 1)
+        for content, name in ((gif()[:-1], 'a.gif'), (gif()[:20], 'a.gif'), (gif(width=0), 'a.gif'),
+                              (gif(width=9000), 'a.gif'), (gif(frames=0), 'a.gif'), (gif(), 'a.png')):
+            with self.subTest(size=len(content), name=name), self.assertRaises(ImageFormatError):
                 detect_image(content, name)
 
     def test_truncation_crc_and_fake_image_rejected(self):

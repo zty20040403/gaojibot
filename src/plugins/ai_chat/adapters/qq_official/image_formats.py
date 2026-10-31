@@ -1,8 +1,9 @@
 """Bounded PNG/JPEG artifact contract; neither MIME nor extension is evidence.
 
 This adapter validates container structure, dimensions and the complete PNG
-scanline stream. It is not an OCR/image-content safety classifier. GIF, animated
-PNG, SVG, WebP and video/audio remain unavailable in this initial contract.
+scanline stream, and the GIF block structure (frames stay animated on QQ). It is
+not an OCR/image-content safety classifier. Animated PNG, SVG, WebP and
+video/audio remain unavailable.
 """
 import binascii
 from pathlib import PurePath
@@ -14,7 +15,7 @@ import unicodedata
 MAX_IMAGE_BYTES = 3_500_000
 MAX_IMAGE_PIXELS = 16_000_000
 MAX_IMAGE_DECODED_BYTES = 64_000_000
-IMAGE_MIMES = frozenset({'image/png', 'image/jpeg'})
+IMAGE_MIMES = frozenset({'image/png', 'image/jpeg', 'image/gif'})
 ALL_ARTIFACT_MIMES = IMAGE_MIMES | {'application/pdf', 'application/zip'}
 
 
@@ -28,7 +29,7 @@ def file_type_for_mime(mime):
 
 def mime_matches_filename(mime, filename):
     suffix = PurePath(filename).suffix.lower()
-    return suffix in {'image/png': {'.png'}, 'image/jpeg': {'.jpg', '.jpeg'},
+    return suffix in {'image/png': {'.png'}, 'image/jpeg': {'.jpg', '.jpeg'}, 'image/gif': {'.gif'},
                      'application/pdf': {'.pdf'}, 'application/zip': {'.zip'}}.get(mime, set())
 
 
@@ -181,6 +182,49 @@ def _jpeg(data):
     raise ImageFormatError('invalid_jpeg_structure')
 
 
+def _gif_sub_blocks(data, offset):
+    while True:
+        if offset >= len(data):
+            raise ImageFormatError('invalid_gif_structure')
+        size = data[offset]
+        offset += 1 + size
+        if size == 0:
+            return offset
+
+
+def _gif(data):
+    if len(data) < 13:
+        raise ImageFormatError('invalid_gif_structure')
+    _dimensions(int.from_bytes(data[6:8], 'little'), int.from_bytes(data[8:10], 'little'))
+    offset = 13 + ((3 << ((data[10] & 7) + 1)) if data[10] & 0x80 else 0)
+    frames = blocks = 0
+    while offset < len(data):
+        blocks += 1
+        if blocks > 65536:
+            raise ImageFormatError('image_marker_limit')
+        kind = data[offset]
+        if kind == 0x3B:
+            # Bytes after the trailer are never decoded.
+            if frames:
+                return
+            break
+        if kind == 0x21 and offset + 2 <= len(data):
+            offset = _gif_sub_blocks(data, offset + 2)
+        elif kind == 0x2C and offset + 10 <= len(data):
+            descriptor = data[offset + 1:offset + 10]
+            _dimensions(int.from_bytes(descriptor[4:6], 'little'), int.from_bytes(descriptor[6:8], 'little'))
+            offset += 10 + ((3 << ((descriptor[8] & 7) + 1)) if descriptor[8] & 0x80 else 0)
+            if offset >= len(data) or not 2 <= data[offset] <= 12:
+                break
+            offset = _gif_sub_blocks(data, offset + 1)
+            frames += 1
+            if frames > 4096:
+                raise ImageFormatError('image_marker_limit')
+        else:
+            break
+    raise ImageFormatError('invalid_gif_structure')
+
+
 def detect_image(content, filename, *, max_bytes=MAX_IMAGE_BYTES):
     if (type(content) is not bytes or type(max_bytes) is not int
             or not 1 <= len(content) <= min(max_bytes, MAX_IMAGE_BYTES)):
@@ -191,6 +235,9 @@ def detect_image(content, filename, *, max_bytes=MAX_IMAGE_BYTES):
     elif content.startswith(b'\xff\xd8'):
         mime = 'image/jpeg'
         _jpeg(content)
+    elif content[:6] in {b'GIF87a', b'GIF89a'}:
+        mime = 'image/gif'
+        _gif(content)
     else:
         raise ImageFormatError('image_format_unavailable')
     if not mime_matches_filename(mime, filename):
