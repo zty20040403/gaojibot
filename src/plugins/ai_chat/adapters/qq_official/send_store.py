@@ -151,7 +151,8 @@ class OfficialSendStore:
                     admission=self.admission, now=now, plan_id=row['plan_id'])
                 return {'msg_type': 7, 'media': manifest['media']}
             rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
-                allowed_mentions=self.mention_authority(cursor, endpoint), max_chars=20000, max_parts=16)
+                allowed_mentions=self.mention_authority(cursor, endpoint) | frozenset({ActorKey.parse(row['requester_actor_key'])}),
+                max_chars=20000, max_parts=16)
         return content_payload(rendered, row["part_index"], plain_fallback=row["variant"] == "plain_fallback")
 
     def list_due(self, token, *, limit=100):
