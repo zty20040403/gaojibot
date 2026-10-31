@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import logging
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Literal
 
 
@@ -52,51 +52,26 @@ class ToolApproval:
 
 
 _READ_TOOLS = {
-    "ops_catalog",
     "read_agent_result",
     "read_task_evidence",
     "read_task_evidence_batch",
     "web_search",
     "web_fetch",
-    "query_alerts",
-    "fleet_overview",
-    "host_inspect",
-    "service_inspect",
-    "model_status",
-    "service_logs",
     "read_image_text",
     "read_attachment",
     "view_image",
-    "view_video",
     "find_images",
     "find_stickers",
     "transcribe_voice",
-    "get_message_by_id",
-    "search_messages",
     "sandbox_list",
     "sandbox_read_file",
     "list_recent_files",
     "memory_list",
-    "context_expand",
-    "context_search",
     "inspect_source",
     "use_skill",
-    "group_members",
-    "recent_speakers",
-    "reminder_list",
-    "routine_list",
-    "project_list",
-    "project_status",
-    "project_versions",
     "view_forward",
-    "view_bilibili",
-    "inspect_shared_content",
-    "get_shared_content",
-    "browser_snapshot",
     "job_status",
     "nix_search",
-    "operation_status",
-    "cluster_job_status",
 }
 
 _SEND_TOOLS = {
@@ -106,20 +81,12 @@ _SEND_TOOLS = {
     "say",
     "send_sticker",
     "send_forward_summary",
-    "send_qq_face",
-    "reply_with_voice",
     "reply_send",
 }
 
 _MEMORY_WRITE_TOOLS = {
     "memory_add",
     "memory_remove",
-    "pin_message",
-    "unpin_message",
-    "reminder_set",
-    "reminder_cancel",
-    "routine_set",
-    "routine_cancel",
 }
 
 _SANDBOX_WRITE_TOOLS = {
@@ -130,14 +97,6 @@ _SANDBOX_WRITE_TOOLS = {
 }
 
 _BROWSER_WRITE_TOOLS = {
-    "browser_navigate",
-    "browser_click",
-    "browser_type",
-    "browser_press_key",
-    "browser_wait_for",
-    "browser_scroll",
-    "browser_close",
-    "browser_clear",
 }
 
 
@@ -210,66 +169,9 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         compensation="cancel-process",
         max_identical_calls=1,
     )
-    policies["inspect_shared_content"] = ToolPolicy(
-        risk="low",
-        idempotency="pure",
-        side_effects=("read", "download:remote-media"),
-        timeout_seconds=3900.0,
-        max_identical_calls=1,
-    )
-    policies["view_video"] = ToolPolicy(
-        risk="low",
-        idempotency="pure",
-        side_effects=("read", "download:remote-media"),
-        timeout_seconds=1900.0,
-        max_identical_calls=1,
-    )
-    policies["diagnose_incident"] = ToolPolicy(
-        risk="low",
-        idempotency="non-idempotent",
-        side_effects=("read:fleet", "probe:fixed-target", "write:diagnostic-ledger"),
-        timeout_seconds=180.0,
-        max_identical_calls=1,
-    )
-    policies["operation_prepare"] = ToolPolicy(
-        risk="high",
-        idempotency="keyed",
-        side_effects=("write:operation-ledger",),
-        timeout_seconds=30.0,
-        max_identical_calls=1,
-    )
     policies["operation_approve"] = ToolPolicy(
         risk="high", idempotency="keyed", side_effects=("write:operation-ledger", "execute:service"),
         timeout_seconds=30.0, approval="task", max_identical_calls=1,
-    )
-    policies["ops_call"] = ToolPolicy(
-        risk="high", idempotency="keyed",
-        side_effects=("read:fleet", "write:operation-ledger"),
-        timeout_seconds=60.0, max_identical_calls=2,
-    )
-    policies["service_control"] = replace(policies["ops_call"])
-    policies["host_reboot"] = replace(policies["ops_call"], risk="critical")
-    policies["operation_cancel"] = ToolPolicy(
-        risk="high",
-        idempotency="idempotent",
-        side_effects=("write:operation-ledger", "cancel:operation"),
-        timeout_seconds=30.0,
-        approval="never",
-        max_identical_calls=1,
-    )
-    policies["cluster_artifact_upload"] = ToolPolicy(
-        risk="medium",
-        idempotency="non-idempotent",
-        side_effects=("read:sandbox", "write:artifact-store"),
-        timeout_seconds=120.0,
-        max_identical_calls=1,
-    )
-    policies["cluster_job_submit"] = ToolPolicy(
-        risk="high",
-        idempotency="keyed",
-        side_effects=("allocate:cluster-resource", "write:job-ledger"),
-        timeout_seconds=60.0,
-        max_identical_calls=1,
     )
     policies["sandbox_create"] = ToolPolicy(
         risk="medium",
@@ -290,29 +192,6 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         side_effects=("spawn:agent", "model:multiple", "write:task-ledger"),
         timeout_seconds=3600.0,
         max_identical_calls=1,
-    )
-    policies["project_create"] = ToolPolicy(
-        risk="medium", idempotency="keyed", side_effects=("write:project",), timeout_seconds=30,
-    )
-    policies["project_open"] = ToolPolicy(
-        risk="medium", idempotency="idempotent", side_effects=("write:project",), timeout_seconds=30,
-    )
-    policies["project_set_rebuild"] = ToolPolicy(
-        risk="medium", idempotency="non-idempotent", side_effects=("write:project",), timeout_seconds=30,
-    )
-    policies["project_snapshot"] = ToolPolicy(
-        risk="medium", idempotency="keyed", side_effects=("write:project-version",), timeout_seconds=30,
-    )
-    policies["project_restore"] = ToolPolicy(
-        risk="medium", idempotency="keyed", side_effects=("write:project", "write:project-version"), timeout_seconds=30,
-    )
-    policies["routine_set"] = ToolPolicy(
-        risk="medium", idempotency="keyed", side_effects=("write:routine", "schedule:model"),
-        timeout_seconds=15.0, max_identical_calls=1,
-    )
-    policies["routine_cancel"] = ToolPolicy(
-        risk="medium", idempotency="idempotent", side_effects=("write:routine", "cancel:owned-job"),
-        timeout_seconds=15.0, max_identical_calls=1,
     )
     policies["delegate_agent"] = ToolPolicy(
         risk="medium",
@@ -337,14 +216,6 @@ def _policy_registry() -> dict[str, ToolPolicy]:
     policies["read_agent_result"] = ToolPolicy(risk="low", idempotency="pure", timeout_seconds=10)
     policies["read_task_evidence"] = ToolPolicy(risk="low", idempotency="pure", timeout_seconds=10)
     policies["read_task_evidence_batch"] = ToolPolicy(risk="low", idempotency="pure", timeout_seconds=10)
-    policies["browser_clear"] = ToolPolicy(
-        risk="critical",
-        idempotency="idempotent",
-        side_effects=("write:browser", "destructive"),
-        timeout_seconds=60.0,
-        approval="never",
-        max_identical_calls=1,
-    )
     policies["job_cancel"] = ToolPolicy(
         risk="critical",
         idempotency="idempotent",
@@ -353,7 +224,7 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         approval="never",
         max_identical_calls=1,
     )
-    for name in {"memory_remove", "unpin_message", "reminder_cancel"}:
+    for name in {"memory_remove"}:
         previous = policies[name]
         policies[name] = ToolPolicy(
             risk="high",
@@ -364,10 +235,6 @@ def _policy_registry() -> dict[str, ToolPolicy]:
             max_identical_calls=1,
         )
     # Leave time for one task-level QQ authorization before a server mutation.
-    for name in {"ops_call", "service_control", "host_reboot", "operation_prepare", "operation_cancel", "cluster_job_submit", "cluster_guardian_create"}:
-        policies[name] = replace(policies.get(name, ToolPolicy()), timeout_seconds=250.0)
-    for name in {"ops_call", "service_control", "host_reboot", "operation_prepare", "operation_cancel"}:
-        policies[name] = replace(policies[name], approval="task")
     return policies
 
 
@@ -454,11 +321,8 @@ def policy_manifest_for_tools(tools: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 _EXPLICIT_APPROVAL_TERMS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "browser_clear": (("清空", "重置", "删除", "clear"), ("浏览器", "cookie", "缓存", "profile")),
     "job_cancel": (("取消", "停止", "终止", "cancel"), ("任务", "job", "后台")),
     "memory_remove": (("删除", "忘掉", "移除", "remove"), ("记忆", "memory")),
-    "unpin_message": (("取消固定", "取消置顶", "unpin"), ("消息", "msg", "固定", "置顶")),
-    "reminder_cancel": (("取消", "删除", "cancel"), ("提醒", "reminder")),
 }
 
 
@@ -468,8 +332,6 @@ def approval_from_user_text(
     arguments: dict[str, Any],
 ) -> ToolApproval:
     policy = policy_for_tool(tool_name)
-    if tool_name.startswith("mcp__"):
-        return ToolApproval(True, source="mcp-host", reason="外部工具由 MCP 宿主核对独立审批，聊天文字不能批准。")
     if policy.approval == "task":
         return ToolApproval(True, source="fleet-task", reason="实际服务器写操作由 Fleet 验证本任务统一授权。")
     if policy.approval == "never":

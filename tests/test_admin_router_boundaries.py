@@ -22,7 +22,6 @@ PAGE_ROUTES = (
     ("GET", "/api/overview"),
     ("GET", "/api/events"),
     ("GET", "/api/databases"),
-    ("GET", "/api/platforms"),
     ("GET", "/api/deliveries"),
     ("POST", "/api/deliveries/{delivery_id}/retry"),
     ("POST", "/api/deliveries/{delivery_id}/cancel"),
@@ -56,17 +55,11 @@ PAGE_ROUTES = (
     ("DELETE", "/api/media/legacy-images"),
     ("GET", "/api/context-plans"),
     ("GET", "/api/context-debug"),
-    ("GET", "/api/wiki"),
-    ("GET", "/api/wiki/{group_id}"),
-    ("PUT", "/api/wiki/{group_id}/settings"),
     ("GET", "/api/context-debug/{turn_id}"),
     ("PUT", "/api/context-debug/{turn_id}/feedback"),
     ("GET", "/api/traces"),
     ("GET", "/api/audit"),
     ("GET", "/api/turn-replay/{scope_kind}/{scope_native_id}/{turn_ordinal}"),
-    ("GET", "/api/observability"),
-    ("GET", "/api/alerts"),
-    ("PUT", "/api/alert-notifications/control"),
 )
 
 
@@ -94,7 +87,6 @@ class AdminRouterBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 settings=SimpleNamespace(
                     admin_origin="https://test", alert_notify_enabled=False
                 ),
-                alert_preferences=self.preferences,
             ),
             test_case=self,
             path=prefix,
@@ -144,24 +136,6 @@ class AdminRouterBoundaryTests(unittest.IsolatedAsyncioTestCase):
                     self.app.state.auth_clock += 61
                     response = await self.client.request(method, path, json={}, headers=headers)
                     self.assertEqual(response.status_code, 403, response.text)
-        self.assertIsNone(self.preferences.value)
-
-    async def test_aliases_share_versions_audit_and_mutation_state(self):
-        await self.login()
-        changed = await self.client.put("/bot-admin/api/alert-notifications/control",
-            json={"enabled": True}, headers={"If-Match": "0", "X-Admin-Actor": "spoofed"})
-        self.assertEqual(changed.status_code, 200, changed.text)
-        self.assertEqual(changed.json()["resource_version"], 1)
-        current = await self.client.get("/bot-admin/api/v1/resource-versions")
-        self.assertEqual(current.json()["versions"]["alerts"], 1)
-        stale = await self.client.put("/bot-admin/api/v1/alert-notifications/control",
-            json={"enabled": False}, headers={"If-Match": "0"})
-        self.assertEqual(stale.status_code, 409, stale.text)
-        self.assertIs(self.preferences.value, True)
-        old_audit = await self.client.get("/bot-admin/api/audit")
-        v1_audit = await self.client.get("/bot-admin/api/v1/audit")
-        self.assertEqual(old_audit.json(), v1_audit.json())
-        self.assertNotIn("spoofed", v1_audit.text)
 
     async def test_custom_prefix_preserves_dashboard_login_and_protected_aliases(self):
         prefix = "/nested/gaoji"

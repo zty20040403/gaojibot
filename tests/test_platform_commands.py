@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 from src.plugins.ai_chat.application.commands import (
     CommandPolicy, CommandResult, CommandServices, ParsedCommand, dispatch_command, parse_command,
@@ -168,10 +168,6 @@ class PlatformCommandTests(unittest.IsolatedAsyncioTestCase):
         result = await self.run_command("/unknown")
         self.assertEqual(result.status, "unknown")
         self.assertFalse(result.handled)
-        callback = AsyncMock()
-        result = await dispatch_command(ParsedCommand("model"), inbound, legacy_callback=callback)
-        self.assertEqual(result.status, "denied")
-        callback.assert_not_called()
         usage = Mock(return_value=CommandResult("ok", "usage for actual endpoint"))
         result = await self.run_command("/usage", inbound, replace(self.services, usage=usage))
         self.assertEqual(result.text, "usage for actual endpoint")

@@ -100,28 +100,7 @@ class TaskEvidenceTests(unittest.TestCase):
         self.assertFalse(ref["complete"])
         self.assertEqual(self.evaluate(contract(), [ref["ref"]])["status"], "unverified")
 
-    def test_inspection_can_finish_with_findings_but_not_wrong_host_or_stale_data(self):
-        ref = self.record(observation(1010))
-        self.assertEqual(self.evaluate(contract("host_inspection", host_id="h610"), [ref["ref"]])["status"], "passed")
-        self.assertEqual(self.evaluate(contract("host_inspection", host_id="tank"), [ref["ref"]])["status"], "unverified")
-        stale = self.record(observation(500))
-        self.assertEqual(self.evaluate(contract("host_inspection", host_id="h610"), [stale["ref"]])["status"], "unverified")
 
-    def test_disk_comparison_requires_completed_action_between_samples(self):
-        before = self.record(observation(1010, 200))
-        after = self.record(observation(1040, 300), at=1040)
-        plan = contract("disk_delta", host_id="h610", mountpoint="/", minimum_delta_bytes=50)
-        refs = [before["ref"], after["ref"]]
-        self.assertEqual(self.evaluate(plan, refs)["status"], "unverified")
-        op = self.record({"operation_id": "op_one", "host_id": "h610", "status": "succeeded",
-                          "created_at": 1020, "updated_at": 1030}, tool="operation_status", at=1030)
-        refs.append(op["ref"])
-        result = self.evaluate(plan, refs)
-        self.assertEqual(result["status"], "passed")
-        self.assertEqual(result["criteria"][0]["detail"]["delta_bytes"], 100)
-        self.assertEqual(result["criteria"][0]["detail"]["operation_ids"], ["op_one"])
-        plan["outcome_checks"][0]["minimum_delta_bytes"] = 101
-        self.assertEqual(self.evaluate(plan, refs)["status"], "failed")
 
     def test_service_needs_verified_native_receipt_not_just_exit_zero(self):
         plan = contract("service_effect", host_id="h610", unit="test.service", action="restart")
@@ -163,34 +142,6 @@ class TaskEvidenceTests(unittest.TestCase):
                     "host_id": "h610", "created_at": 1005, "status": state}, tool="operation_status")
                 self.assertEqual(self.evaluate(contract(), [ref["ref"]])["status"], "unverified")
 
-    def test_disk_review_can_anchor_a_complete_task_evidence_bundle_with_one_sample(self):
-        before = self.record(observation(1010, 200))
-        after = self.record(observation(1040, 300), at=1040)
-        plan = contract("disk_delta", host_id="h610", mountpoint="/", minimum_delta_bytes=50)
-        self.assertEqual(self.evaluate(plan, [after["ref"]])["status"], "unverified")
-        op = self.record({"operation": "maxops.execute", "operation_id": "op_cleanup",
-            "host_id": "h610", "status": "succeeded", "created_at": 1020, "updated_at": 1030},
-            tool="operation_status", at=1030)
-        result = self.evaluate(plan, [after["ref"]])
-        self.assertEqual(result["status"], "passed")
-        row = result["criteria"][0]
-        self.assertEqual(row["detail"]["delta_bytes"], 100)
-        self.assertEqual(set(row["evidence_refs"]), {before["ref"], after["ref"], op["ref"]})
-        self.assertEqual(row["detail"]["operation_ids"], ["op_cleanup"])
-        for payload, tool, args in (
-            (observation(1040, 300, host="tank"), "host_inspect", {"host_id": "tank"}),
-            (observation(1040, 300), "sandbox_exec", {"host_id": "h610"}),
-            ({"ok": True, "operation": "jobs.logs", "result": {"stdout": "freed 100 bytes"}}, "ops_call", {}),
-        ):
-            ref = self.record(payload, tool=tool, at=1040, args=args)
-            self.assertEqual(self.evaluate(plan, [ref["ref"]])["status"], "unverified")
-        plan["outcome_checks"][0]["minimum_delta_bytes"] = 101
-        self.assertEqual(self.evaluate(plan, [after["ref"]])["status"], "failed")
-        self.record({"operation": "maxops.execute", "operation_id": "op_cleanup",
-            "host_id": "h610", "status": "failed", "created_at": 1020, "updated_at": 1041},
-            tool="operation_status", at=1041)
-        plan["outcome_checks"][0]["minimum_delta_bytes"] = 1
-        self.assertEqual(self.evaluate(plan, [after["ref"]])["status"], "unverified")
 
     def test_planner_cannot_omit_the_effect_of_a_typed_mutation(self):
         read = self.record({"ok": True, "content": "read fine"}, tool="web_search")
@@ -242,31 +193,7 @@ class TaskEvidenceTests(unittest.TestCase):
         ref = self.record(data)
         self.assertEqual(self.evaluate(contract("host_inspection", host_id="h610"), [ref["ref"]])["status"], "unverified")
 
-    def test_native_metrics_can_complete_the_same_host_inspection_with_explicit_evidence(self):
-        data = observation(990)
-        data["hosts"][0]["resources"] = {"status": "unavailable"}
-        host_ref = self.record(data)
-        metric_ref = self.record(metrics_receipt(1015), tool="ops_call", at=1015,
-            args={"operation": "host.metrics", "params": {"host": "h610"}})
-        refs = [host_ref["ref"], metric_ref["ref"]]
-        result = self.evaluate(contract("host_inspection", host_id="h610"), refs)
-        self.assertEqual(result["status"], "passed")
-        self.assertEqual(result["criteria"][0]["detail"]["resource_evidence_ref"], metric_ref["ref"])
-        self.assertEqual(result["criteria"][0]["detail"]["observation"]["resources"]["cpu_busy_percent"], 10)
-        self.record({"ok": False, "error": "metrics unavailable"}, tool="ops_call", at=1020,
-            args={"operation": "host.metrics", "params": {"host": "h610"}})
-        self.assertEqual(self.evaluate(contract("host_inspection", host_id="h610"), refs)["status"], "unverified")
 
-    def test_current_inspection_accepts_complementary_sources_in_one_sample_cycle(self):
-        data = observation(1010)
-        data["hosts"][0]["resources"] = {"status": "unavailable"}
-        host_ref = self.record(data)
-        metric_ref = self.record(metrics_receipt(1010), tool="ops_call", at=1015,
-            args={"operation": "host.metrics", "params": {"host": "h610"}})
-        refs = [host_ref["ref"], metric_ref["ref"]]
-        self.assertEqual(self.evaluate(contract("host_inspection", host_id="h610"), refs)["status"], "passed")
-        self.assertEqual(self.evaluate(contract("disk_delta", host_id="h610", mountpoint="/",
-            minimum_delta_bytes=1), refs)["status"], "unverified")
 
     def test_wrong_host_or_stale_native_metrics_cannot_supply_missing_resources(self):
         data = observation(1010)
@@ -278,17 +205,6 @@ class TaskEvidenceTests(unittest.TestCase):
             self.assertEqual(self.evaluate(contract("host_inspection", host_id="h610"),
                 [host_ref["ref"], ref["ref"]])["status"], "unverified")
 
-    def test_separated_observations_explain_what_to_refresh_without_relaxing_gate(self):
-        host_ref = self.record(observation(1010))
-        metric_ref = self.record(metrics_receipt(1260), tool="ops_call", at=1260,
-            args={"operation": "host.metrics", "params": {"host": "h610"}})
-        result = self.evaluate(contract("host_inspection", host_id="h610"),
-            [host_ref["ref"], metric_ref["ref"]])
-        self.assertEqual(result["status"], "unverified")
-        row = result["criteria"][0]
-        self.assertEqual(row["detail"]["observation_gap_seconds"], 250)
-        self.assertEqual(row["detail"]["resource_evidence_ref"], metric_ref["ref"])
-        self.assertIn("不必重跑目录扫描", row["reason"])
 
     def test_generic_review_cannot_hide_incomplete_host_coverage(self):
         data = observation(1010)
