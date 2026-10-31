@@ -8,25 +8,18 @@ from fastapi.routing import APIRoute
 
 from .admin_api import (
     audit,
-    context_debug,
     dashboard,
     events,
-    fleet,
     media,
-    mcp,
     models,
-    observability,
     official_files,
     official_observability,
     official_identity,
-    migrations,
     overview,
-    projects,
     sandboxes,
     subagents,
     tasks,
     tools,
-    wiki,
 )
 from .admin_api.context import AdminRouteContext
 from .admin_api.contracts import AdminServices
@@ -57,18 +50,11 @@ _PAGE_ROUTERS = (
     sandboxes,
     tools,
     media,
-    context_debug,
     audit,
-    observability,
     official_files,
     official_observability,
     official_identity,
-    migrations,
     events,
-    fleet,
-    wiki,
-    mcp,
-    projects,
 )
 
 

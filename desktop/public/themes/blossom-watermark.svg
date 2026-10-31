@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 300" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <defs><g id="flower"><path d="M-5-10C-29-44 12-54 9-18c25-30 50-2 17 13 40 2 26 40-3 20 16 36-22 48-27 10-19 31-49 8-18-13-35 3-38-33-6-29Z"/><path d="M-7-3c7-13 26-5 19 8-6 10-25 5-19-8Z"/><path d="m-11-16 5 6m24-18-4 9m20 16-10-1m-8 25-3-9m-25 13 5-9"/></g></defs>
-  <path d="M92 291c17-34 61-70 82-119s7-73 19-113M89 287c8-50-6-77-19-116m27 105c64-12 98-51 130-84"/>
-  <path d="M129 239c-5-31-29-44-45-38 4 25 19 38 45 38Zm25-42c38-27 63-14 65 6-28 11-48 12-65-6Zm-58 43c-38-1-51-27-45-41 22 1 41 15 45 41Zm93-91c-28-3-46-27-40-44 27 9 38 22 40 44Zm-10-39c30-5 50-25 43-45-25 5-39 21-43 45Z"/>
-  <use href="#flower" transform="translate(190 52) rotate(-9)"/><use href="#flower" transform="translate(65 154) rotate(23) scale(.75)"/><use href="#flower" transform="translate(241 171) rotate(15) scale(.62)"/>
-  <path d="m121 84 1 11m-6-7 12 2m128 17 2 9m-6-4 10-2M33 62l5 8m239 179-5 8m-149-116 3-4"/>
-  <path d="M28 269c12-6 15-5 30-3m-24 11 34-5M255 56l13-6m-9 16 16-3"/>
-</svg>

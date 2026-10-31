@@ -33,12 +33,11 @@ class HostConfigTests(unittest.TestCase):
         raw=self.raw|dict(files={'private_directory':'/tmp/TEST_FILES','generation_enabled':True},
             host_services=[{'invalid':'TEST'}],media={'asr':True},
             native_background={'schedules':{'enabled':True}})
-        with self.assertLogs('src.plugins.ai_chat.adapters.qq_official.host_config',level='WARNING'):
-            config=HostConfiguration.parse(json.dumps(raw))
+        # Removed features (schedules, host services) are ignored, never fatal.
+        config=HostConfiguration.parse(json.dumps(raw))
         self.assertTrue(config.media.asr)
         self.assertTrue(config.files['generation_enabled'])
-        self.assertIsNone(config.native_schedule)
-        self.assertEqual(config.host_services,())
+        self.assertIsNone(config.proactive)
 
     def test_legacy_proofs_and_migration_settings_are_ignored(self):
         raw=self.raw|dict(onebot_accounts=None,deadlines='obsolete',

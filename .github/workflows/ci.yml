@@ -58,7 +58,7 @@ jobs:
           uv export --locked --no-dev --no-emit-project --no-header --output-file "$RUNNER_TEMP/requirements.txt"
           diff -u requirements.txt "$RUNNER_TEMP/requirements.txt"
       - name: Check Python correctness
-        run: ruff check bot.py src tests tools migrations packaging/server nix
+        run: ruff check bot.py src tests tools migrations nix
       - name: Compile all Python modules
         run: python -m compileall -q bot.py src migrations tests
       - name: Create an isolated acceptance database and install vector

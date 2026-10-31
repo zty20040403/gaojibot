@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.postgres_fixture import postgres_for_test
 
 import unittest
 from types import SimpleNamespace
@@ -11,7 +10,6 @@ import nonebot
 
 nonebot.init()
 
-from src.plugins.ai_chat.context_store import ContextStore, estimate_tokens
 from src.plugins.ai_chat.agent_loop import AgentTrace, _build_messages, _completion_kwargs
 from src.plugins.ai_chat.llm_gateway import _anthropic_response, _convert_anthropic_messages
 from src.plugins.ai_chat.observability import BotTelemetry
@@ -86,16 +84,6 @@ class PromptContextTests(unittest.TestCase):
             if item["content"].startswith("<untrusted"):
                 self.assertEqual(item["content"].count("</untrusted "), 1)
 
-    def test_window_moves_in_blocks_and_keeps_chronological_suffix(self):
-        store = ContextStore(postgres_for_test(self))
-        self.addCleanup(store.close)
-        line = "x" * 100
-        messages = [SimpleNamespace(canonical_message_id=index + 1) for index in range(31)]
-        first = store._fit_raw_tail(messages[:30], [line] * 30, token_budget=estimate_tokens(line) * 18)
-        second = store._fit_raw_tail(messages, [line] * 31, token_budget=estimate_tokens(line) * 18)
-        self.assertEqual(first[1][0], second[1][0])
-        self.assertEqual(second[1], list(range(second[1][0], 32)))
-        self.assertLessEqual(second[2], estimate_tokens(line) * 18)
 
     def test_cache_tokens_are_normalized_recorded_and_clamped(self):
         metrics = BotTelemetry()

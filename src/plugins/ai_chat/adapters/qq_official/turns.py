@@ -342,27 +342,7 @@ def build_turn_consumer(runtime, token, app):
                 and (row["binding_state"] == "active" if endpoint.kind == "group"
                      else row["binding_state"] != "revoked"))
 
-    async def memory_writer(inbound, platform, ports, user_text, answer):
-        def commit():
-            if (platform.execution.token is not token or ports.conversation_id != conversation_key(inbound)):
-                raise ToolLeaseLost("official_memory_scope_changed")
-            with runtime.deliveries.transaction() as cursor:
-                row = platform.execution.current(cursor, int(runtime.store.clock()))
-                if row["state"] != "executing" or row["deadline_at"] <= int(runtime.store.clock()):
-                    raise ToolLeaseLost("official_memory_execution_unavailable")
-                # Hold the account/job fences through the existing synchronous
-                # memory write; do not resume a second model turn on failure.
-                app.memory.append_turn(ports.conversation_id, user_text, answer)
-        await runtime._calls(commit)
-
-    service_options = {"memory_writer": memory_writer, "scope_enabled": scope_enabled}
-    background = getattr(runtime, 'background_service', None)
-    if background is not None:
-        service_options['native_background'] = background
-    migration = getattr(runtime,'migration_service',None)
-    if migration is not None:
-        service_options['public_history_factory'] = migration.public_history
-        service_options['project_factory'] = migration.project_context
+    service_options = {"scope_enabled": scope_enabled}
     media = getattr(runtime, 'media_service', None)
     if media is not None:
         service_options['media_factory'] = media.foreground

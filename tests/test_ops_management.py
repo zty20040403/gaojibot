@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timezone
 import hashlib
-import hmac
 import json
 import os
 import tempfile
@@ -431,137 +430,11 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
             app = FastAPI()
             register_admin(app, AdminServices(version='test', started_at=1), token=token)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-                response = await client.post('/bot-admin/api/v1/fleet/operations/op_test/approve',
-                    headers={'Authorization': f'Bearer {header}'}, json={'contract_hash': 'a' * 64, 'resource_version': 1})
+                response = await client.post('/bot-admin/api/v1/sandboxes/s123abc/action',
+                    headers={'Authorization': f'Bearer {header}'}, json={'action': 'destroy'})
                 self.assertEqual(response.status_code, expected)
 
 
-class IntentReceiptApiTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        import nonebot
-        from prometheus_client import CollectorRegistry
-        from src.cluster_control.api import create_app
-        with patch('nonebot.config.DotEnvSettingsSource._read_env_files', return_value={}):
-            nonebot.init()
-        from src.plugins.ai_chat.fleet_client import FleetControlClient
-
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.credential = 'synthetic-control-token-' + 'c' * 40
-        token = Path(self.tmp.name) / 'token'
-        token.write_text(self.credential)
-        self.key = 'subagent:' + 'a' * 64
-        self.path = '/v1/ops/intent-receipts/' + 'a' * 64
-        self.proof = {'source': 'gaoji-control', 'historical': True, 'host_id': 'h610',
-            'actor_id': 'admin:kenneth', 'origin_scope': 'group:123', 'intent_key': self.key,
-            'operation': 'exec.run', 'params_hash': 'b' * 64, 'operation_id': 'op_' + 'd' * 32,
-            'authorized_before_dispatch': False, 'recorded_status': 'awaiting_approval'}
-        self.lookup = Mock(side_effect=lambda actor, origin, key:
-            copy.deepcopy(self.proof) if (actor, origin, key) == ('admin:kenneth', 'group:123', self.key) else None)
-        self.upstream = AsyncMock(side_effect=AssertionError('Receipt lookup must not contact upstream'))
-        manager = OpsManagementService(SimpleNamespace(_request=self.upstream),
-            SimpleNamespace(operation_provenance=self.lookup), hosts=('h610',), actors=('admin:kenneth', 'admin:other'))
-        app = create_app(SimpleNamespace(metrics_registry=CollectorRegistry()), api_token_file=token, management=manager)
-        self.client = FleetControlClient('http://control.test', token, transport=httpx.ASGITransport(app=app))
-        self.addAsyncCleanup(self.client.close)
-
-    def headers(self, path, *, actor='admin:kenneth', origin='group:123'):
-        timestamp = str(int(time.time()))
-        message = '\n'.join(('GET', path, actor, origin, timestamp, hashlib.sha256(b'').hexdigest())).encode()
-        return {'Authorization': 'Bearer ' + self.credential, 'X-KC-Actor': actor, 'X-KC-Origin': origin,
-                'X-KC-Time': timestamp,
-                'X-KC-Signature': hmac.new(self.credential.encode(), message, hashlib.sha256).hexdigest()}
-
-    async def get(self, path, **kwargs):
-        return await self.client._client.get('http://control.test' + path, **kwargs)
-
-    async def test_client_uses_signed_digest_path_and_bypasses_external_replay(self):
-        from src.plugins.ai_chat.agent.external import active_external
-        tracker = SimpleNamespace(request=AsyncMock(side_effect=AssertionError('No external replay')))
-        context_token = active_external.set(tracker)
-        try:
-            for _ in range(2):
-                result = await self.client.operation_receipt(self.key, actor='admin:kenneth', origin='group:123')
-                self.assertEqual(result, self.proof)
-        finally:
-            active_external.reset(context_token)
-        tracker.request.assert_not_awaited()
-        self.lookup.assert_called_with('admin:kenneth', 'group:123', self.key)
-        self.assertEqual(self.lookup.call_count, 2)
-        self.upstream.assert_not_awaited()
-
-    async def test_client_signs_mapped_admin_principal_without_new_approval(self):
-        from src.plugins.ai_chat.fleet_authorization import FleetAuthorization
-        account = Mock(return_value={'username': 'kenneth'})
-        mobile = SimpleNamespace(executors={}, pollers=[], store=SimpleNamespace(account_for_qq=account),
-                                 propose=AsyncMock(side_effect=AssertionError('No new approval')))
-        self.client.authorization = FleetAuthorization(self.client, mobile)
-        result = await self.client.operation_receipt(self.key, actor='qq:3526452465', origin='group:123')
-        self.assertEqual(result, self.proof)
-        account.assert_called_once_with('3526452465')
-        self.lookup.assert_called_once_with('admin:kenneth', 'group:123', self.key)
-        mobile.propose.assert_not_awaited()
-        self.upstream.assert_not_awaited()
-
-    async def test_signature_covers_digest_actor_and_origin(self):
-        headers = self.headers(self.path)
-        cases = [(self.path[:-1] + 'b', headers),
-                 (self.path, {**headers, 'X-KC-Origin': 'group:other'}),
-                 (self.path, {**headers, 'X-KC-Actor': 'admin:other'}),
-                 (self.path, {'Authorization': 'Bearer ' + self.credential})]
-        for path, signed in cases:
-            with self.subTest(path=path, headers=list(signed)):
-                self.assertEqual((await self.get(path, headers=signed)).status_code, 401)
-        self.lookup.assert_not_called()
-
-    async def test_exact_principal_key_and_read_only_route(self):
-        for actor, origin, path, expected in (
-            ('admin:other', 'group:123', self.path, 404),
-            ('admin:kenneth', 'group:other', self.path, 404),
-            ('admin:kenneth', 'group:123', self.path[:-1] + 'b', 404),
-            ('qq:unknown', 'group:123', self.path, 403),
-        ):
-            with self.subTest(actor=actor, origin=origin, path=path):
-                response = await self.get(path, headers=self.headers(path, actor=actor, origin=origin))
-                self.assertEqual(response.status_code, expected)
-                self.assertNotIn('params_hash', response.json())
-        self.assertEqual((await self.client._client.post('http://control.test' + self.path)).status_code, 405)
-        legacy = await self.get('/v1/ops/receipt', params={'intent_key': self.key})
-        self.assertEqual(legacy.status_code, 404)
-        self.upstream.assert_not_awaited()
-
-    async def test_api_rejects_malformed_digest_before_lookup(self):
-        for digest in ('a' * 63, 'a' * 65, 'A' * 64, 'g' * 64, self.key):
-            path = '/v1/ops/intent-receipts/' + digest
-            with self.subTest(digest=digest):
-                self.assertEqual((await self.get(path, headers=self.headers(path))).status_code, 422)
-        self.lookup.assert_not_called()
-
-    async def test_client_rejects_malformed_key_locally(self):
-        from src.plugins.ai_chat.fleet_client import FleetControlError
-        with patch.object(self.client, '_authorized_request', new_callable=AsyncMock) as request:
-            for key in ('', 'a' * 64, 'subagent:' + 'A' * 64, self.key + '\n', self.key + '/extra', None):
-                with self.subTest(key=key), self.assertRaises(FleetControlError) as caught:
-                    await self.client.operation_receipt(key, actor='admin:kenneth', origin='group:123')
-                self.assertEqual(caught.exception.code, 'invalid_request')
-            request.assert_not_awaited()
-
-    async def test_client_checks_response_origin_and_intent_but_not_qq_admin_mapping(self):
-        from src.plugins.ai_chat.fleet_client import FleetControlError
-        with patch.object(self.client, '_authorized_request', new_callable=AsyncMock) as request:
-            request.return_value = self.proof
-            self.assertEqual(await self.client.operation_receipt(self.key, actor='qq:3526452465', origin='group:123'), self.proof)
-            request.assert_awaited_with('GET', self.path, actor='qq:3526452465', origin='group:123')
-            for bad in ({}, {**self.proof, 'origin_scope': 'group:other'},
-                        {**self.proof, 'intent_key': 'subagent:' + 'b' * 64}):
-                with self.subTest(response=bad):
-                    request.return_value = bad
-                    with self.assertRaises(FleetControlError) as caught:
-                        await self.client.operation_receipt(self.key, actor='qq:3526452465', origin='group:123')
-                    self.assertEqual(caught.exception.code, 'invalid_response')
-
-
-@unittest.skipUnless(os.getenv('TEST_OPS_POSTGRES_DSN'), 'isolated PostgreSQL test not configured')
 class ManagementPostgresTests(unittest.TestCase):
     def test_migration_approval_and_fenced_recovery(self):
         import uuid

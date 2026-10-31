@@ -1,4 +1,4 @@
 from __future__ import annotations
 
 
-HEAD_REVISION = "0072_qq_simple_binding"
+HEAD_REVISION = "0073_window_memory_requests"

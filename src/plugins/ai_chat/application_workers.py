@@ -1,4 +1,4 @@
-"""Shared owned workers with explicit optional legacy-only services."""
+"""Shared owned workers for the official application."""
 
 from __future__ import annotations
 
@@ -10,25 +10,7 @@ from .observability import telemetry
 from .runtime import AppContext
 
 
-async def start_background_tasks(
-    context: AppContext,
-    handlers=None,
-    alert_notifier=None,
-    *, maintenance=None,
-) -> None:
-    legacy = handlers is not None
-    if maintenance is None:
-        if not legacy:raise RuntimeError("application_maintenance_required")
-        maintenance = handlers.triggers
-    project_runtime = getattr(context, "project_runtime", None)
-    if project_runtime is not None:
-        await project_runtime.start()
-        migration=getattr(context,'migration_service',None)
-        if migration is not None:
-            await migration.configure_project_runtime(project_runtime)
-    mcp_runtime = getattr(context, "mcp_runtime", None)
-    if mcp_runtime is not None:
-        await mcp_runtime.start()
+async def start_background_tasks(context: AppContext, *, maintenance) -> None:
     if context.turn_journal is not None:
         await asyncio.to_thread(context.turn_journal.recover_interrupted)
         if (
@@ -42,32 +24,9 @@ async def start_background_tasks(
         context.background_tasks.start("event-loop-lag", telemetry.monitor_event_loop)
     if context.proactive_learning is not None:
         context.background_tasks.start("proactive-feedback", maintenance._proactive_feedback_loop)
-    if legacy and context.mobile_authorization is not None:
-        context.background_tasks.start(
-            "mobile-authorization", context.mobile_authorization.run_forever
-        )
-    if (
-        legacy and context.subagent_coordinator is not None
-        and context.subagent_coordinator.dispatcher is not None
-    ):
-        context.background_tasks.start(
-            "subagent-workflows", context.subagent_coordinator.dispatcher.run_forever
-        )
     if context.local_model is not None:
         context.background_tasks.start(
             "local-model-health", context.local_model.run_forever
-        )
-    if getattr(handlers, "routines", None) is not None:
-        context.background_tasks.start("agent-routines", handlers.routines.run_forever)
-    if getattr(handlers, "wiki", None) is not None:
-        context.background_tasks.start("group-wiki", handlers.wiki.worker.run_forever)
-    if (
-        legacy and context.settings.alertmanager_url
-        and context.settings.alert_notify_group_id > 0
-        and context.background_tasks.start("alert-notifier", alert_notifier.run_forever)
-    ):
-        context.logger.info(
-            f"Activity alert QQ notifier started for group {context.settings.alert_notify_group_id}; delivery is {('enabled' if alert_notifier.notifications_enabled else 'disabled')}."
         )
     if (
         context.job_store is not None
@@ -99,54 +58,11 @@ async def start_background_tasks(
         context.logger.info(
             f"Durable media worker enabled with vision profile {context.settings.vision_profile}."
         )
-    if legacy and context.vision_worker is not None and context.background_tasks.start(
-        "vision-worker", context.vision_worker.run_forever
-    ):
-        context.logger.info(
-            f"Transient image understanding worker enabled with vision profile {context.settings.vision_profile}."
-        )
     if context.cold_archive is not None and context.background_tasks.start(
         "cold-archive", context.cold_archive.run_forever
     ):
-        context.logger.info(
-            "Automatic cold archive enabled; h610 remains the hot cache."
-        )
-    if legacy and context.reminder_store is not None and context.background_tasks.start(
-        "reminders", handlers.delivery._reminder_loop
+        context.logger.info("Automatic cold archive enabled.")
+    if context.conversations is not None and context.background_tasks.start(
+        "nightly-maintenance", maintenance._nightly_loop
     ):
-        context.logger.info("Persistent reminder scheduler enabled.")
-    if legacy and context.delivery_store is not None and context.background_tasks.start(
-        "delivery", handlers.delivery._delivery_loop
-    ):
-        context.logger.info("Durable outbound delivery worker enabled.")
-    if (
-        legacy and context.bridge_manager is not None
-        and context.bridge_manager.matrix is not None
-        and context.background_tasks.start(
-            "matrix-sync", handlers.delivery._matrix_sync_loop
-        )
-    ):
-        context.logger.info("Matrix durable sync bridge enabled.")
-    if (
-        legacy and context.bridge_manager is not None
-        and context.bridge_manager.imessage is not None
-        and context.bridge_manager.imessage_poll_enabled
-        and context.background_tasks.start(
-            "imessage-sync", handlers.delivery._imessage_sync_loop
-        )
-    ):
-        context.logger.info("iMessage configured-chat polling enabled.")
-    if context.semantic_recall is not None and context.background_tasks.start(
-        "semantic-index", maintenance._semantic_index_loop
-    ):
-        context.logger.info("PostgreSQL/pgvector semantic recall worker enabled.")
-    if context.historian_service is not None and context.background_tasks.start(
-        "historian", maintenance._historian_loop
-    ):
-        context.logger.info("Model-backed episode Historian enabled.")
-    if context.dream_service is not None and context.background_tasks.start(
-        "memory-dream", maintenance._dream_loop
-    ):
-        context.logger.info(
-            f"Nightly memory dream pass enabled at {context.settings.dream_hour:02d}:00."
-        )
+        context.logger.info("Nightly memory tidy and request-log pruning enabled.")

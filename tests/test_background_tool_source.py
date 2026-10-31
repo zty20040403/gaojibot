@@ -7,7 +7,7 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import (
     AccountKey, ActorKey, BackgroundToolSource, EndpointKey, InboundMessage,
 )
-from src.plugins.ai_chat.tools.state import ToolContext, TurnState, structured_tool_source
+from src.plugins.ai_chat.tools.state import ToolContext, structured_tool_source
 
 
 class BackgroundToolSourceTests(unittest.TestCase):
@@ -56,12 +56,6 @@ class BackgroundToolSourceTests(unittest.TestCase):
             ToolContext(None,background_source=self.source,platform=SimpleNamespace(
                 account=AccountKey('qq-official','TEST_OTHER_APP','test')))
 
-    def test_checkpoint_codec_uses_actual_background_account(self):
-        context=ToolContext(None,background_source=self.source)
-        turn=TurnState(context,reply_checkpoint_codec=SimpleNamespace(platform='onebot-v11'))
-        with self.assertRaises(ValueError):turn._checkpoint_codec()
-        turn.reply_checkpoint_codec=SimpleNamespace(platform='qq-official')
-        self.assertIs(turn._checkpoint_codec(),turn.reply_checkpoint_codec)
 
 
 if __name__=='__main__':

@@ -56,7 +56,7 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         self.app = FastAPI()
         register_admin(self.app, AdminServices(version="test", started_at=1,
             settings=SimpleNamespace(admin_origin="https://test", alert_notify_enabled=False),
-            mobile_authorization=self.mobile, alert_preferences=self.preferences,
+            mobile_authorization=self.mobile,
             sandbox_manager=self.sandbox), token="obsolete-token")
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="https://test", headers={"Origin": "https://test"})
         self.addAsyncCleanup(self.client.aclose)
@@ -92,11 +92,11 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
             status = await self.client.get(prefix + "/status")
             self.assertEqual(status.status_code, 200)
             self.assertEqual(set(status.json()), {"version", "uptime_seconds", "process", "qq_connected"})
-            for resource in ("overview", "traces", "context-debug", "accounts", "fleet", "audit", "events", "security-audit", "approvals"):
+            for resource in ("overview", "traces", "accounts", "audit", "events", "security-audit", "approvals"):
                 self.assertEqual((await self.client.get(prefix + "/" + resource)).status_code, 403, resource)
-            response = await self.client.put(prefix + "/alert-notifications/control", json={"enabled": True})
+            response = await self.client.post(prefix + "/sandboxes/s123abc/action", json={"action": "destroy"})
             self.assertEqual(response.status_code, 403)
-        self.assertEqual(self.preferences.writes, 0)
+        self.sandbox.destroy.assert_not_awaited()
         self.assertFalse(self.sent)
 
     async def test_qq_status_checks_account_not_just_websocket(self):
@@ -152,27 +152,6 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
                 path = re.sub(r"\{[^}]+\}", "1", route)
                 response = await self.client.request(method, path, json={})
                 self.assertEqual(response.status_code, 403, f"{method} {path}: {response.text}")
-
-    async def test_csrf_and_origin_cannot_be_bypassed(self):
-        await self.login()
-        path = "/bot-admin/api/v1/alert-notifications/control"
-        for headers in ({"Origin": "https://evil.test"}, {"X-CSRF-Token": "wrong"}, {"Origin": ""}):
-            response = await self.client.put(path, json={"enabled": True}, headers=headers)
-            self.assertEqual(response.status_code, 403)
-        self.assertFalse(self.sent)
-        self.assertEqual(self.preferences.writes, 0)
-
-    async def test_admin_write_is_direct_and_audited(self):
-        await self.login()
-        response = await self.client.put("/bot-admin/api/v1/alert-notifications/control", json={"enabled": True}, headers={"X-Admin-Actor": "spoofed-person"})
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertFalse(self.sent)
-        self.assertTrue(self.preferences.value)
-        self.assertEqual(self.preferences.writes, 1)
-        self.assertFalse(await self.mobile.run_once())
-        audit = await self.client.get("/bot-admin/api/v1/audit")
-        self.assertNotIn("spoofed-person", audit.text)
-        self.assertIn(self.account["account_id"], audit.text)
 
     async def test_admin_sandbox_actions_are_direct_versioned_and_audited(self):
         await self.login()

@@ -34,9 +34,6 @@ class AdminServices:
     job_worker: Any = None
     subagent_store: Any = None
     subagent_coordinator: Any = None
-    bridge_router: Any = None
-    bridge_state: Any = None
-    browser_manager: Any = None
     background_tasks: Any = None
     model_catalog: Any = None
     llm_gateway: Any = None
@@ -45,9 +42,6 @@ class AdminServices:
     reasoning_preferences: Any = None
     user_profiles: Any = None
     message_ledger: Any = None
-    group_wiki_store: Any = None
-    mcp_runtime: Any = None
-    project_runtime: Any = None
     settings: Any = None
     sandbox_manager: Any = None
     sticker_inventory: Any = None
@@ -58,12 +52,8 @@ class AdminServices:
     turn_journal: Any = None
     database: Any = None
     telemetry: Any = None
-    alert_store: Any = None
-    alert_preferences: Any = None
-    fleet_client: Any = None
     mobile_authorization: MobileAuthorization | None = None
     official_file_service: Any = None  # Live host getter; never a request-supplied route.
-    official_migration_service: Any = None  # Host composition, default unavailable.
     official_identity_service: Any = None  # Exact live account host getter.
     official_observability: Any = None  # Live host getter; read-only aggregate diagnostics.
 

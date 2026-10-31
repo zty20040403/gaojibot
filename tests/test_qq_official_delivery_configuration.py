@@ -25,12 +25,11 @@ class DeliveryConfigurationTests(unittest.TestCase):
             'AI_QQ_OFFICIAL_MAX_TEXT_CHARS':'300','AI_QQ_OFFICIAL_MAX_TEXT_PARTS':'2',
             'AI_QQ_OFFICIAL_MAX_TEXT_BYTES':'600','AI_QQ_OFFICIAL_DEFER_MAX_HOURS':'2',
             'AI_QQ_OFFICIAL_ALLOW_NEWER_WINDOWS':'true','AI_QQ_OFFICIAL_RATE_GROUP_PROACTIVE_PER_MINUTE':'5',
-            'AI_QQ_OFFICIAL_PROJECT_GRANT_TTL_SECONDS':'300','AI_QQ_OFFICIAL_FILE_LINK_TTL_SECONDS':'120'})
+            'AI_QQ_OFFICIAL_FILE_LINK_TTL_SECONDS':'120'})
         policy=config.delivery.turn_policy()
         self.assertEqual((policy.markdown,policy.max_chars,policy.max_parts,policy.max_bytes),(False,300,2,600))
         self.assertTrue(policy.allow_newer_windows)
         self.assertEqual(config.delivery.max_wait_seconds,7200)
-        self.assertEqual(config.delivery.project_grant_ttl_seconds,300)
         self.assertEqual(config.delivery.file_link_ttl_seconds,120)
 
     def test_invalid_delivery_values_rejected_before_credentials(self):
@@ -38,7 +37,6 @@ class DeliveryConfigurationTests(unittest.TestCase):
             'MARKDOWN':['maybe'], 'MAX_TEXT_CHARS':['0','20001','true','nan','-1'],
             'MAX_TEXT_PARTS':['0','17'], 'MAX_TEXT_BYTES':['0','1048577'],
             'DEFER_MAX_HOURS':['0','25'], 'CERTIFICATION':['admin'],
-            'PROJECT_GRANT_TTL_SECONDS':['0','59','86401','true','-1'],
             'FILE_LINK_TTL_SECONDS':['0','59','3601','true','1.5'],
         }.items():
             for value in values:

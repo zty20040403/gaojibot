@@ -12,30 +12,7 @@ from src.plugins.ai_chat.config import Settings
 
 
 class SettingsGroupFilterTests(unittest.TestCase):
-    def test_routines_are_opt_in_with_bounded_worker_settings(self):
-        with patch.dict(os.environ, {}, clear=True):
-            settings = Settings.from_env()
-        self.assertFalse(settings.routines_enabled)
-        self.assertEqual((settings.routine_check_seconds, settings.routine_max_per_owner, settings.routine_timeout_seconds), (15, 5, 600))
-        with patch.dict(os.environ, {"AI_ROUTINES_ENABLED": "true", "AI_ROUTINE_CHECK_SECONDS": "0",
-                                    "AI_ROUTINE_MAX_PER_OWNER": "1000", "AI_ROUTINE_TIMEOUT_SECONDS": "99999"}, clear=True):
-            settings = Settings.from_env()
-        self.assertTrue(settings.routines_enabled)
-        self.assertEqual((settings.routine_check_seconds, settings.routine_max_per_owner, settings.routine_timeout_seconds), (5, 20, 3600))
 
-    def test_intent_classifier_defaults_and_bounded_timeout(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            settings = Settings.from_env()
-        self.assertTrue(settings.tool_intent_enabled)
-        self.assertEqual(settings.tool_intent_timeout_seconds, 3.0)
-        for value, expected in (("0", 0.1), ("-1", 0.1), ("60", 10), ("2.5", 2.5),
-                                ("nan", 3), ("inf", 3), ("bad", 3)):
-            with self.subTest(value=value), patch.dict(os.environ, {
-                "AI_TOOL_INTENT_ENABLED": "false", "AI_TOOL_INTENT_TIMEOUT_SECONDS": value,
-            }, clear=True):
-                settings = Settings.from_env()
-                self.assertFalse(settings.tool_intent_enabled)
-                self.assertEqual(settings.tool_intent_timeout_seconds, expected)
 
     def test_sandbox_allowlist_denies_by_default_and_allow_all_is_explicit(self) -> None:
         cases = (
@@ -63,19 +40,6 @@ class SettingsGroupFilterTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, name):
                         Settings.from_env()
 
-    def test_proactive_defaults_use_interest_gate_and_frequent_voice(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            settings = Settings.from_env()
-
-        self.assertEqual(settings.proactive_interest_threshold, 98)
-        self.assertEqual(settings.proactive_gate_percent, 10)
-        self.assertEqual(settings.proactive_max_checks_per_hour, 6)
-        self.assertEqual(settings.proactive_classifier_profile, "deepseek")
-        self.assertEqual(settings.proactive_voice_percent, 60)
-        self.assertFalse(settings.proactive_enabled)
-        self.assertFalse(settings.proactive_adaptive)
-        self.assertEqual(settings.proactive_adaptive_groups, set())
-        self.assertEqual(settings.proactive_feedback_seconds, 300)
 
     def test_adaptive_proactive_has_explicit_group_scope_and_bounded_window(self):
         with patch.dict(os.environ, {"AI_PROACTIVE_ADAPTIVE": "true", "AI_PROACTIVE_ADAPTIVE_GROUPS": "100,200",
@@ -177,21 +141,6 @@ class SettingsGroupFilterTests(unittest.TestCase):
 
         self.assertEqual(settings.admin_user_ids, {3526452465, 2291939848})
 
-    def test_activity_alert_notification_settings(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "AI_ALERT_NOTIFY_ENABLED": "true",
-                "AI_ALERT_NOTIFY_GROUP_ID": "611798505",
-                "AI_ALERT_NOTIFY_CHECK_SECONDS": "5",
-            },
-            clear=True,
-        ):
-            settings = Settings.from_env()
-
-        self.assertTrue(settings.alert_notify_enabled)
-        self.assertEqual(settings.alert_notify_group_id, 611798505)
-        self.assertEqual(settings.alert_notify_check_seconds, 10)
 
     def test_postgres_node_names_parse_in_dsn_order(self) -> None:
         with patch.dict(

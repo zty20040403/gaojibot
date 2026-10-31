@@ -18,7 +18,7 @@ from src.plugins.ai_chat.agent.control import JobFence, LeaseLost, active_job_fe
 from src.plugins.ai_chat.agent.task_identity import object_owner, require_same_owner, StructuredTaskOwner
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch, LeaseLost as AccountLeaseLost
 from .keys import account_job_kind
-from .host_tools import HOST_TOOLS
+HOST_TOOLS = frozenset()  # host operations were removed
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_to_json, body_from_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
@@ -27,8 +27,8 @@ from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 
 
 TERMINAL = frozenset({'completed', 'partial', 'failed', 'cancelled'})
-TEXT_TOOLS = frozenset({'context_search', 'context_expand', 'get_message_by_id',
-    'search_messages', 'memory_list', 'web_search', 'inspect_source', 'use_skill', 'say'})
+TEXT_TOOLS = frozenset({
+    'history', 'web_search', 'web_fetch', 'inspect_source', 'use_skill', 'say'})
 FILE_TOOLS = frozenset({'sandbox_create', 'sandbox_list', 'sandbox_destroy', 'sandbox_exec',
     'sandbox_write_file', 'sandbox_read_file', 'send_file_from_sandbox', 'send_file'})
 FILE_ROLES = frozenset({'researcher', 'analyst', 'coder', 'document'})

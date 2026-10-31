@@ -6,7 +6,6 @@ import json
 import asyncio
 import os
 import unittest
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import nonebot
@@ -26,8 +25,6 @@ from src.plugins.ai_chat.subagents import (
 )
 from src.plugins.ai_chat.agent import AgentResult, ContextPacket, DEFAULT_AGENT_REGISTRY
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
-from src.plugins.ai_chat.tools import available_tools
-from src.plugins.ai_chat.tools.state import ToolContext
 
 
 class SubAgentStoreTests(unittest.TestCase):
@@ -274,14 +271,6 @@ class SubAgentPlanTests(unittest.TestCase):
                             "du -B1", "du -b", "不能当作目录总量"):
             self.assertIn(requirement, prompt)
 
-    def test_automatic_subagent_tool_is_exposed_on_request(self) -> None:
-        tools = available_tools(ToolContext(
-            SimpleNamespace(), SimpleNamespace(), frozenset({"subagents"}),
-        ))
-        names = {tool["function"]["name"] for tool in tools}
-        self.assertIn("delegate_agent", names)
-        self.assertIn("run_subagents", names)
-        self.assertIn("resume_subagent", names)
 
     def test_agent_manifest_is_versioned_and_policy_aware(self) -> None:
         researcher = next(

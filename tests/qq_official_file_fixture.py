@@ -16,7 +16,7 @@ from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.plugins.ai_chat.turn_journal import TurnJournal
-from src.plugins.ai_chat.project_blobs import ProjectBlobStore
+from src.plugins.ai_chat.blob_store import ProjectBlobStore
 
 PDF = b'%PDF-1.4\n% TEST controlled fixture\n%%EOF\n'
 KEY = hashlib.sha256(b'TEST_TOOL_CALL').hexdigest()

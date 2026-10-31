@@ -5,7 +5,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import patch
 
 import nonebot
 
@@ -34,28 +34,6 @@ class RecordingLogger:
 
 
 class BackgroundTaskSupervisorTests(unittest.IsolatedAsyncioTestCase):
-    async def test_wiki_prerequisites_fail_before_database_or_workers_open(self):
-        for field in ("durable_jobs_enabled", "ledger_enabled", "context_lifecycle_enabled", "outbox_enabled"):
-            with self.subTest(field=field), TemporaryDirectory() as directory, patch("src.plugins.ai_chat.runtime.PostgresDatabase") as database:
-                values = dict(group_wiki_enabled=True, durable_jobs_enabled=True,
-                              ledger_enabled=True, context_lifecycle_enabled=True, outbox_enabled=True)
-                values[field] = False
-                with self.assertRaisesRegex(RuntimeError, "AI_GROUP_WIKI_ENABLED"):
-                    build_app_context(replace(settings, **values), state_dir=Path(directory), project_root=Path(directory),
-                                      logger=Mock(), historian_generator=AsyncMock(), dream_generator=AsyncMock(), evidence_provider=Mock())
-                database.assert_not_called()
-
-    async def test_routine_prerequisites_fail_before_database_or_workers_open(self):
-        for field in ("durable_jobs_enabled", "outbox_enabled", "quota_enabled", "ledger_enabled", "turn_journal_enabled"):
-            with self.subTest(field=field), TemporaryDirectory() as directory, patch("src.plugins.ai_chat.runtime.PostgresDatabase") as database:
-                values = dict(routines_enabled=True, durable_jobs_enabled=True, outbox_enabled=True,
-                              quota_enabled=True, ledger_enabled=True, turn_journal_enabled=True)
-                values[field] = False
-                with self.assertRaisesRegex(RuntimeError, "AI_ROUTINES_ENABLED"):
-                    build_app_context(replace(settings, **values), state_dir=Path(directory), project_root=Path(directory),
-                                      logger=Mock(), historian_generator=AsyncMock(), dream_generator=AsyncMock(), evidence_provider=Mock())
-                database.assert_not_called()
-
     async def test_start_is_idempotent_and_shutdown_cancels_task(self) -> None:
         logger = RecordingLogger()
         supervisor = BackgroundTaskSupervisor(logger)
@@ -188,9 +166,6 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
                     state_dir=Path(tmp),
                     project_root=Path(tmp),
                     logger=RecordingLogger(),
-                    historian_generator=AsyncMock(),
-                    dream_generator=AsyncMock(),
-                    evidence_provider=Mock(),
                 )
             database.assert_not_called()
             self.assertEqual(list(Path(tmp).rglob("*.sqlite3")), [])
@@ -209,9 +184,6 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
                     state_dir=Path(tmp),
                     project_root=Path(tmp),
                     logger=RecordingLogger(),
-                    historian_generator=AsyncMock(),
-                    dream_generator=AsyncMock(),
-                    evidence_provider=Mock(),
                 )
             database.return_value.close.assert_called_once_with()
 
@@ -223,27 +195,12 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
         test_settings = replace(
             settings,
             ledger_enabled=True,
-            context_lifecycle_enabled=True,
             turn_journal_enabled=True,
-            reminders_enabled=True,
             outbox_enabled=True,
             quota_enabled=True,
             semantic_enabled=False,
-            historian_enabled=False,
-            dream_enabled=False,
-            matrix_enabled=False,
-            imessage_enabled=False,
-            mirror_routes_json="",
-            browser_enabled=False,
-            rich_render_enabled=False,
             media_enabled=False,
         )
-
-        async def historian(_candidate):
-            raise AssertionError("disabled historian should not run")
-
-        async def dream(_scope, _entries, _evidence):
-            raise AssertionError("disabled dream should not run")
 
         with TemporaryDirectory() as tmp, patch(
             "src.plugins.ai_chat.runtime.PostgresDatabase", return_value=database
@@ -256,21 +213,15 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
                 state_dir=root / "state",
                 project_root=project_root,
                 logger=logger,
-                historian_generator=historian,
-                dream_generator=dream,
-                evidence_provider=lambda _entry: "",
                 started_at=123,
             )
 
             self.assertEqual(context.started_at, 123)
             self.assertIsNotNone(context.message_ledger)
-            self.assertIsNotNone(context.context_store)
+            self.assertIsNotNone(context.conversations)
             self.assertIsNotNone(context.turn_journal)
-            self.assertIsNotNone(context.reminder_store)
             self.assertIsNotNone(context.delivery_store)
             self.assertIsNotNone(context.usage_store)
-            self.assertIsNone(context.historian_service)
-            self.assertIsNone(context.dream_service)
 
             await context.shutdown()
             await context.shutdown()

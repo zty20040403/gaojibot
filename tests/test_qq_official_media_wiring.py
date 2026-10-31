@@ -73,16 +73,14 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HostConfigurationError):
             host.media_factory(self.runtime,SimpleNamespace(account_key='TEST_OTHER'))
 
-    async def test_real_neutral_registry_uses_current_canonical_without_event(self):
-        session=await self.session(asr=True,emoji=True)
+    async def test_real_base_registry_uses_current_canonical_without_event(self):
+        await self.session(asr=True,emoji=True)
         context=ToolContext(SimpleNamespace(context=self.app),inbound=self.inbound,platform=self.platform)
         turn=TurnState(context)
         registry=neutral_registry_for(context)
         result=json.loads(await registry.execute(turn,'transcribe_voice',{}))
         self.assertTrue(result['ok']);self.assertEqual(result['text'],'TEST transcript')
         self.assertEqual(result['trust'],'external_content')
-        await registry.execute(turn,'send_qq_face',{'expression':'306'})
-        self.assertIn('[表情306]',session.finish('TEST final'))
         self.assertIsNone(context.event)
         names={d['function']['name'] for d in registry.definitions(context)}
         self.assertNotIn('send_sticker',names)
@@ -127,8 +125,8 @@ sys.meta_path.insert(0,Block())
 from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration
 from src.plugins.ai_chat.adapters.qq_official.runtime import OfficialRuntime
 from src.plugins.ai_chat.adapters.qq_official.media_runtime import OfficialMediaService
-from src.plugins.ai_chat.tools import _neutral_registry
-_neutral_registry()
+from src.plugins.ai_chat.tools import _base_registry
+_base_registry()
 assert not any(x=='nonebot' or x.startswith('nonebot.') for x in sys.modules)
 '''
         result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,

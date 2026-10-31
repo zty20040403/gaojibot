@@ -41,7 +41,7 @@ class OfficialSubAgentCompositionTests(unittest.IsolatedAsyncioTestCase):
             model_catalog=self.fixture.coordinator.model_catalog, logger=Mock(),
             settings=replace(settings, search_enabled=True), db_call=self.fixture.calls,
             long_term_memory=None, message_ledger=self.f.ledger,
-            context_store=None, pin_store=None, semantic_recall=None,
+            conversations=None, semantic_recall=None,
             skill_registry=SimpleNamespace(get=lambda _name: None, list=lambda: []),
             self_source=Mock(),
         )
@@ -91,14 +91,13 @@ class OfficialSubAgentCompositionTests(unittest.IsolatedAsyncioTestCase):
         async def run(task_id, **kwargs):
             names = {item['function']['name'] for item in kwargs['tools']}
             self.assertTrue(names <= TEXT_TOOLS)
-            self.assertIn('context_search', names)
+            self.assertIn('history', names)
             self.assertFalse(names & {'memory_add', 'memory_remove', 'delegate_agent',
                                       'run_subagents', 'sandbox_exec', 'send_message'})
             for name in ('memory_add', 'memory_remove', 'host_inspect', 'send_message'):
                 result = json.loads(await kwargs['execute_tool'](name, {'content': 'TEST_WRITE'}))
                 self.assertEqual(result['error'], 'tool_unavailable')
-            result = json.loads(await kwargs['execute_tool']('context_search',
-                {'query': 'TEST', 'scope_key': 'another scope'}))
+            result = json.loads(await kwargs['execute_tool']('history', {'around': 'not-an-id'}))
             self.assertFalse(result['ok'])
             self.complete_task()
 

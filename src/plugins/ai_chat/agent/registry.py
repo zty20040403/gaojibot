@@ -8,25 +8,11 @@ from .contracts import AgentSpec, SubAgentRole, WorkerRole
 
 COMMON_READ_TOOLS = frozenset(
     {
-        "get_message_by_id",
-        "search_messages",
-        "context_expand",
-        "context_search",
-        "memory_list",
         "inspect_source",
-        "inspect_shared_content",
-        "get_shared_content",
         "view_forward",
-        "view_bilibili",
         "list_recent_files",
         "job_status",
         "say",
-        "fleet_overview",
-        "host_inspect",
-        "service_inspect",
-        "model_status",
-        "operation_status",
-        "cluster_job_status",
     }
 )
 SANDBOX_TOOLS = frozenset(
@@ -46,15 +32,6 @@ BROWSER_TOOLS = frozenset(
     {
         "web_search",
         "web_fetch",
-        "browser_navigate",
-        "browser_snapshot",
-        "browser_click",
-        "browser_type",
-        "browser_press_key",
-        "browser_wait_for",
-        "browser_scroll",
-        "browser_close",
-        "browser_clear",
     }
 )
 
@@ -101,7 +78,7 @@ AGENT_SPECS: dict[SubAgentRole, AgentSpec] = {
             "验证或转交未修改的上游文件时一并保留该 ID，供发布步骤复用。"
         ),
         allowed_tools=COMMON_READ_TOOLS | BROWSER_TOOLS | SANDBOX_TOOLS | {
-            "use_skill", "cluster_artifact_upload", "cluster_job_submit"
+            "use_skill"
         },
         model_policy="coding",
         max_turns=20,
@@ -129,7 +106,6 @@ AGENT_SPECS: dict[SubAgentRole, AgentSpec] = {
             COMMON_READ_TOOLS
             | SANDBOX_TOOLS
             | {"read_image_text", "view_image", "use_skill"}
-            | {"cluster_artifact_upload", "cluster_job_submit"}
         ),
         model_policy="document",
         max_turns=20,
@@ -152,8 +128,7 @@ AGENT_SPECS: dict[SubAgentRole, AgentSpec] = {
         allowed_tools=(
             COMMON_READ_TOOLS
             | BROWSER_TOOLS
-            | {"read_image_text", "view_image", "view_video", "transcribe_voice"}
-            | {"cluster_artifact_upload", "cluster_job_submit"}
+            | {"read_image_text", "view_image", "transcribe_voice"}
         ),
         model_policy="vision",
         max_turns=16,
@@ -175,7 +150,6 @@ AGENT_SPECS: dict[SubAgentRole, AgentSpec] = {
         allowed_tools=(
             COMMON_READ_TOOLS
             | SANDBOX_TOOLS
-            | {"query_alerts", "pin_message", "group_members"}
         ),
         model_policy="reasoning",
         risk_level="controlled-write",
@@ -216,25 +190,9 @@ AGENT_SPECS: dict[SubAgentRole, AgentSpec] = {
         allowed_tools=(
             COMMON_READ_TOOLS
             | {
-                "query_alerts",
-                "fleet_overview",
-                "host_inspect",
-                "service_inspect",
-                "model_status",
-                "service_logs",
-                "diagnose_incident",
-                "operation_prepare",
-                "ops_catalog",
-                "ops_call",
-                "service_control",
-                "host_reboot",
-                "operation_cancel",
-                "cluster_job_submit",
-                "cluster_artifact_upload",
                 "sandbox_create",
                 "sandbox_list",
                 "job_status",
-                "group_members",
             }
         ),
         model_policy="operations",

@@ -358,33 +358,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repeated, ())
         self.assertEqual(self.f.query('SELECT COUNT(*) AS n FROM delivery_plans')[0]['n'], 1)
 
-    async def test_legacy_collaborator_resume_reaches_real_context_freeze(self):
-        # Reuse the existing legacy grant/revision fixture, but unlike its
-        # entrance-only test execute the actual _resume_task and role runner.
-        from tests.test_collaboration_execution import CollaborationExecutionTests
-        from src.plugins.ai_chat.agent.collaboration_runtime import active_collaboration_guard
-        legacy = CollaborationExecutionTests('test_resume_restores_collaborator_context_not_original_personal_memory')
-        legacy.setUp()
-        self.addCleanup(legacy.doCleanups)
-        legacy.grant()
-        legacy.revise()
-        token = active_collaboration_guard.set(legacy.guard())
-        try:
-            with patch.object(legacy.coordinator, '_refresh_revision_contract', new=AsyncMock(side_effect=lambda task,*_:task)), \
-                 patch('src.plugins.ai_chat.subagents.ask_deepseek_with_tools', new=AsyncMock(return_value='{"status":"success","summary":"TEST legacy result","artifacts":[]}')) as model, \
-                 patch('src.plugins.ai_chat.subagents.ask_deepseek', new=AsyncMock(return_value='TEST legacy final')), \
-                 patch('src.plugins.ai_chat.subagents.ask_deepseek_json', new=AsyncMock(return_value={} )):
-                await legacy.coordinator.resume(legacy.task.task_id, scope_key=legacy.scope,
-                    requester_user_id=3, selected_profile=legacy.catalog.default,
-                    tools=[], execute_tool=AsyncMock(return_value='{}'))
-            self.assertGreaterEqual(model.await_count, 1)
-            context = legacy.store.run_context(legacy.run.run_id)
-            self.assertIsNotNone(context)
-            self.assertEqual(context.requester_user_id, 3)
-            self.assertIsNone(context.endpoint)
-            self.assertEqual(legacy.store.get(legacy.task.task_id).requester_user_id, 2)
-        finally:
-            active_collaboration_guard.reset(token)
 
     async def test_account_loss_fences_store_mutations_even_while_job_lease_is_valid(self):
         task = self.submission()

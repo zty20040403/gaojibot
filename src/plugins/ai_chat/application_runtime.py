@@ -1,4 +1,4 @@
-"""Official-only application lifecycle: common services, no legacy transport."""
+"""Official QQ application lifecycle: common services started inside the ASGI lifespan."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -9,24 +9,14 @@ from .application_workers import start_background_tasks
 from .agent_loop import configure_llm_runtime, release_llm_runtime
 from .bootstrap import register_http_surfaces
 from .handler_constants import BOT_VERSION
-from .platform_mode import PlatformMode, PlatformModeError
 from .runtime import build_app_context
 
 
 class OfficialApplicationRuntime:
-    onebot_enabled=False
-
-    def __init__(self,settings,*,state_dir,cache_dir,project_root,env,logger=None,desktop_health=False):
-        mode=PlatformMode.from_env(env)
-        if mode.onebot or not mode.official:raise PlatformModeError('official_only_mode_required')
-        if settings.projects_enabled and not settings.subagents_enabled:
-            raise PlatformModeError('official_projects_require_subagents')
-        if settings.mcp_enabled:
-            raise PlatformModeError('official_mcp_transport_not_configured')
+    def __init__(self,settings,*,state_dir,cache_dir,project_root,env,logger=None):
         self.settings=settings
         self.state_dir,self.cache_dir,self.project_root=map(Path,(state_dir,cache_dir,project_root))
         self.env=dict(env)
-        self.desktop_health=desktop_health
         self.logger=logger or logging.getLogger('gaoji.application')
         self._context=None
         self.ready=False
@@ -53,25 +43,17 @@ class OfficialApplicationRuntime:
             if self._closed:raise RuntimeError('application_closed')
             maintenance=ApplicationMaintenance()
             context=await build_owned_context(build_app_context,self.settings,state_dir=self.state_dir,cache_dir=self.cache_dir,
-                project_root=self.project_root,logger=self.logger,
-                historian_generator=maintenance._generate_historian,dream_generator=maintenance._generate_dream,
-                evidence_provider=maintenance._dream_evidence,onebot_enabled=False,environment=self.env)
+                project_root=self.project_root,logger=self.logger,environment=self.env)
             self._context=context
             maintenance.bind(context)
             try:
                 await self._host(context)
-                if self.settings.projects_enabled:
-                    from .project_runtime import ProjectRuntime
-                    context.project_runtime=ProjectRuntime(application=context)
                 configure_llm_runtime(context.model_catalog,context.llm_gateway)
-                register_http_surfaces(app,context,settings=self.settings,version=BOT_VERSION,
-                    logger=self.logger,onebot_enabled=False)
-                # Same order as dual mode: ingress epochs can defer projects
-                # until the real project runtime has completed its startup.
+                register_http_surfaces(app,context,settings=self.settings,version=BOT_VERSION,logger=self.logger)
                 await context.start_official_ingress(self.env)
                 await start_background_tasks(context,maintenance=maintenance)
                 from .application_diagnostics import start_application_diagnostics
-                await start_application_diagnostics(app,context,desktop_health=self.desktop_health)
+                await start_application_diagnostics(app,context)
                 app.state.gaoji_context=context
                 self.ready=True
             except BaseException:
@@ -89,7 +71,7 @@ class OfficialApplicationRuntime:
         async with self._lock:await self._close()
 
 
-def create_application(*,env=None,runtime=None,desktop_health=False):
+def create_application(*,env=None,runtime=None):
     """Build ASGI application without credential/DB I/O until lifespan starts."""
     import os
     from contextlib import asynccontextmanager
@@ -97,11 +79,9 @@ def create_application(*,env=None,runtime=None,desktop_health=False):
     from .config import Settings
     from .paths import application_paths
     environment=dict(os.environ if env is None else env)
-    mode=PlatformMode.from_env(environment)
-    if mode.onebot or not mode.official:raise PlatformModeError('official_only_mode_required')
     state_dir,cache_dir,project_root=application_paths(environment)
     runtime=runtime or OfficialApplicationRuntime(Settings.from_env(environment),state_dir=state_dir,
-        cache_dir=cache_dir,project_root=project_root,env=environment,desktop_health=desktop_health)
+        cache_dir=cache_dir,project_root=project_root,env=environment)
     @asynccontextmanager
     async def lifespan(app):
         try:

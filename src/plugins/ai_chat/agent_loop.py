@@ -49,7 +49,6 @@ FeedbackProvider = Callable[[], Awaitable[list[str]]]
 FinalTextSink = Callable[[str], Awaitable[None]]
 EntryHandler = Callable[["EntryDecision"], Awaitable[Optional[str]]]
 TranscriptSink = Callable[[list[ChatMessage]], None]
-CheckpointSink = Callable[[list[ChatMessage]], Awaitable[None]]
 LoopEventKind = Literal[
     "model_note",
     "tool_started",
@@ -259,7 +258,24 @@ def _build_messages(
     tool_context: str = "",
     replay_prefix: list[ChatMessage] | None = None,
     system_context: str = "",
+    system_prompt: str | None = None,
 ) -> list[ChatMessage]:
+    if system_prompt is not None:
+        # Chat layout: stable system and chat tail first, everything that changes last.
+        chat: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
+        if group_context:
+            chat.append({"role": "user", "content": "[聊天记录]\n" + group_context})
+        current = ["[现在]\n" + runtime_clock_prompt()]
+        if memory_context:
+            current.append("[记忆]\n" + memory_context)
+        for kind, content in (("web", web_context), ("ocr", image_context)):
+            if content:
+                current.append(quote_evidence(content, kind))
+        if tool_context:
+            current.append(tool_context)
+        current.append("[新消息]\n" + (f"{current_user}：" if current_user else "") + user_text)
+        chat.append({"role": "user", "content": "\n\n".join(current)})
+        return chat
     messages = [
         {
             "role": "system",
@@ -285,7 +301,14 @@ def _build_messages(
     return messages
 
 
+# The chat service sets this to keep exactly what the model was last sent.
+request_sink: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("request_sink", default=None)
+
+
 async def _create_completion(_trace: AgentTrace | None = None, **kwargs: Any) -> Any:
+    sink = request_sink.get()
+    if sink is not None:
+        sink(kwargs)
     profile = _active_profile.get() or _resolve_profile()
     _catalog, gateway = _runtime()
     resilient = getattr(gateway, "create_completion_with_profile", None)
@@ -426,6 +449,7 @@ async def ask_deepseek(
     final_text_sink: FinalTextSink | None = None,
     final_stream_state: FinalStreamState | None = None,
     system_context: str = "",
+    system_prompt: str | None = None,
 ) -> str:
     _last_completion_profile.set(None)
     selected_profile = _resolve_profile(profile, model)
@@ -440,6 +464,7 @@ async def ask_deepseek(
         tool_context,
         replay_prefix,
         system_context,
+        system_prompt,
     )
     response, emitted = await _completion_with_optional_stream(
         final_text_sink,
@@ -552,31 +577,22 @@ async def ask_deepseek_with_tools(
     after_tool_round: Callable[[], None] | None = None,
     final_feedback: Callable[[str], str | None] | None = None,
     system_context: str = "",
-    resume_messages: list[ChatMessage] | None = None,
-    resume_history_length: int = 0,
-    checkpoint_sink: CheckpointSink | None = None,
     tool_catalog: ToolCatalog | None = None,
+    system_prompt: str | None = None,
 ) -> str:
     async def publish_transcript(items):
-        if transcript_sink is None and checkpoint_sink is None:
-            return
-        snapshot = deepcopy([item for item in items if item.get("role") != "system"])
         if transcript_sink is not None:
-            transcript_sink(snapshot)
-        if checkpoint_sink is not None:
-            await checkpoint_sink(snapshot)
+            transcript_sink(deepcopy([item for item in items if item.get("role") != "system"]))
 
     _last_completion_profile.set(None)
     selected_profile = _resolve_profile(profile, model)
-    if resume_messages is not None and (entry_handler is not None or not selected_profile.capabilities.tools):
-        raise DeepSeekConfigError("A saved tool continuation requires a tool-capable model without entry replanning")
     if final_feedback is not None and (final_text_sink is not None or entry_handler is not None
             or not tools or not selected_profile.capabilities.tools
             or max_tool_rounds is None or max_tool_rounds < 1):
         raise DeepSeekConfigError("Host final feedback requires a bounded non-streaming tool loop without entry dispatch")
     if entry_handler is not None and not (entry_profile or selected_profile).capabilities.tools:
         raise DeepSeekConfigError("The execution entry requires a tool-capable model")
-    if resume_messages is None and entry_handler is None and (not tools or not selected_profile.capabilities.tools):
+    if entry_handler is None and (not tools or not selected_profile.capabilities.tools):
         answer = await ask_deepseek(
             user_text,
             history,
@@ -590,6 +606,7 @@ async def ask_deepseek_with_tools(
             trace=trace,
             final_text_sink=final_text_sink,
             final_stream_state=final_stream_state,
+            system_prompt=system_prompt,
         )
         await publish_transcript([*history, {"role": "user", "content": user_text}, {"role": "assistant", "content": answer}])
         return answer
@@ -603,19 +620,9 @@ async def ask_deepseek_with_tools(
         tool_context=tool_context,
         system_context=system_context,
         replay_prefix=replay_prefix,
+        system_prompt=system_prompt,
     )
     recovered_calls = []
-    if resume_messages is not None:
-        from .mcp_bridge.checkpoint import validate_transcript
-        if type(resume_history_length) is not int or not 0 <= resume_history_length <= len(resume_messages):
-            raise DeepSeekConfigError("Invalid saved current-turn boundary")
-        pending = validate_transcript(resume_messages)
-        messages = [messages[0], *deepcopy(resume_messages)]
-        if not pending and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
-            return str(messages[-1].get("content") or "")
-        for identifier, (name, arguments) in pending.items():
-            recovered_calls.append(SimpleNamespace(id=identifier, type="function",
-                function=SimpleNamespace(name=name, arguments=json.dumps(arguments, ensure_ascii=False))))
     if trace is not None:
         _configure_trace(trace, selected_profile)
         trace.messages.append({"role": "user", "content": user_text})
@@ -714,28 +721,6 @@ async def ask_deepseek_with_tools(
     stop_reason = "工具调用轮次已达到系统上限。"
     fingerprint_history: list[str] = []
     fingerprint_counts: dict[str, int] = {}
-    if resume_messages is not None:
-        # Completed calls are evidence, not permission to repeat side effects
-        # under a newly invented provider call ID after a restart.
-        completed = set()
-        for item in resume_messages[resume_history_length:]:
-            if item.get("role") != "tool":
-                continue
-            try:
-                receipt = json.loads(item["content"])
-            except (ValueError, TypeError):
-                receipt = None
-            if isinstance(receipt, dict) and receipt.get("code") == "deferred_batch_not_executed":
-                continue
-            completed.add(item.get("tool_call_id"))
-        for item in resume_messages[resume_history_length:]:
-            for call in item.get("tool_calls", []):
-                if call["id"] in completed:
-                    key = _tool_call_fingerprint(call["function"]["name"], json.loads(call["function"]["arguments"]))
-                    fingerprint_history.append(key)
-                    fingerprint_counts[key] = fingerprint_counts.get(key, 0) + 1
-                    total_tool_calls += 1
-
     while max_tool_rounds is None or tool_round < max_tool_rounds:
         tool_round += 1
         recovering = bool(recovered_calls)

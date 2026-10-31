@@ -82,29 +82,7 @@ class EntryContractTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 EntryDecision.parse(raw)
 
-    def test_declared_tools_must_belong_to_selected_worker(self):
-        raw = decision("delegate")
-        step = raw["steps"][0]
-        step.update(agent="analyst", required_tools=["ops_call"])
-        with self.assertRaisesRegex(ValueError, "analyst cannot use ops_call"):
-            EntryDecision.parse(raw)
-        step["agent"] = "operator"
-        parsed = EntryDecision.parse(raw)
-        self.assertEqual(EntryDecision.from_payload(parsed.as_payload()).steps[0]["required_tools"], ["ops_call"])
-        with self.assertRaisesRegex(ValueError, "operator cannot use ops_call"):
-            EntryDecision.parse(raw, worker_tools={"operator": frozenset()})
-        for invalid in ("ops_call", [None], [""]):
-            step["required_tools"] = invalid
-            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "required_tools"):
-                EntryDecision.parse(raw)
 
-    def test_planning_tool_guide_preserves_role_permissions_and_enabled_filter(self):
-        guide = DEFAULT_AGENT_REGISTRY.planning_tools({"ops_call", "web_search"})
-        for role in DEFAULT_AGENT_REGISTRY.worker_roles:
-            names = set(guide["shared_tools"]) | set(guide["role_tools"][role])
-            self.assertEqual(names, DEFAULT_AGENT_REGISTRY.worker(role).allowed_tools & {"ops_call", "web_search"})
-        self.assertIn("ops_call", guide["role_tools"]["operator"])
-        self.assertNotIn("ops_call", guide["role_tools"]["analyst"])
 
     def test_progress_is_runtime_capability_not_planned_delivery(self):
         guide = DEFAULT_AGENT_REGISTRY.planning_tools()
