@@ -142,6 +142,10 @@ class Settings:
     search_enabled: bool
     ops_read_base_url: str
     ops_read_token_file: str
+    background_model: str
+    background_effort: str
+    background_upstream_profile: str
+    background_gateway_port: int
     search_auto_enabled: bool
     search_max_results: int
     search_timeout_seconds: int
@@ -335,6 +339,10 @@ class Settings:
             search_enabled=boolean("AI_SEARCH_ENABLED", True),
             ops_read_base_url=environment.get('AI_OPS_READ_BASE_URL', '').strip(),
             ops_read_token_file=environment.get('AI_OPS_READ_TOKEN_FILE', '').strip(),
+            background_model=environment.get('AI_BACKGROUND_MODEL', 'gpt-6.1-sol').strip(),
+            background_effort=environment.get('AI_BACKGROUND_EFFORT', 'high').strip(),
+            background_upstream_profile=environment.get('AI_BACKGROUND_UPSTREAM_PROFILE', '').strip(),
+            background_gateway_port=integer('AI_BACKGROUND_GATEWAY_PORT', 18640),
             search_auto_enabled=boolean("AI_SEARCH_AUTO_ENABLED", True),
             search_max_results=integer("AI_SEARCH_MAX_RESULTS", 5),
             search_timeout_seconds=integer("AI_SEARCH_TIMEOUT_SECONDS", 10),

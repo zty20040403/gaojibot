@@ -45,7 +45,8 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             model_catalog=ModelCatalog({'TEST_MODEL': profile}, default_profile='TEST_MODEL'),
             sandbox_manager=manager, settings=replace(settings, search_enabled=False),
             conversations=conversations, message_ledger=f.ledger, usage_store=usage,
-            semantic_recall=None, skill_registry=SimpleNamespace(get=lambda _: None))
+            semantic_recall=None, skill_registry=SimpleNamespace(get=lambda _: None),
+            model_preferences=SimpleNamespace(get_explicit=lambda _: None))
         service = OfficialBackgroundAgents(runtime, f.token, app)
         runtime.agent_service = service
         source = dict(account_key=f.account.key, endpoint_key=f.endpoint.key, actor_key=f.actor.key,
@@ -66,20 +67,22 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await service.schedules.control(turn, 'schedule_cancel', {'id': schedule['id']}))['cancelled'])
 
 
-        async def model(_text, _history, tools, execute, *, feedback_provider, **kwargs):
-            self.assertIn('shell', {item['function']['name'] for item in tools})
-            self.assertNotIn('send_file', {item['function']['name'] for item in tools})
-            self.assertEqual(await feedback_provider(), ['TEST extra detail'])
-            await execute('write_file', {'path': '/work/result.txt', 'content': 'TEST file'})
+        async def engine(row, session, *, feedback, progress, trace):
+            names = {item['function']['name'] for item in session.tools}
+            self.assertIn('ask_main', names)
+            self.assertNotIn('send_file', names)
+            self.assertEqual(await feedback(), ['TEST extra detail'])
+            await progress('shell')
             return 'TEST finished /work/result.txt'
 
-        service.runner.llm = model
+        service.runner.engine = engine
         job = f.jobs.claim_due('TEST_BACKGROUND_WORKER', kinds=(service.kind,), now=f.now)[0]
         worker = DurableJobWorker(f.jobs, logger=app.logger, database_calls=calls, worker_id=job.lease_owner)
         worker.register(service.kind, service.execute)
         await worker._execute(job)
         row = service.store.get(number)
         self.assertEqual(row['state'], 'completed')
+        self.assertEqual(row['last_tool'], 'shell')
         self.assertEqual(f.jobs.get(number).status, 'succeeded')
         self.assertEqual(manager.write_file.await_args.args[2], f'/work/.gaoji/jobs/job-{number}.md')
         with patch('src.plugins.ai_chat.adapters.qq_official.background_delivery.ask_deepseek_with_tools',

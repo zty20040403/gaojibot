@@ -33,7 +33,11 @@ class ScheduleTests(unittest.TestCase):
         runtime = SimpleNamespace(jobs=f.jobs, _calls=None,
             store=SimpleNamespace(transaction=f.tx, admitted=f.admission, clock=lambda: f.now),
             outbox=OfficialSendStore(deliveries, admission=f.admission, pepper=b'TEST_SCHEDULE_PEPPER' * 3, clock=lambda: f.now))
-        service = OfficialBackgroundAgents(runtime, f.token, SimpleNamespace(logger=logging.getLogger(__name__), usage_store=usage))
+        app = SimpleNamespace(logger=logging.getLogger(__name__), usage_store=usage, model_catalog=None,
+            model_preferences=SimpleNamespace(get_explicit=lambda _: None),
+            settings=SimpleNamespace(background_model='TEST_MODEL', background_effort='high',
+                                     background_upstream_profile='', background_gateway_port=0))
+        service = OfficialBackgroundAgents(runtime, f.token, app)
         store = Schedules(f.tx, clock=lambda: f.now)
         source = dict(account_key=f.account.key, endpoint_key=f.endpoint.key, actor_key=f.actor.key,
             scope_key=f.endpoint.scope.key, source_execution_id=handle.execution_id, profile='TEST_MODEL',

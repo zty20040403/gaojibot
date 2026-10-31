@@ -101,7 +101,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
         async def completion(**kwargs):
             calls.append(kwargs)
             names = {t['function']['name'] for t in kwargs['tools']}
-            phase = 'background' if 'shell' in names else 'foreground' if 'agent' in names else 'delivery'
+            phase = 'foreground' if 'agent' in names else 'delivery'
             phases[phase] += 1
             step = phases[phase]
             self.assertFalse(names & {'host_exec', 'project_file_upload', 'sandbox_exec'})
@@ -115,13 +115,6 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
                     name, args = 'agent', {'task': 'TEST generate a PDF', 'title': 'TEST PDF'}
                 else:
                     self.assertIn('job#', responses[-1])
-            elif phase == 'background':
-                if step == 1:
-                    name, args = 'write_file', {'path': 'input.md', 'content': 'TEST source-bound PDF'}
-                elif step == 2:
-                    name, args = 'shell', {'command': 'generate-pdf'}
-                else:
-                    content = 'TEST finished; file is /work/result.pdf'
             elif step == 1:
                 name, args = 'send_file_from_sandbox', {'path': '/work/result.pdf', 'filename': 'report.pdf'}
             else:
@@ -138,7 +131,20 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
                 return stream()
             return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
 
-        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=completion):
+        async def background(engine, row, session, *, feedback, progress, trace):
+            # Codex in the VM, reduced to the file it leaves behind.
+            from src.plugins.ai_chat.background_tools import workspace_owner
+            from src.plugins.ai_chat.platform_types import EndpointKey
+            phases['background'] += 1
+            owner = workspace_owner(EndpointKey.parse(row['endpoint_key']))
+            sandbox = (await self.manager.ensure_default(owner))['sandbox_id']
+            await self.manager.write_file(owner, sandbox, 'input.md', b'TEST source-bound PDF')
+            await self.manager.exec(owner, sandbox, 'generate-pdf')
+            await progress('shell')
+            return 'TEST finished; file is /work/result.pdf'
+
+        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=completion), \
+                patch('src.plugins.ai_chat.codex_engine.CodexEngine.__call__', new=background):
             runtime = await self.open(app)
             group = self._testMethodName == 'test_bound_group_file_reply_keeps_original_timeline'
             if group:
@@ -176,7 +182,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(media), 1)
             self.assertNotIn('msg_id', media[0]['payload'])
             self.assertEqual(len(self.fake.media_calls), 1)
-            self.assertEqual(phases, {'foreground': 3, 'background': 3, 'delivery': 2})
+            self.assertEqual(phases, {'foreground': 3, 'background': 1, 'delivery': 2})
             self.assertEqual(len(self.manager.items), 1)
             self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity WHERE state='reserved'"), [])
             await self.wait_db('SELECT * FROM delivery_receipts WHERE applied_at IS NOT NULL', predicate=lambda rows: len(rows) == 3)

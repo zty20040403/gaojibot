@@ -193,6 +193,28 @@ function MemberTable({ title, members, groupId, options, onModelCommit, onEffort
   )
 }
 
+function BackgroundModelPicker({ plane }: { plane: Plane }) {
+  const settings = plane.data.backgroundAgents?.settings
+  const [model, setModel] = useState('')
+  const [effort, setEffort] = useState('')
+  useEffect(() => { setModel(settings?.model ?? ''); setEffort(settings?.effort ?? '') }, [settings?.model, settings?.effort])
+  if (!settings) return null
+  const models: string[] = settings.models?.length ? settings.models : [settings.model]
+  const changed = model.trim() !== settings.model || effort !== settings.effort
+  return (
+    <p className="actions">
+      后台模型{' '}
+      <input list="background-models" value={model} onChange={(event) => setModel(event.target.value)} />
+      <datalist id="background-models">{models.map((name) => <option key={name} value={name} />)}</datalist>
+      {' '}推理强度{' '}
+      <select value={effort} onChange={(event) => setEffort(event.target.value)}>
+        {(settings.efforts as string[]).map((name) => <option key={name} value={name}>{name}</option>)}
+      </select>
+      {' '}<button disabled={!changed || !model.trim()} onClick={() => void plane.mutate('backgroundAgents', '/background-agents/settings', 'PUT', { model: model.trim(), effort }, ['backgroundAgents'])}>保存</button>
+    </p>
+  )
+}
+
 export function TasksView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail: DetailOpener }) {
   const tasks = rows(plane.data.tasks?.items)
   const agents = rows(plane.data.backgroundAgents?.items)
@@ -202,7 +224,8 @@ export function TasksView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail:
   return (
     <>
       <PageHeader title="任务与投递" description="前台 Agent、持久任务和消息投递的统一操作面" action={<RefreshButton onClick={() => void plane.refreshMany(['tasks', 'backgroundAgents', 'jobs', 'deliveries'])} />} />
-      <Section title="后台任务" description="每个任务一个助手，可插话、停止，完成后由前台交付">
+      <Section title="后台任务" description="每个任务由群 VM 里的 Codex 执行，可插话、停止，完成后由前台交付">
+        <BackgroundModelPicker plane={plane} />
         {agents.map((job) => <details key={job.job_id}><summary><code>job#{job.job_id}</code> {job.title} <StatusBadge value={job.state} /> · {job.last_tool || '尚未调用工具'}</summary><p>{job.error}</p><pre>{job.report}</pre>{['queued', 'running'].includes(job.state) && <button onClick={() => void plane.mutate('backgroundAgents', `/background-agents/${job.job_id}/cancel`, 'POST', {}, ['backgroundAgents'])}>停止任务</button>}</details>)}
         {!agents.length && <EmptyState>还没有后台任务</EmptyState>}
       </Section>
