@@ -21,6 +21,8 @@ from .plans import DEFAULT_MAX_WAIT_SECONDS, enqueue_plan, keyed_digest
 from .renderer import content_payload, render_plan, restore_plan
 
 
+GROUP_PROACTIVE_DAILY_LIMIT = 1000
+
 def begin_official_attempt(cursor, delivery_id, context, now):
     assert_epoch(cursor, context.token)
     row = cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? AND account_key=? FOR UPDATE",
@@ -224,6 +226,13 @@ class OfficialSendStore:
                 return self._finish(cursor, token, row, 'failed', 'delivery_expired', now)
             if row['payload_mode'] == 'ephemeral' and delivery_id not in self._ephemeral:
                 return self._finish(cursor, token, row, 'failed', 'ephemeral_payload_lost', now)
+            if send_mode == 'proactive' and endpoint.kind == 'group':
+                day_start = ((now + 8 * 3600) // 86400) * 86400 - 8 * 3600
+                used = cursor.execute("""SELECT count(*) AS n FROM delivery_attempts
+                    WHERE endpoint_key=? AND send_mode='proactive' AND started_at>=?
+                    AND acceptance<>'confirmed_no'""", (endpoint.key, day_start)).fetchone()['n']
+                if used >= GROUP_PROACTIVE_DAILY_LIMIT:
+                    return self._finish(cursor, token, row, 'failed', 'group_proactive_daily_limit', now)
             payload = self._content(cursor, row, endpoint, token=token, now=now)
             if send_mode == 'passive':
                 payload.update(msg_id=msg_id, msg_seq=msg_seq)
