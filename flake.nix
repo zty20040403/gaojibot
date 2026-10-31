@@ -67,8 +67,6 @@
         (lib.fileset.fileFilter (file: file.hasExt "py") ./tests)
         ./tests/fixtures/context_accuracy_cases.json
         (lib.fileset.fileFilter (file: file.hasExt "js") ./tools)
-        ./tools/context_eval.py
-        ./tools/live_file_outbox_acceptance.py
         ./tools/qwen_control.py
         (lib.fileset.fileFilter (
             file:

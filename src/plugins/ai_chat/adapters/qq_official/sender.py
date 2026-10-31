@@ -287,7 +287,8 @@ class OfficialSender:
         self.wake()
         workers = tuple(self._workers.values())
         for worker in workers:
-            worker.cancel()
+            if not worker.cancelling():
+                worker.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
         for future in self._futures.values():
             if not future.done():

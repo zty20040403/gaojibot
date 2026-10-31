@@ -84,11 +84,11 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 "member_openid": "TEST_BOT_MENTION", "is_you": True, "bot": True, "nickname": "TEST bot"}])
         await fake.emit("GROUP_AT_MESSAGE_CREATE" if group else "C2C_MESSAGE_CREATE", data)
 
-    async def complete(self, native):
+    async def complete(self, native, *, timeout=5):
         return await self.wait_db("""SELECT x.execution_id,x.state,x.journal_turn_id,x.plan_id,d.status
             FROM qq_official_inbound_events i JOIN qq_official_turn_executions x ON x.inbox_id=i.inbox_id
             JOIN deliveries d ON d.plan_id=x.plan_id
-            WHERE i.native_message_id=? AND d.status='committed'""", (native,))
+            WHERE i.native_message_id=? AND d.status='committed'""", (native,), timeout=timeout)
 
     async def test_unfinished_messages_share_one_reply_with_complete_input(self):
         from src.plugins.ai_chat.adapters.qq_official.message_batch import MessageBatcher

@@ -10,7 +10,6 @@ from ...message_ir import body_from_json
 from ...platform_types import ActorKey, EndpointKey, InboundMessage
 from .lease import assert_epoch
 from .keys import account_job_kind
-from . import turn_source
 
 
 def job_number(value):
@@ -52,10 +51,9 @@ class OfficialBackgroundAgents:
     async def control(self, turn, name, arguments):
         inbound, life = turn.context.inbound, turn.context.platform.execution
         def run():
-            with life.effect_scope(inbound) as cursor:
+            with self.runtime.store.transaction() as cursor:
+                source = life.current(cursor, int(self.clock()))
                 if name == 'agent':
-                    source = turn_source.assert_execution_current(cursor, token=self.token,
-                        handle=life.handle, job=life.job, now=int(self.clock()), admission=self.runtime.store.admitted)
                     task = str(arguments['task']).strip()
                     if not task:
                         raise ValueError('任务不能为空。')

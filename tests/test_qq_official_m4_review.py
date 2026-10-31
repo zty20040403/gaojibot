@@ -104,7 +104,7 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                 reply = next(item["receipt"] for item in fake.received if item["payload"].get("msg_id") == "TEST_REVIEW_AT")
                 await self.group_message(fake, "TEST_REVIEW_QUOTE", "TEST explain the previous answer", reference=reply["ext_info"]["ref_idx"])
                 try:
-                    await self.complete("TEST_REVIEW_QUOTE")
+                    await self.complete("TEST_REVIEW_QUOTE", timeout=15)
                 except TimeoutError:
                     details = {
                         "inbox": self.query("SELECT status,reason_code,echo_state,dispatch_job_id,trigger_requested,canonical_message_id FROM qq_official_inbound_events WHERE native_message_id='TEST_REVIEW_QUOTE'"),

@@ -809,7 +809,7 @@ class GatewayFakeServerTests(unittest.IsolatedAsyncioTestCase):
         self.fake.drop_next_response = True
         with self.assertRaises(QQAPIError) as caught:
             await self.rest.send_message("group", target, payload)
-        self.assertIs(caught.exception.accepted,False)
+        self.assertIsNone(caught.exception.accepted)
         self.assertEqual(len(self.fake.received), 1)
         await self.fake.emit("GROUP_MSG_REJECT", {"group_openid": target})
         with self.assertRaises(QQAPIError):

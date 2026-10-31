@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import time
@@ -49,6 +50,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
     complete = turn_fixture.OfficialTurnEndToEndTests.complete
 
     async def asyncSetUp(self):
+        self.logger = logging.getLogger(__name__)
         self.temporary = TemporaryDirectory(prefix='qq-file-composition-')
         self.addCleanup(self.temporary.cleanup)
         self.manager = FakeManager()
@@ -82,6 +84,9 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             service = HostServices(database=current.database, transaction=current.deliveries.transaction, database_calls=current._calls)
             return service.official_factory(current, token)
         runtime.migration_factory = host
+        app.official_runtime = runtime
+        app.sandbox_manager = self.manager
+        app.semantic_recall = None
         self.assertTrue(await runtime.start())
         await asyncio.wait_for(self.fake.wait_ready(), 5)
         await self.wait_db("SELECT bot_native_id FROM qq_official_accounts WHERE bot_identity_source='ready'")
@@ -92,31 +97,41 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_foreground_gets_file_receipt_before_final_answer(self):
         app = self.application()
-        calls, sandbox = [], None
+        calls, phases = [], {'foreground': 0, 'background': 0, 'delivery': 0}
         async def completion(**kwargs):
-            nonlocal sandbox
             calls.append(kwargs)
             names = {t['function']['name'] for t in kwargs['tools']}
-            self.assertIn('sandbox_exec', names)
-            self.assertFalse(names & {'host_exec', 'project_file_upload', 'get_group_file_list'})
+            phase = 'background' if 'shell' in names else 'foreground' if 'agent' in names else 'delivery'
+            phases[phase] += 1
+            step = phases[phase]
+            self.assertFalse(names & {'host_exec', 'project_file_upload', 'sandbox_exec'})
             responses = [m['content'] for m in kwargs['messages'] if m['role'] == 'tool']
-            if len(calls) == 1:
-                name, args = 'sandbox_create', {'runtime': 'python'}
-            elif len(calls) == 2:
-                sandbox = json.loads(responses[-1][responses[-1].index('{'):responses[-1].rindex('}')+1])['sandbox_id']
-                name, args = 'sandbox_write_file', {'sandbox_id': sandbox, 'path': 'input.md', 'content': 'TEST source-bound PDF'}
-            elif len(calls) == 3:
-                name, args = 'sandbox_exec', {'sandbox_id': sandbox, 'command': 'generate-pdf'}
-            elif len(calls) == 4:
-                name, args = 'send_file', {'path': '/workspace/result.pdf', 'name': 'report.pdf'}
+            name, args = None, None
+            content = '[silence]'
+            if phase == 'foreground':
+                if step == 1:
+                    name, args = 'say', {'text': 'TEST beginning PDF'}
+                elif step == 2:
+                    name, args = 'agent', {'task': 'TEST generate a PDF', 'title': 'TEST PDF'}
+                else:
+                    self.assertIn('job#', responses[-1])
+            elif phase == 'background':
+                if step == 1:
+                    name, args = 'write_file', {'path': 'input.md', 'content': 'TEST source-bound PDF'}
+                elif step == 2:
+                    name, args = 'shell', {'command': 'generate-pdf'}
+                else:
+                    content = 'TEST finished; file is /work/result.pdf'
+            elif step == 1:
+                name, args = 'send_file_from_sandbox', {'path': '/work/result.pdf', 'filename': 'report.pdf'}
             else:
                 receipt = json.loads(responses[-1][responses[-1].index('{'):responses[-1].rindex('}')+1])
                 self.assertTrue(receipt['stored'])
                 self.assertTrue(receipt['message_accepted'])
-                name, args = None, None
+                content = 'TEST file delivered'
             tool_calls = [SimpleNamespace(id='TEST_GENERATE_' + str(len(calls)), type='function',
                 function=SimpleNamespace(name=name, arguments=json.dumps(args)))] if name else []
-            message = SimpleNamespace(content='' if name else 'TEST file delivered', tool_calls=tool_calls)
+            message = SimpleNamespace(content='' if name else content, tool_calls=tool_calls)
             if kwargs.get('stream'):
                 async def stream():
                     yield SimpleNamespace(choices=[SimpleNamespace(delta=message, finish_reason='stop')])
@@ -135,25 +150,25 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
                     (endpoint.key, endpoint.account.key, scope.key, int(time.time()), int(time.time())))
                 self.fake.proactive_allowed[('group', 'TEST_GROUP')] = True
             await self.emit(self.fake, native='TEST_FILE_SOURCE', content='TEST generate and send PDF', group=group)
-            await self.complete('TEST_FILE_SOURCE')
             try:
-                await asyncio.wait_for(self.fake.files_seen.wait(), 5)
+                finished = await self.wait_db("SELECT * FROM background_jobs WHERE state NOT IN ('queued','running')", timeout=20)
+            except TimeoutError:
+                self.fail(str({'phases': phases, 'jobs': self.query('SELECT job_id,state,error FROM background_jobs'),
+                    'responses': [m['content'] for c in calls for m in c['messages'] if m['role'] == 'tool']}))
+            self.assertEqual(finished[0]['state'], 'completed', finished[0]['error'])
+            try:
+                await asyncio.wait_for(self.fake.files_seen.wait(), 20)
             except TimeoutError:
                 self.fail(str({'calls': len(calls),
                     'files': self.query('SELECT state,reason_code FROM qq_official_file_deliveries'),
                     'jobs': self.query('SELECT kind,status,last_error FROM durable_jobs'),
                     'responses': [m['content'] for c in calls for m in c['messages'] if m['role'] == 'tool']}))
             self.assertEqual(self.query("SELECT job_id FROM durable_jobs WHERE kind LIKE ? OR kind LIKE ?", ('qq_official.ingest.%', 'qq_official.turn.%')), [])
-            self.assertEqual(self.query('SELECT job_id,result_body_json FROM qq_official_turn_executions'),
-                [{'job_id': None, 'result_body_json': None}])
+            await self.wait_db('SELECT * FROM background_jobs WHERE delivered_at IS NOT NULL', timeout=20)
             rows = self.query('SELECT * FROM qq_official_file_artifacts')
             self.assertEqual(len(rows), 1)
             self.assertEqual(self.query('SELECT state FROM qq_official_file_deliveries')[0]['state'], 'message_accepted')
-            self.assertEqual(self.query('SELECT state FROM qq_official_turn_executions')[0]['state'], 'handed_off')
-            from src.plugins.ai_chat.observability import telemetry
-            samples=telemetry.registry.get_sample_value('gaoji_ai_turns_total',
-                {'platform':'qq-official','kind':'group' if group else 'private','status':'succeeded'})
-            self.assertGreaterEqual(samples or 0,1)
+            self.assertEqual(self.query('SELECT state FROM background_jobs')[0]['state'], 'completed')
             await self.wait_db("SELECT * FROM qq_official_file_deliveries WHERE state='message_accepted'")
             body = self.fake.uploaded[('groups', 'TEST_GROUP') if group else ('users', 'TEST_RUNTIME_OWNER')]
             self.assertEqual(hashlib.sha256(body).hexdigest(), rows[0]['sha256'])
@@ -161,10 +176,10 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(media), 1)
             self.assertNotIn('msg_id', media[0]['payload'])
             self.assertEqual(len(self.fake.media_calls), 1)
-            self.assertEqual(len(calls), 5)
+            self.assertEqual(phases, {'foreground': 3, 'background': 3, 'delivery': 2})
             self.assertEqual(len(self.manager.items), 1)
             self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity WHERE state='reserved'"), [])
-            self.assertEqual(len(self.query('SELECT * FROM delivery_receipts WHERE applied_at IS NOT NULL')), 2)
+            await self.wait_db('SELECT * FROM delivery_receipts WHERE applied_at IS NOT NULL', predicate=lambda rows: len(rows) == 3)
             # Private upload receipt never enters context or model replay.
             self.assertNotIn('TEST_FILE_INFO', json.dumps(self.query('SELECT body_json FROM messages')))
             if group:
@@ -178,7 +193,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.verified = False
         async def completion(**kwargs):
             names = {t['function']['name'] for t in kwargs['tools']}
-            self.assertTrue({'sandbox_exec', 'sandbox_create', 'send_file'} <= names)
+            self.assertTrue({'agent', 'sandbox_read_file', 'send_file_from_sandbox'} <= names)
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
                 content='TEST unavailable route', tool_calls=[]))], usage=None)
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=completion):

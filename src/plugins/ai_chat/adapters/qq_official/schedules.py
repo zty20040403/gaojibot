@@ -4,7 +4,6 @@ import json
 from ...message_ir import MessageBody, MentionNode, TextNode
 from ...schedules import Schedules, next_time
 from .renderer import render_plan
-from . import turn_source
 
 
 class ScheduleRuntime:
@@ -16,10 +15,9 @@ class ScheduleRuntime:
     async def control(self, turn, name, args):
         inbound, life = turn.context.inbound, turn.context.platform.execution
         def run():
-            with life.effect_scope(inbound) as cursor:
+            with self.store.transaction() as cursor:
+                row = life.current(cursor, int(self.agents.clock()))
                 if name == 'schedule_set':
-                    row = turn_source.assert_execution_current(cursor, token=self.agents.token, handle=life.handle,
-                        job=life.job, admission=self.runtime.store.admitted, now=int(self.agents.clock()))
                     source = {key: row[key] for key in ('account_key', 'endpoint_key', 'scope_key',
                         'canonical_message_id', 'endpoint_generation', 'route_epoch')}
                     source.update(actor_key=inbound.actor.key, native_message_id=inbound.native_message_id,

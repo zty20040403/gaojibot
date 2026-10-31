@@ -27,11 +27,11 @@ class MessageBatcher:
         self.recent = defaultdict(lambda: deque(maxlen=3))
 
     def add(self, key, source, text, *, requested, canonical_id):
+        if text.lstrip().startswith(('/', '!')):
+            return False
         now = self.clock()
         recent = self.recent[key]
         recent.append(now)
-        if text.lstrip().startswith(('/', '!')):
-            return False
         batch = self.pending.get(key)
         if batch is None:
             burst = len(recent) == 3 and now - recent[0] <= 5

@@ -10,7 +10,6 @@ from src.plugins.ai_chat.adapters.qq_official import turn_source
 from src.plugins.ai_chat.adapters.qq_official.background_agents import OfficialBackgroundAgents
 from src.plugins.ai_chat.adapters.qq_official.background_delivery import present
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
-from src.plugins.ai_chat.adapters.qq_official.turns import OfficialTurnLifecycle
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.conversation_window import ConversationStore
 from src.plugins.ai_chat.delivery import DeliveryStore
@@ -54,13 +53,18 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             canonical_message_id=f.message.canonical_message_id, native_message_id='TEST_INPUT',
             endpoint_generation=1, route_epoch=1)
         inbound = service.restore(source)
-        life = OfficialTurnLifecycle(api=turn_source, token=f.token, handle=handle, job=f.job,
-            admission=f.admission, transactions=store, journal=f.journal, database_calls=calls, clock=lambda: f.now)
+        from src.plugins.ai_chat.adapters.qq_official.turn_platform import ExecutionBinding
+        life = ExecutionBinding(turn_source, f.token, handle, f.job, f.admission)
         turn = TurnState(ToolContext(SimpleNamespace(context=app), inbound=inbound,
             platform=SimpleNamespace(account=f.account, execution=life)), model_profile=profile)
         submitted = await service.control(turn, 'agent', {'task': 'TEST research'})
         number = int(submitted['job'][4:])
         await service.control(turn, 'agent_steer', {'job': submitted['job'], 'message': 'TEST extra detail'})
+        from datetime import datetime, timezone
+        schedule = await service.schedules.control(turn, 'schedule_set', {'kind': 'reminder',
+            'text': 'TEST reminder', 'at': datetime.fromtimestamp(f.now + 3600, timezone.utc).isoformat()})
+        self.assertTrue((await service.schedules.control(turn, 'schedule_cancel', {'id': schedule['id']}))['cancelled'])
+
 
         async def model(_text, _history, tools, execute, *, feedback_provider, **kwargs):
             self.assertIn('shell', {item['function']['name'] for item in tools})

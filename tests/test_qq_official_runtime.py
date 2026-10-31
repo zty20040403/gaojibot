@@ -199,8 +199,8 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
             cursor.close()
             connection.close()
 
-    async def wait_db(self, query, values=(), predicate=bool):
-        async with asyncio.timeout(5):
+    async def wait_db(self, query, values=(), predicate=bool, *, timeout=5):
+        async with asyncio.timeout(timeout):
             while True:
                 rows = await asyncio.to_thread(self.query, query, values)
                 if predicate(rows):
