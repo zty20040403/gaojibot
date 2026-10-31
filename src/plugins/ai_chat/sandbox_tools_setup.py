@@ -43,7 +43,7 @@ async def upgrade(manager, owner, sandbox_id):
     code, _, error = await manager._guest_exec(sandbox_id, '/usr/bin/python3', ['-c', script])
     if code:
         raise RuntimeError(error.decode(errors='replace'))
-    command = 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ' + ' '.join(PACKAGES) + '\n' + INSTALL
+    command = 'set -eu\napt-get update -qq\nDEBIAN_FRONTEND=noninteractive apt-get install -y -qq ' + ' '.join(PACKAGES) + '\n' + INSTALL
     code, _, error = await manager._guest_exec(sandbox_id, '/bin/sh', ['-lc', command], timeout=900)
     if code:
         raise RuntimeError(error.decode(errors='replace')[-2000:])
