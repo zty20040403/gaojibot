@@ -65,12 +65,14 @@ class OfficialBackgroundAgents:
                     row = self.store.submit(cursor, kind=self.kind, key=key, source=source, task=task,
                         title=str(arguments.get('title', '')), profile=turn.model_profile.name)
                     return view(row, int(self.clock()))
-                rows = self.store.list(inbound.endpoint.key, inbound.actor.key)
                 number = job_number(arguments['job']) if arguments.get('job') else None
                 if number is not None:
-                    rows = [row for row in rows if row['job_id'] == number]
-                    if not rows:
+                    row = self.store.get(number)
+                    if row is None or row['endpoint_key'] != inbound.endpoint.key or row['actor_key'] != inbound.actor.key:
                         raise ValueError('找不到你在当前会话里的任务。')
+                    rows = [row]
+                else:
+                    rows = self.store.list(inbound.endpoint.key, inbound.actor.key)
                 if name == 'agent_steer':
                     self.store.steer(number, inbound.endpoint.key, inbound.actor.key, str(arguments['message']))
                     return {'job': arguments['job'], 'steered': True}

@@ -83,6 +83,10 @@ class BackgroundJobs:
 
     def pending_results(self, account_key):
         with self.transaction() as cursor:
+            cursor.execute("""UPDATE background_jobs b SET state='failed',
+                error='任务尚未开始，后台队列已终止；请重新发起。', finished_at=?
+                FROM durable_jobs j WHERE b.job_id=j.job_id AND b.account_key=? AND b.state='queued'
+                AND j.status IN ('succeeded','failed','cancelled')""", (int(self.clock()), account_key))
             rows = cursor.execute('''SELECT * FROM background_jobs WHERE account_key=?
                 AND state NOT IN ('queued','running') AND delivered_at IS NULL ORDER BY job_id LIMIT 20''',
                 (account_key,)).fetchall()

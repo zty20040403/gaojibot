@@ -82,6 +82,10 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         await runner.execute(self.queue.get(other['job_id']))
         self.assertEqual(len(saved), 1)
         self.assertEqual(self.store.get(other['job_id'])['state'], 'failed')
+        queued = self.submit('TEST_QUEUE_TERMINATED')
+        self.queue.cancel(queued['job_id'])
+        self.store.pending_results('TEST_ACCOUNT')
+        self.assertEqual(self.store.get(queued['job_id'])['state'], 'failed')
 
     async def test_cancel_stops_model_without_claiming_success(self):
         row = self.submit()
