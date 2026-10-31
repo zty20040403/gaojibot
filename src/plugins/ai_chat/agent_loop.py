@@ -29,6 +29,7 @@ from .model_budget import ModelBudgetExceeded
 from .observability import current_trace_id, telemetry
 from .runtime_clock import runtime_clock_prompt
 from .tool_invocation import active_tool_call_id
+from .tool_images import ToolImage
 from .prompt_context import quote_evidence, quote_group_context
 from .tool_policy import (
     ToolApproval,
@@ -616,6 +617,7 @@ async def ask_deepseek_with_tools(
     fingerprint_counts: dict[str, int] = {}
     while max_tool_rounds is None or tool_round < max_tool_rounds:
         tool_round += 1
+        tool_images = []
         await _append_pending_feedback(messages, trace, feedback_provider)
         await publish_transcript(messages)
         response, emitted = await _completion_with_optional_stream(
@@ -916,6 +918,9 @@ async def ask_deepseek_with_tools(
                 settings.tool_max_context_chars - tool_context_chars,
                 0,
             )
+            if isinstance(tool_result, ToolImage):
+                tool_images.extend([{'type': 'text', 'text': tool_result.text},
+                    {'type': 'image_url', 'image_url': {'url': tool_result.data_url}}])
             tool_result = _bounded_tool_result(
                 tool_result,
                 min(settings.tool_max_result_chars, remaining_context),
@@ -988,6 +993,8 @@ async def ask_deepseek_with_tools(
             messages.append(tool_message)
             if trace is not None:
                 trace.messages.append(dict(tool_message))
+        if tool_images:
+            messages.append({'role': 'user', 'content': tool_images})
         await publish_transcript(messages)
         if after_tool_round is not None:
             after_tool_round()

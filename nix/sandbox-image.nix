@@ -11,6 +11,8 @@ let
       odfpy
       openpyxl
       pillow
+      playwright
+      trafilatura
       pymupdf
       pypdf
       pytest
@@ -74,6 +76,16 @@ let
     '';
   };
 
+  browserHelpers = pkgs.writeTextDir "share/gaoji/gaoji_browser.py"
+    (builtins.readFile ../src/plugins/ai_chat/sandbox_browser.py);
+  browserPython = pkgs.writeShellScriptBin "gaoji-python" ''
+    export PYTHONPATH=${browserHelpers}/share/gaoji
+    exec ${python}/bin/python "$@"
+  '';
+  webread = pkgs.writeShellScriptBin "webread" ''
+    exec ${python}/bin/python ${../src/plugins/ai_chat/sandbox_webread.py} "$@"
+  '';
+
   # The base is intentionally boring and useful. Large specialist stacks are
   # supplied per command through sandbox_exec.packages and cached in /nix.
   tools = with pkgs; [
@@ -130,6 +142,10 @@ let
     nodejs_22
     sqlite
     poppler-utils
+    chromium
+    ffmpeg-headless
+    browserPython
+    webread
     qpdf
     fontconfig
     wqy_microhei
