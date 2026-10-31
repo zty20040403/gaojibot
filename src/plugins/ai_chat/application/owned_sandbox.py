@@ -291,7 +291,13 @@ class OwnedSandboxExecutor:
                 visible = [item['sandbox_id'] for item in items]
                 self._resources.update({(self.owner, sid): True for sid in visible})
                 return _json({'ok': True, 'sandbox_ids': visible})
-            sid = await self._owned(arguments.get('sandbox_id'))
+            sandbox_id = arguments.get('sandbox_id')
+            if sandbox_id is None and name in {'sandbox_read_file', 'send_file_from_sandbox'}:
+                items = await self._call(self.sandbox_manager.list, self.owner)
+                if not items:
+                    raise GenerationError('conversation_workspace_missing')
+                sandbox_id = items[0]['sandbox_id']
+            sid = await self._owned(sandbox_id)
             if name == 'sandbox_destroy':
                 await self._destroy(self.owner, sid)
                 return _json({'ok': True, 'state': 'destroyed'})

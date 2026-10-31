@@ -400,7 +400,7 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(enabled_names & owned_names, owned_names)
         for closed in (replace(context, capabilities=frozenset()), replace(context, agent_executor=None)):
             self.assertFalse({d['function']['name'] for d in catalog.definitions(closed)} & owned_names)
-            denied = await catalog.execute(TurnState(closed), 'sandbox_create', {})
+            denied = await catalog.execute(TurnState(closed), 'send_file_from_sandbox', {})
             self.assertFalse(json.loads(denied)['ok'])
         self.executor.generation_enabled = False
         self.assertFalse({d['function']['name'] for d in catalog.definitions(context)} & owned_names)
@@ -409,12 +409,10 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('send_file_from_sandbox', names)
         self.assertNotIn('import_file_to_sandbox', names)
         self.assertNotIn('send_image_from_sandbox', names)
-        definitions = registry.definitions(context)
-        spec = next(d for d in definitions if d['function']['name'] == 'sandbox_exec')
-        self.assertNotIn('background', spec['function']['parameters']['properties'])
+        self.assertNotIn('sandbox_exec', names)
         wrong = replace(context, inbound=replace(inbound, native_message_id='TEST_OTHER'))
         self.assertFalse(registry.definitions(wrong))
-        denied = await registry.execute(TurnState(wrong), 'sandbox_create', {})
+        denied = await registry.execute(TurnState(wrong), 'send_file_from_sandbox', {})
         self.assertFalse(json.loads(denied)['ok'])
 
 

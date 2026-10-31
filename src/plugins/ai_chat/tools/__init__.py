@@ -1,19 +1,10 @@
 """One capability-aware catalog for official QQ turns."""
 
 from functools import cache
-import json
 
-from ..ai_tools import TOOL_DEFINITIONS, ToolDefinition
-from .registry import FunctionTool, ToolRegistry
+from ..ai_tools import ToolDefinition
+from .registry import ToolRegistry
 from .state import ToolContext, structured_tool_source
-
-
-def _unavailable(context: ToolContext) -> bool:
-    return False
-
-
-async def _reject(turn, arguments) -> str:
-    return json.dumps({"ok": False, "code": "tool_unavailable", "error": "当前会话不能使用此工具。"}, ensure_ascii=False)
 
 
 @cache
@@ -27,16 +18,10 @@ def _base_registry() -> ToolRegistry:
     from .background import HANDLERS as BACKGROUND_HANDLERS
     from .schedules import HANDLERS as SCHEDULE_HANDLERS
 
-    handlers = {handler.definition["function"]["name"]: handler
-                for handler in (*HISTORY_HANDLERS,
-                                *MEMORY_HANDLERS, *SOURCE_HANDLERS, *STICKER_HANDLERS,
-                                *OWNED_SANDBOX_HANDLERS, *PROGRESS_HANDLERS, *BACKGROUND_HANDLERS, *SCHEDULE_HANDLERS)
-                if handler.platform_neutral}
-    names = {definition["function"]["name"] for definition in TOOL_DEFINITIONS}
-    catalog = [*TOOL_DEFINITIONS, *(handler.definition for name, handler in handlers.items() if name not in names)]
-    return ToolRegistry((handlers.get(definition["function"]["name"])
-                         or FunctionTool(definition, _unavailable, _reject)
-                         for definition in catalog), catalog=catalog)
+    return ToolRegistry(handler for handler in (
+        *HISTORY_HANDLERS, *MEMORY_HANDLERS, *SOURCE_HANDLERS, *STICKER_HANDLERS,
+        *OWNED_SANDBOX_HANDLERS, *PROGRESS_HANDLERS, *BACKGROUND_HANDLERS, *SCHEDULE_HANDLERS
+    ) if handler.platform_neutral)
 
 
 def neutral_registry_for(context: ToolContext) -> ToolRegistry:
