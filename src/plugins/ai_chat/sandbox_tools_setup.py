@@ -4,7 +4,7 @@ from pathlib import Path
 PACKAGES = ['chromium', 'python3-venv', 'ffmpeg', 'poppler-utils']
 INSTALL = '''set -eu
 python3 -m venv --system-site-packages /opt/gaoji-tools
-/opt/gaoji-tools/bin/pip install 'playwright>=1.59,<2' trafilatura 'faster-whisper>=1.2,<2'
+/opt/gaoji-tools/bin/pip install 'playwright>=1.59,<2' trafilatura 'faster-whisper>=1.2,<2' 'av<19'
 /opt/gaoji-tools/bin/python -c "import shutil,site; shutil.copy('/usr/local/share/gaoji/sandbox_browser.py', site.getsitepackages()[0]+'/gaoji_browser.py')"
 ln -sfn /opt/gaoji-tools/bin/python /usr/local/bin/gaoji-python
 cat > /usr/local/bin/webread <<'EOF'
