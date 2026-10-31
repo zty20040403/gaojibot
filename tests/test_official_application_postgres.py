@@ -91,7 +91,7 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                     admin_enabled=True,sandbox_enabled=False,
                     ledger_enabled=True,turn_journal_enabled=True,
                     outbox_enabled=True,quota_enabled=True,durable_jobs_enabled=True,
-                    subagents_enabled=True,semantic_enabled=False,media_enabled=False,observability_enabled=False,proactive_adaptive=False,
+                    semantic_enabled=False,media_enabled=False,observability_enabled=False,proactive_adaptive=False,
                     archive_enabled=False)
                 @asynccontextmanager
                 async def protocol(*args,**kwargs):

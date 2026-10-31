@@ -1,5 +1,5 @@
 """A tool lease loss must not strand a shared delivery-store transaction."""
-from src.plugins.ai_chat.agent.control import LeaseLost
+from src.plugins.ai_chat.execution_control import LeaseLost
 from src.plugins.ai_chat.delivery import DeliveryStore
 from tests.qq_official_outbox_fixture import OutboxFixture
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from ..platform_types import BackgroundToolSource, InboundMessage, TurnPlatform
@@ -59,11 +58,6 @@ class ToolContext:
         return source.scope if source is not None else None
 
 
-@dataclass(frozen=True)
-class SubAgentActions:
-    delegate: Callable[[str, str], Awaitable[dict[str, Any]]]
-    run: Callable[[str], Awaitable[str]]
-    resume: Callable[[int], Awaitable[str]]
 
 
 @dataclass
@@ -75,9 +69,6 @@ class TurnState:
     search_results: list[SearchResult] = field(default_factory=list)
     sticker_handles_this_turn: set[str] = field(default_factory=set)
     sticker_sent: bool = False
-    subagent_task_started: bool = False
-    subagent_delegations: int = 0
-    subagent_actions: SubAgentActions | None = None
     model_profile: Any = None
 
     @property

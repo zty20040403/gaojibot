@@ -5,7 +5,7 @@ import os
 import unittest
 
 from tests.qq_official_file_fixture import FileFixture, PDF, KEY
-from src.plugins.ai_chat.agent.control import LeaseLost
+from src.plugins.ai_chat.execution_control import LeaseLost
 from src.plugins.ai_chat.adapters.qq_official.file_artifacts import ArtifactError, detect_content
 
 

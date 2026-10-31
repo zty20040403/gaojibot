@@ -20,7 +20,6 @@ import {
   X,
 } from 'lucide-react'
 import { TokenUsageChart } from './TokenUsageChart'
-import { SubAgentControls } from './SubAgentControls'
 import { LocalModelPanel, ModelRouteSummary } from './LocalModelPanel'
 import {
   DataTable,
@@ -67,247 +66,6 @@ function jsonRows(value: unknown): any[] {
   }
 }
 
-function planLayers(value: unknown): any[][] {
-  const steps = rows(value)
-  if (!steps.length) return []
-  const remaining = new Map(steps.map((step, index) => [String(step.id ?? `step-${index}`), step]))
-  const resolved = new Set<string>()
-  const layers: any[][] = []
-  while (remaining.size) {
-    const ready = [...remaining.entries()].filter(([, step]) =>
-      rows(step.depends_on).every((dependency) => resolved.has(String(dependency))),
-    )
-    if (!ready.length) return [steps]
-    layers.push(ready.map(([, step]) => step))
-    ready.forEach(([key]) => {
-      remaining.delete(key)
-      resolved.add(key)
-    })
-  }
-  return layers
-}
-
-const AGENT_ROLE_LABELS: Record<string, string> = {
-  supervisor: '主控',
-  researcher: '搜索',
-  coder: '代码',
-  document: '文件',
-  media: '媒体',
-  analyst: '分析',
-  operator: '运维',
-}
-
-function compactAgentLayer(layer: any[]): string {
-  const counts = new Map<string, number>()
-  layer.forEach((step) => {
-    const role = String(step.agent ?? step.role ?? step.id)
-    const label = AGENT_ROLE_LABELS[role] ?? role
-    counts.set(label, (counts.get(label) ?? 0) + 1)
-  })
-  return [...counts.entries()]
-    .map(([label, count]) => count > 1 ? `${label} ×${count}` : label)
-    .join(' + ')
-}
-
-function PlanFlow({ steps }: { steps: unknown }) {
-  const layers = planLayers(steps)
-  if (!layers.length) return <>-</>
-  return (
-    <div className="parallel-plan" title="加号表示可以并行，箭头表示需要等待上一层完成">
-      {layers.map((layer, index) => (
-        <span className="plan-layer-wrap" key={index}>
-          {index > 0 && <b aria-hidden="true">→</b>}
-          <span className={layer.length > 1 ? 'plan-layer parallel' : 'plan-layer'}>
-            {compactAgentLayer(layer)}
-          </span>
-        </span>
-      ))}
-    </div>
-  )
-}
-
-function compactScope(value: unknown): string {
-  const scope = String(value ?? '')
-  const group = scope.match(/(?:^|:)group:(\d+)/)
-  if (group) return `群 ${group[1]}`
-  const user = scope.match(/(?:^|:)private:(\d+)/)
-  if (user) return `私聊 ${user[1]}`
-  return scope.replace(/^onebot-v11:/, '') || '-'
-}
-
-function runDuration(run: any, now: number): number {
-  if (!run.started_at) return 0
-  return Math.max(Number(run.finished_at ?? now) - Number(run.started_at), 0)
-}
-
-function peakParallelism(runs: any[], now: number): number {
-  const events = runs.flatMap((run) => {
-    if (!run.started_at) return []
-    const start = Number(run.started_at)
-    const finish = Math.max(Number(run.finished_at ?? now), start + 0.001)
-    return [{ time: start, delta: 1 }, { time: finish, delta: -1 }]
-  }).sort((left, right) => left.time - right.time || left.delta - right.delta)
-  let active = 0
-  let peak = 0
-  events.forEach((event) => {
-    active += event.delta
-    peak = Math.max(peak, active)
-  })
-  return peak
-}
-
-function AgentFlowNode({ node, now, roleTitles }: { node: any; now: number; roleTitles: Map<string, string> }) {
-  const duration = runDuration(node, now)
-  const dependencies = rows(node.dependencies)
-  const contextHash = String(node.agent_context?.context_hash ?? '')
-  const contextChars = String(node.agent_context?.rendered_context ?? '').length
-  const nodeTitle = [
-    String(node.objective ?? ''),
-    contextHash ? `独立上下文 ${contextHash.slice(0, 12)} · ${fmtNumber(contextChars)} 字符` : '',
-  ].filter(Boolean).join('\n')
-  return (
-    <article className={`agent-flow-node ${node.status} ${node.synthetic ? 'synthetic' : ''}`} title={nodeTitle}>
-      <header>
-        <span className={`agent-state-dot ${node.status}`} />
-        <div>
-          <strong>{node.title ?? roleTitles.get(String(node.role)) ?? node.role}</strong>
-          <code>{node.handle}</code>
-        </div>
-        <StatusBadge value={node.status} />
-      </header>
-      <p>{node.objective}</p>
-      <footer>
-        <span>{node.model_profile || (node.synthetic ? '宿主控制' : '默认模型')}</span>
-        <span>{node.started_at ? `${fmtDuration(duration)}${contextHash ? ` · ctx ${contextHash.slice(0, 6)}` : ''}` : dependencies.length ? `等待 ${dependencies.join('、')}` : '等待调度'}</span>
-      </footer>
-    </article>
-  )
-}
-
-function stageState(stage: any[]): string {
-  const states = stage.map((node) => String(node.status))
-  if (states.some((state) => state === 'failed' || state === 'cancelled')) return 'failed'
-  if (states.some((state) => state === 'running' || state === 'planning' || state === 'verifying')) return 'running'
-  if (states.some((state) => state === 'waiting_external')) return 'pending'
-  if (states.some((state) => state === 'partial' || state === 'skipped')) return 'partial'
-  if (states.every((state) => state === 'succeeded' || state === 'completed')) return 'succeeded'
-  return 'pending'
-}
-
-function SubAgentFlow({ detail, loading, error, now, roles }: { detail: any; loading: boolean; error: string; now: number; roles: any[] }) {
-  const [expanded, setExpanded] = useState(false)
-  const task = detail?.task
-  const runs = rows(detail?.runs)
-  const running = runs.filter((run) => run.status === 'running').length
-  const waiting = rows(detail?.external_waits).filter((item) => item.status === 'pending').length
-  const peak = peakParallelism(runs, now)
-  const roleTitles = new Map(roles.map((role) => [String(role.role), String(role.title)]))
-  const runsByStep = new Map(runs.map((run) => [String(run.step_key), run]))
-  const contextsByRun = new Map(rows(detail?.run_contexts).map((item) => [Number(item.run_id), item.context]))
-  const latestRunFinish = runs.reduce((latest, run) => Math.max(latest, Number(run.finished_at ?? 0)), 0)
-  const planSteps = [...rows(task?.plan?.steps), ...rows(task?.plan?.adaptive_steps),
-    ...runs.filter(run => String(run.step_key).startsWith(`acceptance_r${detail?.control?.revision ?? 1}_`)).map(run => ({ id: run.step_key, agent: run.role, depends_on: run.dependencies }))]
-  const workerStages = planLayers(planSteps).map((layer) => layer.map((step) => {
-    const run = runsByStep.get(String(step.id))
-    return run ? {
-      ...run,
-      agent_context: contextsByRun.get(Number(run.run_id)),
-    } : {
-      handle: String(step.id),
-      role: step.agent,
-      objective: step.objective,
-      dependencies: step.depends_on,
-      status: 'pending',
-    }
-  }))
-  const planningStatus = ['received', 'planning'].includes(String(task?.status)) ? 'running' : task?.plan?.steps ? 'succeeded' : 'failed'
-  const deliveryStatus = detail?.background && ['completed', 'partial'].includes(String(task?.status)) && detail?.final_delivery?.status !== 'committed'
-    ? detail?.final_delivery?.status === 'failed' ? 'failed' : detail?.final_delivery?.status === 'ambiguous' ? 'partial' : 'pending'
-    : task?.status === 'verifying'
-    ? 'running'
-    : ['completed', 'partial', 'failed', 'cancelled'].includes(String(task?.status))
-      ? task.status
-      : 'pending'
-  const stages = task ? [
-    [{
-      handle: 'supervisor',
-      role: 'supervisor',
-      title: '主控 Agent',
-      objective: '拆解目标、安排依赖和验收标准',
-      status: planningStatus,
-      started_at: task.created_at,
-      finished_at: planningStatus === 'succeeded' ? runs[0]?.created_at ?? task.updated_at : null,
-      synthetic: true,
-    }],
-    ...workerStages,
-    [{
-      handle: 'delivery',
-      role: 'supervisor',
-      title: '验收与交付',
-      objective: '汇总各 Agent 结果，检查目标并完成消息或文件交付',
-      status: deliveryStatus,
-      started_at: ['verifying', 'completed', 'partial', 'failed'].includes(String(task.status)) ? Math.max(latestRunFinish, Number(task.updated_at)) : null,
-      finished_at: task.finished_at,
-      synthetic: true,
-    }],
-  ] : []
-
-  useEffect(() => {
-    if (!expanded) return
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setExpanded(false)
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.body.style.overflow = previousOverflow
-      window.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [expanded])
-
-  if (loading && !task) return <div className="subagent-flow-state">正在读取 Agent 执行图...</div>
-  if (error) return <div className="inline-error">{error}</div>
-  if (!task) return null
-  return (
-    <div className={`subagent-flow ${expanded ? 'expanded' : ''}`}>
-      <div className="subagent-flow-head">
-        <div>
-          <span className="eyebrow">执行拓扑 · {task.handle}</span>
-          <h3>{task.objective}</h3>
-        </div>
-        <div className="flow-metrics">
-          <span><small>当前并行</small><strong>{running}</strong></span>
-          <span><small>等待外部结果</small><strong>{waiting}</strong></span>
-          <span><small>峰值并行</small><strong>{peak}</strong></span>
-          <span><small>执行阶段</small><strong>{workerStages.length}</strong></span>
-        </div>
-        <button className="icon-button flow-expand-button" type="button" title={expanded ? '退出放大视图' : '放大执行拓扑'} aria-label={expanded ? '退出放大视图' : '放大执行拓扑'} onClick={() => setExpanded((current) => !current)}>
-          {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-        </button>
-      </div>
-      <div className="agent-flow-scroll">
-        <div className="agent-flow-canvas">
-          {stages.map((stage, index) => (
-            <div className="flow-stage-wrap" key={index}>
-              {index > 0 && <div className={`flow-link ${stageState(stage)}`} aria-hidden="true">
-                <span className="flow-energy first" />
-                <span className="flow-energy second" />
-              </div>}
-              <div className="flow-stage">
-                <span className="flow-stage-label">{index === 0 ? '规划' : index === stages.length - 1 ? '交付' : `阶段 ${index}`}{stage.length > 1 ? ` · 并行 ${stage.length}` : ''}</span>
-                <div className="flow-stage-nodes">
-                  {stage.map((node) => <AgentFlowNode key={node.handle} node={node} now={now} roleTitles={roleTitles} />)}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export function OverviewView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail: DetailOpener }) {
   const overview = plane.data.overview ?? {}
   const totals = overview.totals ?? {}
@@ -329,7 +87,7 @@ export function OverviewView({ plane, onOpenDetail }: { plane: Plane; onOpenDeta
       />
       <div className="metric-grid overview-metrics">
         <Metric label="服务状态" value={plane.online ? '运行中' : '连接断开'} hint={`v${overview.version ?? window.__GAOJI_ADMIN__.version} · 已运行 ${fmtDuration(overview.uptime_seconds)}`} />
-        <Metric label="运行任务" value={fmtNumber(Number(overview.running_tasks ?? 0) + Number(overview.subagent_tasks?.running ?? 0) + Number(overview.subagent_tasks?.planning ?? 0) + Number(overview.subagent_tasks?.verifying ?? 0))} hint={`${fmtNumber(overview.durable_jobs?.running)} 个持久任务 · ${fmtNumber(overview.subagent_tasks?.completed)} 个 Sub-Agent 任务完成 · ${fmtNumber(totals.turns)} 个 Agent 回合`} />
+        <Metric label="运行任务" value={fmtNumber(Number(overview.running_tasks ?? 0))} hint={`${fmtNumber(overview.durable_jobs?.running)} 个持久任务 · ${fmtNumber(totals.turns)} 个 Agent 回合`} />
         <Metric label="沙盒活动" value={fmtNumber(sandboxes.active_commands)} hint={`${fmtNumber(rows(sandboxes.items).length)} 个保留沙盒 · 空闲时停止`} />
         <Metric label="90 天 Token" value={fmtNumber(usageTotals.input + usageTotals.output)} hint={`${fmtNumber(usageTotals.calls)} 次调用 · 输入 ${fmtNumber(usageTotals.input)} / 输出 ${fmtNumber(usageTotals.output)}`} />
       </div>
@@ -437,63 +195,16 @@ function MemberTable({ title, members, groupId, options, onModelCommit, onEffort
 
 export function TasksView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail: DetailOpener }) {
   const tasks = rows(plane.data.tasks?.items)
-  const subagents = plane.data.subagents ?? {}
-  const subagentTasks = rows(subagents.items)
-  const agentRoles = rows(subagents.roles)
+  const agents = rows(plane.data.backgroundAgents?.items)
   const jobs = rows(plane.data.jobs?.items)
   const deliveries = rows(plane.data.deliveries?.items)
-  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
-  const [subagentDetail, setSubagentDetail] = useState<any>(null)
-  const [subagentDetailLoading, setSubagentDetailLoading] = useState(false)
-  const [subagentDetailError, setSubagentDetailError] = useState('')
-  const [clock, setClock] = useState(() => Math.floor(Date.now() / 1000))
-  const taskIds = useMemo(() => subagentTasks.map((task) => Number(task.task_id)), [subagentTasks])
-
-  useEffect(() => {
-    if (!taskIds.length) {
-      setSelectedTaskId(null)
-      setSubagentDetail(null)
-      return
-    }
-    if (selectedTaskId === null || !taskIds.includes(selectedTaskId)) setSelectedTaskId(taskIds[0])
-  }, [selectedTaskId, taskIds])
-
-  useEffect(() => {
-    if (selectedTaskId === null) return
-    const controller = new AbortController()
-    setSubagentDetailLoading(true)
-    void plane.query(`/subagents/${selectedTaskId}`, controller.signal)
-      .then((payload) => {
-        setSubagentDetail(payload)
-        setSubagentDetailError('')
-      })
-      .catch((reason) => {
-        if (!controller.signal.aborted) setSubagentDetailError(reason instanceof Error ? reason.message : 'Sub-Agent 详情读取失败')
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setSubagentDetailLoading(false)
-      })
-    return () => controller.abort()
-  }, [plane.query, selectedTaskId, subagents])
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(Math.floor(Date.now() / 1000)), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
 
   return (
     <>
-      <PageHeader title="任务与投递" description="前台 Agent、持久任务和消息投递的统一操作面" action={<RefreshButton onClick={() => void plane.refreshMany(['tasks', 'subagents', 'jobs', 'deliveries'])} />} />
-      <Section title="Sub-Agent 编排" description="主 Agent 自动选择直接回答、单专家委派或多 Agent 工作流；/task 可强制进入工作流">
-        <div className="agent-role-strip">
-          {agentRoles.map((role) => <div className="agent-role-summary" key={role.role} title={`${role.description} · ${rows(role.allowed_tools).length} 个工具`}><div><strong>{role.title}</strong><code>{role.role}</code></div><span><b>{rows(role.allowed_tools).length}</b><small>工具</small></span></div>)}
-        </div>
-        <div className="subagent-task-list">
-          {subagentTasks.slice(0, 5).map((task) => <article className={`subagent-task-row ${selectedTaskId === Number(task.task_id) ? 'selected' : ''}`} key={task.task_id}><div className="subagent-task-copy"><div className="subagent-task-heading"><code>{task.handle}</code><span>{compactScope(task.scope_key)}</span><time>{fmtTime(task.updated_at)}</time></div><p title={task.objective}>{task.objective}</p><PlanFlow steps={task.plan?.steps} /></div><div className="subagent-task-side"><StatusBadge value={task.status} /><div className="subagent-task-actions"><button className="icon-button" title="查看 Agent 执行拓扑" aria-label={`查看 ${task.handle} 执行拓扑`} onClick={() => setSelectedTaskId(Number(task.task_id))}><GitBranch size={15} /></button>{['received', 'queued', 'planning', 'running', 'verifying', 'cancelling', 'interrupted'].includes(task.status) && <button className="icon-button danger" title="取消 Sub-Agent 任务" aria-label={`取消 ${task.handle}`} onClick={() => void plane.mutate('subagents', `/subagents/${task.task_id}/cancel`, 'POST', {}, ['subagents', 'tasks'])}><Square size={15} /></button>}</div></div></article>)}
-        </div>
-        {!subagentTasks.length && <EmptyState>还没有 Sub-Agent 任务</EmptyState>}
-        <SubAgentFlow detail={subagentDetail} loading={subagentDetailLoading} error={subagentDetailError} now={clock} roles={agentRoles} />
-        {subagentDetail?.task && <SubAgentControls key={subagentDetail.task.task_id} detail={subagentDetail} plane={plane} models={rows(subagents.model_options)} roles={agentRoles} />}
+      <PageHeader title="任务与投递" description="前台 Agent、持久任务和消息投递的统一操作面" action={<RefreshButton onClick={() => void plane.refreshMany(['tasks', 'backgroundAgents', 'jobs', 'deliveries'])} />} />
+      <Section title="后台任务" description="每个任务一个助手，可插话、停止，完成后由前台交付">
+        {agents.map((job) => <details key={job.job_id}><summary><code>job#{job.job_id}</code> {job.title} <StatusBadge value={job.state} /> · {job.last_tool || '尚未调用工具'}</summary><p>{job.error}</p><pre>{job.report}</pre>{['queued', 'running'].includes(job.state) && <button onClick={() => void plane.mutate('backgroundAgents', `/background-agents/${job.job_id}/cancel`, 'POST', {}, ['backgroundAgents'])}>停止任务</button>}</details>)}
+        {!agents.length && <EmptyState>还没有后台任务</EmptyState>}
       </Section>
       <Section title="运行中的 Agent" description="取消会触发当前任务的取消路径">
         <DataTable><thead><tr><th>任务</th><th>会话</th><th>摘要</th><th>耗时</th><th></th></tr></thead><tbody>{tasks.map((task) => <tr key={task.task_id}><td><code>{task.task_id}</code></td><td>{task.conversation_id}</td><td>{task.summary}</td><td>{fmtDuration(task.elapsed_seconds)}</td><td className="actions"><button className="icon-button danger" title="取消任务" onClick={() => void plane.mutate('tasks', `/tasks/${task.task_id}/cancel`, 'POST', {}, ['tasks'])}><Square size={15} /></button></td></tr>)}</tbody></DataTable>

@@ -85,7 +85,7 @@ def usage_callback(transaction, db_call):
     return callback
 
 
-from ...agent.control import LeaseLost
+from ...execution_control import LeaseLost
 
 
 class CommandEffectDenied(LeaseLost):

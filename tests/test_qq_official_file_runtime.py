@@ -1,10 +1,10 @@
+from src.plugins.ai_chat.adapters.qq_official.image_formats import canonical_artifact_filename, ImageFormatError as ArtifactDeliveryError
 """Real source/capacity/manifest storage with the existing owned guest contract.
 
 No platform network, credentials, real VM, alternate model loop or ad-hoc DDL.
 """
 import asyncio
 from dataclasses import replace
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,22 +12,12 @@ import subprocess
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
 
 from src.bot_storage import DatabaseCalls
-from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
 from src.plugins.ai_chat.adapters.qq_official.file_runtime import OfficialFileRuntime, GENERATION_TOOLS
-from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import submit, job_kind
-from src.plugins.ai_chat.agent.artifact_delivery import (
-    ArtifactDeliveryError, canonical_artifact_filename, delivery_state,
-)
-from src.plugins.ai_chat.agent.contracts import ContextPacket
-from src.plugins.ai_chat.agent.control import LeaseLost
-from src.plugins.ai_chat.agent.workspaces import ArtifactCaptureError
+from src.plugins.ai_chat.execution_control import LeaseLost
 from src.plugins.ai_chat.application.owned_sandbox import ArtifactAvailability, GenerationError
-from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
 from src.plugins.ai_chat.platform_types import InboundMessage, PlatformFeatures
-from src.plugins.ai_chat.subagents import SubAgentCoordinator, SubAgentStore, StepOutcome, TaskStep
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id
 from src.plugins.ai_chat.tools import neutral_registry_for
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
@@ -115,7 +105,8 @@ class ForegroundRuntimeTests(RuntimeFixture):
             self.assertEqual(self.files.read_verified(rows[0]["artifact_id"],
                 sha256=rows[0]["sha256"], byte_size=rows[0]["byte_size"]), original)
             self.assertEqual(self.query("SELECT * FROM deliveries"), [])
-            self.assertEqual(await session.close(), {"released":0, "retained":1})
+            await session.close()
+            self.assertEqual(len(session.executor.retained_resources), 1)
             self.assertFalse(GENERATION_TOOLS & {x["function"]["name"] for x in registry.definitions(context)})
         asyncio.run(run())
         self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity WHERE state='reserved'"), [])
@@ -182,7 +173,8 @@ class ForegroundRuntimeTests(RuntimeFixture):
             session = await self.foreground()
             await self.produce(session)
             self.admitted = False
-            self.assertEqual(await session.close(), {"released":0, "retained":1})
+            await session.close()
+            self.assertEqual(len(session.executor.retained_resources), 1)
         asyncio.run(run())
         self.assertFalse(any(x[0] == "destroy" for x in self.manager.calls))
         self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity"), [])
@@ -201,127 +193,12 @@ class ForegroundRuntimeTests(RuntimeFixture):
                 await self.send(session, sid)
             self.assertEqual(len(self.query("SELECT * FROM qq_official_file_artifacts")), 1)
             self.assertEqual(self.query("SELECT * FROM deliveries"), [])
-            self.assertEqual(await session.close(), {"released":0, "retained":1})
+            await session.close()
+            self.assertEqual(len(session.executor.retained_resources), 1)
         asyncio.run(run())
         self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity"), [])
 
 
-class CoordinatorRuntimeTests(RuntimeFixture):
-    def setUp(self):
-        super().setUp()
-        self.tasks = SubAgentStore(self.database)
-        self.addCleanup(self.tasks.close)
-        profile = ModelProfile(name="test", provider="test", protocol="openai-chat", model="test",
-            base_url="http://127.0.0.1", api_key_required=False)
-        self.coordinator = SubAgentCoordinator(self.tasks,
-            ModelCatalog({"test":profile}, default_profile="test"), logger=Mock())
-        packet = ContextPacket(self.endpoint.scope.key, "TEST_FILES", None,
-            self.message.canonical_message_id, "生成并发送 PDF 文件", endpoint=self.endpoint, requester_actor=self.actor)
-        with self.tx() as cursor:
-            self.task = submit(cursor, token=self.token, source_api=execution, source_handle=self.handle,
-                source_job=self.job, tool_call_id="TEST_FILES_TASK", tool_name="run_subagents",
-                packet=packet, decision=None, profile="test", now=self.now, execution_deadline=self.now+1200,
-                result_wait_seconds=600, admission=self.admission, coordinator=self.coordinator, jobs=self.jobs)
-            cursor.execute("UPDATE subagent_tasks SET plan_json=? WHERE task_id=?", (
-                json.dumps({"contract":{"delivery_required":True}}), self.task.task_id))
-        self.tasks.set_task_state(self.task.task_id, "running")
-        self.task = self.tasks.get(self.task.task_id)
-        self.task_job = self.jobs.claim_due("TEST_FILES_WORKER", kinds=(job_kind(self.account),), now=self.now)[0]
-        self.step = TaskStep("document", "document", "TEST document", "PDF")
-        self.run = self.tasks.create_run(self.task.task_id, self.step, allowed_tools=tuple(GENERATION_TOOLS),
-            model_profile="test", now=self.now)
-
-    async def session(self):
-        return await self.runtime.subagent(self.task_job, self.task)
-
-    async def captured(self, session, filename="report.pdf"):
-        sid, raw = await self.produce(session, filename=filename)
-        values = await session.hooks.workspaces.capture(self.task.task_id,
-            [{**raw, "snapshot":"f"*64, "draft":False, "url":"https://TEST.invalid/private"}])
-        self.assertNotIn("url", values[0])
-        self.assertNotIn("draft", values[0])
-        self.tasks.add_artifacts(self.task.task_id, self.run.run_id, values, now=self.now)
-        self.tasks.finish_run(self.run.run_id, "succeeded", result={"artifacts":values}, now=self.now)
-        return sid, values[0]
-
-    async def deliver(self, session, item, *, draft=False):
-        outcome = StepOutcome(self.step, self.tasks.runs(self.task.task_id)[0], {"artifacts":[item]}, None)
-        check = await session.hooks.workspaces.validate(self.task.task_id, item)
-        validation = {"status":"failed" if draft else "passed",
-            "artifacts":[{"artifact_key":item["snapshot"], "status":"failed" if draft else "passed", "reason":"TEST incomplete"}],
-            "checks":[{"artifact_key":item["snapshot"], **check}]}
-        async def legacy(*_):
-            raise AssertionError("legacy transport must not execute")
-        return await self.coordinator._deliver_requested_artifacts(self.task, {self.step.key:outcome},
-            execute_tool=legacy, delivered_artifacts=set(), progress=None,
-            hooks=session.hooks, validation=validation)
-
-
-
-
-    def test_forged_hash_handle_size_and_unrecorded_capture_cannot_read_host_blob(self):
-        async def run():
-            first = await self.session()
-            _, item = await self.captured(first)
-            await first.close()
-            second = await self.session()
-            for changed in ({**item, "snapshot":"f"*64}, {**item, "size":item["size"]+1},
-                            {**item, "handle":"s999999:/workspace/result.pdf"}, {**item, "name":"foreign.pdf"}):
-                with self.assertRaises(GenerationError):
-                    await second.hooks.workspaces.validate(self.task.task_id, changed)
-            with self.tx() as cursor:
-                cursor.execute("DELETE FROM subagent_artifacts WHERE task_id=?", (self.task.task_id,))
-            with self.assertRaises(GenerationError):
-                await second.hooks.workspaces.validate(self.task.task_id, item)
-        asyncio.run(run())
-        self.assertEqual(self.query("SELECT * FROM qq_official_file_artifacts"), [])
-
-    def test_foreign_sandbox_capture_rejected_without_export_or_registration(self):
-        async def run():
-            session = await self.session()
-            with self.assertRaises(ArtifactCaptureError):
-                await session.hooks.workspaces.capture(self.task.task_id,
-                    [{"handle":"s999999:/workspace/test.pdf", "name":"test.pdf"}])
-            self.assertEqual(self.manager.calls, [])
-            with self.assertRaises(LeaseLost):
-                await self.runtime.subagent(self.job, self.task)
-        asyncio.run(run())
-
-    def test_source_revocation_between_capture_and_registration_leaves_no_artifact(self):
-        async def run():
-            session = await self.session()
-            _, item = await self.captured(session)
-            self.admitted = False
-            with self.assertRaises(LeaseLost):
-                await self.deliver(session, item)
-            await session.close()
-        asyncio.run(run())
-        self.assertEqual(self.query("SELECT * FROM qq_official_file_artifacts"), [])
-        self.assertEqual(self.query("SELECT * FROM qq_official_generation_capacity"), [])
-
-    def test_authorized_upstream_import_reads_snapshot_not_mutated_guest(self):
-        async def install(owner, sid, path, content):
-            self.manager.own(owner, sid)["files"][path] = bytes(content)
-            self.manager.event("readonly", owner, sid)
-        self.manager.install_readonly_file = install
-        async def run():
-            session = await self.session()
-            sid, item = await self.captured(session)
-            self.manager.items[sid]["files"]["result.pdf"] = b"TEST mutated guest"
-            target = json.loads(await session.executor.execute("sandbox_create", {}))["sandbox_id"]
-            args = {"step_id":"document", "artifact_index":0, "sandbox_id":target}
-            with self.assertRaises((GenerationError, ValueError)):
-                await session.workspaces.import_artifact(self.task.task_id, {}, args)
-            result = json.loads(await session.workspaces.import_artifact(self.task.task_id,
-                {"document":{"artifacts":[item]}}, args))
-            actual = self.manager.items[target]["files"][result["path"].removeprefix("/workspace/")]
-            self.assertTrue(result["read_only"])
-            self.assertEqual(hashlib.sha256(actual).hexdigest(), item["snapshot"])
-            with self.assertRaises((GenerationError, ValueError)):
-                await session.workspaces.import_artifact(self.task.task_id,
-                    {"document":{"artifacts":[item]}}, {**args, "sandbox_id":"s999999"})
-            await session.close()
-        asyncio.run(run())
 
 
 
@@ -336,9 +213,6 @@ class FilenameAndImportTests(unittest.TestCase):
             with self.assertRaises(ArtifactDeliveryError):
                 canonical_artifact_filename(name, draft=True)
 
-    def test_publication_unknown_is_not_pending_or_accepted(self):
-        self.assertEqual(delivery_state([{"state":"publishing"}], required=True), "pending")
-        self.assertEqual(delivery_state([{"state":"publication_unknown"}], required=True), "publication_unknown")
 
     def test_entire_factory_imports_without_nonebot(self):
         script = """

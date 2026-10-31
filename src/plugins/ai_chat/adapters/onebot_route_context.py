@@ -8,7 +8,7 @@ from functools import wraps
 import inspect
 import weakref
 
-from ..agent.control import RouteFence, active_route_fence
+from ..execution_control import RouteFence, active_route_fence
 from ..platform_types import ActorKey, EndpointKey
 from ..conversation_scope import ConversationScope
 
@@ -71,7 +71,7 @@ def guard_source_transaction(cursor, *, scope=None):
 
 def require_model_source():
     """Unbound background loops cannot start models in a managed deployment."""
-    from ..agent.control import active_job_fence, RouteAuthorityLost
+    from ..execution_control import active_job_fence, RouteAuthorityLost
     proof = active_source_route.get()
     if proof is not None and proof.result_digest is not None:
         raise RouteAuthorityLost("result_source_cannot_execute")

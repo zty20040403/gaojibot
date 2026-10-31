@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from tests import test_qq_official_runtime as runtime_fixture
 from tests.test_qq_official_runtime_sender import verified_ready_platform
@@ -22,7 +22,6 @@ from src.plugins.ai_chat.model_preferences import ModelPreferenceStore
 from src.plugins.ai_chat.platform_types import EndpointKey
 from src.plugins.ai_chat.quota import UsageStore
 from src.plugins.ai_chat.skills import SkillRegistry
-from src.plugins.ai_chat.subagents import SubAgentCoordinator, SubAgentStore
 from src.plugins.ai_chat.tasks import RunningTaskRegistry
 from src.plugins.ai_chat.turn_journal import TurnJournal
 
@@ -152,82 +151,6 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(list(dict(app.reasoning_preferences.items()).values()), ["high"])
                 await runtime.stop()
 
-    async def test_foreground_tool_submits_real_background_task_and_routes_result_to_same_endpoint(self):
-        app = self.application()
-        app.settings = replace(app.settings, subagents_enabled=True, subagent_entry_enabled=True)
-        app.subagent_store = SubAgentStore(self.database)
-        self.addCleanup(app.subagent_store.close)
-        app.subagent_coordinator = SubAgentCoordinator(app.subagent_store, app.model_catalog, logger=self.logger)
-        front_calls = []
-        worker_calls = []
-        result_calls = []
-        decision = {"mode": "delegate", "reason": "独立文字分析", "answer": "",
-            "task_type": "execution", "delivery_required": False,
-            "objective": "TEST 分析文字", "deliverables": ["文字分析"], "constraints": [],
-            "acceptance": ["给出文字分析"], "outcome_checks": [{"criterion_index": 0, "kind": "evidence"}],
-            "steps": [{"id": "analysis", "agent": "analyst", "objective": "TEST 分析文字",
-                       "deliverable": "文字分析", "depends_on": []}]}
-
-        async def completion(**kwargs):
-            definitions = {item["function"]["name"]: item for item in kwargs.get("tools",[])}
-            if 'delegate_agent' not in definitions:
-                result_calls.append(kwargs)
-                return model_response('TEST analysis foreground',[],kwargs)
-            front_calls.append(kwargs)
-            self.assertIn("delegate_agent", definitions)
-            self.assertNotIn("resume_subagent", definitions)
-            self.assertEqual(definitions["delegate_agent"]["function"]["parameters"]["properties"]["role"]["enum"],
-                             ["researcher", "analyst"])
-            tool_calls = []
-            if len(front_calls) == 1:
-                tool_calls = [SimpleNamespace(id="TEST_DELEGATION", type="function", function=SimpleNamespace(
-                    name="delegate_agent", arguments=json.dumps({"role": "analyst", "objective": "TEST 分析文字"})))]
-            else:
-                responses = [message["content"] for message in kwargs["messages"] if message["role"] == "tool"]
-                self.assertEqual(len(responses), 1)
-                self.assertIn('"ok": true', responses[0])
-            return model_response("" if tool_calls else "TEST queued", tool_calls, kwargs)
-
-        async def worker(*args, **kwargs):
-            worker_calls.append(kwargs)
-            tools = {item["function"]["name"] for item in args[2]}
-            self.assertFalse(tools & {"sandbox_exec", "delegate_agent", "run_subagents", "get_group_file_list"})
-            # No tool evidence is fabricated: the real verifier must preserve
-            # that limitation in the terminal result instead of inventing success.
-            return '{"status":"success","summary":"TEST analysis","artifacts":[]}'
-
-        with patch("src.plugins.ai_chat.agent_loop._create_completion", new=completion), \
-             patch("src.plugins.ai_chat.subagents.ask_deepseek_json", new=AsyncMock(return_value=decision)), \
-             patch("src.plugins.ai_chat.subagents.ask_deepseek_with_tools", new=worker), \
-             patch("src.plugins.ai_chat.subagents.ask_deepseek", new=AsyncMock(return_value="TEST analysis draft")):
-            async with verified_ready_platform() as fake:
-                runtime = await self.open_runtime(fake, app)
-                self.assertTrue(runtime.status()["subagent_execution_connected"])
-                await self.emit(fake, native="TEST_DELEGATE_SOURCE", content="TEST delegate analysis")
-                await self.complete("TEST_DELEGATE_SOURCE")
-                await self.wait_db("SELECT delivery_id FROM deliveries WHERE status='committed' AND purpose='background_result'")
-                tasks = self.query("SELECT task_id FROM subagent_tasks")
-                self.assertEqual(len(tasks), 1)
-                task = app.subagent_store.get(tasks[0]["task_id"])
-                self.assertIn(task.status, {"completed", "partial"})
-                self.assertIsNone(task.requester_user_id)
-                self.assertEqual(task.requester_actor.native_user_id, "TEST_RUNTIME_OWNER")
-                self.assertEqual(task.endpoint.native_conversation_id, "TEST_RUNTIME_OWNER")
-                self.assertEqual(len(front_calls), 2)
-                self.assertEqual(len(worker_calls), 1)
-                self.assertEqual(len(result_calls),1)
-                self.assertTrue(all('msg_id' not in entry['payload'] for entry in fake.received))
-                self.assertTrue(all('msg_seq' not in entry['payload'] for entry in fake.received))
-                self.assertTrue(any("TEST queued" in entry["payload"]["markdown"]["content"] for entry in fake.received),
-                                fake.received)
-                self.assertTrue(task.result["answer"])
-                self.assertTrue(any(task.result["answer"] in entry["payload"]["markdown"]["content"]
-                                    for entry in fake.received), fake.received)
-                await self.emit(fake, native="TEST_TASK_STATUS", content=f"/task {task.handle}")
-                await self.complete("TEST_TASK_STATUS")
-                self.assertIn(task.handle, fake.received[-1]["payload"]["markdown"]["content"])
-                self.assertEqual(len(front_calls), 2)
-                await runtime.stop()
 
     async def test_consumer_factory_failure_leaves_no_gateway_or_worker_task(self):
         app = self.application()

@@ -11,7 +11,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from src.plugins.ai_chat import agent_loop
-from src.plugins.ai_chat.agent.control import JobFence, LeaseLost, active_job_fence
+from src.plugins.ai_chat.execution_control import JobFence, LeaseLost, active_job_fence
 from src.plugins.ai_chat.llm_gateway import (
     AnthropicMessagesProvider,
     LLMConnectionError,
@@ -197,7 +197,7 @@ class ModelLeaseFenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.chat.completions.create.await_count, 2)
 
     async def test_route_only_fence_also_disables_sdk_hidden_retries(self):
-        from src.plugins.ai_chat.agent.control import RouteFence, active_route_fence, RouteAuthorityLost
+        from src.plugins.ai_chat.execution_control import RouteFence, active_route_fence, RouteAuthorityLost
         client, provider = self.openai_client(), OpenAIChatProvider()
         job_token = active_job_fence.set(None)
         route_live = True

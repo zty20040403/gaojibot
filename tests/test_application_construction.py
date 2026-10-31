@@ -143,7 +143,7 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
                 model_default_profile='test',local_model_profile='test',
                 model_profiles_json=json.dumps({'test': {'provider':'test','protocol':'openai-chat',
                     'model':'test-model','base_url':'https://test.invalid/v1','api_key_env':'TEST_MODEL_SECRET'}}),
-                ledger_enabled=True, semantic_enabled=False, subagents_enabled=False,
+                ledger_enabled=True, semantic_enabled=False, 
                 sandbox_enabled=False, media_enabled=False, archive_enabled=False, observability_enabled=False)
             host = OfficialApplicationRuntime(chosen,state_dir=root/'state',cache_dir=root/'cache',
                 project_root=root,env={**MODE,'TEST_MODEL_SECRET':'TEST_EXPLICIT_SECRET'},logger=Mock())

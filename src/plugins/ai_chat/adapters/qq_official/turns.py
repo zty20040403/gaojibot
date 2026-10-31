@@ -8,7 +8,7 @@ import asyncio
 import logging
 import traceback
 from src.plugins.ai_chat.agent_loop import FinalStreamState
-from src.plugins.ai_chat.agent.control import LeaseLost as ToolLeaseLost
+from src.plugins.ai_chat.execution_control import LeaseLost as ToolLeaseLost
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost
 from src.plugins.ai_chat.platform_types import SendRequest
 from .commands import route_command

@@ -185,36 +185,10 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         side_effects=("write:sandbox", "destructive"), approval="never",
         timeout_seconds=90.0, max_identical_calls=1,
     )
-    policies["run_subagents"] = ToolPolicy(
-        risk="medium",
-        idempotency="non-idempotent",
-        side_effects=("spawn:agent", "model:multiple", "write:task-ledger"),
-        timeout_seconds=3600.0,
-        max_identical_calls=1,
-    )
-    policies["delegate_agent"] = ToolPolicy(
-        risk="medium",
-        idempotency="non-idempotent",
-        side_effects=("spawn:agent", "model:single", "write:task-ledger"),
-        timeout_seconds=1900.0,
-        max_identical_calls=1,
-    )
-    policies["resume_subagent"] = ToolPolicy(
-        risk="medium",
-        idempotency="keyed",
-        side_effects=("resume:agent", "model:multiple", "write:task-ledger"),
-        timeout_seconds=3600.0,
-        max_identical_calls=1,
-    )
-    policies["revise_subagent"] = ToolPolicy(risk="medium", idempotency="keyed",
-        side_effects=("resume:agent", "write:task-ledger"), timeout_seconds=30, max_identical_calls=1)
-    policies["import_agent_artifact"] = ToolPolicy(risk="low", idempotency="idempotent",
-        side_effects=("write:sandbox",), timeout_seconds=90)
-    policies["import_project_baseline"] = ToolPolicy(risk="low", idempotency="idempotent",
-        side_effects=("write:sandbox",), timeout_seconds=120)
-    policies["read_agent_result"] = ToolPolicy(risk="low", idempotency="pure", timeout_seconds=10)
-    policies["read_task_evidence"] = ToolPolicy(risk="low", idempotency="pure", timeout_seconds=10)
-    policies["read_task_evidence_batch"] = ToolPolicy(risk="low", idempotency="pure", timeout_seconds=10)
+    policies['agent'] = ToolPolicy(idempotency='keyed', side_effects=('spawn:agent',))
+    policies['agent_steer'] = ToolPolicy(side_effects=('write:job',))
+    policies['agent_status'] = ToolPolicy(risk='low', idempotency='pure', side_effects=())
+    policies['agent_cancel'] = ToolPolicy(idempotency='idempotent', side_effects=('write:job',))
     policies["job_cancel"] = ToolPolicy(
         risk="critical",
         idempotency="idempotent",

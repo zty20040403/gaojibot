@@ -8,7 +8,7 @@ export type ResourceName =
   | 'deliveries'
   | 'usage'
   | 'tasks'
-  | 'subagents'
+  | 'backgroundAgents'
   | 'jobs'
   | 'sandboxes'
   | 'stickers'
@@ -42,7 +42,7 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   deliveries: '/deliveries',
   usage: '/usage?days=90',
   tasks: '/tasks',
-  subagents: '/subagents',
+  backgroundAgents: '/background-agents',
   jobs: '/jobs',
   sandboxes: '/sandboxes',
   stickers: '/stickers',
@@ -63,7 +63,7 @@ export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   deliveries: ['deliveries'],
   usage: ['usage'],
   tasks: ['tasks'],
-  subagents: ['subagents', 'tasks'],
+  backgroundAgents: ['backgroundAgents', 'tasks'],
   jobs: ['jobs'],
   sandboxes: ['sandboxes'],
   stickers: ['stickers'],

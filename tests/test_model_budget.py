@@ -67,7 +67,7 @@ class ModelBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reserve.await_count, 2)
 
     async def test_lease_guard_runs_before_request_reservation_or_provider_call(self):
-        from src.plugins.ai_chat.agent.control import LeaseLost
+        from src.plugins.ai_chat.execution_control import LeaseLost
 
         guard = AsyncMock(side_effect=LeaseLost("cancelled"))
         budget = ModelCallBudget(10000, before_request=guard)

@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 from tests.test_llm_gateway import profile
-from src.plugins.ai_chat.agent.control import LeaseLost
+from src.plugins.ai_chat.execution_control import LeaseLost
 from src.plugins.ai_chat.llm_gateway import LLMGateway
 from src.plugins.ai_chat.model_budget import (
     ModelBudgetExceeded, ModelCallBudget, active_model_budget, model_budget_scope,

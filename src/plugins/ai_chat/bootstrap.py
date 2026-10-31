@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .background_jobs import BackgroundJobs
 
 from typing import Any, Protocol
 
@@ -52,8 +53,7 @@ def register_http_surfaces(
                 running_tasks=context.running_tasks,
                 job_store=context.job_store,
                 job_worker=context.job_worker,
-                subagent_store=context.subagent_store,
-                subagent_coordinator=context.subagent_coordinator,
+                background_jobs=BackgroundJobs(context.job_store) if context.job_store else None,
                 background_tasks=context.background_tasks,
                 model_catalog=context.model_catalog,
                 llm_gateway=context.llm_gateway,
