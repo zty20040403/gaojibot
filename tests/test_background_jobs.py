@@ -134,3 +134,27 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         await runner.execute(self.queue.get(row['job_id']))
         self.assertEqual(self.store.get(row['job_id'])['report'], 'done')
 
+    async def test_report_copy_failure_keeps_a_finished_job_completed(self):
+        row = self.submit()
+
+        async def nothing(*args):
+            pass
+
+        async def unwritable(row, report):
+            raise PermissionError('TEST not writable')
+
+        async def session(*args):
+            return SimpleNamespace(prompt='TEST', tools=(), close=nothing)
+
+        async def engine(row, session, *, feedback, progress, trace):
+            return 'TEST chart at /work/chart.png'
+
+        runner = BackgroundRunner(self.store, calls=self.calls, session_factory=session, save_report=unwritable,
+            ask_main=nothing, record_usage=nothing, logger=logging.getLogger(__name__), engine=engine, clock=lambda: self.now)
+        await runner.execute(self.queue.get(row['job_id']))
+        stored = self.store.get(row['job_id'])
+        self.assertEqual(stored['state'], 'completed')
+        self.assertEqual(stored['error'], '')
+        self.assertTrue(stored['report'].startswith('TEST chart at /work/chart.png'))
+        self.assertIn('PermissionError', stored['report'])
+
