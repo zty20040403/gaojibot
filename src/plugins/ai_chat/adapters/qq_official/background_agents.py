@@ -33,6 +33,8 @@ class OfficialBackgroundAgents:
         self.store = BackgroundJobs(runtime.jobs, clock=self.clock)
         self.kind = account_job_kind('agent', token.account_key)
         self.results = {}
+        from .schedules import ScheduleRuntime
+        self.schedules = ScheduleRuntime(self)
         self.runner = BackgroundRunner(self.store, calls=self.calls, session_factory=self.session,
             save_report=self.save_report, ask_main=self.ask_main, record_usage=self.record_usage,
             logger=app.logger, clock=self.clock)
@@ -130,6 +132,7 @@ class OfficialBackgroundAgents:
 
     async def reconcile(self):
         from .background_delivery import present
+        await self.schedules.tick()
         for key, task in tuple(self.results.items()):
             if task.done():
                 del self.results[key]
