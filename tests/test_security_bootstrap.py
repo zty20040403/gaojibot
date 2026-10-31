@@ -1,5 +1,3 @@
-import importlib.util
-import json
 import os
 from pathlib import Path
 import stat
@@ -30,27 +28,3 @@ class DeploymentBootstrapTests(unittest.TestCase):
                 store.accounts.return_value = [{"username": "kenneth"}]
                 self.assertEqual(main(args), 1)
                 self.assertEqual(output.read_text().strip(), password)
-
-    def test_napcat_only_updates_matching_reverse_client_and_rejects_ambiguous_targets(self):
-        source = Path(__file__).resolve().parents[1] / "nix" / "napcat-auth.py"
-        spec = importlib.util.spec_from_file_location("napcat_auth", source)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            token = root / "token"
-            token.write_text("fresh-credential-" * 4)
-            config = root / "config.json"
-            target = {"enable": True, "url": "ws://local/onebot/v11/ws", "token": "old", "name": "bot"}
-            other = {"enable": True, "url": "ws://another/", "token": "unrelated"}
-            config.write_text(json.dumps({"network": {"websocketClients": [target, other]}, "untouched": True}))
-            module.configure(config, token, target["url"])
-            updated = json.loads(config.read_text())
-            self.assertTrue(updated["untouched"])
-            self.assertEqual(updated["network"]["websocketClients"][1], other)
-            self.assertEqual(updated["network"]["websocketClients"][0]["token"], token.read_text())
-            self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
-            before = config.read_bytes()
-            with self.assertRaises(ValueError):
-                module.configure(config, token, "ws://missing/")
-            self.assertEqual(config.read_bytes(), before)

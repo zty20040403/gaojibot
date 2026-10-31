@@ -55,10 +55,6 @@
         ./README.md
         ./LICENSE
         ./THIRD_PARTY_NOTICES.md
-        ./nix/napcat-auth.py
-        ./nix/napcat-native-config.py
-        ./nix/napcat-health.py
-        ./nix/napcat-password-login.py
         (lib.fileset.fileFilter (file: file.hasExt "md" || file.hasExt "html") ./docs)
         (lib.fileset.fileFilter (file: file.hasExt "md") ./skills)
         (lib.fileset.fileFilter (
@@ -70,10 +66,8 @@
           ./migrations)
         (lib.fileset.fileFilter (file: file.hasExt "py") ./tests)
         ./tests/fixtures/context_accuracy_cases.json
-        ./tests/fixtures/subagent_entry_cases.json
         (lib.fileset.fileFilter (file: file.hasExt "js") ./tools)
         ./tools/context_eval.py
-        ./tools/evaluate_subagent_entry.py
         ./tools/live_file_outbox_acceptance.py
         ./tools/qwen_control.py
         (lib.fileset.fileFilter (
@@ -235,7 +229,7 @@
           '';
       imports = pkgs.runCommand "gaoji-import-check" {} ''
         cd ${package}/share/gaoji
-        ${virtualenv}/bin/python -c 'import alembic, edge_tts, httpx, miniaudio, nonebot, openai, opentelemetry.sdk, playwright, prometheus_client, psycopg, psycopg_pool, pygments, pysilk, sqlalchemy'
+        ${virtualenv}/bin/python -c 'import alembic, edge_tts, httpx, miniaudio, fastapi, uvicorn, aiohttp, openai, opentelemetry.sdk, prometheus_client, psycopg, psycopg_pool, pygments, pysilk, sqlalchemy'
         ${virtualenv}/bin/python -c 'import ast, pathlib; [ast.parse(path.read_text(encoding="utf-8"), filename=str(path)) for path in pathlib.Path("src").rglob("*.py")]'
         touch "$out"
       '';
