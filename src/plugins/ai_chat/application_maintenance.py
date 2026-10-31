@@ -1,4 +1,4 @@
-"""Nightly memory tidy, request-log pruning and proactive feedback settlement."""
+"""Nightly memory tidy, request-log pruning."""
 from __future__ import annotations
 
 import asyncio
@@ -57,11 +57,3 @@ class ApplicationMaintenance:
                 if pruned:
                     self.context.logger.info(f"Pruned {pruned} saved model request(s).")
             await asyncio.sleep(600)
-
-    async def _proactive_feedback_loop(self) -> None:
-        while True:
-            try:
-                await self.context.db_call(self.context.proactive_learning.settle_due)
-            except (OSError, RuntimeError, ValueError) as exc:
-                self.context.logger.warning(f"Proactive feedback settlement deferred: {type(exc).__name__}")
-            await asyncio.sleep(30)

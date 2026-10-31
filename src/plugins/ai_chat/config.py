@@ -169,9 +169,6 @@ class Settings:
     archive_delivery_min_bytes: int
     archive_interval_seconds: int
     archive_batch_size: int
-    proactive_adaptive: bool
-    proactive_adaptive_groups: set[int]
-    proactive_feedback_seconds: int
     outbox_enabled: bool
     outbox_lease_seconds: int
     outbox_max_attempts: int
@@ -419,9 +416,6 @@ class Settings:
             archive_batch_size=min(
                 max(integer("AI_ARCHIVE_BATCH_SIZE", 20), 1), 200
             ),
-            proactive_adaptive=boolean("AI_PROACTIVE_ADAPTIVE", False),
-            proactive_adaptive_groups=group_ids("AI_PROACTIVE_ADAPTIVE_GROUPS"),
-            proactive_feedback_seconds=min(max(integer("AI_PROACTIVE_FEEDBACK_SECONDS", 300), 60), 3600),
             outbox_enabled=boolean("AI_OUTBOX_ENABLED", True),
             outbox_lease_seconds=max(
                 integer("AI_OUTBOX_LEASE_SECONDS", 90),

@@ -18,6 +18,8 @@ from src.plugins.ai_chat.platform_types import EndpointKey,ActorKey
 from src.plugins.ai_chat.proactive import is_candidate_message
 from src.plugins.ai_chat.adapters.qq_official.proactive_delivery import ProactiveLifetime,score_and_deliver
 
+DEBOUNCE_SECONDS = 3
+
 
 @dataclass(frozen=True,repr=False,eq=False)
 class ProactiveCandidate:
@@ -26,12 +28,14 @@ class ProactiveCandidate:
 
 
 class ProactiveIngress:
-    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls,
-                 threshold=95,percent=0,max_checks_per_hour=0,random_value=lambda:1):
+    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls):
         self.token,self.tx,self.admission,self.outbox=token,transaction,admission,outbox
         self.scorer,self.clock,self.calls=scorer,clock,database_calls
-        self.threshold,self.percent,self.max_checks,self.random=threshold,percent,max_checks_per_hour,random_value
         self._issued=weakref.WeakKeyDictionary()
+        self._latest={}
+
+    def cancel_pending(self,endpoint):
+        self._latest.pop(endpoint,None)
 
     def _now(self):
         value=self.clock()
@@ -63,14 +67,13 @@ class ProactiveIngress:
         return inbox,ep,actor,message,physical
 
     def begin(self,job):
-        if not 0<self.percent<=100 or not 0<self.max_checks<=120 or self.random()>=self.percent/100:return None
         with self.tx() as c:
             inbox,ep,actor,_,_=self._load(c,job.payload.get('inbox_id'),job=job)
             now=self._now()
             if not inbox['received_at']<=now<inbox['received_at']+30:return None
-            count=c.execute('SELECT count(*) FROM qq_official_proactive_observations WHERE endpoint_key=? AND created_at>?',
+            count=c.execute("SELECT count(*) FROM qq_official_proactive_observations WHERE endpoint_key=? AND created_at>? AND state IN ('scoring','queued')",
                 (ep.key,now-3600)).fetchone()[0]
-            if count>=self.max_checks:return None
+            if count>=8:return None
             inserted=c.execute('''INSERT INTO qq_official_proactive_observations
                 (inbox_id,account_key,endpoint_key,actor_key,canonical_message_id,source_native_message_id,source_received_at,
                  deadline_at,ingest_job_id,worker_owner,worker_generation,account_epoch,endpoint_generation,endpoint_route_epoch,state,created_at)
@@ -123,6 +126,7 @@ class ProactiveIngress:
     def _enqueue(self,source,text,*,purpose,expires_at):
         with self.tx() as c:
             row,(inbox,ep,actor,message,_)=self._candidate(c,source)
+            if self._latest.get(ep.key)!=source.inbox_id:raise MigrationDenied('conversation_continued')
             if not self._now()<expires_at<=row['deadline_at']:raise MigrationDenied('proactive_source_expired')
             plan=self.outbox.enqueue(self.token,rendered=render_plan(MessageBody((TextNode(0,text),)),ep),requester=actor,
                 logical_key='proactive:'+source.inbox_id,source_scope_key=message['scope_key'],source_native_message_id=inbox['native_message_id'],
@@ -142,6 +146,15 @@ class ProactiveIngress:
     async def on_ingested(self,job):
         # Called only after process_inbox's transaction commits. Failure of an
         # optional classifier cannot turn a durable ingest into repeated scoring.
+        def endpoint():
+            with self.tx() as c:
+                return self._load(c,job.payload['inbox_id'])[1].key
+        try:key=await self.calls(endpoint)
+        except MigrationDenied:return {'status':'discarded','reason':'ineligible_ingress'}
+        self._latest[key]=job.payload['inbox_id']
+        await asyncio.sleep(DEBOUNCE_SECONDS)
+        if self._latest.get(key)!=job.payload['inbox_id']:
+            return {'status':'discarded','reason':'conversation_continued'}
         try:source=await self.calls(self.begin,job)
         except MigrationDenied:return {'status':'discarded','reason':'ineligible_ingress'}
         if source is None:return {'status':'discarded','reason':'not_selected'}
@@ -153,7 +166,7 @@ class ProactiveIngress:
             lifetime=await self.current(source)
             async with asyncio.timeout(max(0,lifetime.deadline_at-self._now())):
                 result=await score_and_deliver(source=source,scorer=self.score,current=self.current,send_policy=self.send_policy,
-                    enqueue=self.enqueue,now=self._now,threshold=self.threshold)
+                    enqueue=self.enqueue,now=self._now)
             if result.status=='discarded':await self.calls(self._discard,source)
             return {'status':result.status,'reason':result.reason}
         except (Exception,LeaseLost):

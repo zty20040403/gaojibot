@@ -52,7 +52,7 @@ assert not any(n=='nonebot' or n.startswith('nonebot.') for n in sys.modules)
 
 class CommonWorkerTests(unittest.IsolatedAsyncioTestCase):
     def context(self, starts, **overrides):
-        names=('turn_journal','proactive_learning','local_model','job_store','media_library','semantic_recall',
+        names=('turn_journal','local_model','job_store','media_library','semantic_recall',
                'job_worker','cold_archive','conversations')
         values={**dict.fromkeys(names),**overrides}
         return SimpleNamespace(**values,settings=SimpleNamespace(observability_enabled=False),logger=Mock(),

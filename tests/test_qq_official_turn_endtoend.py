@@ -118,6 +118,44 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(self.query('SELECT * FROM qq_official_turn_executions')),1)
                 await runtime.stop()
 
+    async def test_proactive_debounces_and_limits_conversation_to_eight_per_hour(self):
+        from src.plugins.ai_chat.adapters.qq_official.native_background_factory import background_factory, ProactiveConfiguration
+        app=self.application()
+        with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',
+                   return_value={'reply':'TEST spontaneous reply'}) as model, \
+                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.DEBOUNCE_SECONDS',.15):
+            async with verified_ready_platform() as fake:
+                runtime=self.runtime(loaded=runtime_fixture.loaded_config(fake.app_id,base=fake.base_url),
+                    application=app,ledger=app.message_ledger,journal=app.turn_journal,
+                    background_factory=background_factory(proactive_configuration=ProactiveConfiguration(enabled=True),proactive_profile='test'))
+                self.assertTrue(await runtime.start())
+                await asyncio.wait_for(fake.wait_ready(),5)
+                await self.wait_db("SELECT bot_native_id FROM qq_official_accounts WHERE bot_identity_source='ready'")
+                await self.emit(fake,native='TEST_PROACTIVE_SETUP',content='TEST setup',group=True)
+                await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id='TEST_PROACTIVE_SETUP'")
+                endpoint=EndpointKey(runtime.loaded.account,'group','TEST_GROUP')
+                with runtime.store.transaction() as cursor:
+                    cursor.execute("UPDATE qq_official_endpoints SET binding_state='active' WHERE endpoint_key=?",(endpoint.key,))
+                fake.proactive_allowed[('group','TEST_GROUP')]=True
+                await runtime.sender.refresh_bound_groups()
+                async def emit(index):
+                    await fake.emit('GROUP_MESSAGE_CREATE',{
+                        'id':f'TEST_PASSIVE_{index}','content':f'TEST conversation topic {index}',
+                        'timestamp':datetime.now(timezone.utc).isoformat(),
+                        'group_openid':'TEST_GROUP','author':{'member_openid':'TEST_MEMBER'}})
+                for index in ('burst1','burst2','0'):
+                    await emit(index)
+                for index in range(8):
+                    if index:await emit(index)
+                    await self.wait_db("SELECT count(*) AS count FROM qq_official_proactive_observations WHERE state='queued'",
+                        predicate=lambda rows:rows[0]['count']==index+1)
+                await emit(8)
+                await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id='TEST_PASSIVE_8'")
+                await asyncio.sleep(.3)
+                self.assertEqual(model.call_count,8)
+                self.assertEqual(len(self.query("SELECT plan_id FROM qq_official_proactive_observations WHERE state='queued'")),8)
+                await runtime.stop()
+
     async def test_actual_group_at_and_c2c_share_model_loop_and_commit_real_wire_receipts(self):
         app = self.application()
         model_calls = []

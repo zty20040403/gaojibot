@@ -364,6 +364,8 @@ class OfficialRuntime:
                         i.canonical_message_id,m.sender_actor_key FROM qq_official_inbound_events i
                         JOIN messages m USING(canonical_message_id) WHERE inbox_id=?''', (inbox_id,)).fetchone())
             row = await self._calls(input_row)
+            if result.reply_requested and self.background_service is not None:
+                self.background_service.direct_message(row['endpoint_key'])
             source = SimpleNamespace(job_id=None, payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
                 lease_generation=1, attempts=1, kind=account_job_kind('turn', token.account_key), endpoint=row['endpoint_key'])
             key = row['endpoint_key'], row['sender_actor_key'], row['route_epoch']
