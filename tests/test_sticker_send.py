@@ -33,6 +33,14 @@ class StickerSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["state"], "not_found")
         session.sticker.assert_not_awaited()
 
+    async def test_no_query_sends_the_least_sent_sticker(self):
+        turn, library = self.turn([SimpleNamespace(handle="media#3")])
+        session = SimpleNamespace(sticker=AsyncMock(return_value={"state": "registered"}))
+        result = await _send_sticker(session, turn, {})
+        self.assertEqual(result["state"], "registered")
+        library.search_stickers.assert_awaited_once_with("", limit=5)
+        self.assertEqual(session.sticker.await_args.args[0], {"media_handle": "media#3"})
+
 
 if __name__ == "__main__":
     unittest.main()

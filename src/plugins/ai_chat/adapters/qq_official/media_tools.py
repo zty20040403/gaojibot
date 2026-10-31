@@ -47,10 +47,11 @@ def _definition(name):
 async def _send_sticker(session, turn, arguments):
     handle = arguments.get('media_handle')
     if not handle:
+        # No query is "just send one": the library then offers the least-sent stickers first.
         query = str(arguments.get('query') or '').strip()
         library = turn.context.app.media_library
-        if not query or library is None:
-            raise MediaDenied('sticker_query_required')
+        if library is None:
+            return {'state':'unavailable','message':'表情包库没有启用，这次发不了表情包。'}
         records = await library.search_stickers(query, limit=5)
         used = turn.sticker_handles_this_turn
         record = next((item for item in records if item.handle not in used), None)
