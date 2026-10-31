@@ -380,6 +380,7 @@ class VmSandboxManager:
         ElementTree.SubElement(domain, "name").text = self._name(sandbox_id)
         ElementTree.SubElement(domain, "memory", {"unit": "MiB"}).text = str(self.memory_mib)
         ElementTree.SubElement(domain, "vcpu").text = str(self.vcpus)
+        ElementTree.SubElement(domain, "cpu", {"mode": "host-passthrough"})
         os_node = ElementTree.SubElement(domain, "os")
         ElementTree.SubElement(os_node, "type", {"arch": "x86_64"}).text = "hvm"
         devices = ElementTree.SubElement(domain, "devices")
