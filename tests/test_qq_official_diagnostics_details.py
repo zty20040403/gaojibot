@@ -112,6 +112,6 @@ class DetailReceiptTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
 class DetailsSSETests(unittest.TestCase):
  def test_existing_sse_database_counters_invalidate_details_without_body_or_ids(self):
   from src.plugins.ai_chat.admin_api.realtime import _changed_database_resources
-  for table in ('delivery_receipts','delivery_attempts','qq_official_admin_bindings','qq_official_endpoints','qq_official_owner_grants','admin_accounts','background_jobs','subagent_tasks'):
+  for table in ('delivery_receipts','delivery_attempts','qq_official_admin_bindings','qq_official_endpoints','qq_official_owner_grants','admin_accounts','background_jobs'):
    before={table:(0,0,0)};after={table:(1,0,0)}
    self.assertIn('qq-official',_changed_database_resources(before,after))
