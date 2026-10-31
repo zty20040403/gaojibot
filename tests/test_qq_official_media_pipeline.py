@@ -210,6 +210,22 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                            (media,int(time.time()),int(time.time())))
         return media
 
+    async def test_voice_uses_native_audio_and_sends_once_per_turn(self):
+        complete=self.completion([('reply_with_voice',{'text':'TEST voice'}),
+                                  ('reply_with_voice',{'text':'TEST duplicate'})])
+        with patch('src.plugins.ai_chat.agent_loop._create_completion',new=complete), \
+                patch('src.plugins.ai_chat.voice_reply.synthesize',return_value=b'\x02#!SILK_V3TEST') as synthesize:
+            async with platform() as fake:
+                runtime=await self.start(fake,flags=dict(asr=True),images=True)
+                await self.emit(fake,'TEST_MEDIA_VOICE')
+                await self.complete('TEST_MEDIA_VOICE')
+                await self.wait_db("SELECT artifact_id FROM qq_official_file_deliveries WHERE state='message_accepted'")
+                self.assertEqual(synthesize.call_count,1)
+                self.assertEqual([v[3]['file_type'] for v in fake.media_calls],[3])
+                self.assertEqual(sum(v['payload']['msg_type']==7 for v in fake.received),1)
+                self.assertIn('audio',self.query("SELECT body_json FROM deliveries WHERE body_json LIKE ?",('%audio/silk%',))[0]['body_json'])
+                await runtime.stop()
+
     async def test_real_curated_sticker_shared_tool_to_m6_type_one_type_seven_receipt(self):
         steps=[('find_stickers',{'query':'TEST'}),('send_sticker',{'media_handle':'media#1'})]
         complete=self.completion(steps)

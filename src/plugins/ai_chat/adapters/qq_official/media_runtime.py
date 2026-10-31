@@ -83,6 +83,7 @@ class MediaSession:
     def __init__(self, service, inbound, platform):
         self.service, self.inbound, self.platform = service, inbound, platform
         self.pending_text = []
+        self.voice_sent = False
         self.deadline = None
         self.image_available = self.file_available = False
         self.resolver = LedgerMediaResolver(endpoint=inbound.endpoint, requester=inbound.actor,
@@ -123,6 +124,7 @@ class MediaSession:
             'send_forward_summary': cfg.forwards,
             'send_sticker': cfg.stickers and self.service.runtime.file_service is not None
                             and getattr(self.service.app,'media_library',None) is not None and self.image_available,
+            'reply_with_voice': self.service.runtime.file_service is not None and self.file_available,
         }.get(name, False))
 
     def _route_ready(self, mime):
@@ -188,6 +190,18 @@ class MediaSession:
     async def voice(self, arguments):
         source = await self.source(arguments, {'audio'})
         return await transcribe(source, resolver=self.resolver, fetcher=self.service.fetcher, local_asr=self.service.asr)
+
+    async def reply_with_voice(self, arguments):
+        if self.voice_sent:
+            return {'state': 'skipped', 'message': '这次回复已经生成一条语音。'}
+        from ...voice_reply import synthesize
+        await self.current()
+        content = await synthesize(arguments['text'])
+        record = await self.register_bytes(content, 'reply.silk', 'voice-reply')
+        self.voice_sent = True
+        outcome = await self.service.runtime.file_service.dispatcher.send_artifact(record.artifact_id)
+        return {'state': outcome.status, 'message_accepted': outcome.status == 'committed',
+                'artifact_id': record.artifact_id}
 
     async def document(self, arguments):
         source = await self.source(arguments, {'file','card','link'})

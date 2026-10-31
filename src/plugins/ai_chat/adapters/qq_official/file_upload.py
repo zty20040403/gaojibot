@@ -25,6 +25,8 @@ class FileUploadError(GenerationError):
 
 
 def file_type(filename):
+    if filename.lower().endswith('.silk'):
+        return 3
     mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return 1 if mime.startswith("image/") else 4
 
