@@ -24,7 +24,11 @@ def files():
     directory = Path(__file__).parent
     return [{'path': '/usr/local/share/gaoji/' + name, 'permissions': '0644', 'owner': 'root:root',
         'content': (directory / name).read_text()} for name in (
-            'sandbox_browser.py', 'sandbox_webread.py', 'sandbox_transcribe.py')]
+            'sandbox_browser.py', 'sandbox_webread.py', 'sandbox_transcribe.py')] + [{
+                'path': '/etc/apt/apt.conf.d/80-gaoji-transport',
+                'permissions': '0644', 'owner': 'root:root',
+                'content': 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\n',
+            }]
 
 
 async def upgrade(manager, owner, sandbox_id):
