@@ -59,6 +59,18 @@ class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
             revoked = await client.post(self.base + '/responses', json={}, headers={'Authorization': 'Bearer ' + token})
             self.assertEqual(revoked.status_code, 401)
 
+    async def test_missing_upstream_is_reported_for_the_job(self):
+        token, _ = self.gateway.open()
+        def broken():
+            raise RuntimeError('TEST no cliproxy profile')
+        self.gateway.upstream = broken
+        async with httpx.AsyncClient(trust_env=False) as client:
+            reply = await client.post(self.base + '/responses', json={}, headers={'Authorization': 'Bearer ' + token})
+        self.assertEqual(reply.status_code, 503)
+        self.assertIn('TEST no cliproxy profile', self.gateway.failure(token))
+        self.gateway.revoke(token)
+        self.assertEqual(self.gateway.failure(token), '')
+
     async def test_tunnel_accepts_only_its_token_once(self):
         token, channel = self.gateway.open()
         _, stranger = await asyncio.open_connection('127.0.0.1', self.gateway.port + 1)

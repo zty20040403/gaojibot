@@ -44,8 +44,8 @@ class BackgroundModelSettings:
 
 def upstream_profile(catalog, settings):
     """The profile whose endpoint and key relay background calls (cliproxy by default)."""
-    wanted = settings.background_upstream_profile
-    for profile in catalog.profiles():
+    wanted = settings.background_upstream_profile.strip().lower()  # the catalog lower-cases names
+    for profile in catalog.profiles:
         if (profile.name == wanted) if wanted else profile.provider == 'cliproxy':
             return profile
     raise RuntimeError('没有可用于后台任务的模型端点，请设置 AI_BACKGROUND_UPSTREAM_PROFILE。')
@@ -218,7 +218,8 @@ class CodexEngine:
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(run.done.wait(), 2)
             if run.status == 'failed':
-                raise RuntimeError(run.error or 'Codex 运行失败。')
+                # The relay knows why a model call failed; Codex only reports a generic retry error.
+                raise RuntimeError(self.gateway.failure(token) or run.error or 'Codex 运行失败。')
             text = run.last_text.strip() or f"Codex 没有留下文字报告，会话记录在 /work/.gaoji/jobs/job-{row['job_id']}/codex。"
             return f'{DEADLINE_NOTE}\n{text}' if stopped else text
         except asyncio.CancelledError:

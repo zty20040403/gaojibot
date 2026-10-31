@@ -60,6 +60,7 @@ class CodexGateway:
         # upstream() -> (base_url, api_key); model() -> (model, effort)
         self.port, self.upstream, self.model, self.logger = port, upstream, model, logger
         self.channels: dict[str, Channel] = {}
+        self.failures: dict[str, str] = {}
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(30, read=IDLE_SECONDS), trust_env=False)
         self.http = self.rpc = None
         self.started = asyncio.Lock()
@@ -69,7 +70,11 @@ class CodexGateway:
         self.channels[token] = Channel()
         return token, self.channels[token]
 
+    def failure(self, token):
+        return self.failures.get(token, '')
+
     def revoke(self, token):
+        self.failures.pop(token, None)
         channel = self.channels.pop(token, None)
         if channel is not None:
             channel.close()
@@ -130,7 +135,13 @@ class CodexGateway:
         payload['model'] = model
         if effort:
             payload['reasoning'] = {**(payload.get('reasoning') or {}), 'effort': effort}
-        base_url, key = self.upstream()
+        token = request.headers['authorization'][7:]
+        try:
+            base_url, key = self.upstream()
+        except Exception as exc:
+            self.logger.exception('No upstream for background model calls')
+            self.failures[token] = f'宿主没有可用的模型端点：{exc}'
+            return JSONResponse({'error': self.failures[token]}, 503)
         upstream = await self.client.send(self.client.build_request(
             'POST', base_url.rstrip('/') + request.url.path.removeprefix('/v1'),
             json=payload, headers={'Authorization': 'Bearer ' + key, 'Accept': request.headers.get('accept', '*/*')}),
@@ -139,6 +150,8 @@ class CodexGateway:
             content = await upstream.aread()
             await upstream.aclose()
             self.logger.warning('Background model request failed: %s %s', upstream.status_code, content[:300])
+            self.failures[token] = (f'模型端点返回 {upstream.status_code}：'
+                                    + content[:200].decode(errors='replace'))
             return Response(content, upstream.status_code, media_type=upstream.headers.get('content-type'))
 
         async def chunks():
