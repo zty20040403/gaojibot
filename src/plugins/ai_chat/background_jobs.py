@@ -167,10 +167,11 @@ class BackgroundRunner:
             try:
                 await self.save_report(row, report)
             except Exception as exc:
+                # The report is already stored and is what gets delivered; the
+                # copy in /work is a convenience, so its loss does not fail the job.
                 self.logger.exception('Could not save background report to VM')
-                error += f' 报告写入 VM 失败：{type(exc).__name__}'
-                await self.calls(self.store.update, row['job_id'], state='failed', error=error,
-                                 report=report + '\n' + error)
+                await self.calls(self.store.update, row['job_id'],
+                                 report=report + f'\n\n（报告未能写入 VM：{type(exc).__name__}）')
             await self.record_usage(row, trace)
             if session is not None:
                 await session.close()

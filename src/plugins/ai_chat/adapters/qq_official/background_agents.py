@@ -1,7 +1,8 @@
 """Official QQ binding for background jobs run by Codex in the conversation VM."""
 from dataclasses import dataclass
-import hashlib
 import asyncio
+import base64
+import hashlib
 
 from ...background_jobs import BackgroundJobs, BackgroundRunner
 from ...background_tools import BackgroundToolSession, workspace_owner
@@ -13,6 +14,9 @@ from ...platform_types import ActorKey, EndpointKey, InboundMessage
 from .lease import assert_epoch
 from .keys import account_job_kind
 
+
+# A guest-exec argument is capped at 128 KiB, and base64 grows it by a third.
+REPORT_BYTES = 90_000
 
 PROMPT = '''你是 gaoji 的后台 agent，在本群的持久 Linux VM 里工作：命令以 root 运行，/work 会一直保留，可以装软件。
 你看不到群聊，也不能直接给用户发消息或文件。你的最后一条消息就是报告，前台会转述它，并发送你在报告里写出路径的文件。
@@ -145,10 +149,12 @@ class OfficialBackgroundAgents:
             raise RuntimeError('启动后台 Codex 失败：' + error.decode(errors='replace')[-1000:])
 
     async def save_report(self, row, report):
-        owner = workspace_owner(EndpointKey.parse(row['endpoint_key']))
-        sandbox = await self.app.sandbox_manager.ensure_default(owner)
-        await self.app.sandbox_manager.write_file(owner, sandbox['sandbox_id'],
-            f"/work/.gaoji/jobs/job-{row['job_id']}.md", report.encode())
+        # As root, like Codex itself: its job folders are root's, so the sandbox
+        # user's file import cannot write there.
+        content = report.encode()[:REPORT_BYTES]
+        sandbox_id = await self.start_vm(row)
+        await self.guest_exec(sandbox_id, 'mkdir -p /work/.gaoji/jobs && printf %s '
+            + base64.b64encode(content).decode() + f" | base64 -d > /work/.gaoji/jobs/job-{row['job_id']}.md")
 
     async def record_usage(self, row, trace):
         await self.calls(self.app.usage_store.record, scope_key=row['scope_key'], source='background_agent',

@@ -40,7 +40,8 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         runtime = SimpleNamespace(store=store, jobs=f.jobs, _calls=calls, sender=None, file_service=None, media_service=None,
             outbox=OfficialSendStore(deliveries, admission=f.admission, pepper=b'TEST_BACKGROUND_PEPPER' * 3, clock=lambda: f.now))
         manager = SimpleNamespace(ensure_default=AsyncMock(return_value={'sandbox_id': 's123abc'}),
-            write_file=AsyncMock(), read_file=AsyncMock(return_value=b'TEST_REPORT'))
+            write_file=AsyncMock(), read_file=AsyncMock(return_value=b'TEST_REPORT'),
+            start_owned=AsyncMock(), _guest_exec=AsyncMock(return_value=(0, b'', b'')))
         app = SimpleNamespace(logger=logging.getLogger(__name__), official_runtime=runtime, db_call=calls,
             model_catalog=ModelCatalog({'TEST_MODEL': profile}, default_profile='TEST_MODEL'),
             sandbox_manager=manager, settings=replace(settings, search_enabled=False),
@@ -84,7 +85,9 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['state'], 'completed')
         self.assertEqual(row['last_tool'], 'shell')
         self.assertEqual(f.jobs.get(number).status, 'succeeded')
-        self.assertEqual(manager.write_file.await_args.args[2], f'/work/.gaoji/jobs/job-{number}.md')
+        script = manager._guest_exec.await_args.args[2][1]
+        self.assertTrue(script.endswith(f'base64 -d > /work/.gaoji/jobs/job-{number}.md'))
+        manager.write_file.assert_not_awaited()
         with patch('src.plugins.ai_chat.adapters.qq_official.background_delivery.ask_deepseek_with_tools',
                    new=AsyncMock(return_value='TEST foreground result')):
             await present(service, row)
