@@ -1,16 +1,19 @@
 # 改造上线步骤
 
-本文对应 `rework/p0` 分支：删除 OneBot 和不用的功能，接入新的提示词、聊天窗口、记忆文件和 `history` 工具。生产库的改动在部署时手工执行，执行前先备份。
+本文对应 W1–W7、W9–W10 的统一上线；W8 GitHub 暂缓。生产库的改动在部署时手工执行，执行前先备份。
 
 ## 1. 部署前
 
 1. 备份数据库（用 PostgreSQL 17 的 `pg_dump`，tank 默认的是 16 版）。
 2. NixOS 配置里停掉 NapCat：`gaoji-napcat.service` 不再需要，bot 不再读取 `AI_ONEBOT_ENABLED`。
-3. 不需要改环境变量。`AI_SYSTEM_PROMPT` 照旧作为人设；没设时使用 `prompt.py` 里的默认人设。
+3. `AI_SYSTEM_PROMPT` 继续作为人设。宿主配置移除旧主动接话 percent/threshold/max_checks_per_hour，核对媒体和文件生成已启用。
+4. Nix 配置删除 oneBot、napcat、browser、codesnap、cluster 和 videoDeep 选项；宿主只读运维改用 opsRead，短语音本地识别改用 voiceAsr。cluster-control 服务本身保留。
+5. 已有 VM 显式执行 sandbox_tools_setup.upgrade，新模板预装浏览器、webread、ffmpeg 和 Whisper。升级前保存配置，保持 /work 文件。
+6. 先完成全套测试、前端构建和 Nix 构建，再一次性停止旧服务、备份、迁移并启动新版；保持原 PostgreSQL 主备关系。
 
 ## 2. 部署
 
-服务启动前 `gaoji-db upgrade` 会执行迁移 `0073`，新增三张表：`conversation_windows`、`conversation_memory`、`turn_requests`。
+服务启动前 `gaoji-db upgrade` 执行到 `0077`：新增窗口、记忆、请求、后台任务和定时任务表，删除 104 张废弃功能表。仍在使用的 Fleet 表保留供 cluster-control 使用。先使用 PostgreSQL 17 的 pg_dump 保存完整备份，并验证归档可读。
 
 ## 3. 部署后的数据调整
 
@@ -53,4 +56,4 @@ COMMIT;
 
 ## 5. 回滚
 
-回到 tag `pre-rework-20261031` 并重新部署；`0073` 新增的表不影响旧代码。第 3 步的数据调整需要用备份恢复。
+`0077` 会删除旧功能表，不能只切旧代码或调用 downgrade。回滚须停服务，恢复切换前的数据库备份、宿主配置和对应 Nix generation；第 3 步的数据调整也通过该备份恢复。
