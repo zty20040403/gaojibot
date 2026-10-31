@@ -30,7 +30,6 @@ class FileServiceConfig:
     account_capacity: int = 16
     actor_capacity: int = 4
     destroy_expired_resources: bool = True
-    source_authority: object = None
     existing_artifact_authority: object = None
 
 
@@ -49,7 +48,6 @@ class FileServices:
         self._maintenance_lock = asyncio.Lock()
         self._orphan_cursor = None
         self.payloads = None
-        runtime.outbox.file_authority = config.source_authority
         self.directory = config.private_directory / hashlib.sha256(token.account_key.encode()).hexdigest()
         (self.directory / 'objects').mkdir(parents=True, exist_ok=True, mode=0o700)
         self.artifacts = ArtifactStore(transaction=self.transaction, jobs=self.jobs,
@@ -96,7 +94,7 @@ class FileServices:
         with self.transaction() as cursor:
             self._account(cursor)
             row,_=assert_file_read_current(cursor,token=self.token,artifact_id=artifact_id,
-                admission=self.admission,now=int(self.clock()),source_authority=self.config.source_authority)
+                admission=self.admission,now=int(self.clock()))
             ref=ArtifactRef(row['artifact_id'],row['sha256'],row['byte_size'],row['mime'],row['filename'])
             identity=tuple(row[key] for key in ('account_key','endpoint_key','requester_actor_key',
                 'source_execution_id','source_job_id','source_task_id','source_task_revision',

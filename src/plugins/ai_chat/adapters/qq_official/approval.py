@@ -645,29 +645,9 @@ class OfficialApprovalService:
             await asyncio.to_thread(self.mobile.store.close)
 
 
-from types import SimpleNamespace
 
 from src.bot_security.service import MobileAuthorization
 from src.bot_security.store import SecurityStore
-
-
-class _NativeRoute:
-    def __init__(self,session):self.session=session
-
-    def epoch(self,cursor,task):
-        row=cursor.execute('SELECT source_execution_id,route_epoch FROM qq_official_subagent_dispatches WHERE task_id=? AND account_key=?',
-            (task.task_id,self.session.token.account_key)).fetchone()
-        if row is None: raise SecurityError('official_host_source_unavailable')
-        source=self.session.admission.require_execution(cursor,row['source_execution_id'],endpoint=task.endpoint,
-            actor=task.requester_actor,operation='execute')
-        return source['route_epoch']
-
-    def require_current(self,cursor,*,source,operation,now):
-        if operation!='execute' or source.task_id is None or not self.session._attached:
-            raise SecurityError('official_host_source_unavailable')
-        task=SimpleNamespace(task_id=source.task_id,endpoint=source.endpoint,requester_actor=source.actor)
-        if self.epoch(cursor,task)!=source.route_epoch:
-            raise SecurityError('official_host_route_changed')
 
 
 def approval_services_factory(*,security=None):
@@ -676,7 +656,6 @@ def approval_services_factory(*,security=None):
     security is the existing trusted console SecurityStore. The new store is a
     transport-scoped view of that SAME database/secret, never a new approval queue.
     """
-    from .background_host import NativeTaskSourcePort
     if security is None:
         return lambda runtime,token:None
     if not isinstance(security,SecurityStore):raise SecurityError('official_security_unavailable')
@@ -686,9 +665,8 @@ def approval_services_factory(*,security=None):
         if (runtime.database is not security._database or runtime.sender is None
                 or session is None or session.token is not token):
             raise SecurityError('official_approval_source_unavailable')
-        source=NativeTaskSourcePort(token=token,admission=runtime.store.admitted,route=_NativeRoute(session))
         transport=OfficialApprovalTransport(token=token,secret=security.secret,
-            source_port=source,clock=runtime.store.clock)
+            clock=runtime.store.clock)
         store=OwnerApprovalStore(runtime.database,security.secret,transport=transport,clock=runtime.store.clock)
         try:
             otp=ApprovalOtpSender(sender=runtime.sender,transport=transport,store=store)
