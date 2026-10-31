@@ -58,7 +58,8 @@ class FakeAppServer:
 
 class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
     def engine(self, server, *, now=0):
-        self.gateway = SimpleNamespace(start=AsyncMock(), open=lambda: ('TEST_TOKEN', server), revoke=Mock(), port=18640)
+        self.gateway = SimpleNamespace(start=AsyncMock(), open=lambda: ('TEST_TOKEN', server), revoke=Mock(), port=18640,
+                                       failure=lambda token: '')
         self.exec = AsyncMock()
         settings = SimpleNamespace(get=lambda: ('TEST_MODEL', 'high'))
         return CodexEngine(self.gateway, settings, start_vm=AsyncMock(return_value='s123abc'),
@@ -101,6 +102,27 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
             await self.engine(server)({'job_id': 9, 'task': 'TEST', 'deadline_at': 7200}, self.session(),
                 feedback=AsyncMock(side_effect=[['TEST go'], [], []]), progress=AsyncMock(), trace=AgentTrace())
         self.gateway.revoke.assert_called_once()
+
+    async def test_relay_failure_is_reported_instead_of_codex_generic_error(self):
+        server = FakeAppServer(finish='failed')
+        engine = self.engine(server)
+        self.gateway.failure = lambda token: 'TEST 模型端点返回 404'
+        with self.assertRaisesRegex(RuntimeError, 'TEST 模型端点返回 404'):
+            await engine({'job_id': 10, 'task': 'TEST', 'deadline_at': 7200}, self.session(),
+                feedback=AsyncMock(side_effect=[['TEST go'], [], []]), progress=AsyncMock(), trace=AgentTrace())
+
+    def test_upstream_profile_reads_the_real_catalog(self):
+        from src.plugins.ai_chat.codex_engine import upstream_profile
+        from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
+        def profile(name, provider):
+            return ModelProfile(name=name, provider=provider, protocol='openai-chat', model=name,
+                                base_url='http://127.0.0.1/v1', api_key_required=False)
+        catalog = ModelCatalog({'TEST_DS': profile('TEST_DS', 'deepseek'), 'TEST_CP': profile('TEST_CP', 'cliproxy')},
+                               default_profile='TEST_DS')
+        self.assertEqual(upstream_profile(catalog, SimpleNamespace(background_upstream_profile='')).name, 'test_cp')
+        self.assertEqual(upstream_profile(catalog, SimpleNamespace(background_upstream_profile='TEST_DS')).name, 'test_ds')
+        with self.assertRaises(RuntimeError):
+            upstream_profile(catalog, SimpleNamespace(background_upstream_profile='TEST_NONE'))
 
     def test_launch_script_pins_codex_and_keeps_the_key_out(self):
         script = launch_script(3, 'TEST_TOKEN', 'TEST_MODEL', 18640)
