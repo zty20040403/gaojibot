@@ -4,7 +4,7 @@ from pathlib import Path
 PACKAGES = ['chromium', 'python3-venv', 'ffmpeg', 'poppler-utils']
 INSTALL = '''set -eu
 python3 -m venv --system-site-packages /opt/gaoji-tools
-/opt/gaoji-tools/bin/pip install 'playwright>=1.59,<2' trafilatura
+/opt/gaoji-tools/bin/pip install 'playwright>=1.59,<2' trafilatura 'faster-whisper>=1.2,<2'
 /opt/gaoji-tools/bin/python -c "import shutil,site; shutil.copy('/usr/local/share/gaoji/sandbox_browser.py', site.getsitepackages()[0]+'/gaoji_browser.py')"
 ln -sfn /opt/gaoji-tools/bin/python /usr/local/bin/gaoji-python
 cat > /usr/local/bin/webread <<'EOF'
@@ -12,13 +12,19 @@ cat > /usr/local/bin/webread <<'EOF'
 exec /opt/gaoji-tools/bin/python /usr/local/share/gaoji/sandbox_webread.py "$@"
 EOF
 chmod 755 /usr/local/bin/webread
+cat > /usr/local/bin/gaoji-transcribe <<'EOF'
+#!/bin/sh
+exec /opt/gaoji-tools/bin/python /usr/local/share/gaoji/sandbox_transcribe.py "$@"
+EOF
+chmod 755 /usr/local/bin/gaoji-transcribe
 '''
 
 
 def files():
     directory = Path(__file__).parent
     return [{'path': '/usr/local/share/gaoji/' + name, 'permissions': '0644', 'owner': 'root:root',
-        'content': (directory / name).read_text()} for name in ('sandbox_browser.py', 'sandbox_webread.py')]
+        'content': (directory / name).read_text()} for name in (
+            'sandbox_browser.py', 'sandbox_webread.py', 'sandbox_transcribe.py')]
 
 
 async def upgrade(manager, owner, sandbox_id):

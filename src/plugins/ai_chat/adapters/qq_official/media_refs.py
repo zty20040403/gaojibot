@@ -37,12 +37,13 @@ class MediaSource:
 
 
 class LedgerMediaResolver:
-    def __init__(self, *, endpoint, requester, ledger, db_call, current):
+    def __init__(self, *, endpoint, requester, ledger, db_call, current, scope=None):
         if (not isinstance(endpoint, EndpointKey) or endpoint.account.platform != 'qq-official'
                 or not isinstance(requester, ActorKey) or not requester.matches_endpoint(endpoint)
                 or not callable(current) or not callable(db_call)):
             raise MediaDenied('invalid_media_context')
         self.endpoint, self.requester = endpoint, requester
+        self.scope = scope or endpoint.scope
         self.ledger, self.db_call, self.current = ledger, db_call, current
 
     async def resolve(self, ref):
@@ -50,9 +51,9 @@ class LedgerMediaResolver:
             raise MediaDenied('invalid_media_reference')
         if await self.current(self.endpoint, self.requester) is not True:
             raise MediaDenied('media_source_unavailable')
-        row = await self.db_call(self.ledger.get_in_scope, self.endpoint.scope, ref.canonical_id)
+        row = await self.db_call(self.ledger.get_in_scope, self.scope, ref.canonical_id)
         if (row is None or row.canonical_message_id != ref.canonical_id
-                or row.scope_key != self.endpoint.scope.key
+                or row.scope_key != self.scope.key
                 or row.source_endpoint_key != self.endpoint.key
                 or row.message_kind != 'chat' or row.direction != 'inbound'):
             raise MediaDenied('media_reference_unavailable')

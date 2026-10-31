@@ -74,6 +74,7 @@ _READ_TOOLS = {
 }
 
 _SEND_TOOLS = {
+    "reply_with_voice",
     "send_file_from_sandbox",
     "send_file",
     "send_image_from_sandbox",
