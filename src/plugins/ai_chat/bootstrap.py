@@ -62,6 +62,7 @@ def register_http_surfaces(
                 reasoning_preferences=context.reasoning_preferences,
                 user_profiles=context.user_profiles,
                 message_ledger=context.message_ledger,
+                conversations=context.conversations,
                 settings=context.settings,
                 sandbox_manager=context.sandbox_manager,
                 sticker_inventory=sticker_inventory,

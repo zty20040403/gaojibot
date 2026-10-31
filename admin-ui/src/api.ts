@@ -5,8 +5,6 @@ export type ResourceName =
   | 'approvals'
   | 'securityAudit'
   | 'overview'
-  | 'observability'
-  | 'alerts'
   | 'deliveries'
   | 'usage'
   | 'tasks'
@@ -17,16 +15,10 @@ export type ResourceName =
   | 'media'
   | 'sources'
   | 'databases'
-  | 'fleet'
   | 'groups'
   | 'localModel'
   | 'tools'
   | 'traces'
-  | 'contextPlans'
-  | 'contextDebug'
-  | 'wiki'
-  | 'projects'
-  | 'mcp'
   | 'audit'
   | 'versions'
 
@@ -47,8 +39,6 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   approvals: '/approvals',
   securityAudit: '/security-audit',
   overview: '/overview',
-  observability: '/observability',
-  alerts: '/alerts?days=1&limit=200',
   deliveries: '/deliveries',
   usage: '/usage?days=90',
   tasks: '/tasks',
@@ -59,16 +49,10 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   media: '/media',
   sources: '/sources',
   databases: '/databases',
-  fleet: '/fleet',
   groups: '/group-models',
   localModel: '/local-model',
   tools: '/tools',
   traces: '/traces',
-  contextPlans: '/context-plans',
-  contextDebug: '/context-debug',
-  wiki: '/wiki',
-  projects: '/projects',
-  mcp: '/mcp',
   audit: '/audit',
   versions: '/resource-versions',
 }
@@ -76,8 +60,6 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
 export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   'qq-official': ['qqOfficial'],
   overview: ['overview'],
-  observability: ['observability'],
-  alerts: ['alerts', 'observability'],
   deliveries: ['deliveries'],
   usage: ['usage'],
   tasks: ['tasks'],
@@ -88,15 +70,10 @@ export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   media: ['media'],
   sources: ['sources'],
   databases: ['databases'],
-  fleet: ['fleet'],
   groups: ['groups'],
   'local-model': ['localModel'],
   tools: ['tools'],
   traces: ['traces'],
-  'context-debug': ['contextDebug', 'contextPlans'],
-  wiki: ['wiki'],
-  projects: ['projects'],
-  mcp: ['mcp'],
   audit: ['audit'],
 }
 
