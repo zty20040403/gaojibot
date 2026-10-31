@@ -19,7 +19,7 @@ class ProactiveOutcome:
     reason: str
 
 
-async def score_and_deliver(*, source, scorer, current, send_policy, enqueue, now, threshold):
+async def score_and_deliver(*, source, scorer, current, send_policy, enqueue, now):
     # Source validation can reject a revoked/non-target source. Send permission
     # is deliberately not consulted before the existing classifier runs.
     lifetime=await current(source)
@@ -27,8 +27,8 @@ async def score_and_deliver(*, source, scorer, current, send_policy, enqueue, no
     if now()>=lifetime.deadline_at:return ProactiveOutcome('discarded','source_expired')
     decision=await scorer(source)
     if await current(source)!=lifetime:raise PermissionError('proactive_source_changed')
-    if not decision.should_reply(threshold) or not decision.reply.strip():
-        return ProactiveOutcome('discarded','below_threshold')
+    if not decision.reply.strip():
+        return ProactiveOutcome('discarded','silent')
     observed=now()
     if observed>=lifetime.deadline_at:return ProactiveOutcome('discarded','source_expired')
     choice=await send_policy(source,purpose='unsolicited',deadline=lifetime.deadline_at)

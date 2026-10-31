@@ -31,7 +31,7 @@ def _object(value, required, optional=()):
 
 def _proactive(raw):
     from .native_background_factory import ProactiveConfiguration
-    data=dict(_object(raw,('enabled',),('profile','percent','max_checks_per_hour','threshold','max_reply_chars')))
+    data=dict(_object(raw,('enabled',),('profile','max_reply_chars')))
     profile=data.pop('profile',None)
     if profile is not None and (type(profile) is not str or not 1<=len(profile)<=128 or profile!=profile.strip()):raise ValueError
     if data['enabled'] and profile is None:raise ValueError

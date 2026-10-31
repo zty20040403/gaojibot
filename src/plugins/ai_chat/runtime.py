@@ -30,7 +30,6 @@ from .model_catalog import ModelCatalog
 from .model_preferences import ModelPreferenceStore
 from .mobile_authorization import build_mobile_authorization
 from src.bot_security.service import MobileAuthorization
-from .proactive_learning import ProactiveLearningStore
 from .quota import UsageStore
 from .sandbox import DockerSandboxManager
 from src.sandbox_runtime.factory import manager_from_settings
@@ -85,7 +84,6 @@ class AppContext:
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None
     conversations: ConversationStore | None = None
-    proactive_learning: ProactiveLearningStore | None = None
     delivery_store: DeliveryStore | None = None
     job_store: DurableJobStore | None = None
     job_worker: DurableJobWorker | None = None
@@ -205,7 +203,6 @@ class AppContext:
         for name, resource in (
             ("message ledger", self.message_ledger),
             ("conversation store", self.conversations),
-            ("proactive learning", self.proactive_learning),
             ("delivery store", self.delivery_store),
             ("durable job store", self.job_store),
             ("usage store", self.usage_store),
@@ -565,10 +562,6 @@ def _build_app_context(
         sandbox_manager=sandbox_manager,
         message_ledger=message_ledger,
         conversations=conversations,
-        proactive_learning=(
-            _construction.own(ProactiveLearningStore(database, feedback_seconds=settings.proactive_feedback_seconds))
-            if settings.proactive_adaptive else None
-        ),
         delivery_store=delivery_store,
         job_store=job_store,
         job_worker=job_worker,

@@ -22,8 +22,6 @@ async def start_background_tasks(context: AppContext, *, maintenance) -> None:
             )
     if context.settings.observability_enabled:
         context.background_tasks.start("event-loop-lag", telemetry.monitor_event_loop)
-    if context.proactive_learning is not None:
-        context.background_tasks.start("proactive-feedback", maintenance._proactive_feedback_loop)
     if context.local_model is not None:
         context.background_tasks.start(
             "local-model-health", context.local_model.run_forever

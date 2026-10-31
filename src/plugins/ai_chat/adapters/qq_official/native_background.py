@@ -24,6 +24,10 @@ class NativeBackgroundService:
         if self.proactive is not None:return await self.proactive.on_ingested(job)
         return None
 
+    def direct_message(self,endpoint):
+        if self.proactive is not None:
+            self.proactive.cancel_pending(endpoint)
+
     async def close(self):
         # Restore only our own wrapper; never overwrite a later host guard.
         if self.runtime.outbox.source_guard==self.plan_guard:
