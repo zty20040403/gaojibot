@@ -27,7 +27,7 @@ class MediaConfig:
     documents: bool = False
     forwards: bool = False
     stickers: bool = False
-    emoji: bool = False
+    emoji: bool = False  # Accepted for old host documents; QQ faces cannot be sent.
     max_download_bytes: int = 2 * 1024 * 1024
     timeout_seconds: int = 45
     model_max_tokens: int = 65536
@@ -123,7 +123,6 @@ class MediaSession:
             'send_forward_summary': cfg.forwards,
             'send_sticker': cfg.stickers and self.service.runtime.file_service is not None
                             and getattr(self.service.app,'media_library',None) is not None and self.image_available,
-            'send_qq_face': cfg.emoji,
         }.get(name, False))
 
     def _route_ready(self, mime):
@@ -272,14 +271,6 @@ class MediaSession:
         record = await self.register_bytes(content,filename,'sticker:'+handle)
         return {'state':record.delivery_state,'artifact_id':record.artifact_id,
                 'message':'贴纸已进入受控图片投递，尚未确认平台接收。'}
-
-    async def emoji(self, arguments):
-        await self.current()
-        value = arguments.get('expression')
-        if not isinstance(value,str) or not 1<=len(value.encode())<=512 or '\x00' in value:
-            raise MediaDenied('invalid_emote')
-        self.pending_text.append('[' + ('表情'+value if value.isascii() and value.isdigit() else value) + ']')
-        return {'state':'prepared_content','message':'表情文本将在本轮最终回复发送。'}
 
     def finish(self, answer):
         # These are bounded original texts; final M3 rendering escapes all native

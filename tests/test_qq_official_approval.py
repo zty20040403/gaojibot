@@ -8,7 +8,7 @@ from src.bot_security.store import SecurityStore, SecurityError
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.approval import (
  Recipient, OfficialApprovalTransport)
-from src.plugins.ai_chat.adapters.qq_official.project_authority import Denied
+from src.plugins.ai_chat.adapters.qq_official.validation import Denied
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost
 from src.qq_official.events import parse_dispatch
 from src.plugins.ai_chat.adapters.qq_official.approval import prepare_approval_input,apply_control

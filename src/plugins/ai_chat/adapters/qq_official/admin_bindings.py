@@ -12,7 +12,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 
-from .project_authority import Denied, _deny, _positive, _safe_database_errors, _text
+from .validation import Denied, _deny, _positive, _safe_database_errors, _text
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 

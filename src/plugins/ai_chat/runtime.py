@@ -3,40 +3,23 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from .video import RecentVideoStore
-    from .voice import RecentVoiceStore
-    from .ocr import RecentImageStore
     from .adapters.qq_official.runtime import OfficialRuntime
-    from .mcp_bridge.runtime import McpRuntime
-    from .mcp_bridge.service import McpService
-    from .project_runtime import ProjectRuntime
 
 from src.bot_storage import DatabaseCalls, DatabaseError, PostgresDatabase
 from src.bot_storage.schema import HEAD_REVISION
 
 from .application_construction import ConstructionResources
-from .alert_history import AlertEventStore
-from .alert_preferences import AlertNotificationPreferences
-from .bridges import (
-    BlueBubblesClient,
-    BridgeManager,
-    MatrixClient,
-    MirrorRouter,
-    MirrorStateStore,
-)
-from .browser_tools import BrowserManager, RichMessageRenderer
 from .cold_archive import ColdArchiveService
 from .config import Settings
 from .content_sources import ContentSourceStore
 from .context_store import CaptureCandidate, ContextStore
 from .context_pipeline import TopicGraphStore
 from .delivery import DeliveryStore
-from .fleet_client import FleetControlClient
 from .historian import (
     DreamOperation,
     DreamService,
@@ -57,14 +40,9 @@ from .model_catalog import ModelCatalog
 from .model_preferences import ModelPreferenceStore
 from .mobile_authorization import build_mobile_authorization
 from src.bot_security.service import MobileAuthorization
-from .pins import PinStore
 from .proactive_learning import ProactiveLearningStore
 from .quota import UsageStore
-from .reminders import ReminderStore
-from .routines import RoutineStore
-from .group_wiki import GroupWikiStore
 from .sandbox import DockerSandboxManager
-from src.sandbox_runtime.client import SandboxClient
 from src.sandbox_runtime.factory import manager_from_settings
 from .vm_sandbox import VmSandboxManager
 from .self_source import SelfSource
@@ -123,35 +101,21 @@ class AppContext:
     user_profiles: GroupUserProfileStore
     model_preferences: ModelPreferenceStore
     reasoning_preferences: ModelPreferenceStore
-    alert_preferences: AlertNotificationPreferences
     model_catalog: ModelCatalog
     llm_gateway: LLMGateway = field(repr=False)
     self_source: SelfSource
     skill_registry: SkillRegistry
-    recent_images: RecentImageStore
-    recent_voices: RecentVoiceStore
-    recent_videos: RecentVideoStore
-    sandbox_manager: DockerSandboxManager | SandboxClient | VmSandboxManager
-    bridge_router: MirrorRouter
+    sandbox_manager: DockerSandboxManager | VmSandboxManager
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None
     context_store: ContextStore | None = None
     topic_graph_store: TopicGraphStore | None = None
-    pin_store: PinStore | None = None
     proactive_learning: ProactiveLearningStore | None = None
-    reminder_store: ReminderStore | None = None
-    routine_store: RoutineStore | None = None
-    project_runtime: ProjectRuntime | None = field(default=None, repr=False)
-    group_wiki_store: GroupWikiStore | None = None
-    mcp_runtime: McpRuntime | None = field(default=None, repr=False)
-    mcp_service: McpService | None = field(default=None, repr=False)
     delivery_store: DeliveryStore | None = None
     job_store: DurableJobStore | None = None
     job_worker: DurableJobWorker | None = None
     subagent_store: SubAgentStore | None = None
     subagent_coordinator: SubAgentCoordinator | None = None
-    mirror_state: MirrorStateStore | None = None
-    bridge_manager: BridgeManager | None = None
     usage_store: UsageStore | None = None
     semantic_recall: SemanticRecallService | None = None
     semantic_index_state: SemanticIndexState | None = None
@@ -159,22 +123,17 @@ class AppContext:
     historian_service: HistorianService | None = None
     dream_service: DreamService | None = None
     turn_journal: TurnJournal | None = None
-    browser_manager: BrowserManager | None = None
-    rich_renderer: RichMessageRenderer | None = None
     media_library: MediaLibrary | None = None
     source_store: ContentSourceStore | None = None
     media_cleanup: LegacyMediaCleanup | None = None
     vision_worker: VisionWorker | None = None
     cold_archive: ColdArchiveService | None = None
-    alert_store: AlertEventStore | None = None
-    fleet_client: FleetControlClient | None = None
     mobile_authorization: MobileAuthorization | None = None
     official_runtime: OfficialRuntime | None = field(default=None, repr=False)
     db_call: DatabaseCalls = field(default_factory=DatabaseCalls, repr=False)
     migration_service: Any = field(default=None, repr=False)
     official_host: Any = field(default=None, repr=False)
     official_observability: Any = field(default=None, repr=False)
-    desktop_health_writer: Any = field(default=None, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _closing: bool = field(default=False, init=False, repr=False)
 
@@ -220,7 +179,7 @@ class AppContext:
         self._closing = True
         # Diagnostic output and the public download listener must not prevent
         # the account runtime, leases or shared storage from closing.
-        for name in ('desktop_health_writer', 'official_observability', 'official_host'):
+        for name in ('official_observability', 'official_host'):
             resource=getattr(self,name,None)
             if resource is not None:
                 try:
@@ -263,14 +222,9 @@ class AppContext:
         for name, resource in (
             ("LLM gateway", self.llm_gateway),
             ("local model health", self.local_model),
-            ("bridge manager", self.bridge_manager),
-            ("browser manager", self.browser_manager),
-            ("rich renderer", self.rich_renderer),
             ("media library", self.media_library),
             ("vision worker", self.vision_worker),
             ("cold archive", self.cold_archive),
-            ("fleet control client", self.fleet_client),
-            ("project runtime", self.project_runtime),
         ):
             if resource is None:
                 continue
@@ -280,16 +234,10 @@ class AppContext:
                 self.logger.error(f"Could not close {name}: {exc}")
 
         for name, resource in (
-            ("mirror state", self.mirror_state),
             ("message ledger", self.message_ledger),
             ("context store", self.context_store),
             ("topic graph store", self.topic_graph_store),
-            ("pin store", self.pin_store),
             ("proactive learning", self.proactive_learning),
-            ("reminder store", self.reminder_store),
-            ("routine store", self.routine_store),
-            ("group wiki store", self.group_wiki_store),
-            ("MCP store", self.mcp_service.store if self.mcp_service else None),
             ("delivery store", self.delivery_store),
             ("durable job store", self.job_store),
             ("Sub-Agent task store", self.subagent_store),
@@ -324,7 +272,6 @@ def build_app_context(
     dream_generator: DreamGenerator,
     evidence_provider: EvidenceProvider,
     started_at: int | None = None,
-    onebot_enabled: bool = True,
     environment: Mapping[str, str] | None = None,
     _construction: ConstructionResources | None = None,
 ) -> AppContext:
@@ -342,7 +289,7 @@ def build_app_context(
             project_root=project_root, logger=logger,
             historian_generator=historian_generator,
             dream_generator=dream_generator, evidence_provider=evidence_provider,
-            started_at=started_at, onebot_enabled=onebot_enabled,
+            started_at=started_at,
             environment=environment, _construction=resources,
         )
     except BaseException:
@@ -365,21 +312,9 @@ def _build_app_context(
     dream_generator: DreamGenerator,
     evidence_provider: EvidenceProvider,
     started_at: int | None = None,
-    onebot_enabled: bool = True,
     environment: Mapping[str, str] | None = None,
     _construction: ConstructionResources,
 ) -> AppContext:
-    from .project_runtime import validate_project_settings
-
-    validate_project_settings(settings)
-    if settings.routines_enabled and not all((
-        settings.durable_jobs_enabled, settings.outbox_enabled, settings.quota_enabled,
-        settings.ledger_enabled, settings.turn_journal_enabled,
-    )):
-        raise RuntimeError("AI_ROUTINES_ENABLED requires durable jobs, Outbox, quotas, ledger and turn journal")
-    if settings.group_wiki_enabled and not all((settings.durable_jobs_enabled, settings.ledger_enabled,
-                                               settings.context_lifecycle_enabled, settings.outbox_enabled)):
-        raise RuntimeError("AI_GROUP_WIKI_ENABLED requires durable jobs, Outbox, ledger and context")
     state_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = cache_dir or state_dir / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -400,10 +335,6 @@ def _build_app_context(
     ))
     database.require_revision(HEAD_REVISION)
     logger.info(f"PostgreSQL storage ready in schema {settings.postgres_schema}.")
-
-    if onebot_enabled:
-        from .stickers import configure_learned_sticker_state
-        configure_learned_sticker_state(database)
 
     memory = _construction.own(ConversationMemory(
         settings.max_context_turns,
@@ -427,7 +358,6 @@ def _build_app_context(
         database,
         namespace="reasoning_preferences",
     ))
-    alert_preferences = _construction.own(AlertNotificationPreferences(database))
     model_catalog = ModelCatalog.from_settings(settings, environ=environment)
     if settings.model_simple_chat_profile:
         try:
@@ -480,26 +410,9 @@ def _build_app_context(
             logger.error(f"Canonical message ledger could not be opened: {exc}")
 
     source_store = _construction.own(ContentSourceStore(database))
-    alert_store = _construction.own(AlertEventStore(database))
-    mobile_authorization = build_mobile_authorization(settings, database, onebot_enabled=onebot_enabled)
+    mobile_authorization = build_mobile_authorization(settings, database, onebot_enabled=False)
     if mobile_authorization is not None:
         _construction.own(mobile_authorization.store)
-    fleet_client: FleetControlClient | None = None
-    if settings.cluster_enabled:
-        if not settings.cluster_control_token_file:
-            raise RuntimeError(
-                "AI_CLUSTER_CONTROL_TOKEN_FILE is required when cluster access is enabled"
-            )
-        try:
-            fleet_client = _construction.own(FleetControlClient(
-                settings.cluster_control_url,
-                settings.cluster_control_token_file,
-                timeout_seconds=settings.cluster_control_timeout_seconds,
-                mobile_authorization=mobile_authorization,
-            ))
-        except ValueError as exc:
-            raise RuntimeError(f"Fleet control client could not start: {exc}") from exc
-
     context_store: ContextStore | None = None
     if settings.context_lifecycle_enabled and message_ledger is not None:
         try:
@@ -523,23 +436,6 @@ def _build_app_context(
         except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Topic graph store could not be opened: {exc}")
 
-    pin_store: PinStore | None = None
-    if message_ledger is not None:
-        try:
-            pin_store = _construction.own(PinStore(database))
-        except (OSError, RuntimeError, DatabaseError) as exc:
-            logger.error(f"Pinned message store could not be opened: {exc}")
-
-    reminder_store: ReminderStore | None = None
-    if settings.reminders_enabled:
-        try:
-            reminder_store = _construction.own(ReminderStore(
-                database,
-                max_per_scope=settings.reminder_max_per_scope,
-            ))
-        except (OSError, RuntimeError, DatabaseError) as exc:
-            logger.error(f"Reminder store could not be opened: {exc}")
-
     delivery_store: DeliveryStore | None = None
     if settings.outbox_enabled:
         try:
@@ -555,84 +451,6 @@ def _build_app_context(
                 )
         except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Durable delivery outbox could not be opened: {exc}")
-
-    try:
-        bridge_router = MirrorRouter.from_json(settings.mirror_routes_json)
-    except ValueError as exc:
-        bridge_router = MirrorRouter()
-        logger.error(f"Cross-platform mirror configuration is invalid: {exc}")
-
-    mirror_state: MirrorStateStore | None = None
-    bridge_manager: BridgeManager | None = None
-    if bridge_router.bundles:
-        if message_ledger is None or delivery_store is None:
-            logger.error(
-                "Cross-platform mirrors require both the canonical ledger and outbox."
-            )
-        else:
-            matrix_client: MatrixClient | None = None
-            imessage_client: BlueBubblesClient | None = None
-            try:
-                mirror_state = _construction.own(MirrorStateStore(database))
-                if settings.matrix_enabled:
-                    if not (
-                        settings.matrix_homeserver
-                        and settings.matrix_access_token
-                        and settings.matrix_user_id
-                    ):
-                        logger.error(
-                            "Matrix is enabled but homeserver, access token, "
-                            "or user id is missing."
-                        )
-                    else:
-                        matrix_client = _construction.own(MatrixClient(
-                            settings.matrix_homeserver,
-                            settings.matrix_access_token,
-                            user_id=settings.matrix_user_id,
-                            sync_timeout_ms=settings.matrix_sync_timeout_ms,
-                        ))
-                if settings.imessage_enabled:
-                    if not (
-                        settings.imessage_base_url
-                        and settings.imessage_password
-                        and (settings.imessage_chat_guid or settings.imessage_poll_enabled
-                             and bridge_router.endpoints("imessage"))
-                    ):
-                        logger.error(
-                            "iMessage is enabled but BlueBubbles URL, password, "
-                            "or chat GUID is missing."
-                        )
-                    else:
-                        imessage_client = _construction.own(BlueBubblesClient(
-                            settings.imessage_base_url,
-                            settings.imessage_password,
-                            send_method=settings.imessage_send_method,
-                        ))
-                bridge_manager = BridgeManager(
-                    bridge_router,
-                    message_ledger,
-                    delivery_store,
-                    mirror_state,
-                    matrix=matrix_client,
-                    imessage=imessage_client,
-                    imessage_poll_enabled=settings.imessage_poll_enabled,
-                )
-                # The construction ledger owns the individual clients. Normal
-                # successful shutdown delegates them to BridgeManager.close.
-
-            except (
-                OSError,
-                RuntimeError,
-                TypeError,
-                ValueError,
-                DatabaseError,
-            ) as exc:
-                if mirror_state is not None:
-                    _construction.close_one(mirror_state)
-                mirror_state = None
-                bridge_manager = None
-                _construction.retire(matrix_client, imessage_client)
-                logger.error(f"Cross-platform bridge could not be configured: {exc}")
 
     usage_store: UsageStore | None = None
     if settings.quota_enabled:
@@ -704,13 +522,6 @@ def _build_app_context(
             context_store,
             long_term_memory,
             historian_generator,
-            protected_provider=(
-                lambda scope: (
-                    pin_store.protected_message_ids(scope)
-                    if pin_store is not None
-                    else ()
-                )
-            ),
         )
 
     dream_service: DreamService | None = None
@@ -734,32 +545,6 @@ def _build_app_context(
             ))
         except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Turn journal could not be opened: {exc}")
-
-    browser_manager: BrowserManager | None = None
-    if settings.browser_enabled:
-        browser_manager = _construction.own(BrowserManager(
-            state_dir / "browser_profiles",
-            timeout_seconds=settings.browser_timeout_seconds,
-            max_sessions=settings.browser_max_sessions,
-            idle_seconds=settings.browser_idle_seconds,
-            executable_path=settings.browser_executable_path,
-            allow_private_network=settings.browser_allow_private_network,
-        ))
-
-    rich_renderer: RichMessageRenderer | None = None
-    if settings.rich_render_enabled:
-        rich_renderer = _construction.own(RichMessageRenderer(
-            executable_path=settings.browser_executable_path,
-            timeout_seconds=settings.browser_timeout_seconds,
-            codesnap_enabled=settings.codesnap_enabled,
-            codesnap_executable_path=settings.codesnap_executable_path,
-            codesnap_config_path=settings.codesnap_config_path,
-            codesnap_font_family=settings.codesnap_font_family,
-            codesnap_theme=settings.codesnap_theme,
-            codesnap_timeout_seconds=settings.codesnap_timeout_seconds,
-            codesnap_cache_root=cache_dir / "codesnap",
-            codesnap_cache_entries=settings.codesnap_cache_entries,
-        ))
 
     media_library: MediaLibrary | None = None
     media_cleanup: LegacyMediaCleanup | None = None
@@ -868,48 +653,6 @@ def _build_app_context(
 
                 job_worker.register("media.index_stickers", index_stickers)
 
-            async def execute_sandbox_job(job):
-                payload = job.payload
-                result = await sandbox_manager.exec(
-                    str(payload.get("owner") or ""),
-                    str(payload.get("sandbox_id") or ""),
-                    str(payload.get("command") or ""),
-                    int(payload.get("timeout_seconds") or 300),
-                    packages=[
-                        str(item)
-                        for item in (payload.get("packages") or [])
-                        if isinstance(item, str)
-                    ],
-                )
-                if result.returncode != 0:
-                    raise RuntimeError(
-                        f"sandbox command exited with {result.returncode}: "
-                        f"{result.stderr[-1000:]}"
-                    )
-                return {
-                    "returncode": result.returncode,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "observed_manifest": (
-                        asdict(result.manifest)
-                        if result.manifest is not None
-                        else None
-                    ),
-                    "sandbox_id": str(payload.get("sandbox_id") or ""),
-                }
-
-            async def compensate_sandbox_job(job, _reason):
-                payload = job.payload
-                await sandbox_manager.destroy(
-                    str(payload.get("owner") or ""),
-                    str(payload.get("sandbox_id") or ""),
-                )
-
-            if onebot_enabled:
-                job_worker.register(
-                    "agent.sandbox_exec", execute_sandbox_job,
-                    timeout_seconds=330, compensator=compensate_sandbox_job,
-                )
             if historian_service is not None:
                 job_worker.register(
                     "context.historian_capture",
@@ -926,23 +669,6 @@ def _build_app_context(
             job_store = None
             job_worker = None
             logger.error(f"Durable application job queue could not be opened: {exc}")
-
-    routine_store = None
-    if settings.routines_enabled:
-        if any(value is None for value in (job_store, job_worker, delivery_store, usage_store, turn_journal)):
-            raise RuntimeError("Routines require available jobs, delivery, usage and turn stores")
-        routine_store = _construction.own(RoutineStore(
-            database, jobs=job_store, outbox=delivery_store, usage=usage_store,
-            max_per_owner=settings.routine_max_per_owner,
-        ))
-
-    group_wiki_store = None
-    if settings.group_wiki_enabled:
-        if any(value is None for value in (job_store, job_worker, message_ledger, context_store, delivery_store)):
-            raise RuntimeError("Group wiki requires available jobs, delivery, ledger and context stores")
-        if settings.group_wiki_profile:
-            model_catalog.resolve(settings.group_wiki_profile)
-        group_wiki_store = _construction.own(GroupWikiStore(database, ledger=message_ledger, context=context_store, jobs=job_store))
 
     subagent_store: SubAgentStore | None = None
     subagent_coordinator: SubAgentCoordinator | None = None
@@ -976,15 +702,6 @@ def _build_app_context(
             subagent_coordinator = None
             logger.error(f"Sub-Agent task system could not be opened: {exc}")
 
-    recent_images = recent_voices = recent_videos = None
-    if onebot_enabled:
-        from .ocr import RecentImageStore
-        from .voice import RecentVoiceStore
-        from .video import RecentVideoStore
-        recent_images = RecentImageStore(settings.ocr_recent_image_seconds)
-        recent_voices = RecentVoiceStore(settings.voice_recent_seconds)
-        recent_videos = RecentVideoStore(settings.video_recent_seconds)
-
     return AppContext(
         settings=settings,
         state_dir=state_dir,
@@ -1000,35 +717,24 @@ def _build_app_context(
         user_profiles=user_profiles,
         model_preferences=model_preferences,
         reasoning_preferences=reasoning_preferences,
-        alert_preferences=alert_preferences,
         model_catalog=model_catalog,
         llm_gateway=llm_gateway,
         local_model=local_model,
         self_source=SelfSource(project_root),
         skill_registry=SkillRegistry(project_root / "skills"),
-        recent_images=recent_images,
-        recent_voices=recent_voices,
-        recent_videos=recent_videos,
         sandbox_manager=sandbox_manager,
-        bridge_router=bridge_router,
         message_ledger=message_ledger,
         context_store=context_store,
         topic_graph_store=topic_graph_store,
-        pin_store=pin_store,
         proactive_learning=(
             _construction.own(ProactiveLearningStore(database, feedback_seconds=settings.proactive_feedback_seconds))
             if settings.proactive_adaptive else None
         ),
-        reminder_store=reminder_store,
-        routine_store=routine_store,
-        group_wiki_store=group_wiki_store,
         delivery_store=delivery_store,
         job_store=job_store,
         job_worker=job_worker,
         subagent_store=subagent_store,
         subagent_coordinator=subagent_coordinator,
-        mirror_state=mirror_state,
-        bridge_manager=bridge_manager,
         usage_store=usage_store,
         semantic_recall=semantic_recall,
         semantic_index_state=semantic_index_state,
@@ -1036,14 +742,10 @@ def _build_app_context(
         historian_service=historian_service,
         dream_service=dream_service,
         turn_journal=turn_journal,
-        browser_manager=browser_manager,
-        rich_renderer=rich_renderer,
         media_library=media_library,
         source_store=source_store,
         media_cleanup=media_cleanup,
         vision_worker=vision_worker,
         cold_archive=cold_archive,
-        alert_store=alert_store,
-        fleet_client=fleet_client,
         mobile_authorization=mobile_authorization,
     )

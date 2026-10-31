@@ -49,7 +49,6 @@ FeedbackProvider = Callable[[], Awaitable[list[str]]]
 FinalTextSink = Callable[[str], Awaitable[None]]
 EntryHandler = Callable[["EntryDecision"], Awaitable[Optional[str]]]
 TranscriptSink = Callable[[list[ChatMessage]], None]
-CheckpointSink = Callable[[list[ChatMessage]], Awaitable[None]]
 LoopEventKind = Literal[
     "model_note",
     "tool_started",
@@ -552,31 +551,21 @@ async def ask_deepseek_with_tools(
     after_tool_round: Callable[[], None] | None = None,
     final_feedback: Callable[[str], str | None] | None = None,
     system_context: str = "",
-    resume_messages: list[ChatMessage] | None = None,
-    resume_history_length: int = 0,
-    checkpoint_sink: CheckpointSink | None = None,
     tool_catalog: ToolCatalog | None = None,
 ) -> str:
     async def publish_transcript(items):
-        if transcript_sink is None and checkpoint_sink is None:
-            return
-        snapshot = deepcopy([item for item in items if item.get("role") != "system"])
         if transcript_sink is not None:
-            transcript_sink(snapshot)
-        if checkpoint_sink is not None:
-            await checkpoint_sink(snapshot)
+            transcript_sink(deepcopy([item for item in items if item.get("role") != "system"]))
 
     _last_completion_profile.set(None)
     selected_profile = _resolve_profile(profile, model)
-    if resume_messages is not None and (entry_handler is not None or not selected_profile.capabilities.tools):
-        raise DeepSeekConfigError("A saved tool continuation requires a tool-capable model without entry replanning")
     if final_feedback is not None and (final_text_sink is not None or entry_handler is not None
             or not tools or not selected_profile.capabilities.tools
             or max_tool_rounds is None or max_tool_rounds < 1):
         raise DeepSeekConfigError("Host final feedback requires a bounded non-streaming tool loop without entry dispatch")
     if entry_handler is not None and not (entry_profile or selected_profile).capabilities.tools:
         raise DeepSeekConfigError("The execution entry requires a tool-capable model")
-    if resume_messages is None and entry_handler is None and (not tools or not selected_profile.capabilities.tools):
+    if entry_handler is None and (not tools or not selected_profile.capabilities.tools):
         answer = await ask_deepseek(
             user_text,
             history,
@@ -605,17 +594,6 @@ async def ask_deepseek_with_tools(
         replay_prefix=replay_prefix,
     )
     recovered_calls = []
-    if resume_messages is not None:
-        from .mcp_bridge.checkpoint import validate_transcript
-        if type(resume_history_length) is not int or not 0 <= resume_history_length <= len(resume_messages):
-            raise DeepSeekConfigError("Invalid saved current-turn boundary")
-        pending = validate_transcript(resume_messages)
-        messages = [messages[0], *deepcopy(resume_messages)]
-        if not pending and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
-            return str(messages[-1].get("content") or "")
-        for identifier, (name, arguments) in pending.items():
-            recovered_calls.append(SimpleNamespace(id=identifier, type="function",
-                function=SimpleNamespace(name=name, arguments=json.dumps(arguments, ensure_ascii=False))))
     if trace is not None:
         _configure_trace(trace, selected_profile)
         trace.messages.append({"role": "user", "content": user_text})
@@ -714,28 +692,6 @@ async def ask_deepseek_with_tools(
     stop_reason = "工具调用轮次已达到系统上限。"
     fingerprint_history: list[str] = []
     fingerprint_counts: dict[str, int] = {}
-    if resume_messages is not None:
-        # Completed calls are evidence, not permission to repeat side effects
-        # under a newly invented provider call ID after a restart.
-        completed = set()
-        for item in resume_messages[resume_history_length:]:
-            if item.get("role") != "tool":
-                continue
-            try:
-                receipt = json.loads(item["content"])
-            except (ValueError, TypeError):
-                receipt = None
-            if isinstance(receipt, dict) and receipt.get("code") == "deferred_batch_not_executed":
-                continue
-            completed.add(item.get("tool_call_id"))
-        for item in resume_messages[resume_history_length:]:
-            for call in item.get("tool_calls", []):
-                if call["id"] in completed:
-                    key = _tool_call_fingerprint(call["function"]["name"], json.loads(call["function"]["arguments"]))
-                    fingerprint_history.append(key)
-                    fingerprint_counts[key] = fingerprint_counts.get(key, 0) + 1
-                    total_tool_calls += 1
-
     while max_tool_rounds is None or tool_round < max_tool_rounds:
         tool_round += 1
         recovering = bool(recovered_calls)

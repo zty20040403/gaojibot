@@ -1,7 +1,7 @@
 """Protected, default-off host configuration for the actual application entry.
 
 Only deployment configuration can select these factories. It contains no
-Python import paths, credential values, identity mappings or project grants.
+Python import paths, credential values or identity mappings.
 File uploads use the configured account directly, without route proofs.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from src.bot_security.store import SecurityError
 from src.qq_official.credentials import _read_secret
-from ...platform_types import AccountKey, EndpointKey
+from ...platform_types import AccountKey
 from .config import _boolean
 from .file_services import FileServiceConfig, file_services_factory
 from .host_services import HostServices
@@ -29,51 +29,13 @@ def _object(value, required, optional=()):
     return value
 
 
-def _pairs(pairs):
-    result={}
-    for key,value in pairs:
-        if key in result:raise HostConfigurationError('duplicate_official_host_configuration_key')
-        result[key]=value
-    return result
-
-
-def _list(value,limit):
-    if type(value) is not list or len(value)>limit:
-        raise HostConfigurationError('invalid_official_host_configuration_list')
-    return value
-
-
-def _native_background(raw,account):
-    if raw is None:return None,None,None,None,None
-    from .native_schedule_policy import NativeScheduleConfiguration
+def _proactive(raw):
     from .native_background_factory import ProactiveConfiguration
-    from .wiki_configuration import WikiConfiguration,WikiCollectionEvidence
-    _object(raw,(),('schedules','proactive','wiki'))
-    schedule,schedule_profile,proactive,proactive_profile,wiki=None,None,None,None,None
-    def profile(value,enabled):
-        if value is not None and (type(value) is not str or not 1<=len(value)<=128 or value!=value.strip()):raise ValueError
-        if enabled and value is None:raise ValueError
-        return value
-    if 'schedules' in raw:
-        data=dict(_object(raw['schedules'],('enabled','policy_id','revision','authorization_until'),
-            ('profile','execution_seconds','delivery_seconds','max_tokens','daily_tokens','daily_runs')))
-        schedule_profile=profile(data.pop('profile',None),data['enabled'])
-        schedule=NativeScheduleConfiguration(**data)
-    if 'proactive' in raw:
-        data=dict(_object(raw['proactive'],('enabled',),('profile','percent','max_checks_per_hour','threshold','max_reply_chars')))
-        proactive_profile=profile(data.pop('profile',None),data['enabled'])
-        proactive=ProactiveConfiguration(**data)
-    if 'wiki' in raw:
-        data=dict(_object(raw['wiki'],('enabled',),('profile','hour','timezone','check_seconds','collection_evidence')))
-        evidence=[]
-        for entry in _list(data.pop('collection_evidence',[]),128):
-            entry=dict(_object(entry,('endpoint','endpoint_generation','route_epoch','evidence_inbox_id','verified_at','expires_at')))
-            entry['endpoint']=EndpointKey.parse(entry['endpoint'])
-            if entry['endpoint'].account!=account:raise ValueError
-            evidence.append(WikiCollectionEvidence(**entry))
-        data['profile']=profile(data.get('profile'),data['enabled'])
-        wiki=WikiConfiguration(**data,collection_evidence=tuple(evidence))
-    return schedule,schedule_profile,proactive,proactive_profile,wiki
+    data=dict(_object(raw,('enabled',),('profile','percent','max_checks_per_hour','threshold','max_reply_chars')))
+    profile=data.pop('profile',None)
+    if profile is not None and (type(profile) is not str or not 1<=len(profile)<=128 or profile!=profile.strip()):raise ValueError
+    if data['enabled'] and profile is None:raise ValueError
+    return ProactiveConfiguration(**data),profile
 
 
 logger = logging.getLogger(__name__)
@@ -107,13 +69,9 @@ def _files(raw):
 class HostConfiguration:
     account: AccountKey
     files: dict | None = field(default=None,repr=False)
-    host_services: tuple = field(default=(),repr=False)
     media: object | None = field(default=None,repr=False)
-    native_schedule: object | None = field(default=None,repr=False)
-    native_schedule_profile: str | None = None
     proactive: object | None = field(default=None,repr=False)
     proactive_profile: str | None = None
-    wiki: object | None = field(default=None,repr=False)
 
     @classmethod
     def parse(cls,text):
@@ -124,23 +82,14 @@ class HostConfiguration:
             if account.platform!='qq-official':raise ValueError
         except (ValueError,TypeError,KeyError,AttributeError):
             raise HostConfigurationError('invalid_official_host_account') from None
-        from .host_authority import AllowedService
         from .media_runtime import MediaConfig
-        def services():
-            return tuple(AllowedService(**{**entry,'actions':frozenset(entry['actions'])})
-                         for entry in raw.get('host_services',[]))
         values=dict(files=_optional('files',lambda:_files(raw.get('files'))),
-            host_services=_optional('host_services',services,()),
             media=_optional('media',lambda:MediaConfig(**raw['media']) if raw.get('media') is not None else None))
+        # Old documents may still carry schedules/wiki/host_services; those features were removed.
         background=_optional('background',lambda:dict(raw.get('native_background') or {}),{})
-        for key in ('schedules','proactive','wiki'):
-            if key not in background:continue
-            parsed=_optional(key,lambda:_native_background({key:background[key]},account))
-            if parsed is None:continue
-            schedule,sp,proactive,pp,wiki=parsed
-            if key=='schedules':values.update(native_schedule=schedule,native_schedule_profile=sp)
-            elif key=='proactive':values.update(proactive=proactive,proactive_profile=pp)
-            else:values['wiki']=wiki
+        if 'proactive' in background:
+            parsed=_optional('proactive',lambda:_proactive(background['proactive']))
+            if parsed is not None:values.update(proactive=parsed[0],proactive_profile=parsed[1])
         return cls(account,**values)
 
     @classmethod
@@ -152,14 +101,13 @@ class HostConfiguration:
         if not path:return None
         return _optional('host_configuration',lambda:cls.parse(_read_secret(path,None)))
 
-    def build(self,context,runtime,*,project_grant_ttl_seconds=86400,file_link_ttl_seconds=3600):
+    def build(self,context,runtime,*,file_link_ttl_seconds=3600):
         config=self
-        for feature,profile in (('native_schedule',self.native_schedule_profile),('proactive',self.proactive_profile),
-                ('wiki',self.wiki.profile if self.wiki is not None and self.wiki.enabled else None)):
-            if profile is not None and _optional(feature,lambda:context.model_catalog.resolve(profile)) is None:
-                config=replace(config,**{feature:None})
+        if self.proactive_profile is not None and _optional(
+                'proactive',lambda:context.model_catalog.resolve(self.proactive_profile)) is None:
+            config=replace(config,proactive=None)
         service=HostServices(database=context.database,transaction=context.delivery_store.transaction,
-            database_calls=context.db_call,project_grant_ttl_seconds=project_grant_ttl_seconds)
+            database_calls=context.db_call)
         context.official_host=ConfiguredHost(config,context,service)
         return service
 
@@ -203,37 +151,20 @@ class ConfiguredHost:
     async def background_factory(self,runtime,token):
         self._session(runtime,token)
         from .native_background_factory import background_factory,ProactiveConfiguration
-        from .wiki_service import OfficialWikiService
-        wiki=self.config.wiki
-        def wiki_factory(actual,current):
-            if wiki is None or not wiki.enabled:return None
-            if actual is not runtime or current is not token:raise HostConfigurationError('official_host_epoch_unavailable')
-            return OfficialWikiService(runtime=actual,token=current,app=self.context,
-                collection_allowed=wiki.allowed,configuration=wiki)
-        factory=background_factory(schedule_configuration=self.config.native_schedule,
-            schedule_profile=self.config.native_schedule_profile,
-            proactive_configuration=self.config.proactive or ProactiveConfiguration(),
-            proactive_profile=self.config.proactive_profile,wiki_factory=wiki_factory)
+        factory=background_factory(proactive_configuration=self.config.proactive or ProactiveConfiguration(),
+            proactive_profile=self.config.proactive_profile)
         return await factory(runtime,token)
 
     def approval_factory(self,runtime,token):
         self._session(runtime,token)
         from .approval import approval_services_factory
-        return approval_services_factory(security=getattr(getattr(self.context,'mobile_authorization',None),'store',None),
-            services=self.config.host_services,fleet_client=self.context.fleet_client)(runtime,token)
+        return approval_services_factory(
+            security=getattr(getattr(self.context,'mobile_authorization',None),'store',None))(runtime,token)
 
     async def files_factory(self,runtime,token,rest):
         session=self._session(runtime,token)
         if self.config.files is None:return None
-        from .project_artifacts import ProjectArtifactAuthority
-        def route_guard(cursor,**kwargs):
-            self.migration.routes.assert_active_route(cursor,**kwargs)
-            return True
-        authority=ProjectArtifactAuthority(token=token,clock=runtime.store.clock,route_guard=route_guard,
-            project_scope_guard=self.migration.project_grants.project_scope_guard,
-            read_route_guard=lambda cursor,artifact,project_binding,**kwargs: route_guard(cursor,**kwargs))
-        config=FileServiceConfig(manager=self.context.sandbox_manager,**self.config.files,
-            source_authority=authority)
+        config=FileServiceConfig(manager=self.context.sandbox_manager,**self.config.files)
         if config.generation_enabled and config.manager is None:
             raise HostConfigurationError('official_host_sandbox_unavailable')
         files=await file_services_factory(session.file_configuration(config))(runtime,token,rest)
@@ -254,5 +185,4 @@ def configured_migration_factory(env=None):
     if config is None:return None
     delivery=OfficialConfig.from_env(env).delivery
     return lambda context,runtime:config.build(context,runtime,
-        project_grant_ttl_seconds=delivery.project_grant_ttl_seconds,
         file_link_ttl_seconds=delivery.file_link_ttl_seconds)

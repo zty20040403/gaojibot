@@ -32,14 +32,11 @@ class DeliveryConfiguration:
     defer_max_hours: int = 24
     allow_newer_windows: bool = True
     certification: str = 'unknown'
-    project_grant_ttl_seconds: int = 86400
     file_link_ttl_seconds: int = 3600
 
     def __post_init__(self):
         if (self.certification not in {'unknown', 'unverified', 'certified'}
                 or type(self.defer_max_hours) is not int or not 1 <= self.defer_max_hours <= 24
-                or type(self.project_grant_ttl_seconds) is not int
-                or not 60 <= self.project_grant_ttl_seconds <= 86400
                 or type(self.file_link_ttl_seconds) is not int or not 60 <= self.file_link_ttl_seconds <= 3600):
             raise ValueError('invalid_official_delivery_configuration')
         try:
@@ -57,7 +54,6 @@ class DeliveryConfiguration:
             defer_max_hours=_integer(env, 'DEFER_MAX_HOURS', 24),
             allow_newer_windows=_boolean(env, 'ALLOW_NEWER_WINDOWS', True),
             certification=env.get('AI_QQ_OFFICIAL_CERTIFICATION', 'unknown').strip(),
-            project_grant_ttl_seconds=_integer(env, 'PROJECT_GRANT_TTL_SECONDS', 86400),
             file_link_ttl_seconds=_integer(env, 'FILE_LINK_TTL_SECONDS', 3600),
         )
 

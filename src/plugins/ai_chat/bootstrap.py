@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from .admin import AdminServices, register_admin
-from .bridges import register_bridge_routes
 from .config import Settings
 from .observability import register_metrics_endpoint, telemetry
 from .runtime import AppContext
@@ -22,11 +21,7 @@ def register_http_surfaces(
     settings: Settings,
     version: str,
     logger: BootstrapLogger,
-    onebot_enabled: bool = True,
 ) -> None:
-    mcp_runtime = getattr(context, "mcp_runtime", None)
-    if mcp_runtime is not None and mcp_runtime.endpoint is not None:
-        app.mount(mcp_runtime.config.read_path, mcp_runtime.http, name="mcp-group-reader")
     if settings.observability_enabled:
         try:
             register_metrics_endpoint(
@@ -42,27 +37,8 @@ def register_http_surfaces(
         except (RuntimeError, TypeError, ValueError) as exc:
             logger.error(f"Observability endpoint could not be registered: {exc}")
 
-    if context.bridge_manager is not None:
-        try:
-            register_bridge_routes(
-                app,
-                context.bridge_manager,
-                matrix_appservice_token=settings.matrix_appservice_token,
-                bluebubbles_webhook_token=settings.imessage_webhook_token,
-                bluebubbles_chat_guid=settings.imessage_chat_guid,
-                bluebubbles_bot_handle=settings.imessage_bot_handle,
-                path=settings.bridge_path,
-            )
-        except (RuntimeError, TypeError, ValueError) as exc:
-            logger.error(
-                f"Cross-platform bridge routes could not be registered: {exc}"
-            )
-
-    if onebot_enabled:
-        from .stickers import sticker_inventory
-    else:
-        # The official classified media library has its own authenticated API.
-        sticker_inventory = None
+    # The official classified media library has its own authenticated API.
+    sticker_inventory = None
     if not settings.admin_enabled:
         return
     try:
@@ -78,9 +54,6 @@ def register_http_surfaces(
                 job_worker=context.job_worker,
                 subagent_store=context.subagent_store,
                 subagent_coordinator=context.subagent_coordinator,
-                bridge_router=context.bridge_router,
-                bridge_state=context.mirror_state,
-                browser_manager=context.browser_manager,
                 background_tasks=context.background_tasks,
                 model_catalog=context.model_catalog,
                 llm_gateway=context.llm_gateway,
@@ -89,9 +62,6 @@ def register_http_surfaces(
                 reasoning_preferences=context.reasoning_preferences,
                 user_profiles=context.user_profiles,
                 message_ledger=context.message_ledger,
-                group_wiki_store=context.group_wiki_store,
-                mcp_runtime=mcp_runtime,
-                project_runtime=getattr(context, "project_runtime", None),
                 settings=context.settings,
                 sandbox_manager=context.sandbox_manager,
                 sticker_inventory=sticker_inventory,
@@ -102,15 +72,10 @@ def register_http_surfaces(
                 turn_journal=context.turn_journal,
                 database=context.database,
                 telemetry=telemetry,
-                alert_store=context.alert_store,
-                alert_preferences=context.alert_preferences,
-                fleet_client=context.fleet_client,
                 mobile_authorization=context.mobile_authorization,
                 official_observability=lambda: getattr(context,'official_observability',None),
                 official_identity_service=lambda: getattr(getattr(context,'official_runtime',None),'admin_identity_service',None),
                 official_file_service=lambda: getattr(getattr(context, "official_runtime", None), "file_service", None),
-                official_migration_service=lambda: context.migration_service.admin_service()
-                    if context.migration_service is not None else None,
             ),
             path=settings.admin_path,
         )

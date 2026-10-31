@@ -538,6 +538,69 @@ class MessageLedger:
         ]
         return matches[:limit]
 
+    def history(
+        self,
+        scope: ConversationScope,
+        *,
+        terms: tuple[str, ...] = (),
+        who: str = "",
+        after_id: int = 0,
+        before_id: int | None = None,
+        limit: int = 50,
+        newest: bool = False,
+    ) -> list[CanonicalMessage]:
+        """Visible chat rows in id order; any term may match, case-insensitively."""
+        def like(value: str) -> str:
+            escaped = value.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            return f"%{escaped}%"
+
+        clauses = [
+            "c.scope_key = ?",
+            "m.canonical_message_id >= v.min_canonical_message_id",
+            "m.canonical_message_id > ?",
+            "m.message_kind <> 'command'",
+        ]
+        params: list[object] = [scope.key, max(int(after_id), 0)]
+        if before_id is not None:
+            clauses.append("m.canonical_message_id < ?")
+            params.append(int(before_id))
+        if who:
+            clauses.append("lower(m.sender_display) LIKE ? ESCAPE '\\'")
+            params.append(like(who))
+        if terms:
+            clauses.append("(" + " OR ".join("lower(m.rendered_text) LIKE ? ESCAPE '\\'" for _ in terms) + ")")
+            params.extend(like(term) for term in terms)
+        params.append(min(max(int(limit), 1), 500))
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT m.*, c.scope_key
+                FROM messages AS m
+                JOIN conversations AS c ON c.conversation_id = m.conversation_id
+                JOIN conversation_visibility AS v ON v.conversation_id = m.conversation_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY m.canonical_message_id {'DESC' if newest else 'ASC'}
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        messages = [self._row_to_message(row) for row in rows]
+        return messages[::-1] if newest else messages
+
+    def first_id_at(self, scope: ConversationScope, occurred_at: int) -> int | None:
+        """The first visible message at or after a time, for date filters."""
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT MIN(m.canonical_message_id) AS first_id
+                FROM messages AS m
+                JOIN conversations AS c ON c.conversation_id = m.conversation_id
+                WHERE c.scope_key = ? AND m.occurred_at >= ?
+                """,
+                (scope.key, int(occurred_at)),
+            ).fetchone()
+        return int(row["first_id"]) if row is not None and row["first_id"] is not None else None
+
     def render_recent(
         self,
         scope: ConversationScope,

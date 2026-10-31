@@ -35,7 +35,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, reference_resolver=None, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
-        subagent_actions_factory=None, memory_writer=None, generation_factory=None, public_history_factory=None, project_factory=None, media_factory=None, native_background=None,
+        subagent_actions_factory=None, memory_writer=None, generation_factory=None, public_history_factory=None, media_factory=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -51,9 +51,7 @@ class PlatformChatService:
         self.memory_writer = memory_writer
         self.generation_factory = generation_factory
         self.public_history_factory = public_history_factory
-        self.project_factory = project_factory
         self.media_factory = media_factory
-        self.native_background = native_background
 
     def _scope_enabled(self, scope) -> bool:
         override = self.context.model_preferences.get_scope_enabled_override(scope)
@@ -75,7 +73,7 @@ class PlatformChatService:
         """Prepare a structured text turn for the same context and agent core.
 
         Text delegation is available only through the trusted runtime factory.
-        Optional project/file/task host factories supply their exact current
+        Optional file/task host factories supply their exact current
         source authority. Other host/media and revision continuations remain
         unavailable through this foreground entry point.
         """
@@ -138,14 +136,6 @@ class PlatformChatService:
         capabilities = {"self"}
         if media_session is not None and media_session.enabled("send_sticker"):
             capabilities.add("media")
-        if self.native_background is not None and self.native_background.domain is not None:
-            platform.native_background = self.native_background
-            capabilities.add("reminders")
-        project_provider = (await self.project_factory(inbound, platform)
-                            if self.project_factory is not None else None)
-        if project_provider is not None:
-            platform.project_provider = project_provider
-            capabilities.add("projects")
         if self.context.long_term_memory is not None:
             capabilities.add("memory")
         if any(store is not None for store in (
@@ -172,9 +162,6 @@ class PlatformChatService:
             if public_history is not None:
                 history_prompt = await self.context.db_call(public_history.prompt)
                 history_guards.enter_context(public_history.guard_scope())
-            if project_provider is not None:
-                history_guards.enter_context(project_provider.guard_scope(
-                    self.context.project_runtime.store._transaction))
             if file_session is not None:
                 context = file_session.context(context)
             turn = TurnState(context=context, user_text=user_text)
@@ -210,11 +197,6 @@ class PlatformChatService:
                     selected_profile=selected_profile, journal_turn_id=journal_turn_id,
                 )
                 context_parts = []
-                if project_provider is not None:
-                    from ..project_context import current_project_context
-                    project_context = await current_project_context(turn.context)
-                    if project_context:
-                        context_parts.append(project_context)
                 if history_prompt:
                     context_parts.append(history_prompt)
                 if prepared.turn_context:

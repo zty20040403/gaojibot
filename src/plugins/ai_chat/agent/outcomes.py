@@ -235,26 +235,8 @@ def _host_observation(item: dict, host: str, created: int) -> dict | None:
 
 
 def _inspection_resources(item: dict, observation: dict, items: list[dict], host: str, created: int) -> tuple[dict, str]:
-    # The catalog tool and the compact inspection tool share the same upstream metrics.
-    from ..fleet_tools import summarize_resources
-
-    native = [value for value in items if value["tool_name"] == "ops_call"
-              and value["arguments"].get("operation") == "host.metrics"
-              and value["arguments"].get("params", {}).get("host") == host
-              and value["recorded_at"] >= item["recorded_at"]]
-    if not native:
-        return observation.get("resources") or {}, item["evidence_id"]
-    latest = max(native, key=lambda value: value["recorded_at"])
-    payload = latest["payload"]
-    data = payload.get("result") or {}
-    if (not successful_evidence(latest) or payload.get("operation") != "host.metrics"
-            or not isinstance(data, dict) or data.get("host") != host
-            or not fresh_at_capture(data.get("observed_at"), latest, created)):
-        return {}, latest["evidence_id"]
-    gap = latest["recorded_at"] - item["recorded_at"]
-    if gap > 180:
-        return {"status": "partial", "observation_gap_seconds": gap}, latest["evidence_id"]
-    return summarize_resources({"status": "fresh", "data": data}, host, now=latest["recorded_at"]), latest["evidence_id"]
+    # Fleet resource metrics were removed with the ops tools.
+    return {"status": "unavailable"}, item["evidence_id"]
 
 
 def _check_server(check: dict, items: list[dict], created: int) -> tuple[str, str, dict]:

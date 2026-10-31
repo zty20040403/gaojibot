@@ -7,7 +7,7 @@ from pathlib import Path
 
 from src.plugins.ai_chat.agent.control import LeaseLost
 from src.plugins.ai_chat.application.owned_sandbox import ArtifactAvailability, GenerationLimits
-from src.plugins.ai_chat.project_blobs import ProjectBlobStore
+from src.plugins.ai_chat.blob_store import ProjectBlobStore
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from .file_artifacts import ArtifactStore, current_source
 from .file_authority import assert_file_read_current

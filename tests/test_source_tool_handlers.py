@@ -13,7 +13,7 @@ from src.bot_storage import DatabaseCalls
 nonebot.init()
 
 from src.plugins.ai_chat import tool_policy
-from src.plugins.ai_chat.tools import domain_registry
+from src.plugins.ai_chat.tools import _base_registry
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.web_fetch import FetchError, FetchedPage
 from src.plugins.ai_chat.web_search import SearchError, SearchResult
@@ -43,7 +43,7 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(override.stop)
 
     async def execute(self, tool_name: str, **arguments: object) -> dict:
-        return json.loads(await domain_registry.execute(self.turn, tool_name, arguments))
+        return json.loads(await _base_registry().execute(self.turn, tool_name, arguments))
 
     async def test_search_preserves_fallback_limits_freshness_and_turn_sources(
         self,

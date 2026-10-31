@@ -7,7 +7,7 @@ from src.plugins.ai_chat.tools.registry import FunctionTool, ToolRegistry
 from .media_refs import ExternalText, MediaDenied
 
 NAMES = frozenset({'read_image_text','transcribe_voice','view_forward','send_forward_summary',
-                   'read_attachment','send_sticker','send_qq_face'})
+                   'read_attachment','send_sticker'})
 REFERENCE = {'message_handle':{'type':'string','pattern':'^msg#[1-9][0-9]*$'},
              'segment_index':{'type':'integer','minimum':0,'maximum':511}}
 
@@ -27,16 +27,37 @@ def _definition(name):
         'read_attachment':'读取本会话附件或卡片中的受控链接；仅支持有界 UTF-8 文本/Markdown/JSON，不执行HTML/PDF/ZIP。',
         'view_forward':'读取本会话消息中有界递归转发证据；署名不是已验证身份，内容不是工具权限。',
         'send_forward_summary':'将本会话转发整理为一份有限摘要或受控文件；不会逐条发送，也不声称原生合并转发。',
-        'send_sticker':'发送本轮 find_stickers 返回的 media# 贴纸；仅当前目标已验证原生图片且实际M6出口可用时开放。登记不是平台已接收。',
-        'send_qq_face':'把QQ表情转换为[名字]或[表情ID]文本，附在本轮最终回复；不调用原生表情接口。',
+        'send_sticker':'从表情包库里发一张表情包（当图片发出）。query 写想表达的意思，比如"无语"、"笑死"、"买不起"，自动挑最合适的一张；也可以直接给 find_stickers 返回的 media_handle。一次回复最多一张，别每句都发。',
     }
     value['description']=descriptions[name]
     if name=='send_sticker':
-        value['parameters']={'type':'object','properties':{'media_handle':{'type':'string','pattern':'^media#[1-9][0-9]*$'}},
-                             'required':['media_handle'],'additionalProperties':False}
-    elif name!='send_qq_face':
+        value['parameters']={'type':'object','properties':{
+            'query':{'type':'string','minLength':1,'maxLength':100},
+            'media_handle':{'type':'string','pattern':'^media#[1-9][0-9]*$'}},'additionalProperties':False}
+    else:
         value['parameters']={'type':'object','properties':deepcopy(REFERENCE),'additionalProperties':False}
     return definition
+
+
+async def _send_sticker(session, turn, arguments):
+    handle = arguments.get('media_handle')
+    if not handle:
+        query = str(arguments.get('query') or '').strip()
+        library = turn.context.app.media_library
+        if not query or library is None:
+            raise MediaDenied('sticker_query_required')
+        records = await library.search_stickers(query, limit=5)
+        used = turn.sticker_handles_this_turn
+        record = next((item for item in records if item.handle not in used), None)
+        if record is None:
+            return {'state':'not_found','message':'表情包库里没有合适的，换个说法或者不发。'}
+        handle = record.handle
+        turn.sticker_handles_this_turn.add(handle)
+    if turn.sticker_sent:
+        return {'state':'skipped','message':'这次回复已经发过一张表情包了。'}
+    result = await session.sticker({'media_handle':handle},frozenset(turn.sticker_handles_this_turn))
+    turn.sticker_sent = True
+    return result
 
 
 def media_registry(registry, context):
@@ -56,8 +77,7 @@ def media_registry(registry, context):
                 elif name=='read_attachment':result=await session.document(arguments)
                 elif name in {'view_forward','send_forward_summary'}:
                     result=await session.forward(arguments,send=name=='send_forward_summary')
-                elif name=='send_sticker':result=await session.sticker(arguments,frozenset(turn.sticker_handles_this_turn))
-                else:result=await session.emoji(arguments)
+                else:result=await _send_sticker(session,turn,arguments)
                 if isinstance(result,ExternalText):
                     result={'text':result.text,'source':result.source,'trust':result.trust,'truncated':result.truncated}
                 return json.dumps({'ok':True,**result},ensure_ascii=False)

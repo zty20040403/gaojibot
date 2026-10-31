@@ -69,16 +69,6 @@ def create_router(context: AdminRouteContext) -> APIRouter:
                 services.model_catalog,
                 services.llm_gateway,
             ),
-            "bridges": (
-                services.bridge_state.stats()
-                if services.bridge_state is not None
-                else {}
-            ),
-            "browser": (
-                services.browser_manager.stats()
-                if services.browser_manager is not None
-                else {"active_sessions": 0, "persistent_profiles": 0}
-            ),
         }
 
     @router.get("/api/databases")
@@ -96,23 +86,5 @@ def create_router(context: AdminRouteContext) -> APIRouter:
                 "pool": {},
             }
         return services.database.topology_snapshot()
-
-    @router.get("/api/platforms")
-    async def platforms(
-        authorization: Optional[str] = Header(default=None),
-    ) -> dict[str, object]:
-        authorize(authorization)
-        return {
-            "mirrors": (
-                services.bridge_router.describe()
-                if services.bridge_router is not None
-                else []
-            ),
-            "evidence": (
-                services.bridge_state.stats()
-                if services.bridge_state is not None
-                else {}
-            ),
-        }
 
     return router

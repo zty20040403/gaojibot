@@ -8,7 +8,7 @@ from dataclasses import replace
 from psycopg.errors import CheckViolation
 
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore, two_distinct_official_admins
-from src.plugins.ai_chat.adapters.qq_official.project_authority import Denied
+from src.plugins.ai_chat.adapters.qq_official.validation import Denied
 from src.bot_security.passwords import hash_password
 from src.bot_security.store import SecurityError, SecurityStore
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey

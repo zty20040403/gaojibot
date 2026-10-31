@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 import httpx2
 
 from src.plugins.ai_chat.message_ir import CardNode, MediaNode, TextNode
-from src.plugins.ai_chat.mcp_bridge.http_transport import (
+from src.plugins.ai_chat.pinned_http import (
     HttpPolicy, MAX_RESPONSE_BYTES, McpTransportDenied, PinnedHttpTransport,
 )
 from .media_refs import ExternalText, MediaDenied, bounded_text, text_link

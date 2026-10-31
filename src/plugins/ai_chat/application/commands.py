@@ -1,8 +1,7 @@
 """SDK-free command parsing and dispatch for trusted platform input.
 
 The host supplies model policy and any usage/binding service. A platform role or
-canonical history route never supplies that authority. Legacy callbacks are a
-OneBot-only bridge to its unchanged command handlers.
+canonical history route never supplies that authority.
 """
 from __future__ import annotations
 
@@ -17,14 +16,10 @@ from ..platform_types import InboundMessage
 from ..tasks import RunningTaskRegistry
 
 
-CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "routine", "wiki", "memory", "project", "project_grant"]
+CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory"]
 CommandStatus = Literal["ok", "unknown", "syntax", "denied", "unavailable", "not_found", "unsupported", "error"]
 _ALIASES: dict[str, CommandName] = {
-    "例行": "routine", "routine": "routine",
-    "群百科": "wiki", "wiki": "wiki",
     "memory": "memory", "记忆": "memory",
-    "项目": "project", "project": "project",
-    "项目权限": "project_grant", "项目授权": "project_grant",
     "help": "help", "帮助": "help",
     "bind": "bind", "绑定": "bind",
     "model": "model", "模型": "model", "切换模型": "model",
@@ -104,11 +99,7 @@ class CommandServices:
     usage: ResultCallback | None = None
     binding_handler: ResultCallback | None = None
     db_call: Callable[..., Any] | None = None
-    routine: ResultCallback | None = None
-    wiki: ResultCallback | None = None
     memory: ResultCallback | None = None
-    project: ResultCallback | None = None
-    project_grant: ResultCallback | None = None
 
 
 async def _await(value):
@@ -126,16 +117,9 @@ async def dispatch_command(
     inbound: InboundMessage | None = None,
     *,
     services: CommandServices | None = None,
-    legacy_callback: Callable[[], Awaitable[Any]] | None = None,
 ) -> CommandResult:
     if request is None or request.name not in set(_ALIASES.values()):
         return CommandResult("unknown", "未知命令。")
-    if legacy_callback is not None:
-        if inbound is not None and inbound.endpoint.account.platform != "onebot-v11":
-            return CommandResult("denied", "当前平台不能调用旧平台命令。")
-        # The adapter owns legacy parsing, errors, finish signals and output.
-        await legacy_callback()
-        return CommandResult("ok")
     if inbound is None:
         return CommandResult("error", "命令缺少平台身份。")
     if not request.valid:
@@ -144,12 +128,10 @@ async def dispatch_command(
     if request.name == "help":
         if request.argument:
             return CommandResult("syntax", "用法：/help")
-        extras = [label for key, label in (("routine", "/例行"), ("wiki", "/群百科"),
-            ("memory", "/memory"), ("project", "/项目"), ("project_grant", "/项目权限"))
-            if getattr(services, key) is not None]
+        extras = ["/memory"] if services.memory is not None else []
         commands = "/help、/bind、/model、/effort、/usage、/task、/cancel" + ("、" + "、".join(extras) if extras else "")
         return CommandResult("ok", "可用命令："+commands+"。\n任务状态和停止仅作用于你在当前入口的运行任务。")
-    if request.name in {"routine", "wiki", "memory", "project", "project_grant"}:
+    if request.name == "memory":
         callback = getattr(services, request.name)
         if callback is None:
             return CommandResult("unavailable", "该业务命令尚未配置。")

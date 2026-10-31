@@ -356,13 +356,9 @@ def build_turn_consumer(runtime, token, app):
         await runtime._calls(commit)
 
     service_options = {"memory_writer": memory_writer, "scope_enabled": scope_enabled}
-    background = getattr(runtime, 'background_service', None)
-    if background is not None:
-        service_options['native_background'] = background
     migration = getattr(runtime,'migration_service',None)
     if migration is not None:
         service_options['public_history_factory'] = migration.public_history
-        service_options['project_factory'] = migration.project_context
     media = getattr(runtime, 'media_service', None)
     if media is not None:
         service_options['media_factory'] = media.foreground

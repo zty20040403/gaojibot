@@ -116,7 +116,6 @@ class OfficialRuntime:
         self.application, self.turn_consumer_factory = application, turn_consumer_factory
         self.migration_factory, self.migration_service = migration_factory, None
         self.background_factory, self.background_service = background_factory, None
-        self.native_commands = None
         self.admin_identity_service = None
         self.approval_factory = approval_factory
         self.media_factory = media_factory
@@ -403,8 +402,6 @@ class OfficialRuntime:
                     next_result_scan = loop.time() + 5
                 if self.migration_service is not None:
                     await self.migration_service.maintain()
-                if self.background_service is not None:
-                    await self.background_service.maintain()
                 if self.file_service is not None and loop.time() >= next_file_scan:
                     await self.file_service.maintain()
                     next_file_scan = loop.time() + 30
@@ -485,9 +482,6 @@ class OfficialRuntime:
                             self.outbox.file_authority = None
 
                     resources.push_async_callback(close_files)
-                    migration=self.migration_service
-                    if migration is not None and migration.services.project_router is not None:
-                        migration.configure_project_runtime(migration.services.project_router.projects)
                     file_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
                         concurrency=1, per_scope_limit=1, database_calls=self._calls)
                     file_worker.register(account_job_kind('file', self.loaded.account.key), service.dispatcher)
@@ -517,12 +511,6 @@ class OfficialRuntime:
                 finally:
                     self.background_service = None
             resources.push_async_callback(close_background)
-            background.register(worker)
-            for kind in ('reminder','routine'):
-                domain = self.background_service or (
-                    self.migration_service.domains.get(kind) if self.migration_service is not None else None)
-                if domain is not None:
-                    worker.register(account_job_kind(kind,token.account_key), domain.execute)
             factory = self.turn_consumer_factory
             subagent_worker = None
             if (self.application is not None and getattr(self.application, "subagent_store", None) is not None
