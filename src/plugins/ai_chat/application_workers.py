@@ -62,17 +62,7 @@ async def start_background_tasks(context: AppContext, *, maintenance) -> None:
         "cold-archive", context.cold_archive.run_forever
     ):
         context.logger.info("Automatic cold archive enabled.")
-    if context.semantic_recall is not None and context.background_tasks.start(
-        "semantic-index", maintenance._semantic_index_loop
+    if context.conversations is not None and context.background_tasks.start(
+        "nightly-maintenance", maintenance._nightly_loop
     ):
-        context.logger.info("PostgreSQL/pgvector semantic recall worker enabled.")
-    if context.historian_service is not None and context.background_tasks.start(
-        "historian", maintenance._historian_loop
-    ):
-        context.logger.info("Model-backed episode Historian enabled.")
-    if context.dream_service is not None and context.background_tasks.start(
-        "memory-dream", maintenance._dream_loop
-    ):
-        context.logger.info(
-            f"Nightly memory dream pass enabled at {context.settings.dream_hour:02d}:00."
-        )
+        context.logger.info("Nightly memory tidy and request-log pruning enabled.")

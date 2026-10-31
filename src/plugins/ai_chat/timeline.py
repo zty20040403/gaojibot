@@ -11,6 +11,12 @@ from .ledger import CanonicalMessage
 _NOISE = re.compile(r'^(⚙ |↳ |\{"error"\s*:)')
 
 
+def estimate_tokens(text: str) -> int:
+    """Rough token count: one per CJK character, a quarter per ASCII character."""
+    units = sum(1.0 if ord(character) > 127 else 0.25 for character in text)
+    return max(int(units + 0.999), 1) if text else 0
+
+
 def is_noise(message: CanonicalMessage) -> bool:
     return not message.prompt_text.strip() or bool(_NOISE.match(message.prompt_text.lstrip()))
 

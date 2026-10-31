@@ -8,7 +8,6 @@ from fastapi.routing import APIRoute
 
 from .admin_api import (
     audit,
-    context_debug,
     dashboard,
     events,
     media,
@@ -51,7 +50,6 @@ _PAGE_ROUTERS = (
     sandboxes,
     tools,
     media,
-    context_debug,
     audit,
     official_files,
     official_observability,

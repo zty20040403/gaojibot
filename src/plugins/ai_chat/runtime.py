@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -17,23 +17,13 @@ from .application_construction import ConstructionResources
 from .cold_archive import ColdArchiveService
 from .config import Settings
 from .content_sources import ContentSourceStore
-from .context_store import CaptureCandidate, ContextStore
-from .context_pipeline import TopicGraphStore
+from .conversation_window import ConversationStore
 from .delivery import DeliveryStore
-from .historian import (
-    DreamOperation,
-    DreamService,
-    HistorianResult,
-    HistorianService,
-    MaintenanceState,
-)
 from .identity import GroupUserProfileStore
 from .ledger import MessageLedger
 from .lifecycle import BackgroundTaskSupervisor
-from .long_term_memory import LongTermMemoryStore, MemoryEntry
 from .llm_gateway import LLMGateway
 from .local_model import LocalModelRuntime
-from .memory import ConversationMemory, GroupContextMemory
 from .media_library import MediaLibrary
 from src.bot_storage.media_cleanup import LegacyMediaCleanup
 from .model_catalog import ModelCatalog
@@ -49,7 +39,6 @@ from .self_source import SelfSource
 from .semantic_recall import (
     EmbeddingClient,
     PgVectorBackend,
-    SemanticIndexState,
     SemanticRecallService,
 )
 from .skills import SkillRegistry
@@ -77,12 +66,6 @@ class RuntimeLogger(Protocol):
     def info(self, message: object, *args: object, **kwargs: object) -> object: ...
 
 
-HistorianGenerator = Callable[[CaptureCandidate], Awaitable[HistorianResult]]
-DreamGenerator = Callable[
-    [str, Sequence[MemoryEntry], str],
-    Awaitable[list[DreamOperation]],
-]
-EvidenceProvider = Callable[[MemoryEntry], str]
 
 
 @dataclass
@@ -94,9 +77,6 @@ class AppContext:
     logger: RuntimeLogger = field(repr=False)
     background_tasks: BackgroundTaskSupervisor = field(repr=False)
     database: PostgresDatabase | None = field(repr=False)
-    memory: ConversationMemory
-    group_context: GroupContextMemory
-    long_term_memory: LongTermMemoryStore
     running_tasks: RunningTaskRegistry
     user_profiles: GroupUserProfileStore
     model_preferences: ModelPreferenceStore
@@ -108,8 +88,7 @@ class AppContext:
     sandbox_manager: DockerSandboxManager | VmSandboxManager
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None
-    context_store: ContextStore | None = None
-    topic_graph_store: TopicGraphStore | None = None
+    conversations: ConversationStore | None = None
     proactive_learning: ProactiveLearningStore | None = None
     delivery_store: DeliveryStore | None = None
     job_store: DurableJobStore | None = None
@@ -118,10 +97,6 @@ class AppContext:
     subagent_coordinator: SubAgentCoordinator | None = None
     usage_store: UsageStore | None = None
     semantic_recall: SemanticRecallService | None = None
-    semantic_index_state: SemanticIndexState | None = None
-    maintenance_state: MaintenanceState | None = None
-    historian_service: HistorianService | None = None
-    dream_service: DreamService | None = None
     turn_journal: TurnJournal | None = None
     media_library: MediaLibrary | None = None
     source_store: ContentSourceStore | None = None
@@ -235,15 +210,12 @@ class AppContext:
 
         for name, resource in (
             ("message ledger", self.message_ledger),
-            ("context store", self.context_store),
-            ("topic graph store", self.topic_graph_store),
+            ("conversation store", self.conversations),
             ("proactive learning", self.proactive_learning),
             ("delivery store", self.delivery_store),
             ("durable job store", self.job_store),
             ("Sub-Agent task store", self.subagent_store),
             ("usage store", self.usage_store),
-            ("semantic index state", self.semantic_index_state),
-            ("maintenance state", self.maintenance_state),
             ("turn journal", self.turn_journal),
             ("account authorization", self.mobile_authorization.store if self.mobile_authorization else None),
         ):
@@ -268,9 +240,6 @@ def build_app_context(
     cache_dir: Path | None = None,
     project_root: Path,
     logger: RuntimeLogger,
-    historian_generator: HistorianGenerator,
-    dream_generator: DreamGenerator,
-    evidence_provider: EvidenceProvider,
     started_at: int | None = None,
     environment: Mapping[str, str] | None = None,
     _construction: ConstructionResources | None = None,
@@ -287,8 +256,6 @@ def build_app_context(
         context = _build_app_context(
             settings, state_dir=state_dir, cache_dir=cache_dir,
             project_root=project_root, logger=logger,
-            historian_generator=historian_generator,
-            dream_generator=dream_generator, evidence_provider=evidence_provider,
             started_at=started_at,
             environment=environment, _construction=resources,
         )
@@ -308,9 +275,6 @@ def _build_app_context(
     cache_dir: Path | None = None,
     project_root: Path,
     logger: RuntimeLogger,
-    historian_generator: HistorianGenerator,
-    dream_generator: DreamGenerator,
-    evidence_provider: EvidenceProvider,
     started_at: int | None = None,
     environment: Mapping[str, str] | None = None,
     _construction: ConstructionResources,
@@ -336,20 +300,6 @@ def _build_app_context(
     database.require_revision(HEAD_REVISION)
     logger.info(f"PostgreSQL storage ready in schema {settings.postgres_schema}.")
 
-    memory = _construction.own(ConversationMemory(
-        settings.max_context_turns,
-        database,
-    ))
-    group_context = _construction.own(GroupContextMemory(
-        settings.group_context_messages,
-        settings.group_context_chars,
-        database,
-    ))
-    long_term_memory = _construction.own(LongTermMemoryStore(
-        database,
-        max_entries_per_scope=settings.memory_max_entries,
-        max_content_chars=settings.memory_max_chars,
-    ))
 
     running_tasks = RunningTaskRegistry()
     user_profiles = _construction.own(GroupUserProfileStore(database))
@@ -375,14 +325,6 @@ def _build_app_context(
                 "AI_GROUP_MODEL_PROFILES_JSON maps QQ group "
                 f"{group_id} to unknown model profile {profile_name!r}"
             ) from exc
-    if settings.historian_enabled and settings.historian_profile:
-        model_catalog.resolve(settings.historian_profile)
-    if settings.historian_enabled and not settings.durable_jobs_enabled:
-        raise RuntimeError(
-            "AI_HISTORIAN_ENABLED requires AI_DURABLE_JOBS_ENABLED=true"
-        )
-    if settings.dream_enabled and settings.dream_profile:
-        model_catalog.resolve(settings.dream_profile)
     local_profile = next((item for item in model_catalog.profiles if item.name == settings.local_model_profile), None)
     local_model = _construction.own(LocalModelRuntime(
         local_profile,
@@ -409,33 +351,11 @@ def _build_app_context(
         except (OSError, RuntimeError, DatabaseError) as exc:
             logger.error(f"Canonical message ledger could not be opened: {exc}")
 
+    conversations = _construction.own(ConversationStore(database)) if message_ledger is not None else None
     source_store = _construction.own(ContentSourceStore(database))
     mobile_authorization = build_mobile_authorization(settings, database, onebot_enabled=False)
     if mobile_authorization is not None:
         _construction.own(mobile_authorization.store)
-    context_store: ContextStore | None = None
-    if settings.context_lifecycle_enabled and message_ledger is not None:
-        try:
-            context_store = _construction.own(ContextStore(
-                database,
-                input_budget_tokens=settings.context_input_budget_tokens,
-                high_watermark_tokens=settings.context_high_watermark_tokens,
-                low_watermark_tokens=settings.context_low_watermark_tokens,
-                compartment_target_tokens=(settings.context_compartment_target_tokens),
-                raw_tail_min_messages=settings.context_raw_tail_min_messages,
-                max_compartments=settings.context_max_compartments,
-                historian_managed=settings.historian_enabled,
-            ))
-        except (OSError, RuntimeError, DatabaseError) as exc:
-            logger.error(f"Context store could not be opened: {exc}")
-
-    topic_graph_store: TopicGraphStore | None = None
-    if message_ledger is not None:
-        try:
-            topic_graph_store = _construction.own(TopicGraphStore(database))
-        except (OSError, RuntimeError, DatabaseError) as exc:
-            logger.error(f"Topic graph store could not be opened: {exc}")
-
     delivery_store: DeliveryStore | None = None
     if settings.outbox_enabled:
         try:
@@ -465,7 +385,6 @@ def _build_app_context(
             logger.error(f"Usage and quota store could not be opened: {exc}")
 
     semantic_recall: SemanticRecallService | None = None
-    semantic_index_state: SemanticIndexState | None = None
     if settings.semantic_enabled:
         if not (
             settings.postgres_dsn
@@ -492,7 +411,6 @@ def _build_app_context(
                         schema=settings.postgres_schema,
                     ),
                 )
-                semantic_index_state = _construction.own(SemanticIndexState(database))
             except (
                 OSError,
                 RuntimeError,
@@ -501,37 +419,7 @@ def _build_app_context(
                 DatabaseError,
             ) as exc:
                 semantic_recall = None
-                semantic_index_state = None
                 logger.error(f"Semantic recall could not be configured: {exc}")
-
-    maintenance_state: MaintenanceState | None = None
-    if settings.historian_enabled or settings.dream_enabled:
-        try:
-            maintenance_state = _construction.own(MaintenanceState(database))
-        except (OSError, RuntimeError, DatabaseError) as exc:
-            logger.error(f"Background maintenance state could not be opened: {exc}")
-
-    historian_service: HistorianService | None = None
-    if (
-        settings.historian_enabled
-        and message_ledger is not None
-        and context_store is not None
-    ):
-        historian_service = HistorianService(
-            message_ledger,
-            context_store,
-            long_term_memory,
-            historian_generator,
-        )
-
-    dream_service: DreamService | None = None
-    if settings.dream_enabled:
-        dream_service = DreamService(
-            long_term_memory,
-            dream_generator,
-            evidence_provider=evidence_provider,
-            min_entries=settings.dream_min_entries,
-        )
 
     turn_journal: TurnJournal | None = None
     if settings.turn_journal_enabled and message_ledger is not None:
@@ -653,12 +541,6 @@ def _build_app_context(
 
                 job_worker.register("media.index_stickers", index_stickers)
 
-            if historian_service is not None:
-                job_worker.register(
-                    "context.historian_capture",
-                    historian_service.handle_job,
-                    timeout_seconds=240,
-                )
             if job_store.recovered_jobs:
                 logger.warning(
                     f"Recovered {job_store.recovered_jobs} expired durable job lease(s)."
@@ -710,9 +592,6 @@ def _build_app_context(
         logger=logger,
         background_tasks=BackgroundTaskSupervisor(logger),
         database=database,
-        memory=memory,
-        group_context=group_context,
-        long_term_memory=long_term_memory,
         running_tasks=running_tasks,
         user_profiles=user_profiles,
         model_preferences=model_preferences,
@@ -724,8 +603,7 @@ def _build_app_context(
         skill_registry=SkillRegistry(project_root / "skills"),
         sandbox_manager=sandbox_manager,
         message_ledger=message_ledger,
-        context_store=context_store,
-        topic_graph_store=topic_graph_store,
+        conversations=conversations,
         proactive_learning=(
             _construction.own(ProactiveLearningStore(database, feedback_seconds=settings.proactive_feedback_seconds))
             if settings.proactive_adaptive else None
@@ -737,10 +615,6 @@ def _build_app_context(
         subagent_coordinator=subagent_coordinator,
         usage_store=usage_store,
         semantic_recall=semantic_recall,
-        semantic_index_state=semantic_index_state,
-        maintenance_state=maintenance_state,
-        historian_service=historian_service,
-        dream_service=dream_service,
         turn_journal=turn_journal,
         media_library=media_library,
         source_store=source_store,

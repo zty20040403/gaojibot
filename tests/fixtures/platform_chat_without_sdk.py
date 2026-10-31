@@ -70,7 +70,7 @@ async def main():
     reasoning.set(conversation_key(inbound), "high")
     tasks = RunningTaskRegistry()
     app = SimpleNamespace(
-        settings=replace(settings, tool_intent_enabled=False), db_call=DatabaseCalls(),
+        settings=replace(settings, ), db_call=DatabaseCalls(),
         logger=logging.getLogger("test_platform_chat"), model_preferences=preferences,
         reasoning_preferences=reasoning, running_tasks=tasks,
         model_catalog=ModelCatalog.from_json(json.dumps({

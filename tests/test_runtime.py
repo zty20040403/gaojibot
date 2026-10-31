@@ -201,19 +201,10 @@ class AppContextTests(unittest.IsolatedAsyncioTestCase):
         test_settings = replace(
             settings,
             ledger_enabled=True,
-            context_lifecycle_enabled=True,
             turn_journal_enabled=True,
-            reminders_enabled=True,
             outbox_enabled=True,
             quota_enabled=True,
             semantic_enabled=False,
-            historian_enabled=False,
-            dream_enabled=False,
-            matrix_enabled=False,
-            imessage_enabled=False,
-            mirror_routes_json="",
-            browser_enabled=False,
-            rich_render_enabled=False,
             media_enabled=False,
         )
 

@@ -54,7 +54,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         calls = DatabaseCalls()
         self.addAsyncCleanup(calls.close)
         return SimpleNamespace(
-            settings=replace(settings, tool_intent_enabled=False, search_enabled=False), db_call=calls,
+            settings=replace(settings, search_enabled=False), db_call=calls,
             logger=self.logger, model_preferences=ModelPreferenceStore(None),
             reasoning_preferences=ModelPreferenceStore(None), running_tasks=RunningTaskRegistry(),
             model_catalog=ModelCatalog.from_json(json.dumps({"default": "test", "profiles": {

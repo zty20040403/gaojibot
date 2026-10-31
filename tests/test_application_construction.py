@@ -52,18 +52,18 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(dict(os.environ),before)
 
     def test_parallel_explicit_settings_do_not_change_default_environment(self):
-        with patch.dict(os.environ,{'AI_ADMIN_ENABLED':'false','AI_MAX_CONTEXT_TURNS':'211'}):
+        with patch.dict(os.environ,{'AI_ADMIN_ENABLED':'false','AI_SEARCH_MAX_RESULTS':'211'}):
             original = dict(os.environ)
             def make(index):
-                env={**MODE,'AI_ADMIN_ENABLED':str(index%2==1),'AI_MAX_CONTEXT_TURNS':str(1000+index),
+                env={**MODE,'AI_ADMIN_ENABLED':str(index%2==1),'AI_SEARCH_MAX_RESULTS':str(1000+index),
                      'AI_STATE_DIR':f'/TEST/state-{index}'}
                 host=create_application(env=env).state.gaoji_runtime
-                return host.settings.admin_enabled,host.settings.max_context_turns,host.state_dir
+                return host.settings.admin_enabled,host.settings.search_max_results,host.state_dir
             with ThreadPoolExecutor(max_workers=4) as pool:
                 rows=list(pool.map(make,range(12)))
             for index,row in enumerate(rows):
                 self.assertEqual(row,(index%2==1,1000+index,Path(f'/TEST/state-{index}')))
-            self.assertEqual(Settings.from_env().max_context_turns,211)
+            self.assertEqual(Settings.from_env().search_max_results,211)
             self.assertEqual(dict(os.environ),original)
 
 class OwnedConstructionTests(unittest.IsolatedAsyncioTestCase):
@@ -144,12 +144,8 @@ class FailureTests(unittest.IsolatedAsyncioTestCase):
                 model_default_profile='test',local_model_profile='test',
                 model_profiles_json=json.dumps({'test': {'provider':'test','protocol':'openai-chat',
                     'model':'test-model','base_url':'https://test.invalid/v1','api_key_env':'TEST_MODEL_SECRET'}}),
-                ledger_enabled=True, projects_enabled=False, routines_enabled=False,
-                group_wiki_enabled=False, historian_enabled=False, dream_enabled=False,
-                semantic_enabled=False, mcp_enabled=False, subagents_enabled=False,
-                sandbox_enabled=False, media_enabled=False, matrix_enabled=False,
-                imessage_enabled=False, browser_enabled=False, rich_render_enabled=False,
-                archive_enabled=False, observability_enabled=False)
+                ledger_enabled=True, semantic_enabled=False, subagents_enabled=False,
+                sandbox_enabled=False, media_enabled=False, archive_enabled=False, observability_enabled=False)
             host = OfficialApplicationRuntime(chosen,state_dir=root/'state',cache_dir=root/'cache',
                 project_root=root,env={**MODE,'TEST_MODEL_SECRET':'TEST_EXPLICIT_SECRET'},logger=Mock())
             closed=[];loop=asyncio.get_running_loop();local_clients=[];catalogs=[]

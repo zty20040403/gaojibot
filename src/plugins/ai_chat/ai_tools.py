@@ -31,9 +31,6 @@ SAY_TOOL_NAME = "say"
 DELEGATE_AGENT_TOOL_NAME = "delegate_agent"
 RUN_SUBAGENTS_TOOL_NAME = "run_subagents"
 RESUME_SUBAGENT_TOOL_NAME = "resume_subagent"
-MEMORY_ADD_TOOL_NAME = "memory_add"
-MEMORY_LIST_TOOL_NAME = "memory_list"
-MEMORY_REMOVE_TOOL_NAME = "memory_remove"
 USE_SKILL_TOOL_NAME = "use_skill"
 INSPECT_SOURCE_TOOL_NAME = "inspect_source"
 VIEW_FORWARD_TOOL_NAME = "view_forward"
@@ -638,78 +635,6 @@ RESUME_SUBAGENT_TOOL: ToolDefinition = {
     },
 }
 
-MEMORY_ADD_TOOL: ToolDefinition = {
-    "type": "function",
-    "function": {
-        "name": MEMORY_ADD_TOOL_NAME,
-        "description": (
-            "保存一条以后仍然有用的长期记忆。仅当用户明确要求记住，或用户清楚表达了"
-            "稳定偏好、身份事实、长期项目约定时调用；不要保存临时聊天、推测、密码、"
-            "API Key、验证码或其他秘密。默认保存为当前用户记忆；只有对整个群都适用的"
-            "共同约定才使用 group。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "scope": {
-                    "type": "string",
-                    "enum": ["user", "group"],
-                    "description": "记忆范围：当前用户或当前群。",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "独立、简洁、以后可直接理解的一条事实或偏好。",
-                },
-            },
-            "required": ["scope", "content"],
-            "additionalProperties": False,
-        },
-    },
-}
-
-MEMORY_LIST_TOOL: ToolDefinition = {
-    "type": "function",
-    "function": {
-        "name": MEMORY_LIST_TOOL_NAME,
-        "description": "查看当前用户或当前群已保存的长期记忆及其 ID。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "scope": {
-                    "type": "string",
-                    "enum": ["user", "group", "all"],
-                    "description": "要查看的记忆范围。",
-                }
-            },
-            "required": ["scope"],
-            "additionalProperties": False,
-        },
-    },
-}
-
-MEMORY_REMOVE_TOOL: ToolDefinition = {
-    "type": "function",
-    "function": {
-        "name": MEMORY_REMOVE_TOOL_NAME,
-        "description": (
-            "按 ID 删除当前用户或当前群可见的一条长期记忆。"
-            "仅在用户明确要求忘记或更正该记忆时调用。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "memory_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "memory_list 返回的记忆 ID。",
-                }
-            },
-            "required": ["memory_id"],
-            "additionalProperties": False,
-        },
-    },
-}
-
 
 USE_SKILL_TOOL: ToolDefinition = {
     "type": "function",
@@ -783,8 +708,6 @@ VIEW_FORWARD_TOOL: ToolDefinition = {
 }
 
 
-MEMORY_TOOLS = [MEMORY_ADD_TOOL, MEMORY_LIST_TOOL, MEMORY_REMOVE_TOOL]
-
 SANDBOX_TOOLS = [
     SANDBOX_CREATE_TOOL,
     SANDBOX_DESTROY_TOOL,
@@ -800,6 +723,38 @@ SANDBOX_TOOLS = [
     JOB_STATUS_TOOL,
     JOB_CANCEL_TOOL,
 ]
+
+
+MEMORY_APPEND_TOOL: ToolDefinition = {
+    "type": "function",
+    "function": {
+        "name": "memory_append",
+        "description": "往本会话的记忆末尾加一条。格式「名字：内容（日期 #消息编号）」，说的不是某个人就不写名字。",
+        "parameters": {
+            "type": "object",
+            "properties": {"line": {"type": "string", "minLength": 1, "maxLength": 500}},
+            "required": ["line"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+MEMORY_WRITE_TOOL: ToolDefinition = {
+    "type": "function",
+    "function": {
+        "name": "memory_write",
+        "description": (
+            "用新内容整份重写本会话的记忆：改、删已有的条目，或者整理精简时用。"
+            "分「## 群里」「## 人」两节，人按「### 名字」分，一行一条；没改的条目照抄，别弄丢。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"content": {"type": "string", "minLength": 1, "maxLength": 20000}},
+            "required": ["content"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 HISTORY_TOOL: ToolDefinition = {
@@ -834,7 +789,7 @@ TOOL_DEFINITIONS = (
     WEB_FETCH_TOOL,
     READ_IMAGE_TEXT_TOOL, VIEW_IMAGE_TOOL, FIND_STICKERS_TOOL,
     TRANSCRIBE_VOICE_TOOL, SEND_STICKER_TOOL,
-    *MEMORY_TOOLS,
+    MEMORY_APPEND_TOOL, MEMORY_WRITE_TOOL,
     *SANDBOX_TOOLS,
     HISTORY_TOOL,
     USE_SKILL_TOOL, INSPECT_SOURCE_TOOL,

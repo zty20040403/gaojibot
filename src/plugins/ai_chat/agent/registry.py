@@ -8,7 +8,6 @@ from .contracts import AgentSpec, SubAgentRole, WorkerRole
 
 COMMON_READ_TOOLS = frozenset(
     {
-        "memory_list",
         "inspect_source",
         "view_forward",
         "list_recent_files",

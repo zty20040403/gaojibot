@@ -16,10 +16,11 @@ from ..platform_types import InboundMessage
 from ..tasks import RunningTaskRegistry
 
 
-CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory"]
+CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory", "clear"]
 CommandStatus = Literal["ok", "unknown", "syntax", "denied", "unavailable", "not_found", "unsupported", "error"]
 _ALIASES: dict[str, CommandName] = {
     "memory": "memory", "记忆": "memory",
+    "clear": "clear", "清空": "clear", "清空上下文": "clear",
     "help": "help", "帮助": "help",
     "bind": "bind", "绑定": "bind",
     "model": "model", "模型": "model", "切换模型": "model",
@@ -100,6 +101,7 @@ class CommandServices:
     binding_handler: ResultCallback | None = None
     db_call: Callable[..., Any] | None = None
     memory: ResultCallback | None = None
+    clear: ResultCallback | None = None
 
 
 async def _await(value):
@@ -128,10 +130,11 @@ async def dispatch_command(
     if request.name == "help":
         if request.argument:
             return CommandResult("syntax", "用法：/help")
-        extras = ["/memory"] if services.memory is not None else []
+        extras = [label for key, label in (("memory", "/memory"), ("clear", "/clear"))
+                  if getattr(services, key) is not None]
         commands = "/help、/bind、/model、/effort、/usage、/task、/cancel" + ("、" + "、".join(extras) if extras else "")
         return CommandResult("ok", "可用命令："+commands+"。\n任务状态和停止仅作用于你在当前入口的运行任务。")
-    if request.name == "memory":
+    if request.name in {"memory", "clear"}:
         callback = getattr(services, request.name)
         if callback is None:
             return CommandResult("unavailable", "该业务命令尚未配置。")

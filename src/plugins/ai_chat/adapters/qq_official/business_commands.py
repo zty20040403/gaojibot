@@ -1,8 +1,8 @@
 """Host assembly for native official business commands; no direct transport."""
 from dataclasses import replace
 
+from ...application.commands import CommandResult
 from .commands import CommandEffectDenied
-from .memory_commands import MemoryCommands
 
 
 def build_business_services(runtime, app):
@@ -17,18 +17,18 @@ def build_business_services(runtime, app):
                 or inbound.endpoint!=life.handle.endpoint or inbound.actor!=life.handle.actor):
             raise CommandEffectDenied('business_command_source_mismatch')
         callbacks={}
-        if app.long_term_memory is not None:
-            def provenance(cursor,current):
-                row=cursor.execute('''SELECT sender_principal_id,sender_actor_key,source_endpoint_key
-                    FROM messages WHERE canonical_message_id=? AND native_message_id=? AND direction='inbound' ''',
-                    (life.handle.canonical_message_id,current.native_message_id)).fetchone()
-                if (row is None or row['sender_actor_key']!=current.actor.key
-                        or row['source_endpoint_key']!=current.endpoint.key):
-                    raise CommandEffectDenied('memory_source_evidence_changed')
-                return row['sender_principal_id'] or 0,life.handle.canonical_message_id
-            callbacks['memory']=MemoryCommands(store=app.long_term_memory,inbound=inbound,
-                effect_scope=life.effect_scope,database_call=runtime._calls,provenance=provenance,
-                group_write_authority=lambda cursor,current:runtime.store.authority.owner_for_actor(
-                    cursor,current.endpoint,current.actor) is not None)
+        store=getattr(app,'conversations',None)
+        if store is not None:
+            async def memory(current,parsed):
+                text=await runtime._calls(store.memory,current.scope.key)
+                return CommandResult('ok',text.strip() or '（这个会话还没有记忆。）')
+
+            async def clear(current,parsed):
+                def run():
+                    latest=app.message_ledger.history(current.scope,limit=1,newest=True)
+                    store.set_tail_after(current.scope.key,latest[-1].canonical_message_id if latest else 0)
+                await runtime._calls(run)
+                return CommandResult('ok','上下文已清空。之前的聊天记录还在，需要时我会用 history 查。')
+            callbacks.update(memory=memory,clear=clear)
         return replace(services,**callbacks)
     return factory

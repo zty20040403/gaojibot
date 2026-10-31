@@ -8,15 +8,15 @@ request prefix stays byte-identical between moves and provider caches keep hitti
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 import threading
 import time
 
 from src.bot_storage import DatabaseSource, open_store_connection
 
-from .context_store import estimate_tokens
 from .conversation_scope import ConversationScope
 from .ledger import MessageLedger
-from .timeline import is_noise, render_line
+from .timeline import estimate_tokens, is_noise, render_line
 
 MAX_TAIL_ROWS = 3000
 MEMORY_TOKENS = 3000
@@ -38,11 +38,15 @@ class ConversationStore:
         with self._lock:
             cursor = self._connection.cursor()
             try:
+                cursor.execute("BEGIN")
                 yield cursor
-                self._connection.commit()
             except BaseException:
                 self._connection.rollback()
                 raise
+            else:
+                self._connection.commit()
+            finally:
+                cursor.close()
 
     def tail_after(self, scope_key: str) -> int:
         with self._transaction() as cursor:
@@ -74,6 +78,46 @@ class ConversationStore:
                 (scope_key, text, int(time.time())),
             )
         return text
+
+    def memories_to_tidy(self) -> list[tuple[str, str]]:
+        """Memories written since their last tidy."""
+        with self._transaction() as cursor:
+            rows = cursor.execute(
+                """SELECT scope_key, content FROM conversation_memory
+                WHERE content <> '' AND (tidied_at IS NULL OR updated_at > tidied_at)""",
+            ).fetchall()
+        return [(str(row["scope_key"]), str(row["content"])) for row in rows]
+
+    def save_tidied(self, scope_key: str, original: str, tidied: str) -> bool:
+        """Replace a memory with its tidied text unless it changed meanwhile."""
+        now = int(time.time())
+        with self._transaction() as cursor:
+            row = cursor.execute("SELECT content FROM conversation_memory WHERE scope_key = ? FOR UPDATE",
+                                 (scope_key,)).fetchone()
+            if row is None or str(row["content"]) != original:
+                return False
+            cursor.execute(
+                """UPDATE conversation_memory SET content = ?, previous_content = ?, updated_at = ?, tidied_at = ?
+                WHERE scope_key = ?""",
+                (tidied, original, now, now, scope_key),
+            )
+        return True
+
+    def record_request(self, *, turn_id: int | None, scope_key: str, model: str,
+                       messages: list, tools: list) -> None:
+        """Keep exactly what the model was sent, for debugging a bad answer."""
+        with self._transaction() as cursor:
+            cursor.execute(
+                """INSERT INTO turn_requests (turn_id, scope_key, model, messages_json, tools_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (turn_id, scope_key, model, json.dumps(messages, ensure_ascii=False, default=str),
+                 json.dumps([tool["function"]["name"] for tool in tools], ensure_ascii=False), int(time.time())),
+            )
+
+    def prune_requests(self, *, keep_seconds: int = 14 * 86400) -> int:
+        with self._transaction() as cursor:
+            cursor.execute("DELETE FROM turn_requests WHERE created_at < ?", (int(time.time()) - keep_seconds,))
+            return int(cursor.rowcount or 0)
 
 
 def build_tail(ledger: MessageLedger, store: ConversationStore, scope: ConversationScope, *,

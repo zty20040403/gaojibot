@@ -44,7 +44,7 @@ def build_platform_chat_orchestrator(app, *, service: PlatformChatService | None
             record_trigger=record,
             current_turn_context=lambda inbound, turn_id: current_turn_context(app, inbound, turn_id),
             drain_feedback=feedback, ask_agent=service.ask,
-            is_silence_reply=lambda reply: False, journal_reply_text=str,
+            is_silence_reply=lambda reply: str(reply).strip() == "[silence]", journal_reply_text=str,
         ),
         running_tasks=app.running_tasks, model_preferences=app.model_preferences,
         model_catalog=app.model_catalog, message_ledger=app.message_ledger,

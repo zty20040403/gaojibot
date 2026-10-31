@@ -66,7 +66,6 @@ _READ_TOOLS = {
     "sandbox_list",
     "sandbox_read_file",
     "list_recent_files",
-    "memory_list",
     "inspect_source",
     "use_skill",
     "view_forward",
@@ -85,8 +84,8 @@ _SEND_TOOLS = {
 }
 
 _MEMORY_WRITE_TOOLS = {
-    "memory_add",
-    "memory_remove",
+    "memory_append",
+    "memory_write",
 }
 
 _SANDBOX_WRITE_TOOLS = {
@@ -224,16 +223,6 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         approval="never",
         max_identical_calls=1,
     )
-    for name in {"memory_remove"}:
-        previous = policies[name]
-        policies[name] = ToolPolicy(
-            risk="high",
-            idempotency="idempotent",
-            side_effects=previous.side_effects + ("destructive",),
-            timeout_seconds=previous.timeout_seconds,
-            approval="never",
-            max_identical_calls=1,
-        )
     # Leave time for one task-level QQ authorization before a server mutation.
     return policies
 
@@ -322,7 +311,6 @@ def policy_manifest_for_tools(tools: list[dict[str, Any]]) -> dict[str, Any]:
 
 _EXPLICIT_APPROVAL_TERMS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "job_cancel": (("取消", "停止", "终止", "cancel"), ("任务", "job", "后台")),
-    "memory_remove": (("删除", "忘掉", "移除", "remove"), ("记忆", "memory")),
 }
 
 

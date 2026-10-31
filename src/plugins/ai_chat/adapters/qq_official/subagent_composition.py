@@ -200,8 +200,6 @@ class OfficialSubAgentService:
             return session
         inbound, objective = await self.runtime._calls(self._restore, job)
         capabilities = {"self", "context"}
-        if self.app.long_term_memory is not None:
-            capabilities.add("memory")
         if self.app.settings.search_enabled:
             capabilities.add("web")
         context = ToolContext(SimpleNamespace(context=self.app), event=None,

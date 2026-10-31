@@ -28,7 +28,7 @@ from src.plugins.ai_chat.workers.durable_jobs import JobDeferred
 
 TERMINAL = frozenset({'completed', 'partial', 'failed', 'cancelled'})
 TEXT_TOOLS = frozenset({
-    'history', 'memory_list', 'web_search', 'web_fetch', 'inspect_source', 'use_skill', 'say'})
+    'history', 'web_search', 'web_fetch', 'inspect_source', 'use_skill', 'say'})
 FILE_TOOLS = frozenset({'sandbox_create', 'sandbox_list', 'sandbox_destroy', 'sandbox_exec',
     'sandbox_write_file', 'sandbox_read_file', 'send_file_from_sandbox', 'send_file'})
 FILE_ROLES = frozenset({'researcher', 'analyst', 'coder', 'document'})

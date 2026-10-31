@@ -34,8 +34,9 @@ def background_factory(*,proactive_configuration=ProactiveConfiguration(),proact
                 await runtime._calls(app.usage_store.record,scope_key=endpoint.scope.key,source='proactive-interest',
                     provider=trace.provider,model=trace.model,input_tokens=trace.input_tokens,
                     output_tokens=trace.output_tokens,cached_tokens=trace.cached_tokens,occurred_at=int(runtime.store.clock()))
+            from src.plugins.ai_chat.prompt import PERSONA
             from src.plugins.ai_chat.runtime_clock import runtime_clock_prompt
-            scorer=SharedProactiveScorer(profile=profile,persona=app.settings.system_prompt,clock_prompt=runtime_clock_prompt,
+            scorer=SharedProactiveScorer(profile=profile,persona=app.settings.system_prompt or PERSONA,clock_prompt=runtime_clock_prompt,
                 threshold=proactive_configuration.threshold,max_reply_chars=proactive_configuration.max_reply_chars,record_usage=usage)
             proactive=ProactiveIngress(token=token,transaction=runtime.store.transaction,admission=runtime.store.admitted,
                 outbox=runtime.outbox,scorer=scorer,clock=runtime.store.clock,database_calls=runtime._calls,

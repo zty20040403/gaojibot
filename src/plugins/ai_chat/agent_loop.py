@@ -258,7 +258,24 @@ def _build_messages(
     tool_context: str = "",
     replay_prefix: list[ChatMessage] | None = None,
     system_context: str = "",
+    system_prompt: str | None = None,
 ) -> list[ChatMessage]:
+    if system_prompt is not None:
+        # Chat layout: stable system and chat tail first, everything that changes last.
+        chat: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
+        if group_context:
+            chat.append({"role": "user", "content": "[聊天记录]\n" + group_context})
+        current = ["[现在]\n" + runtime_clock_prompt()]
+        if memory_context:
+            current.append("[记忆]\n" + memory_context)
+        for kind, content in (("web", web_context), ("ocr", image_context)):
+            if content:
+                current.append(quote_evidence(content, kind))
+        if tool_context:
+            current.append(tool_context)
+        current.append("[新消息]\n" + (f"{current_user}：" if current_user else "") + user_text)
+        chat.append({"role": "user", "content": "\n\n".join(current)})
+        return chat
     messages = [
         {
             "role": "system",
@@ -284,7 +301,14 @@ def _build_messages(
     return messages
 
 
+# The chat service sets this to keep exactly what the model was last sent.
+request_sink: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("request_sink", default=None)
+
+
 async def _create_completion(_trace: AgentTrace | None = None, **kwargs: Any) -> Any:
+    sink = request_sink.get()
+    if sink is not None:
+        sink(kwargs)
     profile = _active_profile.get() or _resolve_profile()
     _catalog, gateway = _runtime()
     resilient = getattr(gateway, "create_completion_with_profile", None)
@@ -425,6 +449,7 @@ async def ask_deepseek(
     final_text_sink: FinalTextSink | None = None,
     final_stream_state: FinalStreamState | None = None,
     system_context: str = "",
+    system_prompt: str | None = None,
 ) -> str:
     _last_completion_profile.set(None)
     selected_profile = _resolve_profile(profile, model)
@@ -439,6 +464,7 @@ async def ask_deepseek(
         tool_context,
         replay_prefix,
         system_context,
+        system_prompt,
     )
     response, emitted = await _completion_with_optional_stream(
         final_text_sink,
@@ -552,6 +578,7 @@ async def ask_deepseek_with_tools(
     final_feedback: Callable[[str], str | None] | None = None,
     system_context: str = "",
     tool_catalog: ToolCatalog | None = None,
+    system_prompt: str | None = None,
 ) -> str:
     async def publish_transcript(items):
         if transcript_sink is not None:
@@ -579,6 +606,7 @@ async def ask_deepseek_with_tools(
             trace=trace,
             final_text_sink=final_text_sink,
             final_stream_state=final_stream_state,
+            system_prompt=system_prompt,
         )
         await publish_transcript([*history, {"role": "user", "content": user_text}, {"role": "assistant", "content": answer}])
         return answer
@@ -592,6 +620,7 @@ async def ask_deepseek_with_tools(
         tool_context=tool_context,
         system_context=system_context,
         replay_prefix=replay_prefix,
+        system_prompt=system_prompt,
     )
     recovered_calls = []
     if trace is not None:

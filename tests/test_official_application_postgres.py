@@ -89,13 +89,10 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                 chosen=replace(settings,postgres_dsn=database.dsn,postgres_schema=database.schema,
                     admin_secret_file=private(root/'console-secret',b'TEST_CONSOLE_SECRET_32_BYTES_LONG!'),
                     admin_enabled=True,sandbox_enabled=False,
-                    ledger_enabled=True,context_lifecycle_enabled=True,turn_journal_enabled=True,
+                    ledger_enabled=True,turn_journal_enabled=True,
                     outbox_enabled=True,quota_enabled=True,durable_jobs_enabled=True,
-                    subagents_enabled=True,routines_enabled=False,group_wiki_enabled=False,
-                    semantic_enabled=False,historian_enabled=False,dream_enabled=False,
-                    matrix_enabled=False,imessage_enabled=False,browser_enabled=False,rich_render_enabled=False,
-                    media_enabled=False,mcp_enabled=False,observability_enabled=False,proactive_adaptive=False,
-                    alertmanager_url='',archive_enabled=False)
+                    subagents_enabled=True,semantic_enabled=False,media_enabled=False,observability_enabled=False,proactive_adaptive=False,
+                    archive_enabled=False)
                 @asynccontextmanager
                 async def protocol(*args,**kwargs):
                     async with open_official_protocol(*args,**kwargs) as gateway:

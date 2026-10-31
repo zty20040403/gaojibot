@@ -43,9 +43,7 @@ class OfficialApplicationRuntime:
             if self._closed:raise RuntimeError('application_closed')
             maintenance=ApplicationMaintenance()
             context=await build_owned_context(build_app_context,self.settings,state_dir=self.state_dir,cache_dir=self.cache_dir,
-                project_root=self.project_root,logger=self.logger,
-                historian_generator=maintenance._generate_historian,dream_generator=maintenance._generate_dream,
-                evidence_provider=maintenance._dream_evidence,environment=self.env)
+                project_root=self.project_root,logger=self.logger,environment=self.env)
             self._context=context
             maintenance.bind(context)
             try:
