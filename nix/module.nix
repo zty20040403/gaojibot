@@ -514,6 +514,19 @@ in {
       description = "Days to retain unused on-demand package roots before the dedicated sandbox cache GC removes them.";
     };
 
+    opsRead = {
+      baseUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Cluster-control URL for owner-private background read tools.";
+      };
+      tokenFile = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Host-only cluster-control API token file. Never passed to a VM.";
+      };
+    };
+
     browser = {
       enable = lib.mkEnableOption "the bot's persistent Playwright browser and rich rendering";
 
@@ -842,6 +855,8 @@ in {
         {
           HOME = statePath;
           AI_STATE_DIR = "${statePath}/state";
+          AI_OPS_READ_BASE_URL = cfg.opsRead.baseUrl;
+          AI_OPS_READ_TOKEN_FILE = cfg.opsRead.tokenFile;
           AI_CACHE_DIR = cachePath;
           AI_SANDBOX_ENABLED = boolString cfg.sandbox.enable;
           AI_SANDBOX_ALLOWED_USERS = lib.concatMapStringsSep "," toString cfg.sandbox.allowedUsers;

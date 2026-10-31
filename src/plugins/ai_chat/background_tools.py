@@ -61,6 +61,9 @@ class BackgroundToolSession:
 
     async def execute_tool(self, name, arguments):
         await self.current()
+        if name == 'ops_read' and any(item['function']['name'] == name for item in self.tools):
+            from .ops_read import read
+            return await read(self.app, self.inbound, arguments)
         manager = self.app.sandbox_manager
         if name in {'shell', 'read_file', 'write_file'}:
             sandbox = await self.workspace()

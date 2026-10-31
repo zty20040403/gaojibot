@@ -140,6 +140,8 @@ class Settings:
     tool_max_result_chars: int
     tool_max_context_chars: int
     search_enabled: bool
+    ops_read_base_url: str
+    ops_read_token_file: str
     search_auto_enabled: bool
     search_max_results: int
     search_timeout_seconds: int
@@ -334,6 +336,8 @@ class Settings:
                 500000,
             ),
             search_enabled=boolean("AI_SEARCH_ENABLED", True),
+            ops_read_base_url=environment.get('AI_OPS_READ_BASE_URL', '').strip(),
+            ops_read_token_file=environment.get('AI_OPS_READ_TOKEN_FILE', '').strip(),
             search_auto_enabled=boolean("AI_SEARCH_AUTO_ENABLED", True),
             search_max_results=integer("AI_SEARCH_MAX_RESULTS", 5),
             search_timeout_seconds=integer("AI_SEARCH_TIMEOUT_SECONDS", 10),
