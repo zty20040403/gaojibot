@@ -29,7 +29,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
-        subagent_actions_factory=None, generation_factory=None, media_factory=None,
+        generation_factory=None, media_factory=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -38,7 +38,6 @@ class PlatformChatService:
         self.scope_enabled = scope_enabled or self._scope_enabled
         self.registry_factory = registry_factory
         self.llm = llm
-        self.subagent_actions_factory = subagent_actions_factory
         self.generation_factory = generation_factory
         self.media_factory = media_factory
 
@@ -128,8 +127,6 @@ class PlatformChatService:
             capabilities.add("context")
         if self.context.settings.search_enabled and (force_search or self.context.settings.search_auto_enabled):
             capabilities.add("web")
-        if self.subagent_actions_factory is not None:
-            capabilities.add("subagents")
         context = ToolContext(
             self.services, event=None, capabilities=frozenset(capabilities),
             journal_turn_id=journal_turn_id, inbound=inbound, platform=platform,
@@ -145,14 +142,9 @@ class PlatformChatService:
         try:
             if file_session is not None:
                 context = file_session.context(context)
-            turn = TurnState(context=context, user_text=user_text)
+            turn = TurnState(context=context, user_text=user_text, model_profile=selected_profile)
             registry = await self.context.db_call(self.registry_factory, turn.context)
             tools = await self.context.db_call(registry.definitions, turn.context)
-            prepared = SimpleNamespace(turn_context=turn_context)
-            if self.subagent_actions_factory is not None:
-                turn.subagent_actions = self.subagent_actions_factory(
-                    turn, ports, selected_profile, prepared, turn_trace)
-
             async def execute_tool(name, arguments):
                 from src.storage_admission import CapacityError, require_tool_capacity
                 from ..tool_policy import policy_for_tool

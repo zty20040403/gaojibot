@@ -78,6 +78,7 @@ class TurnState:
     subagent_task_started: bool = False
     subagent_delegations: int = 0
     subagent_actions: SubAgentActions | None = None
+    model_profile: Any = None
 
     @property
     def agent_executor(self) -> Any:

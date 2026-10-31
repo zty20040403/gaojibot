@@ -26,7 +26,7 @@ _ALIASES: dict[str, CommandName] = {
     "model": "model", "模型": "model", "切换模型": "model",
     "effort": "effort", "强度": "effort", "推理强度": "effort", "思考强度": "effort", "reasoning": "effort",
     "usage": "usage", "用量": "usage", "token用量": "usage",
-    "task": "task", "tasks": "task", "任务": "task", "ps": "task",
+    "task": "task", "tasks": "task", "任务": "task", "ps": "task", "status": "task",
     "stop": "cancel", "cancel": "cancel", "停止": "cancel", "取消": "cancel", "取消任务": "cancel", "kill": "cancel",
 }
 _RESETS = frozenset({"default", "reset", "默认", "重置"})

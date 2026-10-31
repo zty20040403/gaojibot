@@ -349,10 +349,7 @@ def build_turn_consumer(runtime, token, app):
     files = getattr(runtime, 'file_service', None)
     if files is not None:
         service_options['generation_factory'] = files.generation.foreground
-    subagents = runtime.subagent_service
-    if subagents is not None and app.settings.subagent_entry_enabled:
-        from .subagent_actions import task_registry_for
-        service_options.update(subagent_actions_factory=subagents.actions_for, registry_factory=task_registry_for)
+    agents = runtime.agent_service
     service = PlatformChatService(app, **service_options)
     orchestrator = build_platform_chat_orchestrator(app, service=service)
 
@@ -403,9 +400,9 @@ def build_turn_consumer(runtime, token, app):
             return await runtime._calls(read)
 
         tasks = app.running_tasks
-        if subagents is not None:
-            from .subagent_commands import TaskRegistryAdapter
-            tasks = TaskRegistryAdapter(tasks, token, active_cursor.get, runtime.store.admitted, runtime.store.clock)
+        if agents is not None:
+            from .background_agents import AgentCommands
+            tasks = AgentCommands(tasks, agents)
         services = CommandServices(running_tasks=tasks,
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
             host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls))

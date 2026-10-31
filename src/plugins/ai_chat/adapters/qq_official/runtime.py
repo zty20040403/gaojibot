@@ -124,7 +124,7 @@ class OfficialRuntime:
         self.file_services_factory = file_services_factory
         self.file_service = None
         self.turn_consumer = None
-        self.subagent_service = None
+        self.agent_service = None
         self.ledger = ledger
         self._owns_ledger = ledger is None
         self.journal = journal
@@ -210,7 +210,7 @@ class OfficialRuntime:
         # No raw account, session, URL, credential, binding effect or DB exception.
         return {"state": self.state, "reason": self.reason, "started": self._started,
                 "turn_execution_connected": self.turn_consumer is not None,
-                "subagent_execution_connected": self.subagent_service is not None,
+                "background_agent_connected": self.agent_service is not None,
                 "binding_transport_connected": self.binding_sender is not None or self.sender is not None,
                 "durable_sender_connected": self.sender is not None,
                 "approval_transport_connected": self.approval_service is not None}
@@ -265,7 +265,7 @@ class OfficialRuntime:
                     self._gateway = None
                     self.sender = None
                     self.turn_consumer = None
-                    self.subagent_service = None
+                    self.agent_service = None
                     # DatabaseCalls drains non-cancellable transaction threads
                     # before this close or any later account acquisition.
                     try:
@@ -397,8 +397,8 @@ class OfficialRuntime:
                         raise
                     observe(self.observer, 'cleanup', 'completed', count=deleted)
                     next_purge = loop.time() + 60
-                if self.subagent_service is not None and loop.time() >= next_result_scan:
-                    await self.subagent_service.reconcile()
+                if self.agent_service is not None and loop.time() >= next_result_scan:
+                    await self.agent_service.reconcile()
                     next_result_scan = loop.time() + 5
                 if self.migration_service is not None:
                     await self.migration_service.maintain()
@@ -512,16 +512,15 @@ class OfficialRuntime:
                     self.background_service = None
             resources.push_async_callback(close_background)
             factory = self.turn_consumer_factory
-            subagent_worker = None
-            if (self.application is not None and getattr(self.application, "subagent_store", None) is not None
-                    and getattr(self.application, "subagent_coordinator", None) is not None
-                    and self.application.settings.subagents_enabled):
-                from .subagent_composition import OfficialSubAgentService
-                self.subagent_service = OfficialSubAgentService(self, token, self.application,
-                    migration_authority=self.migration_service.task_sources if self.migration_service else None)
-                subagent_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
-                    concurrency=2, per_scope_limit=1, database_calls=self._calls)
-                subagent_worker.register(account_job_kind("subagent", self.loaded.account.key), self.subagent_service.execute)
+            agent_worker = None
+            if self.application is not None:
+                from .background_agents import OfficialBackgroundAgents
+                self.agent_service = OfficialBackgroundAgents(self, token, self.application)
+                await self._calls(self.agent_service.store.recover, token.account_key)
+                resources.push_async_callback(self.agent_service.close)
+                agent_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
+                    concurrency=3, per_scope_limit=3, database_calls=self._calls)
+                agent_worker.register(account_job_kind("agent", self.loaded.account.key), self.agent_service.execute)
             if factory is None and self.application is not None:
                 from .turns import build_turn_consumer
                 factory = lambda current, lease_token: build_turn_consumer(current, lease_token, self.application)
@@ -535,8 +534,8 @@ class OfficialRuntime:
                 tasks.append(asyncio.create_task(self.sender.run()))
             if self.approval_service is not None:
                 tasks.append(asyncio.create_task(self.approval_service.run()))
-            if subagent_worker is not None:
-                tasks.append(asyncio.create_task(subagent_worker.run_forever()))
+            if agent_worker is not None:
+                tasks.append(asyncio.create_task(agent_worker.run_forever()))
             if file_worker is not None:
                 tasks.append(asyncio.create_task(file_worker.run_forever()))
             try:
@@ -563,7 +562,7 @@ class OfficialRuntime:
                     await asyncio.gather(*tasks, return_exceptions=True)
                     self.sender = None
                     self.turn_consumer = None
-                    self.subagent_service = None
+                    self.agent_service = None
 
     def _recover_interrupted_turns(self, token):
         from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json
