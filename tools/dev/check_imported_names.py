@@ -18,6 +18,7 @@ def topnames(m):
                 for e in ast.walk(tg):
                     if isinstance(e,ast.Name): names.add(e.id)
         elif isinstance(node,ast.AnnAssign) and isinstance(node.target,ast.Name): names.add(node.target.id)
+        elif isinstance(node,ast.TypeAlias): names.add(node.name.id)
         elif isinstance(node,(ast.Import,ast.ImportFrom)):
             for a in node.names: names.add((a.asname or a.name).split('.')[0])
         elif isinstance(node,(ast.If,ast.Try)):
