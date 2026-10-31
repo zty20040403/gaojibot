@@ -14,6 +14,23 @@
 - 2026-11-01 实测发现群 VM 能连宿主回环（10.0.2.2 的 sshd、PostgreSQL）和 tailnet 服务，此前"VM 网络本来就隔离"的说法不成立。修复见 `docs/sandbox-security.md` 的 KVM networking：libvirt session daemon 移入 `gaoji-vm.service`，nftables 按该 cgroup 只放行公网、DNS 和后台中继端口 18640/18641。部署前 VM 仍不隔离。
 - 当前运行说明以 README、qq-official-host-config 和 deploy-rework 为准。下面是最初的任务交接快照，旧实现位置和未完成标记不代表最新状态。
 
+## 执行记录（2026-11-01）
+
+- 已部署：Bot `6836fae`，Nix 配置 `dfcff7c9`。数据库没有迁移，仍是 `0077`。部署前的完整备份在 tank 的 `/data/services/gaoji/backups/codex-20261101-*/`，同目录有改动前的 `runtime.env`。
+- **后台改用 Codex**（#62，修复 #66、#67）：
+  - 后台任务在群 VM 里运行固定版本 0.153.4 的 `codex app-server`，第一次用时按 sha256 校验后自动安装。
+  - 宿主的工具（history、web_search、web_fetch、ask_main，owner 私聊发起的任务还有 ops_read）以 dynamic tools 的形式提供给 Codex。
+  - 模型请求走宿主 127.0.0.1:18640 的中转站：每个任务一个令牌，宿主换上自己的模型、推理强度和 cliproxy key，key 不进 VM。app-server 的通道在 18641。
+  - 后台模型和推理强度在控制台「任务与投递」页修改，默认 `gpt-6.1-sol` / `high`。
+  - 实测：原群的内存价格任务完整跑通，图、CSV 和资料包都发到了群里，数据点都附了来源。
+- **VM 网络隔离**（#63）：`gaoji-vm.service` 管 VM 的守护进程，nftables 按它的 cgroup 只放行公网、DNS 和 18640/18641。部署后在群 VM 里实测：tank 本机的 SSH、PostgreSQL、bot 端口，tailnet 和局域网都拦住了；中转站和公网是通的。
+- **表情包**（#64）：不指定内容也能发；GIF 能发，库里 136 张都通过了新的格式检查，发出去会动；只在能发的格式里挑，坏文件自动换下一张。
+- **人设和技能**（#65）：人设和真实聊天样例放在 tank 的 `/home/kenneth/services/gaoji/persona.md` 和 `style-examples.md`，由 `AI_SYSTEM_PROMPT_FILE` 和 `AI_STYLE_EXAMPLES_FILE` 指定，不进公开仓库。reminders 和 browser 两个技能文件改成了现在的工具。
+- **还没做完**：
+  - 新绑定的第二个群还没开主动消息。超过 5 分钟的后台结果发不进去（`这个群没开主动发言`），要群主在 QQ 里打开。
+  - h610 仍是异步备库，网络稳定后要恢复同步。
+  - W8 GitHub 仍然暂缓。
+
 
 > 2026-10-31 编写。接手的人（或 AI）先读完本文，再读 `docs/gaoji-rework-plan.md`（总体方案）和 `docs/deploy-rework.md`（上线步骤）。
 > 原则一句话：**先管模型看到什么，删代码优先，能交给后台 agent 的就交给后台 agent，maxx 做得好的地方照着做。**
