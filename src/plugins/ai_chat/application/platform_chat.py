@@ -166,7 +166,8 @@ class PlatformChatService:
                 if turn_context:
                     context_parts.append(quote_evidence(turn_context, "turn_context"))
                 skill_index = self.context.skill_registry.prompt_index()
-                system = system_prompt(self.context.settings.system_prompt, skill_index)
+                system = system_prompt(self.context.settings.system_prompt, skill_index,
+                                       self.context.settings.style_examples)
                 answer = await self.llm(
                     user_text, [], tools, execute_tool,
                     current_user=inbound.sender_display or "群友",

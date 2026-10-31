@@ -24,7 +24,6 @@ SANDBOX_READ_FILE_TOOL_NAME = "sandbox_read_file"
 JOB_STATUS_TOOL_NAME = "job_status"
 JOB_CANCEL_TOOL_NAME = "job_cancel"
 SEND_FILE_FROM_SANDBOX_TOOL_NAME = "send_file_from_sandbox"
-SEND_IMAGE_FROM_SANDBOX_TOOL_NAME = "send_image_from_sandbox"
 LIST_RECENT_FILES_TOOL_NAME = "list_recent_files"
 IMPORT_FILE_TO_SANDBOX_TOOL_NAME = "import_file_to_sandbox"
 SAY_TOOL_NAME = "say"
@@ -446,23 +445,6 @@ SEND_FILE_FROM_SANDBOX_TOOL: ToolDefinition = {
     },
 }
 
-SEND_IMAGE_FROM_SANDBOX_TOOL: ToolDefinition = {
-    "type": "function",
-    "function": {
-        "name": SEND_IMAGE_FROM_SANDBOX_TOOL_NAME,
-        "description": "把沙盒中的 PNG/JPG/GIF/WebP 图片直接发送到当前 QQ 群。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "sandbox_id": {"type": "string"},
-                "path": {"type": "string"},
-            },
-            "required": ["sandbox_id", "path"],
-            "additionalProperties": False,
-        },
-    },
-}
-
 LIST_RECENT_FILES_TOOL: ToolDefinition = {
     "type": "function",
     "function": {
@@ -631,7 +613,6 @@ SANDBOX_TOOLS = [
     SANDBOX_WRITE_FILE_TOOL,
     SANDBOX_READ_FILE_TOOL,
     SEND_FILE_FROM_SANDBOX_TOOL,
-    SEND_IMAGE_FROM_SANDBOX_TOOL,
     LIST_RECENT_FILES_TOOL,
     IMPORT_FILE_TO_SANDBOX_TOOL,
     JOB_STATUS_TOOL,

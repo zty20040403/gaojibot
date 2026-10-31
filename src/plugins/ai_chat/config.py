@@ -12,6 +12,14 @@ if TYPE_CHECKING:
     from .conversation_scope import ConversationScope
 
 
+def _text_file(environ: Mapping[str, str], name: str) -> str:
+    path = environ.get(name, "").strip()
+    if not path:
+        return ""
+    with open(path, encoding="utf-8") as handle:
+        return handle.read().strip()
+
+
 def _get_int(name: str, default: int, *, environ: Mapping[str, str] | None = None) -> int:
     value = (os.environ if environ is None else environ).get(name, "").strip()
     if not value:
@@ -123,6 +131,7 @@ class Settings:
     model_circuit_long_cooldown_seconds: int
     group_model_profiles: dict[int, str]
     system_prompt: str
+    style_examples: str
     ledger_enabled: bool
     turn_journal_enabled: bool
     turn_archive_ttl_days: int
@@ -284,8 +293,11 @@ class Settings:
             group_model_profiles=group_models(
                 "AI_GROUP_MODEL_PROFILES_JSON"
             ),
-            # Empty means the built-in persona in prompt.py.
-            system_prompt=environment.get("AI_SYSTEM_PROMPT", "").strip(),
+            # Empty means the built-in persona in prompt.py. Files win over the
+            # variable: a long persona and real chat lines stay off the public repo.
+            system_prompt=_text_file(environment, "AI_SYSTEM_PROMPT_FILE")
+            or environment.get("AI_SYSTEM_PROMPT", "").strip(),
+            style_examples=_text_file(environment, "AI_STYLE_EXAMPLES_FILE"),
             ledger_enabled=boolean("AI_LEDGER_ENABLED", True),
             turn_journal_enabled=boolean("AI_TURN_JOURNAL_ENABLED", True),
             turn_archive_ttl_days=min(
