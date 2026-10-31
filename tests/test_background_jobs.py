@@ -1,4 +1,4 @@
-"""Real queue/storage checks and the background loop's interruption boundary."""
+"""Real queue/storage checks and the background runner's interruption boundary."""
 import asyncio
 import logging
 from types import SimpleNamespace
@@ -60,19 +60,19 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
             saved.append(report)
 
         async def session(*args):
-            return SimpleNamespace(profile=None, prompt='TEST', tools=(), execute_tool=nothing, close=nothing)
+            return SimpleNamespace(prompt='TEST', tools=(), execute_tool=nothing, close=nothing)
 
-        async def llm(*args, feedback_provider, **kwargs):
+        async def engine(row, session, *, feedback, progress, trace):
             self.store.steer(row['job_id'], 'TEST_ENDPOINT', 'TEST_ACTOR', 'also memory prices')
             self.now = row['deadline_at'] - 200
-            feedback = await feedback_provider()
-            self.assertEqual(feedback[0], 'also memory prices')
-            self.assertEqual(len(feedback), 2)
-            self.assertEqual(await feedback_provider(), [])
+            fresh = await feedback()
+            self.assertEqual(fresh[0], 'also memory prices')
+            self.assertEqual(len(fresh), 2)
+            self.assertEqual(await feedback(), [])
             return 'report with sources'
 
         runner = BackgroundRunner(self.store, calls=self.calls, session_factory=session, save_report=save,
-            ask_main=nothing, record_usage=nothing, logger=logging.getLogger(__name__), llm=llm, clock=lambda: self.now)
+            ask_main=nothing, record_usage=nothing, logger=logging.getLogger(__name__), engine=engine, clock=lambda: self.now)
         await runner.execute(self.queue.get(row['job_id']))
         self.assertEqual(saved, ['report with sources'])
         self.assertEqual(self.store.get(row['job_id'])['state'], 'completed')
@@ -94,15 +94,43 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
             pass
 
         async def session(*args):
-            return SimpleNamespace(profile=None, prompt='TEST', tools=(), execute_tool=nothing, close=nothing)
+            return SimpleNamespace(prompt='TEST', tools=(), execute_tool=nothing, close=nothing)
 
-        async def llm(*args, feedback_provider, **kwargs):
+        async def engine(row, session, *, feedback, progress, trace):
             self.store.cancel(row['job_id'], 'TEST_ENDPOINT', 'TEST_ACTOR')
-            await feedback_provider()
+            await feedback()
             self.fail('A cancelled job continued')
 
         runner = BackgroundRunner(self.store, calls=self.calls, session_factory=session, save_report=nothing,
-            ask_main=nothing, record_usage=nothing, logger=logging.getLogger(__name__), llm=llm, clock=lambda: self.now)
+            ask_main=nothing, record_usage=nothing, logger=logging.getLogger(__name__), engine=engine, clock=lambda: self.now)
         with self.assertRaises(asyncio.CancelledError):
             await runner.execute(self.queue.get(row['job_id']))
         self.assertEqual(self.store.get(row['job_id'])['state'], 'cancelled')
+
+    async def test_question_takes_the_next_steer_as_its_answer(self):
+        row = self.submit()
+        held = {}
+
+        async def nothing(*args):
+            pass
+
+        async def ask_main(row, text):
+            # While the question waits, the engine's own feedback leaves the steer alone.
+            self.assertEqual(await held['feedback'](), [])
+            self.store.steer(row['job_id'], 'TEST_ENDPOINT', 'TEST_ACTOR', 'use RMB')
+
+        async def session(row, job, question):
+            held['question'] = question
+            return SimpleNamespace(prompt='TEST', tools=(), close=nothing)
+
+        async def engine(row, session, *, feedback, progress, trace):
+            held['feedback'] = feedback
+            self.assertEqual(await held['question']('which currency?'), 'use RMB')
+            self.assertEqual(await feedback(), [])
+            return 'done'
+
+        runner = BackgroundRunner(self.store, calls=self.calls, session_factory=session, save_report=nothing,
+            ask_main=ask_main, record_usage=nothing, logger=logging.getLogger(__name__), engine=engine, clock=lambda: self.now)
+        await runner.execute(self.queue.get(row['job_id']))
+        self.assertEqual(self.store.get(row['job_id'])['report'], 'done')
+
