@@ -93,17 +93,15 @@ class OfficialDetails:
                 reason_code,deadline_at,deadline_at AS result_deadline_at,created_at,updated_at,plan_id,journal_turn_id
             FROM qq_official_turn_executions WHERE account_key=? AND created_at<=?
             UNION ALL
-            SELECT s.task_id::text AS identity,s.endpoint_key,s.requester_actor_key,t.status AS state,'subagent' AS execution_kind,
-                s.result_task_status AS result_status,s.suppressed_reason AS reason_code,s.execution_deadline_at AS deadline_at,
-                s.result_expires_at AS result_deadline_at,s.created_at,s.updated_at,s.plan_id,NULL::bigint AS journal_turn_id
-            FROM qq_official_subagent_dispatches s JOIN subagent_tasks t ON t.task_id=s.task_id AND t.account_key=s.account_key
-                AND t.endpoint_key=s.endpoint_key AND t.requester_actor_key=s.requester_actor_key
-            WHERE s.account_key=? AND s.created_at<=?
+            SELECT job_id::text AS identity,endpoint_key,actor_key AS requester_actor_key,state,'agent' AS execution_kind,
+                state AS result_status,'' AS reason_code,deadline_at,NULL::bigint AS result_deadline_at,
+                created_at,COALESCE(finished_at,started_at,created_at) AS updated_at,NULL::text AS plan_id,NULL::bigint AS journal_turn_id
+            FROM background_jobs WHERE account_key=? AND created_at<=?
             ) q ORDER BY created_at DESC,execution_kind DESC,identity DESC LIMIT ? OFFSET ?''',
             (self.account,as_of,self.account,as_of,count,offset)).fetchall()
-        return [{'ref':self._ref('task' if r['execution_kind']=='subagent' else 'execution',r['identity']),'endpoint_ref':self._ref('endpoint',r['endpoint_key']),
+        return [{'ref':self._ref('task' if r['execution_kind']=='agent' else 'execution',r['identity']),'endpoint_ref':self._ref('endpoint',r['endpoint_key']),
             'actor_ref':self._ref('actor',r['requester_actor_key']),'state':finite(r['state'],SAFE_STATES['execution']|TASK_STATES,'other'),
-            'kind':finite(r['execution_kind'],('chat','command','subagent'),'other'),'result_status':finite(r['result_status'],('succeeded','silence','crashed','aborted','denied','cancelled','completed','partial','failed'),None),
+            'kind':finite(r['execution_kind'],('chat','command','agent'),'other'),'result_status':finite(r['result_status'],('succeeded','silence','crashed','aborted','denied','cancelled','completed','partial','failed'),None),
             'reason':_reason(r['reason_code']),'deadline_at':_integer(r['deadline_at']),'result_deadline_at':_integer(r['result_deadline_at']),'created_at':_integer(r['created_at']),
             'updated_at':_integer(r['updated_at']),'plan_ref':self._ref('plan',r['plan_id']),
             'journal_present':r['journal_turn_id'] is not None} for r in rows]

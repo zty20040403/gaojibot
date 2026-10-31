@@ -18,8 +18,8 @@ import time
 import unicodedata
 import weakref
 
-from src.plugins.ai_chat.adapters.qq_official import turn_source as execution, subagent_runtime
-from src.plugins.ai_chat.agent.control import LeaseLost
+from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
+from src.plugins.ai_chat.execution_control import LeaseLost
 from .image_formats import artifact_filename as canonical_artifact_filename
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 
@@ -113,18 +113,6 @@ def foreground_source(cursor, *, token, handle, job, admission, now, pending_dea
         handle.source_native_message_id))
 
 
-def task_source(cursor, *, token, task_id, job, admission, now, pending_deadline_at):
-    binding, task = subagent_runtime.assert_current(cursor, token=token, task_id=task_id,
-        job=job, admission=admission, now=_time(now))
-    if task['cancel_requested'] or task['status'] == 'cancelled':
-        raise LeaseLost('artifact_task_cancelled')
-    _time(pending_deadline_at)
-    if not now < pending_deadline_at <= now + 86400:
-        raise LeaseLost('artifact_task_source_unavailable')
-    return _issue(SourceBinding(token, job, admission, None, task_id, pending_deadline_at,
-        EndpointKey.parse(binding['endpoint_key']), ActorKey.parse(binding['requester_actor_key']),
-        binding['source_execution_id'], 'task:' + str(task_id) + ':1', pending_deadline_at,
-        binding['source_native_message_id']))
 
 
 def current_source(cursor, binding, now):
@@ -148,11 +136,7 @@ def current_source(cursor, binding, now):
         source['source_canonical_message_id'] = row['canonical_message_id']
         source['source_scope_key'] = row['scope_key']
     else:
-        source, task = subagent_runtime.assert_current(cursor, token=binding.token,
-            task_id=binding.task_id, job=binding.job, admission=binding.admission, now=now)
-        if task['cancel_requested'] or task['status'] == 'cancelled':
-            raise LeaseLost('artifact_task_cancelled')
-        source['source_scope_key'] = task['scope_key']
+        raise LeaseLost('retired_subagent_source')
     if (source['endpoint_key'] != binding.endpoint.key or source['requester_actor_key'] != binding.actor.key
             or source['account_key'] != binding.endpoint.account.key
             or source['source_native_message_id'] != binding.source_native_message_id

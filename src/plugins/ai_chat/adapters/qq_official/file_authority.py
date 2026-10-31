@@ -6,7 +6,7 @@ from model input. M3 historical receipt settlement intentionally does not call i
 from __future__ import annotations
 
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
-from src.plugins.ai_chat.agent.control import LeaseLost
+from src.plugins.ai_chat.execution_control import LeaseLost
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from .file_artifacts import _ref, _time, file_job_kind
 

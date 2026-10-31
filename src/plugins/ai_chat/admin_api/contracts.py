@@ -9,18 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.bot_security.service import MobileAuthorization
 
 
-class SubAgentModelUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    expected_version: int = Field(ge=0)
-    policy: dict[str, Any]
 
 
-class SubAgentRevisionUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    expected_version: int = Field(ge=0)
-    instruction: str = Field(min_length=1, max_length=12000)
-    step_keys: list[str] = Field(min_length=1, max_length=14)
-    file_delivery_required: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -32,8 +22,7 @@ class AdminServices:
     running_tasks: Any = None
     job_store: Any = None
     job_worker: Any = None
-    subagent_store: Any = None
-    subagent_coordinator: Any = None
+    background_jobs: Any = None
     background_tasks: Any = None
     model_catalog: Any = None
     llm_gateway: Any = None

@@ -12,7 +12,7 @@ import weakref
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
-from src.plugins.ai_chat.agent.control import JobFence,active_job_fence,LeaseLost
+from src.plugins.ai_chat.execution_control import JobFence,active_job_fence,LeaseLost
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode
 from src.plugins.ai_chat.platform_types import EndpointKey,ActorKey
 from src.plugins.ai_chat.proactive import is_candidate_message

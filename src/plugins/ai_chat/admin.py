@@ -17,7 +17,7 @@ from .admin_api import (
     official_identity,
     overview,
     sandboxes,
-    subagents,
+    background_agents,
     tasks,
     tools,
 )
@@ -46,7 +46,7 @@ _PAGE_ROUTERS = (
     overview,
     models,
     tasks,
-    subagents,
+    background_agents,
     sandboxes,
     tools,
     media,
@@ -72,10 +72,6 @@ def register_admin(
     control_store = AdminControlStore(services.database)
     configure_tool_overrides(control_store.tool_overrides())
     event_broker = AdminEventBroker(control_store.versions)
-    if services.subagent_store is not None:
-        services.subagent_store.set_change_listener(
-            lambda _task_id: event_broker.publish_runtime("subagents", "tasks", "overview")
-        )
     context = AdminRouteContext(
         services=services,
         prefix=prefix,

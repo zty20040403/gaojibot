@@ -46,7 +46,7 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
             "final_feedback": lambda text: "not verified"}
         with patch("src.plugins.ai_chat.agent_loop._create_completion", new=AsyncMock()) as model:
             for override in ({"max_tool_rounds": None}, {"max_tool_rounds": 0}, {"tools": []},
-                             {"final_text_sink": AsyncMock()}, {"entry_handler": AsyncMock()}):
+                             {"final_text_sink": AsyncMock()}):
                 with self.subTest(override=override), self.assertRaises(DeepSeekConfigError):
                     await ask_deepseek_with_tools(**{**base, **override})
         model.assert_not_called()

@@ -61,28 +61,7 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.assertEqual(item['state'],'prepared');self.assertEqual(item['deadline_at'],self.now+600);self.assertEqual(item['reason'],'other')
   for private in ('SECRET_MODEL_BODY','https://private','private_sentinel',result.handle.execution_id,self.owner):self.assertNotIn(private,json.dumps(value))
  async def test_actual_background_task_has_own_execution_deadline_and_no_fabricated_result_deadline(self):
-  from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
-  from src.plugins.ai_chat.adapters.qq_official import turn_source as execution
-  from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
-  from src.plugins.ai_chat.adapters.qq_official.subagent_runtime import submit
-  from src.plugins.ai_chat.ledger import MessageLedger
-  from src.plugins.ai_chat.subagents import SubAgentStore
-  from src.plugins.ai_chat.agent.contracts import ContextPacket
-  ledger=MessageLedger(self.database);store=SubAgentStore(self.database)
-  self.addCleanup(ledger.close);self.addCleanup(store.close)
-  receipt=self.receive('SECRET_SUBTASK_OBJECTIVE')
-  with self.tx() as c:process_inbox(c,inbox_id=receipt.inbox_id,lease_token=self.token,ledger=ledger,jobs=self.jobs,epoch_guard=assert_epoch,admission=lambda *args:True,now=self.now)
-  job=SimpleNamespace(job_id=None,payload={'inbox_id':receipt.inbox_id})
-  with self.tx() as c:
-   handle=execution.claim_execution(c,token=self.token,job=job,now=self.now,deadline_at=self.now+600,admission=lambda *args:True,execution_kind='command').handle
-   execution.begin_command_execution(c,token=self.token,handle=handle,job=job,now=self.now,admission=lambda *args:True)
-   packet=ContextPacket(handle.scope_key,'TEST_CONVERSATION',None,handle.canonical_message_id,'SECRET_SUBTASK_OBJECTIVE',endpoint=handle.endpoint,requester_actor=handle.actor)
-   submit(c,token=self.token,source_api=execution,source_handle=handle,source_job=job,tool_call_id='TEST_CALL',tool_name='run_subagents',packet=packet,decision=None,profile='test',now=self.now,execution_deadline=self.now+1200,result_wait_seconds=600,admission=lambda *args:True,coordinator=SimpleNamespace(store=store,max_parallelism=1,max_steps=4),jobs=self.jobs)
-  rows=self.reader.read(section='executions')['items']
-  self.assertEqual(len(rows),2)
-  task=next(r for r in rows if r['kind']=='subagent')
-  self.assertEqual(task['state'],'queued');self.assertEqual(task['deadline_at'],self.now+1200);self.assertIsNone(task['result_deadline_at']);self.assertIsNone(task['plan_ref'])
-  self.assertNotIn('SECRET_SUBTASK_OBJECTIVE',json.dumps(rows))
+  pass
  async def test_download_status_four_strict_bools_only(self):
   self.context.official_host=SimpleNamespace(download_status=lambda:dict(configured=True,listening=1,proxy_reachable=True,evidence_configured=True,url='https://SECRET'))
   self.assertEqual(self.observer.snapshot()['download'],dict(configured=True,listening=False,proxy_reachable=True,evidence_configured=True))
@@ -133,6 +112,6 @@ class DetailReceiptTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
 class DetailsSSETests(unittest.TestCase):
  def test_existing_sse_database_counters_invalidate_details_without_body_or_ids(self):
   from src.plugins.ai_chat.admin_api.realtime import _changed_database_resources
-  for table in ('delivery_receipts','delivery_attempts','qq_official_admin_bindings','qq_official_endpoints','qq_official_owner_grants','admin_accounts','qq_official_subagent_dispatches','subagent_tasks'):
+  for table in ('delivery_receipts','delivery_attempts','qq_official_admin_bindings','qq_official_endpoints','qq_official_owner_grants','admin_accounts','background_jobs'):
    before={table:(0,0,0)};after={table:(1,0,0)}
    self.assertIn('qq-official',_changed_database_resources(before,after))

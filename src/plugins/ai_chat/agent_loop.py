@@ -10,15 +10,11 @@ import socket
 import time
 from copy import deepcopy
 from contextvars import ContextVar
-from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
-from functools import wraps
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Mapping, Optional
+from typing import Any, Awaitable, Callable, Literal
 
 from .ai_tools import ToolChoice, ToolDefinition
-if TYPE_CHECKING:
-    from .agent.execution import EntryDecision
 from .config import settings
 from .llm_gateway import (
     LLMConfigError,
@@ -27,7 +23,6 @@ from .llm_gateway import (
     LLMGateway,
     classify_llm_failure,
     thinking_extra_body,
-    completion_profile_scope,
 )
 from .model_catalog import ModelCatalog, ModelProfile
 from .model_budget import ModelBudgetExceeded
@@ -47,7 +42,6 @@ ChatMessage = dict[str, Any]
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[str]]
 FeedbackProvider = Callable[[], Awaitable[list[str]]]
 FinalTextSink = Callable[[str], Awaitable[None]]
-EntryHandler = Callable[["EntryDecision"], Awaitable[Optional[str]]]
 TranscriptSink = Callable[[list[ChatMessage]], None]
 LoopEventKind = Literal[
     "model_note",
@@ -329,7 +323,7 @@ async def _invoke_completion(
     **kwargs: Any,
 ) -> Any:
     # Import lazily: the public agent package exports AgentTrace from this module.
-    from .agent.control import assert_job_owned
+    from .execution_control import assert_job_owned
     from .adapters.onebot_route_context import require_model_source
 
     require_model_source()
@@ -534,16 +528,6 @@ async def ask_deepseek_json(
     return payload
 
 
-def _with_entry_model_scope(method):
-    @wraps(method)
-    async def wrapped(*args, **kwargs):
-        names = kwargs.get("entry_allowed_profiles")
-        with completion_profile_scope(names) if names is not None else nullcontext():
-            return await method(*args, **kwargs)
-    return wrapped
-
-
-@_with_entry_model_scope
 async def ask_deepseek_with_tools(
     user_text: str,
     history: list[ChatMessage],
@@ -568,11 +552,6 @@ async def ask_deepseek_with_tools(
     approval_checker: ApprovalChecker | None = None,
     handoff_tool: ToolHandoff | None = None,
     compensate_tool: ToolCompensator | None = None,
-    entry_handler: EntryHandler | None = None,
-    entry_max_steps: int = 8,
-    entry_profile: ModelProfile | None = None,
-    entry_allowed_profiles: frozenset[str] | None = None,
-    project_execution: bool = False,
     transcript_sink: TranscriptSink | None = None,
     after_tool_round: Callable[[], None] | None = None,
     final_feedback: Callable[[str], str | None] | None = None,
@@ -586,13 +565,11 @@ async def ask_deepseek_with_tools(
 
     _last_completion_profile.set(None)
     selected_profile = _resolve_profile(profile, model)
-    if final_feedback is not None and (final_text_sink is not None or entry_handler is not None
+    if final_feedback is not None and (final_text_sink is not None
             or not tools or not selected_profile.capabilities.tools
             or max_tool_rounds is None or max_tool_rounds < 1):
         raise DeepSeekConfigError("Host final feedback requires a bounded non-streaming tool loop without entry dispatch")
-    if entry_handler is not None and not (entry_profile or selected_profile).capabilities.tools:
-        raise DeepSeekConfigError("The execution entry requires a tool-capable model")
-    if entry_handler is None and (not tools or not selected_profile.capabilities.tools):
+    if not tools or not selected_profile.capabilities.tools:
         answer = await ask_deepseek(
             user_text,
             history,
@@ -622,93 +599,9 @@ async def ask_deepseek_with_tools(
         replay_prefix=replay_prefix,
         system_prompt=system_prompt,
     )
-    recovered_calls = []
     if trace is not None:
         _configure_trace(trace, selected_profile)
         trace.messages.append({"role": "user", "content": user_text})
-    if entry_handler is not None:
-        from .agent.execution import ENTRY_PROMPT, ExecutionEntryError
-        from .agent.registry import DEFAULT_AGENT_REGISTRY
-
-        enabled_names = {tool["function"]["name"] for tool in enabled_tool_definitions(tools)}
-        main_tools = ", ".join(sorted(enabled_names))
-        role_tools = DEFAULT_AGENT_REGISTRY.planning_tools(enabled_names)
-        messages.insert(1, {"role": "system", "content": ENTRY_PROMPT + f"\n最多 {entry_max_steps} 个步骤。\n本轮提供的工具：" + main_tools
-            + "\n子 Agent 的工具范围（shared_tools 与各角色 role_tools 的并集）：" + json.dumps(role_tools, ensure_ascii=False)})
-        if project_execution:
-            messages[1]["content"] += (
-                "\n当前会话启用了持久项目工具。针对当前项目的小范围读写、运行和验证，"
-                "允许 task_type=execution、mode=direct、answer 留空，随后调用省略 sandbox_id 的"
-                "sandbox_read_file/write_file/exec。权限和实际项目由宿主核验。"
-                "这不豁免临时沙盒或服务器命令的限制；完整新项目和多项交付仍走工作流。"
-                "项目任务由宿主另加最终合并步骤；上面的步骤上限只用于业务分工，"
-                "不要自己使用 project_integrate 编号。交付物、约束和验收各最多 15 条，"
-                "为项目更新包的宿主验收条款预留一个名额；不能遗漏用户要求。"
-            )
-        try:
-            decision, decision_message = await _execution_entry(
-                messages,
-                entry_profile or selected_profile,
-                trace=trace,
-                max_steps=entry_max_steps,
-                allowed_profiles=entry_allowed_profiles,
-                project_execution=project_execution,
-                worker_tools={role: DEFAULT_AGENT_REGISTRY.worker(role).allowed_tools & enabled_names
-                              for role in DEFAULT_AGENT_REGISTRY.worker_roles},
-            )
-        except ExecutionEntryError as exc:
-            _logger.warning(
-                "Execution entry unavailable; continuing with the normal agent loop: %s",
-                exc,
-            )
-            if trace is not None:
-                trace.execution_decisions.append(
-                    {
-                        "mode": "fallback",
-                        "reason": str(exc),
-                        "task_started": False,
-                    }
-                )
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "宿主执行入口未能生成有效合同。本轮继续使用普通工具循环回答。"
-                        "不得声称已经创建文件、运行程序或完成项目；确实需要执行时，"
-                        "必须调用现有的专业子任务工具。"
-                        + ("当前项目的小修改也可通过项目读写和执行工具完成，以工具回执为准。" if project_execution else "")
-                    ),
-                }
-            )
-        else:
-            result = await entry_handler(decision)
-            if decision.mode in {"workflow", "revise"} or (
-                decision.mode == "direct" and decision.answer
-            ):
-                answer = (
-                    decision.answer if decision.mode == "direct" else str(result or "")
-                )
-                if trace is not None:
-                    trace.messages.append({"role": "assistant", "content": answer})
-                return answer
-            messages.append(decision_message)
-            decision_result = {
-                "role": "tool",
-                "tool_call_id": decision_message["tool_calls"][0]["id"],
-                "content": result
-                or "direct: continue with the necessary tools, without claiming unperformed work",
-            }
-            messages.append(decision_result)
-            if trace is not None:
-                trace.messages.extend([decision_message, decision_result])
-            messages.append(
-                {
-                    "role": "system",
-                    "content": "执行入口已完成。不要再次调用 decide_execution；根据工具结果继续读取或回复，仍缺少执行工作时通过专业子任务完成。"
-                    + ("当前项目的小修改也可直接调用项目工具，不要只返回计划。" if project_execution else ""),
-                }
-            )
-            selected_profile = entry_profile or selected_profile
     next_tool_choice: ToolChoice = tool_choice
     tool_round = 0
     loop_sequence = 0
@@ -723,25 +616,20 @@ async def ask_deepseek_with_tools(
     fingerprint_counts: dict[str, int] = {}
     while max_tool_rounds is None or tool_round < max_tool_rounds:
         tool_round += 1
-        recovering = bool(recovered_calls)
-        if recovering:
-            message, emitted = SimpleNamespace(content="", tool_calls=recovered_calls), ""
-            recovered_calls = []
-        else:
-            await _append_pending_feedback(messages, trace, feedback_provider)
-            await publish_transcript(messages)
-            response, emitted = await _completion_with_optional_stream(
-                final_text_sink,
-                selected_profile,
-                trace=trace,
-                **_completion_kwargs(messages, selected_profile),
-                tools=tools,
-                tool_choice=next_tool_choice,
-            )
-            if trace is not None:
-                _configure_trace(trace, _actual_profile(selected_profile))
-                trace.add_usage(response)
-            message = response.choices[0].message
+        await _append_pending_feedback(messages, trace, feedback_provider)
+        await publish_transcript(messages)
+        response, emitted = await _completion_with_optional_stream(
+            final_text_sink,
+            selected_profile,
+            trace=trace,
+            **_completion_kwargs(messages, selected_profile),
+            tools=tools,
+            tool_choice=next_tool_choice,
+        )
+        if trace is not None:
+            _configure_trace(trace, _actual_profile(selected_profile))
+            trace.add_usage(response)
+        message = response.choices[0].message
         tool_calls = list(getattr(message, "tool_calls", None) or [])
         if not tool_calls:
             content = (message.content or "").strip()
@@ -782,11 +670,10 @@ async def ask_deepseek_with_tools(
                 final_stream_state.streamed_calls += int(bool(emitted))
             return content
 
-        assistant_message = {"content": ""} if recovering else _assistant_tool_message(message)
-        if not recovering:
-            messages.append(assistant_message)
+        assistant_message = _assistant_tool_message(message)
+        messages.append(assistant_message)
         await publish_transcript(messages)
-        if trace is not None and not recovering:
+        if trace is not None:
             trace.messages.append(dict(assistant_message))
         model_note = str(assistant_message.get("content") or "").strip()
         if model_note:
@@ -1144,61 +1031,6 @@ async def ask_deepseek_with_tools(
     raise RuntimeError("Model did not finish after reaching the tool limit.")
 
 
-async def _execution_entry(
-    messages: list[ChatMessage], profile: ModelProfile, *,
-    trace: AgentTrace | None, max_steps: int,
-    allowed_profiles: frozenset[str] | None = None,
-    worker_tools: Mapping[str, frozenset[str]] | None = None,
-    project_execution: bool = False,
-) -> tuple[EntryDecision, ChatMessage]:
-    from .agent.execution import (
-        DECISION_TOOL,
-        DECISION_TOOL_NAME,
-        EntryDecision,
-        ExecutionEntryError,
-        normalize_direct_entry_payload,
-    )
-
-    request_messages = list(messages)
-    for attempt in range(2):
-        with completion_profile_scope(allowed_profiles) if allowed_profiles is not None else nullcontext():
-            response, _ = await _completion_with_optional_stream(
-                None, profile, trace=trace,
-                **_completion_kwargs(request_messages, profile),
-                tools=[DECISION_TOOL],
-                tool_choice={"type": "function", "function": {"name": DECISION_TOOL_NAME}},
-            )
-        if trace is not None:
-            _configure_trace(trace, _actual_profile(profile))
-            trace.add_usage(response)
-        message = response.choices[0].message
-        try:
-            calls = list(getattr(message, "tool_calls", None) or [])
-            if len(calls) != 1 or calls[0].function.name != DECISION_TOOL_NAME or not calls[0].id:
-                raise ValueError("return exactly one decide_execution call")
-            arguments, error = _parse_tool_arguments_checked(calls[0].function.arguments)
-            if error:
-                raise ValueError(error)
-            try:
-                decision = EntryDecision.parse(arguments, max_steps=max_steps, worker_tools=worker_tools, project_execution=project_execution)
-            except ValueError:
-                normalized = normalize_direct_entry_payload(arguments)
-                if normalized is None:
-                    raise
-                decision = EntryDecision.parse(normalized, max_steps=max_steps, worker_tools=worker_tools, project_execution=project_execution)
-        except (ValueError, AttributeError, TypeError) as exc:
-            if attempt:
-                raise ExecutionEntryError(
-                    f"Execution decision invalid; no task was started: {exc}"
-                ) from exc
-            request_messages.append({"role": "user", "content":
-                "入口合同无效。修正后仅调用 decide_execution；不得改成假装执行的普通回答。\n"
-                + quote_evidence(str(exc), "entry_validation")})
-            continue
-        if trace is not None:
-            trace.execution_decisions.append(decision.as_payload())
-        return decision, _assistant_tool_message(message)
-    raise ExecutionEntryError("Execution decision unavailable")
 
 
 async def _completion_with_optional_stream(

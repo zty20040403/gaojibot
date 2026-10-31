@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.file_artifacts import ArtifactError, ArtifactStore
-from src.plugins.ai_chat.agent.control import LeaseLost
+from src.plugins.ai_chat.execution_control import LeaseLost
 from tests.qq_official_file_fixture import FileFixture, PDF, KEY
 
 ONE = PDF + b"a" * (1024 - len(PDF))

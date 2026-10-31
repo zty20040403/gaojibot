@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from src.bot_storage import DatabaseError
 from . import ChatFailure
 from .turn_context import record_loop_event, turn_window
-from ..agent.control import assert_job_owned
+from ..execution_control import assert_job_owned
 from ..agent_loop import AgentTrace, DeepSeekConfigError, ask_deepseek_with_tools, request_sink
 from ..ai_tools import WEB_SEARCH_TOOL_NAME, force_tool
 from ..conversation_keys import conversation_key

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 from src.plugins.ai_chat.application.owned_sandbox import (OwnedSandboxExecutor, GenerationLimits, GenerationError,
     ArtifactAvailability, ArtifactRegistration)
 from src.plugins.ai_chat.tools.owned_sandbox import HANDLERS
-from src.plugins.ai_chat.agent.control import LeaseLost
+from src.plugins.ai_chat.execution_control import LeaseLost
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey, InboundMessage, PlatformFeatures
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id

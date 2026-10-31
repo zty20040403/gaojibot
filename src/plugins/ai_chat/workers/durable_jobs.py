@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol, TypeAlias
 
 from ..storage.jobs import DurableJob, DurableJobStore
-from ..agent.control import RouteAuthorityLost
+from ..execution_control import RouteAuthorityLost
 
 
 DurableJobHandler: TypeAlias = Callable[

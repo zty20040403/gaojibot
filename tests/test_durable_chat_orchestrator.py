@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 import tests.test_platform_chat_orchestrator as fixtures
-from src.plugins.ai_chat.agent.control import LeaseLost
+from src.plugins.ai_chat.execution_control import LeaseLost
 
 from src.plugins.ai_chat.application import chat_orchestrator as draft
 

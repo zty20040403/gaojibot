@@ -17,7 +17,7 @@ import traceback
 
 logger = logging.getLogger(__name__)
 
-from src.plugins.ai_chat.agent.control import LeaseLost, assert_job_owned
+from src.plugins.ai_chat.execution_control import LeaseLost, assert_job_owned
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id
 

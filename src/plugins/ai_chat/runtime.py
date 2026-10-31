@@ -44,11 +44,7 @@ from .semantic_recall import (
 from .skills import SkillRegistry
 from .tasks import RunningTaskRegistry
 from .storage.jobs import DurableJobStore
-from .subagents import (
-    SubAgentCoordinator,
-    SubAgentStore,
-    parse_profile_overrides,
-)
+
 from .turn_journal import TurnJournal
 from .vision_worker import VisionWorker
 from .workers.durable_jobs import DurableJobWorker
@@ -93,8 +89,6 @@ class AppContext:
     delivery_store: DeliveryStore | None = None
     job_store: DurableJobStore | None = None
     job_worker: DurableJobWorker | None = None
-    subagent_store: SubAgentStore | None = None
-    subagent_coordinator: SubAgentCoordinator | None = None
     usage_store: UsageStore | None = None
     semantic_recall: SemanticRecallService | None = None
     turn_journal: TurnJournal | None = None
@@ -214,7 +208,6 @@ class AppContext:
             ("proactive learning", self.proactive_learning),
             ("delivery store", self.delivery_store),
             ("durable job store", self.job_store),
-            ("Sub-Agent task store", self.subagent_store),
             ("usage store", self.usage_store),
             ("turn journal", self.turn_journal),
             ("account authorization", self.mobile_authorization.store if self.mobile_authorization else None),
@@ -552,38 +545,6 @@ def _build_app_context(
             job_worker = None
             logger.error(f"Durable application job queue could not be opened: {exc}")
 
-    subagent_store: SubAgentStore | None = None
-    subagent_coordinator: SubAgentCoordinator | None = None
-    if settings.subagents_enabled:
-        try:
-            profile_overrides = parse_profile_overrides(
-                settings.subagent_profiles_json
-            )
-            for profile_name in profile_overrides.values():
-                model_catalog.resolve(profile_name)
-            subagent_store = _construction.own(SubAgentStore(database))
-            subagent_coordinator = SubAgentCoordinator(
-                subagent_store,
-                model_catalog,
-                logger=logger,
-                max_steps=settings.subagent_max_steps,
-                max_parallelism=settings.subagent_max_parallelism,
-                max_tool_rounds=settings.subagent_max_tool_rounds,
-                timeout_seconds=settings.subagent_timeout_seconds,
-                profile_overrides=profile_overrides,
-            )
-            if subagent_store.recovered_tasks:
-                logger.warning(
-                    "Preserved %s interrupted Sub-Agent task(s) for checkpoint resume.",
-                    subagent_store.recovered_tasks,
-                )
-        except (OSError, RuntimeError, ValueError, DatabaseError) as exc:
-            if subagent_store is not None:
-                _construction.close_one(subagent_store)
-            subagent_store = None
-            subagent_coordinator = None
-            logger.error(f"Sub-Agent task system could not be opened: {exc}")
-
     return AppContext(
         settings=settings,
         state_dir=state_dir,
@@ -611,8 +572,6 @@ def _build_app_context(
         delivery_store=delivery_store,
         job_store=job_store,
         job_worker=job_worker,
-        subagent_store=subagent_store,
-        subagent_coordinator=subagent_coordinator,
         usage_store=usage_store,
         semantic_recall=semantic_recall,
         turn_journal=turn_journal,

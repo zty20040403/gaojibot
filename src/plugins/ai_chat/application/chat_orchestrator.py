@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from src.bot_storage import DatabaseCalls
-from ..agent import AgentTrace
+from ..agent_loop import AgentTrace
 from ..conversation_scope import ConversationScope
 from ..platform_types import EndpointKey, InboundMessage, TurnPlatform
 from ..tasks import LegacyTaskIdentity

@@ -45,18 +45,12 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             if services.job_store is not None
             else {}
         )
-        subagent_tasks = (
-            services.subagent_store.stats()
-            if services.subagent_store is not None
-            else {}
-        )
         return {
             "version": services.version,
             "uptime_seconds": max(int(time.time()) - services.started_at, 0),
             "deliveries": deliveries,
             "running_tasks": tasks,
             "durable_jobs": durable_jobs,
-            "subagent_tasks": subagent_tasks,
             "background_tasks": (
                 {
                     "running": list(services.background_tasks.running()),
