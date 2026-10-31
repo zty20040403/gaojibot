@@ -49,12 +49,12 @@ class PinnedMediaTransport(PinnedHttpTransport):
 
 class PinnedContentReader:
     def __init__(self, *, transport_factory=None, max_bytes=MAX_RESPONSE_BYTES, timeout=15):
-        if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_RESPONSE_BYTES:
+        if type(max_bytes) is not int or not 1 <= max_bytes <= 100 * 1024 * 1024:
             raise MediaDenied('invalid_download_limit')
-        if type(timeout) is not int or not 1 <= timeout <= 30:
+        if type(timeout) is not int or not 1 <= timeout <= 120:
             raise MediaDenied('invalid_download_timeout')
         self.transport_factory = transport_factory or (
-            lambda url: PinnedMediaTransport(url))
+            lambda url: PinnedMediaTransport(url, max_response_bytes=max_bytes, max_session_bytes=max_bytes))
         self.max_bytes, self.timeout = max_bytes, timeout
 
     async def fetch(self, source, *, resolver, audio=False):

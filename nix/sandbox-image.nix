@@ -5,6 +5,7 @@ let
     with ps; [
       aiohttp
       beautifulsoup4
+      faster-whisper
       httpx
       jinja2
       lxml
@@ -85,6 +86,9 @@ let
   webread = pkgs.writeShellScriptBin "webread" ''
     exec ${python}/bin/python ${../src/plugins/ai_chat/sandbox_webread.py} "$@"
   '';
+  transcribe = pkgs.writeShellScriptBin "gaoji-transcribe" ''
+    exec ${python}/bin/python ${../src/plugins/ai_chat/sandbox_transcribe.py} "$@"
+  '';
 
   # The base is intentionally boring and useful. Large specialist stacks are
   # supplied per command through sandbox_exec.packages and cached in /nix.
@@ -146,6 +150,7 @@ let
     ffmpeg-headless
     browserPython
     webread
+    transcribe
     qpdf
     fontconfig
     wqy_microhei

@@ -49,6 +49,7 @@ class OfficialMediaService:
         self.closed = False
         self.fetcher = PinnedContentReader(max_bytes=config.max_download_bytes,
                                           timeout=min(config.timeout_seconds, 30))
+        self.file_fetcher = PinnedContentReader(max_bytes=100*1024*1024, timeout=120)
         worker = getattr(app, 'vision_worker', None)
         self.vision = VisionAdapter(worker, timeout=config.timeout_seconds) if config.ocr and worker is not None and getattr(app,'usage_store',None) is not None else None
         self.asr = None
@@ -88,7 +89,7 @@ class MediaSession:
         self.image_available = self.file_available = False
         self.resolver = LedgerMediaResolver(endpoint=inbound.endpoint, requester=inbound.actor,
             ledger=service.app.message_ledger, db_call=service.runtime._calls,
-            current=self.current_actor)
+            current=self.current_actor, scope=inbound.scope)
 
     def _current(self):
         service, platform = self.service, self.platform
@@ -125,6 +126,7 @@ class MediaSession:
             'send_sticker': cfg.stickers and self.service.runtime.file_service is not None
                             and getattr(self.service.app,'media_library',None) is not None and self.image_available,
             'reply_with_voice': self.service.runtime.file_service is not None and self.file_available,
+            'import_file_to_sandbox': getattr(self.service.app, 'sandbox_manager', None) is not None,
         }.get(name, False))
 
     def _route_ready(self, mime):
@@ -150,7 +152,7 @@ class MediaSession:
             raise MediaDenied('invalid_media_reference')
         index = arguments.get('segment_index')
         message = await self.service.runtime._calls(self.service.app.message_ledger.get_in_scope,
-                                                   self.inbound.endpoint.scope, canonical)
+                                                   self.inbound.scope, canonical)
         if message is None:
             raise MediaDenied('media_reference_unavailable')
         if index is None:
@@ -209,6 +211,23 @@ class MediaSession:
         result = read_text_document(data)
         await self.resolver.require(source)
         return result
+
+    async def import_file(self, arguments):
+        from ...background_tools import workspace_owner
+        import mimetypes
+        source = await self.source(arguments, {'file', 'video', 'audio', 'image', 'sticker'})
+        download = await self.service.file_fetcher.fetch(source, resolver=self.resolver)
+        name = Path(source.node.name).name
+        name = re.sub(r'[^\w.()\-]', '_', name)[:120]
+        if not name or name in {'.', '..'}:
+            name = 'attachment' + (mimetypes.guess_extension(download.declared_mime) or '.bin')
+        path = f'/work/chat/{source.ref.canonical_id}-{source.ref.segment_index}-{name}'
+        manager, owner = self.service.app.sandbox_manager, workspace_owner(self.inbound.endpoint)
+        sandbox = await manager.ensure_default(owner)
+        await self.resolver.require(source)
+        await manager.write_file(owner, sandbox['sandbox_id'], path, download.content, allow_large=True)
+        return {'path': path, 'bytes': len(download.content), 'mime': download.declared_mime,
+                'message': '文件已放入当前会话的 VM，可把路径交给后台 agent 处理。'}
 
     async def forward(self, arguments, *, send=False):
         source = await self.source(arguments, {'forward'})

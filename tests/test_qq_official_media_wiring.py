@@ -10,6 +10,9 @@ import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock
+
+import httpx2
 
 from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration, HostConfigurationError, ConfiguredHost
 from src.plugins.ai_chat.adapters.qq_official.media_runtime import MediaConfig, _read_library_bytes
@@ -19,6 +22,8 @@ from src.plugins.ai_chat.message_ir import MessageBody, MediaNode
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey, InboundMessage, PlatformFeatures
 from src.plugins.ai_chat.tools import neutral_registry_for
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
+from src.plugins.ai_chat.conversation_scope import ConversationScope
+from src.plugins.ai_chat.adapters.qq_official.content_reader import PinnedContentReader, PinnedMediaTransport
 
 
 class WiringTests(unittest.IsolatedAsyncioTestCase):
@@ -100,6 +105,29 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
     async def test_unobserved_sticker_handle_has_zero_library_read(self):
         session=await self.session(stickers=True)
         with self.assertRaises(MediaDenied):await session.sticker({'media_handle':'media#1'},frozenset())
+
+    async def test_bound_conversation_imports_large_attachment_into_its_vm(self):
+        scope=ConversationScope('onebot-v11','group','TEST_OLD_GROUP')
+        self.source=replace(self.source,scope_key=scope.key,body=MessageBody((MediaNode(
+            0,'video',source='https://example.invalid/video',name='clip.mp4'),)))
+        self.inbound=replace(self.inbound,canonical_scope=scope,body=self.source.body)
+        self.platform.inbound=self.inbound
+        def get(actual,canonical):
+            self.assertEqual(actual,scope)
+            return self.source if canonical==3 else None
+        self.app.message_ledger.get_in_scope=get
+        manager=SimpleNamespace(ensure_default=AsyncMock(return_value={'sandbox_id':'TEST_VM'}),write_file=AsyncMock())
+        self.app.sandbox_manager=manager
+        session=await self.session(documents=True)
+        content=b'TEST_VIDEO'*(300*1024)
+        async def dns(host,port):return ('93.184.216.34',)
+        session.service.file_fetcher=PinnedContentReader(max_bytes=100*1024*1024,transport_factory=lambda url:
+            PinnedMediaTransport(url,resolver=dns,max_response_bytes=100*1024*1024,max_session_bytes=100*1024*1024,
+                transport=httpx2.MockTransport(lambda request:httpx2.Response(200,content=content,headers={'content-type':'video/mp4'}))))
+        result=await session.import_file({})
+        self.assertEqual(result['path'],'/work/chat/3-0-clip.mp4')
+        self.assertEqual(manager.write_file.call_args.args[3],content)
+        self.assertTrue(manager.write_file.call_args.kwargs['allow_large'])
 
     def test_configuration_strict_and_local_fallback_dependency_gate(self):
         for bad in ({'asr':1},{'local_asr':True},{'url':'https://x'},{'max_download_bytes':2097153}):

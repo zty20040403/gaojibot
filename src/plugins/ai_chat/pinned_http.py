@@ -49,7 +49,7 @@ class _BoundedStream(httpx2.AsyncByteStream):
             async for chunk in self.stream:
                 received += len(chunk)
                 self.transport.received += len(chunk)
-                if received > MAX_RESPONSE_BYTES or self.transport.received > MAX_SESSION_BYTES:
+                if received > self.transport.max_response_bytes or self.transport.received > self.transport.max_session_bytes:
                     raise McpTransportDenied("MCP response exceeds the byte limit")
                 yield chunk
         finally:
@@ -62,11 +62,13 @@ class _BoundedStream(httpx2.AsyncByteStream):
 class PinnedHttpTransport(httpx2.AsyncBaseTransport):
     def __init__(self, endpoint: str, policy: HttpPolicy, *,
                  resolver: Callable[[str, int], Awaitable[tuple[str, ...]]] = resolve_addresses,
-                 transport: httpx2.AsyncBaseTransport | None = None):
+                 transport: httpx2.AsyncBaseTransport | None = None,
+                 max_response_bytes: int = MAX_RESPONSE_BYTES, max_session_bytes: int = MAX_SESSION_BYTES):
         self.endpoint = httpx2.URL(endpoint)
         if self.endpoint.scheme not in {"http", "https"} or not self.endpoint.host:
             raise McpTransportDenied("Pinned HTTP endpoint must be an absolute http(s) URL")
         self.policy, self.resolver = policy, resolver
+        self.max_response_bytes, self.max_session_bytes = max_response_bytes, max_session_bytes
         self.transport = transport or httpx2.AsyncHTTPTransport(
             trust_env=False, retries=0, limits=httpx2.Limits(max_connections=4, max_keepalive_connections=0))
         self.received = 0
@@ -115,7 +117,7 @@ class PinnedHttpTransport(httpx2.AsyncBaseTransport):
             if response.headers.get("Content-Encoding", "identity").lower() != "identity":
                 raise McpTransportDenied("Compressed MCP responses are disabled")
             size = response.headers.get("Content-Length")
-            if size is not None and (not size.isascii() or not size.isdecimal() or len(size) > 10 or int(size) > MAX_RESPONSE_BYTES):
+            if size is not None and (not size.isascii() or not size.isdecimal() or len(size) > 10 or int(size) > self.max_response_bytes):
                 raise McpTransportDenied("MCP response exceeds the byte limit")
         except BaseException:
             await response.aclose()
