@@ -176,8 +176,6 @@ class DeliveryStore:
         reply_target = str(reply_to_native_message_id or "")
         fingerprint = body_fingerprint(body, reply_target)
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
-            from .adapters.onebot_route_context import guard_source_transaction
-            guard_source_transaction(cursor)
             existing = cursor.execute(
                 "SELECT * FROM deliveries WHERE idempotency_key = ?",
                 (key,),

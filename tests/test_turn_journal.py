@@ -5,9 +5,7 @@ from tests.postgres_fixture import postgres_for_test
 import time
 import unittest
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.agent_loop import AgentTrace

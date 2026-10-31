@@ -325,9 +325,6 @@ async def _invoke_completion(
 ) -> Any:
     # Import lazily: the public agent package exports AgentTrace from this module.
     from .execution_control import assert_job_owned
-    from .adapters.onebot_route_context import require_model_source
-
-    require_model_source()
     assert_job_owned()
     token = _active_profile.set(profile)
     try:

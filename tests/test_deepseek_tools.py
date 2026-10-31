@@ -5,9 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.agent_loop import (
     DeepSeekConfigError,

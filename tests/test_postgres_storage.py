@@ -9,11 +9,9 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import nonebot
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
 
-nonebot.init()
 
 from src.bot_storage.database import (
     PostgresDatabase,

@@ -4,9 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.config import Settings
 

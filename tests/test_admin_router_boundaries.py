@@ -5,10 +5,8 @@ import unittest
 from types import SimpleNamespace
 
 import httpx
-import nonebot
 from fastapi import FastAPI
 
-nonebot.init()
 
 from src.plugins.ai_chat.admin import AdminServices
 from tests.admin_session_fixture import PASSWORD, register_admin

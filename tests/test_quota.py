@@ -6,9 +6,7 @@ import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.quota import UsageStore
 

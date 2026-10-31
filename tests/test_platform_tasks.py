@@ -5,9 +5,7 @@ import asyncio
 from dataclasses import replace
 import unittest
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.platform_types import (
     AccountKey, ActorKey, EndpointKey, InboundMessage,

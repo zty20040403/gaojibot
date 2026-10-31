@@ -7,10 +7,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-import nonebot
 from src.bot_storage import DatabaseCalls
 
-nonebot.init()
 
 from src.plugins.ai_chat import tool_policy
 from src.plugins.ai_chat.tools import _base_registry

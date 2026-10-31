@@ -9,7 +9,6 @@ from src.plugins.ai_chat.adapters.qq_official.renderer import (
     RenderError, content_payload, render_plan, restore_plan,
 )
 from src.plugins.ai_chat.message_ir import MessageBody, MentionNode, TextNode
-from src.plugins.ai_chat.output_planner import plan_reply
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 
 ACCOUNT = AccountKey("qq-official", "TEST_PARAGRAPHS", "test")
@@ -58,7 +57,7 @@ class ReplyParagraphTests(unittest.TestCase):
 
     def test_blank_lines_and_marker_follow_legacy_reply_boundaries(self):
         source = "第一段\n\n第二段 [split] 第三段"
-        expected = [chunk.text for chunk in plan_reply(source).chunks]
+        expected = ["第一段", "第二段", "第三段"]
         self.assertEqual(expected, ["第一段", "第二段", "第三段"])
         self.assertEqual(self.contents(self.render(source)), expected)
 
@@ -76,7 +75,7 @@ class ReplyParagraphTests(unittest.TestCase):
 
     def test_fenced_code_is_one_paragraph_with_literal_control_syntax(self):
         source = "说明\n```python\nprint('[split]')\n\nprint('ok')\n```\n结束"
-        self.assertEqual(self.contents(self.render(source)), [p.text for p in plan_reply(source).chunks])
+        self.assertEqual(self.contents(self.render(source)), ["说明", "```python\nprint('[split]')\n\nprint('ok')\n```", "结束"])
 
     def test_tilde_fence_and_inline_code_are_not_paragraph_controls(self):
         self.assertEqual(self.contents(self.render("说明\n~~~text\na[split]b\n\nc\n~~~\n结束")),

@@ -4,9 +4,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.agent_loop import _build_messages, _build_system_prompt
 from src.plugins.ai_chat.runtime_clock import runtime_clock_prompt

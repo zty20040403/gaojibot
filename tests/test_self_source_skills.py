@@ -4,9 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.self_source import SelfSource
 from src.plugins.ai_chat.skills import SkillRegistry

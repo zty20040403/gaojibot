@@ -7,9 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.media_library import (
     MediaLibrary,
