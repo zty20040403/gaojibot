@@ -6,7 +6,12 @@ INSTALL = '''set -eu
 python3 -m venv --system-site-packages /opt/gaoji-tools
 /opt/gaoji-tools/bin/pip install 'playwright>=1.59,<2' trafilatura 'faster-whisper>=1.2,<2' 'av<19'
 /opt/gaoji-tools/bin/python -c "import shutil,site; shutil.copy('/usr/local/share/gaoji/sandbox_browser.py', site.getsitepackages()[0]+'/gaoji_browser.py')"
-ln -sfn /opt/gaoji-tools/bin/python /usr/local/bin/gaoji-python
+rm -f /usr/local/bin/gaoji-python
+cat > /usr/local/bin/gaoji-python <<'EOF'
+#!/bin/sh
+exec /opt/gaoji-tools/bin/python "$@"
+EOF
+chmod 755 /usr/local/bin/gaoji-python
 cat > /usr/local/bin/webread <<'EOF'
 #!/bin/sh
 exec /opt/gaoji-tools/bin/python /usr/local/share/gaoji/sandbox_webread.py "$@"
