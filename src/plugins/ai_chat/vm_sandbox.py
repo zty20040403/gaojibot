@@ -545,10 +545,9 @@ class VmSandboxManager:
 
     async def ensure_default(self, owner: str, runtime: str = "debian") -> dict[str, str]:
         for item in await self.list(owner):
-            if item.get("purpose") == "shell":
-                if not item["status"].startswith("Up "):
-                    await self.start_owned(owner, item["sandbox_id"])
-                return {**item, "status": "running", "toolset": "vm"}
+            if not item["status"].startswith("Up "):
+                await self.start_owned(owner, item["sandbox_id"])
+            return {**item, "status": "running", "toolset": "vm"}
         return await self.create(owner, runtime, purpose="shell")
 
     async def _owned_running(self, owner: str, sandbox_id: str) -> dict[str, object]:
