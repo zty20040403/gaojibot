@@ -225,6 +225,14 @@
           pkgs.runCommand "gaoji-qq-official-module-check" {} ''
             touch "$out"
           '';
+      vm-sandbox-module = let
+        evaluation = import ./tests/nix/vm-sandbox-module-eval.nix {inherit self;};
+      in
+        assert lib.assertMsg (evaluation.failed == [])
+          ("VM sandbox module evaluation failed: " + lib.concatStringsSep ", " evaluation.failed);
+          pkgs.runCommand "gaoji-vm-sandbox-module-check" {} ''
+            touch "$out"
+          '';
       imports = pkgs.runCommand "gaoji-import-check" {} ''
         cd ${package}/share/gaoji
         ${virtualenv}/bin/python -c 'import alembic, edge_tts, httpx, miniaudio, fastapi, uvicorn, aiohttp, openai, opentelemetry.sdk, prometheus_client, psycopg, psycopg_pool, pygments, pysilk, sqlalchemy'

@@ -14,6 +14,15 @@
   sandboxUsesPodman = cfg.sandbox.backend == "podman";
   sandboxUsesVm = cfg.sandbox.backend == "vm";
   sandboxIsolated = cfg.sandbox.enable && sandboxUsesDocker && cfg.sandbox.network == "isolated";
+  sandboxVm = cfg.runBot && cfg.sandbox.enable && sandboxUsesVm;
+  vmServiceName = "${serviceName}-vm";
+  vmNetworkSetup = pkgs.writeShellScript "gaoji-vm-network" ''
+    exec ${pkgs.python3}/bin/python ${../src/sandbox_runtime/vm_network.py} \
+      --nft ${pkgs.nftables}/bin/nft \
+      --systemctl ${config.systemd.package}/bin/systemctl \
+      --unit ${vmServiceName}.service \
+      ${lib.concatMapStringsSep " " (port: "--host-port ${toString port}") cfg.sandbox.vmHostPorts} "$@"
+  '';
   sandboxNetworkSetup = pkgs.writeShellScript "gaoji-sandbox-network" ''
     exec ${pkgs.python3}/bin/python ${../src/sandbox_runtime/network.py} \
       --docker ${pkgs.docker}/bin/docker \
@@ -344,6 +353,12 @@ in {
       description = "Persistent root for per-task VM disks and metadata.";
     };
 
+    sandbox.vmHostPorts = lib.mkOption {
+      type = lib.types.nonEmptyListOf lib.types.port;
+      default = [18640 18641];
+      description = "Host loopback TCP ports a VM may reach at 10.0.2.2: the background-agent model relay and app-server tunnel. Every other host, LAN, tailnet and link-local address is rejected for VM traffic.";
+    };
+
     sandbox.imageArchive = lib.mkOption {
       type = lib.types.package;
       default = defaultSandboxImage;
@@ -477,11 +492,15 @@ in {
       unitConfig.RequiresMountsFor = lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [cfg.sandbox.vmRoot];
       wants =
         ["network-online.target"];
-      requires = lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
+      # Without the filtered daemon the bot must not run: a stray session
+      # daemon would otherwise serve virsh with unfiltered qemu.
+      requires = lib.optionals sandboxVm ["${vmServiceName}.service"]
+        ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
         "${serviceName}-sandbox-image.service"
       ] ++ lib.optionals sandboxIsolated ["gaoji-sandbox-network.service"];
       after =
         ["network-online.target"]
+        ++ lib.optionals sandboxVm ["${vmServiceName}.service"]
         ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
           "${serviceName}-sandbox-image.service"
         ] ++ lib.optionals sandboxIsolated ["gaoji-sandbox-network.service"];
@@ -594,6 +613,49 @@ in {
         // lib.optionalAttrs (cfg.environmentFile != null) {
           EnvironmentFile = cfg.environmentFile;
         };
+    };
+
+    # libvirt session daemon for KVM workspaces. Its qemu children inherit this
+    # unit's cgroup, which the gaoji_vm nftables table filters; the bot never
+    # autospawns its own daemon (LIBVIRT_AUTOSTART=0 in vm_sandbox.py).
+    systemd.services.${vmServiceName} = lib.mkIf sandboxVm {
+      description = "gaoji KVM workspaces with filtered egress";
+      wantedBy = ["multi-user.target"];
+      unitConfig.RequiresMountsFor = [cfg.sandbox.vmRoot];
+      path = [pkgs.libvirt pkgs.qemu];
+      environment = {
+        HOME = statePath;
+        XDG_RUNTIME_DIR = "${statePath}/vm-runtime";
+      };
+      serviceConfig = {
+        Type = "notify";
+        User = cfg.user;
+        Group = cfg.group;
+        SupplementaryGroups = ["kvm"];
+        StateDirectory = cfg.stateDirectory;
+        # Runs inside this unit's fresh cgroup, before any qemu; failure blocks the start.
+        ExecStartPre = "+${vmNetworkSetup}";
+        ExecStart = "${pkgs.libvirt}/sbin/virtqemud";
+        Restart = "on-failure";
+        RestartSec = 5;
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectControlGroups = true;
+        ProtectHome = "read-only";
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectSystem = "strict";
+        ReadWritePaths = [cfg.sandbox.vmRoot];
+        RestrictSUIDSGID = true;
+      };
+    };
+
+    # nftables.service flushes the whole ruleset on start and reload; put the
+    # VM table back in the same job. On failure the hook stops the VM unit.
+    systemd.services.nftables.serviceConfig = lib.mkIf (sandboxVm && config.networking.nftables.enable) {
+      ExecStartPost = lib.mkAfter ["${vmNetworkSetup} --if-running"];
+      ExecReload = lib.mkAfter ["${vmNetworkSetup} --if-running"];
     };
 
     systemd.services.gaoji-sandbox-network = lib.mkIf sandboxIsolated {

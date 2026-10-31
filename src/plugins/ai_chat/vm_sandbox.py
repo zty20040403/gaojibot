@@ -278,7 +278,9 @@ class VmSandboxManager:
         starting = asyncio.create_task(asyncio.create_subprocess_exec(
             *args, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "LC_ALL": "C"},
+            # The egress-filtered gaoji-vm unit owns the libvirt daemon; one
+            # autospawned here would run qemu outside that filter.
+            env={**os.environ, "LC_ALL": "C", "LIBVIRT_AUTOSTART": "0"},
         ))
         try:
             process = await asyncio.shield(starting)
