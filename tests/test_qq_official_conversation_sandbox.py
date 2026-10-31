@@ -10,6 +10,17 @@ from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
 
 
 class ConversationSandboxTests(unittest.IsolatedAsyncioTestCase):
+    async def test_background_workspace_reuses_existing_task_vm(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = VmSandboxManager(image='/base.qcow2', root=root)
+            manager.list = AsyncMock(return_value=[{'sandbox_id': 's123456',
+                'runtime': 'debian', 'purpose': 'task', 'status': 'Exited'}])
+            manager.start_owned, manager.create = AsyncMock(), AsyncMock()
+            selected = await manager.ensure_default('qqo:conversation:TEST_GROUP')
+            self.assertEqual(selected['sandbox_id'], 's123456')
+            manager.start_owned.assert_awaited_once_with('qqo:conversation:TEST_GROUP', 's123456')
+            manager.create.assert_not_awaited()
+
     async def test_next_turn_and_concurrent_create_reuse_files(self):
         manager = FakeManager()
         def executor(source):
