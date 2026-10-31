@@ -78,10 +78,12 @@ async def history(turn: TurnState, arguments: dict[str, object]) -> str:
                            "hint": "用 around=#编号 读某条前后的原文"}, ensure_ascii=False)
     if start is None and end is None and not who:
         return _error("给 query 搜索，或者用 from/to/who/around 指定要读的原文。")
-    rows = await app.db_call(ledger.history, scope, who=who, after_id=after_id, before_id=end,
-                             limit=limit + 1, newest=start is None)
-    rows = [message for message in rows if not is_noise(message)]
-    more = len(rows) > limit
+    # Fetch extra: noise rows are dropped after the query, and must not hide a next page.
+    fetched = limit * 3 + 1
+    raw = await app.db_call(ledger.history, scope, who=who, after_id=after_id, before_id=end,
+                            limit=fetched, newest=start is None)
+    rows = [message for message in raw if not is_noise(message)]
+    more = len(rows) > limit or len(raw) == fetched
     rows = rows[:limit] if start is not None else rows[-limit:]
     lines = [render_line(message, max_chars=600) for message in rows]
     payload: dict[str, object] = {"ok": True, "lines": lines or ["（没有这样的消息）"]}
