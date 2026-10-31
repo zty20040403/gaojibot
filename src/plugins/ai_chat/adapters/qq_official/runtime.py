@@ -358,17 +358,26 @@ class OfficialRuntime:
             observe(self.observer, 'ingest', result.status)
             if result.status != 'processed' or result.echo_state != 'not_echo':
                 return
-            def endpoint_key():
+            def input_row():
                 with self.store.transaction() as cursor:
-                    return cursor.execute('SELECT endpoint_key FROM qq_official_inbound_events WHERE inbox_id=?', (inbox_id,)).fetchone()['endpoint_key']
-            endpoint = await self._calls(endpoint_key)
+                    return dict(cursor.execute('''SELECT i.endpoint_key,i.route_epoch,i.turn_text,
+                        i.canonical_message_id,m.sender_actor_key FROM qq_official_inbound_events i
+                        JOIN messages m USING(canonical_message_id) WHERE inbox_id=?''', (inbox_id,)).fetchone())
+            row = await self._calls(input_row)
             source = SimpleNamespace(job_id=None, payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
-                lease_generation=1, attempts=1, kind=account_job_kind('turn', token.account_key))
+                lease_generation=1, attempts=1, kind=account_job_kind('turn', token.account_key), endpoint=row['endpoint_key'])
+            key = row['endpoint_key'], row['sender_actor_key'], row['route_epoch']
+            if batcher.add(key, source, row['turn_text'], requested=result.reply_requested,
+                           canonical_id=row['canonical_message_id']):
+                return
+            await dispatch_turn(source, result.reply_requested)
+
+        async def dispatch_turn(source, reply_requested=True):
             async def run():
                 try:
-                    if result.reply_requested:
+                    if reply_requested:
                         if self.turn_consumer is not None:
-                            async with turn_locks.setdefault(endpoint, asyncio.Lock()):
+                            async with turn_locks.setdefault(source.endpoint, asyncio.Lock()):
                                 await self.turn_consumer(source)
                     elif self.background_service is not None:
                         await self.background_service.on_ingested(source)
@@ -380,6 +389,9 @@ class OfficialRuntime:
             task = asyncio.create_task(run())
             active_turns.add(task)
             task.add_done_callback(active_turns.discard)
+
+        from .message_batch import MessageBatcher
+        batcher = MessageBatcher(dispatch_turn)
 
         async def monitor():
             loop = asyncio.get_running_loop()
@@ -548,6 +560,7 @@ class OfficialRuntime:
                     await self._calls(self.store.pause, token, reason)
                     self.state, self.reason = "paused", reason
             finally:
+                await batcher.close()
                 for turn in tuple(active_turns):
                     turn.cancel()
                 await asyncio.gather(*tuple(active_turns), return_exceptions=True)
