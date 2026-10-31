@@ -4,7 +4,9 @@ from types import SimpleNamespace
 import unittest
 
 from src.plugins.ai_chat.adapters.qq_official.background_agents import OfficialBackgroundAgents
+from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
+from src.plugins.ai_chat.adapters.qq_official.send_types import SendReservation
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.quota import UsageStore
 from src.plugins.ai_chat.schedules import Schedules, next_time, ZONE
@@ -37,6 +39,7 @@ class ScheduleTests(unittest.TestCase):
             scope_key=f.endpoint.scope.key, source_execution_id=handle.execution_id, profile='TEST_MODEL',
             canonical_message_id=f.message.canonical_message_id, native_message_id='TEST_INPUT', endpoint_generation=1, route_epoch=1)
         with f.tx() as cursor:
+            observe_ready(cursor, f.token, {'d': {'user': {'id': 'TEST_BOT'}}}, f.now)
             one = store.create(cursor, source, text='TEST meeting', at=datetime.fromtimestamp(f.now+60, ZONE).isoformat())
             two = store.create(cursor, source, kind='routine', text='TEST digest', cron='0 * * * *')
             self.assertFalse(store.cancel(cursor, f.endpoint.key, 'TEST_OTHER_ACTOR', one['id']))
@@ -44,6 +47,11 @@ class ScheduleTests(unittest.TestCase):
             f.now = row['next_at']
             service.schedules.fire(row['id'], row['next_at'])
             service.schedules.fire(row['id'], row['next_at'])
+            if row['kind'] == 'reminder':
+                delivery = f.query('SELECT delivery_id FROM deliveries WHERE account_key=?', (f.account.key,))[0]
+                prepared = runtime.outbox.prepare(f.token, delivery['delivery_id'], send_mode='proactive')
+                self.assertIsInstance(prepared, SendReservation)
+                self.assertIn('<qqbot-at-user id="TEST_MEMBER" />', prepared.payload()['markdown']['content'])
         self.assertEqual(len(f.query('SELECT * FROM delivery_plans WHERE account_key=?', (f.account.key,))), 1)
         self.assertEqual(len(service.store.list(f.endpoint.key, f.actor.key)), 1)
         with f.tx() as cursor:
