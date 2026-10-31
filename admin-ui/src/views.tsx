@@ -21,8 +21,6 @@ import {
 } from 'lucide-react'
 import { TokenUsageChart } from './TokenUsageChart'
 import { SubAgentControls } from './SubAgentControls'
-import { OpsManagementPanel } from './OpsManagementPanel'
-import { GuardianControls } from './GuardianControls'
 import { LocalModelPanel, ModelRouteSummary } from './LocalModelPanel'
 import {
   DataTable,
@@ -312,8 +310,7 @@ function SubAgentFlow({ detail, loading, error, now, roles }: { detail: any; loa
 
 export function OverviewView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail: DetailOpener }) {
   const overview = plane.data.overview ?? {}
-  const observability = plane.data.observability ?? {}
-  const totals = observability.process?.totals ?? {}
+  const totals = overview.totals ?? {}
   const usage = rows(plane.data.usage?.items)
   const deliveries = rows(plane.data.deliveries?.items)
   const sandboxes = plane.data.sandboxes ?? {}
@@ -328,7 +325,7 @@ export function OverviewView({ plane, onOpenDetail }: { plane: Plane; onOpenDeta
       <PageHeader
         title="运行概览"
         description="服务状态、模型请求、Token 与后台任务的实时视图"
-        action={<RefreshButton loading={plane.loading.has('overview')} onClick={() => void plane.refreshMany(['overview', 'observability'])} />}
+        action={<RefreshButton loading={plane.loading.has('overview')} onClick={() => void plane.refreshMany(['overview'])} />}
       />
       <div className="metric-grid overview-metrics">
         <Metric label="服务状态" value={plane.online ? '运行中' : '连接断开'} hint={`v${overview.version ?? window.__GAOJI_ADMIN__.version} · 已运行 ${fmtDuration(overview.uptime_seconds)}`} />
@@ -526,15 +523,11 @@ export function ToolsView({ plane }: { plane: Plane }) {
 
 export function TracesView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail: DetailOpener }) {
   const traces = rows(plane.data.traces?.items)
-  const plans = rows(plane.data.contextPlans?.items)
   return (
     <>
-      <PageHeader title="Trace 与上下文" description="每个回合的模型路由、工具调用、Token 和上下文决策" action={<RefreshButton onClick={() => void plane.refreshMany(['traces', 'contextPlans', 'observability'])} />} />
+      <PageHeader title="Trace 与上下文" description="每个回合的模型路由、工具调用、Token 和耗时" action={<RefreshButton onClick={() => void plane.refreshMany(['traces'])} />} />
       <Section title="最近 Trace" description="Trace ID 可以关联模型、工具和投递日志" action={<ViewAllButton count={traces.length} onClick={() => onOpenDetail('traces')} />}>
         <DataTable><thead><tr><th>开始时间</th><th>Trace ID</th><th>回合</th><th>模型</th><th>状态</th><th>耗时</th><th>工具</th><th>Token</th></tr></thead><tbody>{traces.slice(0, 5).map((trace) => <tr key={trace.trace_id}><td>{fmtTime(trace.started_at)}</td><td><code>{String(trace.trace_id).slice(0, 12)}</code></td><td>{trace.turn_handle}</td><td><ModelRouteSummary trace={trace} /></td><td><StatusBadge value={trace.status} /></td><td>{fmtDuration(trace.duration_seconds)}</td><td>{trace.tool_call_count} / {trace.tool_failures} 失败</td><td>{fmtNumber(trace.total_tokens)}</td></tr>)}</tbody></DataTable>
-      </Section>
-      <Section title="上下文决策" description="焦点消息、相关候选和 Reranker 置信度" action={<ViewAllButton count={plans.length} onClick={() => onOpenDetail('context-plans')} />}>
-        <DataTable><thead><tr><th>决策时间</th><th>回合</th><th>范围</th><th>焦点</th><th>置信度</th><th>理由</th><th>状态</th></tr></thead><tbody>{plans.slice(0, 5).map((plan) => <tr key={`${plan.scope_key}-${plan.turn_handle}`}><td>{fmtTime(plan.created_at)}</td><td>{plan.turn_handle}</td><td><code>{plan.scope_key}</code></td><td>{plan.focus_message_id ? `msg#${plan.focus_message_id}` : '-'}</td><td>{Math.round(Number(plan.confidence ?? 0) * 100)}%</td><td className="capabilities">{rows(plan.reason_codes).map((reason) => <span key={reason}>{reason}</span>)}</td><td><StatusBadge value={plan.status} /></td></tr>)}</tbody></DataTable>
       </Section>
     </>
   )
@@ -548,470 +541,6 @@ export function DatabasesView({ plane }: { plane: Plane }) {
       <PageHeader title="数据库" description="主库、备用节点、连接池和复制延迟" action={<RefreshButton onClick={() => void plane.refresh('databases')} />} />
       <div className="database-summary"><Metric label="整体状态" value={<StatusBadge value={database.overall} />} hint={`写节点：${database.writable_node ?? '-'}`} /><Metric label="连接池" value={`${database.pool?.available ?? 0}/${database.pool?.size ?? 0}`} hint={`${database.pool?.waiting ?? 0} 个等待`} /><Metric label="检查时间" value={fmtTime(database.checked_at)} /></div>
       <div className="database-grid">{nodes.map((node) => <section className={`database-card ${node.status}`} key={node.name}><div className="database-title"><Database size={19} /><div><h2>{node.name}</h2><code>{node.host}:{node.port}</code></div><StatusBadge value={node.status} /></div><dl><div><dt>角色</dt><dd>{node.role}</dd></div><div><dt>写入</dt><dd>{node.writable ? '可写' : '只读'}</dd></div><div><dt>连接延迟</dt><dd>{node.latency_ms ?? '-'} ms</dd></div><div><dt>数据库大小</dt><dd>{fmtBytes(node.database_size_bytes)}</dd></div><div><dt>复制延迟</dt><dd>{node.replication_lag_seconds ?? '-'} s</dd></div><div><dt>PostgreSQL</dt><dd>{node.server_version ?? '-'}</dd></div></dl>{node.error && <p className="error-text">{node.error}</p>}</section>)}</div>
-    </>
-  )
-}
-
-function fleetHostState(host: any): string {
-  const agent = String(host?.agent?.state ?? '')
-  const exporter = String(host?.exporter?.state ?? '')
-  if (agent === 'reachable' && (!exporter || exporter === 'up')) return 'online'
-  if (agent === 'unreachable' || exporter === 'down') return 'offline'
-  return agent || exporter || 'unknown'
-}
-
-export function FleetView({ plane }: { plane: Plane }) {
-  const payload = plane.data.fleet ?? {}
-  const fleet = payload.fleet ?? {}
-  const backend = rows(payload.backends?.items)[0] ?? {}
-  const capabilities = rows(payload.capabilities?.capabilities)
-  const observations = rows(payload.observations?.items)
-  const diagnosticTemplates = rows(payload.diagnostic_templates?.items)
-  const diagnosticRuns = rows(payload.diagnostics?.items)
-  const executionCapabilities = payload.execution_capabilities ?? {}
-  const operationCapability = executionCapabilities.ops_management?.available
-    ? { ...executionCapabilities.ops_management, backend: executionCapabilities.ops_management.backend ?? 'ops' } : executionCapabilities.operations ?? {}
-  const workerCapability = executionCapabilities.worker ?? {}
-  const deploymentCapabilities = payload.deployment_capabilities ?? {}
-  const deploymentRepositories = rows(deploymentCapabilities.repositories)
-  const deployments = rows(payload.deployments?.items)
-  const workers = rows(payload.workers?.items)
-  const jobs = rows(payload.jobs?.items)
-  const reservations = rows(payload.reservations?.items)
-  const previews = rows(payload.previews?.items)
-  const resourcePolicies = rows(payload.resource_policies?.items)
-  const borrowGrants = rows(payload.borrow_grants?.items)
-  const fleetIncidents = rows(payload.incidents?.items)
-  const runbookCases = rows(payload.runbook_cases?.items)
-  const guardians = rows(payload.guardians?.items)
-  const policyByWorker = new Map(resourcePolicies.map((item) => [String(item.worker_id), item]))
-  const observedHosts = rows(fleet.data?.hosts)
-  const inventory = rows(fleet.inventory)
-  const observedByHost = new Map(observedHosts.map((host) => [String(host.host), host]))
-  const knownHosts = inventory.map((host) => ({
-    ...host,
-    ...(observedByHost.get(String(host.host_id)) ?? {}),
-  }))
-  const [selectedHostId, setSelectedHostId] = useState('')
-  const [selectedUnit, setSelectedUnit] = useState('')
-  const [hostDetail, setHostDetail] = useState<any>(null)
-  const [unitDetail, setUnitDetail] = useState<any>(null)
-  const [logDetail, setLogDetail] = useState<any>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState('')
-  const [diagnosticTemplate, setDiagnosticTemplate] = useState('qq_no_reply')
-  const [diagnosticHost, setDiagnosticHost] = useState('h610')
-  const [diagnosticSubject, setDiagnosticSubject] = useState('')
-  const [diagnosticDetail, setDiagnosticDetail] = useState<any>(null)
-  const [diagnosticLoading, setDiagnosticLoading] = useState(false)
-  const [diagnosticError, setDiagnosticError] = useState('')
-  const [grantWorker, setGrantWorker] = useState('')
-  const [grantActor, setGrantActor] = useState('')
-  const [grantScope, setGrantScope] = useState('')
-  const [grantHours, setGrantHours] = useState(3)
-  const [grantCpu, setGrantCpu] = useState(2000)
-  const [grantMemoryGiB, setGrantMemoryGiB] = useState(2)
-  const [grantGpu, setGrantGpu] = useState(0)
-  const [grantBudget, setGrantBudget] = useState(0)
-  const [policyWorker, setPolicyWorker] = useState('')
-  const [policyCpu, setPolicyCpu] = useState(0)
-  const [policyMemoryGiB, setPolicyMemoryGiB] = useState(0)
-  const [policyGpu, setPolicyGpu] = useState(0)
-  const [policyAllowGpu, setPolicyAllowGpu] = useState(false)
-  const [caseTitle, setCaseTitle] = useState('')
-  const [caseHost, setCaseHost] = useState('')
-  const [caseService, setCaseService] = useState('')
-  const [caseSymptoms, setCaseSymptoms] = useState('')
-  const [caseCause, setCaseCause] = useState('')
-  const [caseResolution, setCaseResolution] = useState('')
-  const [caseEvidence, setCaseEvidence] = useState('')
-  const [fleetMutationError, setFleetMutationError] = useState('')
-  const [deploymentRepository, setDeploymentRepository] = useState('')
-  const [deploymentRevision, setDeploymentRevision] = useState('')
-  const [deploymentTargets, setDeploymentTargets] = useState('')
-  const [deploymentChanges, setDeploymentChanges] = useState('')
-  const [deploymentStrategy, setDeploymentStrategy] = useState('serial')
-  const [deploymentCanary, setDeploymentCanary] = useState('')
-  const [deploymentFailurePolicy, setDeploymentFailurePolicy] = useState('pause')
-  const [deploymentDetail, setDeploymentDetail] = useState<any>(null)
-  useEffect(() => {
-    if (deploymentRepository || !deploymentRepositories.length) return
-    const repository = deploymentRepositories[0]
-    setDeploymentRepository(String(repository.repository_id ?? ''))
-    setDeploymentTargets(rows(repository.targets).map((target) => target.host_id).join(','))
-    setDeploymentChanges(rows(repository.allowed_changes)[0] ?? '')
-  }, [deploymentRepository, deploymentRepositories])
-  const selectedHost = knownHosts.find((host) => String(host.host ?? host.host_id) === selectedHostId)
-  const loadHost = async (hostId: string) => {
-    setSelectedHostId(hostId)
-    setSelectedUnit('')
-    setUnitDetail(null)
-    setLogDetail(null)
-    setDetailLoading(true)
-    try {
-      setHostDetail(await plane.query(`/fleet/hosts/${encodeURIComponent(hostId)}`))
-      setDetailError('')
-    } catch (reason) {
-      setHostDetail(null)
-      setDetailError(reason instanceof Error ? reason.message : '节点详情读取失败')
-    } finally {
-      setDetailLoading(false)
-    }
-  }
-  const loadUnit = async (includeLogs: boolean) => {
-    if (!selectedHostId || !selectedUnit) return
-    setDetailLoading(true)
-    try {
-      const base = `/fleet/hosts/${encodeURIComponent(selectedHostId)}/units/${encodeURIComponent(selectedUnit)}`
-      if (includeLogs) setLogDetail(await plane.query(`${base}/logs?lines=50&since_seconds=3600`))
-      else setUnitDetail(await plane.query(base))
-      setDetailError('')
-    } catch (reason) {
-      setDetailError(reason instanceof Error ? reason.message : '服务详情读取失败')
-    } finally {
-      setDetailLoading(false)
-    }
-  }
-  const availableCapabilities = capabilities.filter((item) => item.available)
-  const status = payload.configured ? fleet.status ?? backend.state ?? 'unknown' : 'unconfigured'
-  const runDiagnostic = async () => {
-    if (!diagnosticTemplate || !diagnosticHost) return
-    setDiagnosticLoading(true)
-    try {
-      const result = await plane.mutate('fleet', '/fleet/diagnostics', 'POST', {
-        template: diagnosticTemplate,
-        host_id: diagnosticHost,
-        subject: diagnosticSubject,
-      }, ['fleet'])
-      setDiagnosticDetail(result)
-      setDiagnosticError('')
-    } catch (reason) {
-      setDiagnosticError(reason instanceof Error ? reason.message : '排障任务执行失败')
-    } finally {
-      setDiagnosticLoading(false)
-    }
-  }
-  const loadDiagnostic = async (runId: number) => {
-    setDiagnosticLoading(true)
-    try {
-      setDiagnosticDetail(await plane.query(`/fleet/diagnostics/${runId}`))
-      setDiagnosticError('')
-    } catch (reason) {
-      setDiagnosticError(reason instanceof Error ? reason.message : '排障证据读取失败')
-    } finally {
-      setDiagnosticLoading(false)
-    }
-  }
-  const setWorkerAvailability = async (workerId: string, desired: string) => {
-    const policy = policyByWorker.get(workerId)
-    if (!policy) return
-    try {
-      await plane.mutate('fleet', `/fleet/workers/${encodeURIComponent(workerId)}/availability`, 'POST', {
-        desired_availability: desired,
-        reason: desired === 'available' ? '' : '管理员从控制台收回资源',
-        resource_version: policy.resource_version,
-      }, ['fleet'])
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : 'Worker 状态修改失败')
-    }
-  }
-  const selectPolicyWorker = (workerId: string) => {
-    setPolicyWorker(workerId)
-    const worker = workers.find((item) => item.worker_id === workerId)
-    const policy = policyByWorker.get(workerId)
-    setPolicyCpu(Number(policy?.cpu_limit_millis ?? worker?.capacity?.cpu_millis ?? 0))
-    setPolicyMemoryGiB(Number(policy?.memory_limit_bytes ?? worker?.capacity?.memory_bytes ?? 0) / 1024 ** 3)
-    setPolicyGpu(Number(policy?.gpu_limit_slots ?? 0))
-    setPolicyAllowGpu(Boolean(policy?.allow_gpu))
-  }
-  const configureWorkerCapacity = async () => {
-    const policy = policyByWorker.get(policyWorker)
-    if (!policy) return
-    try {
-      await plane.mutate('fleet', `/fleet/workers/${encodeURIComponent(policyWorker)}/capacity`, 'POST', {
-        allow_gpu: policyAllowGpu,
-        cpu_limit_millis: Math.max(0, Math.round(policyCpu)),
-        memory_limit_bytes: Math.max(0, Math.round(policyMemoryGiB * 1024 ** 3)),
-        gpu_limit_slots: policyAllowGpu ? Math.max(0, Math.round(policyGpu)) : 0,
-        resource_version: policy.resource_version,
-      }, ['fleet'])
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : 'Worker 资源上限修改失败')
-    }
-  }
-  const createGrant = async () => {
-    const worker = workers.find((item) => item.worker_id === grantWorker)
-    if (!worker || !grantActor || !grantScope) return
-    try {
-      await plane.mutate('fleet', '/fleet/borrow-grants', 'POST', {
-        worker_id: grantWorker,
-        grantee_actor_id: grantActor,
-        origin_scope: grantScope,
-        allowed_kinds: rows(worker.capabilities),
-        valid_until: Math.floor(Date.now() / 1000) + Math.max(1, grantHours) * 3600,
-        cpu_millis: Math.max(50, Math.round(grantCpu)),
-        memory_bytes: Math.max(16 * 1024 ** 2, Math.round(grantMemoryGiB * 1024 ** 3)),
-        gpu_slots: Math.max(0, Math.round(grantGpu)),
-        priority: 'normal',
-        max_cost_microunits: Math.max(0, Math.round(grantBudget)),
-      }, ['fleet'])
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : '借用授权创建失败')
-    }
-  }
-  const setGrantStatus = async (grant: any, status: string) => {
-    try {
-      await plane.mutate('fleet', `/fleet/borrow-grants/${encodeURIComponent(grant.grant_id)}/status`, 'POST', {
-        status,
-        resource_version: grant.resource_version,
-      }, ['fleet'])
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : '借用授权修改失败')
-    }
-  }
-  const setGuardianStatus = async (item: any, status: string) => {
-    try {
-      await plane.mutate('fleet', `/fleet/guardians/${encodeURIComponent(item.guardian_id)}/status`, 'POST', {
-        status,
-        resource_version: item.resource_version,
-      }, ['fleet'])
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : '目标守护修改失败')
-    }
-  }
-  const createRunbookCase = async () => {
-    const resolution = caseResolution.split(/[;；\n]/).map((item) => item.trim()).filter(Boolean)
-    const evidence = caseEvidence.split(/[,，;；\n]/).map((item) => item.trim()).filter(Boolean)
-    if (!caseTitle || !caseSymptoms || !caseCause || !resolution.length || !evidence.length) return
-    try {
-      await plane.mutate('fleet', '/fleet/runbook-cases', 'POST', {
-        title: caseTitle,
-        host_id: caseHost,
-        service_ref: caseService,
-        symptoms: caseSymptoms,
-        confirmed_cause: caseCause,
-        resolution,
-        applicability: {
-          ...(caseHost ? { host_id: caseHost } : {}),
-          ...(caseService ? { service_ref: caseService } : {}),
-        },
-        evidence_refs: evidence,
-        status: 'verified',
-        confidence: 'confirmed',
-      }, ['fleet'])
-      setCaseTitle('')
-      setCaseSymptoms('')
-      setCaseCause('')
-      setCaseResolution('')
-      setCaseEvidence('')
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : '故障案例发布失败')
-    }
-  }
-  const selectDeploymentRepository = (repositoryId: string) => {
-    setDeploymentRepository(repositoryId)
-    const repository = deploymentRepositories.find((item) => item.repository_id === repositoryId)
-    setDeploymentTargets(rows(repository?.targets).map((target) => target.host_id).join(','))
-    setDeploymentChanges(rows(repository?.allowed_changes)[0] ?? '')
-    setDeploymentCanary('')
-  }
-  const prepareDeployment = async () => {
-    const targets = deploymentTargets.split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean)
-    const changes = deploymentChanges.split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean)
-    if (!deploymentRepository || !/^[a-f0-9]{40}$/.test(deploymentRevision) || !targets.length || !changes.length) {
-      setFleetMutationError('部署需要仓库、40 位提交、至少一个目标和一个变更范围')
-      return
-    }
-    try {
-      const prepared = await plane.mutate('fleet', '/fleet/deployments', 'POST', {
-        repository_id: deploymentRepository,
-        source_revision: deploymentRevision,
-        expected_remote_revision: deploymentRevision,
-        target_hosts: targets,
-        requested_changes: changes,
-        strategy: deploymentStrategy,
-        canary_host_id: deploymentStrategy === 'canary' ? deploymentCanary : '',
-        failure_policy: deploymentFailurePolicy,
-        deadline_at: Math.floor(Date.now() / 1000) + 3600,
-        idempotency_key: `console-${Date.now()}-${deploymentRevision.slice(0, 8)}`,
-      }, ['fleet'])
-      setDeploymentDetail(prepared)
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : '部署预检创建失败')
-    }
-  }
-  const loadDeployment = async (deploymentId: string) => {
-    try {
-      setDeploymentDetail(await plane.query(`/fleet/deployments/${encodeURIComponent(deploymentId)}`))
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : '部署详情读取失败')
-    }
-  }
-  const approveDeployment = async (item: any) => {
-    try {
-      const approved = await plane.mutate('fleet', `/fleet/deployments/${encodeURIComponent(item.deployment_id)}/approve`, 'POST', {
-        contract_hash: item.contract_hash,
-        resource_version: item.resource_version,
-      }, ['fleet'])
-      setDeploymentDetail(approved)
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : '部署批准失败；请重新查看预检结果')
-    }
-  }
-  const cancelDeployment = async (deploymentId: string) => {
-    try {
-      const cancelled = await plane.mutate('fleet', `/fleet/deployments/${encodeURIComponent(deploymentId)}/cancel`, 'POST', {}, ['fleet'])
-      setDeploymentDetail(cancelled)
-      setFleetMutationError('')
-    } catch (reason) {
-      setFleetMutationError(reason instanceof Error ? reason.message : '部署取消失败')
-    }
-  }
-  return (
-    <>
-      <PageHeader title="服务器集群" description="只读证据、受控操作、远程 Worker、资源预留与临时预览" action={<RefreshButton loading={plane.loading.has('fleet')} onClick={() => void plane.refresh('fleet')} />} />
-      <div className="metric-grid">
-        <Metric label="控制链路" value={<StatusBadge value={status} />} hint={payload.configured ? `Ops：${backend.state ?? 'unknown'}` : '尚未配置集群控制服务'} />
-        <Metric label="登记节点" value={fmtNumber(knownHosts.length)} hint={`${fmtNumber(observedHosts.length)} 台有当前观测`} />
-        <Metric label="可用能力" value={`${availableCapabilities.length}/${capabilities.length}`} hint="新能力不会自动授权" />
-        <Metric label="最后成功" value={fmtTime(backend.last_success_at ?? fleet.observed_at)} hint={fleet.cached ? '当前结果来自缓存' : '当前结果来自上游'} />
-      </div>
-      <div className="metric-grid compact">
-        <Metric label="宿主操作" value={<StatusBadge value={operationCapability.available ? 'ready' : operationCapability.reason ? 'not_configured' : 'unknown'} />} hint={operationCapability.available ? `后端：${operationCapability.backend}` : operationCapability.reason || '尚未取得能力'} />
-        <Metric label="计算 Worker" value={`${workers.filter((item) => item.fresh).length}/${workers.length}`} hint={`${workerCapability.job_kinds?.length ?? 0} 类固定任务`} />
-        <Metric label="运行任务" value={jobs.filter((item) => ['running', 'verifying'].includes(item.status)).length} hint={`${reservations.filter((item) => item.status === 'active').length} 个资源预留`} />
-        <Metric label="活动预览" value={previews.filter((item) => item.state === 'active').length} hint="到期关闭入口，原产物仍保留" />
-        <Metric label="借用授权" value={borrowGrants.filter((item) => item.status === 'available').length} hint={`${borrowGrants.length} 条授权记录`} />
-        <Metric label="目标守护" value={guardians.filter((item) => ['scheduled', 'active'].includes(item.status)).length} hint="正常巡检不调用 LLM" />
-      </div>
-      {fleetMutationError && <div className="inline-error">{fleetMutationError}</div>}
-      <Section title="实验式排障" description="固定目标、最多两层六项检查；证据不足时保持未知">
-        <div className="diagnostic-controls">
-          <label><span>故障类型</span><select value={diagnosticTemplate} onChange={(event) => setDiagnosticTemplate(event.target.value)}>{diagnosticTemplates.map((item) => <option key={item.key} value={item.key}>{item.title}</option>)}</select></label>
-          <label><span>目标节点</span><select value={diagnosticHost} onChange={(event) => setDiagnosticHost(event.target.value)}>{knownHosts.map((host) => { const hostId = String(host.host ?? host.host_id); return <option key={hostId} value={hostId}>{host.label || hostId}</option> })}</select></label>
-          <label className="diagnostic-subject"><span>现象说明</span><input value={diagnosticSubject} maxLength={1000} placeholder="例如：千问返回空内容" onChange={(event) => setDiagnosticSubject(event.target.value)} /></label>
-          <button className="command-button" type="button" disabled={diagnosticLoading || !diagnosticTemplates.length} onClick={() => void runDiagnostic()}><Play size={15} />开始排障</button>
-        </div>
-        {diagnosticError && <div className="inline-error">{diagnosticError}</div>}
-        <DataTable><thead><tr><th>时间</th><th>调查</th><th>模板</th><th>节点</th><th>结论</th><th>可信度</th><th></th></tr></thead><tbody>{diagnosticRuns.slice(0, 5).map((run) => <tr key={run.run_id}><td>{fmtTime(run.started_at)}</td><td><code>{run.handle}</code></td><td>{diagnosticTemplates.find((item) => item.key === run.template)?.title ?? run.template}</td><td>{run.host_id}</td><td className="diagnostic-summary">{run.summary || '正在检查'}</td><td><StatusBadge value={run.confidence} /></td><td className="actions"><button className="icon-button" type="button" title="查看结构化证据" aria-label={`查看 ${run.handle} 证据`} onClick={() => void loadDiagnostic(run.run_id)}><Eye size={15} /></button></td></tr>)}</tbody></DataTable>
-        {!diagnosticRuns.length && <EmptyState>还没有排障记录</EmptyState>}
-        {diagnosticDetail && <div className="diagnostic-detail">
-          <div className="diagnostic-detail-head"><div><strong>{diagnosticDetail.handle} · {diagnosticDetail.summary}</strong><small>{diagnosticDetail.probe_count} 项检查 · {fmtTime(diagnosticDetail.finished_at ?? diagnosticDetail.started_at)}</small></div><StatusBadge value={diagnosticDetail.confidence} /></div>
-          <DataTable><thead><tr><th>证据</th><th>层级</th><th>检查</th><th>目标</th><th>状态</th><th>观测时间</th><th>事实</th></tr></thead><tbody>{rows(diagnosticDetail.evidence).map((item) => <tr key={item.evidence_id}><td><code>{item.handle}</code></td><td>{item.phase}</td><td><code>{item.check_name}</code></td><td className="diagnostic-target">{item.target_ref}</td><td><StatusBadge value={item.status} /></td><td>{fmtTime(item.observed_at ?? item.received_at)}</td><td><code className="diagnostic-facts">{JSON.stringify(item.facts)}</code></td></tr>)}</tbody></DataTable>
-        </div>}
-      </Section>
-      <Section title="节点状态" description="unknown 只表示证据不足，不等于机器关机">
-        {knownHosts.length ? <DataTable><thead><tr><th>节点</th><th>角色</th><th>Agent</th><th>Exporter</th><th>失败服务</th><th>观测状态</th><th></th></tr></thead><tbody>{knownHosts.map((host) => { const hostId = String(host.host ?? host.host_id); return <tr key={hostId}><td><strong>{host.label || hostId}</strong><small className="cell-sub">{hostId} · {host.site ?? host.architecture ?? '-'}</small></td><td>{host.role ?? host.roles?.join?.('、') ?? '-'}</td><td><StatusBadge value={host.agent?.state ?? 'unknown'} /></td><td><StatusBadge value={host.exporter?.state ?? 'unknown'} /></td><td>{host.agent?.failed_units == null ? '-' : fmtNumber(host.agent.failed_units)}</td><td><StatusBadge value={fleetHostState(host)} /></td><td className="actions"><button className="icon-button" title={`查看 ${hostId} 详情`} aria-label={`查看 ${hostId} 详情`} onClick={() => void loadHost(hostId)}><Eye size={15} /></button></td></tr>})}</tbody></DataTable> : <EmptyState>暂无登记节点；控制服务离线时不会猜测机器状态</EmptyState>}
-      </Section>
-      <OpsManagementPanel plane={plane} />
-      <Section title="固定版本部署" description="对固定 Git 提交做隔离预检，完成后在控制台执行，不需要手机验证">
-        <div className="diagnostic-controls">
-          <label><span>配置仓库</span><select value={deploymentRepository} onChange={(event) => selectDeploymentRepository(event.target.value)}><option value="">选择仓库</option>{deploymentRepositories.map((item) => <option key={item.repository_id} value={item.repository_id}>{item.repository_id}</option>)}</select></label>
-          <label className="diagnostic-subject"><span>Git 提交（40 位）</span><input value={deploymentRevision} maxLength={40} placeholder="完整 commit SHA" onChange={(event) => setDeploymentRevision(event.target.value.trim().toLowerCase())} /></label>
-          <label><span>目标（逗号分隔）</span><input value={deploymentTargets} onChange={(event) => setDeploymentTargets(event.target.value)} /></label>
-          <label><span>变更范围</span><input value={deploymentChanges} onChange={(event) => setDeploymentChanges(event.target.value)} /></label>
-          <label><span>批次</span><select value={deploymentStrategy} onChange={(event) => setDeploymentStrategy(event.target.value)}><option value="serial">逐台</option><option value="canary">金丝雀优先</option></select></label>
-          <label><span>金丝雀节点</span><input value={deploymentCanary} disabled={deploymentStrategy !== 'canary'} onChange={(event) => setDeploymentCanary(event.target.value)} /></label>
-          <label><span>失败策略</span><select value={deploymentFailurePolicy} onChange={(event) => setDeploymentFailurePolicy(event.target.value)}><option value="pause">暂停并保留现场</option><option value="rollback_deployed">回滚已部署节点</option></select></label>
-          <button className="command-button" type="button" disabled={!deploymentCapabilities.available} onClick={() => void prepareDeployment()}><GitBranch size={15} />创建预检</button>
-        </div>
-        <DataTable><thead><tr><th>更新时间</th><th>部署</th><th>提交</th><th>节点</th><th>阶段</th><th>状态</th><th></th></tr></thead><tbody>{deployments.slice(0, 5).map((item) => <tr key={item.deployment_id}><td>{fmtTime(item.updated_at)}</td><td><code>{item.deployment_id}</code><small className="cell-sub">{item.repository_id}</small></td><td><code title={item.source_revision}>{String(item.source_revision ?? '').slice(0, 12)}</code></td><td>{rows(item.target_hosts).join(' → ')}</td><td>{item.phase}</td><td><StatusBadge value={item.status} /></td><td className="actions"><button type="button" className="icon-button" title="查看预检、节点和事件" onClick={() => void loadDeployment(item.deployment_id)}><Eye size={15} /></button>{!['succeeded', 'failed', 'cancelled', 'rolled_back', 'needs_attention'].includes(item.status) && <button type="button" className="icon-button danger" title="取消部署" onClick={() => void cancelDeployment(item.deployment_id)}><Ban size={15} /></button>}</td></tr>)}</tbody></DataTable>
-        {!deployments.length && <EmptyState>{deploymentCapabilities.available ? '还没有部署记录' : '尚未配置独立部署执行器'}</EmptyState>}
-        {deploymentDetail && <div className="diagnostic-detail">
-          <div className="diagnostic-detail-head"><div><strong>{deploymentDetail.deployment_id} · {String(deploymentDetail.source_revision ?? '').slice(0, 12)}</strong><small>批准哈希：{deploymentDetail.contract_hash}</small></div><div className="actions"><StatusBadge value={deploymentDetail.status} />{deploymentDetail.status === 'awaiting_approval' && <button type="button" className="command-button" title="执行当前详情中显示的精确预检版本" onClick={() => void approveDeployment(deploymentDetail)}><Check size={15} />执行部署</button>}</div></div>
-          <DataTable><thead><tr><th>节点</th><th>顺序</th><th>步骤</th><th>当前闭包</th><th>目标闭包</th><th>状态</th></tr></thead><tbody>{rows(deploymentDetail.targets).map((target) => <tr key={target.host_id}><td>{target.host_id}</td><td>{target.ordinal + 1}</td><td>{target.step}</td><td><code title={target.current_toplevel}>{String(target.current_toplevel ?? '').split('/').pop() || '-'}</code></td><td><code title={target.target_toplevel}>{String(target.target_toplevel ?? '').split('/').pop() || '-'}</code></td><td><StatusBadge value={target.status} /></td></tr>)}</tbody></DataTable>
-          {Object.entries(deploymentDetail.preflight?.targets ?? {}).map(([hostId, value]: [string, any]) => <div className="deployment-preview" key={hostId}><strong>{hostId} 软件包变化</strong><pre>{value.change_preview || '等待预检'}</pre></div>)}
-          <DataTable><thead><tr><th>时间</th><th>事件</th><th>节点</th><th>步骤</th><th>状态</th><th>操作者</th></tr></thead><tbody>{rows(deploymentDetail.events).slice(-20).reverse().map((event) => <tr key={event.sequence}><td>{fmtTime(event.created_at)}</td><td>{event.event_type}</td><td>{event.host_id || '-'}</td><td>{event.step || '-'}</td><td><StatusBadge value={event.status} /></td><td><code>{event.actor_id}</code></td></tr>)}</tbody></DataTable>
-        </div>}
-      </Section>
-      <Section title="远程 Worker" description="主人状态优先于心跳；draining 会停止接新任务，但允许当前可保存步骤收尾">
-        <div className="diagnostic-controls">
-          <label><span>资源所有者策略</span><select value={policyWorker} onChange={(event) => selectPolicyWorker(event.target.value)}><option value="">选择 Worker</option>{workers.map((item) => <option key={item.worker_id} value={item.worker_id}>{item.worker_id}</option>)}</select></label>
-          <label><span>CPU 上限（m）</span><input type="number" min={0} value={policyCpu} onChange={(event) => setPolicyCpu(Number(event.target.value) || 0)} /></label>
-          <label><span>内存上限（GiB）</span><input type="number" min={0} step={0.25} value={policyMemoryGiB} onChange={(event) => setPolicyMemoryGiB(Number(event.target.value) || 0)} /></label>
-          <button className="command-button" type="button" disabled={!policyWorker} onClick={() => void configureWorkerCapacity()}><ShieldCheck size={15} />保存资源上限</button>
-          <label><span>GPU 上限</span><input type="number" min={0} max={16} disabled={!policyAllowGpu} value={policyGpu} onChange={(event) => setPolicyGpu(Number(event.target.value) || 0)} /></label>
-          <label className="toggle"><input type="checkbox" checked={policyAllowGpu} onChange={(event) => setPolicyAllowGpu(event.target.checked)} /><span /><b>允许借用 GPU</b></label>
-        </div>
-        <DataTable><thead><tr><th>Worker</th><th>节点</th><th>实际状态</th><th>主人状态</th><th>最后心跳</th><th>容量</th><th>让路</th></tr></thead><tbody>{workers.map((item) => { const policy = policyByWorker.get(String(item.worker_id)); return <tr key={item.worker_id}><td><code>{item.worker_id}</code><small className="cell-sub">{item.runtime?.system ?? '-'} / {item.runtime?.machine ?? '-'}</small></td><td>{item.host_id}</td><td><StatusBadge value={item.fresh ? item.availability : 'stale'} /></td><td><StatusBadge value={policy?.desired_availability ?? 'unknown'} /></td><td>{fmtTime(item.last_seen_at)}</td><td>{fmtNumber(item.capacity?.cpu_millis)}m CPU · {fmtBytes(item.capacity?.memory_bytes)} · {fmtNumber(item.capacity?.gpu_slots)} GPU</td><td className="actions"><button className="icon-button success" title="允许接收新任务" onClick={() => void setWorkerAvailability(item.worker_id, 'available')}><Play size={14} /></button><button className="icon-button" title="停止派新任务，当前步骤收尾" onClick={() => void setWorkerAvailability(item.worker_id, 'draining')}><Clock3 size={14} /></button><button className="icon-button danger" title="立即停止接收新任务" onClick={() => void setWorkerAvailability(item.worker_id, 'unavailable')}><Square size={14} /></button></td></tr> })}</tbody></DataTable>
-        {!workers.length && <EmptyState>没有已认证 Worker 心跳</EmptyState>}
-      </Section>
-      <Section title="算力借用" description="授权同时限制使用者、群、期限、任务类型、资源和费用；GPU 默认不开放">
-        <div className="diagnostic-controls">
-          <label><span>Worker</span><select value={grantWorker} onChange={(event) => setGrantWorker(event.target.value)}><option value="">选择 Worker</option>{workers.map((item) => <option key={item.worker_id} value={item.worker_id}>{item.worker_id}</option>)}</select></label>
-          <label><span>借用者</span><input value={grantActor} placeholder="qq:123456" onChange={(event) => setGrantActor(event.target.value)} /></label>
-          <label className="diagnostic-subject"><span>允许的会话</span><input value={grantScope} placeholder="onebot-v11:group:611798505" onChange={(event) => setGrantScope(event.target.value)} /></label>
-          <label><span>时长（小时）</span><input type="number" min={1} max={744} value={grantHours} onChange={(event) => setGrantHours(Number(event.target.value) || 1)} /></label>
-          <label><span>CPU（m）</span><input type="number" min={50} max={8000} value={grantCpu} onChange={(event) => setGrantCpu(Number(event.target.value) || 50)} /></label>
-          <label><span>内存（GiB）</span><input type="number" min={0.016} max={8} step={0.25} value={grantMemoryGiB} onChange={(event) => setGrantMemoryGiB(Number(event.target.value) || 0.25)} /></label>
-          <label><span>GPU</span><input type="number" min={0} max={8} value={grantGpu} onChange={(event) => setGrantGpu(Number(event.target.value) || 0)} /></label>
-          <label><span>费用预算（微单位）</span><input type="number" min={0} value={grantBudget} onChange={(event) => setGrantBudget(Number(event.target.value) || 0)} /></label>
-          <button className="command-button" type="button" disabled={!grantWorker || !grantActor || !grantScope} onClick={() => void createGrant()}><Play size={15} />创建限时授权</button>
-        </div>
-        <DataTable><thead><tr><th>授权</th><th>Worker</th><th>借用者/范围</th><th>期限</th><th>资源上限</th><th>预算</th><th>状态</th><th></th></tr></thead><tbody>{borrowGrants.slice(0, 5).map((item) => <tr key={item.grant_id}><td><code>{item.grant_id}</code></td><td>{item.worker_id}</td><td><code>{item.grantee_actor_id}</code><small className="cell-sub">{item.origin_scope}</small></td><td>{fmtTime(item.valid_until)}</td><td>{fmtNumber(item.cpu_limit_millis)}m · {fmtBytes(item.memory_limit_bytes)} · {fmtNumber(item.gpu_limit_slots)} GPU</td><td>{fmtNumber(item.budget_spent_microunits)} / {fmtNumber(item.budget_limit_microunits)}</td><td><StatusBadge value={item.status} /></td><td className="actions"><button className="icon-button" title="到当前步骤后让路" onClick={() => void setGrantStatus(item, 'draining')}><Clock3 size={14} /></button><button className="icon-button danger" title="撤销后不再派新任务" onClick={() => void setGrantStatus(item, 'revoked')}><Ban size={14} /></button></td></tr>)}</tbody></DataTable>
-        {!borrowGrants.length && <EmptyState>暂无临时算力借用授权</EmptyState>}
-      </Section>
-      <Section title="计算任务" description="排队、领取、资源预留、执行和回执均有独立记录">
-        <DataTable><thead><tr><th>更新时间</th><th>任务</th><th>类型</th><th>节点</th><th>代次</th><th>状态</th><th>结果</th></tr></thead><tbody>{jobs.slice(0, 5).map((item) => <tr key={item.job_id}><td>{fmtTime(item.updated_at)}</td><td><code>{item.job_id}</code></td><td><code>{item.kind}</code></td><td>{item.worker_id || '等待调度'}</td><td>{item.fence || '-'}</td><td><StatusBadge value={item.status} /></td><td className="cluster-result" title={JSON.stringify(item.result ?? {})}>{item.error_code || (item.result?.public_url ? <a href={item.result.public_url} target="_blank" rel="noreferrer">打开预览</a> : item.status === 'succeeded' ? '已验收' : '-')}</td></tr>)}</tbody></DataTable>
-        {!jobs.length && <EmptyState>还没有远程计算任务</EmptyState>}
-      </Section>
-      <Section title="临时预览" description="静态项目由专用 Worker 发布；过期只关闭访问入口，不删除唯一产物">
-        <DataTable><thead><tr><th>预览</th><th>节点</th><th>健康</th><th>到期时间</th><th>状态</th><th></th></tr></thead><tbody>{previews.slice(0, 5).map((item) => <tr key={item.preview_id}><td><code>{item.preview_id}</code></td><td>{item.worker_id || '等待调度'}</td><td><StatusBadge value={item.health_status} /></td><td>{fmtTime(item.expires_at)}</td><td><StatusBadge value={item.state} /></td><td>{item.public_url && item.state === 'active' ? <a href={item.public_url} target="_blank" rel="noreferrer">打开</a> : '-'}</td></tr>)}</tbody></DataTable>
-        {!previews.length && <EmptyState>还没有临时预览</EmptyState>}
-      </Section>
-      <Section title="目标守护" description="固定探针按期限运行；连续失败才形成事故，健康检查不会消耗模型 Token">
-        <GuardianControls plane={plane} />
-        <DataTable><thead><tr><th>守护</th><th>目标</th><th>截止</th><th>最近检查</th><th>连续失败</th><th>处理次数</th><th>状态</th><th></th></tr></thead><tbody>{guardians.slice(0, 5).map((item) => <tr key={item.guardian_id}><td><code>{item.guardian_id}</code></td><td>{item.target_id}</td><td>{fmtTime(item.expires_at)}</td><td>{fmtTime(item.last_checked_at)}</td><td>{fmtNumber(item.consecutive_failures)} / {fmtNumber(item.failure_threshold)}</td><td>{fmtNumber(item.actions_used)} / {fmtNumber(item.max_actions)}</td><td><StatusBadge value={item.status} /></td><td className="actions"><button className="icon-button" title={item.status === 'paused' ? '恢复守护' : '暂停守护'} onClick={() => void setGuardianStatus(item, item.status === 'paused' ? 'active' : 'paused')}>{item.status === 'paused' ? <Play size={14} /> : <Clock3 size={14} />}</button><button className="icon-button danger" title="取消后不再创建新处理" onClick={() => void setGuardianStatus(item, 'cancelled')}><X size={14} /></button></td></tr>)}</tbody></DataTable>
-        {!guardians.length && <EmptyState>暂无目标守护合同</EmptyState>}
-      </Section>
-      <Section title="故障记忆" description="把探测、排障、变更和验收串成事故；旧案例命中后仍需验证当前适用条件">
-        <div className="diagnostic-controls">
-          <label><span>案例标题</span><input value={caseTitle} onChange={(event) => setCaseTitle(event.target.value)} /></label>
-          <label><span>节点</span><input value={caseHost} placeholder="h610" onChange={(event) => setCaseHost(event.target.value)} /></label>
-          <label><span>服务</span><input value={caseService} placeholder="example.service" onChange={(event) => setCaseService(event.target.value)} /></label>
-          <label className="diagnostic-subject"><span>故障现象</span><input value={caseSymptoms} onChange={(event) => setCaseSymptoms(event.target.value)} /></label>
-          <label className="diagnostic-subject"><span>确认原因</span><input value={caseCause} onChange={(event) => setCaseCause(event.target.value)} /></label>
-          <label className="diagnostic-subject"><span>已验证步骤（分号分隔）</span><input value={caseResolution} onChange={(event) => setCaseResolution(event.target.value)} /></label>
-          <label className="diagnostic-subject"><span>证据编号（逗号分隔）</span><input value={caseEvidence} placeholder="incident_...，diagnostic#..." onChange={(event) => setCaseEvidence(event.target.value)} /></label>
-          <button className="command-button" type="button" disabled={!caseTitle || !caseSymptoms || !caseCause || !caseResolution || !caseEvidence} onClick={() => void createRunbookCase()}><ShieldCheck size={15} />发布已验证案例</button>
-        </div>
-        <DataTable><thead><tr><th>最近发生</th><th>事故</th><th>节点/服务</th><th>摘要</th><th>等级</th><th>状态</th></tr></thead><tbody>{fleetIncidents.slice(0, 5).map((item) => <tr key={item.incident_id}><td>{fmtTime(item.last_seen_at)}</td><td><code>{item.incident_id}</code><small className="cell-sub">{item.incident_key}</small></td><td>{item.host_id || '-'}<small className="cell-sub">{item.service_ref || '-'}</small></td><td>{item.summary}</td><td><StatusBadge value={item.severity} /></td><td><StatusBadge value={item.status} /></td></tr>)}</tbody></DataTable>
-        {!fleetIncidents.length && <EmptyState>暂无集群故障事件</EmptyState>}
-        <DataTable><thead><tr><th>更新时间</th><th>案例</th><th>节点/服务</th><th>确认原因</th><th>可信度</th><th>状态</th></tr></thead><tbody>{runbookCases.slice(0, 5).map((item) => <tr key={item.case_id}><td>{fmtTime(item.updated_at)}</td><td><strong>{item.title}</strong><small className="cell-sub"><code>{item.case_id}</code></small></td><td>{item.host_id || '-'}<small className="cell-sub">{item.service_ref || '-'}</small></td><td className="diagnostic-summary" title={item.confirmed_cause}>{item.confirmed_cause}</td><td><StatusBadge value={item.confidence} /></td><td><StatusBadge value={item.status} /></td></tr>)}</tbody></DataTable>
-        {!runbookCases.length && <EmptyState>暂无已发布运维案例</EmptyState>}
-      </Section>
-      {selectedHostId && <Section title={`节点详情 · ${selectedHostId}`} description="主机事实和服务状态按需读取；日志不会自动加载">
-        <div className="fleet-detail-toolbar">
-          <span><strong>{selectedHost?.label || selectedHostId}</strong><small>{selectedHost?.maintainer ? `维护者：${selectedHost.maintainer}` : '维护者未登记'} · 权限来源：{selectedHost?.permission_source || '未确认'}</small></span>
-          <button className="icon-button" title="刷新主机事实" aria-label="刷新主机事实" disabled={detailLoading} onClick={() => void loadHost(selectedHostId)}><RefreshCw className={detailLoading ? 'spin' : ''} size={15} /></button>
-        </div>
-        {detailError && <div className="inline-error">{detailError}</div>}
-        {hostDetail && <DataTable><thead><tr><th>结果</th><th>内核</th><th>运行时间</th><th>系统版本</th><th>观测时间</th></tr></thead><tbody><tr><td><StatusBadge value={hostDetail.status} /></td><td>{hostDetail.data?.facts?.kernel ?? '-'}</td><td>{hostDetail.data?.facts?.uptime_seconds == null ? '-' : fmtDuration(hostDetail.data.facts.uptime_seconds)}</td><td className="truncate" title={hostDetail.data?.facts?.system_closure ?? ''}>{hostDetail.data?.facts?.system_closure ?? '-'}</td><td>{fmtTime(hostDetail.observed_at ?? hostDetail.data?.observed_at)}</td></tr></tbody></DataTable>}
-        <div className="fleet-service-controls">
-          <label><span>允许读取的服务</span><select value={selectedUnit} onChange={(event) => { setSelectedUnit(event.target.value); setUnitDetail(null); setLogDetail(null) }}><option value="">选择 systemd 服务</option>{rows(selectedHost?.readable_units).map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></label>
-          <button className="icon-button" type="button" title="读取服务状态" aria-label="读取服务状态" disabled={!selectedUnit || detailLoading} onClick={() => void loadUnit(false)}><Eye size={15} /></button>
-          <button className="icon-button" type="button" title="读取最近一小时日志" aria-label="读取最近一小时日志" disabled={!selectedUnit || detailLoading} onClick={() => void loadUnit(true)}><FileText size={15} /></button>
-        </div>
-        {unitDetail && <DataTable><thead><tr><th>服务</th><th>加载</th><th>运行</th><th>子状态</th><th>主进程</th><th>内存</th></tr></thead><tbody><tr><td><code>{selectedUnit}</code></td><td>{unitDetail.data?.unit?.load_state ?? '-'}</td><td><StatusBadge value={unitDetail.data?.unit?.active_state ?? unitDetail.status} /></td><td>{unitDetail.data?.unit?.sub_state ?? '-'}</td><td>{unitDetail.data?.unit?.details?.main_pid ?? '-'}</td><td>{fmtBytes(unitDetail.data?.unit?.details?.memory_current_bytes)}</td></tr></tbody></DataTable>}
-        {logDetail && <div className="fleet-log-lines"><div><strong>最近一小时日志</strong><StatusBadge value={logDetail.status} /></div>{rows(logDetail.data?.entries).map((entry, index) => <p key={`${entry.timestamp_us}-${index}`}><time>{fmtTime(Number(entry.timestamp_us ?? 0) / 1_000_000)}</time><code>{entry.priority ?? '-'}</code><span>{entry.message ?? ''}</span></p>)}{!rows(logDetail.data?.entries).length && <EmptyState>没有返回日志；可能没有记录或当前范围无权读取</EmptyState>}</div>}
-      </Section>}
-      <Section title="只读能力" description="能力必须同时存在于上游目录和 gaoji 映射中">
-        <DataTable><thead><tr><th>能力</th><th>上游操作</th><th>可用</th><th>敏感</th><th>原因</th></tr></thead><tbody>{capabilities.map((item) => <tr key={item.name}><td><code>{item.name}</code></td><td><code>{item.operation}</code></td><td><StatusBadge value={item.available ? 'enabled' : 'disabled'} /></td><td>{item.sensitive ? '是' : '否'}</td><td>{item.reason || '-'}</td></tr>)}</tbody></DataTable>
-        {!capabilities.length && <EmptyState>尚未取得 Ops 操作目录</EmptyState>}
-      </Section>
-      <Section title="最近观测" description="日志正文不落库，这里只保存操作、目标、状态和时间">
-        <DataTable><thead><tr><th>收到时间</th><th>操作</th><th>目标</th><th>状态</th><th>耗时</th><th>敏感</th><th>错误码</th></tr></thead><tbody>{observations.slice(0, 5).map((item) => <tr key={item.observation_id}><td>{fmtTime(item.received_at)}</td><td><code>{item.operation}</code></td><td>{item.target_key}</td><td><StatusBadge value={item.status} /></td><td>{item.duration_ms ?? '-'} ms</td><td>{item.sensitive ? '是' : '否'}</td><td>{item.error_code || '-'}</td></tr>)}</tbody></DataTable>
-        {!observations.length && <EmptyState>还没有集群查询证据</EmptyState>}
-      </Section>
     </>
   )
 }
@@ -1117,53 +646,12 @@ export function AuditView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail:
   )
 }
 
-export function ObservabilityView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail: DetailOpener }) {
-  const [notificationSaving, setNotificationSaving] = useState(false)
-  const data = plane.data.observability ?? {}
-  const process = data.process ?? {}
-  const alerts = rows(data.alertmanager?.items)
-  const history = plane.data.alerts ?? data.alert_history ?? {}
-  const summary = history.summary ?? {}
-  const events = rows(history.events)
-  const incidents = rows(history.incidents)
-  const notifications = rows(history.notifications)
-  const notificationControl = history.notification_control ?? {}
-  const notificationEnabled = Boolean(notificationControl.enabled)
-  const setNotificationsEnabled = async (enabled: boolean) => {
-    setNotificationSaving(true)
-    try {
-      await plane.mutate('alerts', '/alert-notifications/control', 'PUT', { enabled }, ['alerts', 'observability'])
-    } catch {
-      // The control plane displays the error and refreshes stale versions.
-    } finally {
-      setNotificationSaving(false)
-    }
-  }
-  return (
-    <>
-      <PageHeader title="可观测性" description="Prometheus、告警事故、阶段延迟、模型降级和工具表现" action={<RefreshButton onClick={() => void plane.refreshMany(['observability', 'alerts'])} />} />
-      <div className="metric-grid"><Metric label="当前活动" value={fmtNumber(data.alertmanager?.active_count ?? alerts.length)} hint={`${fmtNumber(summary.current_incidents)} 个根因事故`} /><Metric label="今日触发" value={fmtNumber(summary.triggered)} hint={`${fmtNumber(summary.firing_notifications)} 次 QQ 通知`} /><Metric label="今日恢复" value={fmtNumber(summary.resolved)} hint={`${fmtNumber(summary.recovery_notifications)} 次恢复通知`} /><Metric label="今日根因事故" value={fmtNumber(summary.incidents)} /></div>
-      <div className="metric-grid"><Metric label="Prometheus" value={<StatusBadge value={data.prometheus?.available ? 'online' : 'offline'} />} hint={data.prometheus?.url ?? '未配置'} /><Metric label="模型请求" value={fmtNumber(process.totals?.model_requests)} /><Metric label="降级路由" value={fmtNumber(rows(process.fallback_routes).length)} /><Metric label="工具失败" value={fmtNumber(process.totals?.tool_failures)} /></div>
-      <Section title="模型延迟"><DataTable><thead><tr><th>模型</th><th>请求</th><th>失败</th><th>P50</th><th>P95</th></tr></thead><tbody>{rows(process.models).map((model) => <tr key={model.profile ?? model.model}><td>{model.profile ?? model.model}</td><td>{fmtNumber(model.requests)}</td><td>{fmtNumber(model.failures)}</td><td>{model.p50_ms ?? '-'} ms</td><td>{model.p95_ms ?? '-'} ms</td></tr>)}</tbody></DataTable></Section>
-      <Section title="当前活动告警" description="此刻仍未恢复，按触发时间倒序显示最近 5 条" action={<ViewAllButton count={alerts.length} onClick={() => onOpenDetail('alerts')} />}>{alerts.length ? [...alerts].sort((left, right) => Date.parse(String(right.starts_at || '')) - Date.parse(String(left.starts_at || ''))).slice(0, 5).map((alert) => <div className="alert-row" key={alert.fingerprint ?? alert.name}><CircleAlert size={17} /><div><strong>{alert.name}</strong><p>{alert.summary || alert.description}</p><time>{fmtTime(alert.starts_at)}</time></div><StatusBadge value={alert.severity} /></div>) : <EmptyState>当前没有活动告警</EmptyState>}</Section>
-      <Section title="根因事故" description="相关链路告警已按受影响主机或服务合并" action={<ViewAllButton count={incidents.length} onClick={() => onOpenDetail('alert-incidents')} />}>{incidents.length ? incidents.slice(0, 5).map((incident) => <div className="alert-row" key={incident.incident_key}><CircleAlert size={17} /><div><strong>{incident.incident_key}</strong><p>{incident.summary || incident.name} · 合并 {fmtNumber(incident.event_count)} 条</p><time>{fmtTime(incident.last_seen_at)}</time></div><StatusBadge value={incident.status} /></div>) : <EmptyState>暂无事故记录</EmptyState>}</Section>
-      <Section title="最近告警事件" description="包括已恢复以及被根因事故合并的原始事件" action={<ViewAllButton count={events.length} onClick={() => onOpenDetail('alert-events')} />}>{events.length ? events.slice(0, 5).map((event) => <div className="alert-row" key={event.event_id}><CircleAlert size={17} /><div><strong>{event.name}</strong><p>{event.summary || event.description}{event.suppressed ? ' · 已合并压制' : ''}</p><time>{fmtTime(event.first_seen_at)}</time></div><StatusBadge value={event.status} /></div>) : <EmptyState>暂无告警历史</EmptyState>}</Section>
-      <Section
-        title="QQ 告警通知"
-        description={`独立控制发往群 ${notificationControl.group_id || '-'} 的通知；关闭后监控采集和告警历史仍继续`}
-        action={<div className="section-actions"><Toggle checked={notificationEnabled} disabled={!notificationControl.configured || notificationSaving} label={notificationSaving ? '保存中' : notificationEnabled ? '通知已开启' : '通知已关闭'} onChange={(enabled) => void setNotificationsEnabled(enabled)} /><ViewAllButton count={notifications.length} onClick={() => onOpenDetail('alert-notifications')} /></div>}
-      >{notifications.length ? notifications.slice(0, 5).map((notification) => <div className="alert-row" key={notification.notification_id}><CircleAlert size={17} /><div><strong>{notification.incident_key}</strong><p>{notification.kind} · 合并 {fmtNumber(notification.alert_count)} 条</p><time>{fmtTime(notification.created_at)}</time></div><StatusBadge value={notification.severity} /></div>) : <EmptyState>暂无 QQ 告警通知</EmptyState>}</Section>
-    </>
-  )
-}
-
 const HELP_SECTIONS = [
   {
     title: '概览与用量',
     items: [
       ['概览', '查看服务、任务、沙盒、Token 趋势和最近投递。把鼠标停在趋势图某一天，即可看到输入、输出、缓存命中、总 Token 和调用次数。'],
       ['模型用量', '切换 90、30、14 天窗口；下方明细按日期、群聊或私聊 Scope、调用来源拆分，便于定位费用来自哪里。'],
-      ['可观测性', '“当前活动”只统计此刻未恢复告警；“今日触发/恢复”来自 PostgreSQL 历史。QQ 告警通知右侧有独立开关，关闭后 Bot、Prometheus、告警采集和历史记录都继续运行，只是不再往群里发通知。'],
     ],
   },
   {
@@ -1171,9 +659,7 @@ const HELP_SECTIONS = [
     items: [
       ['任务与投递', '查看当前 Agent、后台持久任务和 QQ 消息投递。Sub-Agent 列表中的“+”表示并行、“→”表示依赖；点分支图标查看方块执行拓扑和实时状态。右侧方形按钮取消任务，旋转箭头重试任务，播放按钮重试失败投递。'],
       ['Trace 与上下文', '用 Trace ID 串起一次回答的模型、工具、Token 和耗时；上下文决策显示“你觉得呢”等追问最终关联了哪条消息及置信度。'],
-      ['上下文调试', '左侧选择一次回答，右侧查看当前话题、原始证据、候选评分、Token 分区及群/个人记忆。确认质量后点“答对了”或“答非所问”，备注会连同版本写入审计。'],
       ['数据库', '查看当前主库和备用节点、连接池、延迟及复制状态。出现 offline 或 degraded 时先看节点错误，不要直接清数据。'],
-      ['服务器集群', '查看 Ops 只读链路、节点观测、操作能力和最近查询。fresh 是新数据，stale 是旧数据加上游错误，unavailable 只表示当前取不到证据，不能据此断定服务器关机。'],
       ['沙盒', '查看隔离环境、正在执行的命令、资源占用和 Agent 任务。任务完成后沙盒按保留期限回收，因此这里为空通常是正常状态。'],
     ],
   },

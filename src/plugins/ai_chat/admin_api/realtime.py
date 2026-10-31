@@ -107,37 +107,18 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "conversations": ("groups",),
     "principals": ("groups",),
     "principal_identities": ("groups",),
-    "messages": ("groups", "context-debug"),
-    "conversation_visibility": ("context-debug", "wiki"),
-    "context_compartments": ("context-debug", "wiki"),
-    "group_wiki_settings": ("wiki",),
-    "group_wiki_pages": ("wiki",),
-    "group_wiki_publications": ("wiki",),
-    "group_wiki_generations": ("wiki",),
-    "mcp_servers": ("mcp",),
-    "mcp_tools": ("mcp",),
-    "mcp_group_tokens": ("mcp",),
-    "mcp_calls": ("mcp",),
-    "projects": ("projects",),
-    "project_scope_limits": ("projects",),
-    "project_versions": ("projects",),
-    "project_previews": ("projects",),
-    "project_usage": ("projects",),
-    "project_events": ("projects",),
-    "project_io": ("projects",),
-    "project_lifecycle_runs": ("projects",),
-    "project_lifecycle_steps": ("projects",),
-    "deliveries": ("qq-official", "deliveries", "subagents", "overview", "observability"),
-    "delivery_attempts": ("qq-official", "deliveries", "subagents", "overview", "observability"),
-    "usage_events": ("usage", "overview", "observability"),
-    "agent_turns": ("traces", "context-debug", "observability"),
-    "turn_journal_events": ("traces", "context-debug", "observability"),
-    "turn_context_plans": ("traces", "context-debug"),
-    "turn_context_feedback": ("context-debug",),
-    "turn_reaction_votes": ("context-debug",),
-    "turn_edges": ("traces", "context-debug"),
-    "turn_digests": ("traces", "context-debug"),
-    "durable_jobs": ("jobs", "media", "context-debug", "overview", "wiki", "projects"),
+    "messages": ("groups"),
+    "conversation_visibility": ("wiki"),
+    "context_compartments": ("wiki"),
+    "deliveries": ("qq-official", "deliveries", "subagents", "overview"),
+    "delivery_attempts": ("qq-official", "deliveries", "subagents", "overview"),
+    "usage_events": ("usage", "overview"),
+    "agent_turns": ("traces"),
+    "turn_journal_events": ("traces"),
+    "turn_context_plans": ("traces"),
+    "turn_edges": ("traces"),
+    "turn_digests": ("traces"),
+    "durable_jobs": ("jobs", "media", "overview"),
     "media_blobs": ("media", "stickers"),
     "message_media": ("media", "stickers"),
     "media_jobs": ("media",),
@@ -145,10 +126,10 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "media_cleanup_runs": ("media",),
     "content_sources": ("sources",),
     "message_sources": ("sources",),
-    "alert_events": ("alerts", "observability"),
-    "alert_notifications": ("alerts", "observability"),
-    "diagnostic_runs": ("fleet", "observability"),
-    "diagnostic_evidence": ("fleet", "observability"),
+    "alert_events": ("alerts"),
+    "alert_notifications": ("alerts"),
+    "diagnostic_runs": ("fleet"),
+    "diagnostic_evidence": ("fleet"),
     "subagent_tasks": ("qq-official", "subagents", "tasks", "overview"),
     "subagent_runs": ("subagents", "tasks", "overview"),
     "subagent_events": ("subagents", "tasks", "overview"),
@@ -163,11 +144,7 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "bridge_sources": ("overview",),
     "bridge_deliveries": ("overview",),
     "bridge_cursors": ("overview",),
-    "fleet_backend_states": ("fleet", "overview"),
-    "fleet_observations": ("fleet",),
-    "fleet_operations": ("fleet",),
-    "fleet_operation_events": ("fleet",),
-    "fleet_approvals": ("fleet",),
+    "fleet_backend_states": ("overview"),
 }
 
 
@@ -181,9 +158,6 @@ def _changed_database_resources(
     for table, counters in current.items():
         if previous.get(table) != counters:
             changed.update(_DATABASE_RESOURCE_MAP.get(table, ()))
-            # New chat alone cannot change published wiki evidence; edits/deletes can.
-            if table == "messages" and previous.get(table, (0, 0, 0))[1:] != counters[1:]:
-                changed.add("wiki")
     return changed
 
 
@@ -207,7 +181,6 @@ class AdminRealtimeMonitor:
         first = True
         next_process = 0.0
         next_external = 0.0
-        next_fleet = 0.0
         try:
             while self.broker.has_subscribers:
                 changed: set[str] = set()
@@ -251,9 +224,6 @@ class AdminRealtimeMonitor:
                     changed.update(
                         (
                             "overview",
-                            "projects",
-                            "observability",
-                            "alerts",
                             "deliveries",
                             "usage",
                             "tasks",
@@ -264,25 +234,19 @@ class AdminRealtimeMonitor:
                             "media",
                             "sources",
                             "databases",
-                            "fleet",
                             "groups",
                             "tools",
                             "traces",
-                            "context-debug",
-                            "wiki",
                             "audit",
                         )
                     )
                     first = False
                 if now >= next_process:
-                    changed.update(("overview", "observability", "sandboxes", "local-model"))
+                    changed.update(("overview", "sandboxes", "local-model"))
                     next_process = now + 2.0
                 if now >= next_external:
-                    changed.update(("alerts", "databases", "stickers"))
+                    changed.update(("databases", "stickers"))
                     next_external = now + 5.0
-                if now >= next_fleet:
-                    changed.add("fleet")
-                    next_fleet = now + 10.0
                 if changed:
                     self.broker.publish_runtime(*changed)
                 await asyncio.sleep(1.0)

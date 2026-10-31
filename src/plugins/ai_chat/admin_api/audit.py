@@ -14,6 +14,14 @@ def create_router(context: AdminRouteContext) -> APIRouter:
     control_store = context.control_store
     versioned = context.versioned
 
+    @router.get("/api/requests")
+    def requests(turn_id: int | None = Query(default=None, ge=1),
+                 limit: int = Query(default=25, ge=1, le=100)):
+        authorize()
+        if services.conversations is None:
+            raise HTTPException(status_code=503, detail="请求日志不可用")
+        return {"items": services.conversations.requests(turn_id=turn_id, limit=limit)}
+
     @router.get("/api/traces")
     def traces(
         limit: int = Query(default=100, ge=1, le=500),

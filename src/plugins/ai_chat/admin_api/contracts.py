@@ -42,6 +42,7 @@ class AdminServices:
     reasoning_preferences: Any = None
     user_profiles: Any = None
     message_ledger: Any = None
+    conversations: Any = None
     settings: Any = None
     sandbox_manager: Any = None
     sticker_inventory: Any = None
@@ -82,11 +83,6 @@ class GroupEnabledRequest(BaseModel):
     enabled: bool
 
 
-class AlertNotificationControlRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool
-
-
 class SandboxActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["start", "stop", "destroy"]
@@ -103,8 +99,3 @@ class ToolEnabledRequest(BaseModel):
 
 class MediaReviewRequest(BaseModel):
     state: str
-
-
-class ContextFeedbackRequest(BaseModel):
-    verdict: str
-    note: str = ""

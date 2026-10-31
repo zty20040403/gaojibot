@@ -111,8 +111,19 @@ class ConversationStore:
                 """INSERT INTO turn_requests (turn_id, scope_key, model, messages_json, tools_json, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)""",
                 (turn_id, scope_key, model, json.dumps(messages, ensure_ascii=False, default=str),
-                 json.dumps([tool["function"]["name"] for tool in tools], ensure_ascii=False), int(time.time())),
+                 json.dumps(tools, ensure_ascii=False), int(time.time())),
             )
+
+    def requests(self, *, turn_id: int | None = None, limit: int = 50) -> list[dict]:
+        with self._transaction() as cursor:
+            where = "WHERE turn_id = ?" if turn_id is not None else ""
+            parameters = (turn_id, limit) if turn_id is not None else (limit,)
+            rows = cursor.execute(
+                f"SELECT * FROM turn_requests {where} ORDER BY created_at DESC, request_id DESC LIMIT ?",
+                parameters,
+            ).fetchall()
+        return [{**dict(row), "messages": json.loads(row["messages_json"]),
+                 "tools": json.loads(row["tools_json"])} for row in rows]
 
     def prune_requests(self, *, keep_seconds: int = 14 * 86400) -> int:
         with self._transaction() as cursor:
