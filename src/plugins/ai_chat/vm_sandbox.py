@@ -136,6 +136,11 @@ class VmSandboxManager:
         if conversation:
             config["packages"].append("python3-pip")
             config["runcmd"].append(["ln", "-sfn", "/workspace", "/work"])
+            from .sandbox_tools_setup import PACKAGES, INSTALL, files
+            config['packages'].extend(PACKAGES)
+            config['write_files'].extend(files())
+            if not prepared:
+                config['runcmd'].append(['/bin/sh', '-lc', INSTALL])
         if prepared:
             config.pop("packages")
             config["package_update"] = False
