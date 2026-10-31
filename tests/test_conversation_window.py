@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 from types import SimpleNamespace
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -117,6 +118,25 @@ class WindowTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(last.index("[记忆]"), last.index("[新消息]"))
         self.assertTrue(last.endswith("[新消息]\n小红：在吗"))
         self.assertIn("自定义人设", system_prompt("自定义人设"))
+
+    def test_style_examples_sit_between_persona_and_rules(self):
+        text = system_prompt("TEST 人设", "", "群友：TEST 问\n你：TEST 答")
+        self.assertLess(text.index("TEST 人设"), text.index("[说话样例]"))
+        self.assertLess(text.index("你：TEST 答"), text.index("[silence]"))
+        self.assertNotIn("[说话样例]", system_prompt("TEST 人设"))
+
+    def test_persona_and_examples_files_win_over_the_variable(self):
+        import tempfile
+        from src.plugins.ai_chat.config import Settings
+        with tempfile.TemporaryDirectory() as folder:
+            persona, examples = Path(folder) / "persona.md", Path(folder) / "examples.md"
+            persona.write_text("TEST 文件人设\n", encoding="utf-8")
+            examples.write_text("群友：TEST\n", encoding="utf-8")
+            settings = Settings.from_env({"AI_SYSTEM_PROMPT": "TEST 变量人设",
+                                          "AI_SYSTEM_PROMPT_FILE": str(persona),
+                                          "AI_STYLE_EXAMPLES_FILE": str(examples)})
+        self.assertEqual(settings.system_prompt, "TEST 文件人设")
+        self.assertEqual(settings.style_examples, "群友：TEST")
 
 
 if __name__ == "__main__":

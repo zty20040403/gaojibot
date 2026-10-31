@@ -71,10 +71,10 @@ async def present(service, row, *, question=None):
                 '只有需要用户补充时才向用户提问，提醒用户可以直接告诉你补充要求。') if question is not None else (
                 f"[job#{row['job_id']} {row['state']}] {row['title']}\n{row['report'][:2000]}\n"
                 f"完整报告：/work/.gaoji/jobs/job-{row['job_id']}.md\n"
-                '这是用户先前要求的后台任务结果，请用你的语气向用户交付。文件在当前会话工作区，用 send_file_from_sandbox 传报告中的路径即可发送；报告不完整时用 sandbox_read_file 读全文。'
+                '这是用户先前要求的后台任务结果，请用你的语气向用户交付。文件在当前会话工作区，用 send_file_from_sandbox 传报告中的路径即可发送，PNG、JPG、GIF 在群里直接显示成图片；报告不完整时用 sandbox_read_file 读全文。'
                 '任务取消时不要继续执行。失败须说明具体原因，不能声称已经成功。')
             answer = await ask_deepseek_with_tools(report, [], tools, execute, profile=profile, trace=trace,
-                group_context=history, memory_context=memory, system_prompt=system_prompt(app.settings.system_prompt),
+                group_context=history, memory_context=memory, system_prompt=system_prompt(app.settings.system_prompt, examples=app.settings.style_examples),
                 tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True, policies={name: replace(
                     policy_for_tool(name), timeout_seconds=310) for name in ('send_file', 'send_file_from_sandbox')}),
                 max_tool_rounds=24, max_total_calls=80, max_calls_per_round=24)
