@@ -26,63 +26,10 @@
     else pkgs.writeShellScriptBin "docker" ''
       exec ${pkgs.podman}/bin/podman "$@"
     '';
-  codesnapFonts = pkgs.runCommand "qq-bot-codesnap-fonts" {} ''
-    mkdir -p "$out/share/fonts"
-    cp ${pkgs.sarasa-gothic}/share/fonts/truetype/Sarasa-Regular.ttc \
-      "$out/share/fonts/Sarasa-Regular.ttc"
-  '';
-  richFontConfig = pkgs.makeFontsConf {
-    fontDirectories = [
-      pkgs.sarasa-gothic
-      pkgs.noto-fonts-cjk-sans
-    ];
-  };
   defaultWhisperModel = pkgs.fetchurl {
     url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
     hash = "sha256-YO1bw90U7qhWST0zQ0m0BXgt3K8AKNS130CINF+6Lv4=";
   };
-  codesnapConfig = pkgs.writeText "qq-bot-codesnap.json" (builtins.toJSON {
-    print_eggs = false;
-    snapshot_config = {
-      theme = cfg.codesnap.theme;
-      fonts_folders = ["${codesnapFonts}/share/fonts"];
-      window = {
-        mac_window_bar = true;
-        shadow = {
-          radius = 16;
-          color = "#00000040";
-        };
-        margin = {
-          x = 42;
-          y = 42;
-        };
-        border = {
-          width = 1;
-          color = "#ffffff24";
-        };
-        title_config = {
-          color = "#d8dee9";
-          font_family = cfg.codesnap.fontFamily;
-        };
-        radius = 8;
-      };
-      code_config = {
-        font_family = cfg.codesnap.fontFamily;
-        breadcrumbs = {
-          enable = false;
-          separator = "/";
-          color = "#80848b";
-          font_family = cfg.codesnap.fontFamily;
-        };
-      };
-      watermark = {
-        content = "";
-        font_family = cfg.codesnap.fontFamily;
-        color = "#ffffff";
-      };
-      background = "#15171c";
-    };
-  });
   boolString = value:
     if value
     then "true"
@@ -99,17 +46,7 @@
     && !(lib.hasInfix "\n" value)
     && !(lib.hasInfix "\r" value)
     && lib.all (part: part != "." && part != "..") (lib.splitString "/" value);
-  nativeNapcat = cfg.napcat.backend == "native";
-  nativeWebsocketHost =
-    if cfg.host == "0.0.0.0" then "127.0.0.1"
-    else if cfg.host == "::" then "[::1]"
-    else if lib.hasInfix ":" cfg.host then "[${cfg.host}]"
-    else cfg.host;
-  napcatServiceName = if nativeNapcat then "${serviceName}-napcat" else "docker-${cfg.napcat.containerName}";
-  napcatOwner = if nativeNapcat then "${serviceName}-napcat" else "root";
 in {
-  imports = [./napcat-native.nix];
-
   options.services.gaoji = {
     enable = lib.mkEnableOption "the gaoji multi-model bot";
 
@@ -160,12 +97,6 @@ in {
       default = {};
       example = {AI_ENABLED_GROUPS = "123456789";};
       description = "Non-secret environment variables for the bot service.";
-    };
-
-    oneBot.enable = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Enable the existing OneBot application path. Disable alongside qqOfficial.enable for official-only startup.";
     };
 
     qqOfficial = {
@@ -271,12 +202,6 @@ in {
         description = "Maximum original result waiting deadline in hours; never refresh on reconnect or apply to expired proactive speech/OTP.";
       };
 
-      projectGrantTtlSeconds = lib.mkOption {
-        type = lib.types.ints.between 60 86400;
-        default = 86400;
-        description = "Maximum lifetime for a newly issued project grant, including reviewed migration grants; existing deadlines are never renewed by configuration.";
-      };
-
       fileLinkTtlSeconds = lib.mkOption {
         type = lib.types.ints.between 60 3600;
         default = 3600;
@@ -293,36 +218,6 @@ in {
         type = lib.types.enum ["unknown" "unverified" "certified"];
         default = "unknown";
         description = "Trusted operator observation of Tencent account certification; unknown uses unverified limits and grants no target API permissions.";
-      };
-
-      rateGroupProactivePerMinute = lib.mkOption {
-        type = lib.types.nullOr (lib.types.ints.between 1 1000);
-        default = null;
-        description = "Optional stricter proactive group account rate per minute; capped by the contract for the certification profile.";
-      };
-
-      rateC2cProactivePerSecond = lib.mkOption {
-        type = lib.types.nullOr (lib.types.ints.between 1 1000);
-        default = null;
-        description = "Optional stricter proactive C2C account rate per second.";
-      };
-
-      rateC2cProactivePerMinute = lib.mkOption {
-        type = lib.types.nullOr (lib.types.ints.between 1 1000);
-        default = null;
-        description = "Optional extra proactive C2C account rate per minute; does not replace the per-second contract cap.";
-      };
-
-      rateEndpointProactivePerMinute = lib.mkOption {
-        type = lib.types.nullOr (lib.types.ints.between 1 1000);
-        default = null;
-        description = "Optional stricter proactive rate for each physical target; cannot raise the contract cap.";
-      };
-
-      ratePassivePerSecond = lib.mkOption {
-        type = lib.types.nullOr (lib.types.ints.between 1 1000);
-        default = null;
-        description = "Optional local passive rate per second for each account scene; reply-window and server cooldown checks remain authoritative.";
       };
 
       inboxPayloadTtlHours = lib.mkOption {
@@ -359,13 +254,13 @@ in {
     host = lib.mkOption {
       type = lib.types.str;
       default = "127.0.0.1";
-      description = "Address used by the OneBot reverse WebSocket server.";
+      description = "Listen address for the management HTTP server.";
     };
 
     port = lib.mkOption {
       type = lib.types.port;
       default = 8080;
-      description = "Port used by the OneBot reverse WebSocket server.";
+      description = "Listen port for the management HTTP server.";
     };
 
     openFirewall = lib.mkOption {
@@ -389,50 +284,10 @@ in {
       '';
     };
 
-    cluster = {
-      enable = lib.mkEnableOption "read-only gaoji fleet tools";
-
-      localControlService = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Order the bot after a cluster-control service on this host; disable when using a remote control URL.";
-      };
-
-      controlUrl = lib.mkOption {
-        type = lib.types.str;
-        default = "http://127.0.0.1:8091";
-        description = "Fixed gaoji cluster-control API URL.";
-      };
-
-      tokenFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Credential file for the internal cluster-control API.";
-      };
-
-      allowedGroups = lib.mkOption {
-        type = lib.types.listOf lib.types.ints.unsigned;
-        default = [];
-        description = "QQ groups allowed to use non-sensitive fleet queries.";
-      };
-
-      logAllowedGroups = lib.mkOption {
-        type = lib.types.listOf lib.types.ints.unsigned;
-        default = [];
-        description = "QQ groups allowed to request allowlisted service logs.";
-      };
-
-      timeoutSeconds = lib.mkOption {
-        type = lib.types.ints.between 1 30;
-        default = 12;
-        description = "Whole-request timeout used by the bot-side control client.";
-      };
-    };
-
     sandbox.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Allow the bot to create OCI execution sandboxes.";
+      description = "Allow persistent conversation execution workspaces.";
     };
 
     sandbox.backend = lib.mkOption {
@@ -527,200 +382,31 @@ in {
       };
     };
 
-    browser = {
-      enable = lib.mkEnableOption "the bot's persistent Playwright browser and rich rendering";
-
+    voiceAsr = {
+      enable = lib.mkEnableOption "host-local voice transcription when Tencent provides no text";
       package = lib.mkOption {
-        type = lib.types.package;
-        default = pkgs.chromium;
-        defaultText = lib.literalExpression "pkgs.chromium";
-        description = "Chromium-compatible browser executable used by Playwright.";
-      };
-    };
-
-    codesnap = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Render fenced code blocks with the CodeSnap CLI.";
-      };
-
-      package = lib.mkOption {
-        type = lib.types.package;
-        default = pkgs.codesnap;
-        defaultText = lib.literalExpression "pkgs.codesnap";
-        description = "CodeSnap CLI package used for code block images.";
-      };
-
-      fontFamily = lib.mkOption {
-        type = lib.types.str;
-        default = "Sarasa Mono SC";
-        description = "Chinese-capable monospace family used for code snapshots.";
-      };
-
-      theme = lib.mkOption {
-        type = lib.types.str;
-        default = "candy";
-        description = "Built-in CodeSnap syntax theme.";
-      };
-    };
-
-    videoDeep = {
-      enable = lib.mkEnableOption "temporary deep analysis of shared and QQ-native videos";
-
-      whisperPackage = lib.mkOption {
         type = lib.types.package;
         default = pkgs.whisper-cpp;
-        defaultText = lib.literalExpression "pkgs.whisper-cpp";
-        description = "whisper.cpp package used for local audio transcription.";
+        description = "whisper.cpp package for short QQ voice messages.";
       };
-
-      whisperModel = lib.mkOption {
+      model = lib.mkOption {
         type = lib.types.package;
         default = defaultWhisperModel;
-        description = "Fixed-output multilingual Whisper model file.";
-      };
-
-      frameCount = lib.mkOption {
-        type = lib.types.ints.between 4 12;
-        default = 12;
-        description = "Number of evenly sampled video frames sent to the vision model.";
-      };
-
-      maxDownloadMB = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 1024;
-        description = "Maximum combined temporary video and audio download size.";
-      };
-
-      maxDurationMinutes = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 60;
-        description = "Maximum video duration accepted by deep analysis.";
-      };
-
-      timeoutSeconds = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 1800;
-        description = "Timeout for media preparation and local transcription.";
-      };
-
-      recentSeconds = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 300;
-        description = "How long a sender's latest QQ video remains available for a follow-up request.";
-      };
-    };
-
-    napcat = {
-      enable = lib.mkEnableOption "a dedicated NapCat instance for this bot";
-
-      backend = lib.mkOption {
-        type = lib.types.enum ["docker" "native"];
-        default = "docker";
-        description = "Run a Docker image or a native, isolated Nix package.";
-      };
-
-      nativePackage = lib.mkOption {
-        type = lib.types.nullOr lib.types.package;
-        default = null;
-        description = "Pinned, patched QQ package providing bin/qq and napcat/; required for the native backend.";
-      };
-
-      account = lib.mkOption {
-        type = lib.types.str;
-        example = "123456789";
-        description = "QQ account logged in by the dedicated NapCat instance.";
-      };
-
-      image = lib.mkOption {
-        type = lib.types.str;
-        default = "mlikiowa/napcat-docker:latest";
-        description = "NapCat container image; pin a version or digest in production.";
-      };
-
-      containerName = lib.mkOption {
-        type = lib.types.str;
-        default = "napcat-gaoji";
-        description = "OCI container name for the dedicated NapCat instance.";
-      };
-
-      dataDirectory = lib.mkOption {
-        type = lib.types.str;
-        default = "/var/lib/napcat-gaoji";
-        description = "Persistent NapCat data directory on the host.";
-      };
-
-      environmentFiles = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [];
-        description = "Runtime environment files passed to the NapCat container.";
-      };
-
-      environment = lib.mkOption {
-        type = lib.types.attrsOf lib.types.str;
-        default = {};
-        description = "Additional non-secret environment variables for NapCat.";
-      };
-
-      reverseWebsocketUrl = lib.mkOption {
-        type = lib.types.str;
-        default = "ws://${if nativeNapcat then nativeWebsocketHost else "host.docker.internal"}:${toString cfg.port}/onebot/v11/ws";
-        description = "OneBot reverse WebSocket URL used by NapCat.";
-      };
-
-      reverseWebsocketTokenFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Private OneBot token file; updates only the matching configured reverse-WebSocket client before NapCat starts.";
-      };
-
-      webuiAddress = lib.mkOption {
-        type = lib.types.str;
-        default = "127.0.0.1";
-        description = "Host address used for the NapCat WebUI port mapping.";
-      };
-
-      webuiPort = lib.mkOption {
-        type = lib.types.port;
-        default = 6100;
-        description = "Host port used for the dedicated NapCat WebUI.";
-      };
-
-      healthCheck = {
-        enable = lib.mkEnableOption "QQ account probes and bounded transport recovery";
-        metricsFile = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = "Optional node-exporter textfile path for actual QQ account status.";
-        };
-      };
-
-      passwordLogin = {
-        enable = lib.mkEnableOption "bounded password login when QQ is logged out";
-        passwordFile = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = "Private runtime QQ password file, outside the Nix store; loaded with systemd credentials. Never put the password in Nix configuration.";
-        };
-        notification = {
-          enable = lib.mkEnableOption "one targeted login-verification reminder through another QQ instance";
-          webuiConfigFile = lib.mkOption {
-            type = lib.types.str;
-            default = "";
-            description = "Private runtime WebUI config of the independent notification sender.";
-          };
-          webuiPort = lib.mkOption { type = lib.types.port; default = 6099; };
-          account = lib.mkOption { type = lib.types.strMatching "[1-9][0-9]{4,19}"; };
-          groupId = lib.mkOption { type = lib.types.strMatching "[1-9][0-9]{4,19}"; };
-          userId = lib.mkOption { type = lib.types.strMatching "[1-9][0-9]{4,19}"; };
-        };
+        description = "Multilingual Whisper model for short QQ voice messages.";
       };
     };
   };
 
   config = lib.mkIf cfg.enable {
     assertions = [
+      {
+        assertion = !cfg.runBot || cfg.qqOfficial.enable;
+        message = "A running Gaoji application requires QQ official to be enabled";
+      }
+      {
+        assertion = cfg.opsRead.baseUrl == "" || officialCredentialPath cfg.opsRead.tokenFile;
+        message = "opsRead requires a private absolute tokenFile outside /nix/store";
+      }
       {
         assertion = !(cfg.sandbox.enable && sandboxUsesPodman && cfg.sandbox.network == "isolated");
         message = "Isolated egress requires rootful Docker; select none for rootless Podman or explicitly opt into bridge";
@@ -738,33 +424,12 @@ in {
         message = "KVM sandboxes require a pinned vmImage and a persistent absolute vmRoot outside the Nix store";
       }
       {
-        assertion = !(cfg.napcat.enable && nativeNapcat) || (
-          cfg.napcat.nativePackage != null
-          && lib.hasPrefix "/var/lib/" cfg.napcat.dataDirectory
-          && builtins.match "[1-9][0-9]{4,19}" cfg.napcat.account != null
-          && builtins.elem cfg.napcat.webuiAddress ["127.0.0.1" "::1"]
-        );
-        message = "Native NapCat requires a pinned QQ package, a /var/lib data directory, a QQ account and a loopback WebUI address";
-      }
-      {
         assertion = builtins.match "^[A-Za-z0-9_.-]+$" cfg.stateDirectory != null;
         message = "services.gaoji.stateDirectory must be a directory name, not a path";
       }
       {
         assertion = builtins.match "^[A-Za-z0-9_.-]+$" cfg.cacheDirectory != null;
         message = "services.gaoji.cacheDirectory must be a directory name, not a path";
-      }
-      {
-        assertion = !cfg.cluster.enable || cfg.cluster.tokenFile != null;
-        message = "services.gaoji.cluster.tokenFile is required when cluster tools are enabled";
-      }
-      {
-        assertion = !cfg.runBot || cfg.oneBot.enable || cfg.qqOfficial.enable;
-        message = "A running Gaoji application requires OneBot or QQ official to be enabled";
-      }
-      {
-        assertion = !cfg.runBot || cfg.oneBot.enable || !cfg.napcat.enable;
-        message = "QQ official-only startup requires services.gaoji.napcat.enable = false";
       }
       {
         assertion = !cfg.qqOfficial.enable || cfg.qqOfficial.hostConfigFile == null
@@ -791,25 +456,6 @@ in {
           );
         message = "QQ official configuration permits at most 32 owner openids and 256 private allowlist entries";
       }
-      {
-        assertion = !cfg.napcat.passwordLogin.enable || (
-          cfg.napcat.enable
-          && cfg.napcat.passwordLogin.passwordFile != null
-          && lib.hasPrefix "/" cfg.napcat.passwordLogin.passwordFile
-          && !(lib.hasPrefix "/nix/store/" cfg.napcat.passwordLogin.passwordFile)
-        );
-        message = "NapCat password login requires NapCat and a private absolute passwordFile outside /nix/store";
-      }
-      {
-        assertion = !cfg.napcat.passwordLogin.notification.enable || (
-          cfg.napcat.passwordLogin.enable
-          && lib.hasPrefix "/" cfg.napcat.passwordLogin.notification.webuiConfigFile
-          && !(lib.hasPrefix "/nix/store/" cfg.napcat.passwordLogin.notification.webuiConfigFile)
-          && cfg.napcat.passwordLogin.notification.account != cfg.napcat.account
-          && cfg.napcat.passwordLogin.notification.webuiPort != cfg.napcat.webuiPort
-        );
-        message = "Login notifications require a separate QQ instance and its private runtime WebUI config";
-      }
     ];
 
     users.groups.${serviceName} = lib.mkIf (cfg.group == serviceName) {};
@@ -821,7 +467,7 @@ in {
 
     networking.firewall.allowedTCPPorts = lib.optionals cfg.openFirewall [cfg.port];
 
-    virtualisation.docker.enable = lib.mkDefault ((cfg.sandbox.enable && sandboxUsesDocker) || (cfg.napcat.enable && !nativeNapcat));
+    virtualisation.docker.enable = lib.mkDefault (cfg.sandbox.enable && sandboxUsesDocker);
     virtualisation.podman.enable = lib.mkDefault (cfg.sandbox.enable && sandboxUsesPodman);
     virtualisation.libvirtd.enable = lib.mkDefault (cfg.sandbox.enable && sandboxUsesVm);
 
@@ -830,14 +476,12 @@ in {
       wantedBy = ["multi-user.target"];
       unitConfig.RequiresMountsFor = lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [cfg.sandbox.vmRoot];
       wants =
-        ["network-online.target"]
-        ++ lib.optional (cfg.cluster.enable && cfg.cluster.localControlService) "gaoji-cluster-control.service";
+        ["network-online.target"];
       requires = lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
         "${serviceName}-sandbox-image.service"
       ] ++ lib.optionals sandboxIsolated ["gaoji-sandbox-network.service"];
       after =
         ["network-online.target"]
-        ++ lib.optional (cfg.cluster.enable && cfg.cluster.localControlService) "gaoji-cluster-control.service"
         ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
           "${serviceName}-sandbox-image.service"
         ] ++ lib.optionals sandboxIsolated ["gaoji-sandbox-network.service"];
@@ -845,18 +489,13 @@ in {
         cfg.runtimePackages
         ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [sandboxCli]
         ++ lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [pkgs.libvirt pkgs.qemu pkgs.cloud-utils]
-        ++ lib.optionals cfg.browser.enable [cfg.browser.package]
-        ++ lib.optionals cfg.codesnap.enable [cfg.codesnap.package]
-        ++ lib.optionals cfg.videoDeep.enable [
-          pkgs.ffmpeg-headless
-          cfg.videoDeep.whisperPackage
-        ];
+        ++ lib.optionals cfg.voiceAsr.enable [pkgs.ffmpeg-headless cfg.voiceAsr.package];
       environment =
         {
           HOME = statePath;
           AI_STATE_DIR = "${statePath}/state";
           AI_OPS_READ_BASE_URL = cfg.opsRead.baseUrl;
-          AI_OPS_READ_TOKEN_FILE = cfg.opsRead.tokenFile;
+          AI_OPS_READ_TOKEN_FILE = if cfg.opsRead.baseUrl == "" then "" else "/run/credentials/${serviceName}.service/ops-read-token";
           AI_CACHE_DIR = cachePath;
           AI_SANDBOX_ENABLED = boolString cfg.sandbox.enable;
           AI_SANDBOX_ALLOWED_USERS = lib.concatMapStringsSep "," toString cfg.sandbox.allowedUsers;
@@ -885,9 +524,6 @@ in {
           AI_ADMIN_ORIGIN = cfg.admin.origin;
           AI_ADMIN_BOT_ID = cfg.admin.botId;
         }
-        // lib.optionalAttrs (!cfg.oneBot.enable) {
-          AI_ONEBOT_ENABLED = "false";
-        }
         // lib.optionalAttrs (cfg.qqOfficial.enable && cfg.qqOfficial.hostConfigFile != null) {
           AI_QQ_OFFICIAL_HOST_CONFIG_FILE = "/run/credentials/${serviceName}.service/qq-official-host-config";
         }
@@ -909,53 +545,12 @@ in {
           AI_QQ_OFFICIAL_MAX_TEXT_PARTS = toString cfg.qqOfficial.maxTextParts;
           AI_QQ_OFFICIAL_MAX_TEXT_BYTES = (if cfg.qqOfficial.maxTextBytes == null then "" else toString cfg.qqOfficial.maxTextBytes);
           AI_QQ_OFFICIAL_DEFER_MAX_HOURS = toString cfg.qqOfficial.deferMaxHours;
-          AI_QQ_OFFICIAL_PROJECT_GRANT_TTL_SECONDS = toString cfg.qqOfficial.projectGrantTtlSeconds;
           AI_QQ_OFFICIAL_FILE_LINK_TTL_SECONDS = toString cfg.qqOfficial.fileLinkTtlSeconds;
           AI_QQ_OFFICIAL_ALLOW_NEWER_WINDOWS = boolString cfg.qqOfficial.allowNewerWindows;
           AI_QQ_OFFICIAL_CERTIFICATION = cfg.qqOfficial.certification;
-          AI_QQ_OFFICIAL_RATE_GROUP_PROACTIVE_PER_MINUTE = (if cfg.qqOfficial.rateGroupProactivePerMinute == null then "" else toString cfg.qqOfficial.rateGroupProactivePerMinute);
-          AI_QQ_OFFICIAL_RATE_C2C_PROACTIVE_PER_SECOND = (if cfg.qqOfficial.rateC2cProactivePerSecond == null then "" else toString cfg.qqOfficial.rateC2cProactivePerSecond);
-          AI_QQ_OFFICIAL_RATE_C2C_PROACTIVE_PER_MINUTE = (if cfg.qqOfficial.rateC2cProactivePerMinute == null then "" else toString cfg.qqOfficial.rateC2cProactivePerMinute);
-          AI_QQ_OFFICIAL_RATE_ENDPOINT_PROACTIVE_PER_MINUTE = (if cfg.qqOfficial.rateEndpointProactivePerMinute == null then "" else toString cfg.qqOfficial.rateEndpointProactivePerMinute);
-          AI_QQ_OFFICIAL_RATE_PASSIVE_PER_SECOND = (if cfg.qqOfficial.ratePassivePerSecond == null then "" else toString cfg.qqOfficial.ratePassivePerSecond);
         }
-        // lib.optionalAttrs cfg.browser.enable {
-          AI_BROWSER_ENABLED = "true";
-          AI_BROWSER_EXECUTABLE_PATH = lib.getExe cfg.browser.package;
-          FONTCONFIG_FILE = "${richFontConfig}";
-        }
-        // lib.optionalAttrs cfg.codesnap.enable {
-          AI_CODESNAP_ENABLED = "true";
-          AI_CODESNAP_EXECUTABLE_PATH = lib.getExe cfg.codesnap.package;
-          AI_CODESNAP_CONFIG_PATH = codesnapConfig;
-          AI_CODESNAP_FONT_FAMILY = cfg.codesnap.fontFamily;
-          AI_CODESNAP_THEME = cfg.codesnap.theme;
-        }
-        // lib.optionalAttrs (!cfg.codesnap.enable) {
-          AI_CODESNAP_ENABLED = "false";
-        }
-        // lib.optionalAttrs cfg.videoDeep.enable {
-          AI_VIDEO_DEEP_ENABLED = "true";
-          AI_VIDEO_WHISPER_MODEL_PATH = toString cfg.videoDeep.whisperModel;
-          AI_VIDEO_FRAME_COUNT = toString cfg.videoDeep.frameCount;
-          AI_VIDEO_MAX_DOWNLOAD_MB = toString cfg.videoDeep.maxDownloadMB;
-          AI_VIDEO_MAX_DURATION_MINUTES = toString cfg.videoDeep.maxDurationMinutes;
-          AI_VIDEO_TIMEOUT_SECONDS = toString cfg.videoDeep.timeoutSeconds;
-          AI_VIDEO_RECENT_SECONDS = toString cfg.videoDeep.recentSeconds;
-        }
-        // lib.optionalAttrs (!cfg.videoDeep.enable) {
-          AI_VIDEO_DEEP_ENABLED = "false";
-        }
-        // lib.optionalAttrs cfg.cluster.enable {
-          AI_CLUSTER_ENABLED = "true";
-          AI_CLUSTER_CONTROL_URL = cfg.cluster.controlUrl;
-          AI_CLUSTER_CONTROL_TOKEN_FILE = "%d/fleet-control-token";
-          AI_CLUSTER_CONTROL_TIMEOUT_SECONDS = toString cfg.cluster.timeoutSeconds;
-          AI_FLEET_ALLOWED_GROUPS = lib.concatMapStringsSep "," toString cfg.cluster.allowedGroups;
-          AI_FLEET_LOG_ALLOWED_GROUPS = lib.concatMapStringsSep "," toString cfg.cluster.logAllowedGroups;
-        }
-        // lib.optionalAttrs (!cfg.cluster.enable) {
-          AI_CLUSTER_ENABLED = "false";
+        // lib.optionalAttrs cfg.voiceAsr.enable {
+          AI_VIDEO_WHISPER_MODEL_PATH = toString cfg.voiceAsr.model;
         }
         // cfg.environment;
 
@@ -979,7 +574,7 @@ in {
           RestartSec = 5;
           UMask = "0077";
           LoadCredential =
-            lib.optional (cfg.cluster.enable && cfg.cluster.tokenFile != null) "fleet-control-token:${cfg.cluster.tokenFile}"
+            lib.optional (cfg.opsRead.baseUrl != "") "ops-read-token:${cfg.opsRead.tokenFile}"
             ++ lib.optional (cfg.admin.secretFile != null) "admin-authorization-key:${cfg.admin.secretFile}"
             ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.appIdFile != null) "qq-official-app-id:${cfg.qqOfficial.appIdFile}"
             ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.appSecretFile != null) "qq-official-app-secret:${cfg.qqOfficial.appSecretFile}"
@@ -1138,122 +733,6 @@ in {
       };
     };
 
-    virtualisation.oci-containers = lib.mkIf (cfg.napcat.enable && !nativeNapcat) {
-      backend = "docker";
-      containers.${cfg.napcat.containerName} = {
-        image = cfg.napcat.image;
-        autoStart = true;
-        environment =
-          {
-            ACCOUNT = cfg.napcat.account;
-            WSR_ENABLE = "true";
-            WS_URLS = builtins.toJSON [cfg.napcat.reverseWebsocketUrl];
-          }
-          // cfg.napcat.environment;
-        environmentFiles = cfg.napcat.environmentFiles;
-        ports = [
-          "${cfg.napcat.webuiAddress}:${toString cfg.napcat.webuiPort}:6099"
-        ];
-        volumes = [
-          "${cfg.napcat.dataDirectory}/QQ:/app/.config/QQ"
-          "${cfg.napcat.dataDirectory}/config:/app/napcat/config"
-          "${cfg.napcat.dataDirectory}/outbox:/data/outbox"
-        ];
-        extraOptions = ["--add-host=host.docker.internal:host-gateway"];
-      };
-    };
-
-    systemd.services.${napcatServiceName} = lib.mkIf cfg.napcat.enable {
-      wants = lib.optional cfg.runBot "${serviceName}.service";
-      after = lib.optional cfg.runBot "${serviceName}.service";
-      serviceConfig.LoadCredential = lib.optional (cfg.napcat.reverseWebsocketTokenFile != null)
-        "onebot-token:${cfg.napcat.reverseWebsocketTokenFile}";
-      preStart = lib.mkIf (!nativeNapcat && cfg.napcat.reverseWebsocketTokenFile != null) (lib.mkBefore ''
-        ${pkgs.python3}/bin/python ${./napcat-auth.py} \
-          ${lib.escapeShellArg "${cfg.napcat.dataDirectory}/config/onebot11_${cfg.napcat.account}.json"} \
-          "$CREDENTIALS_DIRECTORY/onebot-token" \
-          ${lib.escapeShellArg cfg.napcat.reverseWebsocketUrl}
-      '');
-    };
-
-    systemd.services."${serviceName}-qq-health" = lib.mkIf (cfg.napcat.enable && cfg.napcat.healthCheck.enable) {
-      description = "Probe actual QQ login and recover stalled transport without restart loops";
-      after = ["${napcatServiceName}.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = lib.concatStringsSep " " ([
-          "${pkgs.python3}/bin/python3" "${./napcat-health.py}"
-          "--config" (lib.escapeShellArg "${cfg.napcat.dataDirectory}/config/webui.json")
-          "--port" (toString cfg.napcat.webuiPort)
-          "--unit" "${napcatServiceName}.service"
-          "--systemctl" "${pkgs.systemd}/bin/systemctl"
-          "--state" "/var/lib/${serviceName}-qq-health/state.json"
-        ] ++ lib.optionals (cfg.napcat.healthCheck.metricsFile != null) [
-          "--metrics" (lib.escapeShellArg cfg.napcat.healthCheck.metricsFile)
-        ]);
-        StateDirectory = "${serviceName}-qq-health";
-        StateDirectoryMode = "0700";
-        TimeoutStartSec = "25s";
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        ReadWritePaths = lib.optional (cfg.napcat.healthCheck.metricsFile != null)
-          (builtins.dirOf cfg.napcat.healthCheck.metricsFile);
-      };
-    };
-
-    systemd.timers."${serviceName}-qq-health" = lib.mkIf (cfg.napcat.enable && cfg.napcat.healthCheck.enable) {
-      wantedBy = ["timers.target"];
-      timerConfig = { OnBootSec = "90s"; OnUnitInactiveSec = "30s"; };
-    };
-
-    environment.systemPackages = lib.optionals cfg.napcat.passwordLogin.enable [
-      (pkgs.writeShellScriptBin "${serviceName}-qq-password-login" ''
-        exec ${pkgs.python3}/bin/python3 ${./napcat-password-login.py} "$@"
-      '')
-    ];
-
-    systemd.services."${serviceName}-qq-password-login" = lib.mkIf cfg.napcat.passwordLogin.enable {
-      description = "Attempt QQ password login once; stop for manual verification on failure";
-      after = ["${napcatServiceName}.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecCondition = [
-          "${pkgs.systemd}/bin/systemctl is-active --quiet ${napcatServiceName}.service"
-          "${pkgs.python3}/bin/python3 ${./napcat-password-login.py} --check-ready --port ${toString cfg.napcat.webuiPort}"
-        ];
-        ExecStart = lib.concatStringsSep " " ([
-          "${pkgs.python3}/bin/python3" "${./napcat-password-login.py}"
-          "--config" (lib.escapeShellArg "${cfg.napcat.dataDirectory}/config/webui.json")
-          "--port" (toString cfg.napcat.webuiPort)
-          "--uin" (lib.escapeShellArg cfg.napcat.account)
-          "--password-file" "%d/qq-password"
-          "--state" "/var/lib/${serviceName}-qq-password-login/state.json"
-        ] ++ lib.optionals cfg.napcat.passwordLogin.notification.enable [
-          "--notify-config" (lib.escapeShellArg cfg.napcat.passwordLogin.notification.webuiConfigFile)
-          "--notify-port" (toString cfg.napcat.passwordLogin.notification.webuiPort)
-          "--notify-uin" cfg.napcat.passwordLogin.notification.account
-          "--notify-group" cfg.napcat.passwordLogin.notification.groupId
-          "--notify-user" cfg.napcat.passwordLogin.notification.userId
-        ]);
-        LoadCredential = ["qq-password:${cfg.napcat.passwordLogin.passwordFile}"];
-        StateDirectory = "${serviceName}-qq-password-login";
-        StateDirectoryMode = "0700";
-        TimeoutStartSec = "120s";
-        UMask = "0077";
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-      };
-    };
-
-    systemd.timers."${serviceName}-qq-password-login" = lib.mkIf cfg.napcat.passwordLogin.enable {
-      wantedBy = ["timers.target"];
-      timerConfig = { OnBootSec = "120s"; OnUnitInactiveSec = "60s"; };
-    };
-
     systemd.tmpfiles.rules =
       lib.optionals (cfg.sandbox.enable && sandboxUsesPodman) [
         "d ${statePath} 0700 ${cfg.user} ${cfg.group} -"
@@ -1263,12 +742,6 @@ in {
         "d ${statePath} 0700 ${cfg.user} ${cfg.group} -"
         "d ${statePath}/vm-runtime 0700 ${cfg.user} ${cfg.group} -"
         "d ${cfg.sandbox.vmRoot} 0700 ${cfg.user} ${cfg.group} -"
-      ]
-      ++ lib.optionals cfg.napcat.enable [
-        "d ${cfg.napcat.dataDirectory} 0700 ${napcatOwner} ${napcatOwner} -"
-        "d ${cfg.napcat.dataDirectory}/QQ 0700 ${napcatOwner} ${napcatOwner} -"
-        "d ${cfg.napcat.dataDirectory}/config 0700 ${napcatOwner} ${napcatOwner} -"
-        "d ${cfg.napcat.dataDirectory}/outbox 0700 ${napcatOwner} ${napcatOwner} -"
       ];
   };
 }
