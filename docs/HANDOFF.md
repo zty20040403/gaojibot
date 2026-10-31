@@ -5,6 +5,22 @@
 
 ---
 
+## 0. 开工前 owner 要给接手人的东西
+
+接手人只需要能开发和测试，不需要生产权限：
+
+| 要给的 | 说明 |
+|---|---|
+| GitHub 仓库的写权限 | 在自己的分支开发，开 PR，由 owner 合并 |
+| 一个**测试用**的官方 QQ 机器人和测试群 | 在 QQ 开放平台用沙箱环境，或单独建一个测试机器人。**不要给生产机器人的 AppSecret** |
+| 一个测试用的模型 API key | 本地跑真实对话时用，设置每日额度上限 |
+| maxx 仓库 | `HCHogan/max` 的 `maxx` 分支。私有仓库的话要给读权限 |
+| 起点 | PR #31 合并后从 main 开分支；没合并就从 `rework/p0` 开分支 |
+
+**不给**：tank 的 ssh、生产库、生产环境的 env 文件和密钥。部署、生产库操作和停服务都由 owner 来做（§8）。接手的如果是 AI，仓库根目录的 `AGENTS.md` 会自动加载这些规则。
+
+---
+
 ## 1. 现在在哪
 
 | 项目 | 位置 |
@@ -227,13 +243,18 @@
 ### 7.1 本地测试环境
 
 - 需要一个带 pgvector 的 PostgreSQL 17 容器。测试库名必须以 `_test` 或 `_acceptance` 结尾，地址必须是 127.0.0.1，而且 **`AI_POSTGRES_DSN` 必须和 `TEST_POSTGRES_DSN` 不是同一个库**（否则所有存储测试会直接报错）。
+- 环境变量用 `source tools/dev/testenv.sh <库名_test>` 设置，文件开头写了怎么起容器、怎么建库。
 - 新库先迁移：`AI_POSTGRES_DSN=$TEST_POSTGRES_DSN python -m src.bot_storage.cli upgrade`。
 - 跑全套：`python -m unittest discover -s tests -p 'test_*.py'`，本地大约 10 分钟。全套测试运行期间不要新增迁移文件，部分测试会在运行中迁移到最新版本。
 - 代码检查：`ruff check bot.py src tests tools migrations nix`。
 
 ### 7.2 删代码时的检查方法
 
-- 删除模块后，要检查有没有残留的导入（包括函数内部的延迟导入）和从模块里导入已不存在的名字；原作者用过两个小的 AST 脚本做这件事，可以照这个思路写。
+- 删除模块后，用 `tools/dev/` 里的脚本检查（都在仓库根目录运行）：
+  - `check_unresolved_imports.py`：导入了已不存在的模块，包括函数内部的延迟导入。
+  - `check_imported_names.py`：从模块里导入了已不存在的名字。
+  - `dead_modules.py <入口模块…>`：从入口出发走不到的模块。入口不止 `platform_entrypoint`，还有 `bot_storage.cli`（`gaoji-db`）、`cluster_control`、集群 worker，都要作为入口传进去。
+- 现在 `check_unresolved_imports.py src` 会报 4 个文件，都是已经不会执行的分支里的延迟导入：`subagents.py`、`admin_api/subagents.py`、`subagent_composition.py`（W3 删除）和 `vm_sandbox.py` 的项目浏览器分支（W10 删除）。除了这 4 个，不应该再出现新的。
 - **还要检查按文件路径读取的文件**：用 grep 找代码里出现的 `.py"` 字符串，例如 `sandbox_pdf.py` 是按路径读的，不是 import 的。
 - 用 tag `pre-rework-20261031` 的 worktree 跑同一批测试做对照，分清哪些失败是本来就有的。
 
