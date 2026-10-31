@@ -20,7 +20,7 @@ from src.plugins.ai_chat.application.owned_sandbox import ArtifactAvailability, 
 from src.plugins.ai_chat.platform_types import InboundMessage, PlatformFeatures
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id
 from src.plugins.ai_chat.tools import neutral_registry_for
-from src.plugins.ai_chat.tools.state import ToolContext, TurnState
+from src.plugins.ai_chat.tools.state import ToolContext
 from tests.qq_official_file_fixture import FileFixture
 from tests.test_owned_sandbox import FakeManager
 
@@ -89,10 +89,7 @@ class ForegroundRuntimeTests(RuntimeFixture):
             self.assertFalse(GENERATION_TOOLS & {x["function"]["name"] for x in registry.definitions(context)})
             context = session.context(context)
             self.assertTrue(GENERATION_TOOLS <= {x["function"]["name"] for x in registry.definitions(context)})
-            turn = TurnState(context)
-            sid = json.loads(await registry.execute(turn, "sandbox_create", {}))["sandbox_id"]
-            await registry.execute(turn, "sandbox_write_file", {"sandbox_id":sid, "path":"input.md", "content":"TEST"})
-            await registry.execute(turn, "sandbox_exec", {"sandbox_id":sid, "command":"generate-pdf"})
+            sid, _ = await self.produce(session)
             result = await self.send(session, sid)
             self.assertTrue(result["stored"])
             self.assertIs(result["message_accepted"], False)

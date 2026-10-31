@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from alembic import command
 from alembic.config import Config
-from tests.postgres_fixture import postgres_for_test
+from src.bot_storage.disposable import IsolatedPostgres
 from tests.test_platform_identity_storage import inbound, record
 from src.bot_storage.schema import HEAD_REVISION
 from src.plugins.ai_chat.ledger import MessageLedger
@@ -15,7 +15,9 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 
 class PlatformIdentityMigrationTests(unittest.TestCase):
     def setUp(self):
-        self.db = postgres_for_test(self)
+        fixture = IsolatedPostgres(os.environ["TEST_POSTGRES_DSN"], revision="0072_qq_simple_binding")
+        self.addCleanup(fixture.close)
+        self.db = fixture.database
         self.ledger = MessageLedger(self.db)
         self.addCleanup(self.ledger.close)
 
@@ -24,7 +26,6 @@ class PlatformIdentityMigrationTests(unittest.TestCase):
             method(Config("alembic.ini"), revision)
 
     def test_empty_upgrade_roundtrip(self):
-        self.migrate(command.downgrade, "0060_project_quota_jobs")
         self.migrate(command.upgrade, HEAD_REVISION)
         self.migrate(command.upgrade, HEAD_REVISION)
         self.db.require_revision(HEAD_REVISION)
@@ -33,8 +34,7 @@ class PlatformIdentityMigrationTests(unittest.TestCase):
     def test_existing_rows_keep_ids_and_old_uniqueness_after_upgrade(self):
         scope = ConversationScope("onebot-v11", "group", "123")
         old = self.ledger.record_message(scope, native_message_id="old", sender_native_user_id="7", sender_display="Alice", body=MessageBody((TextNode(0, "old row"),)))
-        self.migrate(command.downgrade, "0060_project_quota_jobs")
-        self.db.require_revision("0060_project_quota_jobs")
+        self.db.require_revision("0072_qq_simple_binding")
         self.migrate(command.upgrade, HEAD_REVISION)
         reread = self.ledger.get_in_scope(scope, old.canonical_message_id)
         self.assertEqual(reread, old)
@@ -45,8 +45,9 @@ class PlatformIdentityMigrationTests(unittest.TestCase):
         self.assertEqual(self.ledger.canonical_id_for_native(scope, "old"), old.canonical_message_id)
 
     def test_downgrade_refuses_to_discard_live_namespaces(self):
+        self.migrate(command.upgrade, HEAD_REVISION)
         message = record(self.ledger, inbound())
-        with self.assertRaisesRegex(RuntimeError, "Export structured"):
-            self.migrate(command.downgrade, "0060_project_quota_jobs")
+        with self.assertRaisesRegex(RuntimeError, "retired_feature_data_requires_backup_restore"):
+            self.migrate(command.downgrade, "0072_qq_simple_binding")
         self.db.require_revision(HEAD_REVISION)
         self.assertEqual(self.ledger.get_in_scope(inbound().scope, message.canonical_message_id), message)

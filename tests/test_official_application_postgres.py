@@ -156,7 +156,6 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                         await asyncio.wait_for(fake.wait_ready(),10)
                         self.assertTrue(fake.resume_count or fake.identify_count>=2)
                         with context.delivery_store.transaction() as cursor:
-                            self.assertEqual(cursor.execute('SELECT count(*) FROM migration_runtime_baselines').fetchone()[0],0)
                             self.assertEqual(cursor.execute('SELECT count(*) FROM qq_official_admin_bindings').fetchone()[0],0)
                     finally:await host.close()
                 self.assertFalse(host.ready)

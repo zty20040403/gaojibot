@@ -17,8 +17,7 @@ from . import turn_source as execution
 from .file_artifacts import current_source, foreground_source
 from .file_generation import GenerationBindingAdapter
 
-GENERATION_TOOLS = frozenset({"sandbox_create", "sandbox_list", "sandbox_destroy", "sandbox_exec",
-    "sandbox_write_file", "sandbox_read_file", "send_file_from_sandbox", "send_file"})
+GENERATION_TOOLS = frozenset({"sandbox_read_file", "send_file_from_sandbox"})
 
 
 def _digest(value):

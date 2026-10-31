@@ -76,6 +76,9 @@ class FakeManager:
         self.items[sid] = {'owner': owner, 'files': {}}
         self.event('create', owner, sid)
         return {'sandbox_id': sid, 'purpose': purpose}
+    async def ensure_default(self, owner):
+        items = await self.list(owner)
+        return items[0] if items else await self.create(owner)
     async def list(self, owner):
         self.event('list', owner)
         return [{'sandbox_id': sid} for sid, item in self.items.items() if item['owner'] == owner]
@@ -119,7 +122,8 @@ class FakeManager:
         elif command not in {'pdfinfo acceptance.pdf', 'unzip -t acceptance.zip'}:
             raise ValueError('TEST unexpected command')
         self.event('exec', owner, sandbox_id)
-        return SimpleNamespace(returncode=0, stdout=stdout, stderr='', manifest=None)
+        from src.plugins.ai_chat.sandbox import SandboxResult
+        return SandboxResult(returncode=0, stdout=stdout, stderr='')
     async def export_artifact(self, owner, sandbox_id, path, *, file_only=False, max_bytes=None):
         assert file_only is True and type(max_bytes) is int and max_bytes > 0
         content = self.own(owner, sandbox_id)['files'][path]

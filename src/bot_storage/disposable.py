@@ -71,7 +71,7 @@ def _migration_environment(dsn, schema):
 
 
 class IsolatedPostgres:
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, *, revision: str = HEAD_REVISION) -> None:
         validate_test_database(dsn)
         with psycopg.connect(dsn) as connection:
             extension = connection.execute(
@@ -91,7 +91,7 @@ class IsolatedPostgres:
             with _migration_environment(dsn, self.schema):
                 config = Config()
                 config.set_main_option("script_location", str(_ROOT / "migrations"))
-                command.upgrade(config, "head")
+                command.upgrade(config, revision)
             self.database = PostgresDatabase(
                 dsn,
                 schema=self.schema,
@@ -99,7 +99,7 @@ class IsolatedPostgres:
                 max_size=8,
                 application_name="gaoji-isolated-workspace",
             )
-            self.database.require_revision(HEAD_REVISION)
+            self.database.require_revision(revision)
         except BaseException as error:
             try:
                 self.close()
