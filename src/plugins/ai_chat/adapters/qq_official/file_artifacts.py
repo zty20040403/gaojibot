@@ -65,7 +65,8 @@ def detect_content(content, filename, max_bytes):
             or type(content) is not bytes or not 1 <= len(content) <= max_bytes):
         raise ArtifactError('artifact_size_unavailable')
     _clean_filename(filename)
-    return mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+    return 'audio/silk' if filename.lower().endswith('.silk') else (
+        mimetypes.guess_type(filename)[0] or 'application/octet-stream')
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True, eq=False, repr=False)

@@ -113,7 +113,8 @@ class OfficialSendStore:
         if ref.created:
             manifest = stable_json({'v': 1, 'media': {'file_info': uploaded.file_info},
                 'artifact_id': artifact['artifact_id'], 'source_native_message_id': artifact['source_native_message_id'] or ''})
-            body = body_to_json(MessageBody((MediaNode(0, 'file', name=artifact['filename'], mime=artifact['mime'],
+            kind = 'audio' if artifact['mime'] == 'audio/silk' else 'file'
+            body = body_to_json(MessageBody((MediaNode(0, kind, name=artifact['filename'], mime=artifact['mime'],
                 source_type='qq_official_file', raw_data={'artifact_id': artifact['artifact_id'],
                     'sha256': artifact['sha256'], 'size': artifact['byte_size']}),)))
             cursor.execute('UPDATE delivery_plans SET manifest_json=?,manifest_digest=? WHERE plan_id=?',

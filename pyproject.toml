@@ -16,7 +16,7 @@ dependencies = [
   "jsonschema>=4.23.0,<5.0.0",
   "blake3>=1.0.0,<2.0.0",
   "silk-python==0.2.8",
-  "edge-tts==7.2.8",
+  "edge-tts==7.3.1",
   "miniaudio==1.71",
   "psycopg[binary,pool]>=3.2.0,<4.0.0",
   "SQLAlchemy>=2.0.0,<3.0.0",
