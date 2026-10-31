@@ -12,7 +12,7 @@ from src.plugins.ai_chat.model_budget import ModelCallBudget, active_model_budge
 from .content_reader import PinnedContentReader, read_text_document
 from .file_artifacts import foreground_source, current_source
 from .forward_render import forward_text, render_forward
-from .image_formats import detect_image, MAX_IMAGE_BYTES
+from .image_formats import detect_image, IMAGE_MIMES, MAX_IMAGE_BYTES
 from .local_asr import LocalASR, LocalASRConfig
 from .media_refs import LedgerMediaResolver, MediaRef, MediaDenied, transcribe, text_link
 from .media_budget import OCRUsage
@@ -280,7 +280,7 @@ class MediaSession:
                     (int(handle[6:]),)).fetchone()
             finally:
                 connection.close()
-            if (row is None or row['mime_type'] not in {'image/png','image/jpeg'}
+            if (row is None or row['mime_type'] not in IMAGE_MIMES
                     or not 1<=row['byte_size']<=MAX_IMAGE_BYTES):
                 raise MediaDenied('sticker_content_unavailable')
             files = self.service.runtime.file_service
@@ -295,7 +295,7 @@ class MediaSession:
             if record is None or record.handle != handle or record.mime_type != row['mime_type']:
                 raise MediaDenied('sticker_content_unavailable')
             content = _read_library_bytes(library.root,record.storage_path,row['byte_size'],row['sha256'])
-            filename = 'sticker.png' if row['mime_type']=='image/png' else 'sticker.jpg'
+            filename = 'sticker.' + {'image/png':'png','image/jpeg':'jpg','image/gif':'gif'}[row['mime_type']]
             if detect_image(content,filename)!=row['mime_type']:
                 raise MediaDenied('sticker_content_unavailable')
             return content,filename

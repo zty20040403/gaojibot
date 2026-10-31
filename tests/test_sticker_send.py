@@ -15,8 +15,8 @@ class StickerSendTests(unittest.IsolatedAsyncioTestCase):
         return TurnState(context), library
 
     async def test_query_picks_best_unused_sticker_and_sends_once(self):
-        records = [SimpleNamespace(handle="media#6", mime_type="image/gif"),
-                   SimpleNamespace(handle="media#7", mime_type="image/jpeg"), SimpleNamespace(handle="media#8", mime_type="image/png")]
+        records = [SimpleNamespace(handle="media#6", mime_type="image/webp"),
+                   SimpleNamespace(handle="media#7", mime_type="image/gif"), SimpleNamespace(handle="media#8", mime_type="image/png")]
         turn, library = self.turn(records)
         session = SimpleNamespace(sticker=AsyncMock(return_value={"state": "registered"}))
         result = await _send_sticker(session, turn, {"query": "买不起"})

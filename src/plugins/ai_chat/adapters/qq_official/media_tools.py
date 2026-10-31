@@ -4,6 +4,7 @@ import json
 
 from src.plugins.ai_chat.ai_tools import TOOL_DEFINITIONS
 from src.plugins.ai_chat.tools.registry import FunctionTool, ToolRegistry
+from .image_formats import IMAGE_MIMES
 from .media_refs import ExternalText, MediaDenied
 
 NAMES = frozenset({'read_image_text','transcribe_voice','view_forward','send_forward_summary',
@@ -44,8 +45,8 @@ def _definition(name):
     return definition
 
 
-# The native image route takes PNG and JPEG; GIF stickers stay in the library for browsing.
-SENDABLE_STICKERS = frozenset({'image/png', 'image/jpeg'})
+# What the native image route takes; GIFs stay animated.
+SENDABLE_STICKERS = IMAGE_MIMES
 _UNSENDABLE = frozenset({'sticker_content_unavailable', 'sticker_bytes_unavailable'})
 
 
