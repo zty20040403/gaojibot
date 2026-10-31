@@ -382,7 +382,7 @@ class ArtifactStore:
                 draft=draft, draft_reason=draft_reason, created_at=now,
                 pending_deadline_at=binding.pending_deadline_at, retain_until=binding.pending_deadline_at)
             if binding.extension is not None:
-                if binding.extension.kind not in {'project','migration'}:
+                if binding.extension.kind not in {'project','migration','background'}:
                     raise ArtifactError('artifact_extension_unavailable')
                 fields['source_extension_kind'] = binding.extension.kind
                 if binding.extension.kind=='migration' or binding.source_migration_item_id is not None:
