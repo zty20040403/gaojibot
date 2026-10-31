@@ -193,7 +193,7 @@ class OfficialTurnConsumer:
                 return decision, None, None
             inbound = load_turn_input(cursor, execution_api=self.api, token=self.token,
                 handle=decision.handle, job=job, now=now, admission=self.store.admitted)
-            return decision, inbound, text
+            return decision, inbound, job.payload.get('batch_text', text)
 
     def _result(self, life):
         with self.outbox.deliveries.transaction() as cursor:

@@ -90,6 +90,34 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
             JOIN deliveries d ON d.plan_id=x.plan_id
             WHERE i.native_message_id=? AND d.status='committed'""", (native,))
 
+    async def test_unfinished_messages_share_one_reply_with_complete_input(self):
+        from src.plugins.ai_chat.adapters.qq_official.message_batch import MessageBatcher
+        app=self.application()
+        calls=[]
+        async def completion(**kwargs):
+            calls.append(kwargs)
+            return model_response('TEST complete answer',[],kwargs)
+        with patch('src.plugins.ai_chat.agent_loop._create_completion',new=completion), \
+                patch('src.plugins.ai_chat.adapters.qq_official.message_batch.MessageBatcher',
+                      side_effect=lambda dispatch:MessageBatcher(dispatch,idle=.3,maximum=2)):
+            async with verified_ready_platform() as fake:
+                runtime=await self.open_runtime(fake,app)
+                await self.emit(fake,native='TEST_BATCH_UNBOUND',content='TEST setup',group=True)
+                await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id='TEST_BATCH_UNBOUND'")
+                endpoint=EndpointKey(runtime.loaded.account,'group','TEST_GROUP')
+                with runtime.store.transaction() as cursor:
+                    cursor.execute("UPDATE qq_official_endpoints SET binding_state='active' WHERE endpoint_key=?",(endpoint.key,))
+                for index,text in enumerate(('那个','明天的会','改到几点了')):
+                    await self.emit(fake,native=f'TEST_BATCH_{index}',content=text,group=True)
+                await self.complete('TEST_BATCH_0')
+                self.assertEqual(len(calls),1)
+                messages=json.dumps(calls[0]['messages'],ensure_ascii=False)
+                for text in ('那个','明天的会','改到几点了'):
+                    self.assertIn(text,messages)
+                self.assertEqual(len(fake.received),1)
+                self.assertEqual(len(self.query('SELECT * FROM qq_official_turn_executions')),1)
+                await runtime.stop()
+
     async def test_actual_group_at_and_c2c_share_model_loop_and_commit_real_wire_receipts(self):
         app = self.application()
         model_calls = []
