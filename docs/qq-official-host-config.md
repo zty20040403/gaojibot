@@ -1,29 +1,38 @@
-# QQ 官方宿主配置
+# 官方 QQ 宿主配置
 
-S1–S8 简化版使用 `AI_QQ_OFFICIAL_HOST_CONFIG_FILE`。官方接入启用时读取；兼容旧 `AI_QQ_MIGRATION_ENABLED` / `AI_QQ_MIGRATION_CONFIG_FILE`，新入口优先。Nix 继续用 `services.gaoji.qqOfficial.hostConfigFile` 和 systemd `LoadCredential`，凭据放在 Nix store 外。
+`AI_QQ_OFFICIAL_HOST_CONFIG_FILE` 指向服务用户可读的私有 JSON 文件。NixOS 用 `services.gaoji.qqOfficial.hostConfigFile` 加载为 systemd credential。不要放密钥值、Python 导入路径或未经核实的身份映射。
 
-配置文件使用 JSON。读取器检查普通文件及非 world-readable 权限，例如 0600 或服务组可读的 0640；不再检查 ACL、文件系统白名单或 SDK 证明。日志不输出配置正文、凭据或路径。整个文件无法读取时关闭宿主扩展；某项可选配置有误时只关闭该功能并记录 warning，基本聊天继续工作。
-
-以下使用虚构账号；部署时填写实际账号键：
+下面使用测试身份展示字段。正式 `account` 必须由真实 AppID 与环境组成，文件目录须位于服务允许写入的私有状态目录。
 
 ```json
 {
   "version": 1,
-  "account": "account:v1:[\"qq-official\",\"TEST_APP\",\"production\"]",
+  "account": "account:v1:[\"qq-official\",\"TEST_APP_ID\",\"production\"]",
   "files": {
-    "private_directory": "/var/lib/gaoji/official-files",
-    "generation_enabled": true
+    "private_directory": "/var/lib/gaoji/state/qq-official-files",
+    "generation_enabled": true,
+    "max_file_bytes": 104857600
   },
-  "media": {"asr": true, "documents": true, "forwards": true, "emoji": true}
+  "media": {
+    "ocr": true,
+    "asr": true,
+    "local_asr": false,
+    "documents": true,
+    "forwards": true,
+    "stickers": true
+  },
+  "native_background": {
+    "proactive": {
+      "enabled": false
+    }
+  }
 }
 ```
 
-`files` 启用存储和原生上传；`generation_enabled` 启用会话沙盒及文件工具。沙盒后端沿用应用配置。默认单文件上限 100 MiB；5 MiB 以内 base64，超过后分片上传。任何带文件名的格式均可发送，图片用类型 1，其他文件用类型 4。旧 `native_routes`、`multipart`、`download` 字段忽略，不再要求证明或部署公共下载服务。
+文件通过当前官方账号上传，不再配置 `native_routes` 或上传证明。实际大小还受 VM 文件导出上限和平台返回限制约束；宿主和 VM 的上限应保持一致。`generation_enabled` 需要工作区后端可用。
 
-可选 `native_background` 包含 `schedules`、`proactive`、`wiki`。启用的功能须指定可用模型 profile。例行任务保留现有执行时限与成本预算；Wiki 的收集策略保持独立。一个后台功能配置有误，不影响其余功能。可选 `host_services` 仍是允许执行的主机服务清单；主机操作需 owner 私聊验证码确认，不会因加载配置而执行。
+媒体能力按上面的开关启用。OCR/图片理解需要有效的视觉 profile；短语音优先读取腾讯识别文本，`local_asr` 需要宿主 whisper.cpp 与模型。视频和大附件先导入 VM，由后台处理。语音回复复用文件服务生成和发送 SILK。
 
-旧 `onebot_accounts`、`deadlines`、迁移模型等字段不再参与运行。历史接入改成 owner 私聊 `/bind <老群号>` 获取六位码，然后在目标群 @ Bot 发送 `/bind <码>`。没有旧历史时可私聊 `/bind create`。提交后立即绑定并关联群内 owner，新消息和发送回执沿用原时间线；已有绑定、项目和审批账户保留。
+主动接话启用时提供 `profile`，可指定 `max_reply_chars`。新消息去抖三秒，每个会话每小时最多八次；旧 `percent`、`threshold` 和 `max_checks_per_hour` 字段应删除。定时任务由 `schedules` 表和工具管理，不放在此文件。
 
-普通回合直接运行。发送器默认主动发送，腾讯拒绝主动发言时使用最近消息窗口；超过窗口时明确报错。重启后不重跑普通回合，会通知用户重发；Sub-Agent、提醒、例行任务和待发结果继续使用持久任务。
-
-INFO 日志记录入站类型、脱敏会话标识、是否 @、回合耗时/实际模型/工具次数，以及发送和上传结果，不含消息正文。官方回合计入 `gaoji_ai_turns_total` 和 `gaoji_ai_turn_duration_seconds`，标签 `platform="qq-official"`。上线状态与分阶段记录见 `qq-official-simplify-plan.md`；S9 的旧表清理须等新版稳定一周。
+旧的项目授权、迁移路线、Wiki、主机写操作策略已移除。管理员后台只读运维另用 `AI_OPS_READ_BASE_URL` 和 `AI_OPS_READ_TOKEN_FILE`；token 只在宿主读取。
