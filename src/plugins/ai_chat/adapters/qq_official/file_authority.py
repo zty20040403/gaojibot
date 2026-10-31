@@ -20,7 +20,7 @@ def _job_current(cursor, job, *, job_id, kind, payload, now):
         raise LeaseLost('artifact_delivery_job_unavailable')
 
 
-def assert_file_current(cursor, *, token, artifact_id, admission, now, job=None, plan_id=None, source_authority=None):
+def assert_file_current(cursor, *, token, artifact_id, admission, now, job=None, plan_id=None):
     """Account→endpoint→jobs→source domain→artifact, under caller transaction.
 
     A worker supplies its exact live job. A post-handoff M3 sender instead
@@ -28,10 +28,10 @@ def assert_file_current(cursor, *, token, artifact_id, admission, now, job=None,
     expired producer or invents a source from canonical conversation history.
     """
     return _assert_current(cursor,token=token,artifact_id=artifact_id,admission=admission,
-        now=now,job=job,plan_id=plan_id,read_only=False,source_authority=source_authority)
+        now=now,job=job,plan_id=plan_id,read_only=False)
 
 
-def assert_file_read_current(cursor, *, token, artifact_id, admission, now, source_authority=None):
+def assert_file_read_current(cursor, *, token, artifact_id, admission, now):
     """Authenticated host-console read; never issues sending authority.
 
     Transport failures do not invalidate intact source-owned bytes. This path
@@ -39,10 +39,10 @@ def assert_file_read_current(cursor, *, token, artifact_id, admission, now, sour
     actor, endpoint, admission and retention checks below unchanged.
     """
     return _assert_current(cursor,token=token,artifact_id=artifact_id,admission=admission,
-        now=now,job=None,plan_id=None,read_only=True,source_authority=source_authority)
+        now=now,job=None,plan_id=None,read_only=True)
 
 
-def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id, read_only, source_authority):
+def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id, read_only):
     _ref(artifact_id)
     _time(now)
     try:
@@ -76,36 +76,7 @@ def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id,
     elif (not isinstance(plan_id,str) or delivery['active_plan_id']!=plan_id
           or delivery['state'] not in {'handed_off','message_accepted'}):
         raise LeaseLost('artifact_handoff_unavailable')
-    if artifact.get('source_extension_kind') == 'project':
-        if source_authority is None:
-            raise LeaseLost('project_artifact_authority_unavailable')
-        source_authority(cursor,token=token,artifact=dict(artifact),now=now,read_only=read_only)
-    if not read_only and artifact['source_task_id'] is not None:
-        task=cursor.execute('SELECT cancel_requested,status FROM subagent_tasks WHERE task_id=?',
-            (artifact['source_task_id'],)).fetchone()
-        if task is None or task['cancel_requested'] or task['status']=='cancelled':
-            raise LeaseLost('artifact_task_cancelled')
     expiry = artifact['retain_until'] if read_only else min(artifact['pending_deadline_at'],artifact['retain_until'])
     if artifact['bytes_state']!='available' or now>=expiry:
         raise LeaseLost('artifact_retention_expired')
     return dict(artifact),dict(delivery)
-
-
-class ArtifactSourceAuthorities:
-    """Explicit host composition; kind names alone never authenticate a source."""
-    def __init__(self, *authorities):
-        self._authorities={}
-        for authority in authorities:
-            kind=getattr(authority,'kind',None)
-            if kind not in {'project','migration'} or kind in self._authorities or not callable(authority):
-                raise ValueError('invalid_artifact_authorities')
-            self._authorities[kind]=authority
-
-    def resolve(self, kind):
-        return self._authorities.get(kind)
-
-    def __call__(self,cursor,*,token,artifact,now,read_only):
-        authority=self.resolve(artifact.get('source_extension_kind'))
-        if authority is None:
-            raise LeaseLost('artifact_extension_unavailable')
-        return authority(cursor,token=token,artifact=artifact,now=now,read_only=read_only)

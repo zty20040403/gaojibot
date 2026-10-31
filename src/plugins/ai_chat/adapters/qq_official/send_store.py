@@ -50,7 +50,6 @@ class OfficialSendStore:
         self.mention_authority = mention_authority or (lambda cursor, endpoint: frozenset())
         self.max_wait_seconds = max_wait_seconds
         self.protected_payloads, self.approval_authority, self.source_guard = protected_payloads, approval_authority, source_guard
-        self.file_authority = None
         self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
@@ -147,7 +146,7 @@ class OfficialSendStore:
             if 'media' in manifest:
                 from .file_authority import assert_file_current
                 assert_file_current(cursor, token=token, artifact_id=manifest['artifact_id'],
-                    admission=self.admission, now=now, plan_id=row['plan_id'], source_authority=self.file_authority)
+                    admission=self.admission, now=now, plan_id=row['plan_id'])
                 return {'msg_type': 7, 'media': manifest['media']}
             rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
                 allowed_mentions=self.mention_authority(cursor, endpoint), max_chars=20000, max_parts=16)

@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 ToolRisk = Literal["low", "medium", "high", "critical"]
 ToolIdempotency = Literal["pure", "idempotent", "keyed", "non-idempotent"]
-ToolApprovalMode = Literal["never", "explicit", "task"]
+ToolApprovalMode = Literal["never", "explicit"]
 ToolExecutionMode = Literal["inline", "durable-eligible", "durable-required"]
 ToolCompensation = Literal[
     "none",
@@ -169,10 +169,6 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         compensation="cancel-process",
         max_identical_calls=1,
     )
-    policies["operation_approve"] = ToolPolicy(
-        risk="high", idempotency="keyed", side_effects=("write:operation-ledger", "execute:service"),
-        timeout_seconds=30.0, approval="task", max_identical_calls=1,
-    )
     policies["sandbox_create"] = ToolPolicy(
         risk="medium",
         idempotency="non-idempotent",
@@ -198,26 +194,16 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         approval="never",
         max_identical_calls=1,
     )
-    # Leave time for one task-level QQ authorization before a server mutation.
     return policies
 
 
 TOOL_POLICIES = _policy_registry()
 DEFAULT_TOOL_POLICY = ToolPolicy()
-MCP_TOOL_POLICY = ToolPolicy(
-    risk="high", idempotency="non-idempotent",
-    side_effects=("execute:external", "write:external"),
-    timeout_seconds=150.0, approval="task", max_identical_calls=1,
-)
 _TOOL_OVERRIDE_LOCK = threading.RLock()
 _TOOL_ENABLED_OVERRIDES: dict[str, bool] = {}
 
 
 def policy_for_tool(name: str) -> ToolPolicy:
-    if name.startswith("mcp__"):
-        # Only the MCP host's reviewed configuration can waive approval. Remote
-        # readOnly/idempotent annotations never weaken loop or retry safeguards.
-        return MCP_TOOL_POLICY
     return TOOL_POLICIES.get(name, DEFAULT_TOOL_POLICY)
 
 
@@ -295,8 +281,6 @@ def approval_from_user_text(
     arguments: dict[str, Any],
 ) -> ToolApproval:
     policy = policy_for_tool(tool_name)
-    if policy.approval == "task":
-        return ToolApproval(True, source="fleet-task", reason="实际服务器写操作由 Fleet 验证本任务统一授权。")
     if policy.approval == "never":
         return ToolApproval(True, source="policy", reason="无需额外批准。")
     normalized = " ".join(str(user_text).casefold().split())
@@ -402,7 +386,7 @@ class ToolCatalog:
             return ToolValidation(False, ("工具参数 schema 缺失。",))
         errors: list[str] = []
         _validate_value(arguments, schema, "$", errors, depth=0,
-                        allow_patterns=not name.startswith("mcp__"))
+                        allow_patterns=True)
         return ToolValidation(not errors, tuple(errors[:8]))
 
     @property

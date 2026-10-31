@@ -53,7 +53,7 @@ def _files(raw):
     if raw is None:
         return None
     if not isinstance(raw,dict):raise ValueError('invalid_file_settings')
-    allowed = set(FileServiceConfig.__dataclass_fields__) - {'manager','source_authority','existing_artifact_authority'}
+    allowed = set(FileServiceConfig.__dataclass_fields__) - {'manager','existing_artifact_authority'}
     value = {k:v for k,v in raw.items() if k in allowed}
     value['private_directory'] = Path(value['private_directory'])
     if not value['private_directory'].is_absolute():

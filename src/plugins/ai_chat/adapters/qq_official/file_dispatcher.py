@@ -4,7 +4,6 @@ import logging
 import traceback
 
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
-from .file_authority import assert_file_read_current
 from .file_upload import FileUploadError
 
 logger = logging.getLogger(__name__)
@@ -26,10 +25,6 @@ class OfficialFileDispatcher:
             if not service.admission(cursor, EndpointKey.parse(artifact['endpoint_key']),
                                       ActorKey.parse(artifact['requester_actor_key'])):
                 raise FileUploadError('当前会话没有文件发送权限。')
-            if artifact.get('source_extension_kind') == 'project':
-                assert_file_read_current(cursor, token=service.token, artifact_id=artifact_id,
-                    admission=service.admission, now=int(service.clock()),
-                    source_authority=service.config.source_authority)
             delivery = cursor.execute('SELECT * FROM qq_official_file_deliveries WHERE artifact_id=?',
                                       (artifact_id,)).fetchone()
             return dict(artifact), dict(delivery)

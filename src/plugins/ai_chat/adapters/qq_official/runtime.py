@@ -493,7 +493,6 @@ class OfficialRuntime:
                         finally:
                             self.file_service = None
                             self.outbox.protected_payloads = None
-                            self.outbox.file_authority = None
 
                     resources.push_async_callback(close_files)
                     file_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,

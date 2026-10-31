@@ -134,8 +134,7 @@ class OfficialObservability:
                 ('inbox','qq_official_inbound_events','status','account_key=?',(token.account_key,)),
                 ('execution','qq_official_turn_executions','state','account_key=?',(token.account_key,)),
                 ('delivery','deliveries','status','account_key=?',(token.account_key,)),
-                ('files','qq_official_file_deliveries d JOIN qq_official_file_artifacts a USING(artifact_id)','d.state','a.account_key=?',(token.account_key,)),
-                ('migration','migration_routes','phase','target_account_key=?',(token.account_key,))):
+                ('files','qq_official_file_deliveries d JOIN qq_official_file_artifacts a USING(artifact_id)','d.state','a.account_key=?',(token.account_key,))):
                 rows=c.execute(f'SELECT {column} AS state,COUNT(*) AS n FROM {table} WHERE {filter_sql} GROUP BY {column}',args).fetchall()
                 value[domain]={r['state']:_count(r['n']) for r in rows if r['state'] in SAFE_STATES[domain]}
             windows=c.execute('''SELECT COUNT(*) FILTER(WHERE state='active' AND expires_at>?) AS active,
