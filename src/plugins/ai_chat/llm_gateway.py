@@ -27,13 +27,9 @@ _logger = logging.getLogger(__name__)
 _profile_scope: ContextVar[frozenset[str] | None] = ContextVar("completion_profile_scope", default=None)
 
 
-def _assert_model_job_owned(*, inference=True) -> None:
+def _assert_model_job_owned() -> None:
     # agent.__init__ exports agent_loop, which imports this gateway.
     from .execution_control import assert_job_owned
-    if inference:
-        from .adapters.onebot_route_context import require_model_source
-        require_model_source()
-
     assert_job_owned()
 
 
@@ -438,7 +434,7 @@ class OpenAIChatProvider:
         if active_job_fence.get() is not None or active_route_fence.get() is not None:
             client = client.with_options(max_retries=0)
         try:
-            _assert_model_job_owned(inference=False)
+            _assert_model_job_owned()
             response = await client.models.list()
         except RateLimitError as exc:
             raise LLMRateLimitError(
@@ -912,7 +908,7 @@ class LLMGateway:
             raise LLMConfigError(
                 f"model listing is not enabled for profile {profile.name!r}"
             )
-        _assert_model_job_owned(inference=False)
+        _assert_model_job_owned()
         return await self._provider(profile).list_models(profile)
 
     async def close(self) -> None:

@@ -10,9 +10,7 @@ from psycopg.adapt import Transformer
 
 from src.bot_storage.database import _translate_sql
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.delivery import DeliveryStore

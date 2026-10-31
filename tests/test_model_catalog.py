@@ -4,9 +4,7 @@ import json
 import unittest
 from dataclasses import replace
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.model_catalog import (

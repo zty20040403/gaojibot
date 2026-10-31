@@ -10,10 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
-import nonebot
 from fastapi import FastAPI
 
-nonebot.init()
 
 from src.plugins.ai_chat.admin import AdminServices, register_admin as locked_register_admin
 from tests.admin_session_fixture import ApprovedClient, register_admin

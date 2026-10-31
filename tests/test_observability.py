@@ -6,10 +6,8 @@ import unittest
 from unittest.mock import patch
 
 import httpx
-import nonebot
 from fastapi import FastAPI
 
-nonebot.init()
 
 from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.observability import (

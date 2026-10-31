@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.tool_policy import (
     ToolCatalog,

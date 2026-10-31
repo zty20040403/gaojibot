@@ -6,9 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.llm_gateway import LLMEmptyResponseError, LLMGateway
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile

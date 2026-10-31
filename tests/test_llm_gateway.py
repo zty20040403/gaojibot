@@ -9,9 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.llm_gateway import (
     AnthropicMessagesProvider,

@@ -6,9 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.llm_gateway import (
     LLMConnectionError,

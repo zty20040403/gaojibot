@@ -3,9 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.content_sources import (
     canonicalize_source_url,

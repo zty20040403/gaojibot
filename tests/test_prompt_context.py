@@ -6,9 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from dataclasses import replace
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.agent_loop import AgentTrace, _build_messages, _completion_kwargs
 from src.plugins.ai_chat.llm_gateway import _anthropic_response, _convert_anthropic_messages

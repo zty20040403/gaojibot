@@ -7,9 +7,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.vision_worker import (

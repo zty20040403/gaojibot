@@ -181,15 +181,11 @@ def register_security_routes(router: APIRouter, mobile: MobileAuthorization | No
     @router.get("/api/status")
     async def status():
         import time
-        from nonebot import get_bots
-        from nonebot.adapters.onebot.v11 import Bot
-        from .onebot_availability import delivery_blocker
-
-        bots = [bot for bot in get_bots().values() if isinstance(bot, Bot)]
-        # An open reverse WebSocket does not mean the QQ account is still logged in.
-        blockers = await asyncio.gather(*(delivery_blocker(bot) for bot in bots))
+        getter = services.official_observability
+        diagnostics = getter() if callable(getter) else None
+        connected = diagnostics is not None and diagnostics.snapshot()['healthy']
         return {"version": services.version, "uptime_seconds": max(0, int(time.time()) - services.started_at),
-                "process": "running", "qq_connected": any(blocker is None for blocker in blockers)}
+                "process": "running", "qq_connected": bool(connected)}
 
     @router.get("/api/accounts")
     async def accounts():

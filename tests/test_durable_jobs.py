@@ -7,9 +7,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker

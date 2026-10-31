@@ -7,9 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import nonebot
 
-nonebot.init()
 
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.lifecycle import BackgroundTaskSupervisor
