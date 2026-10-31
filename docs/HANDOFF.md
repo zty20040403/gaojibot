@@ -11,6 +11,7 @@
 - 最终验收后台任务正常完成：在原群工作区生成一页中英文 PDF，pdftotext 可读取，文件大小 2,482 字节；PDF、结果文字和提醒共三条发送均为 committed。语音消息也已取得平台回执；61 秒 SILK 仅验证上传接受，不代表平台硬性时长上限，未要求用户确认客户端播放。
 - 本次会话已授权自行审阅、使用 merge commit 合并及统一部署，不等待 CI。tank 仍为主库；因主备链路丢包，owner 明确授权将 h610 暂时改为异步备库，网络稳定后再恢复同步。不是主备角色切换。
 - 全套测试曾运行 1,382 项，发现的退役测试和集成问题已修正，并通过受影响模块复测；前端构建、静态导入检查、Ruff 和两个 Nix 系统构建通过。最后两处 VM 复用和提醒发送修复通过 27 项针对性测试，没有重复扩充全量测试。
+- 2026-11-01 实测发现群 VM 能连宿主回环（10.0.2.2 的 sshd、PostgreSQL）和 tailnet 服务，此前"VM 网络本来就隔离"的说法不成立。修复见 `docs/sandbox-security.md` 的 KVM networking：libvirt session daemon 移入 `gaoji-vm.service`，nftables 按该 cgroup 只放行公网、DNS 和后台中继端口 18640/18641。部署前 VM 仍不隔离。
 - 当前运行说明以 README、qq-official-host-config 和 deploy-rework 为准。下面是最初的任务交接快照，旧实现位置和未完成标记不代表最新状态。
 
 
@@ -124,7 +125,7 @@
 | 一个 history 工具 | 搜索和读原文合并；按字面加按意思（向量）搜 | ✅ 字面搜索已做。**可以补：按意思搜**（向量），复用现有的 `semantic_recall` |
 | 后台 agent | 在群 VM 里跑现成的 coding agent（pi）；同时最多 3 个、每个最长 2 小时、剩 5 分钟时提醒收尾；可以插话（steer）；卡住时用 `ask_max` 反问前台；结果作为唤醒交回前台，由前台用人设去说 | **见 §5 W3，这是最重要的一项** |
 | 密钥不进 VM | 搜索 key、GitHub token 都在宿主上，由工具替 agent 调用 | 运维工具、GitHub 工具都照这个做 |
-| 读网页在 VM 里 | `webread <url>` 命令：trafilatura 抽正文，pdftotext 读 PDF，`--offset` 续读；VM 的网络本来就进不了内网 | 我们的 `web_fetch` 在宿主上跑，已经限制只能访问公网。再加一个 VM 里的 `webread`，补上 PDF |
+| 读网页在 VM 里 | `webread <url>` 命令：trafilatura 抽正文，pdftotext 读 PDF，`--offset` 续读；maxx 的 VM 网络进不了内网 | 我们的 `web_fetch` 在宿主上跑，已经限制只能访问公网。再加一个 VM 里的 `webread`，补上 PDF |
 | 浏览器常驻在 VM | headless Chromium 常驻，CDP 只监听 127.0.0.1；SDK 里写 Playwright；`snapshot` 给出带编号的可访问性树；截图交给模型看 | 见 W6 |
 | GitHub 开 PR | 专用机器人账号；`github_push` 收 bundle，宿主在自己的空仓库里推到 fork；`github` 调 REST，写操作只限自己的东西；每天最多 10 个 PR；PR 描述加脚注 | 见 W8，直接照抄设计 |
 | 话没说完先等 | 只有 @、以逗号顿号结尾、以"然后""对了"结尾、5 秒内第三条时，等 10 秒再回（最多 20 秒） | 见 W9 |
@@ -197,7 +198,7 @@
 - 宿主上加一个 `ops_read({action, host?, unit?, lines?})` 工具，调用 tank 上仍在运行的 cluster-control 服务（`src/cluster_control/`，客户端代码可以参考 tag 里的 `fleet_client.py`）。只开只读操作：主机概况、服务状态、日志尾部、磁盘和资源。
 - **只给 owner 私聊发起的后台 agent**；群里发起的任务一律没有这个工具。
 - 写操作（重启、停服务）先不开。以后要开时走现有的私聊验证码审批（`adapters/qq_official/approval.py`），每次都要 owner 确认。
-- VM 网络本来就隔离、进不了内网，所以只能由宿主来调用，**不要把 ssh key 或 token 放进 VM**。
+- 只能由宿主来调用，**不要把 ssh key 或 token 放进 VM**：群友能让后台 agent 在 VM 里以 root 执行任意命令。VM 的出站限制见 `docs/sandbox-security.md`（KVM networking），它只挡宿主和内网地址，不保护 VM 里的东西。
 - 验收：owner 私聊说"看看 tank 为什么慢"，后台 agent 自己查状态、翻日志，最后给出结论。
 
 ### W6 VM 浏览器、看截图、webread
