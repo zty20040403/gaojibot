@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
-from contextvars import ContextVar
 import base64
 import hashlib
 import json
@@ -16,7 +15,6 @@ import shlex
 import shutil
 import stat
 import time
-import uuid
 from pathlib import Path, PurePosixPath
 from typing import Callable
 from xml.etree import ElementTree
@@ -119,7 +117,7 @@ class VmSandboxManager:
     backend = "vm"
 
     @staticmethod
-    def _cloud_config(*, project_disk=None, initialize_project=False, conversation=False, prepared=False) -> str:
+    def _cloud_config(*, conversation=False, prepared=False) -> str:
         # Keep the PDF helper identical in OCI and VM sandboxes.
         helper = Path(__file__).with_name("sandbox_pdf.py").read_text(encoding="utf-8")
         config = {
@@ -144,52 +142,6 @@ class VmSandboxManager:
         if prepared:
             config.pop("packages")
             config["package_update"] = False
-        if project_disk is not None:
-            from src.sandbox_runtime import project_vm_browser_guest, project_vm_gate, project_vm_guest, project_vm_resize_guest
-            from src.sandbox_runtime.project_browser_bundle import build_bundle as browser_bundle, guest_requirements
-            from src.sandbox_runtime.project_vm_file_bundle import build_bundle
-            from src.sandbox_runtime.project_vm_file_guest import HELPER_PATH as FILE_HELPER_PATH
-
-            project = project_disk.guest_config(initialize=initialize_project)
-            config["users"] = [{"name": "sandbox", "uid": 1000, "shell": "/bin/bash",
-                                "lock_passwd": True, "sudo": False}]
-            config["packages"].extend(["e2fsprogs", "util-linux"])
-            config["write_files"].extend([
-                {"path": str(project_vm_guest.CONFIG_PATH), "permissions": "0600", "owner": "root:root",
-                 "content": json.dumps(project)},
-                {"path": project_vm_guest.HELPER_PATH, "permissions": "0755", "owner": "root:root",
-                 "content": Path(project_vm_guest.__file__).read_text(encoding="utf-8")},
-                {"path": project_vm_gate.HELPER_PATH, "permissions": "0755", "owner": "root:root",
-                 "content": Path(project_vm_gate.__file__).read_text(encoding="utf-8")},
-                {"path": project_vm_resize_guest.HELPER_PATH, "permissions": "0700", "owner": "root:root",
-                 "content": Path(project_vm_resize_guest.__file__).read_text(encoding="utf-8")},
-                {"path": FILE_HELPER_PATH, "permissions": "0700", "owner": "root:root",
-                 "encoding": "b64", "content": base64.b64encode(build_bundle()).decode("ascii")},
-                {"path": project_vm_browser_guest.HELPER_PATH, "permissions": "0700", "owner": "root:root",
-                 "encoding": "b64", "content": base64.b64encode(browser_bundle(guest_control=True)).decode("ascii")},
-                {"path": project_vm_browser_guest.WORKER_PATH, "permissions": "0755", "owner": "root:root",
-                 "encoding": "b64", "content": base64.b64encode(browser_bundle()).decode("ascii")},
-                {"path": project_vm_browser_guest.REQUIREMENTS_PATH, "permissions": "0644", "owner": "root:root",
-                 "content": guest_requirements()},
-                {"path": "/etc/udev/rules.d/70-gaoji-browser.rules", "permissions": "0644", "owner": "root:root",
-                 "content": 'SUBSYSTEM=="virtio-ports", ATTR{name}=="' + project_vm_browser_guest.CHANNEL_NAME +
-                            '", OWNER="root", GROUP="root", MODE="0600"\n'},
-                {"path": "/etc/systemd/system/gaoji-project-workspace.service", "permissions": "0644", "owner": "root:root",
-                 "content": "[Unit]\nDescription=Gaoji project workspace\nAfter=local-fs.target\n"
-                            "[Service]\nType=oneshot\nRemainAfterExit=yes\nTimeoutStartSec=300\n"
-                            "ExecStart=/usr/bin/python3 /usr/local/lib/gaoji/project_disk.py mount\n"
-                            "[Install]\nWantedBy=multi-user.target\n"},
-            ])
-            config["runcmd"] = [
-                ["systemctl", "enable", "--now", "qemu-guest-agent"],
-                ["systemctl", "daemon-reload"],
-                ["udevadm", "control", "--reload"],
-                ["udevadm", "trigger", "--subsystem-match=virtio-ports"],
-                ["udevadm", "settle", "--timeout=10"],
-                ["systemctl", "enable", "--now", "gaoji-project-workspace.service"],
-            ]
-        elif initialize_project:
-            raise SandboxError("Project initialization requires a claimed project disk")
         return "#cloud-config\n" + json.dumps(config, ensure_ascii=False)
 
     def __init__(
@@ -230,8 +182,6 @@ class VmSandboxManager:
         self._last_execs: dict[str, SandboxExecutionActivity] = {}
         self._conversation_locks = {}
         self._conversation_guests = set()
-        self.project_mounts = None
-        self._io_scope = ContextVar("vm_project_io", default=None)
 
     @asynccontextmanager
     async def allocation_lock(self):
@@ -249,7 +199,7 @@ class VmSandboxManager:
         self._directory(sandbox_id)
         lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
         if timeout == 0 and lock.locked():
-            raise SandboxError("Project workspace has an active command or file transfer")
+            raise SandboxError("Workspace has an active command or file transfer")
         async with lock:
             self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
             info = self.root.lstat()
@@ -261,12 +211,8 @@ class VmSandboxManager:
                 try:
                     await stack.enter_async_context(host_lock(self.root / f".io-{sandbox_id}.lock", timeout=timeout))
                 except TimeoutError:
-                    raise SandboxError("Project workspace has an active command or file transfer") from None
-                token = self._io_scope.set({"id": sandbox_id})
-                try:
-                    yield
-                finally:
-                    self._io_scope.reset(token)
+                    raise SandboxError("Workspace has an active command or file transfer") from None
+                yield
 
     @staticmethod
     def _owner_hash(owner: str) -> str:
@@ -366,16 +312,8 @@ class VmSandboxManager:
     async def _virsh(self, *args: str, timeout: int = 30) -> str:
         return await self._checked("virsh", "-c", "qemu:///session", *args, timeout=timeout)
 
-    async def _agent(self, sandbox_id: str, request: dict[str, object], *, timeout: int = 20,
-                     domain_uuid: str | None = None) -> object:
+    async def _agent(self, sandbox_id: str, request: dict[str, object], *, timeout: int = 20) -> object:
         target = self._name(sandbox_id)
-        if domain_uuid is not None:
-            try:
-                if not isinstance(domain_uuid, str) or str(uuid.UUID(domain_uuid)) != domain_uuid:
-                    raise ValueError()
-            except ValueError:
-                raise SandboxError("Invalid immutable VM domain identity") from None
-            target = domain_uuid
         answer = await self._virsh(
             "qemu-agent-command", target,
             json.dumps(request, separators=(",", ":")), "--timeout", str(timeout),
@@ -395,30 +333,16 @@ class VmSandboxManager:
     ) -> tuple[int, bytes, bytes]:
         if sandbox_id in self._conversation_guests:
             await self._wait_guest(sandbox_id, timeout=60)
-        scope = self._io_scope.get()
-        if scope and scope["id"] == sandbox_id and "epoch" in scope:
-            from src.sandbox_runtime.project_vm_gate import HELPER_PATH, MAX_REQUEST_BYTES
-
-            if input_bytes is not None:
-                raise SandboxError("Project commands do not accept an unmanaged stdin stream")
-            request = json.dumps({"action": "run", "epoch": scope["epoch"],
-                                  "argv": [path, *args], "timeout": timeout,
-                                  "tasks": scope["tasks"]}).encode()
-            if len(request) > MAX_REQUEST_BYTES:
-                raise SandboxError("Project command exceeds the execution gate request limit")
-            return await self._guest_exec_raw(sandbox_id, "/usr/bin/python3", [HELPER_PATH],
-                                              input_bytes=request, timeout=timeout + 30)
         return await self._guest_exec_raw(sandbox_id, path, args, timeout=timeout, input_bytes=input_bytes)
 
     async def _guest_exec_raw(
         self, sandbox_id: str, path: str, args: list[str], *, timeout: int = 60,
-        input_bytes: bytes | None = None, domain_uuid: str | None = None,
+        input_bytes: bytes | None = None,
     ) -> tuple[int, bytes, bytes]:
         arguments: dict[str, object] = {"path": path, "arg": args, "capture-output": True}
         if input_bytes is not None:
             arguments["input-data"] = base64.b64encode(input_bytes).decode("ascii")
-        target = {"domain_uuid": domain_uuid} if domain_uuid is not None else {}
-        started = await self._agent(sandbox_id, {"execute": "guest-exec", "arguments": arguments}, **target)
+        started = await self._agent(sandbox_id, {"execute": "guest-exec", "arguments": arguments})
         if not isinstance(started, dict):
             raise SandboxError("VM 没有返回命令状态。")
         pid = started.get("pid")
@@ -428,7 +352,7 @@ class VmSandboxManager:
         while time.monotonic() < deadline:
             status = await self._agent(sandbox_id, {
                 "execute": "guest-exec-status", "arguments": {"pid": pid},
-            }, **target)
+            })
             if not isinstance(status, dict):
                 raise SandboxError("VM 命令状态无效。")
             if status.get("exited"):
@@ -451,19 +375,9 @@ class VmSandboxManager:
                 await asyncio.sleep(2)
         raise SandboxError("VM 启动超时，客体代理未就绪。")
 
-    def _domain_xml(self, sandbox_id: str, directory: Path, *, project_disk=None,
-                    project_domain_uuid=None) -> str:
+    def _domain_xml(self, sandbox_id: str, directory: Path) -> str:
         domain = ElementTree.Element("domain", {"type": "kvm"})
         ElementTree.SubElement(domain, "name").text = self._name(sandbox_id)
-        if project_disk is not None:
-            try:
-                if str(uuid.UUID(project_domain_uuid)) != project_domain_uuid:
-                    raise ValueError()
-            except (TypeError, AttributeError, ValueError):
-                raise SandboxError("Project VM requires its journalled domain UUID") from None
-            ElementTree.SubElement(domain, "uuid").text = project_domain_uuid
-        elif project_domain_uuid is not None:
-            raise SandboxError("Project domain identity requires a claimed project disk")
         ElementTree.SubElement(domain, "memory", {"unit": "MiB"}).text = str(self.memory_mib)
         ElementTree.SubElement(domain, "vcpu").text = str(self.vcpus)
         os_node = ElementTree.SubElement(domain, "os")
@@ -483,19 +397,6 @@ class VmSandboxManager:
             ElementTree.SubElement(disk, "target", {"dev": target, "bus": bus})
             if device == "cdrom":
                 ElementTree.SubElement(disk, "readonly")
-        if project_disk is not None:
-            project = project_disk.guest_config()
-            if project_disk.sandbox_id != sandbox_id or not project_disk.path.is_absolute():
-                raise SandboxError("Project disk claim belongs to another VM")
-            disk = ElementTree.SubElement(devices, "disk", {"type": "file", "device": "disk"})
-            ElementTree.SubElement(disk, "driver", {"name": "qemu", "type": "qcow2", "discard": "unmap"})
-            ElementTree.SubElement(disk, "source", {"file": str(project_disk.path)})
-            ElementTree.SubElement(disk, "target", {"dev": "vdb", "bus": "virtio"})
-            ElementTree.SubElement(disk, "serial").text = project["serial"]
-            metadata = ElementTree.SubElement(domain, "metadata")
-            ElementTree.SubElement(metadata, "{urn:gaoji:project:1}workspace", {
-                key: str(project[key]) for key in ("project_id", "generation", "filesystem_uuid", "quota_bytes", "serial")
-            })
         network = ElementTree.SubElement(devices, "interface", {"type": "user"})
         ElementTree.SubElement(network, "model", {"type": "virtio"})
         channel = ElementTree.SubElement(devices, "channel", {"type": "unix"})
@@ -505,17 +406,8 @@ class VmSandboxManager:
         ElementTree.SubElement(channel, "target", {
             "type": "virtio", "name": "org.qemu.guest_agent.0",
         })
-        if project_disk is not None:
-            from src.sandbox_runtime.project_vm_browser_guest import CHANNEL_NAME, SOCKET_NAME
-
-            browser = ElementTree.SubElement(devices, "channel", {"type": "unix"})
-            ElementTree.SubElement(browser, "source", {"mode": "bind", "path": str(directory / SOCKET_NAME)})
-            ElementTree.SubElement(browser, "target", {"type": "virtio", "name": CHANNEL_NAME})
-        # Persistent projects must not accumulate an unbounded, unjournalled
-        # host log which also prevents retirement's exact-file cleanup.
-        serial = ElementTree.SubElement(devices, "serial", {"type": "pty" if project_disk is not None else "file"})
-        if project_disk is None:
-            ElementTree.SubElement(serial, "source", {"path": str(directory / "console.log")})
+        serial = ElementTree.SubElement(devices, "serial", {"type": "file"})
+        ElementTree.SubElement(serial, "source", {"path": str(directory / "console.log")})
         ElementTree.SubElement(serial, "target", {"port": "0"})
         return ElementTree.tostring(domain, encoding="unicode")
 
@@ -666,38 +558,8 @@ class VmSandboxManager:
             self._conversation_guests.add(sandbox_id)
             metadata['last_used'] = int(time.time())
             self._save_metadata(sandbox_id, metadata)
-        if metadata.get("purpose") == "project":
-            if self.project_mounts is None:
-                raise SandboxError("项目 VM 生命周期适配器尚未启用。")
-            observed = await self.project_mounts.authorize(owner, sandbox_id, metadata)
-            scope = self._io_scope.get()
-            if scope and scope["id"] == sandbox_id:
-                spec = metadata.get("project_spec") or {}
-                self._io_scope.set({**scope, "epoch": observed["io_epoch"],
-                                    "tasks": spec.get("pids_limit", self.pids_limit)})
         return metadata
 
-    async def _verify_project_mount(self, sandbox_id, metadata):
-        from src.sandbox_runtime.project_vm_guest import HELPER_PATH, validate_config
-
-        try:
-            config = validate_config({**metadata["project"], "initialize": False})
-            code, out, _ = await self._guest_exec(
-                sandbox_id, "/usr/bin/timeout",
-                ["--kill-after=5s", "25s", "/usr/bin/python3", HELPER_PATH, "verify"], timeout=35,
-            )
-            if code:
-                raise ValueError("Guest verification failed")
-            observed = json.loads(out)
-            keys = ("project_id", "generation", "filesystem_uuid", "quota_bytes", "serial")
-            if (not isinstance(observed, dict) or any(type(observed.get(key)) is not type(config[key]) or observed[key] != config[key] for key in keys)
-                    or observed.get("verified") is not True or observed.get("mounted") is not True
-                    or observed.get("initialization_sealed") is not True
-                    or type(observed.get("used_bytes")) is not int or not 0 <= observed["used_bytes"] <= config["quota_bytes"]):
-                raise ValueError("Guest observation belongs to another project")
-        except (KeyError, TypeError, ValueError):
-            raise SandboxError("项目盘未通过挂载与身份校验，已拒绝访问临时系统盘。") from None
-        return observed
 
     async def exec(
         self, owner: str, sandbox_id: str, command: str,
@@ -707,8 +569,8 @@ class VmSandboxManager:
         if not command.strip():
             raise SandboxError("命令不能为空。")
         async with self.io_lock(sandbox_id):
-            metadata = await self._owned_running(owner, sandbox_id)
-            pids_limit = metadata["project_spec"]["pids_limit"] if metadata.get("project_spec") else self.pids_limit
+            await self._owned_running(owner, sandbox_id)
+            pids_limit = self.pids_limit
             timeout = min(max(timeout_seconds or self.default_timeout_seconds, 1), 300)
             requested = list(packages or [])
             if len(requested) > 16 or any(not PACKAGE_PATTERN.fullmatch(item) for item in requested):
@@ -900,29 +762,6 @@ class VmSandboxManager:
             target = self._workspace_path(path)
             return await self._read_guest_file(sandbox_id, target, max_bytes)
 
-    async def read_project_notes(self, owner, sandbox_id, *, project_id, generation, fence):
-        from src.sandbox_runtime import project_note_reader
-
-        async with self.io_lock(sandbox_id, timeout=0):
-            metadata = await self._owned_running(owner, sandbox_id)
-            scope = self._io_scope.get()
-            project = metadata.get("project", {})
-            if (project.get("project_id") != project_id or project.get("generation") != generation
-                    or not scope or scope.get("epoch") != fence):
-                raise SandboxError("Current project notes identity changed")
-            source = Path(project_note_reader.__file__).read_text(encoding="utf-8")
-            code, output, _ = await self._guest_exec(
-                sandbox_id, "/usr/bin/python3", ["-I", "-c", source], timeout=10,
-            )
-            if code or len(output) > 100000:
-                raise SandboxError("Current project notes are unavailable")
-            await self._owned_running(owner, sandbox_id)
-            if self._io_scope.get().get("epoch") != fence:
-                raise SandboxError("Project changed while reading notes")
-            try:
-                return json.loads(output)
-            except ValueError:
-                raise SandboxError("Invalid current project notes receipt") from None
 
     async def install_readonly_file(self, owner: str, sandbox_id: str, path: str, content: bytes) -> None:
         target = self._workspace_path(path)
@@ -985,12 +824,8 @@ class VmSandboxManager:
 
     async def start_owned(self, owner: str, sandbox_id: str) -> None:
         metadata = await self._metadata(owner, sandbox_id)
-        if metadata.get("purpose") == "project":
-            raise SandboxError("持久项目必须通过项目生命周期启动。")
         async with self.allocation_lock():
             metadata = await self._metadata(owner, sandbox_id)
-            if metadata.get("purpose") == "project":
-                raise SandboxError("持久项目必须通过项目生命周期启动。")
             if owner.startswith('qqo:conversation:'):
                 self._conversation_guests.add(sandbox_id)
                 metadata['last_used'] = int(time.time())
@@ -1015,9 +850,7 @@ class VmSandboxManager:
     async def stop_owned(self, owner: str, sandbox_id: str) -> None:
         lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
         async with lock:
-            metadata = await self._metadata(owner, sandbox_id)
-            if metadata.get("purpose") == "project":
-                raise SandboxError("持久项目必须通过项目生命周期停止。")
+            await self._metadata(owner, sandbox_id)
             if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
                 raise SandboxError("VM 正在执行命令，不能停止。")
             if not await self._running(sandbox_id):
@@ -1035,9 +868,7 @@ class VmSandboxManager:
                 raise
 
     async def destroy(self, owner: str, sandbox_id: str) -> None:
-        metadata = await self._metadata(owner, sandbox_id)
-        if metadata.get("purpose") == "project":
-            raise SandboxError("持久项目不能通过临时沙盒接口销毁。")
+        await self._metadata(owner, sandbox_id)
         if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
             raise SandboxError("VM 正在执行命令，不能销毁。")
         lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
