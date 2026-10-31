@@ -1,23 +1,11 @@
-# Sandbox
-Summary: 在隔离 Docker 沙盒中创建、修改、测试并交付项目。
+# 会话工作区
+Summary: 通过后台 agent 在本群持久 Linux VM 中制作文件、执行代码和分析附件。
 
-1. 用 `sandbox_list` 看是否已有适合本会话的沙盒；没有再 `sandbox_create`。
-2. 用 `say` 告知已经开始和每个真实里程碑，不要重复没有新信息的进度。
-3. 群文件先 `list_recent_files` 或 `get_message_by_id` 定位，再 `import_file_to_sandbox`。
-4. 所有写入、依赖安装、构建和测试都在 `/workspace` 内完成。
-   NixOS 部署使用精简的 Nix 高级镜像：已有常用 shell 工具、Git、curl、
-   rg、GCC、Python、Node、SQLite、Poppler 和 qpdf。先用 `command -v`
-   或 Python import 检查。缺少 Go、Rust、Java、LibreOffice、Pandoc、
-   FFmpeg、ImageMagick、Tesseract 或数据分析库时，先用 `nix_search`
-   找到属性名，再放进 `sandbox_exec.packages`；不要使用 apt，也不要全局
-   pip install。第一次会下载，之后从 gaoji 的共享 Nix 缓存复用。
-   含中文的 PDF 统一使用 `gaoji-pdf input.md output.pdf`，随后运行
-   `pdffonts output.pdf` 确认字体已嵌入，并用 `pdftotext output.pdf -`
-   确认中文可提取。不要用默认 Helvetica 生成中文 PDF。
-5. 先运行测试或最小启动检查，再声称完成。工具失败时报告实际错误，不可伪造成功。
-6. 交付用 `send_file_from_sandbox` 或 `send_image_from_sandbox`。以上沙盒操作无需手机审批。
-   用户要求删除/重建时可直接调用 `sandbox_destroy`，包括未交付文件也不二次确认；正常任务
-   收尾仍交给宿主，确认交付后最多保留一小时，不能在下游读取或文件发送之前自行销毁。
-7. 沙盒不是公网部署环境，也不能访问宿主机、机器人密钥或其他用户的数据。
-8. `packages` 只对本次命令生效。执行沙盒对共享 Nix 缓存只有读取权限；
-   下载由参数受限的辅助容器完成，不能把任意安装脚本伪装成软件包名。
+1. 前台先用 `say` 说清开始做什么，再调用 `agent`，把目标、输入和交付文件名写清楚。前台可以继续聊天；追加要求用 `agent_steer`。
+2. 用户附件先用 `import_file_to_sandbox` 导入，把返回的 `/work/chat/…` 路径交给后台。不要向用户索取已经提供过的文件。
+3. 后台的 `shell`、`read_file`、`write_file` 都在本会话 VM 里工作。文件放 `/work`，任务结束后保留。没有宿主凭据，也不能访问宿主或内网。
+4. 先检查已有工具。`shell.packages` 接受 Debian 包名；Python 包可安装在工作区自己的 venv。浏览器和转写已装在 `gaoji-python` 环境里。
+5. 中文 PDF 用 `gaoji-pdf input.md output.pdf`。交付前用 `pdftotext` 核对内容、`pdffonts` 核对嵌入字体；需要看版式时转成 PNG，用 `view_sandbox_image` 看。
+6. 网页正文用 `webread URL`，长文加 `--offset`；它也能读在线 PDF。需执行脚本的网页用 `gaoji-python` 调 Playwright：`from gaoji_browser import page, snapshot`。截图可用 `view_sandbox_image` 查看。
+7. 视频用 ffmpeg 抽帧，`gaoji-transcribe /work/chat/文件 --language zh` 转写，再综合画面和音轨。不要只凭文件名猜内容。
+8. 后台把结果和文件绝对路径写入报告，不直接发群消息。前台收到完成结果后用 `send_file_from_sandbox` 交付，核对返回的 `message_accepted` 再告诉用户已发送。失败就报告实际错误。
