@@ -135,6 +135,17 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.query('SELECT * FROM qq_official_quota_periods'), [])
         self.assertEqual(self.query('SELECT * FROM qq_official_reply_windows'), [])
 
+    async def test_daily_proactive_budget_survives_sender_restart(self):
+        self.now += 400
+        with patch('src.plugins.ai_chat.adapters.qq_official.send_store.GROUP_PROACTIVE_DAILY_LIMIT', 2):
+            for key in ('TEST_FIRST', 'TEST_SECOND'):
+                self.assertEqual((await self.sender.send_delivery(self.enqueue(key))).status, 'committed')
+            await self.sender.stop()
+            self.sender = self.make_sender()
+            result = await self.sender.send_delivery(self.enqueue('TEST_OVER_LIMIT'))
+            self.assertEqual((result.status, result.reason), ('failed', 'group_proactive_daily_limit'))
+            self.assertEqual(len(self.fake.received), 2)
+
     async def test_proactive_rejection_uses_latest_inbound_and_group_five_replies(self):
         self.fake.proactive_allowed[('group', self.endpoint.native_conversation_id)] = False
         self.inbound(message='TEST_NEWEST')
