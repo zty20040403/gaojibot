@@ -1,55 +1,64 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
-  <title id="title">gaoji</title>
-  <desc id="desc">QQ multi-model agent banner with a robot mark and connected runtime capabilities.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440" role="img" aria-labelledby="title desc">
+  <title id="title">gaoji — conversation first, execution ready</title>
+  <desc id="desc">深色科技风品牌横幅。像群友一样聊天，像 Agent 一样开工；官方 QQ、多模型、记忆与隔离 VM 后台。右侧是概念流程，不是实时状态。</desc>
   <defs>
-    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
-      <path d="M28 0H0V28" fill="none" stroke="#27272a" stroke-width="1"/>
-    </pattern>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#080d1c"/><stop offset=".6" stop-color="#10132b"/><stop offset="1" stop-color="#111d32"/></linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#67e8f9"/><stop offset=".5" stop-color="#818cf8"/><stop offset="1" stop-color="#c084fc"/></linearGradient>
+    <radialGradient id="aurora"><stop stop-color="#6554d8" stop-opacity=".38"/><stop offset="1" stop-color="#6554d8" stop-opacity="0"/></radialGradient>
+    <radialGradient id="cyan"><stop stop-color="#22d3ee" stop-opacity=".2"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#8da4d6" stroke-opacity=".07"/></pattern>
+    <clipPath id="clip"><rect width="1280" height="440" rx="24"/></clipPath>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="5"/></filter>
   </defs>
-
-  <rect width="1200" height="320" rx="18" fill="#09090b"/>
-  <rect width="1200" height="320" rx="18" fill="url(#grid)" opacity="0.72"/>
-  <path d="M0 252H1200" stroke="#27272a"/>
-
-  <g transform="translate(76 66)">
-    <rect x="0" y="0" width="164" height="164" rx="38" fill="#18181b" stroke="#3f3f46" stroke-width="2"/>
-    <path d="M82 46V28" stroke="#fafafa" stroke-width="8" stroke-linecap="round"/>
-    <circle cx="82" cy="23" r="9" fill="#22c55e"/>
-    <rect x="29" y="51" width="106" height="82" rx="24" fill="#fafafa"/>
-    <circle cx="64" cy="89" r="9" fill="#18181b"/>
-    <circle cx="100" cy="89" r="9" fill="#18181b"/>
-    <path d="M63 112H101" stroke="#18181b" stroke-width="7" stroke-linecap="round"/>
-  </g>
-
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
-    <text x="278" y="116" fill="#fafafa" font-size="54" font-weight="700" letter-spacing="1">gaoji</text>
-    <text x="281" y="154" fill="#a1a1aa" font-size="18" letter-spacing="3">QQ MULTI-MODEL AGENT</text>
-    <circle cx="289" cy="200" r="6" fill="#22c55e"/>
-    <text x="306" y="207" fill="#d4d4d8" font-size="16">agent runtime online</text>
-    <text x="77" y="286" fill="#71717a" font-size="14">ONEBOT V11  /  NONEBOT2  /  POSTGRESQL  /  NIXOS</text>
-    <text x="1082" y="286" fill="#71717a" font-size="14">v0.18.0</text>
-  </g>
-
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="14">
-    <path d="M746 91H788M746 160H788M746 229H788" stroke="#3f3f46" stroke-width="2"/>
-    <path d="M788 91V229" stroke="#3f3f46" stroke-width="2"/>
-    <circle cx="746" cy="91" r="5" fill="#22c55e"/>
-    <circle cx="746" cy="160" r="5" fill="#22c55e"/>
-    <circle cx="746" cy="229" r="5" fill="#22c55e"/>
-
-    <rect x="788" y="66" width="148" height="50" rx="8" fill="#18181b" stroke="#3f3f46"/>
-    <text x="810" y="97" fill="#e4e4e7">CONTEXT</text>
-    <rect x="958" y="66" width="166" height="50" rx="8" fill="#18181b" stroke="#3f3f46"/>
-    <text x="980" y="97" fill="#e4e4e7">TOOL CALLS</text>
-
-    <rect x="788" y="135" width="148" height="50" rx="8" fill="#18181b" stroke="#3f3f46"/>
-    <text x="810" y="166" fill="#e4e4e7">VISION</text>
-    <rect x="958" y="135" width="166" height="50" rx="8" fill="#18181b" stroke="#3f3f46"/>
-    <text x="980" y="166" fill="#e4e4e7">POSTGRES</text>
-
-    <rect x="788" y="204" width="148" height="50" rx="8" fill="#18181b" stroke="#3f3f46"/>
-    <text x="810" y="235" fill="#e4e4e7">SANDBOX</text>
-    <rect x="958" y="204" width="166" height="50" rx="8" fill="#18181b" stroke="#3f3f46"/>
-    <text x="980" y="235" fill="#e4e4e7">OUTBOX</text>
+  <g clip-path="url(#clip)">
+    <rect width="1280" height="440" fill="url(#bg)"/>
+    <rect width="1280" height="440" fill="url(#grid)"/>
+    <ellipse cx="940" cy="150" rx="440" ry="340" fill="url(#aurora)"/>
+    <ellipse cx="1180" cy="390" rx="390" ry="260" fill="url(#cyan)"/>
+    <path d="M725-30 1270 440M825-30 1370 440M640 440 1210-30" stroke="#818cf8" stroke-opacity=".09" fill="none"/>
+    <circle cx="1000" cy="211" r="187" fill="none" stroke="#a5b4fc" stroke-opacity=".1"/>
+    <circle cx="1000" cy="211" r="219" fill="none" stroke="#a5b4fc" stroke-opacity=".07" stroke-dasharray="3 11"/>
+    <rect x="1" y="1" width="1278" height="438" rx="24" fill="none" stroke="#334155" stroke-opacity=".7"/>
+    <rect x="56" y="47" width="30" height="3" rx="1.5" fill="url(#accent)"/>
+    <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif">
+      <text x="99" y="53" fill="#a5b4ce" font-size="12" font-weight="600" letter-spacing="3">CONVERSATION FIRST. EXECUTION READY.</text>
+      <text x="51" y="182" fill="#f1f5ff" font-size="118" font-weight="800" letter-spacing="-6">gaoji</text>
+      <circle cx="346" cy="173" r="7" fill="#67e8f9"/>
+      <text x="56" y="234" fill="#e2e8f0" font-family="'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif" font-size="30" font-weight="600">像群友一样聊天。</text>
+      <text x="56" y="279" fill="url(#accent)" font-family="'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif" font-size="30" font-weight="600">像 Agent 一样开工。</text>
+      <text x="57" y="322" fill="#9aa9c3" font-family="'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif" font-size="17">对话、记忆、工具与真实交付，在一个清晰的系统里。</text>
+    </g>
+    <g font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="11" letter-spacing="1.1">
+      <rect x="56" y="355" width="124" height="29" rx="7" fill="#67e8f9" fill-opacity=".07" stroke="#67e8f9" stroke-opacity=".25"/>
+      <text x="118" y="374" fill="#a5f3fc" text-anchor="middle">OFFICIAL QQ</text>
+      <rect x="192" y="355" width="145" height="29" rx="7" fill="#818cf8" fill-opacity=".08" stroke="#818cf8" stroke-opacity=".28"/>
+      <text x="264" y="374" fill="#c7d2fe" text-anchor="middle">MULTI-MODEL</text>
+      <rect x="349" y="355" width="144" height="29" rx="7" fill="#c084fc" fill-opacity=".07" stroke="#c084fc" stroke-opacity=".25"/>
+      <text x="421" y="374" fill="#e9d5ff" text-anchor="middle">CODEX IN VM</text>
+    </g>
+    <g transform="translate(758 77)">
+      <rect x="18" y="16" width="444" height="273" rx="19" fill="#050914" fill-opacity=".35" stroke="#818cf8" stroke-opacity=".12"/>
+      <rect width="444" height="273" rx="19" fill="#10172a" fill-opacity=".92" stroke="#687bb6" stroke-opacity=".45"/>
+      <path d="M0 48H444" stroke="#526582" stroke-opacity=".35"/>
+      <circle cx="24" cy="25" r="4" fill="#67e8f9"/><circle cx="40" cy="25" r="4" fill="#818cf8"/><circle cx="56" cy="25" r="4" fill="#c084fc"/>
+      <g font-family="ui-monospace, SFMono-Regular, Consolas, monospace">
+        <text x="423" y="29" fill="#8090b1" font-size="10" letter-spacing="1.4" text-anchor="end">INTENT → EXECUTION</text>
+        <text x="27" y="82" fill="#67e8f9" font-size="12">01 / UNDERSTAND</text>
+        <text x="27" y="141" fill="#a5b4fc" font-size="12">02 / EXECUTE</text>
+        <text x="27" y="201" fill="#c084fc" font-size="12">03 / DELIVER</text>
+      </g>
+      <g font-family="'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif" font-size="18" font-weight="500">
+        <text x="27" y="108" fill="#dbeafe">上下文与记忆，让一句话有来处。</text>
+        <text x="27" y="168" fill="#dbeafe">任务交给 Codex，工作发生在 VM。</text>
+        <text x="27" y="227" fill="#dbeafe">报告回前台，文件交到对话里。</text>
+      </g>
+      <path d="M405 86V214" stroke="url(#accent)" stroke-opacity=".65" stroke-width="2"/>
+      <circle cx="405" cy="86" r="4" fill="#67e8f9"/><circle cx="405" cy="147" r="4" fill="#a5b4fc"/><circle cx="405" cy="214" r="4" fill="#c084fc"/>
+      <circle cx="405" cy="147" r="11" fill="#818cf8" opacity=".28" filter="url(#glow)"/>
+      <text x="27" y="253" fill="#7183a5" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="10" letter-spacing="1.1">CONCEPTUAL WORKFLOW · NOT A LIVE STATUS</text>
+    </g>
+    <g fill="#a5b4fc"><circle cx="1205" cy="58" r="2" opacity=".65"/><circle cx="708" cy="360" r="2" opacity=".4"/><circle cx="694" cy="101" r="1.5" opacity=".4"/></g>
+    <path d="M758 382H1202" stroke="url(#accent)" stroke-opacity=".2"/>
+    <text x="758" y="402" fill="#8091b3" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="10" letter-spacing="1.8">HUMAN CONVERSATION / AGENT CAPABILITY</text>
   </g>
 </svg>
