@@ -31,6 +31,16 @@ def render_memory(text: str) -> str:
     return "\n".join(kept) + "\n（后面的没加载：记忆超过上限了，尽快用 memory_write 整理精简。）"
 
 
+def speaker(inbound: InboundMessage) -> str:
+    """The new message's speaker; in a group, marks one that @'s or replies to the bot.
+
+    The @ itself is stripped from the text, so without the mark the model cannot
+    tell an insult aimed at it from one between members.
+    """
+    name = inbound.sender_display or "群友"
+    return name + "（@你）" if inbound.mentions_bot and inbound.endpoint.kind == "group" else name
+
+
 def turn_window(app, inbound: InboundMessage, profile) -> tuple[str, str, str]:
     ledger, store = app.message_ledger, getattr(app, "conversations", None)
     if ledger is None or store is None:

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from src.bot_storage import DatabaseError
 from . import ChatFailure
-from .turn_context import record_loop_event, turn_window
+from .turn_context import record_loop_event, speaker, turn_window
 from ..execution_control import assert_job_owned
 from ..agent_loop import AgentTrace, DeepSeekConfigError, ask_deepseek_with_tools, request_sink
 from ..ai_tools import WEB_SEARCH_TOOL_NAME, force_tool
@@ -170,7 +170,7 @@ class PlatformChatService:
                                        self.context.settings.style_examples)
                 answer = await self.llm(
                     user_text, [], tools, execute_tool,
-                    current_user=inbound.sender_display or "群友",
+                    current_user=speaker(inbound),
                     group_context=group_context, memory_context=memory_context,
                     tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",
                     profile=selected_profile,

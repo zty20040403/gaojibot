@@ -119,6 +119,17 @@ class WindowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(last.endswith("[新消息]\n小红：在吗"))
         self.assertIn("自定义人设", system_prompt("自定义人设"))
 
+    def test_group_speaker_is_marked_when_addressing_the_bot(self):
+        from src.plugins.ai_chat.application.turn_context import speaker
+        from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
+        account = AccountKey("qq-official", "TEST_APP", "test")
+        def inbound(kind, mentions):
+            return SimpleNamespace(sender_display="小红", mentions_bot=mentions,
+                                   endpoint=EndpointKey(account, kind, "TEST_ID"))
+        self.assertEqual(speaker(inbound("group", True)), "小红（@你）")
+        self.assertEqual(speaker(inbound("group", False)), "小红")
+        self.assertEqual(speaker(inbound("private", True)), "小红")
+
     def test_style_examples_sit_between_persona_and_rules(self):
         text = system_prompt("TEST 人设", "", "群友：TEST 问\n你：TEST 答")
         self.assertLess(text.index("TEST 人设"), text.index("[说话样例]"))
