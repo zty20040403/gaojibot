@@ -171,9 +171,13 @@ class CodexRun:
             self.done.set()
 
     async def steer(self, text):
-        with contextlib.suppress(RuntimeError):
+        try:
             await self.request('turn/steer', {'threadId': self.thread, 'expectedTurnId': self.turn,
                                               'input': [{'type': 'text', 'text': text}]})
+        except RuntimeError as exc:
+            # Feedback has already been consumed; never finish as if it was applied.
+            raise RuntimeError('追加要求未被 Codex 接受，任务已停止；请带上补充要求重新发起。'
+                               f'原因：{exc}') from exc
 
     async def interrupt(self):
         with contextlib.suppress(RuntimeError):

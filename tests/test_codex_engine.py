@@ -11,8 +11,9 @@ from src.plugins.ai_chat.codex_engine import DEADLINE_NOTE, CodexEngine, launch_
 class FakeAppServer:
     """Answers the client's requests the way codex app-server 0.153 does."""
 
-    def __init__(self, *, finish='completed'):
+    def __init__(self, *, finish='completed', steer_error=None, complete_on_rejection=False):
         self.finish, self.outbox = finish, asyncio.Queue()
+        self.steer_error, self.complete_on_rejection = steer_error, complete_on_rejection
         self.requests, self.tool_replies = [], []
 
     async def wait(self, timeout):
@@ -37,6 +38,11 @@ class FakeAppServer:
             self.tool_replies.append(message)
             return
         self.requests.append(message)
+        if method == 'turn/steer' and self.steer_error is not None:
+            if self.complete_on_rejection:
+                self.complete('TEST original task only', 'completed')
+            self.push({'id': message['id'], 'error': {'code': -32000, 'message': self.steer_error}})
+            return
         reply = {'initialize': {}, 'thread/start': {'thread': {'id': 'THREAD'}},
                  'turn/start': {'turn': {'id': 'TURN'}}, 'turn/steer': {'turnId': 'TURN'},
                  'turn/interrupt': {}}.get(method)
@@ -88,6 +94,22 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('GAOJI_JOB_TOKEN=TEST_TOKEN', script)
         self.assertIn('job-7', script)
         self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
+
+    async def test_rejected_steer_fails_instead_of_returning_the_original_report(self):
+        for completed in (False, True):
+            with self.subTest(original_turn_completed=completed):
+                server = FakeAppServer(steer_error='TEST turn no longer accepts steering',
+                                       complete_on_rejection=completed)
+                feedback = AsyncMock(return_value=['TEST additional model', 'TEST later requirement'])
+                with self.assertRaisesRegex(RuntimeError, '追加要求未被 Codex 接受') as caught:
+                    await asyncio.wait_for(self.engine(server)(
+                        {'job_id': 11, 'task': 'TEST task', 'deadline_at': 7200}, self.session(),
+                        feedback=feedback, progress=AsyncMock(), trace=AgentTrace()), 1)
+                self.assertIn('TEST turn no longer accepts steering', str(caught.exception))
+                self.assertIn('请带上补充要求重新发起', str(caught.exception))
+                self.assertEqual(len(server.sent('turn/steer')), 1)
+                feedback.assert_awaited_once()
+                self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
 
     async def test_deadline_interrupts_and_hands_over_the_partial_report(self):
         server = FakeAppServer()
