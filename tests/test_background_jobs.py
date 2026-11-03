@@ -31,10 +31,10 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.calls = DatabaseCalls()
         self.addAsyncCleanup(self.calls.close)
 
-    def submit(self, key='TEST_ONE'):
+    def submit(self, key='TEST_ONE', *, independent=True):
         with self.store.transaction() as cursor:
             return self.store.submit(cursor, kind='TEST_AGENT', key=key, source=self.source,
-                                     task='research', title='prices', profile='TEST_MODEL')
+                                     task='research', title='prices', profile='TEST_MODEL', independent=independent)
 
     def test_three_jobs_limit_idempotency_and_actor_isolation(self):
         first = self.submit()
@@ -48,6 +48,32 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.store.cancel(first['job_id'], 'TEST_OTHER_ENDPOINT', 'TEST_ACTOR'))
         self.assertTrue(self.store.cancel(first['job_id'], 'TEST_ENDPOINT', 'TEST_ACTOR'))
         self.assertEqual(self.submit('TEST_FOUR')['state'], 'queued')
+
+    def test_followup_guard_preserves_idempotency_and_active_jobs_first(self):
+        first = self.submit(independent=False)
+        self.assertEqual(self.submit(independent=False)['job_id'], first['job_id'])
+        with self.assertRaisesRegex(ValueError, 'agent_status.*agent_steer'):
+            self.submit('TEST_DUPLICATE', independent=False)
+        for index in range(10):
+            self.now += 1
+            done = self.submit(f'TEST_DONE_{index}')
+            self.store.update(done['job_id'], state='completed', finished_at=self.now)
+        self.assertEqual(self.store.list('TEST_ENDPOINT', 'TEST_ACTOR', limit=8)[0]['job_id'], first['job_id'])
+
+    async def test_concurrent_followups_cannot_create_two_jobs(self):
+        results = await asyncio.gather(
+            asyncio.to_thread(self.submit, 'TEST_RACE_ONE', independent=False),
+            asyncio.to_thread(self.submit, 'TEST_RACE_TWO', independent=False), return_exceptions=True)
+        self.assertEqual(sum(isinstance(result, ValueError) for result in results), 1)
+        self.assertEqual(len(self.store.list()), 1)
+
+    def test_another_actor_or_endpoint_does_not_block_new_work(self):
+        self.submit(independent=False)
+        for field in ('actor_key', 'endpoint_key'):
+            with self.store.transaction() as cursor:
+                row = self.store.submit(cursor, kind='TEST_AGENT', key='TEST_OTHER_' + field,
+                    source={**self.source, field: 'TEST_OTHER'}, task='TEST separate work', title='TEST', profile='TEST_MODEL')
+            self.assertEqual(row['state'], 'queued')
 
     async def test_steering_warning_report_and_restart_do_not_rerun_work(self):
         row = self.submit()
