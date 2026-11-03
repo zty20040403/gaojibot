@@ -20,6 +20,7 @@ from ..prompt import system_prompt
 from ..prompt_context import quote_evidence
 from ..tool_policy import ToolCatalog, approval_from_user_text, policy_for_tool
 from ..tools import neutral_registry_for
+from ..tools.background import task_context as background_task_context
 from ..tools.state import ToolContext, TurnState
 from ..web_search import render_search_sources
 from ..workers.durable_jobs import JobDeferred
@@ -165,6 +166,9 @@ class PlatformChatService:
                 context_parts = [quoted] if quoted else []
                 if turn_context:
                     context_parts.append(quote_evidence(turn_context, "turn_context"))
+                background_context = await background_task_context(turn)
+                if background_context:
+                    context_parts.append(background_context)
                 skill_index = self.context.skill_registry.prompt_index()
                 system = system_prompt(self.context.settings.system_prompt, skill_index,
                                        self.context.settings.style_examples)

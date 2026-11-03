@@ -40,7 +40,8 @@ def job_number(value):
 def view(row, now):
     return dict(job=f"job#{row['job_id']}", title=row['title'], state=row['state'],
         elapsed_seconds=max(0, (row['finished_at'] or now) - row['created_at']),
-        last_tool=row['last_tool'], error=row['error'])
+        last_tool=row['last_tool'], error=row['error'][:500], task=row['task'][:500],
+        report_excerpt=row['report'][:600], frontend_processed=row['delivered_at'] is not None)
 
 
 class OfficialBackgroundAgents:
@@ -89,7 +90,8 @@ class OfficialBackgroundAgents:
                                   source_execution_id=life.handle.execution_id)
                     key = 'background:' + life.handle.execution_id + ':' + hashlib.sha256(task.encode()).hexdigest()
                     row = self.store.submit(cursor, kind=self.kind, key=key, source=source, task=task,
-                        title=str(arguments.get('title', '')), profile=turn.model_profile.name)
+                        title=str(arguments.get('title', '')), profile=turn.model_profile.name,
+                        independent=arguments.get('independent') is True)
                     return view(row, int(self.clock()))
                 number = job_number(arguments['job']) if arguments.get('job') else None
                 if number is not None:

@@ -15,13 +15,22 @@ class BackgroundJobs:
         self.jobs, self.clock = jobs, clock
         self.transaction = jobs._transaction
 
-    def submit(self, cursor, *, kind, key, source, task, title, profile):
-        # Serialize the one documented limit across accounts and simultaneous turns.
+    def submit(self, cursor, *, kind, key, source, task, title, profile, independent=False):
+        # Serialize duplicate protection and the global limit across simultaneous turns.
         cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended('gaoji-background-agents',0))")
         existing = cursor.execute('''SELECT b.* FROM background_jobs b JOIN durable_jobs j USING(job_id)
             WHERE j.idempotency_key=?''', (key,)).fetchone()
         if existing:
             return dict(existing)
+        if not independent:
+            active = cursor.execute('''SELECT job_id FROM background_jobs
+                WHERE endpoint_key=? AND actor_key=? AND state IN ('queued','running') ORDER BY job_id''',
+                (source['endpoint_key'], source['actor_key'])).fetchall()
+            if active:
+                names = '、'.join(f"job#{row['job_id']}" for row in active)
+                raise ValueError(f'已有活动任务 {names}，未新建。追问进度请用 agent_status，'
+                                 '补充要求请用 agent_steer；目标不明确先问用户。'
+                                 '只有用户确实要求独立新任务时才设 independent=true。')
         count = cursor.execute("SELECT count(*) AS n FROM background_jobs WHERE state IN ('queued','running')").fetchone()['n']
         if count >= 3:
             raise ValueError('已有三个后台任务在运行，请等一个完成或用 agent_cancel 停止任务。')
@@ -46,7 +55,8 @@ class BackgroundJobs:
         with self.transaction() as cursor:
             where = 'WHERE endpoint_key=? AND actor_key=?' if endpoint is not None else ''
             args = (endpoint, actor, limit) if endpoint is not None else (limit,)
-            rows = cursor.execute(f'SELECT * FROM background_jobs {where} ORDER BY created_at DESC LIMIT ?', args).fetchall()
+            rows = cursor.execute(f'''SELECT * FROM background_jobs {where}
+                ORDER BY (state IN ('queued','running')) DESC,created_at DESC,job_id DESC LIMIT ?''', args).fetchall()
         return [dict(row) for row in rows]
 
     def update(self, job_id, **fields):

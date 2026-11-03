@@ -44,6 +44,8 @@ class ScheduleTests(unittest.TestCase):
             canonical_message_id=f.message.canonical_message_id, native_message_id='TEST_INPUT', endpoint_generation=1, route_epoch=1)
         with f.tx() as cursor:
             observe_ready(cursor, f.token, {'d': {'user': {'id': 'TEST_BOT'}}}, f.now)
+            service.store.submit(cursor, kind=service.kind, key='TEST_ONGOING_USER_JOB', source=source,
+                task='TEST ongoing user task', title='TEST', profile='TEST_MODEL')
             one = store.create(cursor, source, text='TEST meeting', at=datetime.fromtimestamp(f.now+60, ZONE).isoformat())
             two = store.create(cursor, source, kind='routine', text='TEST digest', cron='0 * * * *')
             self.assertFalse(store.cancel(cursor, f.endpoint.key, 'TEST_OTHER_ACTOR', one['id']))
@@ -57,6 +59,6 @@ class ScheduleTests(unittest.TestCase):
                 self.assertIsInstance(prepared, SendReservation)
                 self.assertIn('<qqbot-at-user id="TEST_MEMBER" />', prepared.payload()['markdown']['content'])
         self.assertEqual(len(f.query('SELECT * FROM delivery_plans WHERE account_key=?', (f.account.key,))), 1)
-        self.assertEqual(len(service.store.list(f.endpoint.key, f.actor.key)), 1)
+        self.assertEqual(len(service.store.list(f.endpoint.key, f.actor.key)), 2)
         with f.tx() as cursor:
             self.assertEqual([row['id'] for row in store.list(cursor, f.endpoint.key, f.actor.key)], [two['id']])
