@@ -35,6 +35,7 @@ class OfficialMetrics:
         self.backlog = Gauge('gaoji_qq_official_backlog','Current durable rows by bounded stage.',
             ('domain','state'),registry=registry)
         self.health = Gauge('gaoji_qq_official_healthy','Fresh actual lease/gateway/sender readiness.',registry=registry)
+        self.message_gap = Gauge('gaoji_qq_official_message_gap','Unresolved historical message gap in this process.',registry=registry)
         self.cleanup_deleted = Counter('gaoji_qq_official_cleanup_deleted_total','Confirmed cleanup items by type; tombstones do not imply deleted bytes.',
             ('kind',),registry=registry)
         self.migration_failures=Counter('gaoji_qq_official_migration_failures_total','Authenticated migration operations that failed.',('action',),registry=registry)
@@ -63,6 +64,7 @@ class OfficialMetrics:
 
     def snapshot(self, value):
         self.health.set(int(value.get('healthy') is True))
+        self.message_gap.set(int(value.get('gateway',{}).get('message_gap') is True))
         keys = set()
         # These are count-only gauges. Refresh never increments event counters.
         for domain in ('inbox','execution','delivery','files','migration'):

@@ -26,7 +26,10 @@ from .binding import BindingReducer
 from .config import OfficialConfig
 from .inbox import OfficialInboxStore
 from .keys import account_job_kind
-from .lease import DedicatedAccountLease, LeaseLost, LeaseUnavailable, advisory_key_for
+from .lease import (
+    DedicatedAccountLease, LeaseLost, LeaseRetryable, LeaseUnavailable,
+    advisory_key_for, transient_database_error,
+)
 from .identity_store import observe_ready, observe_self_api
 from .send_store import OfficialSendStore
 from .official_metrics import observe
@@ -145,6 +148,7 @@ class OfficialRuntime:
         self._started = False
         self._token = None
         self._gateway = None
+        self._message_gap = False
         self.state = "disabled"
         self.reason = "not_started"
 
@@ -226,40 +230,52 @@ class OfficialRuntime:
         await self._calls(check)
 
     async def _run(self):
+        delay = self.retry_seconds
+        loop = asyncio.get_running_loop()
         try:
             while not self._stopping:
                 self._resume.clear()
                 self._idle.clear()
                 lease = self.lease_factory(self.database.dsn, self.loaded.account, schema=self.database.schema)
                 token = None
+                retry = False
+                serving_since = None
                 try:
-                    try:
-                        token = await self._calls(lease.acquire)
-                    except LeaseUnavailable:
-                        self.state, self.reason = "paused", "lease_or_account_unavailable"
+                    token = await self._calls(lease.acquire)
+                    if token is None:
+                        retry = True
+                        self.state, self.reason = "waiting", "account_owned_by_another_instance"
                     else:
-                        if token is None:
-                            self.state, self.reason = "waiting", "account_owned_by_another_instance"
-                            await asyncio.sleep(self.retry_seconds)
-                            continue
                         self._token = token
                         await self._calls(self.store.apply_configuration, token, self.loaded.owner_openids)
                         await self._calls(self._recover_binding, token)
                         checkpoint = await self._calls(self.store.checkpoint, token)
+                        serving_since = loop.time()
                         await self._serve(lease, token, checkpoint)
                 except asyncio.CancelledError:
                     raise
                 except LeaseLost:
-                    self.state, self.reason = "paused", "account_lease_lost"
+                    retry = True
+                    self.state, self.reason = "waiting", "account_lease_lost"
+                except LeaseRetryable:
+                    retry = True
+                    self.state, self.reason = "waiting", "database_unavailable"
+                except LeaseUnavailable:
+                    # Never clear a disabled/paused account or bypass admission.
+                    self.state, self.reason = "paused", "lease_or_account_unavailable"
                 except Exception as error:
-                    frames = ' > '.join(f'{x.name}:{x.lineno}' for x in traceback.extract_tb(error.__traceback__)[-6:])
-                    self.logger.warning(f'Official ingress paused: {type(error).__name__} at {frames}')
-                    self.state, self.reason = "paused", "ingress_unavailable"
-                    if token is not None:
-                        try:
-                            await self._calls(self.store.pause, token, "ingress_unavailable")
-                        except Exception:
-                            pass
+                    if transient_database_error(error):
+                        retry = True
+                        self.state, self.reason = "waiting", "database_unavailable"
+                    else:
+                        frames = ' > '.join(f'{x.name}:{x.lineno}' for x in traceback.extract_tb(error.__traceback__)[-6:])
+                        self.logger.warning(f'Official ingress paused: {type(error).__name__} at {frames}')
+                        self.state, self.reason = "paused", "ingress_unavailable"
+                        if token is not None:
+                            try:
+                                await self._calls(self.store.pause, token, "ingress_unavailable")
+                            except Exception:
+                                pass
                 finally:
                     self._token = None
                     self._gateway = None
@@ -273,7 +289,17 @@ class OfficialRuntime:
                     finally:
                         self._idle.set()
                 if not self._stopping:
-                    await self._resume.wait()
+                    if retry:
+                        # Close/drain above must finish before backoff or any new
+                        # acquisition. A stable session resets the capped delay.
+                        if serving_since is not None and loop.time() - serving_since >= 60:
+                            delay = self.retry_seconds
+                        self.logger.warning(f'Official ingress retry: reason={self.reason} delay={delay:.2f}s')
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, 60)
+                    else:
+                        await self._resume.wait()
+                        delay = self.retry_seconds
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -574,6 +600,9 @@ class OfficialRuntime:
                         if not task.done():
                             task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
+                    health = getattr(gateway, "health", {})
+                    if isinstance(health, dict):
+                        self._message_gap = self._message_gap or health.get("message_gap") is True
                     self.sender = None
                     self.turn_consumer = None
                     self.agent_service = None

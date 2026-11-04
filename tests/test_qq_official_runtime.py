@@ -13,7 +13,8 @@ from unittest.mock import AsyncMock, Mock, patch
 import psycopg
 
 from src.plugins.ai_chat.adapters.qq_official.config import LoadedOfficialConfig, OfficialConfig
-from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease, advisory_key_for
+from src.bot_storage import DatabaseError
+from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease, LeaseLost, advisory_key_for
 from src.plugins.ai_chat.adapters.qq_official import runtime as runtime_module
 from src.plugins.ai_chat.adapters.qq_official.runtime import OfficialRuntime
 from src.plugins.ai_chat.conversation_scope import ConversationScope
@@ -266,6 +267,52 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(contender.close)
             self.assertIsNotNone(await asyncio.to_thread(contender.acquire))
 
+    async def test_transport_and_sender_recover_after_backend_loss_and_expired_session(self):
+        from prometheus_client import CollectorRegistry
+        from src.plugins.ai_chat.adapters.qq_official.observability import OfficialObservability
+        from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
+        from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
+
+        async with FakePlatform() as fake:
+            runtime = self.runtime(loaded=loaded_config(fake.app_id, base=fake.base_url, public=True))
+            health = OfficialObservability(SimpleNamespace(official_runtime=runtime), registry=CollectorRegistry())
+            self.addAsyncCleanup(health.close)
+            await runtime.start()
+            for phase, expected_op in enumerate((2, 6, 2, 6)):
+                if phase:
+                    previous = runtime._token
+                    if phase == 2:
+                        fake.resume_invalid_count = 1
+                    await asyncio.to_thread(self.query, "SELECT pg_terminate_backend(?)", (previous.backend_pid,))
+                self.assertEqual(await asyncio.wait_for(fake.wait_ready(), 10), expected_op)
+                async with asyncio.timeout(5):
+                    while not (snapshot := await health.sample())['healthy']:
+                        await asyncio.sleep(0.01)
+                self.assertEqual(snapshot['gateway']['message_gap'], phase >= 2)
+                if phase:
+                    self.assertGreater(runtime._token.epoch, previous.epoch)
+                native = f"TEST_RECOVERY_MESSAGE_{phase}"
+                await fake.emit("C2C_MESSAGE_CREATE", {
+                    "id": native, "author": {"user_openid": "TEST_RECOVERY_USER"},
+                    "content": "synthetic recovery input", "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "message_scene": {"ext": {"msg_idx": f"TEST_RECOVERY_INDEX_{phase}"}},
+                })
+                rows = await self.wait_db("SELECT * FROM qq_official_inbound_events WHERE native_message_id=? AND status='processed'", (native,))
+                endpoint = EndpointKey(runtime.loaded.account, "private", "TEST_RECOVERY_USER")
+                actor = ActorKey(runtime.loaded.account, "c2c_user", "", "TEST_RECOVERY_USER")
+                plan = await runtime._calls(runtime.outbox.enqueue, runtime._token,
+                    rendered=render_plan(MessageBody((TextNode(0, "TEST recovered reply"),)), endpoint),
+                    requester=actor, logical_key=native, source_scope_key=endpoint.scope.key,
+                    expires_at=int(runtime.store.clock())+300, source_native_message_id=native,
+                    source_canonical_message_id=rows[0]['canonical_message_id'])
+                runtime.sender.wake()
+                await self.wait_db("SELECT delivery_id FROM deliveries WHERE plan_id=? AND status='committed'", (plan.plan_id,))
+            self.assertEqual(len(fake.received), 4)
+            self.assertEqual({r['payload']['msg_id'] for r in fake.received},
+                             {f"TEST_RECOVERY_MESSAGE_{phase}" for phase in range(4)})
+            self.assertEqual((fake.identify_count, fake.resume_count), (2, 3))
+            await runtime.stop()
+
     async def test_independent_stop_preserves_other_runtime_onebot_and_shared_ledger(self):
         shared = MessageLedger(self.database)
         self.addCleanup(shared.close)
@@ -372,23 +419,159 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await asyncio.to_thread(other.probe))
         self.assertEqual(len(protocol.gateways), 1)
 
-    async def test_backend_loss_stops_gateway_without_supervisor_reset(self):
+    async def test_backend_loss_reacquires_new_epoch_without_supervisor_reset(self):
         protocol = ControlledProtocol()
         runtime = self.runtime(protocol=protocol)
         await runtime.start()
         gateway = await protocol.next_ready()
-        pid = runtime._token.backend_pid
+        previous = runtime._token
+        pid = previous.backend_pid
 
         def terminate():
             with psycopg.connect(self.database.dsn, autocommit=True) as connection:
                 return connection.execute("SELECT pg_terminate_backend(%s,1000)", (pid,)).fetchone()[0]
 
         self.assertTrue(await asyncio.to_thread(terminate))
-        await self.wait_state(runtime, "paused")
         await asyncio.wait_for(gateway.stopped.wait(), 5)
-        self.assertEqual(runtime.reason, "account_lease_lost")
-        self.assertEqual(len(protocol.gateways), 1)
+        replacement = await protocol.next_ready()
+        self.assertIn(gateway, protocol.closed)
+        self.assertGreater(runtime._token.epoch, previous.epoch)
+        self.assertIsNotNone(replacement.checkpoint)
         self.assertEqual(runtime._supervisor.failures(), {})
+        with self.assertRaises(LeaseLost):
+            await runtime._ensure_current(previous)
+        await replacement.emit(native_id="TEST_AFTER_LEASE_RECOVERY")
+        await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id=? AND status='processed'",
+                           ("TEST_AFTER_LEASE_RECOVERY",))
+
+    async def test_transient_acquisition_failure_retries_fresh_leases(self):
+        attempts, leases = [], []
+
+        def connect(*args, **kwargs):
+            attempts.append(asyncio_loop.time())
+            if len(attempts) < 4:
+                raise psycopg.OperationalError("TEST_SECRET_DSN")
+            return psycopg.connect(*args, **kwargs)
+
+        def factory(*args, **kwargs):
+            lease = DedicatedAccountLease(*args, connect=connect, **kwargs)
+            leases.append(lease)
+            return lease
+
+        asyncio_loop = asyncio.get_running_loop()
+        protocol = ControlledProtocol()
+        runtime = self.runtime(protocol=protocol, lease_factory=factory, retry_seconds=0.04)
+        await runtime.start()
+        await protocol.next_ready()
+        self.assertEqual(len(leases), 4)
+        self.assertTrue(all(lease._closed for lease in leases[:-1]))
+        for elapsed, minimum in zip((b-a for a,b in zip(attempts,attempts[1:])), (0.04,0.08,0.16)):
+            self.assertGreaterEqual(elapsed, minimum * 0.9)
+        self.assertNotIn("TEST_SECRET_DSN", repr(self.logger.mock_calls) + json.dumps(runtime.status()))
+
+    async def test_transient_storage_error_does_not_persist_terminal_pause(self):
+        protocol = ControlledProtocol()
+        runtime = self.runtime(protocol=protocol)
+        transient = DatabaseError("TEST_QUERY_ERROR")
+        transient.__cause__ = psycopg.OperationalError("TEST_SECRET_DSN")
+        original = runtime._recover_binding
+        calls = 0
+
+        def recover(token):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise transient
+            return original(token)
+
+        with patch.object(runtime, "_recover_binding", side_effect=recover):
+            await runtime.start()
+            await protocol.next_ready()
+        self.assertEqual(calls, 2)
+        self.assertEqual(runtime._token.epoch, 2)
+        row = (await asyncio.to_thread(self.query, "SELECT pause_reason FROM qq_official_accounts"))[0]
+        self.assertIsNone(row["pause_reason"])
+
+    async def test_schema_error_does_not_retry_or_open_protocol(self):
+        protocol = ControlledProtocol()
+        runtime = self.runtime(protocol=protocol)
+        permanent = DatabaseError("TEST_QUERY_ERROR")
+        permanent.__cause__ = psycopg.errors.UndefinedColumn("TEST_SECRET_COLUMN")
+        with patch.object(runtime, "_recover_binding", side_effect=permanent) as recover:
+            await runtime.start()
+            await self.quiescent_pause(runtime)
+            await asyncio.sleep(0.05)
+        recover.assert_called_once()
+        self.assertEqual(protocol.gateways, [])
+        self.assertEqual(runtime.reason, "ingress_unavailable")
+        self.assertNotIn("TEST_SECRET_COLUMN", repr(self.logger.mock_calls))
+
+    async def test_loss_from_account_disable_or_manual_pause_remains_stopped(self):
+        for field, value in (("enabled", False), ("gateway_state", "paused")):
+            with self.subTest(field=field):
+                protocol = ControlledProtocol()
+                runtime = self.runtime(loaded=loaded_config("TEST_CONTROL_" + field), protocol=protocol)
+                await runtime.start()
+                gateway = await protocol.next_ready()
+                await asyncio.to_thread(self.query,
+                    f"UPDATE qq_official_accounts SET {field}=? WHERE account_key=? RETURNING account_key",
+                    (value, runtime.loaded.account.key))
+                await self.quiescent_pause(runtime)
+                await asyncio.sleep(0.05)
+                self.assertTrue(gateway.stopped.is_set())
+                self.assertEqual(len(protocol.gateways), 1)
+                row = (await asyncio.to_thread(self.query,
+                    f"SELECT {field} FROM qq_official_accounts WHERE account_key=?", (runtime.loaded.account.key,)))[0]
+                self.assertEqual(row[field], value)
+                await runtime.stop()
+
+    async def test_stop_interrupts_long_acquisition_backoff(self):
+        protocol = ControlledProtocol()
+        connect = Mock(side_effect=psycopg.OperationalError("TEST_UNAVAILABLE"))
+        runtime = self.runtime(protocol=protocol, retry_seconds=60,
+            lease_factory=lambda *a, **k: DedicatedAccountLease(*a, connect=connect, **k))
+        await runtime.start()
+        await self.wait_state(runtime, "waiting")
+        await asyncio.wait_for(runtime.stop(), 2)
+        connect.assert_called_once()
+        self.assertEqual(protocol.gateways, [])
+        self.assertEqual(runtime.state, "stopped")
+
+    async def test_recovery_drains_old_worker_and_does_not_steal_other_holder(self):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        original = DurableJobStore.claim_due
+
+        def blocked(store, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("TEST_RELEASE_TIMEOUT")
+            return original(store, *args, **kwargs)
+
+        protocol = ControlledProtocol()
+        runtime = self.runtime(protocol=protocol)
+        with patch.object(DurableJobStore, "claim_due", new=blocked):
+            await runtime.start()
+            gateway = await protocol.next_ready()
+            self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+            await asyncio.to_thread(self.query, "SELECT pg_terminate_backend(?)", (runtime._token.backend_pid,))
+            await asyncio.wait_for(gateway.stopped.wait(), 3)
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(runtime._idle.wait(), 0.05)
+            self.assertEqual(len(protocol.gateways), 1)
+            contender = DedicatedAccountLease(self.database.dsn, runtime.loaded.account, schema=self.database.schema)
+            self.addCleanup(contender.close)
+            other = await asyncio.to_thread(contender.acquire)
+            self.assertIsNotNone(other)
+            release.set()
+            await asyncio.wait_for(runtime._idle.wait(), 3)
+            await asyncio.sleep(0.1)
+            self.assertEqual(len(protocol.gateways), 1)
+            self.assertEqual(runtime.reason, "account_owned_by_another_instance")
+            self.assertTrue(await asyncio.to_thread(contender.probe))
+            await asyncio.to_thread(contender.close)
+            await protocol.next_ready()
+            self.assertGreater(runtime._token.epoch, other.epoch)
 
     async def test_stop_drains_inflight_database_accept_before_lease_and_store_close(self):
         protocol = ControlledProtocol()
