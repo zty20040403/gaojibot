@@ -18,7 +18,7 @@ from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
 from tests.postgres_fixture import postgres_for_test
 
 from src.plugins.ai_chat.adapters.qq_official.lease import (
-    DedicatedAccountLease, LeaseLost, LeaseUnavailable, advisory_key_for, assert_epoch,
+    DedicatedAccountLease, LeaseLost, LeaseRetryable, LeaseUnavailable, advisory_key_for, assert_epoch,
 )
 
 
@@ -211,6 +211,20 @@ class LeaseTests(_LeaseFixture):
             assert_epoch(cursor, token)
         self.assertNotIn(leak, str(error.exception))
         self.assertTrue(error.exception.__suppress_context__)
+
+    def test_only_transient_database_failures_are_retryable(self):
+        for error_type, retryable in (
+            (psycopg.OperationalError, True), (psycopg.InterfaceError, True),
+            (psycopg.errors.AdminShutdown, True), (psycopg.errors.ReadOnlySqlTransaction, True),
+            (psycopg.errors.LockNotAvailable, True), (psycopg.errors.QueryCanceled, True),
+            (psycopg.errors.InvalidPassword, False), (psycopg.errors.InvalidCatalogName, False),
+            (psycopg.errors.UndefinedTable, False), (psycopg.errors.InsufficientPrivilege, False),
+        ):
+            with self.subTest(error=error_type.__name__):
+                with self.assertRaises(LeaseUnavailable) as raised:
+                    self.lease(connect=Mock(side_effect=error_type("TEST_SECRET_DSN"))).acquire()
+                self.assertEqual(isinstance(raised.exception, LeaseRetryable), retryable)
+                self.assertNotIn("TEST_SECRET_DSN", str(raised.exception))
 
     def test_full_account_suffix_affects_lock_and_invalid_inputs_reject(self):
         accounts = [replace(self.account, app_id="TEST_" + "a" * 310 + suffix) for suffix in ("A", "B")]

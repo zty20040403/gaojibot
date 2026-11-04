@@ -23,6 +23,19 @@ class HealthTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.assertEqual((await self.service.sample())['reason'],'gateway_unavailable')
   self.runtime._gateway.health['state']='ready';await self.calls(self.lease.close)
   self.assertEqual((await self.service.sample())['reason'],'lease_unavailable')
+ async def test_historical_gap_does_not_mask_current_readiness(self):
+  self.runtime._gateway.health['message_gap']=True
+  value=await self.service.sample()
+  self.assertTrue(value['healthy']);self.assertEqual(value['state'],'ready')
+  self.assertEqual(value['reason'],'ready_with_message_gap')
+  self.assertTrue(value['gateway']['message_gap'])
+  self.assertIn('gaoji_qq_official_message_gap 1.0',generate_latest(self.registry).decode())
+  self.runtime._message_gap=True;self.runtime._gateway.health['message_gap']=False
+  self.assertEqual((await self.service.sample())['reason'],'ready_with_message_gap')
+  self.runtime._gateway.health['state']='connecting'
+  self.assertEqual((await self.service.sample())['reason'],'gateway_unavailable')
+  self.runtime._gateway.health['state']='ready';self.runtime.sender._running=False
+  self.assertEqual((await self.service.sample())['reason'],'sender_unavailable')
  async def test_sample_failure_stale_and_private_values_never_reported(self):
   snapshot=await self.service.sample();encoded=json.dumps(snapshot)+generate_latest(self.registry).decode()
   for private in (self.account.key,self.owner,'TEST_SECRET_URL',self.token.holder_id):self.assertNotIn(private,encoded)

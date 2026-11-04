@@ -19,12 +19,29 @@ import weakref
 import psycopg
 from psycopg import sql
 
-from src.bot_storage.database import StoreCursor
+from src.bot_storage.database import DatabaseError, StoreCursor
 from src.plugins.ai_chat.platform_types import AccountKey
 
 
 class LeaseUnavailable(RuntimeError):
     """Fixed diagnostic; never includes DSN, account, session, or DB exception."""
+
+
+class LeaseRetryable(LeaseUnavailable):
+    """Transient storage failure; retry only with a fresh lease instance."""
+
+
+def transient_database_error(error: BaseException) -> bool:
+    """Classify driver codes, never exception text (which can contain secrets)."""
+    while isinstance(error, DatabaseError) and error.__cause__ is not None:
+        error = error.__cause__
+    if not isinstance(error, psycopg.Error):
+        return False
+    code = error.sqlstate
+    return (code is None and isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError))
+            or code is not None and (code.startswith("08") or code in {
+                "25006", "40001", "40P01", "53300", "55P03", "57014", "57P01", "57P02", "57P03",
+            }))
 
 
 class LeaseLost(LeaseUnavailable):
@@ -199,6 +216,8 @@ class DedicatedAccountLease:
                     raise
                 if isinstance(exc, LeaseUnavailable):
                     raise
+                if transient_database_error(exc):
+                    raise LeaseRetryable("Official account lease database is temporarily unavailable") from None
                 raise LeaseUnavailable("Official account lease acquisition failed") from None
 
     def probe(self) -> bool:
