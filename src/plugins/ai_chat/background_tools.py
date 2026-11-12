@@ -47,6 +47,8 @@ class BackgroundToolSession:
         await self.current()
         if name not in {item['function']['name'] for item in self.tools}:
             raise ValueError('后台工具不可用')
+        if name in {'analyze_video','record_video_summary'}:
+            return json.dumps(await self.video.execute(name,arguments),ensure_ascii=False)
         if name == 'ops_read':
             from .ops_read import read
             return await read(self.app, self.inbound, arguments)

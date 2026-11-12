@@ -7,5 +7,5 @@ Summary: 通过后台 agent 在本群持久 Linux VM 中制作文件、执行代
 4. 浏览器和转写已装在 `gaoji-python` 环境里；Python 包可装在工作区自己的 venv。
 5. 中文 PDF 用 `gaoji-pdf input.md output.pdf`。交付前用 `pdftotext` 核对内容、`pdffonts` 核对嵌入字体；需要看版式时转成 PNG 再看。
 6. 网页正文用 `webread URL`，长文加 `--offset`；它也能读在线 PDF。需执行脚本的网页用 `gaoji-python` 调 Playwright：`from gaoji_browser import page, snapshot`。
-7. 视频用 ffmpeg 抽帧，`gaoji-transcribe /work/chat/文件 --language zh` 转写，再综合画面和音轨。不要只凭文件名猜内容。
+7. 视频导入后把路径和 `media_handle` 一起交给后台。有 `analyze_video` 时，先在 VM 用 `gaoji-video /work/chat/文件` 压缩，再调用宿主工具；没有时用 ffmpeg 抽帧、view_image 看图、`gaoji-transcribe /work/chat/文件 --language zh` 转写，最后用 `record_video_summary` 记回原消息。不要只凭文件名猜内容；未看/未听清的部分须说明，密钥不进入 VM。
 8. 后台把结果和文件绝对路径写入报告，不直接发群消息。前台收到完成结果后用 `send_file_from_sandbox` 交付，核对返回的 `message_accepted` 再告诉用户已发送。失败就报告实际错误。

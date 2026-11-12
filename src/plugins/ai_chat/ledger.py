@@ -1241,8 +1241,8 @@ class MessageLedger:
         body = body_from_json(str(row["body_json"]))
         captions = row.get('media_captions') or {}
         from .prompt_context import quote_evidence
-        projected = MessageBody(tuple(replace(node, description='图片：' + quote_evidence(
-            str(captions[str(node.segment_index)])[:300], 'image_caption', stable=True).replace('\n', ' '))
+        projected = MessageBody(tuple(replace(node, description=('视频：' if node.media_kind in {'video','file'} else '图片：') + quote_evidence(
+            str(captions[str(node.segment_index)])[:500], 'media_caption', stable=True).replace('\n', ' '))
             if isinstance(node, MediaNode) and str(node.segment_index) in captions else node for node in body.nodes))
         return CanonicalMessage(
             canonical_message_id=canonical_message_id,

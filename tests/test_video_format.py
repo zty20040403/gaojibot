@@ -3,6 +3,9 @@ from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 import subprocess
+import json
+import httpx
+from openai import AsyncOpenAI
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -71,6 +74,27 @@ class VideoFormatTests(unittest.TestCase):
 
 
 class VideoModelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_sdk_preserves_video_data_url_over_http(self):
+        requests = []
+        def transport(request):
+            requests.append(request)
+            return httpx.Response(200,json={'id':'TEST','created':0,'object':'chat.completion','model':'TEST_MODEL',
+                'choices':[{'index':0,'finish_reason':'stop','message':{'role':'assistant','content':'TEST sound and picture'}}],
+                'usage':{'prompt_tokens':12,'completion_tokens':8,'total_tokens':20}})
+        client = AsyncOpenAI(api_key='TEST_KEY',base_url='https://example.invalid/v1',
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(transport)))
+        self.addAsyncCleanup(client.close)
+        selected = ModelProfile('test','openai','openai-chat','TEST_MODEL','https://example.invalid/v1',
+            api_key='TEST_KEY',capabilities=ModelCapabilities(video=True))
+        gateway = LLMGateway(fallback_enabled=False)
+        self.addAsyncCleanup(gateway.close)
+        with patch('src.plugins.ai_chat.llm_gateway.OpenAIChatProvider._client',return_value=client):
+            result = await gateway.create_completion(selected,messages=[{'role':'user','content':[
+                {'type':'video_url','video_url':{'url':'data:video/mp4;base64,TEST'}}]}],stream=False)
+        self.assertEqual(result.choices[0].message.content,'TEST sound and picture')
+        self.assertEqual(requests[0].url.path,'/v1/chat/completions')
+        self.assertEqual(json.loads(requests[0].content)['messages'][0]['content'][0]['video_url']['url'],'data:video/mp4;base64,TEST')
+
     async def test_only_explicit_chat_video_profiles_accept_video_and_reserve_opaque_input(self):
         calls = []
         class Provider:

@@ -35,6 +35,10 @@
 
 媒体能力按上面的开关启用。`ocr` 开关现在启用 `view_image` 和前台图片输入：前台 profile 的 `capabilities.vision=true` 时直接附当前/合并/引用图片（最多四张），否则用有效的视觉 profile 返回画面与文字。原图下载和模型图均受 `AI_VISION_MAX_IMAGE_MB`（默认 20 MiB，下载硬上限 100 MiB）限制；宿主须有 ffmpeg（Nix 包与开发 shell 已包含），缩到长边 1568，解码失败明确报错、不发送原始坏图。旧 OCR 描述回退仍沿用 `max_download_bytes` 上限和 `official_ocr` 用量分类；短语音优先读取腾讯识别文本，`local_asr` 需要宿主 whisper.cpp 与模型。视频和大附件先导入 VM，由后台处理。语音回复复用文件服务生成和发送 SILK。
 
+视频直传可选：在宿主环境设置 `AI_VIDEO_PROFILE=<模型配置名>`（默认空），该 profile 必须为 `openai-chat`、显式 `capabilities.video=true`，且服务实际接受 Chat 的 `video_url` 数据 URL。建议 `max_input_tokens=65536`、`max_output_tokens=1024`、`timeout_seconds=180`；输入窗口至少覆盖每秒 100 token 加 1024 的余量。密钥只留宿主，不写入 VM。此约定不能等同于任意 OpenAI-compatible 服务都支持视频，需 owner 实测。
+
+VM 需通过模板或显式工具升级安装 `gaoji-video`，将 `/work` 下视频转换为最长 10 分钟、1fps、长边 640、单声道、最大 32 MiB 的 MP4；超过时长先拒绝，不偷偷截断。导入结果的 `media_handle` 和路径一起交给后台。配置视频模型后后台有 `analyze_video`；未配置时用 ffmpeg 抽帧、`view_image`、`gaoji-transcribe`，并用 `record_video_summary` 保存结论。两者都写可搜索的会话历史说明；费用按原会话额度控制并关联后台任务。模型错误明确失败，不宣称已看完；未知费用保守保留。
+
 主动接话启用时提供 `profile`，可指定 `max_reply_chars`。新消息去抖三秒，每个会话每小时最多八次；旧 `percent`、`threshold` 和 `max_checks_per_hour` 字段应删除。定时任务由 `schedules` 表和工具管理，不放在此文件。
 
 旧的项目授权、迁移路线、Wiki、主机写操作策略已移除。管理员后台只读运维另用 `AI_OPS_READ_BASE_URL` 和 `AI_OPS_READ_TOKEN_FILE`；token 只在宿主读取。

@@ -269,7 +269,8 @@ class MediaSession:
         await self.resolver.require(source)
         await manager.write_file(owner, sandbox['sandbox_id'], path, download.content, allow_large=True)
         return {'path': path, 'bytes': len(download.content), 'mime': download.declared_mime,
-                'message': '文件已放入当前会话的 VM，可把路径交给后台 agent 处理。'}
+                'media_handle': f'{source.node.media_kind}#{source.ref.canonical_id}.{source.ref.segment_index}',
+                'message': '文件已放入当前会话的 VM，请把路径和 media_handle 一起交给后台 agent 处理。'}
 
     async def forward(self, arguments, *, send=False):
         source = await self.source(arguments, {'forward'})

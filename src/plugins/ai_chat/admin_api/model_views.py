@@ -48,6 +48,7 @@ def _model_overview(
                     "streaming": profile.capabilities.streaming,
                     "json_mode": profile.capabilities.json_mode,
                     "vision": profile.capabilities.vision,
+                    "video": profile.capabilities.video,
                 },
             }
             for profile in catalog.profiles
