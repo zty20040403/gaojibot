@@ -55,7 +55,7 @@ class VMProgramState:
     async def starting(self, owner, sid):
         async with self._guard():
             metadata,state = await self._load(owner,sid)
-            state.update(starting=True,running=False,paused=False)
+            state.update(starting=True,pending=False,running=False,paused=False,planned_stop=False)
             self._save(sid,metadata,state)
 
     async def failed(self, owner, sid, *, reason='vm_start_failed'):
@@ -64,25 +64,34 @@ class VMProgramState:
             if state.get('starting') or state.get('running'):
                 self._failure(state,reason)
                 self._save(sid,metadata,state)
+            elif state.get('pending'):
+                state.update(pending=False,retained=False,error=reason)
+                self._save(sid,metadata,state)
 
     async def stopping(self, owner, sid):
         async with self._guard():
             metadata,state = await self._load(owner,sid)
-            state.update(running=False,starting=False,retained=False,paused=True)
+            state.update(planned_stop=True,paused=True)
+            self._save(sid,metadata,state)
+
+    async def stopped(self, owner, sid):
+        async with self._guard():
+            metadata,state = await self._load(owner,sid)
+            state.update(running=False,starting=False,pending=False,retained=False,paused=True,planned_stop=False)
             self._save(sid,metadata,state)
 
     async def admit(self, owner, sid, boot, *, enabled):
         """Reserve before loading any units; unknown outcomes retain the slot."""
         async with self._guard():
             metadata,state = await self._load(owner,sid)
-            if state.get('boot_id') not in (None,boot) and state.get('running'):
+            if state.get('boot_id') not in (None,boot) and state.get('running') and not state.get('planned_stop'):
                 self._failure(state,'vm_unexpected_reboot')
             retained = sorted(str(item['id']) for item in await self.manager._all_metadata()
                 if item.get('programs',{}).get('retained'))
             room = retained.index(sid)<self.limit if sid in retained else len(retained)<self.limit
             reason = ('vm_programs_suspended' if state.get('suspended') else
                 'programs_disabled' if not enabled else 'resident_vm_limit' if not room else '')
-            state.update(boot_id=boot,running=True,starting=False,paused=False,last_seen=int(self.clock()))
+            state.update(boot_id=boot,running=True,starting=False,pending=False,paused=False,planned_stop=False,last_seen=int(self.clock()))
             if not reason:
                 state['retained'] = True
             state['hold_reason'] = reason
@@ -102,6 +111,21 @@ class VMProgramState:
             state.update(snapshot=report,updated_at=int(self.clock()))
             self._save(sid,metadata,state)
             return dict(state)
+
+    async def reserve_start(self, owner, sid):
+        async with self._guard():
+            metadata,state = await self._load(owner,sid)
+            if not state.get('wanted') or state.get('paused') or state.get('suspended'):
+                return False
+            retained = sorted(item['id'] for item in await self.manager._all_metadata() if item.get('programs',{}).get('retained'))
+            room = retained.index(sid)<self.limit if sid in retained else len(retained)<self.limit
+            if not room:
+                state['hold_reason'] = 'resident_vm_limit'
+                self._save(sid,metadata,state)
+                return False
+            state.update(retained=True,pending=True)
+            self._save(sid,metadata,state)
+            return True
 
     async def reset(self, owner, sid):
         """Only an authenticated admin action may call this, not VM HTTP."""

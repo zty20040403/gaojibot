@@ -41,6 +41,7 @@ class OfficialVMLifecycle:
             for row in rows:
                 endpoint = EndpointKey.parse(row['endpoint_key'])
                 if workspace_owner(endpoint)==owner:
+                    self.store._route(cursor,endpoint)
                     return endpoint,(row['generation'],row['route_epoch'])
         raise PermissionError('vm_endpoint_unavailable')
 
@@ -50,11 +51,34 @@ class OfficialVMLifecycle:
         endpoint,route = await self.calls(self.route,owner)
         current = await self.credentials.prepare(endpoint,sandbox_id,expected_route=route)
         self.api.rotated(current)
+        try:
+            report = await self.units.sync(current)
+            if not report['ok']:
+                self.logger.warning('VM program sync incomplete vm=%s',sandbox_id)
+        except Exception as error:
+            # A broken unit must not make the conversation VM unusable. The
+            # resident reservation remains held on uncertain guest outcomes.
+            self.logger.warning('VM program sync failed vm=%s error=%s',sandbox_id,type(error).__name__)
         return current
+
+    async def starting(self, owner, sandbox_id):
+        if self.closed:
+            raise PermissionError('vm_service_closed')
+        await self.calls(self.route,owner)
+        await self.manager.program_state.starting(owner,sandbox_id)
+
+    async def failed(self, owner, sandbox_id):
+        await self.manager.program_state.failed(owner,sandbox_id)
+
+    async def stopped(self, owner, sandbox_id):
+        await self.manager.program_state.stopped(owner,sandbox_id)
 
     async def stopping(self, owner, sandbox_id):
         self.api.revoke(sandbox_id)
+        self.units.cancel(sandbox_id)
         await self.calls(self.store.revoke_vm,sandbox_id)
+        if (self.manager._directory(sandbox_id)/'metadata.json').is_file():
+            await self.manager.program_state.stopping(owner,sandbox_id)
 
     async def start(self):
         if getattr(self.manager,'conversation_lifecycle',None) not in (None,self):

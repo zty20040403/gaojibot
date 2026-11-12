@@ -29,7 +29,7 @@ class VMLifecycleTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         await credential_fixture.VMCredentialTests.asyncSetUp(self)
         self.owner = workspace_owner(self.endpoint)
         self.manager.backend = 'vm'
-        self.manager._all_metadata = AsyncMock(return_value=[dict(id='s123456',owner_ref=self.owner)])
+        self.manager._all_metadata = AsyncMock(wraps=self.manager._all_metadata)
         key = self.root/'TEST_UPSTREAM'; key.write_text('TEST_HOST_SECRET'); key.chmod(0o600)
         api = HostAPI.parse('test',dict(base_url='https://api.example.test',secret_file=str(key),
             headers={'Authorization':'Bearer {secret}'},per_hour=10))
@@ -107,7 +107,7 @@ class VMLifecycleTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
 class VMManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await github_fixture.GitHubVMTests.asyncSetUp(self)
-        self.hook = self.manager.conversation_lifecycle = SimpleNamespace(ready=AsyncMock(),stopping=AsyncMock())
+        self.hook = self.manager.conversation_lifecycle = SimpleNamespace(ready=AsyncMock(),stopping=AsyncMock(),starting=AsyncMock(),failed=AsyncMock(),stopped=AsyncMock())
         self.owner = 'qqo:conversation:TEST_GROUP'
 
     async def test_boot_and_already_running_call_ready_but_template_does_not(self):
@@ -119,6 +119,14 @@ class VMManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.hook.ready.reset_mock()
         await self.manager.start_owned('qqo:template','s123456')
         self.hook.ready.assert_not_awaited()
+
+    async def test_cleanup_rechecks_resident_before_revoking_or_touching_guest(self):
+        original = self.manager._metadata.return_value
+        self.manager._metadata.return_value = dict(original,programs=dict(retained=True,wanted=True))
+        await self.manager.stop_owned(self.owner,'s123456',if_idle=True)
+        await self.manager.destroy(self.owner,'s123456',if_unused=True)
+        self.hook.stopping.assert_not_awaited()
+        self.manager._virsh.assert_not_awaited()
 
     async def test_create_failure_revokes_before_destroying_failed_vm(self):
         self.manager.image = self.manager.root/'TEST_base.qcow2'

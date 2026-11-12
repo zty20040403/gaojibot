@@ -14,8 +14,13 @@ from .program_actions import ProgramDenied
 class ProgramUnits:
     def __init__(self, lifecycle, logger):
         self.sessions,self.manager,self.calls = lifecycle.store,lifecycle.manager,lifecycle.calls
-        self.logger,self.active = logger,set()
+        self.logger,self.active,self.tasks = logger,set(),{}
         self.script = Path(sandbox_units.__file__).read_text()
+
+    def cancel(self, sid):
+        task = self.tasks.get(sid)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
 
     def policy(self, current):
         with self.sessions.transaction() as cursor:
@@ -33,18 +38,24 @@ class ProgramUnits:
         if sid in self.active or len(self.active)>=4:
             raise ProgramDenied('program_units_busy',429)
         self.active.add(sid)
+        self.tasks[sid] = asyncio.current_task()
+        admitted = False
         try:
             policy = await self.calls(self.policy,current)
-            await self.manager._metadata(workspace_owner(current.endpoint),sid)
+            owner = workspace_owner(current.endpoint)
+            await self.manager._metadata(owner,sid)
             if not await self.manager._running(sid):
                 raise PermissionError('vm_not_running')
+            allowed,reason = await self.manager.program_state.admit(owner,sid,current.boot_id,enabled=policy['enabled'])
+            admitted = True
+            effective = dict(policy,enabled=allowed)
             # Do not acquire manager.io_lock here: the sandbox user can be
             # waiting for this response inside an exec already holding it.
             # The guest reconciler has its own file lock and bounded commands.
             async with asyncio.timeout(110):
                 code,out,_ = await self.manager._guest_exec(sid,'/usr/bin/timeout',[
                     '--signal=TERM','--kill-after=5s','90','/usr/bin/python3','-c',self.script,'--policy-stdin'],
-                    input_bytes=json.dumps(policy).encode(),timeout=100)
+                    input_bytes=json.dumps(effective).encode(),timeout=100)
             if await self.calls(self.policy,current)!=policy:
                 raise ProgramDenied('program_unit_policy_changed',409)
             try:
@@ -62,9 +73,22 @@ class ProgramUnits:
                 raise ProgramDenied('program_unit_result_unavailable',502) from None
             # Logs are untrusted VM content. Do not leak this VM capability if
             # a unit printed its environment; host credentials never go there.
-            return json.loads(re.sub(r'gvm_[A-Za-z0-9_-]{43}','[VM_TOKEN]',json.dumps(report)))
+            report = json.loads(re.sub(r'gvm_[A-Za-z0-9_-]{43}','[VM_TOKEN]',json.dumps(report)))
+            state = await self.manager.program_state.report(owner,sid,current.boot_id,report,allowed=allowed)
+            if reason not in ('','programs_disabled') and state.get('wanted'):
+                report = dict(report,ok=False,errors={**report['errors'],'_host':reason})
+            return report
+        except Exception:
+            if admitted:
+                try:
+                    await self.manager.program_state.report(owner,sid,current.boot_id,
+                        dict(ok=False,units=[],errors={'_sync':'program_sync_unavailable'}),allowed=allowed)
+                except Exception as error:
+                    self.logger.warning('Program unit state failed error=%s',type(error).__name__)
+            raise
         finally:
             self.active.discard(sid)
+            self.tasks.pop(sid,None)
 
     async def handle(self, request):
         try:

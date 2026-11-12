@@ -23,6 +23,7 @@ def manager_from_settings(settings) -> DockerSandboxManager | VmSandboxManager:
             root=settings.sandbox_vm_root,
             max_per_owner=settings.sandbox_max_per_user,
             max_total=settings.sandbox_max_total,
+            resident_limit=settings.program_vm_limit,
             default_timeout_seconds=settings.sandbox_timeout_seconds,
             max_file_bytes=settings.sandbox_max_file_bytes,
             memory_mib=settings.sandbox_memory_mib,

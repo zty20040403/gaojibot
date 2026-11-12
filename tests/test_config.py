@@ -39,6 +39,14 @@ class SettingsGroupFilterTests(unittest.TestCase):
                         Settings.from_env()
 
 
+    def test_resident_vm_capacity_is_bounded_and_zero_disables_loading(self):
+        self.assertEqual(Settings.from_env({}).program_vm_limit,4)
+        for value in ('0','8','32'):
+            self.assertEqual(Settings.from_env({'AI_PROGRAM_VM_LIMIT':value}).program_vm_limit,int(value))
+        for value in ('-1','33','unlimited'):
+            with self.assertRaisesRegex(ValueError,'AI_PROGRAM_VM_LIMIT'):
+                Settings.from_env({'AI_PROGRAM_VM_LIMIT':value})
+
     def test_zero_sandbox_file_limit_means_unlimited(self) -> None:
         with patch.dict(
             os.environ,

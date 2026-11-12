@@ -14,6 +14,7 @@ from src.plugins.ai_chat.adapters.qq_official.vm_sessions import VMSessions
 from src.plugins.ai_chat.background_tools import workspace_owner
 from src.plugins.ai_chat.platform_types import EndpointKey
 from src.plugins.ai_chat.sandbox_identity import run
+from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
 from tests.qq_official_outbox_fixture import OutboxFixture
 
 BOOT = '00000000-0000-4000-8000-000000000001'
@@ -32,10 +33,18 @@ class VMCredentialTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         async def io_lock(sandbox_id):
             async with lock:
                 yield
+        host = VmSandboxManager(image='/TEST_IMAGE',root=str(self.root/'host'))
+        host._directory('s123456').mkdir(parents=True)
+        host._save_metadata('s123456',dict(id='s123456',owner_ref=workspace_owner(self.endpoint),
+            owner_hash=host._owner_hash(workspace_owner(self.endpoint)),created_at=self.now,last_used=self.now))
+        host.program_state.clock = lambda:self.now
         async def metadata(owner,sandbox_id):
             if owner!=workspace_owner(self.endpoint) or sandbox_id!='s123456':
                 raise PermissionError('vm_owner_mismatch')
+            return await host._metadata(owner,sandbox_id)
         async def guest(sandbox_id,path,args,*,input_bytes,timeout):
+            if path=='/usr/bin/timeout':
+                return 0,b'{"ok":true,"units":[],"errors":{}}',b''
             self.assertEqual(path,'/usr/bin/python3')
             self.assertIn("if __name__=='__main__'",args[1])
             payload = json.loads(input_bytes)
@@ -46,7 +55,8 @@ class VMCredentialTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
                 return 1,payload['token'].encode(),b'TEST_GUEST_ERROR'
             return 0,json.dumps(result).encode(),b''
         self.manager = SimpleNamespace(_metadata=AsyncMock(side_effect=metadata),_running=AsyncMock(return_value=True),
-            _guest_exec=AsyncMock(side_effect=guest),io_lock=io_lock)
+            _guest_exec=AsyncMock(side_effect=guest),io_lock=io_lock,
+            _all_metadata=host._all_metadata,_directory=host._directory,program_state=host.program_state)
         async def calls(function,*args,**kwargs):
             return await asyncio.to_thread(function,*args,**kwargs)
         self.calls = calls

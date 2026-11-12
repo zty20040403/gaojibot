@@ -73,6 +73,15 @@ class VMProgramStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len((await self.state())['failures']),1)
         self.assertEqual(await self.store.admit(OWNER,'s000001','TEST_UNEXPECTED_BOOT',enabled=True),(False,'vm_programs_suspended'))
 
+    async def test_stop_attempt_does_not_release_slot_until_vm_really_stops(self):
+        await self.store.admit(OWNER,'s000001','TEST_BOOT',enabled=True)
+        await self.store.report(OWNER,'s000001','TEST_BOOT',REPORT,allowed=True)
+        await self.store.stopping(OWNER,'s000001')
+        self.assertTrue((await self.state())['retained'])
+        await self.store.stopped(OWNER,'s000001')
+        self.assertFalse((await self.state())['retained'])
+        self.assertFalse(await self.store.reserve_start(OWNER,'s000001'))
+
     async def test_wrong_owner_and_unreadable_state_cannot_free_a_resident_slot(self):
         with self.assertRaisesRegex(Exception,'沙盒不属于当前会话'):
             await self.store.admit('qqo:conversation:TEST_OTHER','s000001','TEST_BOOT',enabled=True)

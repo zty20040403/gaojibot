@@ -98,6 +98,52 @@ class VMUnitHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         finally:
             self.release.set(); pending.cancel(); await asyncio.gather(pending,return_exceptions=True)
 
+    async def test_ready_restores_units_and_two_unplanned_boots_suspend_loading(self):
+        self.assertEqual((await self.post()).status_code,200)
+        self.units.calls.clear()
+        for digit in ('2','3'):
+            self.boot.write_text('00000000-0000-4000-8000-00000000000'+digit)
+            await self.lifecycle.ready(self.owner,'s123456')
+        self.assertEqual(self.policies[-2]['enabled'],True)
+        self.assertEqual(self.policies[-1]['enabled'],False)
+        state = (await self.manager._metadata(self.owner,'s123456'))['programs']
+        self.assertTrue(state['suspended'])
+        self.assertTrue(state['alert'])
+        self.assertEqual(self.units.states['TEST.service'],'inactive')
+        self.client.headers['Authorization'] = 'Bearer '+(self.guest/'token').read_text()
+        result = await self.post()
+        self.assertEqual(result.status_code,409,result.text)
+        self.assertEqual(result.json()['errors']['_host'],'vm_programs_suspended')
+        # Guest sync cannot clear the crash circuit.
+        self.assertTrue((await self.manager._metadata(self.owner,'s123456'))['programs']['suspended'])
+
+    async def test_stopping_cancels_host_initiated_sync_not_only_http_scopes(self):
+        current = await self.lifecycle.credentials.authenticate(self.token_value)
+        self.release = asyncio.Event()
+        task = asyncio.create_task(self.lifecycle.units.sync(current))
+        try:
+            await asyncio.wait_for(self.entered.wait(),3)
+            await self.lifecycle.stopping(self.owner,'s123456')
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(self.units.calls,[])
+            self.assertEqual(self.lifecycle.units.tasks,{})
+            # Until the hypervisor stop succeeds, the unknown slot stays held.
+            self.assertTrue((await self.manager._metadata(self.owner,'s123456'))['programs']['retained'])
+            await self.lifecycle.stopped(self.owner,'s123456')
+            self.assertFalse((await self.manager._metadata(self.owner,'s123456'))['programs']['retained'])
+        finally:
+            self.release.set(); task.cancel(); await asyncio.gather(task,return_exceptions=True)
+
+    async def test_zero_resident_capacity_never_starts_registered_units(self):
+        self.manager.program_state.limit = 0
+        self.units.calls.clear()
+        result = await self.post()
+        self.assertEqual(result.status_code,409,result.text)
+        self.assertEqual(result.json()['errors']['_host'],'resident_vm_limit')
+        self.assertFalse(any(row[1] in {'start','restart'} for row in self.units.calls))
+        self.assertFalse((await self.manager._metadata(self.owner,'s123456'))['programs']['retained'])
+
     async def test_systemd_failure_is_not_reported_as_success(self):
         self.units.fail.add('TEST.service')
         original = self.units.manager.command
