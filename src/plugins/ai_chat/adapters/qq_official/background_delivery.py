@@ -1,5 +1,6 @@
 """Wake the foreground with a report; reuse the ordinary file and text outbox."""
 from dataclasses import replace
+from contextlib import nullcontext
 import hashlib
 from types import SimpleNamespace
 
@@ -35,6 +36,13 @@ class ResultSource:
 
 
 async def present(service, row, *, question=None):
+    tasks = getattr(service.runtime,'conversation_tasks',None)
+    with tasks.track(row['endpoint_key'],row['conversation_generation'],
+            kind='agent' if question is not None else 'result',job_id=row['job_id']) if tasks else nullcontext():
+        return await _present(service,row,question=question)
+
+
+async def _present(service, row, *, question=None):
     app, runtime = service.app, service.runtime
     inbound = await service.calls(service.restore, row)
     profile = app.model_catalog.resolve_preference(row['profile'])

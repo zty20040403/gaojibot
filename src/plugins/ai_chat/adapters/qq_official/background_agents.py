@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import asyncio
 import base64
 import hashlib
+from contextlib import nullcontext
 
 from ...background_jobs import BackgroundJobs, BackgroundRunner
 from ...background_tools import BackgroundToolSession, workspace_owner
@@ -174,14 +175,17 @@ class OfficialBackgroundAgents:
     async def record_usage(self, row, trace):
         await self.calls(self.app.usage_store.record, scope_key=row['scope_key'], source='background_agent',
             provider=trace.provider, model=trace.model, input_tokens=trace.input_tokens,
-            output_tokens=trace.output_tokens, cached_tokens=trace.cached_tokens)
+            output_tokens=trace.output_tokens, cached_tokens=trace.cached_tokens,background_job_id=row['job_id'])
 
     async def ask_main(self, row, question):
         from .background_delivery import present
         await present(self, row, question=question)
 
     async def execute(self, job):
-        return await self.runner.execute(job)
+        row = await self.calls(self.store.get,job.job_id)
+        tasks = getattr(self.runtime,'conversation_tasks',None)
+        with tasks.track(row['endpoint_key'],row['conversation_generation'],kind='agent',job_id=job.job_id) if tasks else nullcontext():
+            return await self.runner.execute(job)
 
     async def reconcile(self):
         from .background_delivery import present
@@ -191,6 +195,8 @@ class OfficialBackgroundAgents:
                 del self.results[key]
                 try:
                     task.result()
+                except asyncio.CancelledError:
+                    pass
                 except Exception:
                     self.app.logger.exception('Background result %s could not be delivered', key)
         for row in await self.calls(self.store.pending_results, self.token.account_key):

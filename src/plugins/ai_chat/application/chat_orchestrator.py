@@ -62,7 +62,7 @@ class DurableTurnLifecycle(Protocol):
     async def finish(self, *, turn_id: int | None, status: str, trace: AgentTrace | None,
                      final_text: str, error_code: str, scope_key: str) -> None: ...
 
-    async def interrupted(self, *, turn_id: int | None, reason: str) -> None: ...
+    async def interrupted(self, *, turn_id: int | None, reason: str, trace: AgentTrace | None = None) -> None: ...
 
 
 class ChatOrchestrator:
@@ -147,7 +147,7 @@ class ChatOrchestrator:
         async def interrupted(reason):
             if durable_lifecycle is not None:
                 try:
-                    await durable_lifecycle.interrupted(turn_id=journal_turn_id, reason=reason)
+                    await durable_lifecycle.interrupted(turn_id=journal_turn_id, reason=reason, trace=trace)
                 except BaseException:
                     # The original failure/cancellation must escape. A stale
                     # lease cannot be reclaimed merely to write a terminal row.

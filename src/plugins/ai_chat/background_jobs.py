@@ -67,9 +67,9 @@ class BackgroundJobs:
 
     def finish(self, job_id, *, state, error, report):
         with self.transaction() as cursor:
-            cursor.execute('''UPDATE background_jobs SET state=CASE WHEN state='cancelled' THEN state ELSE ? END,
-                error=CASE WHEN state='cancelled' THEN error ELSE ? END,report=?,finished_at=? WHERE job_id=?''',
-                (state,error,report,int(self.clock()),job_id))
+            return cursor.execute('''UPDATE background_jobs SET state=CASE WHEN state='cancelled' THEN state ELSE ? END,
+                error=CASE WHEN state='cancelled' THEN error ELSE ? END,report=?,finished_at=? WHERE job_id=? RETURNING state''',
+                (state,error,report,int(self.clock()),job_id)).fetchone()['state']
 
     def update(self, job_id, **fields):
         with self.transaction() as cursor:
@@ -184,9 +184,10 @@ class BackgroundRunner:
             self.logger.exception('Background job %s failed', row['job_id'])
         finally:
             report = '\n\n'.join(part for part in (report, error, '\n'.join(notes)) if part)
-            await self.calls(self.store.finish, row['job_id'], state=state, error=error, report=report)
+            state = await self.calls(self.store.finish, row['job_id'], state=state, error=error, report=report)
             try:
-                await self.save_report(row, report)
+                if state != 'cancelled':  # Do not restart a VM just to save a cancelled task's report.
+                    await self.save_report(row, report)
             except Exception as exc:
                 # The report is already stored and is what gets delivered; the
                 # copy in /work is a convenience, so its loss does not fail the job.

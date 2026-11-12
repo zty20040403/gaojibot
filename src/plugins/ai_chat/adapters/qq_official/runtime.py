@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 import inspect
 import hashlib
 import logging
@@ -148,6 +148,8 @@ class OfficialRuntime:
         self._started = False
         self._token = None
         self._gateway = None
+        self.conversation_tasks = None
+        self.control_changed = None
         self._message_gap = False
         self.state = "disabled"
         self.reason = "not_started"
@@ -282,6 +284,8 @@ class OfficialRuntime:
                     self.sender = None
                     self.turn_consumer = None
                     self.agent_service = None
+                    self.conversation_tasks = None
+                    self.control_changed = None
                     # DatabaseCalls drains non-cancellable transaction threads
                     # before this close or any later account acquisition.
                     try:
@@ -312,6 +316,8 @@ class OfficialRuntime:
 
     async def _serve(self, lease, token, checkpoint):
         session_id = checkpoint.session_id if checkpoint is not None else None
+        from .live_conversations import ConversationTasks
+        work = self.conversation_tasks = ConversationTasks()
         active_turns = set()
         turn_locks = {}
         self_identity_attempted = False
@@ -387,13 +393,19 @@ class OfficialRuntime:
             def input_row():
                 with self.store.transaction() as cursor:
                     return dict(cursor.execute('''SELECT i.endpoint_key,i.route_epoch,i.turn_text,
+                        i.conversation_control,i.conversation_generation,i.conversation_stopped,
                         i.canonical_message_id,m.sender_actor_key FROM qq_official_inbound_events i
                         JOIN messages m USING(canonical_message_id) WHERE inbox_id=?''', (inbox_id,)).fetchone())
             row = await self._calls(input_row)
+            if row['conversation_control']:
+                on_control(row['endpoint_key'],row['conversation_control'])
+            if row['conversation_stopped'] and not result.reply_requested:
+                return
             if result.reply_requested and self.background_service is not None:
                 self.background_service.direct_message(row['endpoint_key'])
             source = SimpleNamespace(job_id=None, payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
-                lease_generation=1, attempts=1, kind=account_job_kind('turn', token.account_key), endpoint=row['endpoint_key'])
+                lease_generation=1, attempts=1, kind=account_job_kind('turn', token.account_key), endpoint=row['endpoint_key'],
+                conversation_generation=row['conversation_generation'],command=row['turn_text'].lstrip().startswith(('/', '!')))
             key = row['endpoint_key'], row['sender_actor_key'], row['route_epoch']
             if batcher.add(key, source, row['turn_text'], requested=result.reply_requested,
                            canonical_id=row['canonical_message_id']):
@@ -402,24 +414,60 @@ class OfficialRuntime:
 
         async def dispatch_turn(source, reply_requested=True):
             async def run():
-                try:
-                    if reply_requested:
-                        if self.turn_consumer is not None:
-                            async with turn_locks.setdefault(source.endpoint, asyncio.Lock()):
-                                await self.turn_consumer(source)
-                    elif self.background_service is not None:
-                        await self.background_service.on_ingested(source)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    frames = [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)[-4:]]
-                    self.logger.warning(f'QQ turn error={type(error).__name__} frames={frames}')
+                # Control and inspection commands never queue behind a model.
+                with nullcontext() if source.command else work.track(source.endpoint,source.conversation_generation):
+                    try:
+                        if reply_requested:
+                            if self.turn_consumer is not None:
+                                if source.command:
+                                    await self.turn_consumer(source)
+                                else:
+                                    async with turn_locks.setdefault(source.endpoint, asyncio.Lock()):
+                                        await self.turn_consumer(source)
+                        elif self.background_service is not None:
+                            await self.background_service.on_ingested(source)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        frames = [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)[-4:]]
+                        self.logger.warning(f'QQ turn error={type(error).__name__} frames={frames}')
             task = asyncio.create_task(run())
             active_turns.add(task)
             task.add_done_callback(active_turns.discard)
 
         from .message_batch import MessageBatcher
         batcher = MessageBatcher(dispatch_turn)
+
+        def on_control(endpoint, receipt):
+            if receipt['status'] != 'ok':
+                return
+            work.cancel_jobs(receipt.get('cancelled_job_ids',()))
+            if receipt['action']=='stop':
+                generation = receipt['generation']
+                work.interrupt(endpoint,before_generation=generation)
+                batcher.forget(endpoint,before_generation=generation)
+        loop = asyncio.get_running_loop()
+        self.control_changed = lambda endpoint,receipt: loop.call_soon_threadsafe(on_control,endpoint,receipt)
+
+        async def reconcile_controls():
+            # Also observes changes made through another host's admin process.
+            endpoints = {item.endpoint for item in work.active.values()} | {key[0] for key in batcher.pending}
+            jobs = tuple({item.job_id for item in work.active.values() if item.job_id is not None})
+            if not endpoints:
+                return
+            def read():
+                from ...platform_types import EndpointKey
+                from .conversation_control import state
+                with self.store.transaction() as cursor:
+                    generations = {key:state(cursor,EndpointKey.parse(key))['stop_generation'] for key in endpoints}
+                    cancelled = cursor.execute('SELECT job_id FROM background_jobs WHERE state=\'cancelled\' AND job_id IN ('+
+                        ','.join('?' for _ in jobs)+')',jobs).fetchall() if jobs else ()
+                    return generations,{row['job_id'] for row in cancelled}
+            generations,cancelled = await self._calls(read)
+            work.cancel_jobs(cancelled)
+            for endpoint,generation in generations.items():
+                work.interrupt(endpoint,before_generation=generation)
+                batcher.forget(endpoint,before_generation=generation)
 
         async def monitor():
             loop = asyncio.get_running_loop()
@@ -429,6 +477,7 @@ class OfficialRuntime:
             while not self._stopping:
                 if not await self._calls(lease.probe):
                     raise LeaseLost("Official account lease was lost")
+                await reconcile_controls()
                 if loop.time() >= next_purge:
                     try:
                         deleted = await self._calls(self.store.purge_terminal_payloads, token)

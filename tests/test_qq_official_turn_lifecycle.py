@@ -78,6 +78,20 @@ class LifecycleTests(fixture.ExecutionFixture):
         asyncio.run(run())
 
 
+    def test_lifecycle_stop_preserves_known_usage_once_without_sending(self):
+        from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
+        async def run():
+            turn = await self.begin_lifecycle()
+            with self.tx() as cursor:
+                change(cursor,self.endpoint,'stop',now=self.now,actor='TEST_ADMIN',authorized=True)
+            for _ in range(2):
+                await self.life.interrupted(turn_id=turn,reason='turn_cancelled_or_owner_lost',trace=self.trace)
+        asyncio.run(run())
+        self.assertEqual(self.query('SELECT status FROM agent_turns')[0]['status'],'aborted')
+        self.assertEqual(len(self.query('SELECT * FROM usage_events')),1)
+        self.assertEqual(self.query('SELECT input_tokens,output_tokens FROM usage_events'),[{'input_tokens':3,'output_tokens':4}])
+        self.assertFalse(self.query('SELECT * FROM deliveries'))
+
     def test_lifecycle_quota_refusal_freezes_without_fake_model_journal(self):
         async def run():
             await self.life.finish(turn_id=None, status="succeeded", trace=None, final_text="TEST_QUOTA",

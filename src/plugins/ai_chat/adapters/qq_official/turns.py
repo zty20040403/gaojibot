@@ -140,13 +140,34 @@ class OfficialTurnLifecycle:
                         occurred_at=int(self.clock()), transaction_cursor=cursor)
         await self._calls(finish)
 
-    async def interrupted(self, *, turn_id, reason):
+    async def interrupted(self, *, turn_id, reason, trace=None):
         def interrupt():
             with self.transactions.transaction() as cursor:
-                row = self._current(cursor)
-                if row["journal_turn_id"] != turn_id:
-                    raise LifecycleError("execution_journal_mismatch")
-                return self.api.interrupt_execution(cursor, **self.args(), reason=reason)
+                # Stopping forbids new effects, not accounting for an already
+                # running call. Keep account ownership and exact source fences.
+                assert_epoch(cursor,self.token)
+                row = cursor.execute('''SELECT * FROM qq_official_turn_executions WHERE execution_id=?
+                    AND account_key=? AND account_fencing_epoch=? FOR UPDATE''',
+                    (self.handle.execution_id,self.token.account_key,self.token.epoch)).fetchone()
+                if row is None or (row['endpoint_key'],row['requester_actor_key'],row['canonical_message_id'],row['scope_key']) != (
+                        self.handle.endpoint.key,self.handle.actor.key,self.handle.canonical_message_id,self.handle.scope_key):
+                    raise LifecycleError('execution_source_mismatch')
+                if row['journal_turn_id'] != turn_id:
+                    raise LifecycleError('execution_journal_mismatch')
+                if row['state'] not in {'prepared','executing'}:
+                    return row['state']
+                result = self.api.interrupt_execution(cursor, **self.args(), reason=reason)
+                if turn_id is not None:
+                    payload = trace.to_payload() if trace else {}
+                    payload.update(failure={'code':reason},usage_incomplete=True)
+                    self.journal.finish_turn(turn_id,status='aborted',final_text='',trace_payload=payload,
+                        input_tokens=trace.input_tokens if trace else 0,output_tokens=trace.output_tokens if trace else 0,
+                        total_tokens=trace.total_tokens if trace else 0,finished_at=int(self.clock()),transaction_cursor=cursor)
+                    if self.usage is not None and trace is not None and (trace.input_tokens or trace.output_tokens):
+                        self.usage.record(scope_key=self.handle.scope_key,source='turn',provider=trace.provider,
+                            model=trace.model,input_tokens=trace.input_tokens,output_tokens=trace.output_tokens,
+                            cached_tokens=trace.cached_tokens,turn_id=turn_id,occurred_at=int(self.clock()),transaction_cursor=cursor)
+                return result
         return await self._calls(interrupt)
 
 

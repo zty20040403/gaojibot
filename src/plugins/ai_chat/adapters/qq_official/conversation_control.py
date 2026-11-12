@@ -54,6 +54,7 @@ def change(cursor, endpoint, action, *, now, actor, authorized):
                 cursor.execute('''UPDATE durable_jobs SET status='cancelled',lease_owner='',lease_until=NULL,finished_at=?,updated_at=?
                     WHERE job_id=? AND status IN ('pending','running')''',(now,now,job['job_id']))
             result['cancelled_jobs'] = len(jobs)
+            result['cancelled_job_ids'] = [job['job_id'] for job in jobs]
         if action == 'stop':
             cursor.execute('''UPDATE background_jobs SET delivered_at=?,error=concat_ws('；',NULLIF(error,''),'会话已停止，结果通知已取消')
                 WHERE endpoint_key=? AND delivered_at IS NULL''',(now,endpoint.key))
@@ -61,7 +62,7 @@ def change(cursor, endpoint, action, *, now, actor, authorized):
             'start':'本会话已恢复；不会补答停止期间的消息。','kill':'已请求取消本会话的全部后台任务；停止状态不变。'}[action]
         if result['cancelled_jobs']:
             text += f"\n已请求取消 {result['cancelled_jobs']} 个后台任务。"
-        result.update(status='ok',text=text)
+        result.update(status='ok',text=text,generation=state(cursor,endpoint)['stop_generation'])
     detail = json.dumps({'actor_ref':hashlib.sha256(actor.encode()).hexdigest(),'outcome':result['status'],
         'cancelled_jobs':result['cancelled_jobs']},separators=(',',':'))
     cursor.execute('''INSERT INTO admin_security_audit(audit_id,account_id,action,target,detail,created_at) VALUES (?,'',?,?,?,?)''',

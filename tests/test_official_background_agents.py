@@ -130,3 +130,5 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.store.get(number)['frontend_answer'], answer)
         self.assertIsNotNone(service.store.get(number)['delivered_at'])
         self.assertEqual(f.query("SELECT purpose FROM delivery_plans WHERE account_key=?", (f.account.key,))[0]['purpose'], 'background_result')
+        self.assertEqual(f.query("SELECT background_job_id FROM usage_events WHERE source='background_agent'"),
+            [{'background_job_id':number},{'background_job_id':number}])

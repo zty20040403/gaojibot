@@ -18,6 +18,7 @@ class Batch:
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     messages: list = field(default_factory=list)
     last_at: float = 0
+    task: asyncio.Task | None = None
 
 
 class MessageBatcher:
@@ -38,7 +39,7 @@ class MessageBatcher:
             if not requested or not (unfinished(text) or burst):
                 return False
             batch = self.pending[key] = Batch(source, now)
-            task = asyncio.create_task(self._wait(key, batch))
+            task = batch.task = asyncio.create_task(self._wait(key, batch))
             self.tasks.add(task)
             task.add_done_callback(self.tasks.discard)
         batch.messages.append((canonical_id, text))
@@ -60,6 +61,15 @@ class MessageBatcher:
         if len(batch.messages) > 1:
             batch.source.payload['batch_message_ids'] = [canonical for canonical, _ in batch.messages]
         await self.dispatch(batch.source)
+
+    def forget(self, endpoint, *, before_generation=None):
+        for key,batch in tuple(self.pending.items()):
+            if key[0]==endpoint and (before_generation is None or batch.source.conversation_generation<before_generation):
+                self.pending.pop(key)
+                batch.task.cancel()
+        for key in tuple(self.recent):
+            if key[0]==endpoint:
+                self.recent.pop(key)
 
     async def close(self):
         for task in self.tasks:
