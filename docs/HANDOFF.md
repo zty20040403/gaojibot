@@ -1,10 +1,17 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F3 开始核对
+
+- 已读 maxx 设计的 Background commands 和本方案 F3；不照搬前台转后台、不恢复 MCP。后台命令需要独立持久来源、VM 内 systemd-run 与逐块输出、原命令完成通知，不让等待占用模型。
+- 现有 `/kill` 仅取消 background_jobs，F3 必须补后台命令及起动竞态；不能只依赖 stop_generation，因为 `/kill` 不改变 stopped，也不能让先认证后慢请求体的旧启动越过 kill。
+- 核对发现方案写 ask_main 保持两小时，但现代码/工具说明实际是 600 秒（background_jobs.py/question、background_tools.py/ASK_MAIN）。实施 F3 时按方案设独立两小时等待上限，仍裁剪到任务原始截止时间；不能跟随 agent 默认六小时一起延长到六小时。
+- 此处仅调查，F3 尚未实施；F2 的 7fde49f 固定快照全套仍在运行，详见下一节。
+
 ## 开发记录（2026-11-12）· Python F2 技能示例与全套准备
 
 - programs 技能补齐公开网页标题、宿主 GitHub 新版本、真人 ping/pong 三个例子，以及 service/timer。共用助手在写请求前原子落盘 pending request_id 和观察位置；202/拒绝/未知不伪装成功，不换 ID 盲重试，重启先查原动作状态。事件流保留 cursor、跳过 bot/program，并有有界进程清理和重启保护。
 - 17 项技能示例/CLI/单元组合通过，实际执行了文档中的持久助手并验证未知写请求只做状态查询、completed 才清 pending；三个脚本均通过编译。没有访问示例网页/GitHub，也没有真实 VM/systemd 验收。
-- F2 本地实现已接齐，但最新提交需要新的固定快照全套复测；既有 1,680 项结果只覆盖 3a03075，不可转用于新的管理台/状态/恢复补丁。随后推进 F3，继续保留所有停止与程序来源边界。
+- F2 本地实现已接齐；固定 **7fde49f** 快照 `/tmp/gaoji-python-f2-final-check` 的全套已启动，日志 `/tmp/gaoji-python-f2-final.log`，PID `/tmp/gaoji-python-f2-final-test.pid`，退出码 `/tmp/gaoji-python-f2-final.exit`。已显式预检 ffmpeg/ffprobe，当前结果待定。既有 1,680 项只覆盖 3a03075，不可转用于新的管理台/状态/恢复补丁。随后推进 F3，继续保留所有停止与程序来源边界。
 
 ## 开发记录（2026-11-12）· Python F2 常驻程序管理页
 
