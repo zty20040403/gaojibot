@@ -23,7 +23,7 @@ def permitted(cursor, endpoint, *, canonical=None, generation=None, commands=Fal
     current = state(cursor,endpoint)
     source = cursor.execute('''SELECT conversation_generation,conversation_stopped,turn_text FROM qq_official_inbound_events
         WHERE endpoint_key=? AND canonical_message_id=?''',(endpoint.key,canonical)).fetchone() if canonical is not None else None
-    if commands and source and source['turn_text'].lstrip().startswith(('/', '!')):
+    if commands and source and (source['turn_text'] or '').lstrip().startswith(('/', '!')):
         return True
     if current['stopped'] or generation is not None and generation != current['stop_generation']:
         return False
@@ -55,9 +55,9 @@ def change(cursor, endpoint, action, *, now, actor, authorized):
                     WHERE job_id=? AND status IN ('pending','running')''',(now,now,job['job_id']))
             result['cancelled_jobs'] = len(jobs)
             result['cancelled_job_ids'] = [job['job_id'] for job in jobs]
-        if action == 'stop':
-            cursor.execute('''UPDATE background_jobs SET delivered_at=?,error=concat_ws('；',NULLIF(error,''),'会话已停止，结果通知已取消')
-                WHERE endpoint_key=? AND delivered_at IS NULL''',(now,endpoint.key))
+        if action in {'stop','kill'}:
+            cursor.execute('''UPDATE background_jobs SET delivered_at=?,error=concat_ws('；',NULLIF(error,''),'会话控制已取消结果通知')
+                WHERE endpoint_key=? AND delivered_at IS NULL AND (?='stop' OR state='cancelled')''',(now,endpoint.key,action))
         text = {'stop':'本会话已停止：消息仍记录，但不再回复普通消息；用 /start 恢复。',
             'start':'本会话已恢复；不会补答停止期间的消息。','kill':'已请求取消本会话的全部后台任务；停止状态不变。'}[action]
         if result['cancelled_jobs']:

@@ -54,6 +54,30 @@ class LiveControlTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(fake.received),4)  # stop/help/start/new, never old work
                 await runtime.stop()
 
+    async def test_database_control_from_another_process_cancels_live_work(self):
+        from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
+        from src.plugins.ai_chat.platform_types import EndpointKey
+        entered,cancelled = asyncio.Event(),asyncio.Event()
+        async def completion(**kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set(); raise
+        with patch('src.plugins.ai_chat.agent_loop._create_completion',new=completion):
+            async with verified_ready_platform() as fake:
+                runtime = await self.open_runtime(fake,self.application())
+                await self.emit(fake,native='TEST_BUSY_REMOTE',content='TEST long question')
+                await asyncio.wait_for(entered.wait(),5)
+                endpoint = EndpointKey(runtime.loaded.account,'private','TEST_RUNTIME_OWNER')
+                with runtime.store.transaction() as cursor:
+                    change(cursor,endpoint,'stop',now=int(runtime.store.clock()),actor='TEST_ADMIN',authorized=True)
+                # Deliberately do not call the in-process notification callback.
+                await asyncio.wait_for(cancelled.wait(),3)
+                await self.wait_db("SELECT turn_id FROM agent_turns WHERE status='aborted'")
+                self.assertEqual(fake.received,[])
+                await runtime.stop()
+
     async def test_stop_forgets_unfinished_batch_without_replaying_after_start(self):
         app = self.application()
         calls = []

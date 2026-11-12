@@ -46,6 +46,7 @@ class AdminServices:
     official_file_service: Any = None  # Live host getter; never a request-supplied route.
     official_identity_service: Any = None  # Exact live account host getter.
     official_observability: Any = None  # Live host getter; read-only aggregate diagnostics.
+    official_runtime: Any = None  # Live host getter for committed control notifications.
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,12 @@ class ToolEnabledRequest(BaseModel):
 
 class MediaReviewRequest(BaseModel):
     state: str
+
+
+class ConversationControlRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    action: Literal['stop','start','kill']
 
 
 class ImageCaptionSettingsRequest(BaseModel):

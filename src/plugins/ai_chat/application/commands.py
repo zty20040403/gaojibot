@@ -137,7 +137,10 @@ async def dispatch_command(
         if services.conversation_control is not None:
             extras += ['/stop', '/start', '/kill']
         commands = "/help、/bind、/model、/effort、/usage、/task、/cancel" + ("、" + "、".join(extras) if extras else "")
-        return CommandResult("ok", "可用命令："+commands+"。\n任务状态和停止仅作用于你在当前入口的运行任务。")
+        hint = '任务状态和 /cancel 仅作用于你在当前入口的运行任务。'
+        if services.conversation_control is not None:
+            hint += '\n/stop、/start、/kill 是会话级控制，需要群主、群管理员或宿主 owner；私聊仅控制自己的会话。'
+        return CommandResult('ok','可用命令：'+commands+'。\n'+hint)
     if request.name in {'stop','start','kill'}:
         if request.argument:
             return CommandResult('syntax', f'用法：/{request.name}')

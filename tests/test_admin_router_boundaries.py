@@ -36,6 +36,8 @@ PAGE_ROUTES = (
     ("GET", "/api/stickers"),
     ("GET", "/api/tools"),
     ("PUT", "/api/tools/{tool_name}/enabled"),
+    ("GET", "/api/conversations"),
+    ("POST", "/api/conversations/control"),
     ("GET", "/api/group-models"),
     ("PUT", "/api/group-models/{group_id}/default"),
     ("PUT", "/api/group-models/{group_id}/enabled"),
