@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import secrets
 import socket
 import unittest
 
@@ -11,17 +12,19 @@ from src.plugins.ai_chat.codex_gateway import CodexGateway
 
 
 def free_port():
-    # The relay takes this port and the next one.
-    while True:
-        with socket.socket() as first:
-            first.bind(('127.0.0.1', 0))
-            port = first.getsockname()[1]
-            with socket.socket() as second:
-                try:
-                    second.bind(('127.0.0.1', port + 1))
-                except OSError:
-                    continue
+    # Avoid the OS's ordinary ephemeral client range: a just-probed adjacent
+    # port there can be consumed by our own HTTP requests before relay startup.
+    # Production keeps its configured fixed ports; only loopback fixtures probe.
+    for _ in range(200):
+        port = 20000+2*secrets.randbelow(5000)
+        with socket.socket() as first, socket.socket() as second:
+            try:
+                first.bind(('127.0.0.1',port))
+                second.bind(('127.0.0.1',port+1))
+            except OSError:
+                continue
             return port
+    raise RuntimeError('TEST relay port pair unavailable')
 
 
 class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):

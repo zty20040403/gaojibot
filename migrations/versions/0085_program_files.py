@@ -41,4 +41,17 @@ def upgrade():
 
 
 def downgrade():
-    raise RuntimeError('program_file_evidence_requires_export_before_downgrade')
+    schema = os.environ.get('AI_POSTGRES_SCHEMA','qq_bot')
+    quoted = op.get_bind().dialect.identifier_preparer.quote(schema)
+    op.execute(f'SET LOCAL search_path TO {quoted},public')
+    if op.get_bind().exec_driver_sql("""SELECT 1 FROM qq_official_program_actions WHERE kind='send_file'
+            UNION ALL SELECT 1 FROM qq_official_file_artifacts WHERE source_program_action_id IS NOT NULL LIMIT 1""").first():
+        raise RuntimeError('program_file_evidence_requires_export_before_downgrade')
+    op.execute('DROP TRIGGER program_file_source_immutable ON qq_official_file_artifacts')
+    op.execute('DROP FUNCTION program_file_source_immutable()')
+    for name in ('ck_file_source_union','ck_file_source_extension_kind','ck_program_file_source','fk_program_file_source'):
+        op.drop_constraint(name,'qq_official_file_artifacts',schema=schema)
+    op.execute('ALTER TABLE qq_official_file_artifacts ADD CONSTRAINT ck_file_source_union CHECK ('+LEGACY_SOURCE+')')
+    op.execute("ALTER TABLE qq_official_file_artifacts ADD CONSTRAINT ck_file_source_extension_kind CHECK(source_extension_kind IN ('project','migration','background'))")
+    op.drop_column('qq_official_file_artifacts','source_program_action_id',schema=schema)
+    op.drop_constraint('uq_program_file_source','qq_official_program_actions',schema=schema)

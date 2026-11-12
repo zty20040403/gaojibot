@@ -77,6 +77,21 @@ class ProgramFileSourceTests(OutboxFixture):
         with self.assertRaisesRegex(ArtifactError,'artifact_request_conflict'):
             self.register(content=b'TEST_CHANGED')
 
+    def test_real_downgrade_refuses_reserved_or_exported_file_evidence(self):
+        import os
+        from unittest.mock import patch
+        from alembic import command
+        from alembic.config import Config
+        # This fixture owns its own disposable DB; do not borrow another
+        # migration fixture's schema ownership registry.
+        for exported in (False,True):
+            if exported:
+                self.register()
+            with patch.dict(os.environ,{'AI_POSTGRES_DSN':self.database.dsn,'AI_POSTGRES_SCHEMA':self.database.schema}), self.assertRaisesRegex(RuntimeError,'program_file_evidence_requires_export'):
+                command.downgrade(Config('alembic.ini'),'0084_program_wakes')
+            self.assertEqual(self.query('SELECT version_num FROM alembic_version')[0]['version_num'],'0085_program_files')
+            self.assertEqual(self.query('SELECT action_id FROM qq_official_program_actions')[0]['action_id'],self.action['action_id'])
+
     def test_stop_start_disable_and_rotation_never_reuse_old_file_authority(self):
         self.register()
         row = self.artifact()
@@ -99,7 +114,7 @@ class ProgramFileSourceTests(OutboxFixture):
 
 
 class ProgramFileMigrationTests(unittest.TestCase):
-    def test_real_upgrade_keeps_settings_and_refuses_evidence_losing_downgrade(self):
+    def test_real_empty_upgrade_downgrade_roundtrip_keeps_settings(self):
         from tests import test_qq_official_outbox_migration as fixture
         schema = fixture.owned_schema(); self.addCleanup(fixture.drop,schema)
         fixture.migrate(schema,'0084_program_wakes')
@@ -109,5 +124,8 @@ class ProgramFileMigrationTests(unittest.TestCase):
         with fixture.connect(schema) as connection:
             self.assertEqual(connection.execute('SELECT program_say_limit FROM conversation_settings').fetchone(),(3,))
             self.assertEqual(connection.execute('SELECT source_program_action_id FROM qq_official_file_artifacts').fetchall(),[])
-        with self.assertRaisesRegex(RuntimeError,'program_file_evidence_requires_export'):
-            fixture.migrate(schema,'0084_program_wakes',downgrade=True)
+        fixture.migrate(schema,'0084_program_wakes',downgrade=True)
+        with fixture.connect(schema) as connection:
+            self.assertEqual(connection.execute('SELECT program_say_limit FROM conversation_settings').fetchone(),(3,))
+            self.assertIsNone(connection.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=%s AND table_name='qq_official_file_artifacts' AND column_name='source_program_action_id'",(schema,)).fetchone())
+        fixture.migrate(schema,'0085_program_files')
