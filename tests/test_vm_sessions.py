@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
 from unittest.mock import Mock
+from time import monotonic, sleep
 
 from tests.qq_official_outbox_fixture import OutboxFixture
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost
@@ -144,6 +145,25 @@ class VMSessionTests(OutboxFixture):
                 pass
         self.assertEqual(len(current),1)
         self.assertEqual(current[0].token_generation,4)
+
+    def test_action_check_and_rotation_share_the_account_transaction_fence(self):
+        original = self.issue()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with self.tx() as cursor:
+                self.store.check(cursor,original.source)
+                pid = cursor.execute('SELECT pg_backend_pid() AS pid').fetchone()['pid']
+                pending = pool.submit(self.issue)
+                deadline = monotonic()+3
+                while not self.query('SELECT pid FROM pg_stat_activity WHERE ?=ANY(pg_blocking_pids(pid))',(pid,)):
+                    if monotonic()>deadline:
+                        self.fail('TEST rotation did not wait for the action fence')
+                    sleep(0.01)
+                self.assertFalse(pending.done())
+                self.assertEqual(self.store.check(cursor,original.source),original.source)
+            rotated = pending.result(timeout=3)
+        self.assertNotEqual(rotated.source,original.source)
+        with self.tx() as cursor, self.assertRaisesRegex(PermissionError,'vm_token_revoked'):
+            self.store.check(cursor,original.source)
 
     def test_invalid_credentials_and_boot_identity_never_echo_supplied_material(self):
         for token in ('','TEST_JOB_TOKEN','Bearer TEST_SECRET',None,{},'gvm_TEST_SECRET'):
