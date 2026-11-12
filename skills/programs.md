@@ -29,4 +29,10 @@ gaoji events --after 123
 
 写动作的 request_id 会先输出到 stderr，JSON 结果在 stdout；非零退出表示失败或结果不明。保存 ID，用 status 检查，不换 ID 盲目重试。events 保留空行心跳，断流时报告最后完整输出的 ID；用它续读。`--program` 默认使用 GAOJI_PROGRAM，没有时用 manual。
 
-常驻单元同步尚在接线，不能声称自动恢复。人工文件交付也可以用后台现有 `send_file_from_sandbox`。长期任务最终用常驻程序，单次提醒仍用 `schedule_set`。
+## 手动同步单元
+
+工具包已有 `gaoji-units`，把单元文件放在 `/work/.gaoji/systemd/` 后运行它。新增会启动、改动会重启、删除会停止；不覆盖系统同名单元。每次查看 JSON 的 ok、units 和 errors；失败会附最近几行日志，不要把文件已保存当作启动成功。
+
+服务自动加入 `gaoji-programs.slice`，CPU/IO 权重为 10，内存上限是 VM 的一半；环境 GAOJI_PROGRAM 使用单元名去掉 .service 后的部分。每个登记目录最多 32 个单元、每文件 64 KiB，拒绝软链接和特殊文件。未改动的单元不会因重复 sync 重跑，修正失败的配置后再同步。
+
+开机恢复、VM 保活和管理台仍在接线，不能声称自动恢复。人工文件交付也可以用后台现有 `send_file_from_sandbox`。长期任务最终用常驻程序，单次提醒仍用 `schedule_set`。
