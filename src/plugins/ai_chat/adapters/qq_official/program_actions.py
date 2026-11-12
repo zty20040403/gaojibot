@@ -55,7 +55,7 @@ class ProgramActions:
         return current
 
     def reserve(self, current, *, generation, kind, program, request_id, payload, transaction_cursor=None):
-        if (kind not in {'say','wake','send_file'} or type(program) is not str or NAME.fullmatch(program) is None
+        if (type(kind) is not str or kind not in {'say','wake','send_file'} or type(program) is not str or NAME.fullmatch(program) is None
                 or type(request_id) is not str or REQUEST.fullmatch(request_id) is None
                 or type(payload) is not dict or type(generation) is not int or generation<0):
             raise ValueError('invalid_program_action')
@@ -100,8 +100,11 @@ class ProgramActions:
         """A scoped read can inspect past failures even while stopped or rotated."""
         with self.transaction() as cursor:
             self.sessions.check(cursor,current)
-            row = cursor.execute('''SELECT action_id,request_id,program_name,kind,state,error_code,plan_id,created_at
-                FROM qq_official_program_actions WHERE endpoint_key=? AND action_id=?''',
+            row = cursor.execute('''SELECT a.action_id,a.request_id,a.program_name,a.kind,a.plan_id,a.created_at,
+                COALESCE(CASE d.status WHEN 'committed' THEN 'completed' WHEN 'pending' THEN 'queued' ELSE d.status END,a.state) AS state,
+                COALESCE(d.wait_reason,a.error_code) AS error_code
+                FROM qq_official_program_actions a LEFT JOIN deliveries d ON d.plan_id=a.plan_id AND d.part_index=0
+                WHERE a.endpoint_key=? AND a.action_id=?''',
                 (current.endpoint.key,action_id)).fetchone()
             if row is None:
                 raise ProgramDenied('program_action_not_found',404)

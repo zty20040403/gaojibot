@@ -142,15 +142,19 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     endpoint = EndpointKey.parse(delivery['endpoint_key'])
     actor = ActorKey.parse(attempt['bot_actor_key'])
     body, metadata = _context_projection(cursor, delivery, attempt)
+    program = cursor.execute('SELECT action_id,program_name FROM qq_official_program_actions WHERE plan_id=?',
+        (delivery['plan_id'],)).fetchone()
+    provenance = dict(by='program',program=program['program_name'],program_action_id=program['action_id']) if program else {}
     reply_target, quoted_index = _quote(cursor, attempt, delivery, endpoint)
     native = receipt['native_message_id']
     scope_key = cursor.execute('SELECT source_scope_key FROM delivery_plans WHERE plan_id=?', (delivery['plan_id'],)).fetchone()['source_scope_key']
     stored = ledger.record_message(ConversationScope.from_key(scope_key), native_message_id=native, sender_native_user_id=actor.native_user_id,
-        sender_display='Bot', body=body, occurred_at=receipt['observed_at'], direction='outbound',
+        sender_display='程序 '+program['program_name'] if program else 'Bot', body=body,
+        occurred_at=receipt['observed_at'], direction='outbound',
         message_kind='command' if delivery['payload_mode']=='ephemeral' or metadata else 'chat',
         reply_to_native_message_id=reply_target, actor=actor, source_endpoint=endpoint,
         raw_event={'source':'qq-official', 'delivery_id':delivery['delivery_id'], 'attempt_id':attempt['attempt_id'],
-                   'receipt_id':receipt_id, 'time_source':'receipt_observed', **metadata}, transaction_cursor=cursor)
+                   'receipt_id':receipt_id, 'time_source':'receipt_observed', **metadata, **provenance}, transaction_cursor=cursor)
     canonical = stored.canonical_message_id
     cursor.execute("""INSERT INTO qq_official_messages
         (message_id,account_key,endpoint_key,native_message_id,canonical_message_id,direction,ref_msg_idx,created_at)

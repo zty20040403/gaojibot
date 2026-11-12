@@ -162,9 +162,11 @@ class OfficialSender:
         await self._fence()
         return await asyncio.shield(await self._submit(delivery_id))
 
-    async def _credential(self, endpoint, route):
+    async def _credential(self, endpoint, route, *, proactive_only=False):
         if route['proactive_state'] != 'denied':
             return 'proactive', None, None
+        if proactive_only:
+            return None
         source = await self._calls(self.outbox.latest_inbound, endpoint)
         if source is None or self.wall_clock() - source['received_at'] >= 300:
             return None
@@ -193,7 +195,8 @@ class OfficialSender:
                 prepared = await self.rest.prepare_send(endpoint.kind, endpoint.native_conversation_id)
             except QQAPIError:
                 return await self._calls(self.outbox.fail, self.token, delivery_id, 'token_unavailable')
-            credential = await self._credential(endpoint, route)
+            program = row.get('program_action_id') is not None
+            credential = await self._credential(endpoint, route,proactive_only=program)
             if credential is None:
                 log.warning('QQ send failed: 这个群没开主动发言，请群主打开')
                 return await self._calls(self.outbox.fail, self.token, delivery_id, PASSIVE_UNAVAILABLE)
@@ -206,11 +209,12 @@ class OfficialSender:
                 return reservation
             # A stop may commit while the database executor returns the claim.
             # Once HTTP begins it cannot be retracted; its receipt remains true.
-            if not await self._calls(self.outbox.attempt_current,self.token,reservation):
+            denied = await self._calls(self.outbox.attempt_denial,self.token,reservation)
+            if denied:
                 if mode == 'passive':
                     self._passive[endpoint.key]['used'] -= 1
                 return await self._calls(self.outbox.fail,self.token,delivery_id,
-                    'conversation_stopped_or_replaced',reservation=reservation)
+                    denied,reservation=reservation)
             started = self.clock()
             payload = reservation.payload()
             error = None
@@ -250,7 +254,7 @@ class OfficialSender:
                 reason = 'content_rejected'
             elif error.code == 40034105 and mode == 'proactive':
                 await self._calls(self.outbox.deny_proactive, self.token, endpoint)
-                retry, reason = True, 'proactive_denied'
+                retry, reason = not program, 'proactive_denied'
             elif error.code == 40034128:
                 if mode == 'passive':
                     self._passive[endpoint.key]['used'] = 5

@@ -173,8 +173,9 @@ class OfficialSendStore:
 
     def get(self, token, delivery_id):
         with self.deliveries.transaction() as cursor:
-            return cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?',
-                (delivery_id, token.account_key)).fetchone()
+            return cursor.execute('''SELECT d.*,p.action_id AS program_action_id FROM deliveries d
+                LEFT JOIN qq_official_program_actions p ON p.plan_id=d.plan_id
+                WHERE d.delivery_id=? AND d.account_key=?''',(delivery_id, token.account_key)).fetchone()
 
     def latest_inbound(self, endpoint):
         with self.deliveries.transaction() as cursor:
@@ -215,13 +216,27 @@ class OfficialSendStore:
         return plan is not None and permitted(cursor,EndpointKey.parse(row['endpoint_key']),
             canonical=row['source_canonical_message_id'],generation=plan['conversation_generation'],commands=command)
 
+    def _program_authorized(self, cursor, token, row):
+        from .program_delivery import denial
+        program = cursor.execute('SELECT 1 FROM qq_official_program_actions WHERE plan_id=?',(row['plan_id'],)).fetchone()
+        if program or ActorKey.parse(row['requester_actor_key']).identity_kind=='bot':
+            reason = denial(cursor,token=token,delivery=row,admission=self.admission,now=int(self.clock()))
+            return reason is None,reason
+        return None,None  # Ordinary human/control sources keep their existing rules.
+
     def attempt_current(self, token, reservation):
+        return self.attempt_denial(token,reservation) is None
+
+    def attempt_denial(self, token, reservation):
         with self.deliveries.transaction() as cursor:
             assert_epoch(cursor,token)
             row = cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?',
                 (reservation.delivery_id,token.account_key)).fetchone()
-            return (row is not None and row['current_attempt_id']==reservation.attempt_id and row['status']=='sending'
-                and self._conversation_permitted(cursor,row))
+            if row is None or row['current_attempt_id']!=reservation.attempt_id or row['status']!='sending':
+                return 'delivery_attempt_replaced'
+            if not self._conversation_permitted(cursor,row):
+                return 'conversation_stopped_or_replaced'
+            return self._program_authorized(cursor,token,row)[1]
 
     def prepare(self, token, delivery_id, *, send_mode, msg_id=None, msg_seq=None):
         now = int(self.clock())
@@ -236,14 +251,16 @@ class OfficialSendStore:
             endpoint = EndpointKey.parse(row['endpoint_key'])
             actor = ActorKey.parse(row['requester_actor_key'])
             route = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
+            if not self._conversation_permitted(cursor,row):
+                return self._finish(cursor,token,row,'cancelled','conversation_stopped_or_replaced',now)
             control = control_for_delivery(cursor, row)
-            authorized = control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor)
+            program_authorized,program_error = self._program_authorized(cursor,token,row)
+            authorized = program_authorized if program_authorized is not None else (
+                control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor))
             if row['purpose'] == 'approval_otp':
                 authorized = authorized and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now)
             if not authorized or route['membership_state'] != 'present' or route['binding_state'] == 'revoked':
-                return self._finish(cursor, token, row, 'failed', 'delivery_not_authorized', now)
-            if not self._conversation_permitted(cursor,row):
-                return self._finish(cursor,token,row,'cancelled','conversation_stopped_or_replaced',now)
+                return self._finish(cursor, token, row, 'failed', program_error or 'delivery_not_authorized', now)
             if now >= row['expires_at']:
                 return self._finish(cursor, token, row, 'failed', 'delivery_expired', now)
             if row['payload_mode'] == 'ephemeral' and delivery_id not in self._ephemeral:
