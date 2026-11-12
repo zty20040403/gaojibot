@@ -27,19 +27,30 @@ class SandboxIdentityTests(unittest.TestCase):
     def run_guest(self, payload):
         return sandbox_identity.run(payload,directory=self.directory,boot_file=self.boot_file)
 
-    def test_install_is_private_atomic_and_returns_only_fingerprint(self):
+    def test_install_is_guest_readable_root_writable_and_returns_only_fingerprint(self):
         self.assertIsNone(self.run_guest({'op':'inspect'})['token_hash'])
         result = self.run_guest(self.payload)
         self.assertEqual(result,dict(boot_id=BOOT,token_hash=hashlib.sha256(TOKEN.encode()).hexdigest(),base_url=URL))
         self.assertNotIn(TOKEN,json.dumps(result))
         self.assertEqual((self.directory/'token').read_text(),TOKEN)
-        self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode),0o700)
-        self.assertEqual(stat.S_IMODE((self.directory/'token').stat().st_mode),0o600)
+        self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode),0o755)
+        self.assertEqual(stat.S_IMODE((self.directory/'token').stat().st_mode),0o644)
         self.assertEqual(self.run_guest({'op':'inspect'}),result)
         newer = dict(self.payload,token='gvm_'+'N'*43)
         self.run_guest(newer)
         self.assertEqual((self.directory/'token').read_text(),newer['token'])
         self.assertFalse(list(self.directory.glob('.token-*')))
+
+    def test_inspect_repairs_old_root_only_modes_without_rotating_the_token(self):
+        original = self.run_guest(self.payload)
+        self.directory.chmod(0o700)
+        for name in ('token','connection.json'):
+            (self.directory/name).chmod(0o600)
+        self.assertEqual(self.run_guest({'op':'inspect'}),original)
+        self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode),0o755)
+        for name in ('token','connection.json'):
+            self.assertEqual(stat.S_IMODE((self.directory/name).stat().st_mode),0o644)
+        self.assertEqual((self.directory/'token').read_text(),TOKEN)
 
     def test_wrong_boot_and_wrong_host_url_never_publish_a_token(self):
         for change in ({'boot_id':'00000000-0000-4000-8000-000000000002'},

@@ -78,8 +78,22 @@ def run(payload, *, directory=Path('/run/gaoji'), boot_file=Path('/proc/sys/kern
         connection = _read(fd,'connection.json',1024)
         if token is not None and TOKEN.fullmatch(token.decode('ascii')) is None:
             raise ValueError('invalid_token_file')
-        return dict(boot_id=boot,token_hash=hashlib.sha256(token).hexdigest() if token else None,
+        result = dict(boot_id=boot,token_hash=hashlib.sha256(token).hexdigest() if token else None,
             base_url=_url(json.loads(connection)['base_url']) if connection else None)
+        # The unprivileged sandbox user must read this conversation capability.
+        # It is not a host secret. Repair old root-only installations on inspect
+        # without rotating a valid boot token or allowing guest users to write it.
+        for name,value in (('token',token),('connection.json',connection)):
+            if value is not None:
+                child = os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
+                try:
+                    if not stat.S_ISREG(os.fstat(child).st_mode):
+                        raise ValueError('invalid_token_file')
+                    os.fchmod(child,0o644)
+                finally:
+                    os.close(child)
+        os.fchmod(fd,0o755)
+        return result
     finally:
         os.close(fd)
 
