@@ -1,4 +1,4 @@
-"""Persist program intent without a human principal; no HTTP routes here yet."""
+"""Persist program intent and quotas without granting a human principal."""
 from contextlib import nullcontext
 import hashlib
 import json
@@ -111,16 +111,17 @@ class ProgramActions:
                 ','.join('?' for _ in fields)+') RETURNING *',tuple(fields.values())).fetchone()
             return dict(row),True
 
-    def get(self, current, action_id):
+    def get(self, current, identifier, *, by_request=False):
         """A scoped read can inspect past failures even while stopped or rotated."""
         with self.transaction() as cursor:
             self.sessions.check(cursor,current)
+            column = 'request_id' if by_request else 'action_id'
             row = cursor.execute('''SELECT a.action_id,a.request_id,a.program_name,a.kind,a.plan_id,a.created_at,
                 COALESCE(CASE d.status WHEN 'committed' THEN 'completed' WHEN 'pending' THEN 'queued' ELSE d.status END,a.state) AS state,
                 COALESCE(d.wait_reason,a.error_code) AS error_code
                 FROM qq_official_program_actions a LEFT JOIN deliveries d ON d.plan_id=a.plan_id AND d.part_index=0
-                WHERE a.endpoint_key=? AND a.action_id=?''',
-                (current.endpoint.key,action_id)).fetchone()
+                WHERE a.endpoint_key=? AND a.'''+column+'=?',
+                (current.endpoint.key,identifier)).fetchone()
             if row is None:
                 raise ProgramDenied('program_action_not_found',404)
             return dict(row)

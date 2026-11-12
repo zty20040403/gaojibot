@@ -148,10 +148,10 @@ class _Server(uvicorn.Server):
 
 
 class CodexGateway:
-    def __init__(self, *, port, upstream, model, logger, client=None, api_handler=None, vm_authority=None):
+    def __init__(self, *, port, upstream, model, logger, client=None, api_handler=None, vm_authority=None, vm_handler=None):
         # upstream() -> (base_url, api_key); model() -> (model, effort)
         self.port, self.upstream, self.model, self.logger = port, upstream, model, logger
-        self.api_handler,self.vm_authority = api_handler,vm_authority
+        self.api_handler,self.vm_authority,self.vm_handler = api_handler,vm_authority,vm_handler
         self.channels: dict[str, Channel] = {}
         self.failures: dict[str, str] = {}
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(30, read=IDLE_SECONDS), trust_env=False)
@@ -184,6 +184,9 @@ class CodexGateway:
                 from .host_apis import METHODS
                 for path in ('/api/{name}','/api/{name}/{path:path}'):
                     app.router.routes.append(Route(path,_ModelRequest(self,self.api_handler),methods=sorted(METHODS)))
+            if self.vm_handler is not None:
+                for path,method,write in (('/vm/say','POST',True),('/vm/actions/{action_id}','GET',False),('/vm/actions','GET',False)):
+                    app.router.routes.append(Route(path,_ModelRequest(self,self.vm_handler,vm_only=True,write=write),methods=[method]))
             self.http = _Server(uvicorn.Config(app, host='127.0.0.1', port=self.port, log_level='warning',
                                                access_log=False, lifespan='off'))
             self.http_task = asyncio.create_task(self.http.serve())

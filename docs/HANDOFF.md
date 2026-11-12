@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F2 发言 HTTP 接线与全套快照（未部署）
+
+- 注册 VM-only `POST /vm/say` 和 `GET /vm/actions`（按 action_id 路径或 request_id 查询）；任务令牌不能进入，scope/actor 不接受正文声明。16 KiB/15 秒正文上限，单条 1800 字符；读取请求体期间 stop/start 也不会让旧正文进入新代。
+- 直接发言使用持久幂等请求/额度和原 sender，只有实际回执才返回 completed；失败/结果不明均明确返回，超时可查状态。响应丢失不知道 action_id 时也能用原 request_id 查询，在 stop 期间仍可读；不换 ID 盲目重发。
+- 46 项 HTTP/生命周期/VM 与任务 API/凭据/后台组合通过（包含先前 16 项接线组合），Ruff/两项导入检查通过。README、宿主配置和安全文档已同步。
+- 固定 **c79ca91** 快照的全套已结束：**1,571 项、0 失败、10 跳过，757.954 秒**，`/tmp/gaoji-python-f2-credential-full.log`，退出码 0。该快照包含程序发送底座，但不包含后续 c888916 写身份及本次 HTTP 补丁，不可把它说成最新 HEAD 全套。
+- 下一步继续 `/vm/wake`（匿名程序来源、每小时 6 次及超额合并），然后文件/读工具、消息流、CLI、systemd 同步/保活/崩溃保护、管理台和技能。F2/F3 尚未完成；未部署、未接生产，真实 QQ/VM 验收仍待 owner。
+
 ## 开发记录（2026-11-12）· Python F2 写请求身份代数（未部署）
 
 - 写请求在首次凭据事务里捕获停止代数，然后才等待 guest-agent；核验期间发生 stop/start 也拒绝旧请求。VM HTTP scope 按只读/写代数分开，停止会取消在途写 scope，但不会取消按方案保留的 API/读请求。

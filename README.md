@@ -173,7 +173,7 @@ Tests use a separate local database and never the production QQ credentials. Rea
 
 gaoji currently targets the official QQ platform only. The old OneBot/NapCat adapter, the desktop app, project workspaces, the group wiki, pinned messages, MCP, bridges and multi-role sub-agents have been removed. Their code is kept under the `pre-rework-20261031` tag and is not planned work on the current roadmap.
 
-Optional host-keyed APIs let background jobs use a GitHub bot account for public repositories: credentials stay on the host, calls have per-conversation limits and an admin audit, and commits use a public noreply identity. The owner must configure the account and keys; real GitHub/VM acceptance is still pending. VM-token API access is wired, while resident programs, wake and direct messaging are still in progress. See [official host configuration](docs/qq-official-host-config.md). Whether long-job results and reminders can be sent proactively also depends on the target group's permissions and the official quota.
+Optional host-keyed APIs let background jobs use a GitHub bot account for public repositories: credentials stay on the host, calls have per-conversation limits and an admin audit, and commits use a public noreply identity. The owner must configure the account and keys; real GitHub/VM acceptance is still pending. VM-token API access and direct program speech are wired; resident-unit management, wake and the CLI remain in progress. See [official host configuration](docs/qq-official-host-config.md). Whether long-job results and reminders can be sent proactively also depends on the target group's permissions and the official quota.
 
 </details>
 
