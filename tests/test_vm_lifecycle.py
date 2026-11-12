@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import httpx
 import httpx2
 
+from src.bot_storage.async_calls import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.background_agents import OfficialBackgroundAgents
 from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration
 from src.plugins.ai_chat.background_tools import workspace_owner
@@ -33,8 +34,9 @@ class VMLifecycleTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         api = HostAPI.parse('test',dict(base_url='https://api.example.test',secret_file=str(key),
             headers={'Authorization':'Bearer {secret}'},per_hour=10))
         jobs = DurableJobStore(self.database); self.addCleanup(jobs.close)
+        calls = DatabaseCalls(); self.addAsyncCleanup(calls.close)
         runtime = SimpleNamespace(store=SimpleNamespace(transaction=self.tx,admitted=lambda *_:True,clock=lambda:self.now),
-            jobs=jobs,_calls=self.calls)
+            jobs=jobs,_calls=calls,turn_locks={})
         profile = ModelProfile('TEST_MODEL','test','openai-chat','TEST_MODEL','https://example.invalid',api_key_required=False)
         app = SimpleNamespace(database=self.database,settings=replace(settings,background_gateway_port=free_port()),
             sandbox_manager=self.manager,logger=logging.getLogger(__name__),

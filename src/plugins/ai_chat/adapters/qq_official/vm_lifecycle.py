@@ -10,7 +10,7 @@ from .vm_sessions import VMSessions
 
 
 class OfficialVMLifecycle:
-    def __init__(self, *, transaction, lease, private_admission, manager, calls, gateway, logger, clock, runtime):
+    def __init__(self, *, transaction, lease, private_admission, manager, calls, gateway, logger, clock, runtime, app):
         self.transaction,self.lease,self.manager,self.calls = transaction,lease,manager,calls
         self.gateway,self.logger = gateway,logger
         self.store = VMSessions(transaction,lease,private_admission=private_admission,clock=clock)
@@ -19,7 +19,9 @@ class OfficialVMLifecycle:
         from .program_http import ProgramHTTP
         self.actions = ProgramActions(self.store)
         self.api = VMAPIAuthority(self.credentials,actions=self.actions)
-        self.http = ProgramHTTP(self.actions,runtime,calls,logger)
+        from .program_runner import ProgramRunner
+        self.programs = ProgramRunner(self,runtime,app)
+        self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs)
         self.closed,self.restoring = False,None
 
     def route(self, owner):
@@ -53,6 +55,7 @@ class OfficialVMLifecycle:
         self.manager.conversation_lifecycle = self
         self.gateway.vm_authority = self.api
         self.gateway.vm_handler = self.http.handle
+        await self.programs.start()
         await self.gateway.start()
         self.restoring = asyncio.create_task(self.restore())
 
@@ -80,4 +83,5 @@ class OfficialVMLifecycle:
         if self.restoring is not None:
             self.restoring.cancel()
             await asyncio.gather(self.restoring,return_exceptions=True)
+        await self.programs.close()
         await self.api.close()

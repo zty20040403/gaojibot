@@ -17,8 +17,9 @@ class ProgramExecution:
     def pending(self):
         with self.transaction() as cursor:
             assert_epoch(cursor,self.token)
-            return [dict(row) for row in cursor.execute('''SELECT * FROM qq_official_program_wakes
-                WHERE account_key=? AND (state='queued' AND due_at<=? OR state='answered')
+            return [dict(row) for row in cursor.execute('''SELECT w.*,
+                (SELECT conversation_generation FROM qq_official_program_actions a WHERE a.wake_id=w.wake_id LIMIT 1) AS conversation_generation
+                FROM qq_official_program_wakes w WHERE account_key=? AND (state='queued' AND due_at<=? OR state='answered')
                 ORDER BY due_at,wake_id LIMIT 64''',(self.token.account_key,int(self.clock()))).fetchall()]
 
     def recover(self):
@@ -111,7 +112,7 @@ class ProgramExecution:
             assert_epoch(cursor,self.token)
             row = cursor.execute('''SELECT d.status,d.wait_reason FROM qq_official_program_wakes w
                 JOIN qq_official_program_actions a ON a.action_id=w.reply_action_id JOIN deliveries d ON d.plan_id=a.plan_id
-                WHERE w.wake_id=? AND w.account_key=? AND w.run_id=? AND w.state='answered' AND d.part_index=0''',
+                WHERE w.wake_id=? AND w.account_key=? AND w.run_id=? AND d.part_index=0''',
                 (run['wake_id'],self.token.account_key,run['run_id'])).fetchone()
             if row and row['status'] in {'committed','failed','cancelled','ambiguous'}:
                 cursor.execute('UPDATE qq_official_program_wakes SET state=?,error_code=?,finished_at=? WHERE wake_id=?',

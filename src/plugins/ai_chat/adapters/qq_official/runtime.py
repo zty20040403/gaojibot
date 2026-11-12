@@ -149,6 +149,7 @@ class OfficialRuntime:
         self._token = None
         self._gateway = None
         self.conversation_tasks = None
+        self.turn_locks = {}
         self.control_changed = None
         self._message_gap = False
         self.state = "disabled"
@@ -319,7 +320,7 @@ class OfficialRuntime:
         from .live_conversations import ConversationTasks
         work = self.conversation_tasks = ConversationTasks()
         active_turns = set()
-        turn_locks = {}
+        turn_locks = self.turn_locks = {}
         self_identity_attempted = False
 
         async def on_checkpoint(value):

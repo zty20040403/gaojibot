@@ -121,17 +121,21 @@ cancels admitted API calls, including upstream header waits and binary streams;
 a partial download is a transport failure, not a successful EOF.
 
 The VM token currently authorizes configured `/api/<name>/…` routes, direct
-`/vm/say` and scoped `/vm/actions` status reads. It
+`/vm/say`, queued `/vm/wake` and scoped `/vm/actions` status reads. It
 cannot use `/v1/models`, model responses, or the Codex app-server tunnel. Job
 tokens remain separate; missing or expired job tokens never fall back to VM
 authority. Both callers share physical-conversation API quotas. `/stop` leaves
 VM `/api` access available by design; it does not terminate guest programs.
-`/vm/say` captures the stop generation in the first authentication transaction,
+Both `/vm/say` and `/vm/wake` capture the stop generation in the first authentication transaction,
 before waiting for the guest agent or request body, and checks it again at
 admission and before HTTP delivery. Read/API scopes are separate from write
 scopes, so stop/start cannot revive an old action. Program plans have durable
 non-human provenance, share a conversation quota and cannot borrow a member's
 passive-reply window. Other `/vm` action routes must retain these same fences.
+Wake turns have no human/owner identity and only explicit read-only tools. They
+share the foreground endpoint lock, check every merged input program, and are
+cancelled on stop or revocation. Model usage is reserved before each request;
+unknown usage keeps its bound, and interrupted model runs are not replayed.
 Guest-agent integration tests use local doubles and do not prove real KVM or
 QQ acceptance; the remaining resident-program facilities are not yet complete.
 

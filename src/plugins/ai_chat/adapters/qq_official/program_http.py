@@ -10,8 +10,9 @@ from .send_types import OutboxInvariantError
 
 
 class ProgramHTTP:
-    def __init__(self, actions, runtime, calls, logger):
+    def __init__(self, actions, runtime, calls, logger, *, programs=None):
         self.actions,self.runtime,self.calls,self.logger = actions,runtime,calls,logger
+        self.programs = programs
 
     async def handle(self, request):
         scope = request.state.channel
@@ -37,6 +38,12 @@ class ProgramHTTP:
             if (type(data) is not dict or not {'text','request_id'}<=data.keys()
                     or data.keys()-{'text','request_id','program'}):
                 raise ValueError()
+            if request.url.path=='/vm/wake':
+                if self.programs is None:
+                    return JSONResponse({'error':'program_runner_unavailable'},503)
+                result = await self.programs.submit(scope.identity,generation=scope.generation,
+                    program=data.get('program','manual'),request_id=data['request_id'],text=data['text'])
+                return JSONResponse(result,202)
             action,ref = await self.calls(say,self.actions,scope.identity,generation=scope.generation,
                 program=data.get('program','manual'),request_id=data['request_id'],text=data['text'])
             try:

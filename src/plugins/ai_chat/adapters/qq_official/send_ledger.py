@@ -179,6 +179,8 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     cursor.execute("""UPDATE deliveries SET status='committed',native_message_id=?,lease_until=NULL,
         wait_reason=NULL,last_error='',updated_at=? WHERE delivery_id=?""", (native, now, delivery['delivery_id']))
     cursor.execute('UPDATE delivery_receipts SET applied_at=? WHERE receipt_id=?', (now, receipt_id))
+    if wake:
+        cursor.execute("UPDATE qq_official_program_wakes SET state='completed',error_code='',finished_at=? WHERE wake_id=?",(now,wake['wake_id']))
     from .file_projection import apply_file_receipt
     apply_file_receipt(cursor, delivery=delivery, attempt=attempt, now=now)
     return SendOutcome('committed', '', delivery['delivery_id'])

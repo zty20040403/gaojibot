@@ -72,7 +72,7 @@ class OfficialBackgroundAgents:
             from .vm_lifecycle import OfficialVMLifecycle
             self.vm_lifecycle = OfficialVMLifecycle(transaction=runtime.store.transaction,lease=token,
                 private_admission=runtime.store.admitted,manager=app.sandbox_manager,calls=self.calls,
-                gateway=self.gateway,logger=app.logger,clock=self.clock,runtime=runtime)
+                gateway=self.gateway,logger=app.logger,clock=self.clock,runtime=runtime,app=app)
         engine = CodexEngine(self.gateway, self.model_settings, start_vm=self.start_vm,
                              guest_exec=self.guest_exec, clock=self.clock)
         self.runner = BackgroundRunner(self.store, calls=self.calls, session_factory=self.session,
