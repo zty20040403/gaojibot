@@ -117,7 +117,13 @@ VM 令牌可 `POST /vm/history`（例如 `{"query":"TEST"}`）、`/vm/web-search
 
 省略 after 时，响应头 `X-Gaoji-Head` 是订阅起点，之后只发送新消息；带 after 时按每页 100 条回补并接着读取新消息，不静默截断长回补。30 秒无消息发送空行心跳。客户端保存最后完整收到的 id，断开后从它重连；尚未收到消息时用响应头中的起点。游标不能为负数或超前。
 
-每会话最多 2 条、宿主合计 16 条订阅，超额返回 429。stop 不关闭读流；VM 凭据撤销或轮换会让流以传输错误结束，不能当作成功读完。常驻单元管理和 `gaoji` CLI 仍在实施；以上入口只做过本地替身验收，未部署。
+每会话最多 2 条、宿主合计 16 条订阅，超额返回 429。stop 不关闭读流；VM 凭据撤销或轮换会让流以传输错误结束，不能当作成功读完。常驻单元管理仍在实施；以上入口只做过本地替身验收，未部署。
+
+### VM CLI
+
+镜像工具定义已包含无第三方依赖的 `gaoji`，旧 VM 需 owner 执行显式工具升级。支持 say、wake、send-file、history、web-search、web-fetch、events、status；`gaoji --help` 查看参数。每次请求重读 `/run/gaoji` 凭据，不读环境代理，不跟随重定向。
+
+写动作可指定 `--program`（默认 GAOJI_PROGRAM 或 manual）和 `--request-id`。自动生成的 ID 会先写 stderr；超时或断线不要换 ID 重发，使用 `gaoji status --request-id <id>`。`gaoji events --after <id>` 保留空行心跳，断流非零退出并在 stderr 报告可恢复游标；只将完整消息行交给调用者。
 
 ## GitHub 机器人账号
 

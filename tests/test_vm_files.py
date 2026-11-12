@@ -62,6 +62,32 @@ class VMFileHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual(say.status_code,429) # send-file shares the say bucket.
         self.assertEqual((await self.post(path='different.txt')).status_code,409)
 
+    async def test_stdlib_cli_client_uses_real_vm_routes_and_can_resume_program_events(self):
+        import json
+        from src.plugins.ai_chat import sandbox_gaoji as cli
+        client = cli.Client(self.guest)
+        original = cli.http.client.HTTPConnection
+        def connect(host,port,**kwargs):
+            self.assertEqual((host,port),('10.0.2.2',self.service.gateway.port))
+            return original('127.0.0.1',port,**kwargs)
+        def event():
+            stream = client.events(0)
+            try:
+                return json.loads(next(stream))
+            finally:
+                stream.close()
+        with patch.object(cli.http.client,'HTTPConnection',side_effect=connect):
+            status,reply = await asyncio.to_thread(client.request,'POST','/vm/say',
+                {'text':'TEST_CLI','request_id':'TEST_CLI_SAY'})
+            self.assertEqual((status,reply['state']),(200,'completed'))
+            first = await asyncio.to_thread(event)
+            self.assertEqual((first['text'],first['by']),('TEST_CLI','program'))
+            status,reply = await asyncio.to_thread(client.request,'POST','/vm/send-file',
+                {'path':'/work/report.txt','request_id':'TEST_CLI_FILE'})
+            self.assertEqual((status,reply['state']),(202,'queued'))
+            status,stored = await asyncio.to_thread(client.request,'GET','/vm/actions?request_id=TEST_CLI_FILE')
+            self.assertEqual((status,stored['action_id']),(200,reply['action_id']))
+
     async def test_only_bounded_regular_files_from_this_workspace_are_accepted(self):
         outside = self.root/'TEST_PRIVATE'; outside.write_bytes(b'TEST_OUTSIDE')
         (self.work/'link').symlink_to(outside)

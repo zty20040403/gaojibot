@@ -12,4 +12,21 @@ Summary: VM 中程序的身份、受限发言、模型唤醒与可续读消息�
 
 - 程序可用 `POST /vm/send-file`，JSON 为 `{"path":"/work/report.txt","request_id":"TEST_FILE","program":"TEST_PROGRAM"}`，可选 filename。只发当前工作区普通文件，与 say 共用额度；拒绝软链接、目录、特殊文件。202 不代表送达，仍按动作 ID 查询。文件排队后再修改路径内容不会改变已保存的附件，未知结果不能换 ID 盲目再发。
 
-`gaoji` CLI 和常驻单元同步尚在接线；不要声称已经安装或自动恢复。人工文件交付也可以继续用后台现有 `send_file_from_sandbox`。长期任务最终用常驻程序，单次提醒仍用 `schedule_set`。
+## CLI
+
+先 `command -v gaoji` 检查工具是否安装；旧 VM 的工具升级由 owner 安排，不能误称已经安装。命令只用 Python 标准库：
+
+```sh
+gaoji say 'TEST 通知' --program TEST_PROGRAM --request-id TEST_NOTICE_1
+gaoji wake 'TEST 检查结果，请判断是否值得通知' --program TEST_PROGRAM
+gaoji send-file /work/report.txt --program TEST_PROGRAM --request-id TEST_FILE_1
+gaoji status --request-id TEST_FILE_1
+gaoji history --query 'TEST 关键字'
+gaoji web-search 'TEST 最新版本'
+gaoji web-fetch https://example.test
+gaoji events --after 123
+```
+
+写动作的 request_id 会先输出到 stderr，JSON 结果在 stdout；非零退出表示失败或结果不明。保存 ID，用 status 检查，不换 ID 盲目重试。events 保留空行心跳，断流时报告最后完整输出的 ID；用它续读。`--program` 默认使用 GAOJI_PROGRAM，没有时用 manual。
+
+常驻单元同步尚在接线，不能声称自动恢复。人工文件交付也可以用后台现有 `send_file_from_sandbox`。长期任务最终用常驻程序，单次提醒仍用 `schedule_set`。

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 
 from tests.qq_official_file_fixture import FileFixture
-from tests.test_qq_official_simple_files import FileDeliveryTests as fixture
+from tests import test_qq_official_simple_files as fixture
 from tests.test_vm_sessions import BOOT
 from src.plugins.ai_chat.adapters.qq_official.file_upload import FileUploadError
 from src.plugins.ai_chat.adapters.qq_official.program_actions import ProgramActions
@@ -16,7 +16,7 @@ from src.plugins.ai_chat.adapters.qq_official.vm_sessions import VMSessions
 
 class ProgramFileDeliveryTests(FileFixture,unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        await fixture.asyncSetUp(self)
+        await fixture.FileDeliveryTests.asyncSetUp(self)
         self.sessions = VMSessions(self.tx,self.token,private_admission=self.admission,clock=lambda:self.now)
         self.current = self.sessions.issue(self.endpoint,'s123456',BOOT,expected_route=(1,1)).source
         self.actions = ProgramActions(self.sessions)

@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F2 标准库 CLI（未部署）
+
+- 增加无第三方依赖的 `gaoji say/wake/send-file/history/web-search/web-fetch/events/status`；新 VM cloud-init 和显式旧 VM 工具升级使用同一脚本。每次重新读 VM 凭据，仅固定宿主地址，不使用环境代理、不跟重定向。
+- 写请求先输出 request_id，传输失败不自动重试；status 可按原 ID 找回结果。events 只输出完整行，保留心跳，断流非零退出并报告最后消费的游标供 --after 续读。
+- 13 项 CLI/真实 HTTP 文件入口组合及后续 19 项含程序文件投递的组合通过（有重叠），包含直接对真实宿主路由发言、读事件、排队文件和查状态；`python -I … --help` 验证脚本可脱离项目独立运行。Ruff、两项导入检查通过；未在真实 VM 安装。
+- 固定 320058e（包括文件 HTTP、不含 CLI）全套正在 `/tmp/gaoji-python-files-full.log` 运行，PID 文件 `/tmp/gaoji-python-files-test.pid`。不能当成已通过或当前 HEAD 全套。
+- 常驻单元同步/恢复/保活与崩溃保护、管理台和 /units 仍待实施。
+
 ## 开发记录（2026-11-12）· Python F2 VM 发文件 HTTP（未部署）
 
 - VM-only `POST /vm/send-file` 从当前会话的 /work 有界导出普通文件，拒绝穿越、目录、逐级软链接、FIFO、空文件和超限内容；不接受 host path、endpoint、actor 或 artifact ID。导出不解压、不执行文件内容。
