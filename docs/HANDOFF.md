@@ -5,6 +5,7 @@
 - `sandbox_units.py` / `gaoji-units` 同步登记目录中的 service/timer：新增启动、改动重启、删除停止，输出逐单元状态和失败日志；不覆盖系统同名单元、mask 或不属于本工具的 runtime 文件/drop-in。
 - 文件按目录描述符读取，拒绝逐级软链接、特殊文件、非 UTF-8/空/超限内容；每文件 64 KiB、最多 32 单元。共享 slice 的 CPU/IO 权重 10、MemoryMax=50%；环境 GAOJI_PROGRAM 使用服务基本名。
 - 7 项真实临时文件/替身 systemd 回归，加既有 CLI 共 12 项通过；Ruff、导入检查通过。标准库客户端 wrapper 也放进 cloud-init write_files，prepared 镜像跳过安装时仍能得到新命令。
+- 固定 d109469（包含迁移/端口修复、CLI 与手动单元同步）的全套复测已启动，快照 `/tmp/gaoji-python-files-final-check`，日志 `/tmp/gaoji-python-files-final.log`，PID 文件 `/tmp/gaoji-python-files-final-test.pid`，退出码文件 `/tmp/gaoji-python-files-final.exit`；尚无结果。
 - 尚未接开机自动同步、宿主崩溃门槛、VM 保活与管理台，不能称为完整常驻恢复；真实 systemd/VM 验收仍待 owner。
 
 ## 开发记录（2026-11-12）· Python F2 全套发现的迁移与测试端口问题
