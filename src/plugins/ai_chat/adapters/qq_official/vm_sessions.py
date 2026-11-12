@@ -146,12 +146,15 @@ class VMSessions:
             raise PermissionError('vm_route_replaced')
         return current
 
-    def authenticate(self, token):
+    def authenticate_cursor(self, cursor, token):
         digest = fingerprint(token)
+        assert_epoch(cursor,self.lease)
+        row = cursor.execute('SELECT * FROM qq_official_vm_sessions WHERE token_hash=?',(digest,)).fetchone()
+        return self._current(cursor,row)
+
+    def authenticate(self, token):
         with self.transaction() as cursor:
-            assert_epoch(cursor,self.lease)
-            row = cursor.execute('SELECT * FROM qq_official_vm_sessions WHERE token_hash=?',(digest,)).fetchone()
-            return self._current(cursor,row)
+            return self.authenticate_cursor(cursor,token)
 
     def check(self, cursor, current):
         """Recheck a host-authenticated source inside each short action transaction."""

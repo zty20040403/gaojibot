@@ -34,13 +34,28 @@ class ProgramActions:
         self.sessions = sessions
         self.transaction,self.clock = sessions.transaction,sessions.clock
 
+    def _capture(self, cursor, current):
+        generation = state(cursor,current.endpoint)['stop_generation']
+        if not permitted(cursor,current.endpoint,generation=generation):
+            raise ProgramDenied('conversation_stopped_or_replaced')
+        return generation
+
+    def authenticate(self, token):
+        # Capture before waiting for guest identity/body I/O, not afterwards.
+        with self.transaction() as cursor:
+            current = self.sessions.authenticate_cursor(cursor,token)
+            return current,self._capture(cursor,current)
+
     def capture(self, current):
         with self.transaction() as cursor:
             self.sessions.check(cursor,current)
-            generation = state(cursor,current.endpoint)['stop_generation']
+            return self._capture(cursor,current)
+
+    def require_generation(self, current, generation):
+        with self.transaction() as cursor:
+            self.sessions.check(cursor,current)
             if not permitted(cursor,current.endpoint,generation=generation):
                 raise ProgramDenied('conversation_stopped_or_replaced')
-            return generation
 
     def check(self, cursor, row):
         """A short transactional fence; never hold it across model/QQ/VM I/O."""

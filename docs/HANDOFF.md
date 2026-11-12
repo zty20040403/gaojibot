@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F2 写请求身份代数（未部署）
+
+- 写请求在首次凭据事务里捕获停止代数，然后才等待 guest-agent；核验期间发生 stop/start 也拒绝旧请求。VM HTTP scope 按只读/写代数分开，停止会取消在途写 scope，但不会取消按方案保留的 API/读请求。
+- 写身份持久复查中止会返回 403 和 `conversation_stopped_or_replaced`，不误报成正文已经处理或成功发送；失效任务令牌和 VM-only 入口的认证边界不变。此补丁只接认证骨架，下一步注册具体 `/vm` 路由。
+- 32 项真实数据库/guest 文件、VM API、生命周期及 Codex 组合通过，Ruff/导入检查通过。另在固定 `c79ca91` 快照运行全套：`/tmp/gaoji-python-f2-credential-full.log`，尚未结束，不代表新写身份补丁全套通过。
+
 ## 开发记录（2026-11-12）· Python F2 程序发言发送底座（未部署）
 
 - 程序动作现在可形成独立发送计划：只有持久动作记录、精确正文/物理 endpoint/stop generation 匹配时，才允许已验证的真实 bot 身份作为内部 requester；普通 bot requester 仍被拒绝，没有放宽通用 SendRequest，也不借用真人或 owner。

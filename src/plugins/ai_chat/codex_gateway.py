@@ -14,6 +14,7 @@ import secrets
 import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
+from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 import uvicorn
@@ -25,15 +26,17 @@ IDLE_SECONDS = 120
 class RequestScope:
     """Host-authenticated identity and revocation for complete ASGI lifetimes."""
 
-    def __init__(self, *, source=None, current=None, caller_ref=None):
+    def __init__(self, *, source=None, current=None, caller_ref=None, identity=None, generation=None):
         self.source = dict(source) if source is not None else None
         self.current = current
+        self.identity,self.generation = identity,generation
         self.caller_ref = caller_ref or (f"job#{source['job_id']}" if source and 'job_id' in source else None)
         self.requests = set()
         self.revoked = False
 
-    def close(self):
+    def close(self, *, status=401, reason='caller token revoked'):
         self.revoked = True
+        self.denial = status,reason
         for task in tuple(self.requests):
             if not task.cancelling():
                 task.cancel()
@@ -77,23 +80,26 @@ class _ModelRequest:
     reject the next request. The response's upstream socket closes even if
     cancellation occurs before the streaming generator starts.
     """
-    def __init__(self, gateway, handler=None):
+    def __init__(self, gateway, handler=None, *, vm_only=False, write=False):
         self.gateway = gateway
+        self.vm_only,self.write = vm_only,write
         self.handler = handler or gateway._responses
         self.model_request = handler is None
 
     async def __call__(self, scope, receive, send):
         request = Request(scope,receive)
         header = request.headers.get('authorization','')
-        channel = self.gateway.channels.get(header[7:]) if header.startswith('Bearer ') else None
+        channel = self.gateway.channels.get(header[7:]) if header.startswith('Bearer ') and not self.vm_only else None
         if (channel is None and not self.model_request and header.startswith('Bearer gvm_')
                 and self.gateway.vm_authority is not None):
             try:
-                channel = await self.gateway.vm_authority.authorize(header[7:])
+                channel = await self.gateway.vm_authority.authorize(header[7:],write=self.write)
             except asyncio.CancelledError:
                 if not self.gateway.vm_authority.closed:
                     raise
                 return await JSONResponse({'error':'vm_service_closed'},503)(scope,receive,send)
+            except HTTPException as error:
+                return await JSONResponse({'error':error.detail},error.status_code)(scope,receive,send)
             except PermissionError:
                 return await JSONResponse({'error':'invalid vm token'},401)(scope,receive,send)
             except Exception:
@@ -117,7 +123,7 @@ class _ModelRequest:
             if not channel.revoked:
                 raise
             if not started:
-                await JSONResponse({'error':'caller token revoked'},401)(scope,receive,send)
+                await JSONResponse({'error':channel.denial[1]},channel.denial[0])(scope,receive,send)
             elif not finished:
                 if not self.model_request:
                     # A binary/JSON API has no SSE completion marker. Abort the

@@ -67,6 +67,16 @@ class VMCredentials:
 
     async def authenticate(self, token):
         current = await self.calls(self.store.authenticate,token)
+        await self._verify(current)
+        return current
+
+    async def authenticate_action(self, token, actions):
+        current,generation = await self.calls(actions.authenticate,token)
+        await self._verify(current)
+        await self.calls(actions.require_generation,current,generation)
+        return current,generation
+
+    async def _verify(self, current):
         # A new HTTP request proves the VM still has this boot and token. A
         # caller cannot reuse an exfiltrated token after the VM has rebooted.
         observed = await self._inspect(current.endpoint,current.sandbox_id)
@@ -74,7 +84,6 @@ class VMCredentials:
             await self.calls(self.store.discard,current)
             raise PermissionError('vm_boot_replaced')
         await self.check(current)
-        return current
 
     async def check(self, current):
         # Streaming/action boundaries use this cheap persistent check; boot
