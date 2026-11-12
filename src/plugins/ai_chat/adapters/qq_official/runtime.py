@@ -406,7 +406,7 @@ class OfficialRuntime:
             source = SimpleNamespace(job_id=None, payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
                 lease_generation=1, attempts=1, kind=account_job_kind('turn', token.account_key), endpoint=row['endpoint_key'],
                 conversation_generation=row['conversation_generation'],command=row['turn_text'].lstrip().startswith(('/', '!')))
-            key = row['endpoint_key'], row['sender_actor_key'], row['route_epoch']
+            key = row['endpoint_key'], row['sender_actor_key'], row['route_epoch'], row['conversation_generation']
             if batcher.add(key, source, row['turn_text'], requested=result.reply_requested,
                            canonical_id=row['canonical_message_id']):
                 return
@@ -660,6 +660,7 @@ class OfficialRuntime:
         from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json
         from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
         from .renderer import render_plan
+        from .conversation_control import permitted
 
         now = int(self.store.clock())
         notice = '刚才重启了，这条没处理完，麻烦再说一次'
@@ -679,6 +680,14 @@ class OfficialRuntime:
             for row in rows:
                 endpoint = EndpointKey.parse(row['endpoint_key'])
                 actor = ActorKey.parse(row['requester_actor_key'])
+                if not permitted(cursor,endpoint,canonical=row['canonical_message_id'],commands=row['execution_kind']=='command'):
+                    if row['journal_turn_id'] is not None:
+                        self.journal.finish_turn(row['journal_turn_id'],status='aborted',finished_at=now,
+                            trace_payload={'failure':{'code':'conversation_stopped_or_replaced'},'usage_incomplete':True},
+                            transaction_cursor=cursor)
+                    cursor.execute('''UPDATE qq_official_turn_executions SET state='cancelled',
+                        reason_code='conversation_stopped_or_replaced',updated_at=? WHERE execution_id=?''',(now,row['execution_id']))
+                    continue
                 if row['state'] == 'result_ready' and row['result_body_json'] and row['plan_id'] is None:
                     plan = self.outbox.enqueue(token,
                         rendered=render_plan(body_from_json(row['result_body_json']), endpoint), requester=actor,

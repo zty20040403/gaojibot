@@ -92,6 +92,14 @@ class LifecycleTests(fixture.ExecutionFixture):
         self.assertEqual(self.query('SELECT input_tokens,output_tokens FROM usage_events'),[{'input_tokens':3,'output_tokens':4}])
         self.assertFalse(self.query('SELECT * FROM deliveries'))
 
+    def test_lifecycle_execution_failure_is_not_reported_as_user_cancellation(self):
+        async def run():
+            turn = await self.begin_lifecycle()
+            await self.life.interrupted(turn_id=turn,reason='turn_execution_interrupted',trace=self.trace)
+        asyncio.run(run())
+        self.assertEqual(self.query('SELECT status FROM agent_turns'),[{'status':'crashed'}])
+        self.assertEqual(len(self.query('SELECT * FROM usage_events')),1)
+
     def test_lifecycle_quota_refusal_freezes_without_fake_model_journal(self):
         async def run():
             await self.life.finish(turn_id=None, status="succeeded", trace=None, final_text="TEST_QUOTA",

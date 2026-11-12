@@ -160,7 +160,10 @@ class OfficialTurnLifecycle:
                 if turn_id is not None:
                     payload = trace.to_payload() if trace else {}
                     payload.update(failure={'code':reason},usage_incomplete=True)
-                    self.journal.finish_turn(turn_id,status='aborted',final_text='',trace_payload=payload,
+                    from .conversation_control import permitted
+                    cancelled = reason=='turn_cancelled_or_owner_lost' or not permitted(cursor,self.handle.endpoint,
+                        canonical=self.handle.canonical_message_id,commands=row['execution_kind']=='command')
+                    self.journal.finish_turn(turn_id,status='aborted' if cancelled else 'crashed',final_text='',trace_payload=payload,
                         input_tokens=trace.input_tokens if trace else 0,output_tokens=trace.output_tokens if trace else 0,
                         total_tokens=trace.total_tokens if trace else 0,finished_at=int(self.clock()),transaction_cursor=cursor)
                     if self.usage is not None and trace is not None and (trace.input_tokens or trace.output_tokens):

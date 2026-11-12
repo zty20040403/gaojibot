@@ -54,6 +54,48 @@ class LiveControlTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(fake.received),4)  # stop/help/start/new, never old work
                 await runtime.stop()
 
+    async def test_stopped_conversation_survives_runtime_restart_without_old_notice(self):
+        await self.restart_after_control(resume_before=False)
+
+    async def test_resumed_conversation_survives_runtime_restart_without_old_notice(self):
+        await self.restart_after_control(resume_before=True)
+
+    async def restart_after_control(self, *, resume_before):
+        entered = asyncio.Event()
+        calls = []
+        async def completion(**kwargs):
+            calls.append(kwargs)
+            if len(calls)==1:
+                entered.set()
+                await asyncio.Event().wait()
+            return base.model_response('TEST new after restart',[],kwargs)
+        app = self.application()
+        with patch('src.plugins.ai_chat.agent_loop._create_completion',new=completion):
+            async with verified_ready_platform() as fake:
+                runtime = await self.open_runtime(fake,app)
+                await self.emit(fake,native='TEST_BEFORE_STOP',content='TEST long question')
+                await asyncio.wait_for(entered.wait(),5)
+                await self.emit(fake,native='TEST_STOP',content='/stop')
+                await self.complete('TEST_STOP')
+                await self.wait_db("SELECT turn_id FROM agent_turns WHERE status='aborted'")
+                if resume_before:
+                    await self.emit(fake,native='TEST_START',content='/start')
+                    await self.complete('TEST_START')
+                await runtime.stop()
+                count = len(fake.received)
+                restarted = await self.open_runtime(fake,app)
+                self.assertEqual(len(fake.received),count)
+                if not resume_before:
+                    await self.emit(fake,native='TEST_PAUSED',content='TEST still paused')
+                    await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id='TEST_PAUSED' AND status='processed'")
+                    await self.emit(fake,native='TEST_START',content='/start')
+                    await self.complete('TEST_START')
+                await self.emit(fake,native='TEST_AFTER_RESTART',content='TEST new request')
+                await self.complete('TEST_AFTER_RESTART')
+                self.assertEqual(len(calls),2)
+                self.assertEqual(len(fake.received),3)
+                await restarted.stop()
+
     async def test_database_control_from_another_process_cancels_live_work(self):
         from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
         from src.plugins.ai_chat.platform_types import EndpointKey
@@ -76,6 +118,32 @@ class LiveControlTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(cancelled.wait(),3)
                 await self.wait_db("SELECT turn_id FROM agent_turns WHERE status='aborted'")
                 self.assertEqual(fake.received,[])
+                await runtime.stop()
+
+    async def test_new_input_never_joins_old_batch_before_stop_notification_arrives(self):
+        from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
+        from src.plugins.ai_chat.platform_types import EndpointKey
+        calls = []
+        async def completion(**kwargs):
+            calls.append(kwargs)
+            return base.model_response('TEST new answer',[],kwargs)
+        with patch('src.plugins.ai_chat.agent_loop._create_completion',new=completion), patch.object(
+                MessageBatcher,'forget'), patch(
+                'src.plugins.ai_chat.adapters.qq_official.message_batch.MessageBatcher',
+                side_effect=lambda dispatch:MessageBatcher(dispatch,idle=.4,maximum=1)):
+            async with verified_ready_platform() as fake:
+                runtime = await self.open_runtime(fake,self.application())
+                await self.emit(fake,native='TEST_OLD_BATCH',content='那个')
+                await self.wait_db("SELECT canonical_message_id FROM qq_official_inbound_events WHERE native_message_id='TEST_OLD_BATCH' AND status='processed'")
+                endpoint = EndpointKey(runtime.loaded.account,'private','TEST_RUNTIME_OWNER')
+                with runtime.store.transaction() as cursor:
+                    for action in ('stop','start'):
+                        change(cursor,endpoint,action,now=int(runtime.store.clock()),actor='TEST_ADMIN',authorized=True)
+                await self.emit(fake,native='TEST_NEW_BATCH',content='TEST new request')
+                await self.complete('TEST_NEW_BATCH')
+                await asyncio.sleep(.5)
+                self.assertEqual(len(calls),1)
+                self.assertEqual(len(fake.received),1)
                 await runtime.stop()
 
     async def test_stop_forgets_unfinished_batch_without_replaying_after_start(self):

@@ -22,6 +22,7 @@ class Batch:
 
 
 class MessageBatcher:
+    """Keys are (physical endpoint, actor, route epoch, stop generation)."""
     def __init__(self, dispatch, *, idle=10, maximum=20, clock=time.monotonic):
         self.dispatch, self.idle, self.maximum, self.clock = dispatch, idle, maximum, clock
         self.pending, self.tasks = {}, set()
@@ -68,7 +69,7 @@ class MessageBatcher:
                 self.pending.pop(key)
                 batch.task.cancel()
         for key in tuple(self.recent):
-            if key[0]==endpoint:
+            if key[0]==endpoint and (before_generation is None or key[3]<before_generation):
                 self.recent.pop(key)
 
     async def close(self):
