@@ -604,8 +604,9 @@ class OfficialRuntime:
             if self.application is not None:
                 from .background_agents import OfficialBackgroundAgents
                 self.agent_service = OfficialBackgroundAgents(self, token, self.application)
-                await self._calls(self.agent_service.store.recover, token.account_key)
                 resources.push_async_callback(self.agent_service.close)
+                await self._calls(self.agent_service.store.recover, token.account_key)
+                await self.agent_service.start()
                 agent_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
                     concurrency=3, per_scope_limit=3, database_calls=self._calls)
                 agent_worker.register(account_job_kind("agent", self.loaded.account.key), self.agent_service.execute)

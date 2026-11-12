@@ -67,11 +67,21 @@ class OfficialBackgroundAgents:
         self.api_proxy = HostAPIProxy(self.host_apis,HostAPICalls(app.database,clock=self.clock),calls=self.calls) if self.host_apis else None
         self.gateway = CodexGateway(port=settings.background_gateway_port, upstream=upstream,
             model=self.model_settings.get, logger=app.logger,api_handler=self.api_proxy.handle if self.api_proxy else None)
+        self.vm_lifecycle = None
+        if getattr(getattr(app,'sandbox_manager',None),'backend',None)=='vm':
+            from .vm_lifecycle import OfficialVMLifecycle
+            self.vm_lifecycle = OfficialVMLifecycle(transaction=runtime.store.transaction,lease=token,
+                private_admission=runtime.store.admitted,manager=app.sandbox_manager,calls=self.calls,
+                gateway=self.gateway,logger=app.logger,clock=self.clock)
         engine = CodexEngine(self.gateway, self.model_settings, start_vm=self.start_vm,
                              guest_exec=self.guest_exec, clock=self.clock)
         self.runner = BackgroundRunner(self.store, calls=self.calls, session_factory=self.session,
             save_report=self.save_report, ask_main=self.ask_main, record_usage=self.record_usage,
             logger=app.logger, engine=engine, clock=self.clock)
+
+    async def start(self):
+        if self.vm_lifecycle is not None:
+            await self.vm_lifecycle.start()
 
     def check(self, cursor, row, *, scheduled=False):
         assert_epoch(cursor, self.token)
@@ -211,6 +221,8 @@ class OfficialBackgroundAgents:
                 self.results[row['job_id']] = asyncio.create_task(present(self, row))
 
     async def close(self):
+        if self.vm_lifecycle is not None:
+            await self.vm_lifecycle.close()
         for task in self.results.values():
             task.cancel()
         await asyncio.gather(*self.results.values(), return_exceptions=True)

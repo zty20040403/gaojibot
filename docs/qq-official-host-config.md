@@ -41,9 +41,13 @@ VM 需通过模板或显式工具升级安装 `gaoji-video`，将 `/work` 下视
 
 主动接话启用时提供 `profile`，可指定 `max_reply_chars`。新消息去抖三秒，每个会话每小时最多八次；旧 `percent`、`threshold` 和 `max_checks_per_hour` 字段应删除。定时任务由 `schedules` 表和工具管理，不放在此文件。
 
-## 宿主密钥 API（任务令牌入口已实现；VM 令牌待 F2）
+## 宿主密钥 API（任务与 VM 令牌入口已实现）
 
-可在宿主 JSON 的 `apis` 对象里登记声明；没有配置时保持关闭。后台任务启动的中转服务提供 `/api/<名字>/<路径>`：VM 请求 `http://10.0.2.2:18640/api/<名字>/…`，头带 `Authorization: Bearer $GAOJI_JOB_TOKEN`（需展开环境变量）。非默认端口以后台提示词为准。任务结束/取消后令牌失效；VM 令牌入口将在 F2 接入，当前不能无令牌调用。
+可在宿主 JSON 的 `apis` 对象里登记声明；没有配置时保持关闭。中转服务提供 `/api/<名字>/<路径>`：VM 请求 `http://10.0.2.2:18640/api/<名字>/…`，头带 `Authorization: Bearer $GAOJI_JOB_TOKEN`（需展开环境变量）。非默认端口以后台提示词为准。任务结束/取消后任务令牌失效；没有令牌或失效任务令牌不会自动降级为 VM 身份。
+
+VM 后端启动时中转服务随账号运行时启动，无需先有后台任务。会话 VM 的令牌在 `/run/gaoji/token`，连接地址在 `/run/gaoji/connection.json`；创建/启动时写入，宿主重启会核对仍在运行的 VM 的 boot 与令牌文件哈希再恢复，停止/销毁前撤销。程序调用 `/api` 可读取此文件设置 Bearer 头，不要把值复制进脚本、日志或 git。这个身份只能代表本会话，不能调用模型路由或 Codex TCP 通道，也没有创建 VM 的人的 owner 权限。
+
+任务与 VM 调用共用按物理会话的 API 限额；审计分别标为 `job#…` 和 `vm:…`。`/stop` 取消任务身份，但按方案保留 VM 的 `/api` 能力，不停掉 VM；待实现的 `/vm/say`、`/vm/wake`、`/vm/send-file` 会另外受停止门槛限制。此处的 VM 凭据接线不代表常驻单元/发言/唤醒功能已经完成。
 
 ```json
 {

@@ -162,6 +162,14 @@ class VMSessions:
             raise PermissionError('vm_token_revoked')
         return current
 
+    def revoke_vm(self, sandbox_id):
+        """Host lifecycle after its VM ownership check; absent routes need no cleanup."""
+        with self.transaction() as cursor:
+            assert_epoch(cursor,self.lease)
+            cursor.execute('''UPDATE qq_official_vm_sessions SET revoked_at=?,updated_at=? WHERE sandbox_id=?
+                AND endpoint_key IN (SELECT endpoint_key FROM qq_official_endpoints WHERE account_key=?)''',
+                (int(self.clock()),int(self.clock()),sandbox_id,self.lease.account_key))
+
     def revoke(self, endpoint):
         with self.transaction() as cursor:
             assert_epoch(cursor,self.lease)

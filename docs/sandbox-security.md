@@ -104,6 +104,31 @@ and shared disk ownership. tap or passt with explicit rules (as in maxx) needs
 a bridge, DHCP, NAT and a new relay address. The cgroup filter keeps slirp and
 the relay address as they are.
 
+### Conversation VM credentials
+
+A conversation VM is shared by that conversation's members as root. Anyone in
+it can ask the bot to read `/run/gaoji/token`; this is intentionally a
+conversation capability, not a personal identity or a host/API secret. The host
+stores only its SHA-256 hash and binds it to the physical endpoint, VM, boot,
+account lease and route generation. It never inherits the creator's owner or
+operations privileges, and request headers/body cannot choose another scope.
+
+Creation/start writes the token through the guest agent; stopping/destroying a
+VM revokes it before stopping the guest. On host restart, a running VM must have
+the same observed boot and token-file hash before its capability is restored.
+New HTTP requests also check its current boot/file identity. Rotation/revocation
+cancels admitted API calls, including upstream header waits and binary streams;
+a partial download is a transport failure, not a successful EOF.
+
+The VM token currently authorizes configured `/api/<name>/…` routes only. It
+cannot use `/v1/models`, model responses, or the Codex app-server tunnel. Job
+tokens remain separate; missing or expired job tokens never fall back to VM
+authority. Both callers share physical-conversation API quotas. `/stop` leaves
+VM `/api` access available by design; it does not terminate guest programs.
+The forthcoming `/vm` action routes must separately enforce the stop generation.
+Guest-agent integration tests use local doubles and do not prove real KVM or
+QQ acceptance; the remaining resident-program facilities are not yet complete.
+
 ### Verifying a host
 
 Run as root on the host after deployment:

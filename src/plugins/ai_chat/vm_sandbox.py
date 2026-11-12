@@ -183,6 +183,7 @@ class VmSandboxManager:
         self._conversation_locks = {}
         self._conversation_guests = set()
         self.github_identity = None  # Public login/id from protected host configuration, never a token.
+        self.conversation_lifecycle = None
 
     @asynccontextmanager
     async def allocation_lock(self):
@@ -510,6 +511,7 @@ class VmSandboxManager:
                 if code:
                     raise SandboxError(f"VM 初始化失败：{err.decode(errors='replace')[-500:]}")
                 await self._configure_github(owner,sandbox_id)
+                await self._conversation_event('ready',owner,sandbox_id)
                 metadata["state"] = "ready"
                 metadata["last_used"] = int(time.time())
                 self._save_metadata(sandbox_id, metadata)
@@ -519,6 +521,11 @@ class VmSandboxManager:
                     "purpose": str(metadata["purpose"]), "toolset": "vm",
                 }
             except (Exception, asyncio.CancelledError):
+                if started:
+                    try:
+                        await self._conversation_event('stopping',owner,sandbox_id)
+                    except Exception as error:
+                        logger.warning('VM credential cleanup failed error=%s',type(error).__name__)
                 clean = True
                 if started:
                     code, _, _ = await self._run(
@@ -826,6 +833,10 @@ class VmSandboxManager:
     async def search_nix_packages(self, query: str) -> list[dict[str, str]]:
         raise SandboxError("VM 使用 Debian 软件包；请用 sandbox_exec 的 packages 参数安装具体包名。")
 
+    async def _conversation_event(self, event, owner, sandbox_id):
+        if owner.startswith('qqo:conversation:') and self.conversation_lifecycle is not None:
+            await getattr(self.conversation_lifecycle,event)(owner,sandbox_id)
+
     async def _configure_github(self, owner, sandbox_id):
         if self.github_identity is None or not owner.startswith('qqo:conversation:'):
             return
@@ -845,6 +856,7 @@ class VmSandboxManager:
                 if owner.startswith('qqo:conversation:'):
                     await self._wait_guest(sandbox_id, timeout=60)
                     await self._configure_github(owner,sandbox_id)
+                    await self._conversation_event('ready',owner,sandbox_id)
                 return
             existing = await self._all_metadata()
             running = [item for item in existing if await self._running(str(item["id"]))]
@@ -857,15 +869,16 @@ class VmSandboxManager:
             await self._virsh("start", self._name(sandbox_id))
             await self._wait_guest(sandbox_id)
             await self._configure_github(owner,sandbox_id)
+            await self._conversation_event('ready',owner,sandbox_id)
             metadata["last_started"] = int(time.time())
             self._save_metadata(sandbox_id, metadata)
 
     async def stop_owned(self, owner: str, sandbox_id: str) -> None:
-        lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
-        async with lock:
+        async with self.io_lock(sandbox_id):
             await self._metadata(owner, sandbox_id)
             if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
                 raise SandboxError("VM 正在执行命令，不能停止。")
+            await self._conversation_event('stopping',owner,sandbox_id)
             if not await self._running(sandbox_id):
                 return
             code, _, err = await self._guest_exec(sandbox_id, "/usr/bin/sync", [], timeout=20)
@@ -884,8 +897,8 @@ class VmSandboxManager:
         await self._metadata(owner, sandbox_id)
         if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
             raise SandboxError("VM 正在执行命令，不能销毁。")
-        lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
-        async with lock:
+        async with self.io_lock(sandbox_id):
+            await self._conversation_event('stopping',owner,sandbox_id)
             if await self._running(sandbox_id):
                 await self._virsh("destroy", self._name(sandbox_id))
             if await self._defined(sandbox_id):

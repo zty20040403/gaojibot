@@ -71,7 +71,7 @@
 - At most **3** background jobs run at once, each for up to **2 hours**. Jobs can be steered, interrupted and cancelled.
 - Group owners/admins or a host owner can `/stop`, `/start` and `/kill`; an admitted private-chat peer controls only that private chat. Stop survives restart, keeps recording messages and optional image captions, and cancels old replies/jobs. Commands still respond. Start never replays old messages/results; skipped schedule occurrences stay skipped. A request already accepted by QQ cannot be unsent by stopping.
 - A conversation reuses its own VM and `/work`. A job that was running when the service restarted is marked as interrupted; its files are kept, and it is not silently resumed.
-- **QQ credentials, model keys and operations credentials stay on the host.** The VM only receives a revocable job token.
+- **QQ credentials, model keys and operations credentials stay on the host.** The VM only receives revocable job and conversation-scoped VM tokens, never credentials that can retrieve host secrets.
 - The VM's network cannot reach the host or the internal network. Only the public internet, DNS and the relay ports are allowed. Using a VM is not, by itself, treated as isolation.
 - The background agent cannot send QQ messages. `history`, search and `ask_main` are called by the host on its behalf; `ops_read` is available only to jobs started from the owner's private chat.
 - A finished job, an uploaded file, a queued message and a platform receipt are separate stages. **A generated result is not counted as delivered.**
@@ -173,7 +173,7 @@ Tests use a separate local database and never the production QQ credentials. Rea
 
 gaoji currently targets the official QQ platform only. The old OneBot/NapCat adapter, the desktop app, project workspaces, the group wiki, pinned messages, MCP, bridges and multi-role sub-agents have been removed. Their code is kept under the `pre-rework-20261031` tag and is not planned work on the current roadmap.
 
-Optional host-keyed APIs let background jobs use a GitHub bot account for public repositories: credentials stay on the host, calls have per-conversation limits and an admin audit, and commits use a public noreply identity. The owner must configure the account and keys; real GitHub/VM acceptance is still pending, and resident-program VM tokens will follow in F2. See [official host configuration](docs/qq-official-host-config.md). Whether long-job results and reminders can be sent proactively also depends on the target group's permissions and the official quota.
+Optional host-keyed APIs let background jobs use a GitHub bot account for public repositories: credentials stay on the host, calls have per-conversation limits and an admin audit, and commits use a public noreply identity. The owner must configure the account and keys; real GitHub/VM acceptance is still pending. VM-token API access is wired, while resident programs, wake and direct messaging are still in progress. See [official host configuration](docs/qq-official-host-config.md). Whether long-job results and reminders can be sent proactively also depends on the target group's permissions and the official quota.
 
 </details>
 

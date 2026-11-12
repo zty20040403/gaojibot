@@ -23,9 +23,7 @@ class VMAPIAuthority:
             if self.closed:
                 raise PermissionError('vm_service_closed')
             # Only the digest-bearing source is retained, never the raw token.
-            for previous in tuple(self.scopes):
-                if previous.endpoint==current.endpoint and previous!=current:
-                    self._retire(self.scopes.pop(previous))
+            self.rotated(current)
             scope = self.scopes.get(current)
             if scope is None or scope.revoked:
                 if scope is not None:
@@ -45,6 +43,11 @@ class VMAPIAuthority:
             self.retired.add(task)
             task.add_done_callback(self.retired.discard)
         scope.close()
+
+    def rotated(self, current):
+        for previous in tuple(self.scopes):
+            if previous.endpoint==current.endpoint and previous!=current:
+                self._retire(self.scopes.pop(previous))
 
     def revoke(self, sandbox_id):
         for current in tuple(self.scopes):
