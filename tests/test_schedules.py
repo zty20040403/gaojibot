@@ -62,3 +62,22 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(len(service.store.list(f.endpoint.key, f.actor.key)), 2)
         with f.tx() as cursor:
             self.assertEqual([row['id'] for row in store.list(cursor, f.endpoint.key, f.actor.key)], [two['id']])
+        from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
+        with f.tx() as cursor:
+            change(cursor,f.endpoint,'stop',now=f.now,actor='TEST_ADMIN',authorized=True)
+        due = f.query('SELECT next_at FROM schedules WHERE id=?',(two['id'],))[0]['next_at']
+        f.now = due
+        service.schedules.fire(two['id'],due)
+        paused = f.query('SELECT * FROM schedules WHERE id=?',(two['id'],))[0]
+        self.assertIsNone(paused['cancelled_at'])
+        self.assertIn('不会补发',paused['last_error'])
+        self.assertEqual(len(service.store.list(f.endpoint.key,f.actor.key)),2)
+        with f.tx() as cursor:
+            change(cursor,f.endpoint,'start',now=f.now,actor='TEST_ADMIN',authorized=True)
+        f.now = paused['next_at']
+        service.schedules.fire(two['id'],f.now)
+        future = service.store.list(f.endpoint.key,f.actor.key)[0]
+        self.assertEqual(future['state'],'queued')
+        self.assertEqual(future['conversation_generation'],1)
+        with f.tx() as cursor:
+            service.check(cursor,future)  # Future occurrences are not old-turn replays.

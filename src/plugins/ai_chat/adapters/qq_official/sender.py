@@ -204,6 +204,13 @@ class OfficialSender:
                 if mode == 'passive':
                     self._passive[endpoint.key]['used'] -= 1
                 return reservation
+            # A stop may commit while the database executor returns the claim.
+            # Once HTTP begins it cannot be retracted; its receipt remains true.
+            if not await self._calls(self.outbox.attempt_current,self.token,reservation):
+                if mode == 'passive':
+                    self._passive[endpoint.key]['used'] -= 1
+                return await self._calls(self.outbox.fail,self.token,delivery_id,
+                    'conversation_stopped_or_replaced',reservation=reservation)
             started = self.clock()
             payload = reservation.payload()
             error = None

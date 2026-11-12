@@ -66,7 +66,8 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
                  admission=None, challenge_id: str | None = None, pepper: bytes | None = None,
                  digest_key_id: str = "v1", binding_preview=None, control_reply_id=None, epoch_guard=assert_epoch,
                  max_wait_seconds: int = DEFAULT_MAX_WAIT_SECONDS, protected_ref=None,
-                 approval_source_id=None, approval_authority=None, source_guard=None, source_proof=None) -> PlanRef:
+                 approval_source_id=None, approval_authority=None, source_guard=None, source_proof=None,
+                 source_generation=None) -> PlanRef:
     """The adapter must pass current admission, not a model-supplied grant.
 
     The rendered object is sealed by the pure renderer. A duplicate identity
@@ -169,7 +170,16 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     mode, scheme, key_id = ("ephemeral", "hmac_sha256_v1", digest_key_id) if ephemeral else ("persistent", "sha256", None)
     if protected:
         mode = "protected"
-    immutable = dict(account_key=token.account_key, endpoint_key=endpoint.key,
+    from .conversation_control import permitted, state
+    command = cursor.execute('''SELECT 1 FROM qq_official_turn_executions WHERE endpoint_key=? AND requester_actor_key=?
+        AND canonical_message_id=? AND execution_kind='command' AND state='result_ready' ''',
+        (endpoint.key,requester.key,source_canonical_message_id)).fetchone() is not None
+    if not (control_view or ephemeral or binding_preview) and not permitted(cursor,endpoint,
+            canonical=source_canonical_message_id if purpose!='background_result' else None,
+            generation=source_generation,commands=command):
+        raise OutboxInvariantError('conversation_stopped_or_replaced')
+    immutable = dict(conversation_generation=state(cursor,endpoint)['stop_generation'],
+        account_key=token.account_key, endpoint_key=endpoint.key,
         requester_actor_key=requester.key, source_scope_key=source_scope_key,
         source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
         endpoint_generation=endpoint_row["generation"], route_epoch=endpoint_row["route_epoch"],

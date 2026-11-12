@@ -27,13 +27,18 @@ def permitted(cursor, endpoint, *, canonical=None, generation=None, commands=Fal
         return True
     if current['stopped'] or generation is not None and generation != current['stop_generation']:
         return False
-    return source is None or (not source['conversation_stopped'] and source['conversation_generation']==current['stop_generation'])
+    # Persisted child tasks/artifacts carry their own creation generation; a
+    # future scheduled occurrence may legitimately cite an older chat message.
+    return generation is not None or source is None or (not source['conversation_stopped'] and source['conversation_generation']==current['stop_generation'])
 
 
 def change(cursor, endpoint, action, *, now, actor, authorized):
     """Trusted host callback only; chat never supplies the authorized argument."""
     if not isinstance(endpoint,EndpointKey) or action not in OPERATIONS:
         raise ValueError('invalid_conversation_control')
+    cursor.execute('SELECT account_key FROM qq_official_accounts WHERE account_key=? FOR UPDATE',(endpoint.account.key,))
+    if cursor.execute('SELECT 1 FROM qq_official_endpoints WHERE endpoint_key=? AND account_key=?',(endpoint.key,endpoint.account.key)).fetchone() is None:
+        raise ValueError('conversation_endpoint_missing')
     result = {'action':action,'status':'denied','text':'只有本群群主、管理员或宿主 owner 可以控制本会话。','cancelled_jobs':0}
     if authorized:
         cursor.execute('INSERT INTO conversation_settings(scope_key) VALUES (?) ON CONFLICT DO NOTHING',(endpoint.scope.key,))
@@ -49,6 +54,9 @@ def change(cursor, endpoint, action, *, now, actor, authorized):
                 cursor.execute('''UPDATE durable_jobs SET status='cancelled',lease_owner='',lease_until=NULL,finished_at=?,updated_at=?
                     WHERE job_id=? AND status IN ('pending','running')''',(now,now,job['job_id']))
             result['cancelled_jobs'] = len(jobs)
+        if action == 'stop':
+            cursor.execute('''UPDATE background_jobs SET delivered_at=?,error=concat_ws('；',NULLIF(error,''),'会话已停止，结果通知已取消')
+                WHERE endpoint_key=? AND delivered_at IS NULL''',(now,endpoint.key))
         text = {'stop':'本会话已停止：消息仍记录，但不再回复普通消息；用 /start 恢复。',
             'start':'本会话已恢复；不会补答停止期间的消息。','kill':'已请求取消本会话的全部后台任务；停止状态不变。'}[action]
         if result['cancelled_jobs']:

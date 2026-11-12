@@ -110,7 +110,8 @@ class OfficialSendStore:
             source_canonical_message_id=artifact['source_canonical_message_id'],
             turn_id=turn['journal_turn_id'] if turn else None,
             expires_at=min(artifact['pending_deadline_at'], uploaded.expires_at), now=now,
-            purpose='requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds)
+            purpose='requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds,
+            source_generation=artifact['conversation_generation'])
         if ref.created:
             manifest = stable_json({'v': 1, 'media': {'file_info': uploaded.file_info},
                 'artifact_id': artifact['artifact_id'], 'source_native_message_id': artifact['source_native_message_id'] or ''})
@@ -204,6 +205,24 @@ class OfficialSendStore:
             cursor.execute("UPDATE qq_official_endpoints SET proactive_state='denied',updated_at=? WHERE endpoint_key=?",
                 (int(self.clock()), endpoint.key))
 
+    def _conversation_permitted(self, cursor, row):
+        from .conversation_control import permitted
+        if row['purpose'] in {'binding_otp','approval_otp'} or control_for_delivery(cursor,row):
+            return True
+        plan = cursor.execute('SELECT conversation_generation FROM delivery_plans WHERE plan_id=?',(row['plan_id'],)).fetchone()
+        command = cursor.execute("SELECT 1 FROM qq_official_turn_executions WHERE plan_id=? AND execution_kind='command'",
+            (row['plan_id'],)).fetchone() is not None
+        return plan is not None and permitted(cursor,EndpointKey.parse(row['endpoint_key']),
+            canonical=row['source_canonical_message_id'],generation=plan['conversation_generation'],commands=command)
+
+    def attempt_current(self, token, reservation):
+        with self.deliveries.transaction() as cursor:
+            assert_epoch(cursor,token)
+            row = cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?',
+                (reservation.delivery_id,token.account_key)).fetchone()
+            return (row is not None and row['current_attempt_id']==reservation.attempt_id and row['status']=='sending'
+                and self._conversation_permitted(cursor,row))
+
     def prepare(self, token, delivery_id, *, send_mode, msg_id=None, msg_seq=None):
         now = int(self.clock())
         with self.deliveries.transaction() as cursor:
@@ -223,6 +242,8 @@ class OfficialSendStore:
                 authorized = authorized and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now)
             if not authorized or route['membership_state'] != 'present' or route['binding_state'] == 'revoked':
                 return self._finish(cursor, token, row, 'failed', 'delivery_not_authorized', now)
+            if not self._conversation_permitted(cursor,row):
+                return self._finish(cursor,token,row,'cancelled','conversation_stopped_or_replaced',now)
             if now >= row['expires_at']:
                 return self._finish(cursor, token, row, 'failed', 'delivery_expired', now)
             if row['payload_mode'] == 'ephemeral' and delivery_id not in self._ephemeral:

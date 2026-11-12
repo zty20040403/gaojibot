@@ -16,7 +16,8 @@ def upgrade():
     op.execute('ALTER TABLE qq_official_inbound_events ADD COLUMN conversation_generation BIGINT NOT NULL DEFAULT 0')
     op.execute('ALTER TABLE qq_official_inbound_events ADD COLUMN conversation_stopped BOOLEAN NOT NULL DEFAULT FALSE')
     op.execute('ALTER TABLE qq_official_inbound_events ADD COLUMN conversation_control JSONB')
-    op.execute('ALTER TABLE delivery_plans ADD COLUMN conversation_generation BIGINT NOT NULL DEFAULT 0')
+    for table in ('delivery_plans','background_jobs','qq_official_file_artifacts'):
+        op.execute(f'ALTER TABLE {table} ADD COLUMN conversation_generation BIGINT NOT NULL DEFAULT 0')
 
 
 def downgrade():
@@ -27,6 +28,8 @@ def downgrade():
         raise RuntimeError('conversation_control_requires_export_before_downgrade')
     for table,columns in (
         ('delivery_plans',('conversation_generation',)),
+        ('background_jobs',('conversation_generation',)),
+        ('qq_official_file_artifacts',('conversation_generation',)),
         ('qq_official_inbound_events',('conversation_generation','conversation_stopped','conversation_control')),
         ('conversation_settings',('stopped','stop_generation'))):
         for column in columns:

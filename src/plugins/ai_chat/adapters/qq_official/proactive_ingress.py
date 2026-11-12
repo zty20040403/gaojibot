@@ -50,6 +50,9 @@ class ProactiveIngress:
         message=c.execute('SELECT m.*,co.scope_key FROM messages m JOIN conversations co USING(conversation_id) JOIN conversation_visibility v USING(conversation_id) WHERE canonical_message_id=? AND m.canonical_message_id>=v.min_canonical_message_id',
             (inbox['canonical_message_id'],)).fetchone()
         if message is None:raise MigrationDenied('proactive_source_unavailable')
+        from .conversation_control import permitted
+        if not permitted(c,ep,canonical=message['canonical_message_id']):
+            raise MigrationDenied('conversation_stopped_or_replaced')
         actor=ActorKey.parse(message['sender_actor_key'])
         if getattr(self.admission,'require_inbox',None) is not None:
             self.admission.require_inbox(c,inbox_id,endpoint=ep,actor=actor,operation='execute' if job else 'send')

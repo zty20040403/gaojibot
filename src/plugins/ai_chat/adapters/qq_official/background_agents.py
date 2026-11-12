@@ -67,7 +67,7 @@ class OfficialBackgroundAgents:
             save_report=self.save_report, ask_main=self.ask_main, record_usage=self.record_usage,
             logger=app.logger, engine=engine, clock=self.clock)
 
-    def check(self, cursor, row):
+    def check(self, cursor, row, *, scheduled=False):
         assert_epoch(cursor, self.token)
         endpoint, actor = EndpointKey.parse(row['endpoint_key']), ActorKey.parse(row['actor_key'])
         route = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
@@ -75,6 +75,10 @@ class OfficialBackgroundAgents:
                 or route['generation'] != row['endpoint_generation'] or route['route_epoch'] != row['route_epoch']
                 or not self.runtime.store.admitted(cursor, endpoint, actor)):
             raise PermissionError('后台任务的原会话或权限已改变。')
+        from .conversation_control import permitted
+        if not scheduled and not permitted(cursor,endpoint,canonical=row['canonical_message_id'],
+                generation=row.get('conversation_generation')):
+            raise PermissionError('会话已停止或任务属于停止前的回合。')
         return endpoint, actor
 
     async def control(self, turn, name, arguments):
@@ -86,8 +90,10 @@ class OfficialBackgroundAgents:
                     task = str(arguments['task']).strip()
                     if not task:
                         raise ValueError('任务不能为空。')
+                    from .conversation_control import state
                     source = dict(source, actor_key=inbound.actor.key, native_message_id=inbound.native_message_id,
-                                  source_execution_id=life.handle.execution_id)
+                        conversation_generation=state(cursor,inbound.endpoint)['stop_generation'],
+                        source_execution_id=life.handle.execution_id)
                     key = 'background:' + life.handle.execution_id + ':' + hashlib.sha256(task.encode()).hexdigest()
                     row = self.store.submit(cursor, kind=self.kind, key=key, source=source, task=task,
                         title=str(arguments.get('title', '')), profile=turn.model_profile.name,

@@ -355,7 +355,9 @@ class ArtifactStore:
             source = current_source(cursor, binding, self._now())
             now = self._now()
             artifact_id = secrets.token_hex(16)
-            fields = dict(artifact_id=artifact_id, request_key=key, account_key=binding.endpoint.account.key,
+            from .conversation_control import state
+            fields = dict(conversation_generation=state(cursor,binding.endpoint)['stop_generation'],
+                artifact_id=artifact_id, request_key=key, account_key=binding.endpoint.account.key,
                 endpoint_key=binding.endpoint.key, requester_actor_key=binding.actor.key,
                 source_execution_id=binding.source_execution_id, source_task_id=binding.task_id,
                 source_task_revision=1 if binding.task_id is not None else None,

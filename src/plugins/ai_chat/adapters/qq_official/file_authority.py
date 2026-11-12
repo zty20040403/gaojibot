@@ -60,6 +60,9 @@ def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id,
             or (endpoint.kind=='group' and route['binding_state']!='active') or route['membership_state']!='present'
             or admission(cursor,endpoint,actor) is not True):
         raise LeaseLost('artifact_route_unavailable')
+    from .conversation_control import permitted
+    if not read_only and not permitted(cursor,endpoint,generation=artifact['conversation_generation']):
+        raise LeaseLost('conversation_stopped_or_replaced')
     delivery=cursor.execute('SELECT * FROM qq_official_file_deliveries WHERE artifact_id=?',(artifact_id,)).fetchone()
     denied={'cancelled','expired'} if read_only else {'failed','cancelled','expired','delivery_unknown'}
     if delivery is None or delivery['state'] in denied:

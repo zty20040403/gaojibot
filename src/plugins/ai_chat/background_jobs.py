@@ -40,7 +40,8 @@ class BackgroundJobs:
         fields = {key: source[key] for key in (
             'account_key', 'endpoint_key', 'actor_key', 'scope_key', 'source_execution_id',
             'canonical_message_id', 'native_message_id', 'endpoint_generation', 'route_epoch')}
-        fields.update(job_id=job.job_id, task=task, title=title or task[:80], profile=profile,
+        fields.update(conversation_generation=source.get('conversation_generation',0),
+                      job_id=job.job_id, task=task, title=title or task[:80], profile=profile,
                       created_at=now, deadline_at=now + 7200)
         row = cursor.execute('INSERT INTO background_jobs (' + ','.join(fields) + ') VALUES (' +
             ','.join('?' for _ in fields) + ') RETURNING *', tuple(fields.values())).fetchone()
@@ -58,6 +59,17 @@ class BackgroundJobs:
             rows = cursor.execute(f'''SELECT * FROM background_jobs {where}
                 ORDER BY (state IN ('queued','running')) DESC,created_at DESC,job_id DESC LIMIT ?''', args).fetchall()
         return [dict(row) for row in rows]
+
+    def start(self, job_id):
+        with self.transaction() as cursor:
+            return cursor.execute("UPDATE background_jobs SET state='running',started_at=? WHERE job_id=? AND state='queued' RETURNING *",
+                (int(self.clock()),job_id)).fetchone()
+
+    def finish(self, job_id, *, state, error, report):
+        with self.transaction() as cursor:
+            cursor.execute('''UPDATE background_jobs SET state=CASE WHEN state='cancelled' THEN state ELSE ? END,
+                error=CASE WHEN state='cancelled' THEN error ELSE ? END,report=?,finished_at=? WHERE job_id=?''',
+                (state,error,report,int(self.clock()),job_id))
 
     def update(self, job_id, **fields):
         with self.transaction() as cursor:
@@ -110,10 +122,10 @@ class BackgroundRunner:
         self.logger, self.engine, self.clock = logger, engine, clock
 
     async def execute(self, durable_job):
-        row = await self.calls(self.store.get, durable_job.job_id)
-        if row['state'] != 'queued':
-            return {'state': row['state']}
-        await self.calls(self.store.update, row['job_id'], state='running', started_at=int(self.clock()))
+        row = await self.calls(self.store.start, durable_job.job_id)
+        if row is None:
+            current = await self.calls(self.store.get, durable_job.job_id)
+            return {'state': current['state'] if current else 'cancelled'}
         steering_offset, warned, asking = 0, False, False
         notes = []
         trace = AgentTrace()
@@ -172,8 +184,7 @@ class BackgroundRunner:
             self.logger.exception('Background job %s failed', row['job_id'])
         finally:
             report = '\n\n'.join(part for part in (report, error, '\n'.join(notes)) if part)
-            await self.calls(self.store.update, row['job_id'], state=state, error=error,
-                             report=report, finished_at=int(self.clock()))
+            await self.calls(self.store.finish, row['job_id'], state=state, error=error, report=report)
             try:
                 await self.save_report(row, report)
             except Exception as exc:

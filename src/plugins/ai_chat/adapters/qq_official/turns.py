@@ -242,7 +242,7 @@ class OfficialTurnConsumer:
             return await self._execute(job)
         except asyncio.CancelledError:
             raise
-        except (ToolLeaseLost, LeaseLost):
+        except (ToolLeaseLost, LeaseLost, execution.ExecutionFenceLost):
             logging.getLogger(__name__).warning('QQ turn stopped: account or permission changed')
             return {'status': 'cancelled'}
         except Exception as error:
@@ -257,6 +257,9 @@ class OfficialTurnConsumer:
                     if row is None:
                         return
                     endpoint, actor = EndpointKey.parse(row['endpoint_key']), ActorKey.parse(row['requester_actor_key'])
+                    from .conversation_control import permitted
+                    if not permitted(cursor,endpoint,canonical=row['canonical_message_id'],commands=row['execution_kind']=='command'):
+                        return
                     self.outbox.enqueue(self.token, rendered=render_plan(MessageBody((TextNode(0, '这次处理失败了，请再试一次。'),)), endpoint),
                         requester=actor, logical_key='turn-error:' + row['execution_id'], source_scope_key=row['scope_key'],
                         source_native_message_id=row['source_native_message_id'], source_canonical_message_id=row['canonical_message_id'],
