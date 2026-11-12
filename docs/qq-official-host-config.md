@@ -69,4 +69,41 @@ VM 需通过模板或显式工具升级安装 `gaoji-video`，将 `/work` 下视
 - 数据库审计只保存时间、物理会话、任务编号、API 名、方法、规范路径和结果，不存查询参数或请求体。管理员可在“任务与投递 → 宿主 API 调用审计”按 API 名/物理 scope 查询并翻页。`pending` 仅表示尚未确认结束，不证明外部未执行；取消和网络故障不自动重试写操作，也不退额度。流式响应中断将断开连接，不伪装成完整文件。
 - API 能防密钥直接进入 VM，但不能替用户判断调用内容；群友可以让 VM 使用获准 API。需要限制收件人、目标仓库等内容时，不应配置一个无限制的通用入口。
 
+### GitHub 机器人账号
+
+owner 自行注册专用账号，并在宿主配置两个 API；仅用 `public_repo` classic token，不给私有仓库或删除仓库权限。不将 token、basic-auth 编码、私人邮箱带进 VM。以下是合并到上述 host JSON 的示例片段，均为测试占位值：
+
+```json
+{
+  "github": {"login": "TEST-BOT", "user_id": 12345},
+  "apis": {
+    "github": {
+      "base_url": "https://api.github.com",
+      "secret_file": "/run/secrets/TEST_GITHUB_TOKEN",
+      "headers": {
+        "Authorization": "Bearer {secret}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "TEST-BOT"
+      },
+      "per_hour": 100,
+      "about": "公共仓库 REST API。只在用户明确要求时开 PR，描述末尾单独写 This pull request was opened by an AI at a group member's request. 不发送垃圾内容。"
+    },
+    "github-git": {
+      "base_url": "https://github.com",
+      "secret_file": "/run/secrets/TEST_GITHUB_BASIC",
+      "headers": {"Authorization": "Basic {secret}", "User-Agent": "TEST-BOT"},
+      "per_hour": 100,
+      "about": "HTTPS git 推送；只使用机器人账号获准访问的公共仓库。PR 仍须用户明确要求并注明 AI 身份。"
+    }
+  }
+}
+```
+
+`TEST_GITHUB_BASIC` 文件保存 `base64("x-access-token:<同一个 token>")` 的单行值，不是原 token；两个私有文件必须一起轮换。实际值由 owner 在宿主生成，不能让 VM 获取它们。每会话每小时 100 次仅是示例配置；Git 协议的多次 HTTP 请求分别计数。
+
+`github.login` / `user_id` 只保存公开提交身份。会话 VM 创建、启动和后台任务接管已运行的 VM 时，宿主通过 guest agent 写 `/etc/gitconfig`，邮箱为 `12345+TEST-BOT@users.noreply.github.com`；设置失败明确中止，不猜私人邮箱。模板和非会话 VM 不写此身份。宿主不强制审查 PR 正文，用户明确要求与 AI 署名规则在提示词和 `skills/github.md` 说明。
+
+没有在本地测试中连接真实 GitHub 或创建 PR；账号、token 权限及真实推送由 owner 测试环境验收。
+
 旧的项目授权、迁移路线、Wiki、主机写操作策略已移除。管理员后台只读运维另用 `AI_OPS_READ_BASE_URL` 和 `AI_OPS_READ_TOKEN_FILE`；token 只在宿主读取。

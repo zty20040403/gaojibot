@@ -182,6 +182,7 @@ class VmSandboxManager:
         self._last_execs: dict[str, SandboxExecutionActivity] = {}
         self._conversation_locks = {}
         self._conversation_guests = set()
+        self.github_identity = None  # Public login/id from protected host configuration, never a token.
 
     @asynccontextmanager
     async def allocation_lock(self):
@@ -508,6 +509,7 @@ class VmSandboxManager:
                 )
                 if code:
                     raise SandboxError(f"VM 初始化失败：{err.decode(errors='replace')[-500:]}")
+                await self._configure_github(owner,sandbox_id)
                 metadata["state"] = "ready"
                 metadata["last_used"] = int(time.time())
                 self._save_metadata(sandbox_id, metadata)
@@ -824,6 +826,13 @@ class VmSandboxManager:
     async def search_nix_packages(self, query: str) -> list[dict[str, str]]:
         raise SandboxError("VM 使用 Debian 软件包；请用 sandbox_exec 的 packages 参数安装具体包名。")
 
+    async def _configure_github(self, owner, sandbox_id):
+        if self.github_identity is None or not owner.startswith('qqo:conversation:'):
+            return
+        code,_,_ = await self._guest_exec(sandbox_id,'/bin/sh',['-c',self.github_identity.script],timeout=30)
+        if code:
+            raise SandboxError('VM 的 Git 提交身份配置失败。')
+
     async def start_owned(self, owner: str, sandbox_id: str) -> None:
         metadata = await self._metadata(owner, sandbox_id)
         async with self.allocation_lock():
@@ -835,6 +844,7 @@ class VmSandboxManager:
             if await self._running(sandbox_id):
                 if owner.startswith('qqo:conversation:'):
                     await self._wait_guest(sandbox_id, timeout=60)
+                    await self._configure_github(owner,sandbox_id)
                 return
             existing = await self._all_metadata()
             running = [item for item in existing if await self._running(str(item["id"]))]
@@ -846,6 +856,7 @@ class VmSandboxManager:
                 await self._virsh("define", str(self._directory(sandbox_id) / "domain.xml"))
             await self._virsh("start", self._name(sandbox_id))
             await self._wait_guest(sandbox_id)
+            await self._configure_github(owner,sandbox_id)
             metadata["last_started"] = int(time.time())
             self._save_metadata(sandbox_id, metadata)
 

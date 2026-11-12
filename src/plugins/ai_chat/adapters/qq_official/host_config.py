@@ -1,7 +1,7 @@
 """Protected, default-off host configuration for the actual application entry.
 
 Only deployment configuration can select these factories. It contains no
-Python import paths, credential values or identity mappings.
+Python import paths, credential values or QQ identity mappings.
 File uploads use the configured account directly, without route proofs.
 """
 from __future__ import annotations
@@ -73,6 +73,7 @@ class HostConfiguration:
     proactive: object | None = field(default=None,repr=False)
     proactive_profile: str | None = None
     apis: dict = field(default_factory=dict,repr=False)
+    github: object | None = None
 
     @classmethod
     def parse(cls,text):
@@ -85,7 +86,9 @@ class HostConfiguration:
             raise HostConfigurationError('invalid_official_host_account') from None
         from .media_runtime import MediaConfig
         from ...host_apis import parse_apis
+        from ...host_github import GitHubIdentity
         values=dict(apis=_optional('host_apis',lambda:parse_apis(raw.get('apis',{})),{}),
+            github=_optional('github',lambda:GitHubIdentity.parse(raw['github']) if raw.get('github') is not None else None),
             files=_optional('files',lambda:_files(raw.get('files'))),
             media=_optional('media',lambda:MediaConfig(**raw['media']) if raw.get('media') is not None else None))
         # Old documents may still carry schedules/wiki/host_services; those features were removed.
@@ -111,6 +114,9 @@ class HostConfiguration:
             config=replace(config,proactive=None)
         service=HostServices(database=context.database,transaction=context.delivery_store.transaction,
             database_calls=context.db_call)
+        manager = getattr(context,'sandbox_manager',None)
+        if getattr(manager,'backend',None)=='vm':
+            manager.github_identity = config.github
         context.official_host=ConfiguredHost(config,context,service)
         return service
 

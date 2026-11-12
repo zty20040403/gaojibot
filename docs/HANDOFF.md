@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F4③ GitHub 身份与技能（未部署）
+
+- 宿主配置支持公开 `github.login/user_id`，会话 VM 创建/启动及后台接管已运行 VM 时，通过 guest agent 设置 `/etc/gitconfig` 的 name/noreply 邮箱。只传公开身份，失败明确报错；模板/非会话 VM 不写入，token 仍只在宿主 API 的私有文件里。
+- 配置文档提供 `github` REST 与 `github-git` Basic 两个 API 的测试占位示例；补齐 `skills/github.md`、后台规则和双语 README。明确用户要求后才开 PR、AI 英文署名、禁止 VM 登录/缓存 GitHub 密钥、未知写入结果先查询而非重试。
+- 28 项 GitHub/VM 替身/任务代理组合通过，含真实临时 git 配置写入，以及真实 PostgreSQL 的 `/stop` 后 `/start` 仍拒绝旧任务 API、持久任务取消立即拒绝；Ruff/两个导入检查通过。没有真实 GitHub 请求、真实 VM 或 PR，不能冒充外部验收。
+- F4 的任务令牌路线、审计管理台和 GitHub 本地代码已齐；VM 令牌按依赖待 F2。固定快照完整复测待后续记录。
+
 ## 开发记录（2026-11-12）· Python F4② 管理台审计（未部署）
 
 - 管理台“任务与投递”加入宿主 API 审计，可按 API 名/物理 scope 精确查询，按游标向前翻页，并显示所选范围 24 小时结果计数。只读 `/api/host-apis` 同时有 v1 别名；未登录和普通成员不能读取。

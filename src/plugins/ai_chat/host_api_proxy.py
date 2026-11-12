@@ -14,11 +14,18 @@ def api_instructions(apis, port):
         return ''
     entries = [dict(name=api.name,url=f'http://10.0.2.2:{port}/api/{api.name}',
         allow=api.allow,per_hour=api.per_hour,about=api.about) for api in apis.values()]
+    github = ('\nGitHub：只在用户明确要求时开 PR；描述末尾单独写一行 '
+        'This pull request was opened by an AI at a group member\'s request. '
+        '不要批量骚扰或发垃圾内容。用 git config --system 读取公开提交身份；'
+        '禁止 gh auth login 或在 VM 保存 GitHub token。Git 推送到 github-git 中转，'
+        '用 git -c credential.helper= -c http.followRedirects=false '
+        '-c "http.extraHeader=Authorization: Bearer $GAOJI_JOB_TOKEN" push <中转仓库URL> <分支>。'
+        '不要在 URL 或永久 git 配置中保存任务令牌。') if {'github','github-git'}<=apis.keys() else ''
     return ('\n宿主 API（只在任务存活时可用）：用 curl/fetch 请求下面的地址，认证头为 '
         '`Authorization: Bearer $GAOJI_JOB_TOKEN`（展开环境变量，不是上游密钥）。'
         '只按用户要求调用；HTTP 失败要说明，超时或中断可能已在外部生效，不自动重试写操作。'
         'allow 是方法和路径段前缀；per_hour 按本会话整点小时计算，0 不设本地上限，失败也占次数。'
-        '不得尝试获取宿主密钥。\n'+json.dumps(entries,ensure_ascii=False))
+        '不得尝试获取宿主密钥。\n'+json.dumps(entries,ensure_ascii=False)+github)
 
 
 class HostAPIProxy:
