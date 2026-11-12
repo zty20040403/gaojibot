@@ -30,6 +30,8 @@ class OfficialVMLifecycle:
         self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs,reads=ProgramReads(app),
             stream=ProgramStream(self.store,calls,logger),files=self.files,units=self.units)
         self.closed,self.restoring = False,None
+        from .program_keeper import ProgramKeeper
+        self.keeper = ProgramKeeper(self)
 
     def route(self, owner):
         # VM metadata contains the existing hashed owner ref, not a caller-
@@ -45,14 +47,23 @@ class OfficialVMLifecycle:
                     return endpoint,(row['generation'],row['route_epoch'])
         raise PermissionError('vm_endpoint_unavailable')
 
-    async def ready(self, owner, sandbox_id):
+    async def _paused(self, owner, sandbox_id):
+        state = (await self.manager._metadata(owner,sandbox_id))['programs']
+        return bool(state.get('paused') or state.get('planned_stop'))
+
+    async def ready(self, owner, sandbox_id, *, automatic=False):
         if self.closed:
             raise PermissionError('vm_service_closed')
+        if automatic and await self._paused(owner,sandbox_id):
+            return None
         endpoint,route = await self.calls(self.route,owner)
         current = await self.credentials.prepare(endpoint,sandbox_id,expected_route=route)
+        if automatic and await self._paused(owner,sandbox_id):
+            await self.calls(self.store.discard,current)
+            return None
         self.api.rotated(current)
         try:
-            report = await self.units.sync(current)
+            report = await self.units.sync(current,automatic=automatic)
             if not report['ok']:
                 self.logger.warning('VM program sync incomplete vm=%s',sandbox_id)
         except Exception as error:
@@ -61,11 +72,11 @@ class OfficialVMLifecycle:
             self.logger.warning('VM program sync failed vm=%s error=%s',sandbox_id,type(error).__name__)
         return current
 
-    async def starting(self, owner, sandbox_id):
+    async def starting(self, owner, sandbox_id, *, automatic=False):
         if self.closed:
             raise PermissionError('vm_service_closed')
         await self.calls(self.route,owner)
-        await self.manager.program_state.starting(owner,sandbox_id)
+        await self.manager.program_state.starting(owner,sandbox_id,automatic=automatic)
 
     async def failed(self, owner, sandbox_id):
         await self.manager.program_state.failed(owner,sandbox_id)
@@ -73,12 +84,12 @@ class OfficialVMLifecycle:
     async def stopped(self, owner, sandbox_id):
         await self.manager.program_state.stopped(owner,sandbox_id)
 
-    async def stopping(self, owner, sandbox_id):
+    async def stopping(self, owner, sandbox_id, *, automatic=False):
         self.api.revoke(sandbox_id)
         self.units.cancel(sandbox_id)
         await self.calls(self.store.revoke_vm,sandbox_id)
         if (self.manager._directory(sandbox_id)/'metadata.json').is_file():
-            await self.manager.program_state.stopping(owner,sandbox_id)
+            await self.manager.program_state.stopping(owner,sandbox_id,paused=not automatic)
 
     async def start(self):
         if getattr(self.manager,'conversation_lifecycle',None) not in (None,self):
@@ -92,21 +103,12 @@ class OfficialVMLifecycle:
         self.restoring = asyncio.create_task(self.restore())
 
     async def restore(self):
-        # Restore running VMs without blocking QQ startup on one broken guest.
-        # Booting retained units is added with the resident-program keeper.
         try:
-            items = await self.manager._all_metadata()
-            for item in items:
-                owner,sid = str(item.get('owner_ref','')),str(item['id'])
-                if not owner.startswith('qqo:conversation:'):
-                    continue
-                try:
-                    if await self.manager._running(sid):
-                        await self.ready(owner,sid)
-                except Exception as error:
-                    self.logger.warning('VM credential restore failed vm=%s error=%s',sid,type(error).__name__)
+            await self.keeper.scan()
         except Exception as error:
             self.logger.warning('VM credential scan failed error=%s',type(error).__name__)
+        if not self.closed:
+            self.keeper.start()
 
     async def close(self):
         self.closed = True
@@ -115,5 +117,6 @@ class OfficialVMLifecycle:
         if self.restoring is not None:
             self.restoring.cancel()
             await asyncio.gather(self.restoring,return_exceptions=True)
+        await self.keeper.close()
         await self.programs.close()
         await self.api.close()

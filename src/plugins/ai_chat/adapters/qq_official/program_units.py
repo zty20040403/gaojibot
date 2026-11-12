@@ -33,7 +33,7 @@ class ProgramUnits:
                 raise ProgramDenied('program_unit_policy_too_large',503)
             return dict(enabled=row['programs_enabled'] if row else True,disabled=[item['program_name'] for item in disabled])
 
-    async def sync(self, current):
+    async def sync(self, current, *, automatic=False):
         sid = current.sandbox_id
         if sid in self.active or len(self.active)>=4:
             raise ProgramDenied('program_units_busy',429)
@@ -46,7 +46,7 @@ class ProgramUnits:
             await self.manager._metadata(owner,sid)
             if not await self.manager._running(sid):
                 raise PermissionError('vm_not_running')
-            allowed,reason = await self.manager.program_state.admit(owner,sid,current.boot_id,enabled=policy['enabled'])
+            allowed,reason = await self.manager.program_state.admit(owner,sid,current.boot_id,enabled=policy['enabled'],automatic=automatic)
             admitted = True
             effective = dict(policy,enabled=allowed)
             # Do not acquire manager.io_lock here: the sandbox user can be

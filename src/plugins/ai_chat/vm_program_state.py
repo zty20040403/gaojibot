@@ -52,9 +52,11 @@ class VMProgramState:
         if len(failures)>=2:
             state.update(suspended=True,alert='VM 在 30 分钟内两次启动失败或非计划重启；常驻程序自动加载已暂停，需要管理员检查后恢复。')
 
-    async def starting(self, owner, sid):
+    async def starting(self, owner, sid, *, automatic=False):
         async with self._guard():
             metadata,state = await self._load(owner,sid)
+            if automatic and (state.get('paused') or state.get('suspended') or not state.get('pending')):
+                raise PermissionError('vm_autostart_cancelled')
             state.update(starting=True,pending=False,running=False,paused=False,planned_stop=False)
             self._save(sid,metadata,state)
 
@@ -68,22 +70,24 @@ class VMProgramState:
                 state.update(pending=False,retained=False,error=reason)
                 self._save(sid,metadata,state)
 
-    async def stopping(self, owner, sid):
+    async def stopping(self, owner, sid, *, paused=True):
         async with self._guard():
             metadata,state = await self._load(owner,sid)
-            state.update(planned_stop=True,paused=True)
+            state.update(planned_stop=True,paused=paused)
             self._save(sid,metadata,state)
 
     async def stopped(self, owner, sid):
         async with self._guard():
             metadata,state = await self._load(owner,sid)
-            state.update(running=False,starting=False,pending=False,retained=False,paused=True,planned_stop=False)
+            state.update(running=False,starting=False,pending=False,retained=False,planned_stop=False)
             self._save(sid,metadata,state)
 
-    async def admit(self, owner, sid, boot, *, enabled):
+    async def admit(self, owner, sid, boot, *, enabled, automatic=False):
         """Reserve before loading any units; unknown outcomes retain the slot."""
         async with self._guard():
             metadata,state = await self._load(owner,sid)
+            if automatic and (state.get('paused') or state.get('planned_stop')):
+                raise PermissionError('vm_autostart_cancelled')
             if state.get('boot_id') not in (None,boot) and state.get('running') and not state.get('planned_stop'):
                 self._failure(state,'vm_unexpected_reboot')
             retained = sorted(str(item['id']) for item in await self.manager._all_metadata()
