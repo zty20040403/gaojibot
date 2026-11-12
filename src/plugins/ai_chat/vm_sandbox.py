@@ -233,7 +233,11 @@ class VmSandboxManager:
             raise SandboxError("沙盒 ID 格式错误。")
         return self.root / sandbox_id
 
-    def _save_metadata(self, sandbox_id: str, data: dict[str, object]) -> None:
+    def _save_metadata(self, sandbox_id: str, data: dict[str, object], *, filename='metadata.json') -> None:
+        if filename not in {'metadata.json','programs.json'}:
+            raise ValueError('invalid_vm_metadata_file')
+        if filename=='metadata.json':
+            data = {key:value for key,value in data.items() if key!='programs'}
         directory = self._directory(sandbox_id)
         temporary = directory / (".metadata-" + secrets.token_hex(8))
         try:
@@ -241,7 +245,7 @@ class VmSandboxManager:
                 json.dump(data, stream, ensure_ascii=False)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, directory / "metadata.json")
+            os.replace(temporary, directory / filename)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -424,6 +428,8 @@ class VmSandboxManager:
             raise SandboxError("沙盒不存在或元数据不可读。") from exc
         if data.get("id") != sandbox_id or data.get("owner_hash") != self._owner_hash(owner):
             raise SandboxError("沙盒不属于当前会话。")
+        from .vm_program_state import VMProgramState
+        data['programs'] = VMProgramState.read(directory)
         return data
 
     async def _all_metadata(self) -> list[dict[str, object]]:
@@ -438,6 +444,8 @@ class VmSandboxManager:
             except (OSError, ValueError):
                 continue
             if data.get("id") == directory.name:
+                from .vm_program_state import VMProgramState
+                data['programs'] = VMProgramState.read(directory)
                 found.append(data)
         return found
 
