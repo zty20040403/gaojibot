@@ -58,8 +58,7 @@ class MessageBatcher:
                 break
         del self.pending[key]
         if len(batch.messages) > 1:
-            batch.source.payload['batch_text'] = '[连续消息，请合起来回答一次]\n' + '\n'.join(
-                f'[msg#{canonical}] {text}' for canonical, text in batch.messages)
+            batch.source.payload['batch_message_ids'] = [canonical for canonical, _ in batch.messages]
         await self.dispatch(batch.source)
 
     async def close(self):

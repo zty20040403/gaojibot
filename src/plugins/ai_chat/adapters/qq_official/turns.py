@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from src.plugins.ai_chat.message_ir import MessageBody, TextNode
+from dataclasses import replace
+from src.plugins.ai_chat.ledger import MessageLedger
+from src.plugins.ai_chat.timeline import render_line
+from src.plugins.ai_chat.message_ir import MediaNode, MessageBody, TextNode
 import asyncio
 import logging
 import traceback
@@ -193,7 +196,21 @@ class OfficialTurnConsumer:
                 return decision, None, None
             inbound = load_turn_input(cursor, execution_api=self.api, token=self.token,
                 handle=decision.handle, job=job, now=now, admission=self.store.admitted)
-            return decision, inbound, job.payload.get('batch_text', text)
+            ids = tuple(job.payload.get('batch_message_ids', ()))
+            if kind == 'chat' and (ids or any(isinstance(n, MediaNode) for n in inbound.body.nodes)):
+                lines = []
+                for canonical in ids or (decision.handle.canonical_message_id,):
+                    message_row = MessageLedger._message_row(cursor, canonical)
+                    if message_row is None:
+                        raise self.api.ExecutionError('batch_source_unavailable')
+                    message = MessageLedger._row_to_message(message_row)
+                    if (message.scope_key != inbound.scope.key or message.source_endpoint_key != inbound.endpoint.key
+                            or message.sender_actor_key != inbound.actor.key or message.direction != 'inbound'):
+                        raise self.api.ExecutionError('batch_source_mismatch')
+                    lines.append(render_line(message))
+                text = ('[连续消息，请合起来回答一次]\n' if ids else '') + '\n'.join(lines)
+                inbound = replace(inbound, batch_message_ids=ids)
+            return decision, inbound, text
 
     def _result(self, life):
         with self.outbox.deliveries.transaction() as cursor:

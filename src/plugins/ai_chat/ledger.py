@@ -544,6 +544,7 @@ class MessageLedger:
         *,
         terms: tuple[str, ...] = (),
         who: str = "",
+        actor_key: str = "",
         after_id: int = 0,
         before_id: int | None = None,
         limit: int = 50,
@@ -564,6 +565,9 @@ class MessageLedger:
         if before_id is not None:
             clauses.append("m.canonical_message_id < ?")
             params.append(int(before_id))
+        if actor_key:
+            clauses.append("m.sender_actor_key = ?")
+            params.append(actor_key)
         if who:
             clauses.append("lower(m.sender_display) LIKE ? ESCAPE '\\'")
             params.append(like(who))

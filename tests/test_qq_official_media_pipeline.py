@@ -151,7 +151,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_real_ocr_document_tools_charge_usage_and_original_model_gateway(self):
-        complete=self.completion([('read_image_text',{}),('read_attachment',{})])
+        complete=self.completion([('view_image',{}),('read_attachment',{})])
         with patch('src.plugins.ai_chat.agent_loop._create_completion',new=complete):
             async with platform() as fake:
                 runtime=await self.start(fake,flags=dict(ocr=True,documents=True))
@@ -160,6 +160,9 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                 await self.complete('TEST_MEDIA_OCR')
                 self.assertEqual(len(self.vision_calls),1)
                 self.assertIn('TEST OCR content',str(self.model_calls[-1]['messages']))
+                self.assertIn('TEST image',str(self.model_calls[-1]['messages']))
+                self.assertIn('[image#', str(self.model_calls[0]['messages']))
+                self.assertNotIn('read_image_text', str(self.model_calls[0]['tools']))
                 self.assertIn('TEST external document',str(self.model_calls[-1]['messages']))
                 self.assertNotIn('signature=TEST_SECRET',str(self.vision_calls))
                 usage=self.query("SELECT * FROM usage_events WHERE source='official_ocr'")
@@ -177,7 +180,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
             values=await asyncio.gather(original(session,arguments),original(session,arguments),return_exceptions=True)
             results.extend(values)
             raise values[0] if isinstance(values[0],BaseException) else values[1]
-        complete=self.completion([('read_image_text',{})])
+        complete=self.completion([('view_image',{})])
         with patch('src.plugins.ai_chat.agent_loop._create_completion',new=complete),patch.object(MediaSession,'ocr',new=concurrent):
             async with platform() as fake:
                 runtime=await self.start(fake,flags=dict(ocr=True),unknown_vision=True)
@@ -191,6 +194,31 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(usage[0]['output_tokens'],0)
                 self.assertTrue(any('ocr_quota_exhausted' in str(value) for value in results))
                 self.assertEqual(len(self.query('SELECT * FROM qq_official_turn_executions')),1)
+                await runtime.stop()
+
+    async def test_media_only_batch_renders_canonical_handles_and_reads_previous_image(self):
+        from src.plugins.ai_chat.adapters.qq_official.message_batch import MessageBatcher
+        complete = self.completion([('view_image', {})])
+        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=complete), patch(
+                'src.plugins.ai_chat.adapters.qq_official.message_batch.MessageBatcher',
+                side_effect=lambda dispatch: MessageBatcher(dispatch, idle=.3, maximum=2)):
+            async with platform() as fake:
+                runtime = await self.start(fake, flags=dict(ocr=True))
+                await self.emit(fake, 'TEST_MEDIA_BATCH', content='', attachments=[
+                    {'url': 'https://example.invalid/image?signature=TEST_SECRET', 'content_type': 'image/png'},
+                    {'url': 'https://example.invalid/video', 'content_type': 'video/mp4'},
+                    {'url': 'https://example.invalid/audio', 'content_type': 'audio/wav'},
+                    {'url': 'https://example.invalid/file', 'content_type': 'application/pdf'}])
+                await self.emit(fake, 'TEST_MEDIA_QUESTION', content='TEST 这是啥')
+                await self.complete('TEST_MEDIA_BATCH')
+                last = self.model_calls[0]['messages'][-1]['content']
+                self.assertIn('[连续消息，请合起来回答一次]', last)
+                for kind in ('image', 'video', 'voice', 'file'):
+                    self.assertIn(f'[{kind}#', last)
+                self.assertNotIn('TEST_SECRET', last)
+                self.assertIn('TEST 这是啥', last)
+                self.assertEqual(len(self.vision_calls), 1)
+                self.assertEqual(len(fake.received), 1)
                 await runtime.stop()
 
     async def seed_sticker(self):

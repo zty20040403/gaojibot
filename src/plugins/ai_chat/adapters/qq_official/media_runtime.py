@@ -118,7 +118,7 @@ class MediaSession:
     def enabled(self, name):
         cfg = self.service.config
         return bool({
-            'read_image_text': self.service.vision is not None,
+            'view_image': self.service.vision is not None,
             'transcribe_voice': cfg.asr,
             'read_attachment': cfg.documents,
             'view_forward': cfg.forwards,
@@ -173,8 +173,31 @@ class MediaSession:
             raise MediaDenied('media_reference_unavailable')
         return source
 
+    async def image_source(self, arguments):
+        if arguments.get('message_handle') is not None:
+            return await self.source(arguments, {'image', 'sticker'})
+        row = await self.current()
+        ledger, calls = self.service.app.message_ledger, self.service.runtime._calls
+        current = await calls(ledger.get_in_scope, self.inbound.scope, row['canonical_message_id'])
+        def has_image(message):
+            return (message is not None and message.direction == 'inbound'
+                    and message.source_endpoint_key == self.inbound.endpoint.key
+                    and any(isinstance(node, MediaNode) and node.media_kind in {'image', 'sticker'}
+                            for node in message.body.nodes))
+        selected = current if has_image(current) else None
+        for filters in ({'actor_key': self.inbound.actor.key, 'limit': 10}, {'limit': 100}):
+            if selected is not None:
+                break
+            recent = await calls(ledger.history, self.inbound.scope,
+                before_id=row['canonical_message_id'] + 1, newest=True, **filters)
+            selected = next((message for message in reversed(recent) if has_image(message)), None)
+        if selected is not None:
+            return await self.source({**arguments,
+                'message_handle': f'msg#{selected.canonical_message_id}'}, {'image', 'sticker'})
+        raise MediaDenied('image_not_found_use_message_handle_msg#')
+
     async def ocr(self, arguments):
-        source = await self.source(arguments, {'image','sticker'})
+        source = await self.image_source(arguments)
         parent = active_model_budget()
         if parent is not None and (not callable(parent.before_request)
                                   or not callable(parent.reserve_request)):

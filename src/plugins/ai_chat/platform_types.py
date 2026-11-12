@@ -222,6 +222,8 @@ class InboundMessage:
     # history, never the actor, actual endpoint, reply window or authorization.
     canonical_scope: ConversationScope | None = None
     route_epoch: int = 0
+    # Trusted adapter batch membership, never parsed from user/model text.
+    batch_message_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_target(self.endpoint, self.actor, self.reply_credential)

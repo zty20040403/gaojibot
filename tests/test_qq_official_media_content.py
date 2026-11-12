@@ -312,7 +312,7 @@ class VisionTests(Fixtures):
             guard_calls.append(True)
         with model_budget_scope(ModelCallBudget(10000, before_request=before)):
             result = await VisionAdapter(worker).recognize(source, resolver=self.resolver, fetcher=self.reader())
-        self.assertEqual(result.text, '识别出的外部文本')
+        self.assertEqual(result.text, '一张测试图\n图中文字：识别出的外部文本')
         self.assertEqual(len(self.model_requests), 1)
         self.assertEqual(len(guard_calls), 1)
         self.assertIn('data:image/png;base64,', str(self.model_requests))
