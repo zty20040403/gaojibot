@@ -1,5 +1,6 @@
 """A narrow, persisted program source for direct bot speech, never a human grant."""
 import json
+from contextlib import nullcontext
 
 from ...message_ir import MessageBody,TextNode
 from .identity_store import snapshot
@@ -27,7 +28,10 @@ def load(cursor, action_id):
 
 def check(cursor, token, row, admission, now):
     sessions = VMSessions(None,token,private_admission=admission,clock=lambda:now)
-    ProgramActions(sessions).check(cursor,row)
+    actions = ProgramActions(sessions)
+    actions.check(cursor,row)
+    from .program_execution import check_reply
+    check_reply(cursor,actions,row)
 
 
 def validate(cursor, *, token, action_id, rendered, requester, logical_key, source_scope_key,
@@ -77,14 +81,14 @@ def denial(cursor, *, token, delivery, admission, now):
         return None if valid else 'program_plan_mismatch'
     except PermissionError as error:
         code = str(error)
-        return code if code in {'program_disabled','program_action_expired','conversation_stopped_or_replaced',
+        return code if code in {'program_disabled','program_action_disabled','program_action_expired','conversation_stopped_or_replaced',
             'vm_token_revoked','vm_route_replaced','vm_endpoint_unavailable'} else 'program_source_unavailable'
 
 
-def say(actions, current, *, generation, program, request_id, text):
+def say(actions, current, *, generation, program, request_id, text, transaction_cursor=None):
     from .plans import enqueue_plan
     rendered = rendered_say(current.endpoint,text)
-    with actions.transaction() as cursor:
+    with (nullcontext(transaction_cursor) if transaction_cursor is not None else actions.transaction()) as cursor:
         row,_ = actions.reserve(current,generation=generation,kind='say',program=program,
             request_id=request_id,payload={'text':text},transaction_cursor=cursor)
         ref = enqueue_plan(cursor,token=actions.sessions.lease,rendered=rendered,

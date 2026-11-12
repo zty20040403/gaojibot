@@ -64,7 +64,9 @@ class ProgramActions:
         if (row['scope_key']!=current.scope_key or not permitted(cursor,current.endpoint,
                 generation=row['conversation_generation'])):
             raise ProgramDenied('conversation_stopped_or_replaced')
-        settings(cursor,current.scope_key,row['program_name'])
+        limits = settings(cursor,current.scope_key,row['program_name'])
+        if limits['program_wake_limit' if row['kind']=='wake' else 'program_say_limit']==0:
+            raise ProgramDenied('program_action_disabled')
         if int(self.clock())>=row['expires_at']:
             raise ProgramDenied('program_action_expired',409)
         return current
@@ -122,10 +124,16 @@ class ProgramActions:
         with self.transaction() as cursor:
             self.sessions.check(cursor,current)
             column = 'request_id' if by_request else 'action_id'
-            row = cursor.execute('''SELECT a.action_id,a.request_id,a.program_name,a.kind,a.plan_id,a.created_at,
-                COALESCE(CASE d.status WHEN 'committed' THEN 'completed' WHEN 'pending' THEN 'queued' ELSE d.status END,a.state) AS state,
-                COALESCE(d.wait_reason,a.error_code) AS error_code
-                FROM qq_official_program_actions a LEFT JOIN deliveries d ON d.plan_id=a.plan_id AND d.part_index=0
+            row = cursor.execute('''SELECT a.action_id,a.request_id,a.program_name,a.kind,a.created_at,
+                COALESCE(a.plan_id,r.plan_id) AS plan_id,w.wake_id,w.due_at,w.answer_text='[silence]' AS silent,
+                CASE WHEN a.state IN ('cancelled','failed') THEN a.state ELSE
+                    COALESCE(CASE d.status WHEN 'committed' THEN 'completed' WHEN 'pending' THEN 'queued' ELSE d.status END,
+                    CASE WHEN w.state='queued' THEN a.state ELSE w.state END,a.state) END AS state,
+                CASE WHEN a.state IN ('cancelled','failed') THEN a.error_code ELSE
+                    COALESCE(d.wait_reason,w.error_code,a.error_code) END AS error_code
+                FROM qq_official_program_actions a LEFT JOIN qq_official_program_wakes w ON w.wake_id=a.wake_id
+                LEFT JOIN qq_official_program_actions r ON r.action_id=w.reply_action_id
+                LEFT JOIN deliveries d ON d.plan_id=COALESCE(a.plan_id,r.plan_id) AND d.part_index=0
                 WHERE a.endpoint_key=? AND a.'''+column+'=?',
                 (current.endpoint.key,identifier)).fetchone()
             if row is None:

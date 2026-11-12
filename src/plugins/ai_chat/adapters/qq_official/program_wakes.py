@@ -36,8 +36,6 @@ class ProgramWakes:
         for row in rows:
             try:
                 self.actions.check(cursor,row)
-                if settings(cursor,row['scope_key'],row['program_name'])['program_wake_limit']==0:
-                    raise ProgramDenied('program_wake_disabled')
                 live.append(dict(row))
             except PermissionError as error:
                 cursor.execute("UPDATE qq_official_program_actions SET state='cancelled',error_code=? WHERE action_id=?",
