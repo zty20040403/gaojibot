@@ -88,3 +88,10 @@ class ToolEnabledRequest(BaseModel):
 
 class MediaReviewRequest(BaseModel):
     state: str
+
+
+class ImageCaptionSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    scope_key: str = Field(min_length=1, max_length=1000)
+    enabled: bool = Field(strict=True)
+    daily_limit: int = Field(default=200, ge=0, le=10000, strict=True)

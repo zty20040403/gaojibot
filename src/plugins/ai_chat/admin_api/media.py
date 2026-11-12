@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from typing import Optional
+import time
+
+from ..image_captions import CaptionSettings
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
@@ -9,6 +12,7 @@ from .contracts import (
     AdminMutationContext,
     CleanupConfirmationRequest,
     MediaReviewRequest,
+    ImageCaptionSettingsRequest,
 )
 
 
@@ -64,6 +68,7 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             }
         try:
             snapshot = services.media_library.admin_snapshot(limit=limit)
+            caption_rows = CaptionSettings(services.media_library.database).snapshot(int(time.time()))
             vision = (
                 services.vision_worker.admin_snapshot(limit=limit)
                 if services.vision_worker is not None
@@ -94,12 +99,32 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             **snapshot,
             "vision": vision,
             "cleanup": cleanup,
+            "caption_settings": caption_rows,
+            "captions_available": services.vision_worker is not None,
             "configured": True,
             "available": True,
             "api_version": "v1",
             "resource": "media",
             "resource_version": control_store.version("media"),
         }
+
+    @router.put('/api/media/captions/settings')
+    def caption_settings(
+        selection: ImageCaptionSettingsRequest,
+        mutation_info: AdminMutationContext = Depends(mutation_context),
+        authorization: Optional[str] = Header(default=None),
+    ) -> dict[str, object]:
+        authorize(authorization)
+        if services.media_library is None or selection.enabled and services.vision_worker is None:
+            raise HTTPException(status_code=503, detail='图片说明服务未配置')
+        try:
+            result = mutate(mutation_info, 'media', action='media.captions.set', target=selection.scope_key,
+                operation=lambda _version: CaptionSettings(services.media_library.database).set(
+                    selection.scope_key, enabled=selection.enabled, daily_limit=selection.daily_limit))
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)[:200]) from None
+        event_broker.publish('media')
+        return mutation_payload(result, **(result.value if isinstance(result.value, dict) else {}))
 
     @router.put("/api/media/{media_id}/review")
     def review_media(

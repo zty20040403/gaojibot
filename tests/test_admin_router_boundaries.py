@@ -45,6 +45,7 @@ PAGE_ROUTES = (
     ("PUT", "/api/group-models/{group_id}/users/{user_id}/reasoning-effort"),
     ("GET", "/api/media"),
     ("PUT", "/api/media/{media_id}/review"),
+    ("PUT", "/api/media/captions/settings"),
     ("GET", "/api/sources"),
     ("DELETE", "/api/media/legacy-images"),
     ("GET", "/api/traces"),
