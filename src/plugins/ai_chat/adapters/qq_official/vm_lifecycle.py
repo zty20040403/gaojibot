@@ -21,7 +21,8 @@ class OfficialVMLifecycle:
         self.api = VMAPIAuthority(self.credentials,actions=self.actions)
         from .program_runner import ProgramRunner
         self.programs = ProgramRunner(self,runtime,app)
-        self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs)
+        from .program_reads import ProgramReads
+        self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs,reads=ProgramReads(app))
         self.closed,self.restoring = False,None
 
     def route(self, owner):

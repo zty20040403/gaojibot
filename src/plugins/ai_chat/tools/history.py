@@ -61,8 +61,8 @@ async def history(turn: TurnState, arguments: dict[str, object]) -> str:
                  for message in (*before, *after)]
         return json.dumps({"ok": True, "lines": lines or ["（没有这样的消息）"]}, ensure_ascii=False)
     try:
-        start = _boundary(ledger, scope, str(arguments["from"]), end=False) if arguments.get("from") else None
-        end = _boundary(ledger, scope, str(arguments["to"]), end=True) if arguments.get("to") else None
+        start = await app.db_call(_boundary, ledger, scope, str(arguments["from"]), end=False) if arguments.get("from") else None
+        end = await app.db_call(_boundary, ledger, scope, str(arguments["to"]), end=True) if arguments.get("to") else None
     except ValueError:
         return _error("from/to 要写成 YYYY-MM-DD、YYYY-MM-DD HH:MM 或 #消息编号。")
     after_id = (start - 1) if start is not None else 0

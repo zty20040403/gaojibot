@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F2 VM 只读工具入口（未部署）
+
+- VM-only `POST /vm/history`、`/vm/web-search`、`/vm/web-fetch` 复用同一宿主工具目录及其 JSON schema；只能读物理会话，不接受 scope/actor/密钥覆盖，不开放模型或其他工具。停止、停用写动作以及无 sender 时仍能读取。
+- 每会话最多 4 个、宿主合计 16 个并发读取；正文最多 16 KiB/15 秒，工具总等待最多 60 秒。客户端断开、凭据轮换或撤销会取消真实工具任务；返回内容前再次校验来源，搜索/网页失败明确返回错误。
+- 日期范围 history 原有同步数据库边界移到 db_call，避免 HTTP/模型事件循环直接阻塞在日期查询上。
+- 29 项真实 HTTP/SQL/生命周期唤醒/会话窗口/网页工具/后台来源组合通过，外部网页与搜索使用替身；Ruff/两项导入检查通过。首轮误写不存在的 tests.test_history 导致加载报错，已更正为实际 tests.test_conversation_window 并重跑完整组合，没有跳过该覆盖。
+- 固定 c2f98e3（唤醒 + 重复取消回执修复）的全套正在 `/tmp/gaoji-python-wake-final-full.log` 运行，PID 文件 `/tmp/gaoji-python-wake-final-test.pid`；该快照不包含本次只读入口。
+
 ## 开发记录（2026-11-12）· Python 停机回执重复取消修复（未部署）
 
 - 对 d1eb4d9 全套的唯一失败新增确定性 RED：平台接受后，阻塞 capture_receipt，连续两次取消发送 worker。旧实现只 shield 第一次等待，第二次取消穿透收尾任务，造成回执已存但尚未 applied。
