@@ -69,10 +69,10 @@ class ProgramActions:
             raise ProgramDenied('program_action_expired',409)
         return current
 
-    def reserve(self, current, *, generation, kind, program, request_id, payload, transaction_cursor=None):
+    def reserve(self, current, *, generation, kind, program, request_id, payload, transaction_cursor=None, queue_wake=False):
         if (type(kind) is not str or kind not in {'say','wake','send_file'} or type(program) is not str or NAME.fullmatch(program) is None
                 or type(request_id) is not str or REQUEST.fullmatch(request_id) is None
-                or type(payload) is not dict or type(generation) is not int or generation<0):
+                or type(payload) is not dict or type(generation) is not int or generation<0 or queue_wake and kind!='wake'):
             raise ValueError('invalid_program_action')
         try:
             encoded = json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
@@ -97,16 +97,22 @@ class ProgramActions:
             quota_kind = 'wake' if kind=='wake' else 'say'
             used = cursor.execute('SELECT used FROM program_quota WHERE scope_key=? AND kind=? AND hour=?',
                 (scope,quota_kind,now//3600)).fetchone()
-            if (used['used'] if used else 0)>=limits['program_'+quota_kind+'_limit']:
+            limit = limits['program_'+quota_kind+'_limit']
+            deferred = (used['used'] if used else 0)>=limit
+            if deferred and not (queue_wake and limit>0):
                 raise ProgramDenied('program_rate_limited',429)
-            cursor.execute('''INSERT INTO program_quota(scope_key,kind,hour,used) VALUES (?,?,?,1)
-                ON CONFLICT(scope_key,kind,hour) DO UPDATE SET used=program_quota.used+1''',(scope,quota_kind,now//3600))
+            if not deferred:
+                cursor.execute('''INSERT INTO program_quota(scope_key,kind,hour,used) VALUES (?,?,?,1)
+                    ON CONFLICT(scope_key,kind,hour) DO UPDATE SET used=program_quota.used+1''',(scope,quota_kind,now//3600))
             fields = dict(action_id=secrets.token_hex(16),endpoint_key=current.endpoint.key,scope_key=scope,
                 request_id=request_id,program_name=program,kind=kind,payload_json=encoded,intent_digest=intent,
                 sandbox_id=current.sandbox_id,boot_id=current.boot_id,token_hash=current.token_hash,
                 token_generation=current.token_generation,account_epoch=current.account_epoch,
                 endpoint_generation=current.endpoint_generation,route_epoch=current.route_epoch,
                 conversation_generation=generation,created_at=now,expires_at=now+300)
+            if queue_wake:
+                from .program_wakes import allocate
+                fields.update(allocate(cursor,current,generation,now,encoded,deferred=deferred))
             row = cursor.execute('INSERT INTO qq_official_program_actions ('+','.join(fields)+') VALUES ('+
                 ','.join('?' for _ in fields)+') RETURNING *',tuple(fields.values())).fetchone()
             return dict(row),True
