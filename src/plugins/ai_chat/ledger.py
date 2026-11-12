@@ -1227,7 +1227,7 @@ class MessageLedger:
         return cursor.execute(
             """
             SELECT m.*, c.scope_key
-            FROM messages_with_captions AS m
+            FROM messages AS m
             JOIN conversations AS c
               ON c.conversation_id = m.conversation_id
             WHERE m.canonical_message_id = ?
