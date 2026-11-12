@@ -98,6 +98,7 @@ class LegacyMediaCleanup:
                     DELETE FROM message_media AS ordinary
                     WHERE ordinary.media_id = ?
                       AND ordinary.media_kind = 'image'
+                      AND ordinary.source_type <> 'qq-official.caption'
                       AND NOT EXISTS (
                           SELECT 1 FROM message_media AS sticker_link
                           WHERE sticker_link.media_id = ordinary.media_id
@@ -215,7 +216,10 @@ class LegacyMediaCleanup:
                              AND ordinary.media_kind = 'image'
                        ) AS ordinary_links
                 FROM media_blobs AS blob
-                WHERE EXISTS (
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM message_media official
+                    WHERE official.media_id=blob.media_id AND official.source_type='qq-official.caption'
+                ) AND EXISTS (
                     SELECT 1 FROM message_media AS ordinary
                     WHERE ordinary.media_id = blob.media_id
                       AND ordinary.media_kind = 'image'

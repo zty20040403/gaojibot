@@ -397,6 +397,8 @@ class MediaLibrary:
             await asyncio.gather(*(run(job) for job in jobs))
 
     async def process_job(self, job: MediaJob) -> None:
+        if job.job_type == 'official_caption':
+            return await self.official_caption_worker.process(job)
         if job.job_type == "fetch":
             await self._process_fetch(job)
         elif job.job_type == "caption":
@@ -439,7 +441,7 @@ class MediaLibrary:
                     now,
                     now,
                     getattr(self, 'official_caption_worker', None) is not None,
-                    self.batch_size,
+                    min(self.batch_size, self.worker_concurrency),
                     now + self.lease_seconds,
                     self.worker_id,
                     now,
