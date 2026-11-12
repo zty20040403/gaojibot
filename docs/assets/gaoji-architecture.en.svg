@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
+  <title id="title">Gaoji conversation and execution architecture</title>
+  <desc id="desc">The foreground agent chats and calls tools through a multi-model API and delivers through the outbox. Complex tasks are stored as jobs and run by Codex in an isolated VM, driven by the host; the VM's requests go through a host relay and the report returns to the foreground. PostgreSQL holds durable state, and credentials never enter the VM.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0b1222"/><stop offset="1" stop-color="#111a2e"/></linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#67e8f9"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+    <marker id="blue" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 7 4 1 7" fill="#67e8f9"/></marker>
+    <marker id="purple" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 7 4 1 7" fill="#a78bfa"/></marker>
+    <marker id="orange" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 7 4 1 7" fill="#fbbf24"/></marker>
+  </defs>
+  <rect x="1" y="1" width="1278" height="518" rx="20" fill="url(#bg)" stroke="#25344e"/>
+  <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <text x="40" y="43" fill="#8ca3c6" font-size="11" letter-spacing="2.2">THE SYSTEM, AT A GLANCE</text>
+    <text x="40" y="77" fill="#e2e8f0" font-size="24" font-weight="650">Conversation stays in front. Execution runs in the back.</text>
+    <text x="1240" y="73" fill="#8ca3c6" font-size="13" text-anchor="end">Logical architecture · not live monitoring</text>
+    <g fill="#131f34" stroke="#33445f">
+      <rect x="42" y="119" width="190" height="91" rx="13"/>
+      <rect x="306" y="119" width="270" height="91" rx="13"/>
+      <rect x="681" y="119" width="280" height="91" rx="13"/>
+      <rect x="1048" y="119" width="190" height="91" rx="13"/>
+      <rect x="42" y="320" width="190" height="114" rx="13"/>
+      <rect x="306" y="320" width="270" height="114" rx="13"/>
+      <rect x="1048" y="320" width="190" height="114" rx="13"/>
+    </g>
+    <rect x="651" y="307" width="322" height="140" rx="15" fill="#1b1732" stroke="#a78bfa" stroke-opacity=".7" stroke-dasharray="5 4"/>
+    <g font-size="21" font-weight="650" fill="#f1f5f9">
+      <text x="64" y="157">Official QQ</text>
+      <text x="329" y="157">Foreground agent</text>
+      <text x="705" y="157">Multi-model API</text>
+      <text x="1070" y="157">Outbox</text>
+      <text x="64" y="359" font-size="19">PostgreSQL</text>
+      <text x="329" y="359">Background jobs</text>
+      <text x="675" y="346" fill="#ddd6fe">Codex · isolated VM</text>
+      <text x="1070" y="359" font-size="20">Host relay</text>
+    </g>
+    <g font-size="14" fill="#98abc9">
+      <text x="64" y="186">Group / DM / inbound</text>
+      <text x="329" y="186">Timeline, memory, tools, persona</text>
+      <text x="705" y="186">Chat API / background Responses</text>
+      <text x="1070" y="186">Text, files, receipts</text>
+      <text x="64" y="385">Chat, memory, jobs</text>
+      <text x="64" y="410">Auth, requests, receipts</text>
+      <text x="329" y="385">Durable queue · steer / cancel</text>
+      <text x="329" y="410">Host-driven runs · report back</text>
+      <text x="675" y="377" fill="#c4b5fd">Persistent /work · code / files</text>
+      <text x="675" y="404" fill="#a5a3c6">Browser / PDF / video / audio</text>
+      <text x="675" y="428" fill="#9690b7" font-size="12">No host keys · never posts to QQ directly</text>
+      <text x="1070" y="385">Job token / RPC</text>
+      <text x="1070" y="410">Model keys stay on host</text>
+    </g>
+    <g fill="none" stroke-width="2" stroke-linejoin="round">
+      <path d="M232 157H306" stroke="#67e8f9" marker-end="url(#blue)"/>
+      <path d="M576 157H681" stroke="#fbbf24" marker-start="url(#orange)" marker-end="url(#orange)"/>
+      <path d="M576 194H612V240H1143V210" stroke="#67e8f9" marker-end="url(#blue)"/>
+      <path d="M434 210V320" stroke="#a78bfa" marker-start="url(#purple)" marker-end="url(#purple)"/>
+      <path d="M576 372H651" stroke="#a78bfa" marker-start="url(#purple)" marker-end="url(#purple)"/>
+      <path d="M973 372H1048" stroke="#a78bfa" marker-start="url(#purple)" marker-end="url(#purple)"/>
+      <path d="M1143 320V281H821V210" stroke="#fbbf24" marker-start="url(#orange)" marker-end="url(#orange)"/>
+      <path d="M306 186H269V275H137V320M232 390H306" stroke="#647c9e" stroke-dasharray="5 5"/>
+    </g>
+    <g font-size="12">
+      <text x="627" y="139" fill="#fbbf24" text-anchor="middle">model calls</text>
+      <text x="828" y="231" fill="#67e8f9" text-anchor="middle">One delivery path → official message API</text>
+      <text x="450" y="281" fill="#c4b5fd">delegate / report</text>
+      <text x="616" y="357" fill="#c4b5fd" text-anchor="middle">run</text>
+      <text x="1011" y="357" fill="#c4b5fd" text-anchor="middle">requests</text>
+      <text x="1102" y="301" fill="#fbbf24" text-anchor="end">model requests / host auth</text>
+      <text x="253" y="309" fill="#8ca3c6" text-anchor="end">durable state</text>
+    </g>
+    <path d="M42 472H1238" stroke="url(#line)" stroke-opacity=".22"/>
+    <g font-size="11" letter-spacing="1.6" fill="#93a9c9">
+      <text x="42" y="498">HOST-ONLY KEYS</text>
+      <text x="376" y="498">PERSISTENT WORKSPACE</text>
+      <text x="810" y="498">DURABLE STATE</text>
+      <text x="1238" y="498" text-anchor="end">HUMAN-FIRST DELIVERY</text>
+    </g>
+  </g>
+</svg>
