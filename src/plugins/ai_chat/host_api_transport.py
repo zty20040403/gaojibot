@@ -26,6 +26,7 @@ class PinnedAPITransport(PinnedHttpTransport):
                         address.sixtofour or address.teredo or any(address in network for network in _NAT64)):
                     raise ApiDenied('api_address_denied')
             return addresses
+        self.current = None
         super().__init__(url,HttpPolicy(),resolver=public_addresses,transport=transport)
         if self.endpoint.scheme!='https':
             raise ApiDenied('api_https_required')
@@ -39,7 +40,13 @@ class PinnedAPITransport(PinnedHttpTransport):
         headers = httpx2.Headers(request.headers)
         headers['Host'] = self.endpoint.netloc.decode('ascii')
         headers['Accept-Encoding'] = 'identity'
-        pinned = httpx2.Request(request.method,self.endpoint.copy_with(host=await self.address()),
+        address = await self.address()
+        if self.current is not None:
+            try:
+                await self.current()
+            except PermissionError:
+                raise ApiDenied('api_caller_revoked') from None
+        pinned = httpx2.Request(request.method,self.endpoint.copy_with(host=address),
             headers=headers,content=body,extensions={'timeout':TIMEOUT,'sni_hostname':self.endpoint.host})
         return await self.transport.handle_async_request(pinned)
 
@@ -93,7 +100,7 @@ class ApiResponse:
 
 
 @asynccontextmanager
-async def forward(api, *, method, raw_path, query, headers, body, transport_factory=PinnedAPITransport):
+async def forward(api, *, method, raw_path, query, headers, body, transport_factory=PinnedAPITransport, current=None):
     """The caller owns authentication, quota reservation and final audit."""
     path = canonical_path(raw_path)
     if not api.permits(method,path):
@@ -111,6 +118,7 @@ async def forward(api, *, method, raw_path, query, headers, body, transport_fact
         outgoing = httpx2.Headers(forwarded_headers(headers))
         outgoing.update({key:value.replace('{secret}',secret) for key,value in api.headers.items()})
         transport = transport_factory(str(url))
+        transport.current = current
     except (ValueError,UnicodeError):
         raise ApiDenied('invalid_api_request') from None
     upstream = None

@@ -25,7 +25,9 @@ IDLE_SECONDS = 120
 class Channel:
     """One job's app-server stdio, carried over a TCP connection from the VM."""
 
-    def __init__(self):
+    def __init__(self, *, source=None, current=None):
+        self.source = dict(source) if source is not None else None
+        self.current = current
         self.connected = asyncio.get_running_loop().create_future()
         self.reader = self.writer = None
         self.requests = set()
@@ -64,8 +66,10 @@ class _ModelRequest:
     reject the next request. The response's upstream socket closes even if
     cancellation occurs before the streaming generator starts.
     """
-    def __init__(self, gateway):
+    def __init__(self, gateway, handler=None):
         self.gateway = gateway
+        self.handler = handler or gateway._responses
+        self.model_request = handler is None
 
     async def __call__(self, scope, receive, send):
         request = Request(scope,receive)
@@ -74,6 +78,8 @@ class _ModelRequest:
             return await JSONResponse({'error':'invalid job token'},401)(scope,receive,send)
         task = asyncio.current_task()
         channel.requests.add(task)
+        request.state.channel = channel
+        request.state.resources = contextlib.AsyncExitStack()
         started,finished = False,False
         async def tracked_send(message):
             nonlocal started,finished
@@ -81,7 +87,7 @@ class _ModelRequest:
             finished |= message['type']=='http.response.body' and not message.get('more_body',False)
             await send(message)
         try:
-            response = await self.gateway._responses(request)
+            response = await self.handler(request)
             await response(scope,receive,tracked_send)
         except asyncio.CancelledError:
             if not channel.revoked:
@@ -89,13 +95,20 @@ class _ModelRequest:
             if not started:
                 await JSONResponse({'error':'job token revoked'},401)(scope,receive,send)
             elif not finished:
+                if not self.model_request:
+                    # A binary/JSON API has no SSE completion marker. Abort the
+                    # connection: a clean chunked EOF would falsely mean success.
+                    raise
                 # No fabricated completion event; the interrupted stream ends.
                 await send({'type':'http.response.body','body':b'','more_body':False})
         finally:
             channel.requests.discard(task)
             upstream = getattr(request.state,'model_upstream',None)
-            if upstream is not None:
-                await upstream.aclose()
+            try:
+                if upstream is not None:
+                    await upstream.aclose()
+            finally:
+                await request.state.resources.aclose()
 
 
 class _Server(uvicorn.Server):
@@ -105,18 +118,19 @@ class _Server(uvicorn.Server):
 
 
 class CodexGateway:
-    def __init__(self, *, port, upstream, model, logger, client=None):
+    def __init__(self, *, port, upstream, model, logger, client=None, api_handler=None):
         # upstream() -> (base_url, api_key); model() -> (model, effort)
         self.port, self.upstream, self.model, self.logger = port, upstream, model, logger
+        self.api_handler = api_handler
         self.channels: dict[str, Channel] = {}
         self.failures: dict[str, str] = {}
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(30, read=IDLE_SECONDS), trust_env=False)
         self.http = self.rpc = None
         self.started = asyncio.Lock()
 
-    def open(self):
+    def open(self, *, source=None, current=None):
         token = secrets.token_urlsafe(32)
-        self.channels[token] = Channel()
+        self.channels[token] = Channel(source=source,current=current)
         return token, self.channels[token]
 
     def failure(self, token):
@@ -136,6 +150,10 @@ class CodexGateway:
             app = Starlette(routes=[Route('/v1/models', self._models),
                                     Route('/v1/responses', _ModelRequest(self), methods=['POST']),
                                     Route('/v1/responses/compact', _ModelRequest(self), methods=['POST'])])
+            if self.api_handler is not None:
+                from .host_apis import METHODS
+                for path in ('/api/{name}','/api/{name}/{path:path}'):
+                    app.router.routes.append(Route(path,_ModelRequest(self,self.api_handler),methods=sorted(METHODS)))
             self.http = _Server(uvicorn.Config(app, host='127.0.0.1', port=self.port, log_level='warning',
                                                access_log=False, lifespan='off'))
             self.http_task = asyncio.create_task(self.http.serve())

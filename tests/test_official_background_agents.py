@@ -88,7 +88,7 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         service.runner.engine = engine
         if steer_error is not None:
             server = FakeAppServer(steer_error=steer_error, complete_on_rejection=True)
-            gateway = SimpleNamespace(start=AsyncMock(), open=lambda: ('TEST_TOKEN', server),
+            gateway = SimpleNamespace(start=AsyncMock(), open=lambda **kwargs: ('TEST_TOKEN', server),
                 revoke=Mock(), port=18640, failure=lambda token: '')
             service.runner.engine = CodexEngine(gateway, service.model_settings, start_vm=service.start_vm,
                                                guest_exec=service.guest_exec, clock=lambda: f.now)

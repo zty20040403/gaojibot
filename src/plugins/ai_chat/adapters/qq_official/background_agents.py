@@ -60,8 +60,13 @@ class OfficialBackgroundAgents:
         def upstream():
             profile = upstream_profile(app.model_catalog, settings)
             return profile.base_url, profile.api_key
+        host = getattr(app,'official_host',None)
+        self.host_apis = host.config.apis if host is not None and host.config.account.key==token.account_key else {}
+        from ...host_api_calls import HostAPICalls
+        from ...host_api_proxy import HostAPIProxy
+        self.api_proxy = HostAPIProxy(self.host_apis,HostAPICalls(app.database,clock=self.clock),calls=self.calls) if self.host_apis else None
         self.gateway = CodexGateway(port=settings.background_gateway_port, upstream=upstream,
-                                    model=self.model_settings.get, logger=app.logger)
+            model=self.model_settings.get, logger=app.logger,api_handler=self.api_proxy.handle if self.api_proxy else None)
         engine = CodexEngine(self.gateway, self.model_settings, start_vm=self.start_vm,
                              guest_exec=self.guest_exec, clock=self.clock)
         self.runner = BackgroundRunner(self.store, calls=self.calls, session_factory=self.session,
@@ -144,7 +149,9 @@ class OfficialBackgroundAgents:
                 check_transaction(cursor)
         async def current():
             await self.calls(check)
-        session = BackgroundToolSession(self.app, inbound, question=question, current=current, prompt=PROMPT)
+        from ...host_api_proxy import api_instructions
+        session = BackgroundToolSession(self.app, inbound, question=question, current=current,
+            prompt=PROMPT+api_instructions(self.host_apis,self.app.settings.background_gateway_port))
         from ...background_video import VideoSession
         session.video = VideoSession(self.app,inbound,current=current,check=check_transaction,job_id=job.job_id)
         session.tools += session.video.tools

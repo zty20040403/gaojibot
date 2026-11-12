@@ -194,7 +194,7 @@ class CodexEngine:
         model, _ = self.model_settings.get()
         trace.provider, trace.model = 'codex', model
         await self.gateway.start()
-        token, channel = self.gateway.open()
+        token, channel = self.gateway.open(source=row,current=session.current)
         run = CodexRun(channel, session, progress, trace)
         reader = None
         try:

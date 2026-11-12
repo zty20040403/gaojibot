@@ -64,7 +64,7 @@ class FakeAppServer:
 
 class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
     def engine(self, server, *, now=0):
-        self.gateway = SimpleNamespace(start=AsyncMock(), open=lambda: ('TEST_TOKEN', server), revoke=Mock(), port=18640,
+        self.gateway = SimpleNamespace(start=AsyncMock(), open=lambda **kwargs: ('TEST_TOKEN', server), revoke=Mock(), port=18640,
                                        failure=lambda token: '')
         self.exec = AsyncMock()
         settings = SimpleNamespace(get=lambda: ('TEST_MODEL', 'high'))
@@ -73,7 +73,7 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
 
     def session(self):
         tool = {'type': 'function', 'function': {'name': 'history', 'description': 'TEST', 'parameters': {'type': 'object'}}}
-        return SimpleNamespace(prompt='TEST prompt', tools=(tool,), execute_tool=AsyncMock(return_value='TEST lines'))
+        return SimpleNamespace(prompt='TEST prompt', tools=(tool,), current=AsyncMock(), execute_tool=AsyncMock(return_value='TEST lines'))
 
     async def test_tool_steer_and_report(self):
         server, session, trace, progress = FakeAppServer(), self.session(), AgentTrace(), AsyncMock()
