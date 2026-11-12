@@ -10,11 +10,13 @@ from .send_types import OutboxInvariantError
 
 
 class ProgramHTTP:
-    def __init__(self, actions, runtime, calls, logger, *, programs=None, reads=None, stream=None, files=None):
+    def __init__(self, actions, runtime, calls, logger, *, programs=None, reads=None, stream=None, files=None, units=None):
         self.actions,self.runtime,self.calls,self.logger = actions,runtime,calls,logger
-        self.programs,self.reads,self.stream,self.files = programs,reads,stream,files
+        self.programs,self.reads,self.stream,self.files,self.units = programs,reads,stream,files,units
 
     async def handle(self, request):
+        if request.url.path=='/vm/units':
+            return await self.units.handle(request) if self.units is not None else JSONResponse({'error':'program_units_unavailable'},503)
         if request.url.path=='/vm/events':
             return await self.stream.handle(request) if self.stream is not None else JSONResponse({'error':'program_events_unavailable'},503)
         from .program_reads import ROUTES

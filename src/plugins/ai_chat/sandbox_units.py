@@ -124,16 +124,19 @@ class Units:
     def conflict(self, name):
         return name in {'gaoji-units.service','gaoji-units-boot.service'} or any(os.path.lexists(path/name) for path in self.system)
 
-    def sync(self):
+    def sync(self, *, enabled=True, disabled=()):
+        if (type(enabled) is not bool or not isinstance(disabled,(list,tuple)) or len(disabled)>256
+                or any(not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]{0,79}',name) for name in disabled)):
+            raise UnitError('invalid_unit_policy')
         fd = directory(self.runtime,create=True)
         lock = os.open('.gaoji-units.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=fd)
         try:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            return self._sync(fd)
+            return self._sync(fd,enabled,set(disabled))
         finally:
             os.close(lock); os.close(fd)
 
-    def _sync(self, runtime_fd):
+    def _sync(self, runtime_fd, enabled, disabled):
         desired,errors,owned = {},{},set()
         try:
             root = directory(self.registry)
@@ -168,7 +171,7 @@ class Units:
         if self.conflict(SLICE):
             raise UnitError('system_slice_conflict')
         install(self.runtime/SLICE,MARKER+b'[Slice]\nCPUWeight=10\nIOWeight=10\nMemoryMax=50%\n')
-        changed = []
+        changed,blocked = [],set()
         for name in sorted(owned-desired.keys()-errors.keys()):
             try:
                 if self.conflict(name):
@@ -179,27 +182,40 @@ class Units:
                     remove(self.runtime/(name+'.d')/DROPIN)
                 except FileNotFoundError:
                     pass
+                try:
+                    remove(self.runtime/('.gaoji-paused-'+name))
+                except FileNotFoundError:
+                    pass
             except (OSError,UnitError,subprocess.TimeoutExpired) as error:
                 errors[name] = str(error)[:1000]
         for name,content in desired.items():
             try:
-                override = MARKER+(('[Service]\nSlice='+SLICE+'\nEnvironment="GAOJI_PROGRAM='+name.rsplit('.',1)[0]+'"\n').encode()
+                pause = self.runtime/('.gaoji-paused-'+name)
+                was_paused = os.path.lexists(pause)
+                if not enabled or name.rsplit('.',1)[0] in disabled:
+                    blocked.add(name)
+                    install(pause,MARKER+b'disabled\n')
+                elif was_paused:
+                    remove(pause)
+                override = MARKER+('[Unit]\nConditionPathExists=!'+str(pause)+'\n').encode()
+                override += (('[Service]\nSlice='+SLICE+'\nEnvironment="GAOJI_PROGRAM='+name.rsplit('.',1)[0]+'"\n').encode()
                     if name.endswith('.service') else b'[Timer]\n')
                 updated = install(self.runtime/(name+'.d')/DROPIN,override)
-                if install(self.runtime/name,MARKER+content) or updated:
+                if install(self.runtime/name,MARKER+content) or updated or was_paused:
                     changed.append(name)
             except (OSError,ValueError,UnitError) as error:
                 errors[name] = str(error)[:1000]
         self.control('daemon-reload')
-        for name in sorted(changed):
+        for name in sorted(set(changed)|blocked):
             try:
-                self.control('restart' if name in owned else 'start',name)
+                self.control('stop' if name in blocked else 'restart' if name in owned else 'start',name)
             except (UnitError,subprocess.TimeoutExpired) as error:
                 errors[name] = str(error)[:1000]
         rows = []
         for name in sorted(desired.keys()-errors.keys() | set(changed)):
             try:
                 row = self.status(name)
+                row['enabled'] = name not in blocked
                 rows.append(row)
                 if row.get('ActiveState')=='failed':
                     errors.setdefault(name,'unit_failed')
@@ -209,9 +225,15 @@ class Units:
 
 
 def main():
-    argparse.ArgumentParser(prog='gaoji-units',description='Sync /work/.gaoji/systemd; report states and failed-unit logs.').parse_args()
+    parser = argparse.ArgumentParser(description='Root-only guest worker; use gaoji-units from the sandbox user.')
+    parser.add_argument('--policy-stdin',action='store_true')
+    args = parser.parse_args()
     try:
-        result = Units().sync()
+        import sys
+        policy = json.loads(sys.stdin.read(32769)) if args.policy_stdin else {}
+        if type(policy) is not dict or policy.keys()-{'enabled','disabled'}:
+            raise UnitError('invalid_unit_policy')
+        result = Units().sync(**policy)
     except (OSError,ValueError,UnitError,subprocess.TimeoutExpired) as error:
         result = dict(ok=False,error=str(error)[:1000])
     print(json.dumps(result,ensure_ascii=False))

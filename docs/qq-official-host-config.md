@@ -97,6 +97,10 @@ VM 后端启动时中转服务随账号运行时启动，无需先有后台任�
 - 模型答案也占每小时 60 条的发言额度；`completed` 且 `silent=true` 表示模型选择 `[silence]`，没有发送 QQ 消息；其他成功完成必须有真实发送回执。
 - 停止、停用、凭据撤销及事件过期均会拒绝或取消。重启后未完成的模型回合标记 `ambiguous`，不重复调用；已保存答案可在来源仍有效时接续投递。
 
+### 单元同步
+
+`POST /vm/units` 只接受空 JSON 对象，使用 VM 认证但不受聊天 stop 限制。`gaoji-units`/`gaoji units` 通过它调用宿主固定的 root guest helper，普通 sandbox 用户无须 sudo。宿主读取本会话 programs_enabled 与 program_controls；调用方不能提供策略、路径或命令。同步受单 VM 1 个/宿主 4 个并发和 guest 超时限制，失败返回非 2xx，不把已保存文件误当作已启动服务。
+
 ### 程序发文件
 
 `POST /vm/send-file` 接受 `{"path":"/work/report.txt","request_id":"TEST_UNIQUE","program":"TEST_PROGRAM"}`，可选 `filename` 改显示名。只从令牌绑定的会话 VM 工作区导出普通文件，不接受 URL、宿主路径、其他 VM 或 artifact ID。

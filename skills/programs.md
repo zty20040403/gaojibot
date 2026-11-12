@@ -31,7 +31,7 @@ gaoji events --after 123
 
 ## 手动同步单元
 
-工具包已有 `gaoji-units`，把单元文件放在 `/work/.gaoji/systemd/` 后运行它。新增会启动、改动会重启、删除会停止；不覆盖系统同名单元。每次查看 JSON 的 ok、units 和 errors；失败会附最近几行日志，不要把文件已保存当作启动成功。
+工具包已有 `gaoji-units`（也可 `gaoji units`），把单元文件放在 `/work/.gaoji/systemd/` 后运行它。命令通过本会话 VM 接口请求宿主运行固定 guest 同步器，不需要 sudo，也不能传任意命令或路径。新增会启动、改动会重启、删除会停止；不覆盖系统同名单元。宿主停用的程序（服务与同名 timer）保持暂停，不能靠重跑命令绕过。每次查看 JSON 的 ok、units 和 errors；失败会附最近几行日志，不要把文件已保存当作启动成功。
 
 服务自动加入 `gaoji-programs.slice`，CPU/IO 权重为 10，内存上限是 VM 的一半；环境 GAOJI_PROGRAM 使用单元名去掉 .service 后的部分。每个登记目录最多 32 个单元、每文件 64 KiB，拒绝软链接和特殊文件。未改动的单元不会因重复 sync 重跑，修正失败的配置后再同步。
 

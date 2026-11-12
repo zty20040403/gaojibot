@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F2 单元同步 HTTP 与文件全套
+
+- `gaoji-units` 现为 `gaoji units` 的入口，通过 VM-only `/vm/units` 让宿主执行固定 root guest helper；sandbox 用户不需要 sudo，不能传命令、路径、scope 或程序策略。仍非 MCP，没有宿主 shell。
+- 程序停用策略由宿主数据库读取，服务与对应 timer 按基本名一同暂停；全会话停用会停止全部登记单元。暂停标记约束 systemd 后续启动，重新启用才启动。停止聊天本身不停止程序。
+- 同 VM 同时最多一个同步、宿主最多四个；不拿已被 sandbox_exec 持有的 VM 文件锁，避免等待自身的 HTTP 死锁。策略调用中改变不会回报旧成功，程序日志中的 VM token 脱敏。28 项单元/真实 HTTP/生命周期/CLI 组合、Ruff、两项导入检查通过。
+- 固定 d109469 全套 **1,650 项、0 失败、10 跳过，868.843 秒，exit 0**；日志 `/tmp/gaoji-python-files-final.log`。不包含后续 VM 读取权限和本次 HTTP 补丁。
+- 开机自动恢复、VM 保活/崩溃保护与管理台仍待接线。真实 VM/systemd 验收仍由 owner 执行。
+
 ## 开发记录（2026-11-12）· Python F2 VM 用户读取权限修正
 
 - 接常驻启动时发现真实 VM 命令以 sandbox 用户执行，原 /run/gaoji 的 0700/0600 会导致程序读不到 VM 令牌。改为目录 0755、令牌/连接文件 0644，仍只有 root 可写；这是明确允许所有本会话 VM 程序读取的会话能力，不是宿主密钥。
@@ -11,7 +19,7 @@
 - `sandbox_units.py` / `gaoji-units` 同步登记目录中的 service/timer：新增启动、改动重启、删除停止，输出逐单元状态和失败日志；不覆盖系统同名单元、mask 或不属于本工具的 runtime 文件/drop-in。
 - 文件按目录描述符读取，拒绝逐级软链接、特殊文件、非 UTF-8/空/超限内容；每文件 64 KiB、最多 32 单元。共享 slice 的 CPU/IO 权重 10、MemoryMax=50%；环境 GAOJI_PROGRAM 使用服务基本名。
 - 7 项真实临时文件/替身 systemd 回归，加既有 CLI 共 12 项通过；Ruff、导入检查通过。标准库客户端 wrapper 也放进 cloud-init write_files，prepared 镜像跳过安装时仍能得到新命令。
-- 固定 d109469（包含迁移/端口修复、CLI 与手动单元同步）的全套复测已启动，快照 `/tmp/gaoji-python-files-final-check`，日志 `/tmp/gaoji-python-files-final.log`，PID 文件 `/tmp/gaoji-python-files-final-test.pid`，退出码文件 `/tmp/gaoji-python-files-final.exit`；尚无结果。
+- 固定 d109469（包含迁移/端口修复、CLI 与手动单元同步）的全套复测已启动，快照 `/tmp/gaoji-python-files-final-check`，日志 `/tmp/gaoji-python-files-final.log`，PID 文件 `/tmp/gaoji-python-files-final-test.pid`，退出码文件 `/tmp/gaoji-python-files-final.exit`；已通过 1,650 项、0 失败、10 跳过，见顶部记录。
 - 尚未接开机自动同步、宿主崩溃门槛、VM 保活与管理台，不能称为完整常驻恢复；真实 systemd/VM 验收仍待 owner。
 
 ## 开发记录（2026-11-12）· Python F2 全套发现的迁移与测试端口问题

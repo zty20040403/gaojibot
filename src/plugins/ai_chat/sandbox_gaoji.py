@@ -120,6 +120,7 @@ def parser():
         if name=='send-file':
             command.add_argument('--filename')
     commands.add_parser('events').add_argument('--after',type=int)
+    commands.add_parser('units',help='sync registered units through the host, not a guest sudo shell')
     command = commands.add_parser('history')
     for name in ('query','who','from','to','around'):
         command.add_argument('--'+name)

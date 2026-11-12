@@ -24,9 +24,11 @@ class OfficialVMLifecycle:
         from .program_reads import ProgramReads
         from .program_stream import ProgramStream
         from .program_files import ProgramFiles
+        from .program_units import ProgramUnits
+        self.units = ProgramUnits(self,logger)
         self.files = ProgramFiles(self,runtime,logger)
         self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs,reads=ProgramReads(app),
-            stream=ProgramStream(self.store,calls,logger),files=self.files)
+            stream=ProgramStream(self.store,calls,logger),files=self.files,units=self.units)
         self.closed,self.restoring = False,None
 
     def route(self, owner):

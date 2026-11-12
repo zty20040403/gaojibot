@@ -104,13 +104,37 @@ class SandboxUnitsTests(unittest.TestCase):
         self.assertIn('TEST last failure',result['units'][0]['logs'])
         self.assertIn('TEST_FAIL.service',result['errors'])
 
+    def test_disabled_service_and_timer_stay_paused_until_host_policy_enables_them(self):
+        for suffix in ('service','timer'):
+            (self.registry/('TEST.'+suffix)).write_text(SERVICE if suffix=='service' else '[Timer]\nOnActiveSec=60\n')
+        result = self.manager.sync(disabled=['TEST'])
+        self.assertTrue(result['ok'])
+        self.assertTrue(all(not item['enabled'] and item['ActiveState']=='inactive' for item in result['units']))
+        self.assertFalse(any(row[1] in {'start','restart'} for row in self.calls))
+        for suffix in ('service','timer'):
+            name = 'TEST.'+suffix
+            self.assertTrue((self.runtime/('.gaoji-paused-'+name)).exists())
+            self.assertIn('ConditionPathExists=!',(self.runtime/(name+'.d')/units.DROPIN).read_text())
+        self.calls.clear()
+        self.assertTrue(self.manager.sync()['ok'])
+        for suffix in ('service','timer'):
+            self.assertIn(['systemctl','restart','TEST.'+suffix],self.calls)
+        self.assertTrue(self.manager.sync(enabled=False)['ok'])
+        self.assertTrue(all(value=='inactive' for value in self.states.values()))
+
+    def test_invalid_host_policy_fails_before_any_systemd_change(self):
+        for policy in ({'enabled':'true'},{'disabled':['../TEST']},{'disabled':['TEST']*257}):
+            with self.assertRaisesRegex(units.UnitError,'invalid_unit_policy'):
+                self.manager.sync(**policy)
+        self.assertEqual(self.calls,[])
+
     def test_tool_bundle_contains_the_standalone_sync_command(self):
         import subprocess
         import sys
         from src.plugins.ai_chat import sandbox_tools_setup
         entry = next(item for item in sandbox_tools_setup.files() if item['path'].endswith('/sandbox_units.py'))
         self.assertEqual(entry['content'],Path(units.__file__).read_text())
-        self.assertIn('exec /usr/bin/python3 /usr/local/share/gaoji/sandbox_units.py',sandbox_tools_setup.INSTALL)
+        self.assertIn('exec /usr/bin/python3 /usr/local/share/gaoji/sandbox_gaoji.py units',sandbox_tools_setup.INSTALL)
         result = subprocess.run([sys.executable,'-I',units.__file__,'--help'],capture_output=True,timeout=5)
         self.assertEqual(result.returncode,0,result.stderr)
         import json

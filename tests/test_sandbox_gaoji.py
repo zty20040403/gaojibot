@@ -75,7 +75,7 @@ class SandboxGaojiTests(unittest.TestCase):
         replacement = 'gvm_'+('TEST_B_'*7)[:43]
         (self.root/'token').write_text(replacement)
         for command,args in (('wake',('TEST_WAKE',)),('send-file',('/work/report.txt','--filename','report.txt')),
-                ('history',()),('web-search',('TEST_QUERY',)),('web-fetch',('https://example.test',))):
+                ('history',()),('units',()),('web-search',('TEST_QUERY',)),('web-fetch',('https://example.test',))):
             self.assertEqual(self.run_cli(command,*args)[0],0)
             self.assertEqual(self.server.seen[-1][1],'/vm/'+command)
             self.assertEqual(self.server.seen[-1][2],'Bearer '+replacement)
