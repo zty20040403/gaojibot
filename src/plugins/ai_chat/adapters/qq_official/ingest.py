@@ -262,6 +262,8 @@ def process_inbox(
                    "codec_warnings": list(decoded.evidence.warnings), "truncated": decoded.evidence.truncated},
         transaction_cursor=cursor,
     )
+    from ...image_captions import ingest_captions
+    ingest_captions(cursor, recorded, timestamp)
     canonical = recorded.canonical_message_id
     cursor.execute("""INSERT INTO qq_official_messages
         (message_id,account_key,endpoint_key,native_message_id,canonical_message_id,
