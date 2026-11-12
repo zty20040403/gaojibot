@@ -25,6 +25,7 @@ class VMSource:
     account_epoch: int
     endpoint_generation: int
     route_epoch: int
+    token_hash: str = field(repr=False)
 
     @property
     def scope_key(self):
@@ -49,7 +50,7 @@ def fingerprint(token):
 
 def source(row):
     return VMSource(EndpointKey.parse(row['endpoint_key']),*(row[key] for key in (
-        'sandbox_id','boot_id','token_generation','account_epoch','endpoint_generation','route_epoch')))
+        'sandbox_id','boot_id','token_generation','account_epoch','endpoint_generation','route_epoch','token_hash')))
 
 
 class VMSessions:
@@ -105,6 +106,36 @@ class VMSessions:
                   route_epoch=excluded.route_epoch,updated_at=excluded.updated_at,revoked_at=NULL RETURNING *''',
                 (endpoint.key,sandbox_id,boot_id,fingerprint(token),self.lease.epoch,*expected_route,now,now)).fetchone()
             return VMCredential(source(row),token)
+
+    def resume(self, endpoint, sandbox_id, observed, *, expected_route):
+        """Only a lifecycle observation, never data supplied to an HTTP route.
+
+        A host restart may retain a running VM's token after observing the same
+        boot and file fingerprint. Route changes and explicit revocation cannot
+        be undone this way; the lifecycle must explicitly issue a new token.
+        """
+        with self.transaction() as cursor:
+            route = self._route(cursor,endpoint)
+            if (route['generation'],route['route_epoch'])!=expected_route:
+                raise PermissionError('vm_route_replaced')
+            row = cursor.execute('SELECT * FROM qq_official_vm_sessions WHERE endpoint_key=?',(endpoint.key,)).fetchone()
+            if (row is None or row['revoked_at'] is not None or row['sandbox_id']!=sandbox_id
+                    or row['boot_id']!=observed['boot_id'] or row['token_hash']!=observed['token_hash']
+                    or (row['endpoint_generation'],row['route_epoch'])!=expected_route):
+                return None
+            updated = cursor.execute('''UPDATE qq_official_vm_sessions SET account_epoch=?,updated_at=?
+                WHERE endpoint_key=? RETURNING *''',(self.lease.epoch,int(self.clock()),endpoint.key)).fetchone()
+            return source(updated)
+
+    def discard(self, current):
+        """A failed install must not revoke a newer successful installation."""
+        with self.transaction() as cursor:
+            assert_epoch(cursor,self.lease)
+            if current.endpoint.account.key!=self.lease.account_key:
+                raise PermissionError('vm_endpoint_unavailable')
+            cursor.execute('''UPDATE qq_official_vm_sessions SET revoked_at=?,updated_at=?
+                WHERE endpoint_key=? AND token_hash=?''',
+                (int(self.clock()),int(self.clock()),current.endpoint.key,current.token_hash))
 
     def _current(self, cursor, row):
         if row is None or row['revoked_at'] is not None or row['account_epoch']!=self.lease.epoch:
