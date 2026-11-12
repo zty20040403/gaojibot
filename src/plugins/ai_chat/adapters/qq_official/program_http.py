@@ -10,9 +10,9 @@ from .send_types import OutboxInvariantError
 
 
 class ProgramHTTP:
-    def __init__(self, actions, runtime, calls, logger, *, programs=None, reads=None, stream=None):
+    def __init__(self, actions, runtime, calls, logger, *, programs=None, reads=None, stream=None, files=None):
         self.actions,self.runtime,self.calls,self.logger = actions,runtime,calls,logger
-        self.programs,self.reads,self.stream = programs,reads,stream
+        self.programs,self.reads,self.stream,self.files = programs,reads,stream,files
 
     async def handle(self, request):
         if request.url.path=='/vm/events':
@@ -40,6 +40,14 @@ class ProgramHTTP:
                     body.extend(chunk)
             await scope.current()
             data = json.loads(body)
+            if request.url.path=='/vm/send-file':
+                if (type(data) is not dict or not {'path','request_id'}<=data.keys()
+                        or data.keys()-{'path','request_id','program','filename'}):
+                    raise ValueError()
+                if self.files is None:
+                    return JSONResponse({'error':'program_files_unavailable'},503)
+                result = await self.files.submit(scope.identity,generation=scope.generation,**data)
+                return JSONResponse(result,{'completed':200,'failed':502,'ambiguous':409,'cancelled':409}.get(result['state'],202))
             if (type(data) is not dict or not {'text','request_id'}<=data.keys()
                     or data.keys()-{'text','request_id','program'}):
                 raise ValueError()

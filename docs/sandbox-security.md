@@ -121,7 +121,7 @@ cancels admitted API calls, including upstream header waits and binary streams;
 a partial download is a transport failure, not a successful EOF.
 
 The VM token currently authorizes configured `/api/<name>/…` routes, direct
-`/vm/say`, queued `/vm/wake`, scoped `/vm/actions` status reads, and the
+`/vm/say`, queued `/vm/wake`, bounded `/vm/send-file`, scoped `/vm/actions` status reads, and the
 read-only `/vm/history`, `/vm/web-search`, `/vm/web-fetch` tools and `/vm/events`. It
 cannot use `/v1/models`, model responses, or the Codex app-server tunnel. Job
 tokens remain separate; missing or expired job tokens never fall back to VM
@@ -144,6 +144,11 @@ VM revocation cancels the actual tool operation. Event streams allow 2 concurren
 subscriptions per conversation and 16 per host, expose only visible physical-scope
 chat with internal person/message IDs, and never expose raw transport identity fields.
 Committed-ledger pagination supports reconnection without an in-memory-only gap.
+Program file exports are restricted to the authenticated VM workspace, use bounded
+regular-file reads with no-follow checks at every path component, and share the say
+quota. Two exports per conversation/four per host, a 60-second export deadline, and
+live source checks bound this path. Exported bytes are immutable before queuing;
+retries cannot silently substitute a changed file, and unknown deliveries are not replayed.
 Guest-agent integration tests use local doubles and do not prove real KVM or
 QQ acceptance; the remaining resident-program facilities are not yet complete.
 

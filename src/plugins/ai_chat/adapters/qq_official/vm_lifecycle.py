@@ -23,8 +23,10 @@ class OfficialVMLifecycle:
         self.programs = ProgramRunner(self,runtime,app)
         from .program_reads import ProgramReads
         from .program_stream import ProgramStream
+        from .program_files import ProgramFiles
+        self.files = ProgramFiles(self,runtime,logger)
         self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs,reads=ProgramReads(app),
-            stream=ProgramStream(self.store,calls,logger))
+            stream=ProgramStream(self.store,calls,logger),files=self.files)
         self.closed,self.restoring = False,None
 
     def route(self, owner):
@@ -58,6 +60,7 @@ class OfficialVMLifecycle:
         self.manager.conversation_lifecycle = self
         self.gateway.vm_authority = self.api
         self.gateway.vm_handler = self.http.handle
+        await self.calls(self.files.recover)
         await self.programs.start()
         await self.gateway.start()
         self.restoring = asyncio.create_task(self.restore())
