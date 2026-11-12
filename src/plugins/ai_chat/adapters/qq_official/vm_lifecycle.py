@@ -27,7 +27,8 @@ class OfficialVMLifecycle:
         from .program_units import ProgramUnits
         self.units = ProgramUnits(self,logger)
         from .program_status import ProgramStatus
-        self.status = ProgramStatus(self)
+        self.status = ProgramStatus(transaction=self.transaction,manager=self.manager,calls=self.calls,
+            clock=self.store.clock,route=self.store._route)
         self.files = ProgramFiles(self,runtime,logger)
         self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs,reads=ProgramReads(app),
             stream=ProgramStream(self.store,calls,logger),files=self.files,units=self.units)

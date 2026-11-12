@@ -97,6 +97,21 @@ class ConversationControlRequest(BaseModel):
     action: Literal['stop','start','kill']
 
 
+class ProgramSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    enabled: bool = Field(strict=True)
+    say_limit: int = Field(ge=0,le=10000,strict=True)
+    wake_limit: int = Field(ge=0,le=1000,strict=True)
+
+
+class ProgramControlRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    program_name: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9_.@-]{0,79}$')
+    enabled: bool = Field(strict=True)
+
+
 class ImageCaptionSettingsRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     scope_key: str = Field(min_length=1, max_length=1000)

@@ -2,7 +2,7 @@
 import asyncio
 import shutil
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock,patch
 
 from tests import test_vm_units as unit_fixture
 from tests.qq_official_outbox_fixture import OutboxFixture
@@ -123,6 +123,13 @@ class ProgramKeeperTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.lifecycle.units.tasks,{})
         finally:
             self.release.set(); scan.cancel(); await asyncio.gather(scan,return_exceptions=True)
+
+    async def test_committed_policy_can_wake_periodic_scan_from_admin_thread(self):
+        entered = asyncio.Event()
+        with patch.object(self.lifecycle.keeper,'scan',AsyncMock(side_effect=entered.set)) as scan:
+            await asyncio.to_thread(self.lifecycle.keeper.wake)
+            await asyncio.wait_for(entered.wait(),3)
+            scan.assert_awaited_once()
 
     async def test_closing_host_cancels_keeper_without_erasing_retained_intent(self):
         task = self.lifecycle.keeper.task

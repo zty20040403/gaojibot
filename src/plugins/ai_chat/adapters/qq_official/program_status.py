@@ -7,14 +7,14 @@ from ...application.commands import CommandResult
 
 
 class ProgramStatus:
-    def __init__(self, lifecycle):
-        self.lifecycle = lifecycle
+    def __init__(self, *, transaction, manager, calls, clock, route):
+        self.transaction,self.manager,self.calls,self.clock,self.route = transaction,manager,calls,clock,route
 
     def _read(self, endpoint, authorize, *, details=True):
-        service = self.lifecycle
+        service = self
         with service.transaction() as cursor:
             authorize(cursor)
-            service.store._route(cursor,endpoint)
+            service.route(cursor,endpoint)
             if not details:
                 return
             row = cursor.execute('''SELECT programs_enabled,program_say_limit,program_wake_limit
@@ -27,7 +27,7 @@ class ProgramStatus:
                 COUNT(*) FILTER(WHERE kind='wake') AS wake_requests,
                 COUNT(*) FILTER(WHERE kind='send_file') AS file_requests
                 FROM qq_official_program_actions WHERE endpoint_key=? AND created_at>=?
-                GROUP BY program_name ORDER BY program_name LIMIT 64''',(endpoint.key,int(service.store.clock())-86400)).fetchall()
+                GROUP BY program_name ORDER BY program_name LIMIT 64''',(endpoint.key,int(service.clock())-86400)).fetchall()
             failures = cursor.execute('''SELECT a.program_name,a.kind,
                 CASE WHEN a.state IN ('failed','cancelled','ambiguous') THEN a.state
                     ELSE COALESCE(d.status,w.state,a.state) END AS state,
@@ -40,16 +40,16 @@ class ProgramStatus:
                 WHERE a.endpoint_key=? AND a.created_at>=? AND
                     (a.state IN ('failed','cancelled','ambiguous') OR d.status IN ('failed','cancelled','ambiguous')
                     OR w.state IN ('failed','cancelled','ambiguous'))
-                ORDER BY a.created_at DESC,a.action_id DESC LIMIT 8''',(endpoint.key,int(service.store.clock())-86400)).fetchall()
+                ORDER BY a.created_at DESC,a.action_id DESC LIMIT 8''',(endpoint.key,int(service.clock())-86400)).fetchall()
             return dict(settings=settings,controls=[dict(row) for row in controls],
                 requests_24h=[dict(row) for row in counts],recent_failures=[dict(row) for row in failures])
 
     async def snapshot(self, endpoint, *, authorize):
-        service = self.lifecycle
+        service = self
         result = await service.calls(self._read,endpoint,authorize)
         owner = workspace_owner(endpoint)
         vms = []
-        for item in await service.manager._all_metadata():
+        for item in await service.manager._all_metadata() if service.manager is not None else ():
             if item.get('owner_ref')!=owner:
                 continue
             metadata = await service.manager._metadata(owner,str(item['id']))
@@ -67,7 +67,7 @@ class ProgramStatus:
     async def context(self, turn):
         inbound,execution = turn.context.inbound,turn.context.platform.execution
         def authorize(cursor):
-            source = execution.current(cursor,int(self.lifecycle.store.clock()))
+            source = execution.current(cursor,int(self.clock()))
             if source['endpoint_key']!=inbound.endpoint.key or source['requester_actor_key']!=inbound.actor.key:
                 raise PermissionError('program_status_source_mismatch')
         result = await self.snapshot(inbound.endpoint,authorize=authorize)

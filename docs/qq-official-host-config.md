@@ -103,6 +103,8 @@ VM 后端启动时中转服务随账号运行时启动，无需先有后台任�
 
 `POST /vm/units` 只接受空 JSON 对象，使用 VM 认证但不受聊天 stop 限制。`gaoji-units`/`gaoji units` 通过它调用宿主固定的 root guest helper，普通 sandbox 用户无须 sudo。宿主读取本会话 programs_enabled 与 program_controls；调用方不能提供策略、路径或命令。同步受单 VM 1 个/宿主 4 个并发和 guest 超时限制，失败返回非 2xx，不把已保存文件误当作已启动服务。
 
+管理 API `/api/programs` 可按 endpoint 读取持久状态（包括宿主运行时离线时）；`/api/programs/settings` 设置会话开关与小时 say/wake 上限，`/api/programs/control` 按程序名停用/启用。修改要求登录、CSRF 和 If-Match，策略/版本/审计同事务，响应 `synchronization=pending` 表示正在等待 guest 同步。0 禁止该类动作，改额度或重新启用不退款。页面与崩溃恢复入口仍在实施。
+
 ### 程序发文件
 
 `POST /vm/send-file` 接受 `{"path":"/work/report.txt","request_id":"TEST_UNIQUE","program":"TEST_PROGRAM"}`，可选 `filename` 改显示名。只从令牌绑定的会话 VM 工作区导出普通文件，不接受 URL、宿主路径、其他 VM 或 artifact ID。

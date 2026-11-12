@@ -6,7 +6,8 @@ class ProgramKeeper:
     def __init__(self, lifecycle):
         self.lifecycle,self.manager = lifecycle,lifecycle.manager
         self.lock = asyncio.Lock()
-        self.task = None
+        self.task,self.loop = None,None
+        self.changed = asyncio.Event()
 
     def enabled(self, endpoint):
         with self.lifecycle.transaction() as cursor:
@@ -70,12 +71,24 @@ class ProgramKeeper:
                     task.cancel()
                 await asyncio.gather(*tasks,return_exceptions=True)
 
+    def wake(self):
+        if self.loop is not None and not self.loop.is_closed():
+            try:
+                self.loop.call_soon_threadsafe(self.changed.set)
+            except RuntimeError:
+                self.lifecycle.logger.warning('Program policy committed; runtime closing, sync remains pending')
+
     def start(self):
+        self.loop = asyncio.get_running_loop()
         self.task = asyncio.create_task(self.run())
 
     async def run(self):
         while not self.lifecycle.closed:
-            await asyncio.sleep(30)
+            try:
+                await asyncio.wait_for(self.changed.wait(),30)
+            except TimeoutError:
+                pass
+            self.changed.clear()
             try:
                 await self.scan()
             except Exception as error:

@@ -1,11 +1,18 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F2 管理台程序策略 API
+
+- 新增 `/api/programs`、`/settings`、`/control`；管理员可查单元快照/日志/24 小时请求和失败，按会话开关与调整额度，或停用单个程序。运行时离线时仍能读取持久快照。
+- 登录、CSRF、严格输入、真实 endpoint 与 If-Match 必需。策略、版本和审计在账号锁下同事务提交；单程序重新启用删除覆写、不清空已用额度。提交后才唤醒 keeper，不在数据库事务里等 VM；响应明确 synchronization=pending，不伪装成服务已停止。
+- 21 项管理 API/权限/回滚/并发版本/离线读取/状态/keeper 组合通过，Ruff 与两项导入检查通过。未恢复 QQ OTP。
+- 页面与显式崩溃恢复入口继续实施；这些新补丁尚未全套复测。此前 3a03075 固定快照已通过 1,680 项、0 失败、10 跳过。
+
 ## 开发记录（2026-11-12）· Python F2 程序状态、/units 与模型可见错误
 
 - `program_status.py` 按物理 endpoint 读取持久单元/控制/24 小时请求计数与最近真实投递失败；前后都验证原回合与路由，不启动 VM、不执行 guest，不输出令牌、原生身份或动作正文。普通聊天的动态上下文和 `/units` 复用同一投影。
 - 崩溃暂停、程序停用和 `proactive_denied` 可在下一轮对话看到；请求次数不等于成功发送。模型上下文截断并引用为资料，不注入单元日志或改动缓存系统提示词；/units 只读，不接受范围参数。
 - 宿主严格验证 guest 返回的逐单元结构/字段长度，拒绝把畸形回复写成可用快照；未知结果仍占常驻名额。40 项状态/HTTP/FakePlatform/命令/真实回合权限组合、Ruff、两项导入检查通过。初轮暴露原回合字段名是 requester_actor_key，已修正并重跑。
-- 固定 **3a03075** 的全套在 `/tmp/gaoji-python-resident-check` 运行，日志 `/tmp/gaoji-python-resident-full.log`，PID `/tmp/gaoji-python-resident-test.pid`，退出码 `/tmp/gaoji-python-resident.exit`。当前仍无最终结果；检查时仍在执行测试迁移，没有观察到数据库锁等待，不能算已通过，也不覆盖本次状态补丁。
+- 固定 **3a03075** 的全套在 `/tmp/gaoji-python-resident-check` 运行，日志 `/tmp/gaoji-python-resident-full.log`，PID `/tmp/gaoji-python-resident-test.pid`，退出码 `/tmp/gaoji-python-resident.exit`。已完成：**1,680 项、0 失败、10 跳过，1,022.384 秒，exit 0**。途中检查仍在执行迁移，没有锁等待，未中断或跳过用例；该快照不覆盖本次状态补丁。
 - 后续仍需管理台控制/审计与技能三个示例，再推进 F3；真实 QQ/VM/systemd 验收未做。
 
 ## 开发记录（2026-11-12）· Python F2 宿主恢复与常驻巡检
