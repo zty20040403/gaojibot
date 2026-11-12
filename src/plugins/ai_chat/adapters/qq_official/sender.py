@@ -242,7 +242,14 @@ class OfficialSender:
                 try:
                     return await asyncio.shield(task)
                 except asyncio.CancelledError:
-                    await task
+                    # A second shutdown cancellation must not propagate into
+                    # the accepted receipt between capture and finalization.
+                    while not task.done():
+                        try:
+                            await asyncio.shield(task)
+                        except asyncio.CancelledError:
+                            continue
+                    task.result()
                     raise
             if error.accepted is not False:
                 return await self._calls(self.outbox.fail, self.token, delivery_id,

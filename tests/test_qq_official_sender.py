@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -122,6 +123,39 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
                 runner.cancel()
                 await asyncio.gather(runner, return_exceptions=True)
             await health.close()
+
+    async def test_repeated_cancellation_drains_accepted_receipt_through_finalization(self):
+        entered,release = threading.Event(),threading.Event()
+        original = self.outbox.capture_receipt
+        def capture(reservation, body):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError('TEST receipt barrier timed out')
+            return original(reservation,body)
+        delivery = self.enqueue()
+        with patch.object(self.outbox,'capture_receipt',side_effect=capture):
+            pending = asyncio.create_task(self.sender.send_delivery(delivery))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait,3))
+                worker = self.sender._workers[self.endpoint.key]
+                worker.cancel()
+                await asyncio.sleep(0)  # First cancellation enters the receipt drain.
+                worker.cancel()  # Runtime shutdown can cancel that drain again.
+                await asyncio.sleep(0)
+                release.set()
+                await asyncio.gather(worker,pending,return_exceptions=True)
+            finally:
+                release.set()
+                await self.sender.stop()
+                await asyncio.gather(pending,return_exceptions=True)
+        self.assertEqual(len(self.fake.received),1)
+        receipts = self.query('SELECT applied_at FROM delivery_receipts')
+        self.assertEqual(len(receipts),1)
+        self.assertIsNotNone(receipts[0]['applied_at'])
+        self.assertEqual(len(self.query("SELECT * FROM messages WHERE direction='outbound'")),1)
+        self.sender = self.make_sender()
+        self.assertEqual((await self.sender.send_delivery(delivery)).status,'committed')
+        self.assertEqual(len(self.fake.received),1)
 
     async def test_default_proactive_delivers_after_five_minutes_and_records_reference(self):
         self.now += 400
