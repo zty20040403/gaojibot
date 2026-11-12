@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import contextmanager
 import time
+import json
 
 from fastapi import Depends, HTTPException, Query
 
@@ -10,6 +11,7 @@ from ..background_tools import workspace_owner
 from ..sandbox import SandboxError
 from ..adapters.qq_official.program_status import ProgramStatus
 from ..platform_types import EndpointKey
+from ..message_ir import body_from_json, render_fallback_text
 from .context import authorize, mutation_context, mutation_payload
 from .contracts import AdminMutationContext, ProgramControlRequest, ProgramSettingsRequest, ProgramResumeRequest
 
@@ -80,6 +82,29 @@ def create_router(context):
             snapshot = await reader.snapshot(endpoint,authorize=checked,include_recovery=True)
         return dict(available=True,vm_available=manager is not None,items=items,snapshot=snapshot,
             api_version='v1',resource='programs',resource_version=version)
+
+    @router.get('/api/programs/messages')
+    def messages(endpoint_key: str = Query(...,max_length=1000),program_name: str = Query('',max_length=80),
+                 before: int = Query(0,ge=0,le=2**63-1),limit: int = Query(50,ge=1,le=100)):
+        authorize()
+        endpoint = parse_endpoint(endpoint_key)
+        with transaction() as cursor:
+            existing(cursor,endpoint)
+            rows = cursor.execute('''SELECT m.canonical_message_id,m.occurred_at,m.body_json,m.raw_event_json
+                FROM messages m JOIN conversations c USING(conversation_id)
+                JOIN conversation_visibility v USING(conversation_id)
+                WHERE c.scope_key=? AND m.source_endpoint_key=? AND m.direction='outbound' AND m.message_kind='chat'
+                    AND m.canonical_message_id>=v.min_canonical_message_id AND (?=0 OR m.canonical_message_id<?)
+                    AND m.raw_event_json::jsonb->>'by'='program'
+                    AND (?='' OR m.raw_event_json::jsonb->>'program'=? OR jsonb_exists(m.raw_event_json::jsonb->'programs',?))
+                ORDER BY m.canonical_message_id DESC LIMIT ?''',
+                (endpoint.scope.key,endpoint.key,before,before,program_name,program_name,program_name,limit+1)).fetchall()
+        items = []
+        for row in rows[:limit]:
+            raw = json.loads(row['raw_event_json'])
+            items.append(dict(id=row['canonical_message_id'],at=row['occurred_at'],program=raw.get('program',''),
+                programs=raw.get('programs',[]),text=render_fallback_text(body_from_json(row['body_json']))[:8000]))
+        return dict(items=items,next_cursor=items[-1]['id'] if len(rows)>limit else None)
 
     def mutate(selection, info, *, program=False, resume=None):
         authorize()

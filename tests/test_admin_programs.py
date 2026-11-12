@@ -175,6 +175,35 @@ class AdminProgramTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.query('SELECT * FROM admin_audit_log'))
         self.assertFalse(self.query('SELECT * FROM admin_resource_versions'))
 
+    async def test_program_messages_filter_receipts_and_page_without_other_scope_or_raw_identity(self):
+        from src.plugins.ai_chat.ledger import MessageLedger
+        from src.plugins.ai_chat.message_ir import MessageBody,TextNode
+        from src.plugins.ai_chat.platform_types import ActorKey,EndpointKey
+        ledger = MessageLedger(self.database); self.addCleanup(ledger.close)
+        other = EndpointKey(self.account,'group','TEST_OTHER'); self.provision(other)
+        def record(name, *, endpoint=None, direction='outbound', by='program', members=()):
+            endpoint = endpoint or self.endpoint
+            actor = ActorKey(self.account,'bot','','TEST_NATIVE_BOT') if direction=='outbound' else ActorKey(
+                self.account,'group_member',endpoint.native_conversation_id,'TEST_NATIVE_BOT')
+            return ledger.record_message(endpoint.scope,native_message_id='TEST_NATIVE_'+name,
+                sender_native_user_id='TEST_NATIVE_BOT',sender_display='TEST',source_endpoint=endpoint,actor=actor,
+                direction=direction,body=MessageBody((TextNode(0,'TEST_TEXT_'+name),)),occurred_at=self.now,
+                raw_event=dict(by=by,program='TEST_PROGRAM',programs=list(members),token='TEST_SECRET_NEVER_PROJECTED'))
+        record('FOREIGN',endpoint=other); record('INBOUND',direction='inbound'); record('HUMAN',by='human')
+        record('FIRST'); record('MERGED',members=('TEST_PROGRAM','TEST_SECOND')); record('LAST')
+        await self.login()
+        params = dict(endpoint_key=self.endpoint.key,program_name='TEST_PROGRAM',limit=2)
+        response = await self.admin.get(self.path+'/messages',params=params)
+        self.assertEqual(response.status_code,200,response.text)
+        page = response.json()
+        self.assertEqual([row['text'] for row in page['items']],['TEST_TEXT_LAST','TEST_TEXT_MERGED'])
+        self.assertNotIn('TEST_NATIVE',response.text); self.assertNotIn('TEST_SECRET',response.text)
+        response = await self.admin.get(self.path+'/messages',params=params|{'before':page['next_cursor']})
+        self.assertEqual([row['text'] for row in response.json()['items']],['TEST_TEXT_FIRST'])
+        self.assertIsNone(response.json()['next_cursor'])
+        response = await self.admin.get(self.path+'/messages',params=params|{'program_name':'TEST_SECOND'})
+        self.assertEqual([row['text'] for row in response.json()['items']],['TEST_TEXT_MERGED'])
+
     async def test_auth_csrf_versions_and_input_are_required(self):
         body = dict(endpoint_key=self.endpoint.key,enabled=False,say_limit=1,wake_limit=1)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://test') as client:

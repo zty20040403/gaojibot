@@ -40,6 +40,7 @@ PAGE_ROUTES = (
     ("GET", "/api/conversations"),
     ("POST", "/api/conversations/control"),
     ("GET", "/api/programs"),
+    ("GET", "/api/programs/messages"),
     ("POST", "/api/programs/settings"),
     ("POST", "/api/programs/control"),
     ("POST", "/api/programs/resume"),

@@ -26,6 +26,7 @@ const INITIAL_RESOURCES: ResourceName[] = [
   'databases',
   'groups',
   'conversations',
+  'programs',
   'localModel',
   'tools',
   'traces',
@@ -200,9 +201,10 @@ export function useControlPlane(runtime: GaojiAdminRuntime) {
       method: 'POST' | 'PUT' | 'DELETE',
       body: unknown,
       refreshResources: ResourceName[],
+      expectedVersion?: number,
     ) => {
       try {
-        const payload = await client.mutate(path, method, body, versions[resource], setPendingApproval)
+        const payload = await client.mutate(path, method, body, expectedVersion ?? versions[resource], setPendingApproval)
         if (typeof payload.resource_version === 'number') {
           setVersions((current) => ({ ...current, [resource]: payload.resource_version }))
         }
