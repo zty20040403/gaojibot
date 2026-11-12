@@ -173,6 +173,7 @@ class Settings:
     media_lease_seconds: int
     media_batch_size: int
     media_worker_concurrency: int
+    video_profile: str
     video_whisper_model_path: str
     video_whisper_threads: int
     archive_enabled: bool
@@ -411,6 +412,7 @@ class Settings:
             media_worker_concurrency=min(
                 max(integer("AI_MEDIA_WORKER_CONCURRENCY", 2), 1), 8
             ),
+            video_profile=environment.get('AI_VIDEO_PROFILE', '').strip(),
             video_whisper_model_path=environment.get(
                 "AI_VIDEO_WHISPER_MODEL_PATH", ""
             ).strip(),

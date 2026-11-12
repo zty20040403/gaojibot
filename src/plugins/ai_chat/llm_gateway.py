@@ -833,6 +833,8 @@ class LLMGateway:
             raise LLMConfigError(
                 f"model profile {profile.name!r} does not support native JSON mode"
             )
+        if _request_contains_videos(kwargs.get('messages')) and not _supports_video(profile):
+            raise LLMConfigError(f'model profile {profile.name!r} does not support video_url input')
         budget = active_model_budget()
         _assert_model_job_owned()
         if budget is None:
@@ -1086,9 +1088,22 @@ def _profile_supports_request(
         return False
     if kwargs.get("response_format") and not profile.capabilities.json_mode:
         return False
+    if _request_contains_videos(kwargs.get('messages')) and not _supports_video(profile):
+        return False
     if _request_contains_images(kwargs.get("messages")):
         return profile.capabilities.vision
     return True
+
+
+def _supports_video(profile: ModelProfile) -> bool:
+    return profile.protocol == 'openai-chat' and profile.capabilities.video
+
+
+def _request_contains_videos(messages: object) -> bool:
+    return isinstance(messages,list) and any(
+        isinstance(block,dict) and block.get('type') in {'video','video_url','input_video'}
+        for message in messages if isinstance(message,dict) and isinstance(message.get('content'),list)
+        for block in message['content'])
 
 
 def _request_contains_images(messages: object) -> bool:

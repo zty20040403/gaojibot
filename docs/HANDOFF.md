@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F1④ 视频输入基础（未部署）
+
+- VM 工具新增 `gaoji-video FILE`：仅处理 /work 下文件，先检查 10 分钟上限，再压成 1fps、长边 640、单声道 MP4，上限 32 MiB；源码随 cloud-init/显式 upgrade 安装，本次未升级任何 VM。
+- 宿主 `video_format.py` 只做有界 MP4 box/时长元数据检查，不运行视频解码器。模型能力新增显式 `capabilities.video`，仅允许 openai-chat 的 `video_url` 约定，其他协议/文字模型拒绝，回退也必须匹配能力。`AI_VIDEO_PROFILE` 默认空；后台调用和历史结论接入仍在下一小步。
+- 35 项本地回归通过，含真实 ffmpeg 生成/压缩的合成音视频、轨道时长与容器拒绝、模型能力、预算；base64 媒体传输字节不再冒充文字 token，仍按配置的完整输入窗口保守预留。未使用真实 QQ/模型/VM，不声称视频功能已完成。
+
 ## 开发记录（2026-11-12）· Python F1③ 管理台与小步验收（未部署）
 
 - 管理台“媒体审核 → 图片说明”可按会话开关说明、设置每日 0–10,000 张（默认关闭/200 张），查看今日已排队及累计失败/超额。GET `/api/media` 返回状态，PUT `/api/media/captions/settings` 修改配置；沿用现有登录管理员点击授权、CSRF/Origin 校验、版本及审计，不恢复旧的全局 QQ OTP。

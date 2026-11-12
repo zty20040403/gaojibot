@@ -35,6 +35,7 @@ class ModelCapabilities:
     json_mode: bool = True
     model_listing: bool = True
     vision: bool = False
+    video: bool = False
 
     @classmethod
     def defaults_for(cls, protocol: str) -> "ModelCapabilities":
@@ -66,6 +67,7 @@ class ModelCapabilities:
             "json_mode",
             "model_listing",
             "vision",
+            "video",
         }
         unknown = sorted(str(key) for key in raw if str(key) not in supported)
         if unknown:
@@ -87,6 +89,7 @@ class ModelCapabilities:
                 defaults.model_listing,
             ),
             vision=_mapping_bool(raw, "vision", defaults.vision),
+            video=_mapping_bool(raw, "video", defaults.video),
         )
 
 

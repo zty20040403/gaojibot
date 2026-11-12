@@ -22,6 +22,11 @@ cat > /usr/local/bin/gaoji-transcribe <<'EOF'
 exec /opt/gaoji-tools/bin/python /usr/local/share/gaoji/sandbox_transcribe.py "$@"
 EOF
 chmod 755 /usr/local/bin/gaoji-transcribe
+cat > /usr/local/bin/gaoji-video <<'EOF'
+#!/bin/sh
+exec /opt/gaoji-tools/bin/python /usr/local/share/gaoji/sandbox_video.py "$@"
+EOF
+chmod 755 /usr/local/bin/gaoji-video
 '''
 
 
@@ -29,7 +34,7 @@ def files():
     directory = Path(__file__).parent
     return [{'path': '/usr/local/share/gaoji/' + name, 'permissions': '0644', 'owner': 'root:root',
         'content': (directory / name).read_text()} for name in (
-            'sandbox_browser.py', 'sandbox_webread.py', 'sandbox_transcribe.py')] + [{
+            'sandbox_browser.py', 'sandbox_webread.py', 'sandbox_transcribe.py', 'sandbox_video.py')] + [{
                 'path': '/etc/apt/apt.conf.d/80-gaoji-transport',
                 'permissions': '0644', 'owner': 'root:root',
                 'content': 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\n',
