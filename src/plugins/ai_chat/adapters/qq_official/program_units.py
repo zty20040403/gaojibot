@@ -69,6 +69,20 @@ class ProgramUnits:
                 if (set(report)!={'ok','units','errors'} or type(report['units']) is not list or len(report['units'])>32
                         or type(report['errors']) is not dict or len(report['errors'])>64):
                     raise ValueError()
+                names = set()
+                for row in report['units']:
+                    if (type(row) is not dict or type(row.get('name')) is not str
+                            or sandbox_units.NAME.fullmatch(row['name']) is None or row['name'] in names
+                            or type(row.get('enabled')) is not bool
+                            or row.keys()-{'name','enabled','LoadState','ActiveState','SubState','Result','Slice','logs'}):
+                        raise ValueError()
+                    names.add(row['name'])
+                    for key,value in row.items():
+                        if key!='enabled' and (type(value) is not str or len(value)>(4000 if key=='logs' else 160)):
+                            raise ValueError()
+                if (any(type(key) is not str or len(key)>512 or type(value) is not str or len(value)>4000
+                        for key,value in report['errors'].items()) or report['ok']!= (not report['errors'])):
+                    raise ValueError()
             except (ValueError,TypeError):
                 raise ProgramDenied('program_unit_result_unavailable',502) from None
             # Logs are untrusted VM content. Do not leak this VM capability if

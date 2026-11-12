@@ -82,6 +82,10 @@ class VMProgramHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
             (502,'failed','proactive_denied'))
         self.assertEqual((await self.post(request_id='TEST_SECOND')).status_code,429)
         self.assertEqual(self.query("SELECT * FROM messages WHERE direction='outbound'"),[])
+        current = await self.lifecycle.credentials.authenticate(self.token_value)
+        snapshot = await self.lifecycle.status.snapshot(self.endpoint,authorize=lambda cursor:self.lifecycle.store.check(cursor,current))
+        self.assertEqual(snapshot['recent_failures'][0]['error_code'],'proactive_denied')
+        self.assertEqual(snapshot['recent_failures'][0]['state'],'failed')
 
     async def test_slow_body_cannot_cross_stop_start(self):
         authenticated,release = asyncio.Event(),asyncio.Event()

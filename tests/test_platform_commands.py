@@ -30,7 +30,7 @@ def message(*, app="app-A", environment="test", group="group-A", user="opaque-me
 class CommandParsingTests(unittest.TestCase):
     def test_known_aliases_and_opaque_binding_secret(self):
         for text, name in (("/模型 profile", "model"), ("!reasoning 高", "effort"),
-                           ("/ps", "task"), ("/取消任务 t45", "cancel"), ("/帮助", "help")):
+                           ("/ps", "task"), ("/取消任务 t45", "cancel"), ("/帮助", "help"), ("/units", "units"), ("!程序", "units")):
             self.assertEqual(parse_command(text).name, name)
         parsed = parse_command("/bind SECRET-WITH-NONNUMERIC-IDENTITY")
         self.assertEqual(parsed.argument, "SECRET-WITH-NONNUMERIC-IDENTITY")
@@ -74,6 +74,19 @@ class PlatformCommandTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(worker())
         self.workers.append(task)
         return await ready, task
+
+    async def test_program_status_is_read_only_and_explicitly_unavailable_without_host(self):
+        self.assertEqual((await self.run_command('/units')).status,'unavailable')
+        self.assertNotIn('/units',(await self.run_command('/help')).text)
+        called = []
+        def status(inbound,request):
+            called.append(inbound.endpoint)
+            return CommandResult('ok','TEST_UNITS')
+        services = replace(self.services,units=status)
+        self.assertIn('/units',(await self.run_command('/help',services=services)).text)
+        self.assertEqual((await self.run_command('/units',services=services)).text,'TEST_UNITS')
+        self.assertEqual((await self.run_command('/units TEST_OTHER',services=services)).status,'syntax')
+        self.assertEqual(called,[message().endpoint])
 
     async def test_missing_host_policy_and_platform_owner_cannot_change_models(self):
         inbound = replace(message(), platform_role="owner")

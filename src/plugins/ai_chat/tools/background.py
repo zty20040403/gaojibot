@@ -29,6 +29,13 @@ async def task_context(turn):
             + quote_evidence(json.dumps(jobs, ensure_ascii=False), 'background_jobs'))
 
 
+async def program_context(turn):
+    if not enabled(turn.context):
+        return ''
+    lifecycle = service(turn.context).vm_lifecycle
+    return await lifecycle.status.context(turn) if lifecycle is not None else ''
+
+
 async def execute(turn, arguments, *, name):
     try:
         result = await service(turn.context).control(turn, name, arguments)

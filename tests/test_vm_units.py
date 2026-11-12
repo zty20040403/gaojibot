@@ -82,6 +82,24 @@ class VMUnitHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual((response.status_code,response.json()['error']),(502,'program_unit_result_unavailable'))
         self.assertEqual(self.lifecycle.units.active,set())
 
+    async def test_guest_report_shape_cannot_poison_future_host_status(self):
+        original = self.manager._guest_exec.side_effect
+        current_report = {}
+        async def guest(sid,path,args,**kwargs):
+            if path=='/usr/bin/timeout':
+                return 0,json.dumps(current_report).encode(),b''
+            return await original(sid,path,args,**kwargs)
+        self.manager._guest_exec.side_effect = guest
+        for units in (['TEST_INVALID_ROW'],[{'name':'TEST.service','enabled':'yes'}],
+                [{'name':'TEST.service','enabled':True,'ActiveState':'x'*10000}],
+                [{'name':'TEST.service','enabled':True,'command':'TEST_INJECTED'}]):
+            current_report = dict(ok=True,units=units,errors={})
+            response = await self.post()
+            self.assertEqual(response.status_code,502,response.text)
+            state = (await self.manager._metadata(self.owner,'s123456'))['programs']
+            self.assertEqual(state['snapshot']['errors'],{'_sync':'program_sync_unavailable'})
+            self.assertTrue(state['retained'])
+
     async def test_duplicate_sync_is_bounded_and_policy_change_cannot_report_stale_success(self):
         self.release = asyncio.Event()
         pending = asyncio.create_task(self.post())
