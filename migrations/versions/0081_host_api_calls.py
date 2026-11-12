@@ -21,6 +21,7 @@ def upgrade():
         error_code TEXT NOT NULL DEFAULT '', created_at BIGINT NOT NULL, finished_at BIGINT,
         CHECK(outcome IN ('pending','completed','failed','denied','interrupted')))''')
     op.execute('CREATE INDEX host_api_calls_scope_time ON host_api_calls(scope_key,created_at DESC)')
+    op.execute('CREATE INDEX host_api_calls_time ON host_api_calls(created_at)')
 
 
 def downgrade():

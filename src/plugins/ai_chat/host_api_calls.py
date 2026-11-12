@@ -55,10 +55,21 @@ class HostAPICalls:
                 WHERE call_id=? AND finished_at IS NULL RETURNING call_id''',
                 (status_code,outcome,error_code,int(self.clock()),call_id)).fetchone() is not None
 
-    def snapshot(self, *, limit=100):
+    def snapshot(self, *, limit=100, scope_key='', api_name='', before=0):
+        limit = min(max(int(limit),1),500)
+        conditions,params = ['TRUE'],[]
+        for column,value in (('scope_key',scope_key),('api_name',api_name)):
+            if value:
+                conditions.append(column+'=?')
+                params.append(value)
+        where = ' AND '.join(conditions)
         with self.transaction() as cursor:
-            rows = cursor.execute('''SELECT * FROM host_api_calls ORDER BY call_id DESC LIMIT ?''',
-                (min(max(int(limit),1),500),)).fetchall()
-            counts = cursor.execute('''SELECT outcome,count(*) AS count FROM host_api_calls
-                WHERE created_at>=? GROUP BY outcome''',(int(self.clock())-86400,)).fetchall()
-        return {'items':[dict(row) for row in rows],'counts':{row['outcome']:row['count'] for row in counts}}
+            cursor.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+            rows = cursor.execute('SELECT * FROM host_api_calls WHERE '+where+
+                (' AND call_id<?' if before else '')+' ORDER BY call_id DESC LIMIT ?',
+                (*params,*([int(before)] if before else []),limit+1)).fetchall()
+            counts = cursor.execute('SELECT outcome,count(*) AS count FROM host_api_calls WHERE '+where+
+                ' AND created_at>=? GROUP BY outcome',(*params,int(self.clock())-86400)).fetchall()
+        return {'items':[dict(row) for row in rows[:limit]],
+            'next_cursor':rows[limit-1]['call_id'] if len(rows)>limit else None,
+            'counts':{row['outcome']:row['count'] for row in counts}}

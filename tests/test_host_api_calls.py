@@ -50,6 +50,20 @@ class HostAPICallTests(unittest.TestCase):
         self.assertEqual(data['counts'],{'failed':1,'denied':1})
         self.assertEqual(data['items'][1]['status_code'],503)
 
+    def test_keyset_pagination_and_exact_filters_do_not_skip_after_new_calls(self):
+        for _ in range(3):
+            self.begin(limit=0)
+        self.begin(scope_key='TEST_PHYSICAL_B')
+        self.begin(api_name='another')
+        first = self.store.snapshot(limit=2,scope_key='TEST_PHYSICAL_A',api_name='test')
+        self.assertEqual([row['call_id'] for row in first['items']],[3,2])
+        self.begin(limit=0)
+        second = self.store.snapshot(limit=2,scope_key='TEST_PHYSICAL_A',api_name='test',before=first['next_cursor'])
+        self.assertEqual([row['call_id'] for row in second['items']],[1])
+        self.assertIsNone(second['next_cursor'])
+        self.assertEqual(second['counts'],{'pending':4})
+        self.assertEqual(self.store.snapshot(scope_key="TEST' OR TRUE --")['items'],[])
+
     def test_denials_are_audited_without_query_and_without_reserving(self):
         row = self.begin(path='/TEST?key=TEST_PRIVATE',rejection=(403,'api_operation_denied'))
         self.assertEqual(row['status_code'],403)

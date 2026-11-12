@@ -19,6 +19,7 @@ from .admin_api import (
     sandboxes,
     background_agents,
     conversations,
+    host_apis,
     tasks,
     tools,
 )
@@ -49,6 +50,7 @@ _PAGE_ROUTERS = (
     tasks,
     background_agents,
     conversations,
+    host_apis,
     sandboxes,
     tools,
     media,

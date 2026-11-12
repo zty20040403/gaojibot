@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react'
 import { TokenUsageChart } from './TokenUsageChart'
+import { HostAPIAudit } from './HostAPIAudit'
 import { LocalModelPanel, ModelRouteSummary } from './LocalModelPanel'
 import {
   DataTable,
@@ -241,6 +242,7 @@ export function TasksView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail:
         {agents.map((job) => <details key={job.job_id}><summary><code>job#{job.job_id}</code> {job.title} <StatusBadge value={job.state} /> · {job.last_tool || '尚未调用工具'}</summary><p>{job.error}</p><pre>{job.report}</pre>{['queued', 'running'].includes(job.state) && <button onClick={() => void plane.mutate('backgroundAgents', `/background-agents/${job.job_id}/cancel`, 'POST', {}, ['backgroundAgents'])}>停止任务</button>}</details>)}
         {!agents.length && <EmptyState>还没有后台任务</EmptyState>}
       </Section>
+      <HostAPIAudit query={plane.query} />
       <Section title="运行中的 Agent" description="取消会触发当前任务的取消路径">
         <DataTable><thead><tr><th>任务</th><th>会话</th><th>摘要</th><th>耗时</th><th></th></tr></thead><tbody>{tasks.map((task) => <tr key={task.task_id}><td><code>{task.task_id}</code></td><td>{task.conversation_id}</td><td>{task.summary}</td><td>{fmtDuration(task.elapsed_seconds)}</td><td className="actions"><button className="icon-button danger" title="取消任务" onClick={() => void plane.mutate('tasks', `/tasks/${task.task_id}/cancel`, 'POST', {}, ['tasks'])}><Square size={15} /></button></td></tr>)}</tbody></DataTable>
         {!tasks.length && <EmptyState>当前没有正在运行的 Agent</EmptyState>}

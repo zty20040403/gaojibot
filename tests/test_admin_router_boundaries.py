@@ -26,6 +26,7 @@ PAGE_ROUTES = (
     ("GET", "/api/usage"),
     ("GET", "/api/tasks"),
     ("GET", "/api/background-agents"),
+    ("GET", "/api/host-apis"),
     ("POST", "/api/background-agents/{job_id}/cancel"),
     ("POST", "/api/tasks/{task_id}/cancel"),
     ("GET", "/api/jobs"),
