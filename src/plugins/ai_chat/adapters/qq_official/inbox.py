@@ -234,7 +234,8 @@ class OfficialInboxStore:
             if ledger is not None and result.disposition == 'inbox':
                 from .ingest import process_inbox
                 ingested = process_inbox(cursor, inbox_id=result.inbox_id, lease_token=token,
-                    ledger=ledger, jobs=self.jobs, epoch_guard=self.epoch_guard, admission=self.admitted, now=now)
+                    ledger=ledger, jobs=self.jobs, epoch_guard=self.epoch_guard, admission=self.admitted, now=now,
+                    owner_authority=self.authority)
                 result = replace(result, ingested=ingested)
             cursor.execute("""UPDATE qq_official_accounts SET session_id=?,durable_seq=?,gateway_state='active',updated_at=?
                 WHERE account_key=?""", (session_id, seq, now, account.key))

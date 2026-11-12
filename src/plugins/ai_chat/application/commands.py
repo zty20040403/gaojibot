@@ -16,7 +16,7 @@ from ..platform_types import InboundMessage
 from ..tasks import RunningTaskRegistry
 
 
-CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory", "clear"]
+CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory", "clear", "stop", "start", "kill"]
 CommandStatus = Literal["ok", "unknown", "syntax", "denied", "unavailable", "not_found", "unsupported", "error"]
 _ALIASES: dict[str, CommandName] = {
     "memory": "memory", "记忆": "memory",
@@ -27,7 +27,8 @@ _ALIASES: dict[str, CommandName] = {
     "effort": "effort", "强度": "effort", "推理强度": "effort", "思考强度": "effort", "reasoning": "effort",
     "usage": "usage", "用量": "usage", "token用量": "usage",
     "task": "task", "tasks": "task", "任务": "task", "ps": "task", "status": "task",
-    "stop": "cancel", "cancel": "cancel", "停止": "cancel", "取消": "cancel", "取消任务": "cancel", "kill": "cancel",
+    "cancel": "cancel", "停止": "cancel", "取消": "cancel", "取消任务": "cancel",
+    "stop": "stop", "start": "start", "kill": "kill",
 }
 _RESETS = frozenset({"default", "reset", "默认", "重置"})
 _STATUS = frozenset({"status", "list", "ls", "状态", "列表"})
@@ -102,6 +103,7 @@ class CommandServices:
     db_call: Callable[..., Any] | None = None
     memory: ResultCallback | None = None
     clear: ResultCallback | None = None
+    conversation_control: ResultCallback | None = None
 
 
 async def _await(value):
@@ -132,8 +134,16 @@ async def dispatch_command(
             return CommandResult("syntax", "用法：/help")
         extras = [label for key, label in (("memory", "/memory"), ("clear", "/clear"))
                   if getattr(services, key) is not None]
+        if services.conversation_control is not None:
+            extras += ['/stop', '/start', '/kill']
         commands = "/help、/bind、/model、/effort、/usage、/task、/cancel" + ("、" + "、".join(extras) if extras else "")
         return CommandResult("ok", "可用命令："+commands+"。\n任务状态和停止仅作用于你在当前入口的运行任务。")
+    if request.name in {'stop','start','kill'}:
+        if request.argument:
+            return CommandResult('syntax', f'用法：/{request.name}')
+        if services.conversation_control is None:
+            return CommandResult('unavailable', '会话控制尚未配置；取消本人任务请用 /cancel。')
+        return await _await(services.conversation_control(inbound,request))
     if request.name in {"memory", "clear"}:
         callback = getattr(services, request.name)
         if callback is None:
