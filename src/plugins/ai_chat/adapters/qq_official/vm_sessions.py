@@ -6,13 +6,13 @@ routes, the lifecycle must also check the actual VM and revoke stale boots.
 """
 from dataclasses import dataclass, field
 import hashlib
-import re
 import secrets
 import time
 from uuid import UUID
 
 from ...platform_types import ActorKey, EndpointKey
 from ...sandbox import SANDBOX_ID_PATTERN
+from ...sandbox_identity import TOKEN
 from .lease import assert_epoch
 
 
@@ -42,7 +42,7 @@ class VMCredential:
 
 
 def fingerprint(token):
-    if type(token) is not str or re.fullmatch(r'gvm_[A-Za-z0-9_-]{43}',token) is None:
+    if type(token) is not str or TOKEN.fullmatch(token) is None:
         raise PermissionError('vm_token_invalid')
     return hashlib.sha256(token.encode('ascii')).hexdigest()
 
