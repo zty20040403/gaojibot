@@ -122,7 +122,7 @@ a partial download is a transport failure, not a successful EOF.
 
 The VM token currently authorizes configured `/api/<name>/…` routes, direct
 `/vm/say`, queued `/vm/wake`, scoped `/vm/actions` status reads, and the
-read-only `/vm/history`, `/vm/web-search`, `/vm/web-fetch` tools. It
+read-only `/vm/history`, `/vm/web-search`, `/vm/web-fetch` tools and `/vm/events`. It
 cannot use `/v1/models`, model responses, or the Codex app-server tunnel. Job
 tokens remain separate; missing or expired job tokens never fall back to VM
 authority. Both callers share physical-conversation API quotas. `/stop` leaves
@@ -140,7 +140,10 @@ unknown usage keeps its bound, and interrupted model runs are not replayed.
 Read tools remain available while stopped, use physical-conversation identity,
 and accept no scope/actor/key override. They are capped at 4 concurrent calls
 per conversation and 16 per host, with a 60-second tool timeout; disconnect or
-VM revocation cancels the actual tool operation.
+VM revocation cancels the actual tool operation. Event streams allow 2 concurrent
+subscriptions per conversation and 16 per host, expose only visible physical-scope
+chat with internal person/message IDs, and never expose raw transport identity fields.
+Committed-ledger pagination supports reconnection without an in-memory-only gap.
 Guest-agent integration tests use local doubles and do not prove real KVM or
 QQ acceptance; the remaining resident-program facilities are not yet complete.
 

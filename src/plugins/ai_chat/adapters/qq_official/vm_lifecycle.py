@@ -22,7 +22,9 @@ class OfficialVMLifecycle:
         from .program_runner import ProgramRunner
         self.programs = ProgramRunner(self,runtime,app)
         from .program_reads import ProgramReads
-        self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs,reads=ProgramReads(app))
+        from .program_stream import ProgramStream
+        self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs,reads=ProgramReads(app),
+            stream=ProgramStream(self.store,calls,logger))
         self.closed,self.restoring = False,None
 
     def route(self, owner):
