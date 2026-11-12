@@ -505,10 +505,10 @@ in {
           "${serviceName}-sandbox-image.service"
         ] ++ lib.optionals sandboxIsolated ["gaoji-sandbox-network.service"];
       path =
-        cfg.runtimePackages
+        (cfg.runtimePackages ++ [pkgs.ffmpeg-headless])
         ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [sandboxCli]
         ++ lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [pkgs.libvirt pkgs.qemu pkgs.cloud-utils]
-        ++ lib.optionals cfg.voiceAsr.enable [pkgs.ffmpeg-headless cfg.voiceAsr.package];
+        ++ lib.optionals cfg.voiceAsr.enable [cfg.voiceAsr.package];
       environment =
         {
           HOME = statePath;

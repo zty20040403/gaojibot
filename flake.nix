@@ -126,6 +126,7 @@
             "$out/share/gaoji/src/plugins/ai_chat/admin_ui_dist/"
           makeWrapper ${virtualenv}/bin/python "$out/bin/gaoji" \
             --add-flags "$out/share/gaoji/bot.py" \
+            --prefix PATH : ${lib.makeBinPath [pkgs.ffmpeg-headless]} \
             --chdir "$out/share/gaoji" \
             --set PYTHONDONTWRITEBYTECODE 1 \
             --set PYTHONUNBUFFERED 1 \
@@ -247,7 +248,7 @@
       virtualenv = pythonSet.mkVirtualEnv "gaoji-dev-env" workspace.deps.default;
     in {
       default = pkgs.mkShell {
-        packages = [virtualenv pkgs.uv pkgs.ruff pkgs.nodejs_22];
+        packages = [virtualenv pkgs.uv pkgs.ruff pkgs.nodejs_22 pkgs.ffmpeg-headless];
         env = {
           UV_NO_SYNC = "1";
           UV_PYTHON = pythonSet.python.interpreter;

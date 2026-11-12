@@ -673,14 +673,21 @@ class VisionWorker:
         content: bytes,
         mime_type: str,
     ) -> tuple[bytes, str]:
+        return self.prepare_image(content, mime_type, max_vision_bytes=self.max_vision_bytes,
+            prepare_threshold_bytes=self.prepare_threshold_bytes, max_edge_pixels=self.max_edge_pixels,
+            timeout_seconds=self.timeout_seconds, ffmpeg_path=self.ffmpeg_path)
+
+    @staticmethod
+    def prepare_image(content, mime_type, *, max_vision_bytes, prepare_threshold_bytes=0,
+                      max_edge_pixels=1568, timeout_seconds=30, ffmpeg_path='ffmpeg', strict=False):
         if (
-            mime_type not in {"image/gif", "image/webp"}
-            and len(content) <= self.prepare_threshold_bytes
-            and len(content) <= self.max_vision_bytes
+            not strict and mime_type not in {"image/gif", "image/webp"}
+            and len(content) <= prepare_threshold_bytes
+            and len(content) <= max_vision_bytes
         ):
             return content, mime_type
-        if not shutil.which(self.ffmpeg_path):
-            if len(content) <= self.max_vision_bytes:
+        if not shutil.which(ffmpeg_path):
+            if not strict and len(content) <= max_vision_bytes:
                 return content, mime_type
             raise VisionJobError("ffmpeg is required to prepare this image")
         suffix = {
@@ -697,19 +704,21 @@ class VisionWorker:
             source.write_bytes(content)
             completed = subprocess.run(
                 [
-                    self.ffmpeg_path,
+                    ffmpeg_path,
                     "-hide_banner",
                     "-loglevel",
                     "error",
                     "-y",
+                    "-protocol_whitelist", "file,pipe",
+                    "-max_pixels", "40000000",
                     "-i",
                     str(source),
                     "-frames:v",
                     "1",
                     "-vf",
                     (
-                        f"scale='min({self.max_edge_pixels},iw)':"
-                        f"'min({self.max_edge_pixels},ih)':"
+                        f"scale='min({max_edge_pixels},iw)':"
+                        f"'min({max_edge_pixels},ih)':"
                         "force_original_aspect_ratio=decrease"
                     ),
                     "-q:v",
@@ -717,14 +726,14 @@ class VisionWorker:
                     str(prepared),
                 ],
                 capture_output=True,
-                timeout=self.timeout_seconds,
+                timeout=timeout_seconds,
                 check=False,
             )
             if completed.returncode == 0 and prepared.is_file():
                 prepared_content = prepared.read_bytes()
-                if prepared_content and len(prepared_content) <= self.max_vision_bytes:
+                if prepared_content and len(prepared_content) <= max_vision_bytes:
                     return prepared_content, "image/jpeg"
-        if len(content) <= self.max_vision_bytes:
+        if not strict and len(content) <= max_vision_bytes:
             return content, mime_type
         raise VisionJobError("ffmpeg could not prepare image")
 

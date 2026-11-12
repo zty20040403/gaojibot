@@ -53,6 +53,13 @@ class ImageSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.selected(), latest)
         self.assertEqual(await self.selected({'message_handle': f'msg#{own}'}), own)
 
+    async def test_later_image_in_trusted_batch_is_current_input(self):
+        first = self.say()
+        image = self.say(image=True)
+        self.current = first
+        self.session.inbound.batch_message_ids = (first, image)
+        self.assertEqual(await self.selected(), image)
+
     async def test_explicit_text_or_foreign_handle_does_not_fall_back(self):
         self.say(image=True)
         text = self.say()

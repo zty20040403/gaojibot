@@ -31,7 +31,7 @@
 
 文件通过当前官方账号上传，不再配置 `native_routes` 或上传证明。实际大小还受 VM 文件导出上限和平台返回限制约束；宿主和 VM 的上限应保持一致。`generation_enabled` 需要工作区后端可用。
 
-媒体能力按上面的开关启用。OCR/图片理解需要有效的视觉 profile；短语音优先读取腾讯识别文本，`local_asr` 需要宿主 whisper.cpp 与模型。视频和大附件先导入 VM，由后台处理。语音回复复用文件服务生成和发送 SILK。
+媒体能力按上面的开关启用。`ocr` 开关现在启用 `view_image` 和前台图片输入：前台 profile 的 `capabilities.vision=true` 时直接附当前/合并/引用图片（最多四张），否则用有效的视觉 profile 返回画面与文字。原图下载和模型图均受 `AI_VISION_MAX_IMAGE_MB`（默认 20 MiB，下载硬上限 100 MiB）限制；宿主须有 ffmpeg（Nix 包与开发 shell 已包含），缩到长边 1568，解码失败明确报错、不发送原始坏图。旧 OCR 描述回退仍沿用 `max_download_bytes` 上限和 `official_ocr` 用量分类；短语音优先读取腾讯识别文本，`local_asr` 需要宿主 whisper.cpp 与模型。视频和大附件先导入 VM，由后台处理。语音回复复用文件服务生成和发送 SILK。
 
 主动接话启用时提供 `profile`，可指定 `max_reply_chars`。新消息去抖三秒，每个会话每小时最多八次；旧 `percent`、`threshold` 和 `max_checks_per_hour` 字段应删除。定时任务由 `schedules` 表和工具管理，不放在此文件。
 

@@ -50,6 +50,8 @@ class OfficialMediaService:
         self.fetcher = PinnedContentReader(max_bytes=config.max_download_bytes,
                                           timeout=min(config.timeout_seconds, 30))
         self.file_fetcher = PinnedContentReader(max_bytes=100*1024*1024, timeout=120)
+        self.image_fetcher = PinnedContentReader(max_bytes=min(app.settings.media_max_vision_bytes, 100*1024*1024),
+                                                timeout=min(config.timeout_seconds, 30))
         worker = getattr(app, 'vision_worker', None)
         self.vision = VisionAdapter(worker, timeout=config.timeout_seconds) if config.ocr and worker is not None and getattr(app,'usage_store',None) is not None else None
         self.asr = None
@@ -85,6 +87,8 @@ class MediaSession:
         self.service, self.inbound, self.platform = service, inbound, platform
         self.pending_text = []
         self.voice_sent = False
+        self.frontend_vision = False
+        self.images = {}
         self.deadline = None
         self.image_available = self.file_available = False
         self.resolver = LedgerMediaResolver(endpoint=inbound.endpoint, requester=inbound.actor,
@@ -118,7 +122,7 @@ class MediaSession:
     def enabled(self, name):
         cfg = self.service.config
         return bool({
-            'view_image': self.service.vision is not None,
+            'view_image': cfg.ocr and (self.frontend_vision or self.service.vision is not None),
             'transcribe_voice': cfg.asr,
             'read_attachment': cfg.documents,
             'view_forward': cfg.forwards,
@@ -178,23 +182,38 @@ class MediaSession:
             return await self.source(arguments, {'image', 'sticker'})
         row = await self.current()
         ledger, calls = self.service.app.message_ledger, self.service.runtime._calls
-        current = await calls(ledger.get_in_scope, self.inbound.scope, row['canonical_message_id'])
+        ids = getattr(self.inbound, 'batch_message_ids', ()) or (row['canonical_message_id'],)
         def has_image(message):
             return (message is not None and message.direction == 'inbound'
                     and message.source_endpoint_key == self.inbound.endpoint.key
                     and any(isinstance(node, MediaNode) and node.media_kind in {'image', 'sticker'}
                             for node in message.body.nodes))
-        selected = current if has_image(current) else None
+        selected = None
+        for canonical in ids:
+            message = await calls(ledger.get_in_scope, self.inbound.scope, canonical)
+            if has_image(message):
+                selected = message
+                break
         for filters in ({'actor_key': self.inbound.actor.key, 'limit': 10}, {'limit': 100}):
             if selected is not None:
                 break
             recent = await calls(ledger.history, self.inbound.scope,
-                before_id=row['canonical_message_id'] + 1, newest=True, **filters)
+                before_id=max(ids) + 1, newest=True, **filters)
             selected = next((message for message in reversed(recent) if has_image(message)), None)
         if selected is not None:
             return await self.source({**arguments,
                 'message_handle': f'msg#{selected.canonical_message_id}'}, {'image', 'sticker'})
         raise MediaDenied('image_not_found_use_message_handle_msg#')
+
+    async def view_image(self, arguments):
+        if self.frontend_vision:
+            from .image_input import read_image
+            return await read_image(self, await self.image_source(arguments))
+        return await self.ocr(arguments)
+
+    async def input_images(self):
+        from .image_input import current_images
+        return await current_images(self)
 
     async def ocr(self, arguments):
         source = await self.image_source(arguments)

@@ -301,6 +301,7 @@ class VisionTests(Fixtures):
         worker.vision_profile_name = profile.name
         worker.llm_gateway = LLMGateway(providers={'openai-chat': Provider()}, fallback_enabled=False)
         worker.max_vision_bytes, worker.prepare_threshold_bytes = 1024 * 1024, 1024 * 1024
+        worker.max_edge_pixels, worker.timeout_seconds, worker.ffmpeg_path = 1568, 5, 'ffmpeg'
         return worker
 
     async def test_existing_vision_and_llm_gateway_with_real_budget_no_queue(self):

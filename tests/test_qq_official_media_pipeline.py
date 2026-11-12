@@ -1,7 +1,9 @@
 """M7 candidate actual host factory -> M4 -> tools -> M3, isolated PG only."""
 import asyncio
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import datetime, timezone
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -61,8 +63,11 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
     application=turn_fixture.OfficialTurnEndToEndTests.application
     complete=turn_fixture.OfficialTurnEndToEndTests.complete
 
-    async def start(self,fake,*,flags,images=False,unknown_vision=False):
+    async def start(self,fake,*,flags,images=False,unknown_vision=False,frontend_vision=False):
         self.app=self.application()
+        profile = self.app.model_catalog.resolve('test')
+        self.app.model_catalog = ModelCatalog({'test': replace(profile,
+            capabilities=replace(profile.capabilities, vision=frontend_vision))}, default_profile='test')
         self.temp=TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.app.database=self.database
         self.app.state_dir=Path(self.temp.name)
@@ -92,6 +97,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
         worker.model_catalog=ModelCatalog({'testvision':self.vision_profile},default_profile='testvision')
         worker.vision_profile_name='testvision';worker.llm_gateway=gateway
         worker.max_vision_bytes=worker.prepare_threshold_bytes=1048576
+        worker.max_edge_pixels, worker.timeout_seconds, worker.ffmpeg_path = 1568, 5, 'ffmpeg'
         self.app.vision_worker=worker
         account=AccountKey('qq-official',fake.app_id,'test')
         endpoint=EndpointKey(account,'private','TEST_RUNTIME_OWNER')
@@ -126,6 +132,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
             return httpx2.Response(200,content=png(),headers={'content-type':'image/png'})
         self.runtime_instance.media_service.fetcher=PinnedContentReader(transport_factory=lambda url:
             PinnedMediaTransport(url,resolver=dns,transport=httpx2.MockTransport(fetch)))
+        self.runtime_instance.media_service.image_fetcher = self.runtime_instance.media_service.fetcher
         return self.runtime_instance
 
     async def emit(self,fake,native,**extra):
@@ -138,7 +145,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.model_calls=[]
         async def complete(**kwargs):
             nonlocal index
-            self.model_calls.append(kwargs)
+            self.model_calls.append(deepcopy(kwargs))
             if index<len(steps):
                 name,args=steps[index];index+=1
                 self.assertIn(name,{t['function']['name'] for t in kwargs['tools']})
@@ -219,6 +226,25 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('TEST 这是啥', last)
                 self.assertEqual(len(self.vision_calls), 1)
                 self.assertEqual(len(fake.received), 1)
+                await runtime.stop()
+
+    async def test_vision_frontend_gets_image_and_tool_image_without_caption_call(self):
+        complete = self.completion([('view_image', {})])
+        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=complete):
+            async with platform() as fake:
+                runtime = await self.start(fake, flags=dict(ocr=True), frontend_vision=True)
+                await self.emit(fake, 'TEST_DIRECT_IMAGE', attachments=[
+                    {'url': 'https://example.invalid/image?signature=TEST_SECRET', 'content_type': 'image/png'}])
+                await self.complete('TEST_DIRECT_IMAGE')
+                first = self.model_calls[0]['messages'][-1]['content']
+                self.assertIsInstance(first, list)
+                self.assertEqual(sum(p['type'] == 'image_url' for p in first), 1)
+                last = self.model_calls[-1]['messages'][-1]['content']
+                self.assertEqual(sum(p['type'] == 'image_url' for p in last), 1)
+                self.assertIn('<untrusted', str(first))
+                self.assertNotIn('TEST_SECRET', str(self.model_calls))
+                self.assertEqual(len(self.vision_calls), 0)
+                self.assertEqual(len(self.downloads), 1)
                 await runtime.stop()
 
     async def seed_sticker(self):

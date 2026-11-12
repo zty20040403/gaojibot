@@ -118,6 +118,7 @@ class PlatformChatService:
 
         media_session = (await self.media_factory(inbound, platform) if self.media_factory is not None else None)
         if media_session is not None:
+            media_session.frontend_vision = selected_profile.capabilities.vision
             platform.media_session = media_session
         capabilities = {"self"}
         if media_session is not None and media_session.enabled("send_sticker"):
@@ -164,6 +165,9 @@ class PlatformChatService:
                 group_context, memory_context, quoted = await self.context.db_call(
                     turn_window, self.context, inbound, selected_profile)
                 context_parts = [quoted] if quoted else []
+                input_images, image_warnings = await media_session.input_images() if media_session is not None else ((), '')
+                if image_warnings:
+                    context_parts.append(quote_evidence(image_warnings, 'image_load_status'))
                 if turn_context:
                     context_parts.append(quote_evidence(turn_context, "turn_context"))
                 background_context = await background_task_context(turn)
@@ -177,7 +181,7 @@ class PlatformChatService:
                     current_user=speaker(inbound),
                     group_context=group_context, memory_context=memory_context,
                     tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",
-                    profile=selected_profile,
+                    profile=selected_profile, input_images=input_images,
                     tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True, policies={
                         'send_file_from_sandbox': replace(policy_for_tool('send_file_from_sandbox'), timeout_seconds=310),
                         'send_file': replace(policy_for_tool('send_file_from_sandbox'), timeout_seconds=310),

@@ -45,7 +45,7 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         async def call(function,*args,**kwargs): return function(*args,**kwargs)
         @contextmanager
         def tx(): yield object()
-        self.app = SimpleNamespace(settings=SimpleNamespace(video_whisper_model_path='',video_whisper_threads=2),
+        self.app = SimpleNamespace(settings=SimpleNamespace(video_whisper_model_path='',video_whisper_threads=2,media_max_vision_bytes=20*1024*1024),
             db_call=call,usage_store=None,vision_worker=None,media_library=None,
             message_ledger=SimpleNamespace(get_in_scope=lambda scope,canonical:self.source if canonical==3 else None))
         self.runtime = SimpleNamespace(_token=self.token,_stopping=False,_calls=call,
