@@ -64,7 +64,9 @@ class ProgramKeeperTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         await self.lifecycle.keeper.scan()
         self.manager.start_owned.assert_not_awaited()
         self.assertTrue((await self.state())['paused'])
-        await self.manager.program_state.reset(self.owner,'s123456')
+        await self.manager.program_state.reset(self.owner,'s123456',
+            expected=self.manager.program_state.recovery_fence(await self.manager._metadata(self.owner,'s123456')),
+            request_id='TEST_RESUME',authorize=AsyncMock())
         self.query('INSERT INTO conversation_settings(scope_key,programs_enabled) VALUES (?,FALSE)',(self.endpoint.scope.key,))
         await self.lifecycle.keeper.scan()
         self.manager.start_owned.assert_not_awaited()

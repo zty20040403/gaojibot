@@ -10,7 +10,7 @@ class ProgramStatus:
     def __init__(self, *, transaction, manager, calls, clock, route):
         self.transaction,self.manager,self.calls,self.clock,self.route = transaction,manager,calls,clock,route
 
-    def _read(self, endpoint, authorize, *, details=True):
+    def _read(self, endpoint, authorize, *, details=True, recovery=False):
         service = self
         with service.transaction() as cursor:
             authorize(cursor)
@@ -41,12 +41,18 @@ class ProgramStatus:
                     (a.state IN ('failed','cancelled','ambiguous') OR d.status IN ('failed','cancelled','ambiguous')
                     OR w.state IN ('failed','cancelled','ambiguous'))
                 ORDER BY a.created_at DESC,a.action_id DESC LIMIT 8''',(endpoint.key,int(service.clock())-86400)).fetchall()
-            return dict(settings=settings,controls=[dict(row) for row in controls],
+            result = dict(settings=settings,controls=[dict(row) for row in controls],
                 requests_24h=[dict(row) for row in counts],recent_failures=[dict(row) for row in failures])
+            if recovery:
+                from .keys import account_job_kind
+                result['recovery_jobs'] = [dict(row) for row in cursor.execute('''SELECT job_id,status,last_error,updated_at
+                    FROM durable_jobs WHERE kind=? AND scope_key=? ORDER BY job_id DESC LIMIT 5''',
+                    (account_job_kind('program_admin',endpoint.account.key),endpoint.scope.key)).fetchall()]
+            return result
 
-    async def snapshot(self, endpoint, *, authorize):
+    async def snapshot(self, endpoint, *, authorize, include_recovery=False):
         service = self
-        result = await service.calls(self._read,endpoint,authorize)
+        result = await service.calls(self._read,endpoint,authorize,recovery=include_recovery)
         owner = workspace_owner(endpoint)
         vms = []
         for item in await service.manager._all_metadata() if service.manager is not None else ():
@@ -59,6 +65,8 @@ class ProgramStatus:
                 suspended=bool(state.get('suspended')),paused=bool(state.get('paused')),
                 alert=str(state.get('alert',''))[:500],hold_reason=str(state.get('hold_reason',''))[:120],
                 updated_at=state.get('updated_at'),units=report.get('units',[])[:32],errors=report.get('errors',{})))
+            if include_recovery:
+                vms[-1]['recovery_fence'] = service.manager.program_state.recovery_fence(metadata)
             if len(vms)==8:
                 break
         await service.calls(self._read,endpoint,authorize,details=False)

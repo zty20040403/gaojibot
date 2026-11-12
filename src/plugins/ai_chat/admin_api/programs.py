@@ -6,10 +6,12 @@ import time
 from fastapi import Depends, HTTPException, Query
 
 from ..admin_control import AdminVersionConflict
+from ..background_tools import workspace_owner
+from ..sandbox import SandboxError
 from ..adapters.qq_official.program_status import ProgramStatus
 from ..platform_types import EndpointKey
 from .context import authorize, mutation_context, mutation_payload
-from .contracts import AdminMutationContext, ProgramControlRequest, ProgramSettingsRequest
+from .contracts import AdminMutationContext, ProgramControlRequest, ProgramSettingsRequest, ProgramResumeRequest
 
 
 def parse_endpoint(value):
@@ -75,11 +77,11 @@ def create_router(context):
                 current = cursor.execute("SELECT version FROM admin_resource_versions WHERE resource_key='programs'").fetchone()
                 if (current['version'] if current else 0)!=version:
                     raise HTTPException(409,'程序配置已改变，请刷新')
-            snapshot = await reader.snapshot(endpoint,authorize=checked)
+            snapshot = await reader.snapshot(endpoint,authorize=checked,include_recovery=True)
         return dict(available=True,vm_available=manager is not None,items=items,snapshot=snapshot,
             api_version='v1',resource='programs',resource_version=version)
 
-    def mutate(selection, info, *, program=False):
+    def mutate(selection, info, *, program=False, resume=None):
         authorize()
         if info.expected_version is None:
             raise HTTPException(428,'请刷新程序状态并提供 If-Match')
@@ -89,6 +91,9 @@ def create_router(context):
                 cursor.execute('SELECT account_key FROM qq_official_accounts WHERE account_key=? FOR UPDATE',(endpoint.account.key,))
                 existing(cursor,endpoint)
                 def operation():
+                    if resume is not None:
+                        return dict(recovery_fence=selection.recovery_fence),resume.enqueue(cursor,endpoint,
+                            selection.sandbox_id,selection.recovery_fence)
                     if program:
                         previous = cursor.execute('SELECT enabled FROM program_controls WHERE scope_key=? AND program_name=?',
                             (endpoint.scope.key,selection.program_name)).fetchone()
@@ -110,7 +115,8 @@ def create_router(context):
                         (endpoint.scope.key,selection.enabled,selection.say_limit,selection.wake_limit))
                     return before,policy(cursor,endpoint)
                 result = context.control_store.mutate_transaction(cursor,'programs',expected_version=info.expected_version,
-                    actor=info.actor,action='program.control' if program else 'program.settings',target=endpoint.key,operation=operation)
+                    actor=info.actor,action='program.resume' if resume is not None else 'program.control' if program else 'program.settings',
+                    target=endpoint.key,operation=operation)
         except AdminVersionConflict as error:
             raise HTTPException(409,dict(code='resource_version_conflict',resource=error.resource_key,
                 expected_version=error.expected,current_version=error.current)) from None
@@ -132,5 +138,23 @@ def create_router(context):
     @router.post('/api/programs/control')
     def control(selection: ProgramControlRequest, info: AdminMutationContext = Depends(mutation_context)):
         return mutate(selection,info,program=True)
+
+    @router.post('/api/programs/resume')
+    async def resume(selection: ProgramResumeRequest, info: AdminMutationContext = Depends(mutation_context)):
+        authorize()
+        if info.expected_version is None:
+            raise HTTPException(428,'请刷新程序状态并提供 If-Match')
+        runtime = services.official_runtime() if callable(services.official_runtime) else None
+        lifecycle = getattr(getattr(runtime,'agent_service',None),'vm_lifecycle',None)
+        if lifecycle is None or lifecycle.closed or manager is None:
+            raise HTTPException(503,'会话 VM 运行时不可用，未提交恢复请求')
+        endpoint = parse_endpoint(selection.endpoint_key)
+        try:
+            metadata = await manager._metadata(workspace_owner(endpoint),selection.sandbox_id)
+        except SandboxError:
+            raise HTTPException(404,'找不到该会话的 VM') from None
+        if manager.program_state.recovery_fence(metadata)!=selection.recovery_fence or metadata['programs'].get('planned_stop'):
+            raise HTTPException(409,'VM 状态已改变，请刷新后重新检查')
+        return await asyncio.to_thread(mutate,selection,info,resume=lifecycle.admin)
 
     return router

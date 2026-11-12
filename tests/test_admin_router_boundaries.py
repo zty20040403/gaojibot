@@ -42,6 +42,7 @@ PAGE_ROUTES = (
     ("GET", "/api/programs"),
     ("POST", "/api/programs/settings"),
     ("POST", "/api/programs/control"),
+    ("POST", "/api/programs/resume"),
     ("GET", "/api/group-models"),
     ("PUT", "/api/group-models/{group_id}/default"),
     ("PUT", "/api/group-models/{group_id}/enabled"),

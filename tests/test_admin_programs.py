@@ -111,6 +111,70 @@ class AdminProgramTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()['snapshot']['vms'][0]['units'][0]['name'],'TEST.service')
         self.manager._guest_exec.assert_not_awaited()
 
+    async def resume(self, *, version=0, fence=None):
+        metadata = await self.manager._metadata(self.owner,'s123456')
+        return await self.admin.post(self.path+'/resume',headers={'If-Match':str(version)},json=dict(
+            endpoint_key=self.endpoint.key,sandbox_id='s123456',
+            recovery_fence=fence or self.manager.program_state.recovery_fence(metadata)))
+
+    def claim_resume(self):
+        return self.service.runtime.jobs.claim_due('TEST_ADMIN_WORKER',kinds=(self.lifecycle.admin.kind,),now=self.now)[0]
+
+    async def test_resume_is_audited_durable_and_retry_does_not_clear_a_new_pause(self):
+        await self.login()
+        await self.manager.program_state.stopping(self.owner,'s123456')
+        await self.manager.program_state.stopped(self.owner,'s123456')
+        response = await self.resume()
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertTrue((await self.manager._metadata(self.owner,'s123456'))['programs']['paused'])
+        self.assertEqual(self.query('SELECT action FROM admin_audit_log')[0]['action'],'program.resume')
+        job = self.claim_resume()
+        self.assertEqual(job.job_id,response.json()['job_id'])
+        result = await self.lifecycle.admin.execute(job)
+        self.assertTrue(result['reset_applied'])
+        self.assertFalse((await self.manager._metadata(self.owner,'s123456'))['programs']['paused'])
+        await self.manager.program_state.stopping(self.owner,'s123456')
+        await self.manager.program_state.stopped(self.owner,'s123456')
+        from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker
+        worker = DurableJobWorker(self.service.runtime.jobs,logger=self.lifecycle.logger,worker_id=job.lease_owner)
+        worker.register(self.lifecycle.admin.kind,self.lifecycle.admin.execute)
+        await worker._execute(job)  # Lost success ACK, same durable intent.
+        self.assertTrue((await self.manager._metadata(self.owner,'s123456'))['programs']['paused'])
+        snapshot = await self.admin.get(self.path,params={'endpoint_key':self.endpoint.key})
+        self.assertEqual(snapshot.json()['snapshot']['recovery_jobs'][0]['status'],'succeeded')
+
+    async def test_resume_rejects_stale_snapshot_cancelled_job_and_changed_route(self):
+        await self.login()
+        metadata = await self.manager._metadata(self.owner,'s123456')
+        old = self.manager.program_state.recovery_fence(metadata)
+        await self.manager.program_state.stopping(self.owner,'s123456')
+        await self.manager.program_state.stopped(self.owner,'s123456')
+        self.assertEqual((await self.resume(fence=old)).status_code,409)
+        self.assertEqual((await self.resume()).status_code,200)
+        job = self.claim_resume()
+        self.service.runtime.jobs.cancel(job.job_id)
+        with self.assertRaisesRegex(PermissionError,'program_admin_job_expired_or_replaced'):
+            await self.lifecycle.admin.execute(job)
+        self.assertTrue((await self.manager._metadata(self.owner,'s123456'))['programs']['paused'])
+        self.assertEqual((await self.resume(version=1)).status_code,200)
+        job = self.claim_resume()
+        self.query('UPDATE qq_official_endpoints SET route_epoch=route_epoch+1 WHERE endpoint_key=?',(self.endpoint.key,))
+        with self.assertRaisesRegex(PermissionError,'program_admin_route_replaced'):
+            await self.lifecycle.admin.execute(job)
+        self.assertTrue((await self.manager._metadata(self.owner,'s123456'))['programs']['paused'])
+
+    async def test_resume_enqueue_failure_rolls_back_intent_version_and_audit(self):
+        await self.login()
+        original = self.lifecycle.admin.enqueue
+        def fail(*args):
+            original(*args)
+            raise RuntimeError('TEST_AFTER_ENQUEUE')
+        with patch.object(self.lifecycle.admin,'enqueue',side_effect=fail):
+            self.assertEqual((await self.resume()).status_code,503)
+        self.assertFalse(self.query('SELECT * FROM durable_jobs WHERE kind=?',(self.lifecycle.admin.kind,)))
+        self.assertFalse(self.query('SELECT * FROM admin_audit_log'))
+        self.assertFalse(self.query('SELECT * FROM admin_resource_versions'))
+
     async def test_auth_csrf_versions_and_input_are_required(self):
         body = dict(endpoint_key=self.endpoint.key,enabled=False,say_limit=1,wake_limit=1)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://test') as client:

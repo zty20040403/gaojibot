@@ -35,6 +35,8 @@ class OfficialVMLifecycle:
         self.closed,self.restoring = False,None
         from .program_keeper import ProgramKeeper
         self.keeper = ProgramKeeper(self)
+        from .program_admin import ProgramAdmin
+        self.admin = ProgramAdmin(self,runtime.jobs)
 
     def route(self, owner):
         # VM metadata contains the existing hashed owner ref, not a caller-

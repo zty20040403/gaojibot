@@ -1,6 +1,7 @@
 """Host-owned resident inventory and crash circuit; no guest data grants identity."""
 import asyncio
 from contextlib import asynccontextmanager
+import hashlib
 import json
 import os
 import stat
@@ -131,12 +132,25 @@ class VMProgramState:
             self._save(sid,metadata,state)
             return True
 
-    async def reset(self, owner, sid):
-        """Only an authenticated admin action may call this, not VM HTTP."""
+    @staticmethod
+    def recovery_fence(metadata):
+        state = metadata.get('programs',{})
+        value = [metadata.get('created_at'),*[state.get(key) for key in
+            ('boot_id','failures','suspended','paused','planned_stop','last_resume')]]
+        return hashlib.sha256(json.dumps(value,separators=(',',':')).encode()).hexdigest()
+
+    async def reset(self, owner, sid, *, expected, request_id, authorize):
+        """An audited admin intent, checked again under the cross-host state lock."""
         async with self._guard():
             metadata,state = await self._load(owner,sid)
-            state.update(failures=[],suspended=False,paused=False,error='',alert='',hold_reason='')
+            await authorize()
+            if state.get('last_resume')==request_id:
+                return False  # Lost DB success ACK must not clear a later crash.
+            if self.recovery_fence(metadata)!=expected or state.get('planned_stop'):
+                raise PermissionError('program_recovery_state_changed')
+            state.update(failures=[],suspended=False,paused=False,error='',alert='',hold_reason='',last_resume=request_id)
             self._save(sid,metadata,state)
+            return True
 
     @staticmethod
     def keeps_awake(metadata):

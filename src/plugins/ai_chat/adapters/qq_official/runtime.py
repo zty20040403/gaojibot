@@ -601,7 +601,7 @@ class OfficialRuntime:
                     self.background_service = None
             resources.push_async_callback(close_background)
             factory = self.turn_consumer_factory
-            agent_worker = None
+            agent_worker = program_admin_worker = None
             if self.application is not None:
                 from .background_agents import OfficialBackgroundAgents
                 self.agent_service = OfficialBackgroundAgents(self, token, self.application)
@@ -611,6 +611,11 @@ class OfficialRuntime:
                 agent_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
                     concurrency=3, per_scope_limit=3, database_calls=self._calls)
                 agent_worker.register(account_job_kind("agent", self.loaded.account.key), self.agent_service.execute)
+                if self.agent_service.vm_lifecycle is not None:
+                    admin = self.agent_service.vm_lifecycle.admin
+                    program_admin_worker = DurableJobWorker(self.jobs,logger=self.logger,poll_seconds=0.5,
+                        concurrency=1,per_scope_limit=1,database_calls=self._calls)
+                    program_admin_worker.register(admin.kind,admin.execute,timeout_seconds=30)
             if factory is None and self.application is not None:
                 from .turns import build_turn_consumer
                 factory = lambda current, lease_token: build_turn_consumer(current, lease_token, self.application)
@@ -626,6 +631,8 @@ class OfficialRuntime:
                 tasks.append(asyncio.create_task(self.approval_service.run()))
             if agent_worker is not None:
                 tasks.append(asyncio.create_task(agent_worker.run_forever()))
+            if program_admin_worker is not None:
+                tasks.append(asyncio.create_task(program_admin_worker.run_forever()))
             if file_worker is not None:
                 tasks.append(asyncio.create_task(file_worker.run_forever()))
             try:

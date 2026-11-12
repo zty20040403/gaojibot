@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import AsyncMock
 
 from src.plugins.ai_chat.vm_program_state import VMProgramState
 from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
@@ -59,8 +60,27 @@ class VMProgramStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state['suspended']); self.assertTrue(state['alert'])
         fresh = VMProgramState(self.manager,clock=lambda:self.now)
         self.assertEqual(await fresh.admit(OWNER,'s000001','TEST_SAFE_BOOT',enabled=True),(False,'vm_programs_suspended'))
-        await fresh.reset(OWNER,'s000001')
+        await fresh.reset(OWNER,'s000001',expected=fresh.recovery_fence(await self.manager._metadata(OWNER,'s000001')),
+            request_id='TEST_RESUME',authorize=AsyncMock())
         self.assertTrue((await fresh.admit(OWNER,'s000001','TEST_SAFE_BOOT',enabled=True))[0])
+
+    async def test_resume_fences_later_changes_and_lost_ack_does_not_reset_new_crash(self):
+        metadata = await self.manager._metadata(OWNER,'s000001')
+        original = self.store.recovery_fence(metadata)
+        await self.store.stopping(OWNER,'s000001')
+        with self.assertRaisesRegex(PermissionError,'program_recovery_state_changed'):
+            await self.store.reset(OWNER,'s000001',expected=original,request_id='TEST_OLD',authorize=AsyncMock())
+        await self.store.stopped(OWNER,'s000001')
+        expected = self.store.recovery_fence(await self.manager._metadata(OWNER,'s000001'))
+        with self.assertRaisesRegex(PermissionError,'TEST_REVOKED'):
+            await self.store.reset(OWNER,'s000001',expected=expected,request_id='TEST_BAD',
+                authorize=AsyncMock(side_effect=PermissionError('TEST_REVOKED')))
+        self.assertTrue((await self.state())['paused'])
+        self.assertTrue(await self.store.reset(OWNER,'s000001',expected=expected,request_id='TEST_RESUME',authorize=AsyncMock()))
+        for _ in range(2):
+            await self.store.starting(OWNER,'s000001'); await self.store.failed(OWNER,'s000001')
+        self.assertFalse(await self.store.reset(OWNER,'s000001',expected=expected,request_id='TEST_RESUME',authorize=AsyncMock()))
+        self.assertTrue((await self.state())['suspended'])
 
     async def test_window_expiry_planned_stop_and_unexpected_boot_are_distinct(self):
         await self.store.starting(OWNER,'s000001'); await self.store.failed(OWNER,'s000001')
