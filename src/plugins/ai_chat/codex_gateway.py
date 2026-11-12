@@ -28,6 +28,8 @@ class Channel:
     def __init__(self):
         self.connected = asyncio.get_running_loop().create_future()
         self.reader = self.writer = None
+        self.requests = set()
+        self.revoked = False
 
     async def wait(self, timeout):
         self.reader, self.writer = await asyncio.wait_for(asyncio.shield(self.connected), timeout)
@@ -43,10 +45,57 @@ class Channel:
         return json.loads(line)
 
     def close(self):
+        self.revoked = True
+        for task in tuple(self.requests):
+            if not task.cancelling():
+                task.cancel()
         if not self.connected.done():
             self.connected.cancel()
+        elif not self.connected.cancelled() and self.writer is None:
+            self.reader,self.writer = self.connected.result()
         if self.writer is not None:
             self.writer.close()
+
+
+class _ModelRequest:
+    """Own the whole ASGI response, including upstream headers and streaming.
+
+    Revoking a job must cancel an already admitted model request, not merely
+    reject the next request. The response's upstream socket closes even if
+    cancellation occurs before the streaming generator starts.
+    """
+    def __init__(self, gateway):
+        self.gateway = gateway
+
+    async def __call__(self, scope, receive, send):
+        request = Request(scope,receive)
+        channel = self.gateway.channels.get(request.headers.get('authorization','').removeprefix('Bearer '))
+        if channel is None or not self.gateway._authorized(request):
+            return await JSONResponse({'error':'invalid job token'},401)(scope,receive,send)
+        task = asyncio.current_task()
+        channel.requests.add(task)
+        started,finished = False,False
+        async def tracked_send(message):
+            nonlocal started,finished
+            started |= message['type']=='http.response.start'
+            finished |= message['type']=='http.response.body' and not message.get('more_body',False)
+            await send(message)
+        try:
+            response = await self.gateway._responses(request)
+            await response(scope,receive,tracked_send)
+        except asyncio.CancelledError:
+            if not channel.revoked:
+                raise
+            if not started:
+                await JSONResponse({'error':'job token revoked'},401)(scope,receive,send)
+            elif not finished:
+                # No fabricated completion event; the interrupted stream ends.
+                await send({'type':'http.response.body','body':b'','more_body':False})
+        finally:
+            channel.requests.discard(task)
+            upstream = getattr(request.state,'model_upstream',None)
+            if upstream is not None:
+                await upstream.aclose()
 
 
 class _Server(uvicorn.Server):
@@ -85,8 +134,8 @@ class CodexGateway:
                 return
             self.rpc = await asyncio.start_server(self._tunnel, '127.0.0.1', self.port + 1, limit=2**24)
             app = Starlette(routes=[Route('/v1/models', self._models),
-                                    Route('/v1/responses', self._responses, methods=['POST']),
-                                    Route('/v1/responses/compact', self._responses, methods=['POST'])])
+                                    Route('/v1/responses', _ModelRequest(self), methods=['POST']),
+                                    Route('/v1/responses/compact', _ModelRequest(self), methods=['POST'])])
             self.http = _Server(uvicorn.Config(app, host='127.0.0.1', port=self.port, log_level='warning',
                                                access_log=False, lifespan='off'))
             self.http_task = asyncio.create_task(self.http.serve())
@@ -146,6 +195,7 @@ class CodexGateway:
             'POST', base_url.rstrip('/') + request.url.path.removeprefix('/v1'),
             json=payload, headers={'Authorization': 'Bearer ' + key, 'Accept': request.headers.get('accept', '*/*')}),
             stream=True)
+        request.state.model_upstream = upstream
         if upstream.status_code >= 400:
             content = await upstream.aread()
             await upstream.aclose()

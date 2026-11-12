@@ -118,6 +118,39 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report, DEADLINE_NOTE + '\nTEST partial')
         self.assertEqual(len(server.sent('turn/interrupt')), 1)
 
+    async def test_cancel_timeout_revokes_token_and_leaves_no_rpc_or_tool_task(self):
+        entered,closed = asyncio.Event(),asyncio.Event()
+        class UnresponsiveInterrupt(FakeAppServer):
+            async def send(self, message):
+                if message.get('method') != 'turn/interrupt':
+                    await super().send(message)
+        session = self.session()
+        async def tool(*args):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+        session.execute_tool = tool
+        task = asyncio.create_task(self.engine(UnresponsiveInterrupt())(
+            {'job_id':11,'task':'TEST','deadline_at':7200},session,
+            feedback=AsyncMock(return_value=[]),progress=AsyncMock(),trace=AgentTrace()))
+        try:
+            await asyncio.wait_for(entered.wait(),1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task,7)
+            self.gateway.revoke.assert_called_once()
+            self.assertTrue(closed.is_set())
+            leaked = [other for other in asyncio.all_tasks() if other.get_coro().__qualname__.startswith('CodexRun.')]
+            self.assertEqual(leaked,[])
+        finally:
+            task.cancel()
+            await asyncio.gather(task,return_exceptions=True)
+            for other in asyncio.all_tasks():
+                if other.get_coro().__qualname__.startswith('CodexRun.'):
+                    other.cancel()
+
     async def test_failed_turn_raises_the_reason(self):
         server = FakeAppServer(finish='failed')
         with self.assertRaisesRegex(RuntimeError, 'TEST upstream down'):

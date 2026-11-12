@@ -59,6 +59,54 @@ class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
             revoked = await client.post(self.base + '/responses', json={}, headers={'Authorization': 'Bearer ' + token})
             self.assertEqual(revoked.status_code, 401)
 
+    async def test_revoke_cancels_request_waiting_for_upstream_headers(self):
+        entered,cancelled,release = asyncio.Event(),asyncio.Event(),asyncio.Event()
+        async def upstream(request):
+            entered.set()
+            try:
+                await release.wait()
+                return httpx.Response(200,content=b'TEST')
+            finally:
+                cancelled.set()
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        token,_ = self.gateway.open()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            task = asyncio.create_task(client.post(self.base+'/responses',json={},headers={'Authorization':'Bearer '+token}))
+            try:
+                await asyncio.wait_for(entered.wait(),2)
+                self.gateway.revoke(token)
+                await asyncio.wait_for(cancelled.wait(),2)
+                self.assertEqual((await task).status_code,401)
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task,return_exceptions=True)
+
+    async def test_revoke_closes_upstream_stream_without_completion(self):
+        entered,closed = asyncio.Event(),asyncio.Event()
+        class Stream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'data: TEST_PARTIAL\n\n'
+                entered.set()
+                await asyncio.Event().wait()
+            async def aclose(self):
+                closed.set()
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request:
+            httpx.Response(200,stream=Stream(),headers={'content-type':'text/event-stream'})))
+        token,_ = self.gateway.open()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            task = asyncio.create_task(client.post(self.base+'/responses',json={},headers={'Authorization':'Bearer '+token}))
+            try:
+                await asyncio.wait_for(entered.wait(),2)
+                self.gateway.revoke(token)
+                await asyncio.wait_for(closed.wait(),2)
+                self.assertNotIn(b'response.completed',(await task).content)
+            finally:
+                task.cancel()
+                await asyncio.gather(task,return_exceptions=True)
+
     async def test_missing_upstream_is_reported_for_the_job(self):
         token, _ = self.gateway.open()
         def broken():
@@ -70,6 +118,20 @@ class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('TEST no cliproxy profile', self.gateway.failure(token))
         self.gateway.revoke(token)
         self.assertEqual(self.gateway.failure(token), '')
+
+    async def test_revoke_closes_tunnel_even_before_engine_waits_for_it(self):
+        token,channel = self.gateway.open()
+        reader,writer = await asyncio.open_connection('127.0.0.1',self.gateway.port+1)
+        try:
+            writer.write(token.encode()+b'\n')
+            await writer.drain()
+            await asyncio.wait_for(asyncio.shield(channel.connected),2)
+            self.assertIsNone(channel.writer)
+            self.gateway.revoke(token)
+            self.assertEqual(await asyncio.wait_for(reader.read(),2),b'')
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     async def test_tunnel_accepts_only_its_token_once(self):
         token, channel = self.gateway.open()
