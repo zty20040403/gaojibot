@@ -56,6 +56,27 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([payload['part_index'] for path, payload in calls if path.endswith('part_finish')], [0, 1, 2])
         self.assertEqual(calls[-1][1]['upload_id'], 'TEST_UPLOAD')
 
+    async def test_source_is_rechecked_before_each_multipart_write(self):
+        from src.plugins.ai_chat.adapters.qq_official.file_upload import UploadedFile
+        checks = 0
+        async def current():
+            nonlocal checks
+            checks += 1
+            if checks==3:
+                raise PermissionError('TEST_REVOKED')
+        rest = SimpleNamespace(request=AsyncMock(return_value={'upload_id':'TEST_UPLOAD','block_size':SMALL_FILE_BYTES,
+            'parts':[{'index':0,'presigned_url':'https://storage.example/part/0'}]}))
+        client = SimpleNamespace(put=AsyncMock())
+        uploader = FileUploader(rest,client=client)
+        with self.assertRaisesRegex(PermissionError,'TEST_REVOKED'):
+            await uploader.upload(ENDPOINT,b'a'*(SMALL_FILE_BYTES+1),'large.bin',current=current)
+        rest.request.assert_awaited_once(); client.put.assert_not_awaited()
+        # Even a cached handle cannot bypass the source check after waiting on
+        # the shared uploader's lock.
+        uploader.cache[(ENDPOINT.key,hashlib.sha256(b'TEST').hexdigest(),'small.bin')] = UploadedFile('TEST_INFO',2**62)
+        with self.assertRaises(PermissionError):
+            await uploader.upload(ENDPOINT,b'TEST','small.bin',current=AsyncMock(side_effect=PermissionError('TEST_REVOKED')))
+
     async def test_wrapped_platform_error_reports_prepare_cause_and_allows_retry(self):
         rest = SimpleNamespace(request=AsyncMock(side_effect=[
             QQAPIError('upload', status=400, code=50015014),

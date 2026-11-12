@@ -100,18 +100,19 @@ class OfficialSendStore:
         cursor = transaction_cursor
         endpoint = EndpointKey.parse(artifact['endpoint_key'])
         now = int(self.clock())
+        program = artifact.get('source_program_action_id')
         turn = cursor.execute('SELECT journal_turn_id FROM qq_official_turn_executions WHERE execution_id=?',
                               (artifact['source_execution_id'],)).fetchone()
         ref = enqueue_plan(cursor, token=token,
             rendered=render_plan(MessageBody((TextNode(0, '文件：' + artifact['filename']),)), endpoint),
             requester=ActorKey.parse(artifact['requester_actor_key']),
-            logical_key='file:' + artifact['artifact_id'], source_scope_key=artifact['source_scope_key'],
+            logical_key='program:'+program if program else 'file:'+artifact['artifact_id'], source_scope_key=artifact['source_scope_key'],
             source_native_message_id=artifact['source_native_message_id'] or '',
             source_canonical_message_id=artifact['source_canonical_message_id'],
             turn_id=turn['journal_turn_id'] if turn else None,
             expires_at=min(artifact['pending_deadline_at'], uploaded.expires_at), now=now,
-            purpose='requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds,
-            source_generation=artifact['conversation_generation'])
+            purpose='unsolicited' if program else 'requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds,
+            source_generation=artifact['conversation_generation'],program_action_id=program)
         if ref.created:
             manifest = stable_json({'v': 1, 'media': {'file_info': uploaded.file_info},
                 'artifact_id': artifact['artifact_id'], 'source_native_message_id': artifact['source_native_message_id'] or ''})

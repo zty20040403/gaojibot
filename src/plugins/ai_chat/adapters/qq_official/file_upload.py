@@ -50,34 +50,40 @@ class FileUploader:
         if self._owns_client:
             await self.client.aclose()
 
-    async def _request(self, path, payload):
+    async def _request(self, path, payload, current=None):
+        if current is not None:
+            await current()
         try:
             return await self.rest.request("POST", path, payload)
         except QQAPIError as error:
             if error.status != 401:
                 raise
             self.rest.token_manager.invalidate()
+            if current is not None:
+                await current()
             return await self.rest.request("POST", path, payload)
 
-    async def _multipart(self, path, content, metadata):
-        prepared = await self._request(path + "/upload_prepare", metadata)
+    async def _multipart(self, path, content, metadata, current=None):
+        prepared = await self._request(path + "/upload_prepare", metadata, current)
         upload_id, block_size = prepared["upload_id"], int(prepared["block_size"])
         for part in sorted(prepared["parts"], key=lambda part: part["index"]):
             index = int(part["index"])
             block = content[index * block_size:(index + 1) * block_size]
             # Presigned storage requests never receive the QQ Authorization header.
+            if current is not None:
+                await current()
             response = await self.client.put(part["presigned_url"], content=block)
             response.raise_for_status()
             await self._request(path + "/upload_part_finish", {
                 "upload_id": upload_id, "part_index": index,
                 "block_size": str(len(block)), "md5": hashlib.md5(block).hexdigest(),
-            })
+            }, current)
         return await self._request(path + "/files", {
             "upload_id": upload_id, "file_type": metadata["file_type"],
             "file_name": metadata["file_name"], "srv_send_msg": False,
-        })
+        }, current)
 
-    async def upload(self, endpoint, content, filename):
+    async def upload(self, endpoint, content, filename, *, current=None):
         if not filename:
             raise FileUploadError("发送文件需要文件名。")
         size = len(content)
@@ -92,6 +98,8 @@ class FileUploader:
             sha1=hashlib.sha1(content).hexdigest(),
             md5_10m=hashlib.md5(content[:HASH_PREFIX_BYTES]).hexdigest())
         async with self._lock:
+            if current is not None:
+                await current()
             now = int(self.clock())
             self.cache = {k: v for k, v in self.cache.items() if v.expires_at > now}
             if key in self.cache:
@@ -106,13 +114,13 @@ class FileUploader:
                     response = await self._request(path + "/files", {
                         "file_type": metadata["file_type"], "file_name": filename,
                         "file_data": base64.b64encode(content).decode("ascii"), "srv_send_msg": False,
-                    })
+                    }, current)
                 else:
-                    response = await self._multipart(path, content, metadata)
+                    response = await self._multipart(path, content, metadata, current)
             except QQAPIError as error:
                 if error.code == 50015014:
                     try:
-                        await self._request(path + "/upload_prepare", metadata)
+                        await self._request(path + "/upload_prepare", metadata, current)
                     except QQAPIError as diagnostic:
                         error = diagnostic
                 logger.warning("QQ upload bytes=%d elapsed=%.2f result=rejected code=%s",

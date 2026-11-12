@@ -21,7 +21,7 @@ def rendered_say(endpoint, text):
 
 def load(cursor, action_id):
     row = cursor.execute('SELECT * FROM qq_official_program_actions WHERE action_id=?',(action_id,)).fetchone()
-    if row is None or row['kind']!='say':
+    if row is None or row['kind'] not in {'say','send_file'}:
         raise OutboxInvariantError('program_source_unavailable')
     return row
 
@@ -32,6 +32,10 @@ def check(cursor, token, row, admission, now):
     actions.check(cursor,row)
     from .program_execution import check_reply
     check_reply(cursor,actions,row)
+    if row['kind']=='send_file':
+        from .program_file_source import assert_artifact
+        from .program_file_delivery import artifact
+        assert_artifact(cursor,token=token,artifact=artifact(cursor,row),admission=admission,now=now)
 
 
 def validate(cursor, *, token, action_id, rendered, requester, logical_key, source_scope_key,
@@ -39,29 +43,39 @@ def validate(cursor, *, token, action_id, rendered, requester, logical_key, sour
              source_generation, admission, now):
     row = load(cursor,action_id)
     check(cursor,token,row,admission,now)
-    expected = rendered_say(source(row).endpoint,json.loads(row['payload_json']).get('text'))
+    if row['kind']=='send_file':
+        from .program_file_delivery import rendered as file_rendered
+        expected = file_rendered(cursor,row)
+    else:
+        expected = rendered_say(source(row).endpoint,json.loads(row['payload_json']).get('text'))
     if (rendered.to_json()!=expected.to_json() or requester!=snapshot(cursor,rendered.endpoint.account).bot_actor
             or logical_key!='program:'+action_id or source_scope_key!=row['scope_key']
             or source_native_message_id or source_canonical_message_id is not None or turn_id is not None
-            or purpose!='unsolicited' or expires_at!=row['expires_at'] or source_generation!=row['conversation_generation']):
+            or purpose!='unsolicited' or (expires_at>row['expires_at'] if row['kind']=='send_file' else expires_at!=row['expires_at'])
+            or source_generation!=row['conversation_generation']):
         raise OutboxInvariantError('program_source_mismatch')
 
 
-def matches(cursor, row, plan):
+def matches(cursor, row, plan, *, binding=False):
     endpoint = source(row).endpoint
-    expected = stable_json(dict(v=1,rendered=rendered_say(endpoint,json.loads(row['payload_json'])['text']).to_json(),
-        control=None,source_native_message_id=''))
-    return (plan['endpoint_key']==endpoint.key and plan['requester_actor_key']==snapshot(cursor,endpoint.account).bot_actor.key
+    if not (plan['endpoint_key']==endpoint.key and plan['requester_actor_key']==snapshot(cursor,endpoint.account).bot_actor.key
         and plan['source_scope_key']==row['scope_key'] and plan['purpose']=='unsolicited'
         and plan['source_canonical_message_id'] is None and plan['turn_id'] is None
-        and plan['conversation_generation']==row['conversation_generation'] and plan['expires_at']==row['expires_at']
+        and plan['conversation_generation']==row['conversation_generation']
         and plan['part_count']==1 and plan['payload_mode']=='persistent'
-        and plan['manifest_json']==expected and plan['manifest_digest']==digest(expected))
+        and plan['manifest_digest']==digest(plan['manifest_json'])):
+        return False
+    if row['kind']=='send_file':
+        from .program_file_delivery import matches as file_matches
+        return file_matches(cursor,row,plan,binding=binding)
+    expected = stable_json(dict(v=1,rendered=rendered_say(endpoint,json.loads(row['payload_json'])['text']).to_json(),
+        control=None,source_native_message_id=''))
+    return plan['expires_at']==row['expires_at'] and plan['manifest_json']==expected
 
 
 def bind(cursor, action_id, plan):
     row = load(cursor,action_id)
-    if row['plan_id'] not in (None,plan['plan_id']) or not matches(cursor,row,plan):
+    if row['plan_id'] not in (None,plan['plan_id']) or not matches(cursor,row,plan,binding=True):
         raise OutboxInvariantError('program_plan_mismatch')
     if row['plan_id'] is None:
         cursor.execute("UPDATE qq_official_program_actions SET plan_id=?,state='queued' WHERE action_id=?",
@@ -70,7 +84,7 @@ def bind(cursor, action_id, plan):
 
 def denial(cursor, *, token, delivery, admission, now):
     row = cursor.execute('SELECT * FROM qq_official_program_actions WHERE plan_id=?',(delivery['plan_id'],)).fetchone()
-    if row is None or row['kind']!='say':
+    if row is None or row['kind'] not in {'say','send_file'}:
         return 'program_source_unavailable'
     try:
         check(cursor,token,row,admission,now)

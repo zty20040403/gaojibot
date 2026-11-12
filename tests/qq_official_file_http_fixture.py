@@ -73,6 +73,7 @@ class MediaFake(FakePlatform):
             data = b''.join(self.parts[i] for i in sorted(self.parts))
         key = (request.match_info['collection'], request.match_info['target'])
         self.uploaded[key] = data
+        self.files_transport = request.transport
         self.files_seen.set()
         if self.files_release is not None:
             await self.files_release.wait()
