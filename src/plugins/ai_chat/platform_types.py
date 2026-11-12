@@ -281,6 +281,27 @@ class BackgroundToolSource:
 
 
 @dataclass(frozen=True)
+class ProgramToolSource:
+    """Conversation metadata, not a human actor, inbound event or authorization."""
+
+    endpoint: EndpointKey = field(repr=False)
+    program: str
+    source_ref: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.endpoint, EndpointKey) or self.endpoint.account.platform != 'qq-official':
+            raise ValueError('program source requires an official endpoint')
+        for value, name, maximum in ((self.program, 'program', 80), (self.source_ref, 'source_ref', 128)):
+            _text(value, name)
+            if len(value.encode()) > maximum:
+                raise ValueError('program source metadata is too long')
+
+    @property
+    def scope(self) -> ConversationScope:
+        return self.endpoint.scope
+
+
+@dataclass(frozen=True)
 class PlatformFeatures:
     """Implementation support only; not platform or local authorization."""
 

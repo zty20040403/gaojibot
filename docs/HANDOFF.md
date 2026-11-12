@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F2 非真人工具来源（未部署）
+
+- 增加 ProgramToolSource：只有物理会话和程序引用，不带 actor、role、引用凭据或历史别名；不能和真实入站、后台真人来源或旧 Event 混用。
+- 程序来源的工具目录只开放明确的只读集合（history/web_search/web_fetch/use_skill/inspect_source），不因 capabilities 或误带宿主 session 继承真人的 memory/agent/运维/发送权限；实际执行仍须宿主验证实时 VM 来源。这是唤醒/VM 读接口的基础，不代表这些路由已完成。
+- 14 项来源/会话窗口及 32 项平台编排/类型/只读工具回归通过；Ruff/两项导入检查通过。下一步持久唤醒与超额合并。
+
 ## 开发记录（2026-11-12）· Python F2 发言 HTTP 接线与全套快照（未部署）
 
 - 注册 VM-only `POST /vm/say` 和 `GET /vm/actions`（按 action_id 路径或 request_id 查询）；任务令牌不能进入，scope/actor 不接受正文声明。16 KiB/15 秒正文上限，单条 1800 字符；读取请求体期间 stop/start 也不会让旧正文进入新代。

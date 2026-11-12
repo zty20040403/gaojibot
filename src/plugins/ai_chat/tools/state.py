@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ..platform_types import BackgroundToolSource, InboundMessage, TurnPlatform
+from ..platform_types import BackgroundToolSource, InboundMessage, ProgramToolSource, TurnPlatform
 
 if TYPE_CHECKING:
     from ..runtime import AppContext
@@ -13,17 +13,20 @@ if TYPE_CHECKING:
     from ..conversation_scope import ConversationScope
 
 
-def structured_tool_source(context) -> InboundMessage | BackgroundToolSource | None:
+def structured_tool_source(context) -> InboundMessage | BackgroundToolSource | ProgramToolSource | None:
     """Read typed identity metadata; every effect still needs its source fence."""
     inbound = getattr(context, "inbound", None)
     background = getattr(context, "background_source", None)
-    if inbound is not None and background is not None:
+    program = getattr(context, 'program_source', None)
+    if sum(value is not None for value in (inbound, background, program)) > 1:
         raise ValueError("tool sources are mutually exclusive")
     if inbound is not None and not isinstance(inbound, InboundMessage):
         raise TypeError("inbound must be an InboundMessage")
     if background is not None and not isinstance(background, BackgroundToolSource):
         raise TypeError("background_source must be a BackgroundToolSource")
-    return inbound if inbound is not None else background
+    if program is not None and not isinstance(program, ProgramToolSource):
+        raise TypeError('program_source must be a ProgramToolSource')
+    return inbound if inbound is not None else background if background is not None else program
 
 
 @dataclass(frozen=True)
@@ -36,13 +39,14 @@ class ToolContext:
     inbound: InboundMessage | None = None
     platform: TurnPlatform | None = None
     background_source: BackgroundToolSource | None = None
+    program_source: ProgramToolSource | None = None
 
     def __post_init__(self) -> None:
         if self.inbound is not None and not isinstance(self.inbound, InboundMessage):
             raise TypeError("inbound must be an InboundMessage")
         source = structured_tool_source(self)
-        if self.background_source is not None and self.event is not None:
-            raise ValueError("background work cannot carry a legacy event")
+        if (self.background_source is not None or self.program_source is not None) and self.event is not None:
+            raise ValueError("non-inbound work cannot carry a legacy event")
         if source is not None and self.platform is not None:
             if source.endpoint.account != self.platform.account:
                 raise ValueError("tool platform account does not match inbound endpoint")
