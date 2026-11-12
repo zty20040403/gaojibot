@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F2 消息流游标与投影底座（未部署）
+
+- ProgramEvents 按物理 scope + source_endpoint 双重过滤可见聊天记录，输出 id/at/sender/person/reply_to/text，实际 bot/程序出站带 by。只输出内部人员编号，不输出原生 openid、消息索引或原始事件；命令和被 clear 隐藏的记录不进入流，隐藏引用也不泄露。
+- 快照在已验证账号锁之后取得 ledger 同一 scope 的事务锁；ID 分配前也用该锁，因此不会让读游标越过尚未提交的较小消息 ID。真实 PostgreSQL pg_blocking_pids 回归确认正在提交的写事务确实阻塞快照。
+- 14 项事件投影/VM 读取/程序投递组合通过，Ruff/两项导入检查通过。仅底座，`GET /vm/events` 和 CLI 尚未开放；接下来接有界 NDJSON 流、心跳与断线续读。
+
 ## 开发记录（2026-11-12）· Python F2 VM 只读工具入口（未部署）
 
 - VM-only `POST /vm/history`、`/vm/web-search`、`/vm/web-fetch` 复用同一宿主工具目录及其 JSON schema；只能读物理会话，不接受 scope/actor/密钥覆盖，不开放模型或其他工具。停止、停用写动作以及无 sender 时仍能读取。
