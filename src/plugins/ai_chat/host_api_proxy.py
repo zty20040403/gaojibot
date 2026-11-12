@@ -1,4 +1,4 @@
-"""Job-authenticated API forwarding on the existing host relay (not MCP)."""
+"""Host-authenticated API forwarding on the existing relay (not MCP)."""
 import asyncio
 import json
 
@@ -36,7 +36,7 @@ class HostAPIProxy:
     async def handle(self, request):
         channel = request.state.channel
         source = channel.source
-        if source is None or channel.current is None:
+        if source is None or channel.current is None or not channel.caller_ref:
             return JSONResponse({'error':'api_caller_unavailable'},403)
         endpoint = EndpointKey.parse(source['endpoint_key'])
         name = request.path_params['name']
@@ -73,7 +73,7 @@ class HostAPIProxy:
             return JSONResponse({'error':'api_authorization_unavailable'},503)
         try:
             admitted = await self.calls(self.store.begin,scope_key=endpoint.scope.key,api_name=name,
-                caller_ref=f"job#{source['job_id']}",method=request.method,path=path,
+                caller_ref=channel.caller_ref,method=request.method,path=path,
                 limit=api.per_hour if api else 0,rejection=rejection)
         except Exception:
             return JSONResponse({'error':'api_audit_unavailable'},503)

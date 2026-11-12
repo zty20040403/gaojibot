@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F2 VM API 身份边界（未部署）
+
+- CodexGateway 分离可撤销 HTTP 请求 scope 与任务专用 TCP 通道。VM 身份可供 `/api` 使用，但不进入任务令牌表，不能访问模型路由或 Codex RPC；没有令牌及失效任务令牌也不会回退到 VM 身份。
+- `VMAPIAuthority` 只保留带哈希的已验证来源，后台检查持久撤销并中止等待上游响应头/流的请求；关闭时也取消仍在等 guest-agent 的认证。API 额度/审计使用宿主来源中的物理 endpoint 和 VM caller_ref，不信任请求体或 header 声明。
+- 20 项 VM API/原任务 API/Codex 组合通过；补充关闭 scope 的重建后，8 项 VM API 复测、Ruff 和导入检查通过（有重叠，不相加）。二进制流中断仍以传输失败结束，保留原 HTTP 状态和 interrupted 审计。
+- 尚未将此适配器注册到运行时；下一步接 VM 生命周期和启动恢复，之后再实现 `/vm` 发言/唤醒等路由。未部署。
+
 ## 开发记录（2026-11-12）· Python F4 全套复测与 F2 令牌适配层（未部署）
 
 - 补齐 ffmpeg/ffprobe PATH 后，同一 F4 固定快照 `e3e8b6b` 全套 **1,517 项，0 失败，10 跳过**，耗时 700.851 秒；日志 `/tmp/gaoji-python-f4-final.log`，结束码 `/tmp/gaoji-python-f4-final.exit` 为 0。首轮缺依赖的失败日志仍保留，没有跳过用例或修改媒体实现来绕过。

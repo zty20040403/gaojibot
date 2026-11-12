@@ -22,16 +22,30 @@ MAX_BODY = 64 * 1024 * 1024
 IDLE_SECONDS = 120
 
 
-class Channel:
-    """One job's app-server stdio, carried over a TCP connection from the VM."""
+class RequestScope:
+    """Host-authenticated identity and revocation for complete ASGI lifetimes."""
 
-    def __init__(self, *, source=None, current=None):
+    def __init__(self, *, source=None, current=None, caller_ref=None):
         self.source = dict(source) if source is not None else None
         self.current = current
-        self.connected = asyncio.get_running_loop().create_future()
-        self.reader = self.writer = None
+        self.caller_ref = caller_ref or (f"job#{source['job_id']}" if source and 'job_id' in source else None)
         self.requests = set()
         self.revoked = False
+
+    def close(self):
+        self.revoked = True
+        for task in tuple(self.requests):
+            if not task.cancelling():
+                task.cancel()
+
+
+class Channel(RequestScope):
+    """Only job scopes have an app-server TCP tunnel; VM scopes never do."""
+
+    def __init__(self, *, source=None, current=None):
+        super().__init__(source=source,current=current)
+        self.connected = asyncio.get_running_loop().create_future()
+        self.reader = self.writer = None
 
     async def wait(self, timeout):
         self.reader, self.writer = await asyncio.wait_for(asyncio.shield(self.connected), timeout)
@@ -47,10 +61,7 @@ class Channel:
         return json.loads(line)
 
     def close(self):
-        self.revoked = True
-        for task in tuple(self.requests):
-            if not task.cancelling():
-                task.cancel()
+        super().close()
         if not self.connected.done():
             self.connected.cancel()
         elif not self.connected.cancelled() and self.writer is None:
@@ -73,9 +84,22 @@ class _ModelRequest:
 
     async def __call__(self, scope, receive, send):
         request = Request(scope,receive)
-        channel = self.gateway.channels.get(request.headers.get('authorization','').removeprefix('Bearer '))
-        if channel is None or not self.gateway._authorized(request):
-            return await JSONResponse({'error':'invalid job token'},401)(scope,receive,send)
+        header = request.headers.get('authorization','')
+        channel = self.gateway.channels.get(header[7:]) if header.startswith('Bearer ') else None
+        if (channel is None and not self.model_request and header.startswith('Bearer gvm_')
+                and self.gateway.vm_authority is not None):
+            try:
+                channel = await self.gateway.vm_authority.authorize(header[7:])
+            except asyncio.CancelledError:
+                if not self.gateway.vm_authority.closed:
+                    raise
+                return await JSONResponse({'error':'vm_service_closed'},503)(scope,receive,send)
+            except PermissionError:
+                return await JSONResponse({'error':'invalid vm token'},401)(scope,receive,send)
+            except Exception:
+                return await JSONResponse({'error':'vm_authorization_unavailable'},503)(scope,receive,send)
+        if channel is None or channel.revoked:
+            return await JSONResponse({'error':'invalid caller token'},401)(scope,receive,send)
         task = asyncio.current_task()
         channel.requests.add(task)
         request.state.channel = channel
@@ -93,7 +117,7 @@ class _ModelRequest:
             if not channel.revoked:
                 raise
             if not started:
-                await JSONResponse({'error':'job token revoked'},401)(scope,receive,send)
+                await JSONResponse({'error':'caller token revoked'},401)(scope,receive,send)
             elif not finished:
                 if not self.model_request:
                     # A binary/JSON API has no SSE completion marker. Abort the
@@ -118,10 +142,10 @@ class _Server(uvicorn.Server):
 
 
 class CodexGateway:
-    def __init__(self, *, port, upstream, model, logger, client=None, api_handler=None):
+    def __init__(self, *, port, upstream, model, logger, client=None, api_handler=None, vm_authority=None):
         # upstream() -> (base_url, api_key); model() -> (model, effort)
         self.port, self.upstream, self.model, self.logger = port, upstream, model, logger
-        self.api_handler = api_handler
+        self.api_handler,self.vm_authority = api_handler,vm_authority
         self.channels: dict[str, Channel] = {}
         self.failures: dict[str, str] = {}
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(30, read=IDLE_SECONDS), trust_env=False)
@@ -163,6 +187,8 @@ class CodexGateway:
                 await asyncio.sleep(0.05)
 
     async def close(self):
+        if self.vm_authority is not None:
+            await self.vm_authority.close()
         for token in tuple(self.channels):
             self.revoke(token)
         if self.rpc is not None:
