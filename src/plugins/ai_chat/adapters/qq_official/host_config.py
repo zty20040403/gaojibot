@@ -72,6 +72,7 @@ class HostConfiguration:
     media: object | None = field(default=None,repr=False)
     proactive: object | None = field(default=None,repr=False)
     proactive_profile: str | None = None
+    apis: dict = field(default_factory=dict,repr=False)
 
     @classmethod
     def parse(cls,text):
@@ -83,7 +84,9 @@ class HostConfiguration:
         except (ValueError,TypeError,KeyError,AttributeError):
             raise HostConfigurationError('invalid_official_host_account') from None
         from .media_runtime import MediaConfig
-        values=dict(files=_optional('files',lambda:_files(raw.get('files'))),
+        from ...host_apis import parse_apis
+        values=dict(apis=_optional('host_apis',lambda:parse_apis(raw.get('apis',{})),{}),
+            files=_optional('files',lambda:_files(raw.get('files'))),
             media=_optional('media',lambda:MediaConfig(**raw['media']) if raw.get('media') is not None else None))
         # Old documents may still carry schedules/wiki/host_services; those features were removed.
         background=_optional('background',lambda:dict(raw.get('native_background') or {}),{})

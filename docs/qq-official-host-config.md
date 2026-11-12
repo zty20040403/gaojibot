@@ -41,4 +41,30 @@ VM 需通过模板或显式工具升级安装 `gaoji-video`，将 `/work` 下视
 
 主动接话启用时提供 `profile`，可指定 `max_reply_chars`。新消息去抖三秒，每个会话每小时最多八次；旧 `percent`、`threshold` 和 `max_checks_per_hour` 字段应删除。定时任务由 `schedules` 表和工具管理，不放在此文件。
 
+## 宿主密钥 API（F4 接线中，尚未开放路由）
+
+可在宿主 JSON 的 `apis` 对象里登记声明；没有配置时保持关闭。当前这一步仅完成配置和路径校验，代理、额度审计和管理台还在实施，不应把下面的配置视为已经可调用。
+
+```json
+{
+  "apis": {
+    "test-api": {
+      "base_url": "https://api.example.test/v1",
+      "secret_file": "/run/secrets/TEST_API_KEY",
+      "headers": {"Authorization": "Bearer {secret}", "User-Agent": "TEST_BOT"},
+      "query": {},
+      "allow": ["GET /repos", "POST /repos/TEST_BOT"],
+      "per_hour": 20,
+      "about": "测试 API；只按用户明确要求操作。"
+    }
+  }
+}
+```
+
+- 名称只用小写字母、数字和连字符，最长 48 字符。`base_url` 仅 HTTPS，不含用户名、密码、查询或 fragment；请求只能留在这个固定基址下。
+- `secret_file` 是宿主绝对路径，文件不得全局可读。`headers` 或 `query` 至少一处含 `{secret}`；密钥不进模型提示词或 VM。配置解析不读取密钥文件，调用阶段读取失败须明确报错。
+- `allow` 每项为 `METHOD /路径前缀`，按路径段边界匹配；`GET /repos` 允许 `/repos/TEST`，不允许 `/repos-private`。方法 `*` 表示支持的所有方法；不支持 glob 路径。省略/null 表示不限路径，空数组拒绝全部。CONNECT、TRACE 不开放。
+- 拒绝点段、双斜杠、反斜杠、控制字符，以及编码的点/斜杠/百分号，不能靠重复解码绕过路径限制。小时额度为整数，0 表示不设本地小时上限；后续按物理会话持久计数，不因宿主重启清零。
+- API 能防密钥直接进入 VM，但不能替用户判断调用内容；群友可以让 VM 使用获准 API。需要限制收件人、目标仓库等内容时，不应配置一个无限制的通用入口。
+
 旧的项目授权、迁移路线、Wiki、主机写操作策略已移除。管理员后台只读运维另用 `AI_OPS_READ_BASE_URL` 和 `AI_OPS_READ_TOKEN_FILE`；token 只在宿主读取。
