@@ -48,7 +48,7 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         store = SimpleNamespace(transaction=f.tx, admitted=f.admission, clock=lambda: f.now)
         runtime = SimpleNamespace(store=store, jobs=f.jobs, _calls=calls, sender=None, file_service=None, media_service=None,
             outbox=OfficialSendStore(deliveries, admission=f.admission, pepper=b'TEST_BACKGROUND_PEPPER' * 3, clock=lambda: f.now))
-        manager = SimpleNamespace(ensure_default=AsyncMock(return_value={'sandbox_id': 's123abc'}),
+        manager = SimpleNamespace(_conversation_locks={},ensure_default=AsyncMock(return_value={'sandbox_id': 's123abc'}),
             write_file=AsyncMock(), read_file=AsyncMock(return_value=b'TEST_REPORT'),
             start_owned=AsyncMock(), _guest_exec=AsyncMock(return_value=(0, b'', b'')))
         app = SimpleNamespace(logger=logging.getLogger(__name__), official_runtime=runtime, db_call=calls,

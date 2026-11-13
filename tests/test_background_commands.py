@@ -7,6 +7,7 @@ from src.plugins.ai_chat.adapters.qq_official.background_commands import Backgro
 from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
 from src.plugins.ai_chat.adapters.qq_official.program_actions import ProgramDenied
 from src.plugins.ai_chat.platform_types import EndpointKey
+from src.plugins.ai_chat.background_tools import workspace_owner
 from src.plugins.ai_chat.adapters.qq_official.vm_sessions import VMSessions
 from tests.test_vm_sessions import BOOT
 from tests.qq_official_outbox_fixture import OutboxFixture
@@ -100,13 +101,14 @@ class BackgroundCommandTests(OutboxFixture):
 
     def test_idle_shutdown_holds_pending_and_uncertain_commands_and_serializes_new_starts(self):
         row,_ = self.reserve()
-        self.assertFalse(self.sessions.revoke_vm('s123456',if_idle=True))
+        owner = workspace_owner(self.endpoint)
+        self.assertFalse(self.sessions.revoke_vm('s123456',idle_owner=owner))
         self.assertEqual(self.sessions.authenticate(self.credential.token),self.current)
         self.query("UPDATE qq_official_background_commands SET state='ambiguous'")
         self.control('kill')
-        self.assertFalse(self.sessions.revoke_vm('s123456',if_idle=True))
+        self.assertFalse(self.sessions.revoke_vm('s123456',idle_owner=owner))
         self.query("UPDATE qq_official_background_commands SET state='cancelled',finished_at=?",(self.now,))
-        self.assertTrue(self.sessions.revoke_vm('s123456',if_idle=True))
+        self.assertTrue(self.sessions.revoke_vm('s123456',idle_owner=owner))
         with self.assertRaises(PermissionError):
             self.sessions.authenticate(self.credential.token)
         for index in range(4):
@@ -118,7 +120,7 @@ class BackgroundCommandTests(OutboxFixture):
                     return False
             with ThreadPoolExecutor(max_workers=2) as pool:
                 admitted = pool.submit(reserve)
-                revoked = pool.submit(self.sessions.revoke_vm,'s123456',if_idle=True)
+                revoked = pool.submit(self.sessions.revoke_vm,'s123456',idle_owner=owner)
                 self.assertNotEqual(admitted.result(),revoked.result())
             self.query("UPDATE qq_official_background_commands SET state='cancelled',finished_at=?",(self.now,))
 

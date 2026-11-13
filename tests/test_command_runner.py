@@ -118,4 +118,4 @@ class CommandRunnerTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         await self.runner.close()
         self.assertEqual(self.runner.active,{})
         self.assertTrue(all(self.stored(key)['finished_at'] is None for key in keys))
-        self.assertFalse(self.lifecycle.store.revoke_vm('s123456',if_idle=True))
+        self.assertFalse(self.lifecycle.store.revoke_vm('s123456',idle_owner=self.owner))

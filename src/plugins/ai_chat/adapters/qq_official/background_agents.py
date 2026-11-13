@@ -175,9 +175,13 @@ class OfficialBackgroundAgents:
 
     async def start_vm(self, row):
         owner = workspace_owner(EndpointKey.parse(row['endpoint_key']))
-        sandbox = await self.app.sandbox_manager.ensure_default(owner)
-        await self.app.sandbox_manager.start_owned(owner, sandbox['sandbox_id'])
-        return sandbox['sandbox_id']
+        manager = self.app.sandbox_manager
+        # The idle cleaner holds this lock while stopping/removing an old VM.
+        # A late admitted agent waits, then resolves/boots the current workspace.
+        async with manager._conversation_locks.setdefault(owner,asyncio.Lock()):
+            sandbox = await manager.ensure_default(owner)
+            await manager.start_owned(owner, sandbox['sandbox_id'])
+            return sandbox['sandbox_id']
 
     async def guest_exec(self, sandbox_id, script):
         code, _, error = await self.app.sandbox_manager._guest_exec(sandbox_id, '/bin/sh', ['-c', script], timeout=900)

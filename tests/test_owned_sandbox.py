@@ -55,6 +55,7 @@ class FakeManager:
     max_file_bytes = 1024 * 1024
     def __init__(self):
         self.items, self.calls = {}, []
+        self._conversation_locks = {}
         self.after, self.fail = None, None
         self.unembedded, self.cancel_exec = False, False
     def event(self, name, owner, sid=None):

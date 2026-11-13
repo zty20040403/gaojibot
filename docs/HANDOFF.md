@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· 六小时 agent 的 VM 保活回归
+
+- RED 复查发现：只延长任务 deadline 不够，原两小时空闲清理会停掉仍在运行的 agent VM；旧清理已启动时，新 agent 也可能撞上正在关闭的 VM。新增两项回归先稳定失败，再修复。
+- 自动停机现在用 `VMSessions.revoke_vm(idle_owner=…)`，在同一账号事务内检查该物理 owner 的 queued/running agent 和该 VM 的未结束命令；不依赖当前 VM 令牌注册行，因此凭据轮换/同会话 VM 替换不会丢掉活跃 agent 的保活约束。人工停机仍允许。
+- agent 启动与空闲清理共享 owner 的短期工作区锁，迟到的新任务等清理结束后重新选择/启动 VM；不把锁持有六小时，也不挡其他会话启动。30项保活/命令/生命周期/官方agent/文件组合通过，测试日志 `/tmp/gaoji-agent-keepalive-final.log`。
+
 ## 开发记录（2026-11-12）· F3 管理 API
 
 - `/api/background-commands` 读取运行中或最近命令及独立通知回执；按物理 endpoint 筛选，限制100条并明确截断，运行时离线仍可读。复用 VM 的动作事实投影，不把命令退出0当作已发送QQ。

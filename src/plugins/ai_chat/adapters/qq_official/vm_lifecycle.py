@@ -94,7 +94,7 @@ class OfficialVMLifecycle:
         await self.manager.program_state.stopped(owner,sandbox_id)
 
     async def stopping(self, owner, sandbox_id, *, automatic=False):
-        if not await self.calls(self.store.revoke_vm,sandbox_id,if_idle=automatic):
+        if not await self.calls(self.store.revoke_vm,sandbox_id,idle_owner=owner if automatic else None):
             return False
         self.api.revoke(sandbox_id)
         self.units.cancel(sandbox_id)

@@ -10,6 +10,7 @@ import secrets
 import time
 from uuid import UUID
 
+from ...background_tools import workspace_owner
 from ...platform_types import ActorKey, EndpointKey
 from ...sandbox import SANDBOX_ID_PATTERN
 from ...sandbox_identity import TOKEN
@@ -165,11 +166,16 @@ class VMSessions:
             raise PermissionError('vm_token_revoked')
         return current
 
-    def revoke_vm(self, sandbox_id, *, if_idle=False):
-        """Check command holds and revoke atomically; a late reservation cannot pass."""
+    def revoke_vm(self, sandbox_id, *, idle_owner=None):
+        """Check active owner jobs / VM commands and revoke in one account transaction."""
         with self.transaction() as cursor:
             assert_epoch(cursor,self.lease)
-            if if_idle and cursor.execute('''SELECT 1 FROM qq_official_background_commands c
+            if idle_owner is not None:
+                agents = cursor.execute("SELECT DISTINCT endpoint_key FROM background_jobs WHERE account_key=? AND state IN ('queued','running')",
+                    (self.lease.account_key,)).fetchall()
+                if any(workspace_owner(EndpointKey.parse(row['endpoint_key']))==idle_owner for row in agents):
+                    return False
+            if idle_owner is not None and cursor.execute('''SELECT 1 FROM qq_official_background_commands c
                     JOIN qq_official_endpoints e USING(endpoint_key)
                     WHERE e.account_key=? AND c.sandbox_id=? AND c.finished_at IS NULL LIMIT 1''',
                     (self.lease.account_key,sandbox_id)).fetchone():
