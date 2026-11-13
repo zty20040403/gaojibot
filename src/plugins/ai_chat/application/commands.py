@@ -16,7 +16,7 @@ from ..platform_types import InboundMessage
 from ..tasks import RunningTaskRegistry
 
 
-CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory", "clear", "stop", "start", "kill", "units", "logins"]
+CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory", "clear", "stop", "start", "kill", "units", "logins", "logout"]
 CommandStatus = Literal["ok", "unknown", "syntax", "denied", "unavailable", "not_found", "unsupported", "error"]
 _ALIASES: dict[str, CommandName] = {
     "memory": "memory", "记忆": "memory",
@@ -30,7 +30,7 @@ _ALIASES: dict[str, CommandName] = {
     "cancel": "cancel", "停止": "cancel", "取消": "cancel", "取消任务": "cancel",
     "stop": "stop", "start": "start", "kill": "kill",
     "units": "units", "程序": "units",
-    "logins": "logins",
+    "logins": "logins", "logout": "logout",
 }
 _RESETS = frozenset({"default", "reset", "默认", "重置"})
 _STATUS = frozenset({"status", "list", "ls", "状态", "列表"})
@@ -136,7 +136,7 @@ async def dispatch_command(
     if request.name == "help":
         if request.argument:
             return CommandResult("syntax", "用法：/help")
-        extras = [label for key, label in (("memory", "/memory"), ("clear", "/clear"), ("units", "/units"), ("browser", "/logins"))
+        extras = [label for key, label in (("memory", "/memory"), ("clear", "/clear"), ("units", "/units"), ("browser", "/logins、/logout <域名>"))
                   if getattr(services, key) is not None]
         if services.conversation_control is not None:
             extras += ['/stop', '/start', '/kill']
@@ -145,9 +145,9 @@ async def dispatch_command(
         if services.conversation_control is not None:
             hint += '\n/stop、/start、/kill 是会话级控制，需要群主、群管理员或宿主 owner；私聊仅控制自己的会话。'
         return CommandResult('ok','可用命令：'+commands+'。\n'+hint)
-    if request.name=='logins':
-        if request.argument:
-            return CommandResult('syntax','用法：/logins')
+    if request.name in {'logins','logout'}:
+        if (request.name=='logins' and request.argument) or (request.name=='logout' and not request.argument):
+            return CommandResult('syntax','用法：/logins 或 /logout <域名>')
         if services.browser is None:
             return CommandResult('unavailable','浏览器状态服务尚未配置。')
         try:

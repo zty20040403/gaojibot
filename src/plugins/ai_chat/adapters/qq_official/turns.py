@@ -461,8 +461,14 @@ def build_turn_consumer(runtime, token, app):
             return await agents.vm_lifecycle.status.command(current,request,authorize=authorize)
         async def browser(current, request):
             def authorize(cursor):
-                return life.command_source(cursor,current)
-            return await agents.vm_lifecycle.browser.command(current,request,authorize=authorize)
+                source = life.command_source(cursor,current)
+                if request.name=='logout' and current.endpoint.kind=='group':
+                    from .message_roles import source_role
+                    role = source_role(cursor,current.endpoint,current.actor,source['canonical_message_id'],now=int(runtime.store.clock()))
+                    if role not in {'owner','admin'} and runtime.store.authority.owner_for_actor(cursor,current.endpoint,current.actor) is None:
+                        raise PermissionError('browser_logout_denied')
+                return source
+            return await agents.vm_lifecycle.browser.command(current,request,authorize=authorize,key=life.handle.execution_id)
         services = CommandServices(running_tasks=tasks,
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
             host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls),

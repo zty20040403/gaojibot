@@ -81,7 +81,10 @@ class BrowserRuntime:
             raise BrowserUnavailable('browser_result_invalid')
         return dict(result,state='ready',sandbox_id=sid)
 
-    async def command(self, inbound, request, *, authorize):
+    async def command(self, inbound, request, *, authorize, key=None):
+        if request.name=='logout':
+            from .browser_mutations import command
+            return await command(self,inbound,request,authorize=authorize,key=key)
         if request.name!='logins' or request.argument:
             return CommandResult('syntax','用法：/logins')
         try:

@@ -9,6 +9,7 @@ from uuid import UUID
 from ... import sandbox_browser,sandbox_browser_state,sandbox_browser_actions
 from ...background_tools import workspace_owner
 from .browser_runtime import BrowserUnavailable
+from ...application.commands import CommandResult
 
 
 class BrowserActionUnknown(BrowserUnavailable):
@@ -48,13 +49,16 @@ async def mutate(browser, endpoint, *, authorize, key, action, domain=''):
             route = await browser.calls(browser.check,endpoint,authorize)
             owner = workspace_owner(endpoint)
             items = await browser.manager.list(owner)
+            await browser.calls(browser.check,endpoint,authorize,route)
             if not items:
                 return {'error':'browser_vm_missing'}
             sid = items[0]['sandbox_id']
             async with browser.manager.io_lock(sid):
                 await browser.manager._metadata(owner,sid)
                 await browser.calls(browser.check,endpoint,authorize,route)
-                if not await browser.manager._running(sid):
+                running = await browser.manager._running(sid)
+                await browser.calls(browser.check,endpoint,authorize,route)
+                if not running:
                     return {'error':'browser_vm_offline'}
                 code,boot,_ = await browser.manager._guest_exec(sid,'/usr/bin/python3',
                     ['-I','-S','-c','from pathlib import Path;print(Path("/proc/sys/kernel/random/boot_id").read_text().strip())'],timeout=5)
@@ -109,3 +113,32 @@ async def mutate(browser, endpoint, *, authorize, key, action, domain=''):
         raise BrowserUnavailable('browser_unavailable') from None
     finally:
         browser.active.discard(endpoint.key)
+
+
+async def command(browser, inbound, request, *, authorize, key):
+    if not key:
+        return CommandResult('denied','缺少有效的宿主命令凭据，未发起清理。')
+    try:
+        domain = sandbox_browser_state.domain_name(request.argument)
+    except ValueError:
+        return CommandResult('syntax','用法：/logout <域名>；可先 /logins 查询，不接受 URL、路径或多个域名。')
+    try:
+        result = await mutate(browser,inbound.endpoint,authorize=authorize,key=key,action='logout',domain=domain)
+    except PermissionError:
+        return CommandResult('denied','没有清理权限，未发起清理；群公共浏览器须由群主、群管理员或宿主 owner 操作。')
+    except BrowserActionUnknown:
+        result = {'error':'browser_action_unknown'}
+    except BrowserUnavailable:
+        return CommandResult('unavailable','未能发起清理；VM可能忙碌或客体代理不可达，请稍后检查状态。')
+    if result.get('cleared') is True:
+        return CommandResult('ok',f'已清理本会话 {domain} 及其子域的浏览器站点状态。其他网站、设备和服务器上的登录不会因此撤销；再次访问请核对实际状态。')
+    code = result['error']
+    if code=='browser_logout_parent_domain_required':
+        return CommandResult('denied','本次未清理：该站点继承父域 Cookie。请确认清理范围后明确指定父域：'+ '、'.join(result['domains'][:8])+('（仅显示前8项）' if len(result['domains'])>8 else ''))
+    if code=='browser_vm_missing':
+        return CommandResult('unavailable','本会话还没有 VM，未发起清理。')
+    if code=='browser_vm_offline':
+        return CommandResult('unavailable','本会话 VM 已离线，未擅自开机或清理；请启动后重新检查。')
+    if code in {'browser_request_expired','browser_boot_changed','browser_busy'}:
+        return CommandResult('unavailable','VM已变化、忙碌或请求已过期，本次未执行清理；请重新检查状态。')
+    return CommandResult('unavailable','清理结果不明，可能已部分或全部执行；未自动重试，不能据此认定已经退出。')

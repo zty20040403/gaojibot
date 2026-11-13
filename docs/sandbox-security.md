@@ -118,6 +118,14 @@ storage values, or treat login as permission for payment, publication or deletio
 A site-specific login check waits at most 180 seconds; cookies, a missing QR code
 or a redirect alone are not evidence of success. QR files use the existing
 scoped file-delivery path and its real receipt, not a new unfenced sender.
+`/logins` and `/logout <domain>` use only the physical conversation's VM,
+without creating or booting it. Native cleanup requires the private peer or a
+verified group/host owner/admin and rechecks the original command, deadline,
+lease and route. The host dispatches fixed guest code with an operation ID,
+observed boot and short expiry; guest write-ahead receipts are outside the
+browser profile. Interrupted or uncertain operations never automatically replay,
+including after a new login. A parent-domain cookie requires an explicit broader
+request. Clearing local state does not revoke other devices or server sessions.
 These workflow and local tests are not real website/QQ acceptance evidence.
 
 ### Conversation VM credentials

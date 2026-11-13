@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import AsyncMock
@@ -12,6 +13,7 @@ from tests import test_browser_runtime as base
 from tests.qq_official_outbox_fixture import OutboxFixture
 from src.plugins.ai_chat.adapters.qq_official.browser_mutations import mutate,BrowserActionUnknown
 from src.plugins.ai_chat import sandbox_browser_actions as actions
+from src.plugins.ai_chat.application.commands import CommandServices,dispatch_command,parse_command
 
 BOOT = '11111111-1111-4111-8111-111111111111'
 
@@ -43,7 +45,37 @@ class BrowserMutationTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
 
     async def mutate(self,**kwargs):
         return await mutate(self.browser,self.endpoint,authorize=self.authorize,
-            **dict(key='TEST_NATIVE_EXECUTION',action='logout',domain='test.example',**kwargs))
+            **{**dict(key='TEST_NATIVE_EXECUTION',action='logout',domain='test.example'),**kwargs})
+
+    async def command(self,text,*,key='TEST_UI_COMMAND'):
+        async def callback(inbound,request):
+            return await self.browser.command(inbound,request,authorize=self.authorize,key=key)
+        return await dispatch_command(parse_command(text),SimpleNamespace(endpoint=self.endpoint),services=CommandServices(browser=callback))
+
+    async def test_chat_logout_dispatches_only_explicit_domains_and_reports_actual_result(self):
+        for text in ('/logout','/logout https://test.example','/logout test.example TEST_OTHER'):
+            self.assertEqual((await self.command(text)).status,'syntax')
+        self.assertEqual((await self.command('/logout test.example',key=None)).status,'denied')
+        self.perform.assert_not_awaited()
+        result = await self.command('/logout Test.Example')
+        self.assertEqual(result.status,'ok'); self.assertIn('test.example',result.text)
+        self.assertIn('其他网站、设备和服务器上的登录不会因此撤销',result.text)
+        self.assertEqual(self.perform.await_args.args[0]['domain'],'test.example')
+
+    async def test_chat_unknown_is_not_misreported_as_unsupported_or_success(self):
+        self.perform.side_effect = RuntimeError('TEST_SECRET_COOKIE')
+        result = await self.command('/logout test.example')
+        self.assertEqual(result.status,'unavailable')
+        self.assertIn('清理结果不明',result.text); self.assertNotIn('TEST_SECRET',result.text)
+        self.perform.assert_awaited_once()
+
+    async def test_chat_offline_and_pre_dispatch_denial_are_explicit(self):
+        self.running = False
+        result = await self.command('/logout test.example')
+        self.assertIn('已离线',result.text)
+        self.running,self.allowed = True,False
+        self.assertEqual((await self.command('/logout test.example')).status,'denied')
+        self.perform.assert_not_awaited(); self.manager._guest_exec.assert_not_awaited()
 
     async def test_fixed_payload_and_journal_do_not_repeat_after_a_new_login(self):
         self.assertEqual(await self.mutate(),{'cleared':True,'domain':'test.example'})
