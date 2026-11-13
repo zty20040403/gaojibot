@@ -48,6 +48,10 @@ def change(cursor, endpoint, action, *, now, actor, authorized):
         elif action == 'start':
             cursor.execute('UPDATE conversation_settings SET stopped=FALSE WHERE scope_key=?',(endpoint.scope.key,))
         if action in {'stop','kill'}:
+            from .background_commands import cancel_commands
+            cursor.execute('UPDATE conversation_settings SET command_generation=command_generation+1 WHERE scope_key=?',(endpoint.scope.key,))
+            result['cancelled_command_ids'] = cancel_commands(cursor,endpoint,now)
+            result['cancelled_commands'] = len(result['cancelled_command_ids'])
             jobs = cursor.execute('''UPDATE background_jobs SET state='cancelled',finished_at=?,error='会话控制命令取消'
                 WHERE endpoint_key=? AND state IN ('queued','running') RETURNING job_id''',(now,endpoint.key)).fetchall()
             for job in jobs:
@@ -62,9 +66,11 @@ def change(cursor, endpoint, action, *, now, actor, authorized):
             'start':'本会话已恢复；不会补答停止期间的消息。','kill':'已请求取消本会话的全部后台任务；停止状态不变。'}[action]
         if result['cancelled_jobs']:
             text += f"\n已请求取消 {result['cancelled_jobs']} 个后台任务。"
+        if result.get('cancelled_commands'):
+            text += f"\n已请求取消 {result['cancelled_commands']} 个后台命令；运行中的命令仍需 VM 确认停止。"
         result.update(status='ok',text=text,generation=state(cursor,endpoint)['stop_generation'])
     detail = json.dumps({'actor_ref':hashlib.sha256(actor.encode()).hexdigest(),'outcome':result['status'],
-        'cancelled_jobs':result['cancelled_jobs']},separators=(',',':'))
+        'cancelled_jobs':result['cancelled_jobs'],'cancelled_commands':result.get('cancelled_commands',0)},separators=(',',':'))
     cursor.execute('''INSERT INTO admin_security_audit(audit_id,account_id,action,target,detail,created_at) VALUES (?,'',?,?,?,?)''',
         (secrets.token_hex(16),'qq.conversation.'+action,hashlib.sha256(endpoint.key.encode()).hexdigest(),detail,now))
     return result

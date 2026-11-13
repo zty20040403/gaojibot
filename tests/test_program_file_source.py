@@ -82,6 +82,7 @@ class ProgramFileSourceTests(OutboxFixture):
         from unittest.mock import patch
         from alembic import command
         from alembic.config import Config
+        from src.bot_storage.schema import HEAD_REVISION
         # This fixture owns its own disposable DB; do not borrow another
         # migration fixture's schema ownership registry.
         for exported in (False,True):
@@ -89,7 +90,7 @@ class ProgramFileSourceTests(OutboxFixture):
                 self.register()
             with patch.dict(os.environ,{'AI_POSTGRES_DSN':self.database.dsn,'AI_POSTGRES_SCHEMA':self.database.schema}), self.assertRaisesRegex(RuntimeError,'program_file_evidence_requires_export'):
                 command.downgrade(Config('alembic.ini'),'0084_program_wakes')
-            self.assertEqual(self.query('SELECT version_num FROM alembic_version')[0]['version_num'],'0085_program_files')
+            self.assertEqual(self.query('SELECT version_num FROM alembic_version')[0]['version_num'],HEAD_REVISION)
             self.assertEqual(self.query('SELECT action_id FROM qq_official_program_actions')[0]['action_id'],self.action['action_id'])
 
     def test_stop_start_disable_and_rotation_never_reuse_old_file_authority(self):

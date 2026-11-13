@@ -11,12 +11,13 @@ from .vm_sessions import VMSource
 @dataclass(frozen=True)
 class VMRequestIdentity:
     source: VMSource
-    generation: int | None = None
+    generation: int | tuple[int,int] | None = None
+    operation: str = 'read'
 
 
 class VMAPIAuthority:
-    def __init__(self, credentials, *, actions=None):
-        self.credentials,self.actions = credentials,actions
+    def __init__(self, credentials, *, actions=None, commands=None):
+        self.credentials,self.actions,self.commands = credentials,actions,commands
         self.scopes = {}
         self.authenticating = set()
         self.retired = set()
@@ -29,17 +30,19 @@ class VMAPIAuthority:
         task = asyncio.current_task()
         self.authenticating.add(task)
         try:
+            operation = 'command' if write=='command' else 'write' if write else 'read'
+            actions = self.commands if operation=='command' else self.actions
             if write:
-                if self.actions is None:
+                if actions is None:
                     raise PermissionError('vm_actions_unavailable')
-                current,generation = await self.credentials.authenticate_action(token,self.actions)
+                current,generation = await self.credentials.authenticate_action(token,actions)
             else:
                 current,generation = await self.credentials.authenticate(token),None
             if self.closed:
                 raise PermissionError('vm_service_closed')
             # Only the digest-bearing source is retained, never the raw token.
-            self.rotated(current,generation=generation)
-            identity = VMRequestIdentity(current,generation)
+            self.rotated(current,generation=generation,operation=operation)
+            identity = VMRequestIdentity(current,generation,operation)
             scope = self.scopes.get(identity)
             if scope is None or scope.revoked:
                 if scope is not None:
@@ -48,7 +51,7 @@ class VMAPIAuthority:
                     if generation is None:
                         await self.credentials.check(current)
                     else:
-                        await self.credentials.calls(self.actions.require_generation,current,generation)
+                        await self.credentials.calls(actions.require_generation,current,generation)
                 scope = self.scopes[identity] = RequestScope(source={'endpoint_key':current.endpoint.key},
                     current=check,caller_ref=current.caller_ref,identity=current,generation=generation)
             if self.monitor is None:
@@ -65,10 +68,10 @@ class VMAPIAuthority:
             task.add_done_callback(self.retired.discard)
         scope.close()
 
-    def rotated(self, current, *, generation=None):
+    def rotated(self, current, *, generation=None, operation='read'):
         for previous in tuple(self.scopes):
             if previous.source.endpoint==current.endpoint and (previous.source!=current or (
-                    generation is not None and previous.generation is not None and previous.generation!=generation)):
+                    previous.operation==operation and generation is not None and previous.generation!=generation)):
                 self._retire(self.scopes.pop(previous))
 
     def revoke(self, sandbox_id):

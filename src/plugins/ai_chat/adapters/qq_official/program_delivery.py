@@ -96,7 +96,8 @@ def denial(cursor, *, token, delivery, admission, now):
     except PermissionError as error:
         code = str(error)
         return code if code in {'program_disabled','program_action_disabled','program_action_expired','conversation_stopped_or_replaced',
-            'vm_token_revoked','vm_route_replaced','vm_endpoint_unavailable'} else 'program_source_unavailable'
+            'vm_token_revoked','vm_route_replaced','vm_endpoint_unavailable','background_command_cancelled_or_replaced',
+            'background_command_notification_unavailable'} else 'program_source_unavailable'
 
 
 def say(actions, current, *, generation, program, request_id, text, transaction_cursor=None):

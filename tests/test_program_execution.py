@@ -39,6 +39,38 @@ class ProgramExecutionTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         reply = self.execution.publish(run)
         return first,second,run,reply
 
+    async def test_command_notification_is_atomic_and_kill_blocks_its_already_saved_answer(self):
+        from src.plugins.ai_chat.adapters.qq_official.background_commands import BackgroundCommands
+        from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
+        commands = BackgroundCommands(self.actions.sessions)
+        command,_ = commands.reserve(self.current,generation=(0,0),program='TEST_PROGRAM',request_id='TEST_COMMAND',argv=['true'])
+        options = dict(generation=0,program='TEST_PROGRAM',request_id='command:'+command['command_id'],
+            text='TEST command completed',source_command_id=command['command_id'])
+        with self.assertRaisesRegex(ProgramDenied,'notification_unavailable'):
+            self.wakes.submit(self.current,**options)
+        self.query("UPDATE qq_official_background_commands SET state='completed',finished_at=?,exit_code=0",(self.now,))
+        with self.assertRaisesRegex(RuntimeError,'TEST_ROLLBACK'):
+            with self.tx() as cursor:
+                self.wakes.submit(self.current,transaction_cursor=cursor,**options)
+                raise RuntimeError('TEST_ROLLBACK')
+        self.assertEqual(self.query('SELECT * FROM program_quota'),[])
+        self.assertIsNone(self.query('SELECT notification_action_id FROM qq_official_background_commands')[0]['notification_action_id'])
+        action,created = self.wakes.submit(self.current,**options)
+        self.assertTrue(created)
+        self.assertFalse(self.wakes.submit(self.current,**options)[1])
+        self.assertEqual(self.query('SELECT notification_action_id FROM qq_official_background_commands')[0]['notification_action_id'],action['action_id'])
+        run = self.execution.claim(action['wake_id'])
+        self.execution.answer(run,'TEST command answer')
+        reply = self.execution.publish(run)
+        with self.tx() as cursor:
+            change(cursor,self.endpoint,'kill',now=self.now,actor='TEST_ADMIN',authorized=True)
+        result = await self.sender.send_delivery(self.delivery(reply))
+        self.assertEqual((result.status,result.reason),('failed','background_command_cancelled_or_replaced'))
+        self.assertEqual(self.fake.received,[])
+        # Ordinary program wakes are not background commands and remain available.
+        ordinary = self.submit('TEST_ORDINARY')
+        self.assertIsNotNone(self.execution.claim(ordinary['wake_id']))
+
     async def test_claim_is_single_winner_and_silence_does_not_fabricate_a_qq_message(self):
         action = self.submit()
         with ThreadPoolExecutor(max_workers=2) as pool:

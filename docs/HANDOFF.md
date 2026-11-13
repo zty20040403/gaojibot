@@ -1,5 +1,14 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· Python F3 命令意图与取消代数
+
+- 新迁移 0086 增加独立命令表与 conversation_settings.command_generation。VM 来源不冒充真人，重复 request_id 不重复占位，每物理会话最多八个未确认结束的命令；取消已开始/结果不明的命令不提前释放名额。
+- `/kill` 和 `/stop` 同事务提升命令代数并请求取消，`/kill` 不改变 stopped/stop_generation。VM 认证可在 guest/body 等待前捕获两种代数，命令范围与普通 say/wake、只读/API 范围独立。
+- 完成通知通过程序唤醒持久关联 source_command_id，通知与命令引用同事务；等待模型或已生成回答之后仍复查原命令代数。真实 PostgreSQL/FakePlatform 验证 kill 后旧通知不发出，而普通程序唤醒不受 kill 影响。
+- 43 项命令/认证/唤醒/投递/迁移/控制回归通过，Ruff 和两项导入检查通过；之前 17 项命令/控制组合通过，两组有重叠。首次组合一次 180 秒超时不能算通过，完整重跑成功；新完成通知测试揭示拒绝原因被发送器白名单折叠，已补明确且安全的错误码后重跑通过。
+- 此提交仅持久底座；尚未注册命令 HTTP 路由，gaoji run-bg、VM 执行器/输出/保活/恢复、管理台和任务时限配置仍待接通。没有部署或真实 VM/systemd 验收。
+- F2 固定 7fde49f 全套仍在 /tmp/gaoji-python-f2-final.log 运行，已出现失败标记但最终明细尚未输出，不可记通过；待定位并修复。
+
 ## 开发记录（2026-11-12）· Python F3 开始核对
 
 - 已读 maxx 设计的 Background commands 和本方案 F3；不照搬前台转后台、不恢复 MCP。后台命令需要独立持久来源、VM 内 systemd-run 与逐块输出、原命令完成通知，不让等待占用模型。

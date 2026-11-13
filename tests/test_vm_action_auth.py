@@ -66,6 +66,36 @@ class VMActionAuthTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fresh.generation,1)
         self.assertEqual(len(self.authority.scopes),2)
 
+    async def test_command_generation_is_captured_before_guest_io_and_kill_preserves_say_and_reads(self):
+        from src.plugins.ai_chat.adapters.qq_official.background_commands import BackgroundCommands
+        from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
+        self.authority.commands = BackgroundCommands(self.store)
+        read = await self.authority.authorize(self.value)
+        write = await self.authority.authorize(self.value,write=True)
+        command = await self.authority.authorize(self.value,write='command')
+        self.assertEqual(len(self.authority.scopes),3)
+        self.assertEqual(command.generation,(0,0))
+        waiting = asyncio.create_task(asyncio.Event().wait())
+        command.requests.add(waiting)
+        with self.tx() as cursor:
+            change(cursor,self.endpoint,'kill',now=self.now,actor='TEST_ADMIN',authorized=True)
+        result = await asyncio.wait_for(asyncio.gather(waiting,return_exceptions=True),3)
+        self.assertIsInstance(result[0],asyncio.CancelledError)
+        await read.current(); await write.current()
+        self.assertFalse(read.revoked); self.assertFalse(write.revoked)
+        fresh = await self.authority.authorize(self.value,write='command')
+        self.assertEqual(fresh.generation,(0,1))
+        original = self.manager._guest_exec.side_effect
+        async def guest(*args,**kwargs):
+            if json.loads(kwargs['input_bytes'])['op']=='inspect':
+                with self.tx() as cursor:
+                    change(cursor,self.endpoint,'kill',now=self.now,actor='TEST_ADMIN',authorized=True)
+            return await original(*args,**kwargs)
+        self.manager._guest_exec.side_effect = guest
+        with self.assertRaises(HTTPException) as caught:
+            await self.authority.authorize(self.value,write='command')
+        self.assertEqual(caught.exception.detail,'background_command_generation_changed')
+
     async def test_action_authentication_is_unavailable_without_action_authority(self):
         authority = VMAPIAuthority(self.broker)
         self.addAsyncCleanup(authority.close)

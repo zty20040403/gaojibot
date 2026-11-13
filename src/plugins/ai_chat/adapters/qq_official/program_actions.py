@@ -64,6 +64,9 @@ class ProgramActions:
         if (row['scope_key']!=current.scope_key or not permitted(cursor,current.endpoint,
                 generation=row['conversation_generation'])):
             raise ProgramDenied('conversation_stopped_or_replaced')
+        if row.get('source_command_id'):
+            from .background_commands import check_notification
+            check_notification(cursor,self.sessions,row['source_command_id'],current=current,program=row['program_name'])
         limits = settings(cursor,current.scope_key,row['program_name'])
         if limits['program_wake_limit' if row['kind']=='wake' else 'program_say_limit']==0:
             raise ProgramDenied('program_action_disabled')
@@ -71,16 +74,20 @@ class ProgramActions:
             raise ProgramDenied('program_action_expired',409)
         return current
 
-    def reserve(self, current, *, generation, kind, program, request_id, payload, transaction_cursor=None, queue_wake=False):
+    def reserve(self, current, *, generation, kind, program, request_id, payload, transaction_cursor=None, queue_wake=False,
+                source_command_id=None):
         if (type(kind) is not str or kind not in {'say','wake','send_file'} or type(program) is not str or NAME.fullmatch(program) is None
                 or type(request_id) is not str or REQUEST.fullmatch(request_id) is None
-                or type(payload) is not dict or type(generation) is not int or generation<0 or queue_wake and kind!='wake'):
+                or type(payload) is not dict or type(generation) is not int or generation<0 or queue_wake and kind!='wake'
+                or source_command_id is not None and (kind!='wake' or type(source_command_id) is not str
+                    or re.fullmatch(r'[0-9a-f]{32}',source_command_id) is None)):
             raise ValueError('invalid_program_action')
         try:
             encoded = json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
             if len(encoded.encode())>16384:
                 raise ValueError()
-            intent = hashlib.sha256(json.dumps([kind,program,encoded],ensure_ascii=False).encode()).hexdigest()
+            identity = [kind,program,encoded]+([source_command_id] if source_command_id is not None else [])
+            intent = hashlib.sha256(json.dumps(identity,ensure_ascii=False).encode()).hexdigest()
         except (ValueError,TypeError,UnicodeError):
             raise ValueError('invalid_program_action') from None
         now,scope = int(self.clock()),current.scope_key
@@ -88,6 +95,9 @@ class ProgramActions:
             self.sessions.check(cursor,current)
             if not permitted(cursor,current.endpoint,generation=generation):
                 raise ProgramDenied('conversation_stopped_or_replaced')
+            if source_command_id is not None:
+                from .background_commands import check_notification
+                check_notification(cursor,self.sessions,source_command_id,current=current,program=program)
             limits = settings(cursor,scope,program)
             row = cursor.execute('SELECT * FROM qq_official_program_actions WHERE endpoint_key=? AND request_id=?',
                 (current.endpoint.key,request_id)).fetchone()
@@ -111,7 +121,7 @@ class ProgramActions:
                 sandbox_id=current.sandbox_id,boot_id=current.boot_id,token_hash=current.token_hash,
                 token_generation=current.token_generation,account_epoch=current.account_epoch,
                 endpoint_generation=current.endpoint_generation,route_epoch=current.route_epoch,
-                conversation_generation=generation,created_at=now,expires_at=now+300)
+                conversation_generation=generation,created_at=now,expires_at=now+300,source_command_id=source_command_id)
             if queue_wake:
                 from .program_wakes import allocate
                 fields.update(allocate(cursor,current,generation,now,encoded,deferred=deferred))

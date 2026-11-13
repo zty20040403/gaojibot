@@ -1,4 +1,5 @@
 """Durable wake admission: six per hour, then one bounded next-hour batch."""
+from contextlib import nullcontext
 import hashlib
 import json
 import secrets
@@ -64,13 +65,17 @@ class ProgramWakes:
             cursor.execute('UPDATE qq_official_program_wakes SET funded=TRUE WHERE wake_id=?',(wake['wake_id'],))
             cursor.execute("UPDATE qq_official_program_actions SET state='queued' WHERE wake_id=? AND state='coalesced'",(wake['wake_id'],))
 
-    def submit(self, current, *, generation, program, request_id, text):
+    def submit(self, current, *, generation, program, request_id, text, source_command_id=None, transaction_cursor=None):
         if type(text) is not str or not text.strip() or len(text)>4000:
             raise ProgramDenied('invalid_program_text',400)
-        with self.transaction() as cursor:
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.transaction()) as cursor:
             self.actions.sessions.check(cursor,current)
             if generation!=self.actions._capture(cursor,current):
                 raise ProgramDenied('conversation_stopped_or_replaced')
             self.activate(cursor,current)
-            return self.actions.reserve(current,generation=generation,kind='wake',program=program,
-                request_id=request_id,payload={'text':text},transaction_cursor=cursor,queue_wake=True)
+            result = self.actions.reserve(current,generation=generation,kind='wake',program=program,
+                request_id=request_id,payload={'text':text},transaction_cursor=cursor,queue_wake=True,source_command_id=source_command_id)
+            if source_command_id is not None:
+                cursor.execute('UPDATE qq_official_background_commands SET notification_action_id=? WHERE command_id=?',
+                    (result[0]['action_id'],source_command_id))
+            return result
