@@ -62,6 +62,8 @@ class GitHubVMTests(unittest.IsolatedAsyncioTestCase):
         self.manager._running = AsyncMock(return_value=False)
         self.manager._virsh,self.manager._wait_guest = AsyncMock(),AsyncMock()
         self.manager._save_metadata = Mock()
+        # The hypervisor and guest are simulated; XML generation must not probe host QEMU.
+        self.manager._domain_xml = Mock(return_value='<domain/>')
         self.manager._guest_exec = AsyncMock(return_value=(0,b'',b''))
 
     async def test_boot_and_already_running_vm_receive_identity_before_work(self):
@@ -88,5 +90,12 @@ class GitHubVMTests(unittest.IsolatedAsyncioTestCase):
         self.manager._checked = AsyncMock()
         self.manager._configure_github = AsyncMock()
         owner = 'qqo:conversation:TEST_GROUP'
-        result = await self.manager.create(owner)
+        with patch('src.plugins.ai_chat.vm_sandbox.shutil.which',return_value=None):
+            result = await self.manager.create(owner)
+        self.manager._domain_xml.assert_called_once_with(result['sandbox_id'],self.manager.root/result['sandbox_id'])
         self.manager._configure_github.assert_awaited_once_with(owner,result['sandbox_id'])
+
+    async def test_real_domain_xml_still_rejects_missing_host_emulator(self):
+        with patch('src.plugins.ai_chat.vm_sandbox.shutil.which',return_value=None):
+            with self.assertRaisesRegex(SandboxError,'缺少 QEMU'):
+                VmSandboxManager._domain_xml(self.manager,'s123456',self.manager.root/'s123456')
