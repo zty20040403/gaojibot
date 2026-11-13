@@ -1339,21 +1339,15 @@ def _anthropic_response(payload: dict[str, Any]) -> Any:
                     ),
                 )
             )
-    raw_usage = payload.get("usage")
-    usage_data = raw_usage if isinstance(raw_usage, dict) else {}
-    cached_tokens = _safe_int(usage_data.get("cache_read_input_tokens"))
-    cache_write_tokens = _safe_int(usage_data.get("cache_creation_input_tokens"))
-    input_tokens = _safe_int(usage_data.get("input_tokens")) + cached_tokens + cache_write_tokens
-    output_tokens = _safe_int(usage_data.get("output_tokens"))
+    from .model_usage import TokenUsage
+    raw_usage = payload.get('usage')
+    receipt = TokenUsage.anthropic(raw_usage)
     usage = SimpleNamespace(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        prompt_tokens=input_tokens,
-        prompt_tokens_details={"cached_tokens": cached_tokens},
-        cache_creation_input_tokens=cache_write_tokens,
-        completion_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
-    )
+        input_tokens=receipt.input_tokens,output_tokens=receipt.output_tokens,
+        prompt_tokens=receipt.input_tokens,prompt_tokens_details={'cached_tokens':receipt.cached_tokens},
+        cache_creation_input_tokens=receipt.cache_write_tokens,completion_tokens=receipt.output_tokens,
+        total_tokens=receipt.input_tokens+receipt.output_tokens if receipt.known else None,
+    ) if isinstance(raw_usage,dict) else None
     message = SimpleNamespace(
         role="assistant",
         content="".join(text_parts),
@@ -1421,10 +1415,3 @@ def _content_text(content: object) -> str:
     if content is None:
         return ""
     return str(content)
-
-
-def _safe_int(value: object) -> int:
-    try:
-        return max(int(value or 0), 0)
-    except (TypeError, ValueError):
-        return 0
