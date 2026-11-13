@@ -1,5 +1,14 @@
 # gaojibot 改造交接文件
 
+## tank 发布结果（2026-11-13 UTC）· 已完成切换
+
+- 用户授权仅部署tank，未完成新功能目标保持暂停。PR #74已合并为ad5a6e1（树与修复55011b7完全一致）；共享Nix main的部署配置f874a2a9固定该版本。没有混入Java工作区、费用四维API草稿或依赖漏洞修复。
+- 最终55011b7固定本机快照全套1971项、0失败、10跳过、1432.751秒、exit0（/tmp/gaoji-python-release-expiry.log及同前缀revision/exit）；PR Linux CI同为1971项通过，合并后Linux CI再次1971项通过。Nix package与Secret scan通过；UI构建与5个React检查通过。既有Windows ACL CI仍失败，不宣称全部CI绿色；54项分组与全套有重叠，不相加。
+- 先用PG17生产备份在systemd PrivateNetwork内实际恢复并迁移0077→0095，10510条消息不变；停旧服务后另做最终完整备份，再正式迁移到0095_billing_source_metadata。最终备份/data/services/gaoji/backups/python-next-20261113/before-switch/qq_bot.dump为96266512字节、0600，目录检查通过；备份配置和结果留在同目录，未下载或提交敏感内容。
+- tank运行与启动profile一致，部署包/nix/store/yd2nw8hyrpdylg8gphg8027yb56br8cj-gaojibot-0.20.0；QQ连续3次ready、无message_gap，12个运行源码文件SHA256与ad5a6e1逐字一致。数据库、VM服务、Worker、Maxx的PID均未变；内核不变，h610未部署或重启，tank仍唯一可写主库且h610 streaming/async。
+- 系统激活仅伴随accounts-daemon/polkit重启与dbus重载；原有greeter UID/channels警告未混入修复。切换脚本初次因root PATH无python3无法解析健康JSON，改用部署包gaoji-env的Python后实际验证成功；未回滚或重跑迁移，维护gate已删除。
+- 现存3个会话VM均离线，没有需要即时刷新的活跃VM；未擅自开机、改依赖或删除/work/登录状态。旧离线VM后续复用前须按显式sandbox_tools_setup.upgrade流程更新工具。此次未发送真实QQ测试消息、调用真实模型/运维写操作或登录网站，不把ready及包级检查当作全部功能的真实环境验收。回滚须停写并恢复切换前DB/config与匹配固定主库系统，不能只切旧应用包。
+
 ## 发布回归修复（2026-11-13）· 审批截止竞态
 
 - fe00a25 的 Linux CI 全套1968项、1失败、10跳过：等待审批的过期结果偶发为cancelled。稳定RED确认不是只缺测试等待：原来源检查通过后、配置检查前跨过截止时间时，取消收尾没有优先记录expired；已批准意图在回执检查后跨过截止时间还可能领取executing。
