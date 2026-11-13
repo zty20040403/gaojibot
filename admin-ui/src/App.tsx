@@ -22,6 +22,7 @@ import { LoginGate, MemberStatus, AccountsView, ApprovalNotice } from './Account
 import { StatusBadge } from './components'
 import { RequestsView } from './RequestsView'
 import { ProgramsView } from './ProgramsView'
+import { OperationsView } from './OperationsView'
 import { OfficialQQView } from './OfficialQQView'
 import { DETAIL_META, DetailView, type DetailViewId } from './detailViews'
 import { useControlPlane } from './useControlPlane'
@@ -46,7 +47,7 @@ const runtime = window.__GAOJI_ADMIN__ ?? {
   requiresLogin: true,
 }
 
-type ViewId = 'programs' | 'requests' | 'qq-official' | 'accounts' | 'overview' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'databases' | 'sandboxes' | 'media' | 'audit' | 'help'
+type ViewId = 'operations' | 'programs' | 'requests' | 'qq-official' | 'accounts' | 'overview' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'databases' | 'sandboxes' | 'media' | 'audit' | 'help'
 
 const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group: string; icon: ComponentType<{ size?: number }> }> = [
   { id: 'qq-official', label: 'QQ 官方机器人', description: '连接诊断、管理员关联与验收记录', group: '配置', icon: Bot },
@@ -62,6 +63,7 @@ const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group:
   { id: 'groups', label: '模型与群友', description: '配置群开关、统一模型和个人模型', group: '配置', icon: Users },
   { id: 'tools', label: '工具权限', description: '控制 Agent 可见工具与执行策略', group: '配置', icon: Wrench },
   { id: 'databases', label: '数据库', description: '主备节点、连接池与复制状态', group: '基础设施', icon: Database },
+  { id: 'operations', label: '运维操作审计', description: '操作单、私聊批准和执行结果（只读）', group: '基础设施', icon: FileClock },
   { id: 'audit', label: '审计记录', description: '查询所有控制面修改及资源版本', group: '基础设施', icon: FileClock },
   { id: 'help', label: '使用说明', description: '每个功能的用途、操作方法和影响', group: '帮助', icon: BookOpen },
 ]
@@ -180,6 +182,7 @@ export function App() {
               {active === 'sandboxes' && <SandboxesView plane={plane} />}
               {active === 'programs' && <ProgramsView plane={plane} />}
               {active === 'media' && <MediaView plane={plane} onOpenDetail={openDetail} />}
+              {active === 'operations' && <OperationsView query={plane.query} />}
               {active === 'audit' && <AuditView plane={plane} onOpenDetail={openDetail} />}
               {active === 'help' && <HelpView />}
             </>

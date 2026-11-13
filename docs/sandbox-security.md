@@ -104,6 +104,28 @@ and shared disk ownership. tap or passt with explicit rules (as in maxx) needs
 a bridge, DHCP, NAT and a new relay address. The cgroup filter keeps slirp and
 the relay address as they are.
 
+### Host-mediated operations
+
+Operations are disabled unless the host declares fixed recipes. `ops_act` is a
+host tool for the original verified owner's private background job only; shared
+history aliases, groups and VM/program identities cannot acquire it. No SSH key,
+control address/token or operations network is provided to the guest. The tool
+catalog exposes only recipe descriptions and parameter validation, never argv.
+
+A separate ephemeral private notice gives the exact recipe, arguments and a
+one-time code. Only a fresh authenticated plain-text reply from that owner within
+ten minutes can approve it; the notice must also have a confirmed QQ receipt.
+Codes and notice bodies are not persisted in chat or inbound payloads. Task,
+owner grant/revision, account lease, route, stop generation and configuration
+remain checked during execution. Approval does not bypass these checks.
+
+A claim is never replayed after cancellation, restart or unknown remote results.
+An interrupted call may already have executed: cancelling locally does not prove
+remote rollback. Bounded summaries redact known host credentials (including JSON
+escapes) before storage; recipes must never print arbitrary business secrets.
+Only the original private task gets the output, marked as untrusted data. The
+admin operations page is a protected read-only audit, not another approval route.
+
 ### Browser login state
 
 Personal QR/mobile-confirmation logins belong only in the requesting private
