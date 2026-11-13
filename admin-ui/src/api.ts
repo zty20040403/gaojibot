@@ -9,6 +9,7 @@ export type ResourceName =
   | 'usage'
   | 'tasks'
   | 'backgroundAgents'
+  | 'commands'
   | 'jobs'
   | 'sandboxes'
   | 'stickers'
@@ -45,6 +46,7 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   usage: '/usage?days=90',
   tasks: '/tasks',
   backgroundAgents: '/background-agents',
+  commands: '/background-commands',
   jobs: '/jobs',
   sandboxes: '/sandboxes',
   stickers: '/stickers',
@@ -68,6 +70,7 @@ export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   usage: ['usage'],
   tasks: ['tasks'],
   backgroundAgents: ['backgroundAgents', 'tasks'],
+  commands: ['commands'],
   jobs: ['jobs'],
   sandboxes: ['sandboxes'],
   stickers: ['stickers'],

@@ -37,6 +37,7 @@ gaoji events --after 123
 
 - 查询：`gaoji command-status --request-id TEST_BUILD_1`，或 `--command-id <id>`；看退出码、用时、error_code、notification_error 和 notification 的真实状态。
 - 取消：`gaoji stop-bg <id>`；`stopping` 不等于已停止。`ambiguous` 也不能换 request_id 重跑。同 ID 不接受改动后的命令。
+- 管理台“任务与投递”可按会话查看命令、退出码、输出快照和真实通知状态，并停止单条命令。管理员还可将新 agent 时限设为1–6小时（默认6），不改变旧任务截止时间，也不改变 run-bg 的六小时限制。
 - 每会话最多八个未确认结束的命令，最长六小时，输出捕获上限 64 MiB；运行或停止不明时保留 VM。宿主重启不会重执行旧命令，新租约会请求停止原单元；VM 重启也不会自动重跑。
 - 对应 VM-only 接口是 `POST /vm/commands`（argv、request_id、可选 program）、`GET /vm/commands/<id>` 或 `?request_id=…`、`POST /vm/commands/<id>/stop`（空对象）。`/kill` 和 `/stop` 禁止旧启动与旧完成通知；已暂停会话仍可查状态和取消，不能新建命令。
 

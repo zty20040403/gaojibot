@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import { TokenUsageChart } from './TokenUsageChart'
 import { HostAPIAudit } from './HostAPIAudit'
+import { CommandsPanel } from './CommandsPanel'
 import { LocalModelPanel, ModelRouteSummary } from './LocalModelPanel'
 import {
   DataTable,
@@ -236,12 +237,13 @@ export function TasksView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail:
 
   return (
     <>
-      <PageHeader title="任务与投递" description="前台 Agent、持久任务和消息投递的统一操作面" action={<RefreshButton onClick={() => void plane.refreshMany(['tasks', 'backgroundAgents', 'jobs', 'deliveries'])} />} />
+      <PageHeader title="任务与投递" description="前台 Agent、持久任务和消息投递的统一操作面" action={<RefreshButton onClick={() => void plane.refreshMany(['tasks', 'backgroundAgents', 'commands', 'jobs', 'deliveries'])} />} />
       <Section title="后台任务" description="每个任务由群 VM 里的 Codex 执行，可插话、停止，完成后由前台交付">
         <BackgroundModelPicker plane={plane} />
         {agents.map((job) => <details key={job.job_id}><summary><code>job#{job.job_id}</code> {job.title} <StatusBadge value={job.state} /> · {job.last_tool || '尚未调用工具'}</summary><p>{job.error}</p><pre>{job.report}</pre>{['queued', 'running'].includes(job.state) && <button onClick={() => void plane.mutate('backgroundAgents', `/background-agents/${job.job_id}/cancel`, 'POST', {}, ['backgroundAgents'])}>停止任务</button>}</details>)}
         {!agents.length && <EmptyState>还没有后台任务</EmptyState>}
       </Section>
+      <CommandsPanel plane={plane} />
       <HostAPIAudit query={plane.query} />
       <Section title="运行中的 Agent" description="取消会触发当前任务的取消路径">
         <DataTable><thead><tr><th>任务</th><th>会话</th><th>摘要</th><th>耗时</th><th></th></tr></thead><tbody>{tasks.map((task) => <tr key={task.task_id}><td><code>{task.task_id}</code></td><td>{task.conversation_id}</td><td>{task.summary}</td><td>{fmtDuration(task.elapsed_seconds)}</td><td className="actions"><button className="icon-button danger" title="取消任务" onClick={() => void plane.mutate('tasks', `/tasks/${task.task_id}/cancel`, 'POST', {}, ['tasks'])}><Square size={15} /></button></td></tr>)}</tbody></DataTable>

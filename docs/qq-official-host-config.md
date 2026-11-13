@@ -105,7 +105,11 @@ VM 后端启动时中转服务随账号运行时启动，无需先有后台任�
 - `gaoji stop-bg <id>` 对应 `POST /vm/commands/<id>/stop`，正文空对象。查询/取消在聊天停止期间仍允许；新命令在 guest/body 等待前捕获停止与 kill 双代数，旧启动和旧完成通知均被拒绝。
 - 每物理会话最多八个未确认结束的命令；最长六小时、输出捕获最多 64 MiB，在 `/work` 以 sandbox 用户执行，不继承 agent 任务令牌。先准备 sandbox 可写目录；shell 语法须显式使用 sh -lc。命令和常驻程序是不同 systemd 单元。
 - 控制器和监护只使用固定 guest helper。未知启动不重发，停止不明不释放名额；活跃/不明命令阻止空闲关机或清盘。宿主换租约后停止旧来源而不重执行，VM 重启也不重跑。新 boot 的程序读取旧命令状态不会恢复旧写权限。
-- 完成通知走 F2 的受限模型唤醒和主动发送，额度/权限/平台失败都保留状态。VM 输出是资料，不授予真人/owner 权限。真实 QQ/VM/systemd 验收、后台命令管理页与 agent 1–6 小时配置仍待完成。
+- 完成通知走 F2 的受限模型唤醒和主动发送，额度/权限/平台失败都保留状态。VM 输出是资料，不授予真人/owner 权限。真实 QQ/VM/systemd 验收仍待 owner。
+
+管理台“任务与投递”已展示命令、退出用时、输出快照和独立通知回执；默认只看未确认结束的命令，可切换最近记录并按物理 endpoint 筛选。最多100条，截断会提示。停止只登记持久意图，不在管理请求内执行 guest 命令；与账号锁、版本和审计同事务提交，要求登录、CSRF、If-Match，不走 QQ OTP。
+
+同页可按会话设置新 agent 的时限1–6小时（默认6），也用于 routine 新建的 agent；创建后 deadline 固定，修改设置不延长旧任务。`ask_main` 独立最多等两小时，仍裁剪到任务剩余时间；活跃 agent 阻止会话 VM 两小时空闲清理。API 为 `GET /api/background-commands`、`PUT /api/background-commands/settings`（endpoint_key、hours）、`POST /api/background-commands/<id>/cancel`（endpoint_key）。程序来源没有修改这些管理设置的权限。
 
 ### 单元同步
 
