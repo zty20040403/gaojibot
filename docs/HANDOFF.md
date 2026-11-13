@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F5 写操作宿主驱动
+
+- browser_mutations.py 只向实际会话的运行中VM发送固定载荷：先观察boot，再以原生命令/管理操作ID的摘要、短期截止时间调用guest写前回执。返回必须匹配操作ID与boot，只接清理结果或受限错误，不接Cookie值；不启动离线VM、不自动重试不明写入。
+- 写调用中撤权、路由改变或回复后撤权都报告结果不明，不声称未执行；读取前拒绝则无写调用。父域Cookie只提示需明确指定父域，不擅自扩大清理范围。相同意图到期参数改变只冲突，不再清理。
+- 20项真实PostgreSQL/临时guest回执/VM替身/站点状态组合通过；尚未接入聊天logout或管理页，不是F5完成。固定fe75855（含原生命令工厂修复、不含此驱动）的全套正在 /tmp/gaoji-python-browser-base-full.log；revision/exit/PID分别为 /tmp/gaoji-python-browser-base-revision、/tmp/gaoji-python-browser-base.exit、/tmp/gaoji-python-browser-base-test.pid。
+
 ## 开发记录（2026-11-13）· 原生命令授权工厂回归
 
 - 深查宿主写操作时发现 `/units` 和 `/logins` 工厂回调误用了模型 ExecutionBinding 的 current()；实际传入 OfficialTurnLifecycle 没有该方法，因此真实入口会变成“状态暂时不可用”。此前分组只替身调用服务，1,756项全套没有覆盖此工厂路径。
