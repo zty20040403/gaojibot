@@ -33,7 +33,7 @@ class BrowserRuntimeTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
             return {'owner_ref':owner,'id':sid}
         self.manager = SimpleNamespace(list=AsyncMock(side_effect=listing),io_lock=io_lock,
             _metadata=AsyncMock(side_effect=metadata),_running=AsyncMock(side_effect=lambda _:self.running),
-            _guest_exec=AsyncMock(return_value=(0,b'{"domains":["test.example"],"truncated":false}',b'')),
+            _guest_exec=AsyncMock(return_value=(0,b'{"domains":["test.example"],"truncated":false,"boot":"11111111-1111-4111-8111-111111111111"}',b'')),
             start_owned=AsyncMock(),ensure_default=AsyncMock())
         sessions = VMSessions(self.tx,self.token,private_admission=lambda *_:True,clock=lambda:self.now)
         self.browser = BrowserRuntime(SimpleNamespace(store=sessions,manager=self.manager,calls=self.calls))
@@ -49,10 +49,13 @@ class BrowserRuntimeTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         with patch('sqlite3.connect',side_effect=AssertionError('Host must not open the guest Cookie file')) as sqlite:
             result = await self.snapshot()
         sqlite.assert_not_called()
-        self.assertEqual(result,{'state':'ready','sandbox_id':'s123456','domains':['test.example'],'truncated':False})
+        self.assertEqual(result,{'state':'ready','sandbox_id':'s123456','domains':['test.example'],'truncated':False,
+            'fence':self.browser.fence(self.endpoint,'s123456','11111111-1111-4111-8111-111111111111',(1,1))})
+        self.assertNotIn('11111111-1111-4111-8111-111111111111',json.dumps(result))
         args = self.manager._guest_exec.await_args.args
         self.assertEqual(args[:2],('s123456','/usr/bin/python3'))
-        self.assertEqual(args[2][-1],'domains'); self.assertIn('base64',args[2][1])
+        self.assertEqual(args[2][:3],['-I','-S','-c']); self.assertIn('base64',args[2][3])
+        compile(args[2][3],'<guest-browser-read>','exec')
         other = EndpointKey(self.account,'group','TEST_OTHER'); self.provision(other)
         self.query("UPDATE qq_official_endpoints SET binding_state='revoked' WHERE endpoint_key=?",(self.endpoint.key,))
         self.query('UPDATE qq_official_endpoints SET canonical_scope_key=? WHERE endpoint_key=?',(self.endpoint.scope.key,other.key))
@@ -103,7 +106,7 @@ class BrowserRuntimeTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
     async def test_recheck_after_guest_result_and_strict_protocol_reject_private_values(self):
         async def revoke(*args,**kwargs):
             self.allowed = False
-            return (0,b'{"domains":["test.example"],"truncated":false}',b'')
+            return (0,b'{"domains":["test.example"],"truncated":false,"boot":"11111111-1111-4111-8111-111111111111"}',b'')
         self.manager._guest_exec.side_effect = revoke
         with self.assertRaises(PermissionError):
             await self.snapshot()
@@ -111,7 +114,7 @@ class BrowserRuntimeTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         for result in ({'domains':['test.example'],'truncated':False,'cookies':'TEST_SECRET'},
                 {'domains':['https://test.example/?TEST_SECRET'],'truncated':False},
                 {'domains':['test.example']*201,'truncated':False},{'domains':[],'truncated':'TEST_SECRET'}):
-            self.manager._guest_exec.return_value = (0,json.dumps(result).encode(),b'TEST_SECRET')
+            self.manager._guest_exec.return_value = (0,json.dumps(dict(result,boot='11111111-1111-4111-8111-111111111111')).encode(),b'TEST_SECRET')
             with self.assertRaises(BrowserUnavailable) as raised:
                 await self.snapshot()
             self.assertNotIn('TEST_SECRET',str(raised.exception))

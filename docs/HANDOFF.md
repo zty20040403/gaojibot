@@ -1,5 +1,10 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· 管理台清空前的快照绑定
+
+- 浏览器域名与boot由同一个固定guest进程返回；宿主只向调用者给出绑定物理入口、VM、boot、路由及账号租约的摘要fence，不输出boot或Cookie值。管理清空可要求该fence，VM/boot/路由变化时在写调用前拒绝，原生/logout不依赖先查询。
+- 32项浏览器/原生命令/架构组合通过。管理台路由尚在接线；固定138bdc8（含前次架构修正及/logout，不含此次fence）的全套重跑位于 /tmp/gaoji-python-browser-recheck.log，revision/exit/PID为同前缀的 .revision/.exit/.pid；未将其预先记为通过。
+
 ## 开发记录（2026-11-13）· 浏览器全套架构守卫修正
 
 - 固定 fe75855 的全套结束：1,784项、2失败、10跳过，exit1；/tmp/gaoji-python-browser-base-full.log。两项均为 PostgresOnlyArchitectureTests 将guest Chromium只读Cookie库误归类为SQLite业务存储，不是全套通过。

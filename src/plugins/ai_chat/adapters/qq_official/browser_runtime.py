@@ -1,8 +1,10 @@
 """Physical-conversation browser access; guest values never enter host responses."""
 import asyncio
 import base64
+import hashlib
 import json
 from pathlib import Path
+from uuid import UUID
 
 from ...application.commands import CommandResult
 from ...background_tools import workspace_owner
@@ -26,6 +28,10 @@ class BrowserRuntime:
             if expected is not None and current!=expected:
                 raise PermissionError('browser_route_changed')
             return current
+
+    def fence(self, endpoint, sid, boot, route):
+        value = [endpoint.key,sid,boot,*route,self.sessions.lease.epoch]
+        return hashlib.sha256(json.dumps(value,separators=(',',':')).encode()).hexdigest()
 
     async def snapshot(self, endpoint, *, authorize):
         if endpoint.key in self.active or len(self.active)>=4:
@@ -59,8 +65,10 @@ class BrowserRuntime:
                 return {'state':'offline','sandbox_id':sid,'domains':[],'truncated':False}
             # Send the fixed host payload, not a guest-modifiable script path.
             payload = base64.b64encode(Path(guest.__file__).read_bytes()).decode('ascii')
-            script = "import base64;exec(compile(base64.b64decode("+repr(payload)+"),'<browser-state>','exec'))"
-            pending = asyncio.create_task(self.manager._guest_exec(sid,'/usr/bin/python3',['-c',script,'domains'],timeout=10))
+            script = ("import base64,json;from pathlib import Path;scope={'__name__':'browser_state'};"
+                "exec(compile(base64.b64decode("+repr(payload)+"),'<browser-state>','exec'),scope);"
+                "print(json.dumps(dict(scope['domains'](),boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip())))")
+            pending = asyncio.create_task(self.manager._guest_exec(sid,'/usr/bin/python3',['-I','-S','-c',script],timeout=10))
             try:
                 while not pending.done():
                     await self.calls(self.check,endpoint,authorize,route)
@@ -74,12 +82,15 @@ class BrowserRuntime:
         if code or type(content) is not bytes or len(content)>65536:
             raise BrowserUnavailable('browser_read_failed')
         result = json.loads(content)
-        if (type(result) is not dict or set(result)!={'domains','truncated'} or type(result['truncated']) is not bool
+        if (type(result) is not dict or set(result)!={'domains','truncated','boot'} or type(result['truncated']) is not bool
                 or type(result['domains']) is not list or len(result['domains'])>guest.DOMAIN_LIMIT
                 or any(type(name) is not str or guest.domain_name(name)!=name for name in result['domains'])
                 or result['domains']!=sorted(set(result['domains']))):
             raise BrowserUnavailable('browser_result_invalid')
-        return dict(result,state='ready',sandbox_id=sid)
+        boot = result.pop('boot')
+        if type(boot) is not str or str(UUID(boot))!=boot:
+            raise BrowserUnavailable('browser_result_invalid')
+        return dict(result,state='ready',sandbox_id=sid,fence=self.fence(endpoint,sid,boot,route))
 
     async def command(self, inbound, request, *, authorize, key=None):
         if request.name=='logout':

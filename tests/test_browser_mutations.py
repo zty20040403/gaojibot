@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 from tests import test_browser_runtime as base
 from tests.qq_official_outbox_fixture import OutboxFixture
 from src.plugins.ai_chat.adapters.qq_official.browser_mutations import mutate,BrowserActionUnknown
+from src.plugins.ai_chat.adapters.qq_official.browser_runtime import BrowserUnavailable
 from src.plugins.ai_chat import sandbox_browser_actions as actions
 from src.plugins.ai_chat.application.commands import CommandServices,dispatch_command,parse_command
 
@@ -88,6 +89,17 @@ class BrowserMutationTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.perform.assert_awaited_once()
         self.manager.start_owned.assert_not_awaited()
         self.assertFalse(self.browser.active)
+
+    async def test_admin_snapshot_fence_refuses_new_boot_route_or_vm_before_clear(self):
+        actual = self.browser.fence(self.endpoint,'s123456',BOOT,(1,1))
+        for fence in (self.browser.fence(self.endpoint,'s123456','22222222-2222-4222-8222-222222222222',(1,1)),
+                self.browser.fence(self.endpoint,'s123456',BOOT,(1,2)),self.browser.fence(self.endpoint,'s654321',BOOT,(1,1))):
+            with self.assertRaisesRegex(BrowserUnavailable,'browser_snapshot_changed'):
+                await mutate(self.browser,self.endpoint,authorize=self.authorize,key='TEST_ADMIN',action='clear',expected_fence=fence)
+        self.perform.assert_not_awaited()
+        self.assertEqual(await mutate(self.browser,self.endpoint,authorize=self.authorize,
+            key='TEST_ADMIN',action='clear',expected_fence=actual),{'cleared':True})
+        self.perform.assert_awaited_once()
 
     async def test_clear_has_a_distinct_intent_and_no_guest_supplied_script(self):
         self.assertEqual(await mutate(self.browser,self.endpoint,authorize=self.authorize,key='TEST_ADMIN_CLEAR',action='clear'),{'cleared':True})

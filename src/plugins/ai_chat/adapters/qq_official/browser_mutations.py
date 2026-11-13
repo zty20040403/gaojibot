@@ -36,7 +36,7 @@ def script(request):
     return '\n'.join(lines)
 
 
-async def mutate(browser, endpoint, *, authorize, key, action, domain=''):
+async def mutate(browser, endpoint, *, authorize, key, action, domain='', expected_fence=None):
     if action not in {'logout','clear'} or not isinstance(key,str) or not 1<=len(key)<=256:
         raise ValueError('browser_request_invalid')
     domain = sandbox_browser_state.domain_name(domain) if action=='logout' else ''
@@ -67,6 +67,8 @@ async def mutate(browser, endpoint, *, authorize, key, action, domain=''):
                 boot = boot.decode().strip()
                 if str(UUID(boot))!=boot:
                     raise BrowserUnavailable('browser_boot_invalid')
+                if expected_fence is not None and expected_fence!=browser.fence(endpoint,sid,boot,route):
+                    raise BrowserUnavailable('browser_snapshot_changed')
                 request = dict(id=hashlib.sha256((endpoint.key+'\0'+key).encode()).hexdigest(),boot=boot,
                     expires=int(browser.sessions.clock())+60,action=action,domain=domain)
                 await browser.calls(browser.check,endpoint,authorize,route)
