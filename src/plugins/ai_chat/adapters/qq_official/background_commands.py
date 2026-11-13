@@ -18,7 +18,8 @@ def cancel_commands(cursor, endpoint, now, *, command_id=None):
     where,args = (' AND command_id=?',(command_id,)) if command_id is not None else (' AND finished_at IS NULL',())
     rows = cursor.execute('''UPDATE qq_official_background_commands SET cancel_requested=TRUE,
         state=CASE WHEN state='pending' THEN 'cancelled' WHEN finished_at IS NULL THEN 'stopping' ELSE state END,
-        finished_at=CASE WHEN state='pending' THEN ? ELSE finished_at END,error_code='command_cancel_requested'
+        finished_at=CASE WHEN state='pending' THEN ? ELSE finished_at END,
+        error_code=CASE WHEN finished_at IS NULL THEN 'command_cancel_requested' ELSE error_code END
         WHERE endpoint_key=? AND NOT cancel_requested'''+where+' RETURNING command_id',
         (now,endpoint.key,*args)).fetchall()
     return [row['command_id'] for row in rows]
@@ -123,7 +124,7 @@ class BackgroundCommands:
         with self.transaction() as cursor:
             self.sessions.check(cursor,current)
             row = cursor.execute('''SELECT command_id,request_id,program_name,state,cancel_requested,
-                created_at,deadline_at,started_at,finished_at,exit_code,error_code,notification_error
+                created_at,deadline_at,started_at,finished_at,exit_code,elapsed_seconds,output_bytes,error_code,notification_error,notification_action_id
                 FROM qq_official_background_commands WHERE endpoint_key=? AND '''+
                 ('request_id' if by_request else 'command_id')+'=?',(current.endpoint.key,identifier)).fetchone()
             if row is None:

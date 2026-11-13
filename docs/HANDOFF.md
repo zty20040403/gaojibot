@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· F3 宿主执行状态与完成通知
+
+- command_execution.py 在账号锁下认领启动；starting/ambiguous 只查状态、不重发启动，未确认结束仍占名额。0087 保存用时、输出字节数与公平巡检时间；原始 argv 不进入模型通知。
+- guest 观察须通过结构/长度/状态校验，输出中的 VM 令牌脱敏；迟到的 running 不覆盖完成事实。超时保留部分输出并可通知；kill/权限撤销后的实际退出码仍保存，但旧通知被禁止。
+- 完成唤醒复用 F2 队列与额度，source_command_id 和唤醒同事务写入；额度/合并缓冲失败用 savepoint 回滚部分预留，持久记录通知失败，不宣称群里已收到。
+- 35 项真实 PostgreSQL 命令/唤醒/投递组合通过，包括迁移空数据回退再升级、有观察证据拒绝回退。Ruff 与导入检查通过。此提交仍是状态底座，宿主循环和 HTTP/CLI 尚未接通。
+
 ## 开发记录（2026-11-12）· F3 guest systemd 控制器
 
 - sandbox_commands.py 接固定 start/status/stop 协议，仅接受宿主分配的命令 ID 与观察到的 boot；systemd 单元不自动重启，六小时内硬截止，共享半 VM 内存的低权重 slice，停止整个 cgroup。
