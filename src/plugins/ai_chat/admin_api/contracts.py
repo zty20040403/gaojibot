@@ -97,6 +97,12 @@ class ConversationControlRequest(BaseModel):
     action: Literal['stop','start','kill']
 
 
+class ConversationProactiveRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid',strict=True)
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    enabled: bool
+
+
 class BrowserClearRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     endpoint_key: str = Field(min_length=1,max_length=1000)

@@ -4,10 +4,11 @@ import time
 from fastapi import Depends, HTTPException
 
 from ..admin_control import AdminVersionConflict
+from ..conversation_config import change as configure
 from ..adapters.qq_official.conversation_control import change, state
 from ..platform_types import EndpointKey
 from .context import authorize, mutation_context, mutation_payload
-from .contracts import AdminMutationContext, ConversationControlRequest
+from .contracts import AdminMutationContext, ConversationControlRequest, ConversationProactiveRequest
 
 
 def create_router(context):
@@ -25,10 +26,10 @@ def create_router(context):
                 FROM qq_official_endpoints ORDER BY endpoint_key LIMIT 500''').fetchall()
             scopes = tuple(EndpointKey.parse(row['endpoint_key']).scope.key for row in endpoints)
             settings = {row['scope_key']:row for row in connection.execute(
-                'SELECT scope_key,stopped,stop_generation FROM conversation_settings WHERE scope_key IN ('+
+                'SELECT scope_key,stopped,stop_generation,proactive_enabled,proactive_generation FROM conversation_settings WHERE scope_key IN ('+
                 ','.join('?' for _ in scopes)+')',scopes).fetchall()} if scopes else {}
             items = [dict(row,**{key:settings.get(EndpointKey.parse(row['endpoint_key']).scope.key,{}).get(key,default)
-                for key,default in (('stopped',False),('stop_generation',0))}) for row in endpoints]
+                for key,default in (('stopped',False),('stop_generation',0),('proactive_enabled',True),('proactive_generation',0))}) for row in endpoints]
             version = connection.execute("SELECT version FROM admin_resource_versions WHERE resource_key='conversations'").fetchone()
             return {'available':True,'items':items,'api_version':'v1','resource':'conversations',
                 'resource_version':version['version'] if version else 0}
@@ -78,5 +79,40 @@ def create_router(context):
             notify(endpoint.key,result.value)
         context.event_broker.publish('conversations','tasks','backgroundAgents')
         return mutation_payload(result,**result.value)
+
+    @router.post('/api/conversations/proactive')
+    def proactive(selection: ConversationProactiveRequest, info: AdminMutationContext = Depends(mutation_context)):
+        authorize()
+        if services.database is None:
+            raise HTTPException(503,'会话配置未配置')
+        if info.expected_version is None:
+            raise HTTPException(428,'请刷新会话设置并提供 If-Match')
+        try:
+            endpoint = EndpointKey.parse(selection.endpoint_key)
+            if endpoint.account.platform!='qq-official':raise ValueError
+        except (TypeError,ValueError):
+            raise HTTPException(404,'找不到该 QQ 会话') from None
+        connection = services.database.store_connection()
+        cursor = connection.cursor()
+        try:
+            values = configure(cursor,endpoint,'proactive_enabled',selection.enabled,
+                actor=info.actor,now=int(time.time()),expected_version=info.expected_version)
+            version = cursor.execute("SELECT version FROM admin_resource_versions WHERE resource_key='conversations'").fetchone()[0]
+            connection.commit()
+        except AdminVersionConflict as error:
+            connection.rollback()
+            raise HTTPException(409,{'code':'resource_version_conflict','resource':error.resource_key,
+                'expected_version':error.expected,'current_version':error.current}) from None
+        except ValueError:
+            connection.rollback()
+            raise HTTPException(404,'找不到该 QQ 会话') from None
+        except Exception:
+            connection.rollback()
+            raise HTTPException(503,'会话配置未能提交，请刷新后重试') from None
+        finally:
+            cursor.close(); connection.close()
+        context.event_broker.publish('conversations')
+        return dict(api_version='v1',resource='conversations',resource_version=version,
+            endpoint_key=endpoint.key,proactive_enabled=values['proactive_enabled'])
 
     return router

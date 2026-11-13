@@ -4,6 +4,7 @@ import json
 import re
 
 from .platform_types import EndpointKey
+from .admin_control import AdminVersionConflict
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,7 @@ class Setting:
 
 SETTINGS = {
     'agent_timeout_hours':Setting(6,'commands','1–6小时；只影响新任务',6,1),
-    'proactive_enabled':Setting(True,'conversations','主动接话；仍需宿主启用分类器'),
+    'proactive_enabled':Setting(True,'conversations','仅群聊主动接话；仍需宿主启用分类器'),
     'program_say_limit':Setting(60,'programs','每整点小时发言/文件共用额度；0禁用',10000),
     'program_wake_limit':Setting(6,'programs','每整点小时唤醒额度；0禁用，超额合并',10000),
     'image_captions':Setting(False,'captions','新入站图片说明；仍需宿主视觉服务'),
@@ -57,7 +58,7 @@ def display(values, name=''):
         for key,item in SETTINGS.items() if not name or name==key)
 
 
-def change(cursor, endpoint, name, value, *, actor, now):
+def change(cursor, endpoint, name, value, *, actor, now, expected_version=None):
     """The caller must check the native command/admin authority in this transaction.
 
     Join the same account -> resource -> settings lock order as admin writers.
@@ -66,13 +67,19 @@ def change(cursor, endpoint, name, value, *, actor, now):
     if not isinstance(endpoint,EndpointKey) or endpoint.account.platform!='qq-official' or name not in SETTINGS:
         raise ValueError('invalid_conversation_setting')
     item = SETTINGS[name]; item.validate(value)
+    if expected_version is not None and (type(expected_version) is not int or expected_version<0):
+        raise ValueError('invalid_conversation_setting_version')
     cursor.execute('SELECT account_key FROM qq_official_accounts WHERE account_key=? FOR UPDATE',(endpoint.account.key,))
     if not cursor.execute('SELECT 1 FROM qq_official_endpoints WHERE endpoint_key=?',(endpoint.key,)).fetchone():
         raise ValueError('conversation_endpoint_unavailable')
     before = snapshot(cursor,endpoint)[name]
-    version = cursor.execute('''INSERT INTO admin_resource_versions(resource_key,version,updated_at) VALUES (?,1,?)
-        ON CONFLICT(resource_key) DO UPDATE SET version=admin_resource_versions.version+1,updated_at=EXCLUDED.updated_at
-        RETURNING version''',(item.resource,now)).fetchone()[0]
+    cursor.execute('''INSERT INTO admin_resource_versions(resource_key,version,updated_at) VALUES (?,0,?)
+        ON CONFLICT(resource_key) DO NOTHING''',(item.resource,now))
+    version = cursor.execute('SELECT version FROM admin_resource_versions WHERE resource_key=? FOR UPDATE',(item.resource,)).fetchone()[0]
+    if expected_version is not None and expected_version!=version:
+        raise AdminVersionConflict(item.resource,expected_version,version)
+    version += 1
+    cursor.execute('UPDATE admin_resource_versions SET version=?,updated_at=? WHERE resource_key=?',(version,now,item.resource))
     cursor.execute('INSERT INTO conversation_settings(scope_key) VALUES (?) ON CONFLICT DO NOTHING',(endpoint.scope.key,))
     extra = ',proactive_generation=proactive_generation+CASE WHEN proactive_enabled<>? THEN 1 ELSE 0 END' if name=='proactive_enabled' else ''
     args = (value,value,endpoint.scope.key) if extra else (value,endpoint.scope.key)

@@ -141,7 +141,10 @@ export function GroupsView({ plane }: { plane: Plane }) {
     { value: '', label: `跟随全局 (${payload.default?.profile ?? '-'})` },
     ...profiles.filter((profile) => profile.configured).map((profile) => ({ value: profile.name, label: `${profile.name} · ${profile.model}` })),
   ]
-  const controlConversation = (endpointKey: string, action: 'stop' | 'start' | 'kill') => plane.mutate('conversations', '/conversations/control', 'POST', { endpoint_key: endpointKey, action }, ['conversations', 'tasks', 'backgroundAgents'])
+  const conversationVersion = plane.data.conversations?.resource_version
+  const conversationsReady = Number.isInteger(conversationVersion) && conversationVersion >= 0
+  const proactive = (endpointKey: string, enabled: boolean) => plane.mutate('conversations', '/conversations/proactive', 'POST', { endpoint_key: endpointKey, enabled }, ['conversations'], conversationVersion)
+  const controlConversation = (endpointKey: string, action: 'stop' | 'start' | 'kill') => plane.mutate('conversations', '/conversations/control', 'POST', { endpoint_key: endpointKey, action }, ['conversations', 'tasks', 'backgroundAgents'], conversationVersion)
   const setGroupModel = (groupId: number, profile: string) => plane.mutate('groups', `/group-models/${groupId}/default`, 'PUT', { profile: profile || null }, ['groups', 'overview'])
   const setUserModel = (groupId: number, userId: number, profile: string) => plane.mutate('groups', `/group-models/${groupId}/users/${userId}`, 'PUT', { profile: profile || null }, ['groups', 'overview'])
   const setGroupEffort = (groupId: number, effort: string) => plane.mutate('groups', `/group-models/${groupId}/reasoning-effort`, 'PUT', { effort: effort || null }, ['groups', 'overview'])
@@ -150,13 +153,14 @@ export function GroupsView({ plane }: { plane: Plane }) {
     <>
       <PageHeader title="模型、群与用户" description="统一调配群友模型，同时保留管理员个人配置" action={<RefreshButton loading={plane.loading.has('groups') || plane.loading.has('conversations')} onClick={() => void plane.refreshMany(['groups', 'conversations'])} />} />
       <LocalModelPanel plane={plane} />
-      <Section title="会话启停" description="停止后仍记录消息，但取消在途回复与后台任务；恢复不补发旧结果。不改变平台绑定或模型配置。">
-        <DataTable><thead><tr><th>会话</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody>
+      <Section title="会话启停" description="停止后仍记录消息，但取消在途回复与后台任务；恢复不补发旧结果。主动接话开关仍需宿主启用分类器，不恢复已停止会话，不影响正常@回复。">
+        <DataTable><thead><tr><th>会话</th><th>类型</th><th>状态</th><th>主动接话</th><th>操作</th></tr></thead><tbody>
           {rows(plane.data.conversations?.items).map((conversation) => <tr key={conversation.endpoint_key}>
             <td><code>{conversation.endpoint_key}</code></td><td>{conversation.kind === 'group' ? '群聊' : '私聊'}</td>
             <td><StatusBadge value={conversation.stopped ? 'paused' : 'active'} label={conversation.stopped ? '已停止' : '可运行'} /></td>
-            <td><div className="actions"><button onClick={() => void controlConversation(conversation.endpoint_key, conversation.stopped ? 'start' : 'stop')}>{conversation.stopped ? '恢复会话' : '停止会话'}</button>
-              <button onClick={() => { if (window.confirm(`取消此会话所有人的后台任务？停止状态不变。\n${conversation.endpoint_key}`)) void controlConversation(conversation.endpoint_key, 'kill') }}>取消后台任务</button></div></td>
+            <td><Toggle checked={Boolean(conversation.proactive_enabled)} disabled={!conversationsReady || conversation.kind !== 'group'} label={`主动接话 ${conversation.endpoint_key}`} onChange={(enabled) => void proactive(conversation.endpoint_key, enabled)} /></td>
+            <td><div className="actions"><button disabled={!conversationsReady} onClick={() => void controlConversation(conversation.endpoint_key, conversation.stopped ? 'start' : 'stop')}>{conversation.stopped ? '恢复会话' : '停止会话'}</button>
+              <button disabled={!conversationsReady} onClick={() => { if (window.confirm(`取消此会话所有人的后台任务？停止状态不变。\n${conversation.endpoint_key}`)) void controlConversation(conversation.endpoint_key, 'kill') }}>取消后台任务</button></div></td>
           </tr>)}
         </tbody></DataTable>
         {!rows(plane.data.conversations?.items).length && <EmptyState>尚无可控制的 QQ 会话</EmptyState>}

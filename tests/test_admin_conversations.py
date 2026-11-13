@@ -77,6 +77,55 @@ class AdminConversationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.query('SELECT * FROM '+table),table)
         self.notify.assert_not_called()
 
+    async def test_proactive_switch_shares_native_version_without_clearing_stop(self):
+        from src.plugins.ai_chat.conversation_config import change as native
+        self.query('INSERT INTO conversation_settings(scope_key,stopped,stop_generation) VALUES (?,TRUE,3)',(self.endpoint.scope.key,))
+        initial = await self.login()
+        self.assertTrue(initial['items'][0]['proactive_enabled'])
+        body = {'endpoint_key':self.endpoint.key,'enabled':False}
+        self.assertEqual((await self.client.post(self.path+'/proactive',json=body)).status_code,428)
+        response = await self.client.post(self.path+'/proactive',headers={'If-Match':'0'},json=body)
+        self.assertEqual(response.status_code,200,response.text)
+        snapshot = (await self.client.get(self.path)).json()
+        self.assertEqual(snapshot['resource_version'],1)
+        row = snapshot['items'][0]
+        self.assertEqual((row['stopped'],row['stop_generation'],row['proactive_enabled'],row['proactive_generation']),(True,3,False,1))
+        with self.tx() as cursor:
+            native(cursor,self.endpoint,'proactive_enabled',True,actor='TEST_NATIVE',now=ingress.NOW)
+        stale = await self.client.post(self.path+'/proactive',headers={'If-Match':'1'},json=body)
+        self.assertEqual(stale.status_code,409,stale.text)
+        self.assertEqual(stale.json()['detail']['resource'],'conversations')
+        self.assertEqual(len(self.query('SELECT * FROM admin_audit_log')),2)
+        self.notify.assert_not_called()  # Do not interrupt ordinary foreground work.
+        self.assertEqual(self.app.state.auth_messages,[])
+
+    async def test_proactive_requires_strict_bool_and_existing_endpoint_and_rolls_back_errors(self):
+        await self.login()
+        for enabled in (0,'false',None):
+            response = await self.client.post(self.path+'/proactive',headers={'If-Match':'0'},
+                json={'endpoint_key':self.endpoint.key,'enabled':enabled})
+            self.assertEqual(response.status_code,422,response.text)
+        response = await self.client.post(self.path+'/proactive',headers={'If-Match':'0'},
+            json={'endpoint_key':'TEST_FOREIGN','enabled':False})
+        self.assertEqual(response.status_code,404)
+        original = conversations.configure
+        def fail(*args,**kwargs):
+            original(*args,**kwargs)
+            raise RuntimeError('TEST rollback')
+        with patch.object(conversations,'configure',side_effect=fail):
+            response = await self.client.post(self.path+'/proactive',headers={'If-Match':'0'},
+                json={'endpoint_key':self.endpoint.key,'enabled':False})
+        self.assertEqual(response.status_code,503,response.text)
+        for table in ('conversation_settings','admin_resource_versions','admin_audit_log'):
+            self.assertFalse(self.query('SELECT * FROM '+table),table)
+
+    async def test_parallel_proactive_switches_with_same_version_have_one_winner(self):
+        await self.login()
+        responses = await asyncio.gather(*(self.client.post(self.path+'/proactive',headers={'If-Match':'0'},
+            json={'endpoint_key':self.endpoint.key,'enabled':enabled}) for enabled in (True,False)))
+        self.assertEqual(sorted(response.status_code for response in responses),[200,409])
+        self.assertEqual(len(self.query('SELECT * FROM admin_audit_log')),1)
+
     async def test_login_csrf_version_and_real_endpoint_are_required(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://test') as anonymous:
             response = await anonymous.post(self.path+'/control',headers={'Origin':'https://test'},

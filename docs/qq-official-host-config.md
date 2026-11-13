@@ -33,7 +33,7 @@
 
 图片说明入库另由管理台“媒体审核 → 图片说明”按会话启用，默认关闭、每日 200 张（北京时间），可调为 0–10,000 张。宿主须启用 `AI_MEDIA_ENABLED=true` 并配置支持视觉的 `AI_VISION_PROFILE`。启用后仅处理新入站图片/表情，不补旧图；说明可在 `history` 搜到。失败、超额和费用可查；关闭不退款已经发生的模型调用。普通图片不会自动加入全局可发表情库。开关、每日额度及管理台计数按实际 endpoint 的物理会话隔离，不跟随历史别名；说明仍写入原历史。升级 `0092_caption_scopes` 时，涉及历史别名的旧开关关闭、上限重置为 200，管理员须按实际会话重新确认；已消耗的日额度保守保留，不退款。没有历史别名的配置不变。
 
-`/config` 查看当前物理会话的固定配置：`agent_timeout_hours`（默认6，1–6）、`proactive_enabled`（默认on，仍需宿主启用主动分类器）、`program_say_limit`（默认60/小时）、`program_wake_limit`（默认6/小时）、`image_captions`（默认off）、`image_daily_limit`（默认200/天）；计数上限可设0–10000，0禁用。`/config <名称>`只读，`/config <名称> <值或default>`写入/恢复默认，布尔值用on/off。所有已准入成员可看，修改须原认证群主/群管或宿主owner，私聊仅本人。配置不恢复/stop、不重放旧主动回复、不延长已有任务。图片说明管理API使用独立`captions`版本，If-Match取`GET /api/media`返回的`caption_resource_version`，不是媒体审核的版本。
+`/config` 查看当前物理会话的固定配置：`agent_timeout_hours`（默认6，1–6）、`proactive_enabled`（默认on，仍需宿主启用主动分类器）、`program_say_limit`（默认60/小时）、`program_wake_limit`（默认6/小时）、`image_captions`（默认off）、`image_daily_limit`（默认200/天）；计数上限可设0–10000，0禁用。`/config <名称>`只读，`/config <名称> <值或default>`写入/恢复默认，布尔值用on/off。所有已准入成员可看，修改须原认证群主/群管或宿主owner，私聊仅本人。配置不恢复/stop、不重放旧主动回复、不延长已有任务。管理台“模型、群与用户→会话启停”提供群聊主动接话开关，使用所见会话版本；后台时限、程序额度及图片说明分别在原有任务、程序和媒体页维护。图片说明管理API使用独立`captions`版本，If-Match取`GET /api/media`返回的`caption_resource_version`，不是媒体审核的版本。
 
 媒体能力按上面的开关启用。`ocr` 开关现在启用 `view_image` 和前台图片输入：前台 profile 的 `capabilities.vision=true` 时直接附当前/合并/引用图片（最多四张），否则用有效的视觉 profile 返回画面与文字。原图下载和模型图均受 `AI_VISION_MAX_IMAGE_MB`（默认 20 MiB，下载硬上限 100 MiB）限制；宿主须有 ffmpeg（Nix 包与开发 shell 已包含），缩到长边 1568，解码失败明确报错、不发送原始坏图。旧 OCR 描述回退仍沿用 `max_download_bytes` 上限和 `official_ocr` 用量分类；短语音优先读取腾讯识别文本，`local_asr` 需要宿主 whisper.cpp 与模型。视频和大附件先导入 VM，由后台处理。语音回复复用文件服务生成和发送 SILK。
 
