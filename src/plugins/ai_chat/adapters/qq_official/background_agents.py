@@ -89,6 +89,9 @@ class OfficialBackgroundAgents:
     async def start(self):
         if self.ops is not None:
             await self.ops.start()
+        else:
+            from .ops_actions import retire_runtime
+            await self.calls(retire_runtime,self.runtime.store.transaction,self.token,int(self.clock()),'ops_runtime_disabled')
         if self.vm_lifecycle is not None:
             await self.vm_lifecycle.start()
 

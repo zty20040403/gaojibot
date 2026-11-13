@@ -15,6 +15,17 @@ from .lease import assert_epoch
 TERMINAL = frozenset({'succeeded','failed','denied','expired','cancelled','unknown'})
 
 
+def retire_runtime(transaction,token,now,reason):
+    # Recovery also runs with operations disabled: an old claim is unknown,
+    # not forever "executing", and an unanswered notice must not stay live.
+    with transaction() as cursor:
+        assert_epoch(cursor,token)
+        cursor.execute("""UPDATE ops_actions SET state=CASE WHEN state='executing' THEN 'unknown'
+            WHEN expires_at<=? THEN 'expired' ELSE 'cancelled' END,
+            code_hash='',error_code=?,finished_at=?,updated_at=? WHERE account_key=? AND finished_at IS NULL""",
+            (now,reason,now,now,token.account_key))
+
+
 @dataclass(frozen=True)
 class Proposal:
     action: dict = field(repr=False)

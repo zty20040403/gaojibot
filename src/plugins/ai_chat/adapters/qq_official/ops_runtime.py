@@ -5,7 +5,7 @@ import json
 from ...ops_plans import OpsPlanError
 from ...tools.background import definition
 from html import escape
-from .ops_actions import OpsActions,TERMINAL
+from .ops_actions import OpsActions,TERMINAL,retire_runtime
 from .ops_execution import OpsExecution,drain
 from .ops_notices import OpsNotices
 from .ops_replies import OpsReplies
@@ -49,12 +49,7 @@ class OfficialOps:
         self.runtime.outbox.ops_authority,self.runtime.store.ops_replies = self.notices,self.replies
 
     def recover(self,*,closing=False):
-        with self.transaction() as cursor:
-            rows = cursor.execute("SELECT * FROM ops_actions WHERE account_key=? AND state NOT IN ('succeeded','failed','denied','expired','cancelled','unknown')",
-                (self.token.account_key,)).fetchall()
-            for row in rows:
-                state = 'unknown' if row['state']=='executing' else 'expired' if row['expires_at']<=self.actions.clock() else 'cancelled'
-                self.actions.close(cursor,row['action_id'],state=state,error='ops_runtime_closed' if closing else 'ops_runtime_restarted')
+        retire_runtime(self.transaction,self.token,int(self.actions.clock()),'ops_runtime_closed' if closing else 'ops_runtime_restarted')
 
     async def close(self):
         if self.closed:return

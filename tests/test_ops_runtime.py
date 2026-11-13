@@ -162,6 +162,9 @@ class OpsRuntimeTests(OpsFixture,unittest.IsolatedAsyncioTestCase):
         other = OfficialBackgroundAgents(self.runtime,self.token,self.app)
         try:
             self.assertIsNone(other.ops)
+            pending = self.request(request_id='TEST_DISABLED_RESTART')
+            await other.start()
+            self.assertEqual(self.query('SELECT state FROM ops_actions WHERE action_id=?',(pending.action['action_id'],))[0]['state'],'cancelled')
             session = await other.session(self.jobs.get(self.job.job_id),self.job,AsyncMock())
             with self.assertRaisesRegex(ValueError,'后台工具不可用'):
                 await session.execute_tool('ops_act',self.args)

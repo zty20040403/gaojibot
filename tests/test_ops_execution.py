@@ -110,6 +110,16 @@ class OpsExecutionTests(OpsFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute())['state'],'unknown')
         self.assertEqual(self.trace,['prepare','approve'])
 
+    async def test_runtime_retirement_marks_a_claim_unknown_without_dispatch_or_rewrite(self):
+        from src.plugins.ai_chat.adapters.qq_official.ops_actions import retire_runtime
+        await self.approved()
+        self.assertIsNotNone(self.execution.claim(self.proposal.action['action_id'])[1])
+        retire_runtime(self.tx,self.token,self.now,'ops_runtime_disabled')
+        self.assertEqual((await self.execute())['state'],'unknown'); self.assertEqual(self.trace,[])
+        original = self.action(); self.now += 1
+        retire_runtime(self.tx,self.token,self.now,'ops_runtime_restarted')
+        self.assertEqual(self.action(),original)
+
     async def test_parallel_duplicate_does_not_send_a_second_remote_intent(self):
         await self.approved(); entered,release = asyncio.Event(),asyncio.Event()
         async def wait():entered.set(); await release.wait()
