@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· 原生命令授权工厂回归
+
+- 深查宿主写操作时发现 `/units` 和 `/logins` 工厂回调误用了模型 ExecutionBinding 的 current()；实际传入 OfficialTurnLifecycle 没有该方法，因此真实入口会变成“状态暂时不可用”。此前分组只替身调用服务，1,756项全套没有覆盖此工厂路径。
+- 新增 tests/test_native_vm_commands.py 经真实consumer工厂/命令路由/PostgreSQL/outbox重现 RED，再改为 command_source：原始endpoint/actor/消息/路由、executing 状态、截止时间及实时路由代数均复查；effect_scope 共用同一逻辑，事务内不等待VM。
+- 28项原生工厂/浏览器/回合生命周期/程序状态/命令组合通过，包含过期及中途路由变化拒绝。未访问真实VM；原全套结果仍只代表原快照，最新补丁还需全套。
+
 ## 开发记录（2026-11-13）· F5 guest 写操作回执
 
 - sandbox_browser_actions.py 为 logout/clear 加独立于浏览器资料目录的写前记录：原boot、操作ID、短期截止时间与精确请求绑定；执行中断留 unknown，重试只读原回执，不重做清理。不会因为响应丢失删掉后来新登录的状态。

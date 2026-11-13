@@ -62,6 +62,20 @@ class OfficialTurnLifecycle:
                     raise LifecycleError("turn_deadline_expired")
         await self._calls(check)
 
+    def command_source(self, cursor, inbound):
+        """Validate a native command in the caller's short transaction."""
+        if (inbound.endpoint != self.handle.endpoint or inbound.actor != self.handle.actor
+                or inbound.route_epoch != self.handle.route_epoch or inbound.scope.key != self.handle.scope_key
+                or inbound.native_message_id != self.handle.source_native_message_id):
+            raise LifecycleError("execution_input_mismatch")
+        row = self._current(cursor)
+        route = cursor.execute('SELECT generation,route_epoch FROM qq_official_endpoints WHERE endpoint_key=?',
+            (self.handle.endpoint.key,)).fetchone()
+        if (row["state"] != "executing" or int(self.clock()) >= row["deadline_at"] or route is None
+                or (route['generation'],route['route_epoch'])!=(self.handle.endpoint_generation,self.handle.route_epoch)):
+            raise LifecycleError("execution_effect_not_current")
+        return row
+
     @contextmanager
     def effect_scope(self, inbound):
         """Hold both execution fences across one synchronous command effect.
@@ -70,14 +84,8 @@ class OfficialTurnLifecycle:
         settings-store commit is not claimed to be atomic with its reply;
         interruption retains needs_attention and cannot replay the effect.
         """
-        if (inbound.endpoint != self.handle.endpoint or inbound.actor != self.handle.actor
-                or inbound.route_epoch != self.handle.route_epoch or inbound.scope.key != self.handle.scope_key
-                or inbound.native_message_id != self.handle.source_native_message_id):
-            raise LifecycleError("execution_input_mismatch")
         with self.transactions.transaction() as cursor:
-            row = self._current(cursor)
-            if row["state"] != "executing" or int(self.clock()) >= row["deadline_at"]:
-                raise LifecycleError("execution_effect_not_current")
+            self.command_source(cursor,inbound)
             yield cursor
 
     async def begin(self, *, inbound, selected_profile, objective, prompt_version):
@@ -449,15 +457,11 @@ def build_turn_consumer(runtime, token, app):
             tasks = AgentCommands(tasks, agents)
         async def units(current, request):
             def authorize(cursor):
-                source = life.current(cursor,int(runtime.store.clock()))
-                if source['endpoint_key']!=current.endpoint.key or source['requester_actor_key']!=current.actor.key:
-                    raise PermissionError('program_status_source_mismatch')
+                return life.command_source(cursor,current)
             return await agents.vm_lifecycle.status.command(current,request,authorize=authorize)
         async def browser(current, request):
             def authorize(cursor):
-                source = life.current(cursor,int(runtime.store.clock()))
-                if source['endpoint_key']!=current.endpoint.key or source['requester_actor_key']!=current.actor.key:
-                    raise PermissionError('browser_source_mismatch')
+                return life.command_source(cursor,current)
             return await agents.vm_lifecycle.browser.command(current,request,authorize=authorize)
         services = CommandServices(running_tasks=tasks,
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
