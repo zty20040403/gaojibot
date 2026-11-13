@@ -48,6 +48,7 @@ class OpsPlanTests(unittest.TestCase):
         for change in ({'argv':['{unit}']},{'argv':['systemctl','{unit}']},{'argv':['/TEST_BIN/control','--unit={unit}']},
                 {'argv':['/TEST_BIN/control','{other}']},{'parameters':{'unit':{'type':'string'}}},
                 {'parameters':{'unit':{'pattern':'.*'}}},{'parameters':{'unit':{'enum':[]}}},
+                {'parameters':{'unit':{'enum':['TEST_\u202e']}}},{'about':'TEST_\ud800'},
                 {'parameters':{'unit':{'minimum':True,'maximum':3}}},{'timeout_seconds':0},
                 {'timeout_seconds':True},{'argv':['/TEST_BIN/control','fixed']},{'host':'{unit}'},
                 {'env':{'TOKEN':'TEST_SECRET'}}):

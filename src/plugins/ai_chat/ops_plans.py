@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import unicodedata
 from urllib.parse import urlsplit
 
 from src.qq_official.credentials import _read_secret
@@ -17,7 +18,7 @@ class OpsPlanError(ValueError):
 
 
 def text(value,limit):
-    if type(value) is not str or not 1<=len(value)<=limit or any(ord(c)<32 or ord(c)==127 for c in value):
+    if type(value) is not str or not 1<=len(value)<=limit or any(unicodedata.category(c) in {'Cc','Cf','Cs'} for c in value):
         raise OpsPlanError('invalid_ops_configuration')
     return value
 
