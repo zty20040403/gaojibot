@@ -10,6 +10,7 @@ import json
 import secrets
 import time
 
+from .billing_sources import metadata
 from .model_pricing import ModelPricing
 from .model_usage import TokenUsage
 from .platform_types import ActorKey,EndpointKey
@@ -73,10 +74,11 @@ class ModelBilling:
                 raise ValueError('billing_turn_source_mismatch')
         call_id = secrets.token_hex(16)
         cursor.execute('''INSERT INTO model_usage_calls(call_id,endpoint_key,scope_key,actor_key,purpose,turn_id,
-            background_job_id,program_wake_id,provider,model,profile,pricing_json,started_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            background_job_id,program_wake_id,provider,model,profile,pricing_json,started_at,source_metadata_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (call_id,source.endpoint.key,source.endpoint.scope.key,source.actor.key if source.actor else None,source.purpose,
              source.turn_id,source.background_job_id,source.program_wake_id,profile.provider,profile.model,profile.name,
-             json.dumps(profile.pricing.to_mapping(),sort_keys=True) if profile.pricing else None,int(self.clock())))
+             json.dumps(profile.pricing.to_mapping(),sort_keys=True) if profile.pricing else None,int(self.clock()),metadata(cursor,source)))
         return call_id
 
     def finish(self,call_id,usage):
