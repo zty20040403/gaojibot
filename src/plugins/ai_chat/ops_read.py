@@ -13,8 +13,8 @@ from .tools.background import definition
 
 MAX_RESPONSE = 1024 * 1024
 DEADLINE = 20
-ACTIONS = ('overview', 'service', 'logs', 'disk', 'resources')
-TOOL = definition('ops_read', '只读查看服务器概况、服务状态、日志、磁盘或资源。只供已核验 owner 的私聊后台任务；不会重启或修改服务。结果可能敏感，不转发到群或其他会话。',
+ACTIONS = ('overview', 'services', 'service', 'logs', 'disk', 'resources', 'version')
+TOOL = definition('ops_read', '只读查看概况、服务列表(services)/状态(service)、日志、磁盘/内存和当前部署依据(version)。version返回实测系统closure/配置revision，缺失字段未知，不能当作应用Git版本；旧缓存不能说是实时状态。只供不共享历史的owner私聊任务，结果不转发到群或其他会话，不执行写操作。',
     {'action': {'type': 'string', 'enum': list(ACTIONS)},
      'host': {'type': 'string'}, 'unit': {'type': 'string'},
      'lines': {'type': 'integer', 'minimum': 1, 'maximum': 200},
@@ -27,6 +27,10 @@ class OpsReadError(RuntimeError):
 
 def owner_allowed(app, inbound):
     if inbound.endpoint.kind != 'private' or not app.settings.ops_read_base_url or not app.settings.ops_read_token_file:
+        return False
+    # Job reports are persisted in their canonical history. Never admit sensitive
+    # observations to a private task whose history is shared with another scope.
+    if getattr(inbound,'canonical_scope',None) not in (None,inbound.endpoint.scope):
         return False
     runtime = app.official_runtime
     if runtime is None or runtime.store.authority is None:
@@ -61,6 +65,7 @@ def request_path(args):
     host_path = '/v1/hosts/'+quote(host,safe='')
     return {'overview':host_path if host else '/v1/fleet', 'service':host_path+'/units/'+quote(unit,safe=''),
         'logs':host_path+'/units/'+quote(unit,safe='')+'/logs',
+        'services':host_path+'/units','version':host_path,
         'disk':host_path+'/metrics','resources':host_path+'/metrics'}[action],params
 
 

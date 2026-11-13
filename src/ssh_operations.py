@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shlex
 import signal
 import stat
 import subprocess
@@ -109,9 +110,43 @@ def cpu_counters() -> dict[str, tuple[int, int]]:
     return counters
 
 
+def deployment_version(root: Path = Path('/')) -> dict:
+    """Observe running-system metadata, not the desired/last deployment record."""
+    def text(path):
+        try:
+            with path.open(encoding='utf-8') as stream:
+                value = stream.read(4097)
+            return value.strip() if len(value)<=4096 else None
+        except (OSError,UnicodeError):
+            return None
+    release = {}
+    for line in (text(root/'etc/os-release') or '').splitlines():
+        key,separator,value = line.partition('=')
+        if separator and key in {'VERSION_ID','BUILD_ID'}:
+            try:
+                words = shlex.split(value,comments=True)
+                if len(words)==1:
+                    release[key] = words[0]
+            except ValueError:
+                pass
+    closure = root/'run/current-system'
+    result = dict(system_closure=str(closure.resolve()) if closure.exists() else None,
+        configuration_revision=text(closure/'configuration-revision'),
+        os_version=release.get('VERSION_ID'),os_build=release.get('BUILD_ID'))
+    return dict(result,unknown_version_fields=[key for key,value in result.items() if not value])
+
+
 def observation(config: dict, operation: str, params: dict) -> dict:
     host = config["host_id"]
     envelope = {"host": host, "observed_at": now()}
+    if operation == 'units.list':
+        raw = command(config,'systemctl',['list-units','--all','--type=service','--no-legend','--plain','--no-pager'])
+        units = []
+        for line in raw.splitlines():
+            fields = line.split(maxsplit=4)
+            if len(fields)>=4 and UNIT.fullmatch(fields[0]):
+                units.append(dict(zip(('unit','load_state','active_state','sub_state'),fields[:4])))
+        return {**envelope,'units':units[:200],'truncated':len(units)>200,'coverage':'loaded_services'}
     if operation == "units.status":
         return {**envelope, "unit": unit_status(config, params.get("unit"))}
     if operation == "units.logs":
@@ -138,11 +173,10 @@ def observation(config: dict, operation: str, params: dict) -> dict:
             result["resource_observation"] = {"source": "ssh", "sample_at_unix_seconds": time.time()}
         return result
     if operation == "host.facts":
-        closure = Path("/run/current-system")
         return {**envelope, "facts": {"boot_id": Path(config["boot_id_file"]).read_text().strip(),
             "hostname": os.uname().nodename, "kernel": os.uname().release,
             "architecture": os.uname().machine, "uptime_seconds": float(Path("/proc/uptime").read_text().split()[0]),
-            "system_closure": str(closure.resolve()) if closure.exists() else None}}
+            **deployment_version()}}
     if operation == "host.metrics":
         metrics = filesystem_metrics(config)
         def scalar(name, value):

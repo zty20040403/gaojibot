@@ -23,6 +23,9 @@ class OpsSourceTests(OutboxFixture):
             decisions = authority.apply_trusted_config(cursor,self.account,(self.actor.native_user_id,),'TEST_REVISION')
             self.assertIsNotNone(decisions[0].grant)
         self.assertTrue(owner_allowed(app,inbound))
+        inbound.canonical_scope = EndpointKey(self.account,'group','TEST_SHARED').scope
+        self.assertFalse(owner_allowed(app,inbound))
+        inbound.canonical_scope = self.endpoint.scope
         for endpoint,actor in ((EndpointKey(self.account,'private','TEST_OTHER'),self.actor),
                 (self.endpoint,ActorKey(self.account,'c2c_user','','TEST_OTHER')),
                 (EndpointKey(self.account,'group','TEST_GROUP'),ActorKey(self.account,'group_member','TEST_GROUP','TEST_PRIVATE')),

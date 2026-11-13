@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F5全套通过与F6只读扩充
+
+- 固定313a62f188201c43144bd5acebdab96855c6b2ad的全套 **1,806项、0失败、10跳过，exit0，1317.103秒**。/tmp/gaoji-python-browser-final.log/.revision/.exit一致，覆盖F5完整本地链路；不包含其后的F6，真实网站/QQ/VM验收仍待owner。
+- ops_read增加services/version；control增加GET /v1/hosts/{host}/units，宿主SSH只读helper增加units.list（最多200个已加载service，包括inactive，明确truncated），按readable_units再过滤，不走VM网络、不提供任意shell。旧上游缺能力时明确unsupported。
+- version沿用host.facts，helper读取实际/run/current-system及配置revision、os-release字段；缺失明确unknown，不把部署意图/旧任务的版本冒充当前版本，也不臆测应用Git revision。
+- 另拒绝共享历史别名的owner私聊任务读取运维：后台报告会持久化到canonical scope，不能把敏感结果写入群共用历史。69项PostgreSQL来源/HTTP/control/SSH替身/后台组合通过（含此前16项），Ruff通过。未访问真实主机。下一步是操作单配置、短码审批与审计管理页。
+
 ## 开发记录（2026-11-13）· F6 只读运维传输边界
 
 - 原ops_read仅请求前查owner且无有界响应/持续取消；现要求原后台任务current回调，等待HTTP头/正文、返回前持续复查任务与owner。群、非owner、跨账号/私聊actor和共享历史别名都不授权；VM/程序无此工具。

@@ -320,6 +320,11 @@ class FleetControlService:
                             item["agent"] = {**item.get("agent", {}), "failed_units": len(item["units"])}
                         projected.append(item)
                     scoped["hosts"] = projected
+        elif operation == 'units.list':
+            policy = self._inventory_by_host.get(str(payload.get('host','')),{})
+            allowed = policy.get('readable_units',[])
+            scoped['units'] = [item for item in payload.get('units',[])
+                if isinstance(item,dict) and item.get('unit') in allowed]
         elif operation == "alerts.active":
             alerts = payload.get("alerts")
             if isinstance(alerts, list):
@@ -362,7 +367,12 @@ class FleetControlService:
                     "invalid_response",
                     "Ops returned data for a different host",
                 )
-            if operation == "units.status":
+            if operation == 'units.list':
+                if (not isinstance(payload.get('units'),list) or len(payload['units'])>200
+                        or type(payload.get('truncated')) is not bool
+                        or any(not isinstance(item,dict) or not isinstance(item.get('unit'),str) for item in payload['units'])):
+                    raise OpsError('invalid_response','Ops returned an invalid service list')
+            elif operation == "units.status":
                 unit = payload.get("unit")
                 if not isinstance(unit, dict) or unit.get("unit") != params.get("unit"):
                     raise OpsError(
@@ -560,6 +570,9 @@ class FleetControlService:
 
     async def host_facts(self, host: str) -> dict[str, Any]:
         return (await self.query_capability("host.facts.read", {"host": host})).as_dict()
+
+    async def unit_list(self, host: str) -> dict[str, Any]:
+        return (await self.query_capability("host.units.read", {"host": host})).as_dict()
 
     async def unit_status(self, host: str, unit: str) -> dict[str, Any]:
         return (

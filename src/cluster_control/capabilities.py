@@ -20,6 +20,7 @@ BINDINGS: tuple[CapabilityBinding, ...] = (
     CapabilityBinding("fleet.alerts.read", "alerts.active"),
     CapabilityBinding("host.facts.read", "host.facts"),
     CapabilityBinding("host.metrics.read", "host.metrics"),
+    CapabilityBinding("host.units.read", "units.list", cacheable=False),
     CapabilityBinding("unit.status.read", "units.status"),
     CapabilityBinding(
         "unit.logs.read", "units.logs", sensitive=True, cacheable=False
@@ -34,6 +35,7 @@ _EXPECTED_PARAMS: dict[str, tuple[dict[str, str], set[str]]] = {
     "alerts.active": ({}, set()),
     "host.facts": ({"host": "string"}, {"host"}),
     "host.metrics": ({"host": "string"}, {"host"}),
+    "units.list": ({"host": "string"}, {"host"}),
     "units.status": (
         {"host": "string", "unit": "string"},
         {"host", "unit"},
