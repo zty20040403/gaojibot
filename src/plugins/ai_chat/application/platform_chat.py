@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from contextlib import nullcontext
 import json
 from types import SimpleNamespace
 
@@ -30,7 +31,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
-        generation_factory=None, media_factory=None,
+        generation_factory=None, media_factory=None, billing_factory=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -41,6 +42,11 @@ class PlatformChatService:
         self.llm = llm
         self.generation_factory = generation_factory
         self.media_factory = media_factory
+        self.billing_factory = billing_factory
+
+    async def _call_model(self,inbound,platform,turn_id,*args,**kwargs):
+        with self.billing_factory(inbound,platform,turn_id) if self.billing_factory is not None else nullcontext():
+            return await self.llm(*args,**kwargs)
 
     def _scope_enabled(self, scope) -> bool:
         override = self.context.model_preferences.get_scope_enabled_override(scope)
@@ -179,8 +185,8 @@ class PlatformChatService:
                 skill_index = self.context.skill_registry.prompt_index()
                 system = system_prompt(self.context.settings.system_prompt, skill_index,
                                        self.context.settings.style_examples)
-                answer = await self.llm(
-                    user_text, [], tools, execute_tool,
+                answer = await self._call_model(
+                    inbound, platform, journal_turn_id, user_text, [], tools, execute_tool,
                     current_user=speaker(inbound),
                     group_context=group_context, memory_context=memory_context,
                     tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",

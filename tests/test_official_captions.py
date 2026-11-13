@@ -15,6 +15,7 @@ from src.plugins.ai_chat.image_captions import CaptionSettings
 from src.plugins.ai_chat.llm_gateway import LLMGateway
 from src.plugins.ai_chat.media_library import MediaLibrary
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile, ModelCapabilities
+from src.plugins.ai_chat.model_billing import ModelBilling
 from src.plugins.ai_chat.official_caption_worker import OfficialCaptionWorker
 from src.plugins.ai_chat.quota import UsageStore
 from src.plugins.ai_chat.vision_worker import VisionWorker
@@ -60,7 +61,8 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.usage = UsageStore(self.database)
         self.addCleanup(self.usage.close)
         self.app = SimpleNamespace(database=self.database,media_library=self.library,vision_worker=self.vision,usage_store=self.usage,
-            db_call=self.calls,message_ledger=self.ledger,settings=SimpleNamespace(media_max_vision_bytes=1024*1024))
+            db_call=self.calls,message_ledger=self.ledger,settings=SimpleNamespace(media_max_vision_bytes=1024*1024),
+            model_billing=ModelBilling(self.database))
         self.worker = OfficialCaptionWorker(self.app)
         self.library.official_caption_worker = self.worker
         self.addresses = ('93.184.216.34',)
@@ -113,6 +115,12 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
         await self.run_job()
         self.assertEqual(len(self.model_calls),1)
         self.assertEqual(len(self.query("SELECT * FROM media_jobs WHERE status='succeeded'")),2)
+        bill = self.query('SELECT * FROM model_usage_calls')
+        self.assertEqual(len(bill),1)
+        self.assertEqual((bill[0]['scope_key'],bill[0]['purpose'],bill[0]['input_tokens']),
+            (self.endpoint.scope.key,'image_caption',12))
+        self.assertTrue(bill[0]['actor_key'])
+        self.assertFalse(bill[0]['cost_complete'])
         cleanup = LegacyMediaCleanup(self.database,media_root=Path(self.temp.name))
         self.assertEqual(cleanup.preview()['candidate_count'],0)
 

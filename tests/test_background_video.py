@@ -18,6 +18,7 @@ from src.plugins.ai_chat.quota import UsageStore
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from tests.qq_official_turn_fixture import ExecutionFixture
 from tests.test_video_format import metadata_clip
+from src.plugins.ai_chat.model_billing import ModelBilling
 
 
 class BackgroundVideoTests(unittest.IsolatedAsyncioTestCase):
@@ -44,7 +45,8 @@ class BackgroundVideoTests(unittest.IsolatedAsyncioTestCase):
             logger=logging.getLogger(__name__),db_call=self.calls,message_ledger=f.ledger,usage_store=self.usage,
             model_preferences=SimpleNamespace(get_explicit=lambda _:None),sandbox_manager=self.manager,
             model_catalog=ModelCatalog({'testvideo':profile},default_profile='testvideo'),
-            llm_gateway=LLMGateway(providers={'openai-chat':Provider()},fallback_enabled=False))
+            llm_gateway=LLMGateway(providers={'openai-chat':Provider()},fallback_enabled=False),
+            model_billing=ModelBilling(f.database))
         self.service = OfficialBackgroundAgents(runtime,f.token,self.app)
         self.addAsyncCleanup(self.service.close)
         source = dict(account_key=f.account.key,endpoint_key=f.endpoint.key,actor_key=f.actor.key,scope_key=f.endpoint.scope.key,
@@ -75,6 +77,8 @@ class BackgroundVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.model_calls[0]['messages'][-1]['content'][-1]['type'],'video_url')
         await self.session.execute_tool('analyze_video',self.arguments)
         self.assertEqual(len(self.model_calls),1)
+        bill = self.f.query('SELECT scope_key,purpose,background_job_id,input_tokens FROM model_usage_calls')
+        self.assertEqual(bill,[dict(scope_key=self.f.endpoint.scope.key,purpose='video',background_job_id=self.job.job_id,input_tokens=12)])
         await self.session.execute_tool('record_video_summary',{'message_handle':self.arguments['message_handle'],'summary':'TEST 抽帧见猫，音轨无法转写'})
         self.assertEqual(self.f.query('SELECT method FROM message_media_notes')[0]['method'],'frames')
         self.assertEqual(len(self.f.ledger.history(self.f.endpoint.scope,terms=('无法转写',))),1)
@@ -85,6 +89,7 @@ class BackgroundVideoTests(unittest.IsolatedAsyncioTestCase):
             await self.session.execute_tool('analyze_video',self.arguments)
         self.assertFalse(self.f.query('SELECT * FROM message_media_notes'))
         self.assertEqual(self.f.query("SELECT input_tokens FROM usage_events WHERE source='video_analysis'")[0]['input_tokens'],12)
+        self.assertEqual(self.f.query('SELECT input_tokens FROM model_usage_calls')[0]['input_tokens'],12)
 
     async def test_unknown_cost_is_not_refunded_and_quota_prevents_retry(self):
         def uncertain():

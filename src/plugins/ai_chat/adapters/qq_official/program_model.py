@@ -13,6 +13,7 @@ from ...prompt_context import quote_evidence
 from ...tools import neutral_registry_for
 from ...tools.state import ToolContext, TurnState
 from .program_actions import ProgramDenied
+from .billing import scoped
 from .program_usage import ProgramUsage
 from .vm_sessions import source
 
@@ -62,7 +63,8 @@ class ProgramModel:
             '最终回复最多 1800 字符；无需发言时输出 [silence]。\n'+quote_evidence(evidence,'program_wake'))
         usage = ProgramUsage(self.execution,run,self.app.usage_store,self.calls,current=check)
         try:
-            with model_budget_scope(usage.budget):
+            with model_budget_scope(usage.budget),scoped(self.app,current.endpoint,'program_wake',
+                    program_wake_id=run['wake_id'],current=check):
                 return await self.llm(prompt,[],tools,execute,current_user='程序事件（不是真人）',profile=profile,
                     group_context=history,memory_context=memory,max_tool_rounds=24,max_total_calls=80,max_calls_per_round=24,
                     system_prompt=system_prompt(self.app.settings.system_prompt,self.app.skill_registry.prompt_index(),self.app.settings.style_examples))

@@ -23,6 +23,7 @@ from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.llm_gateway import LLMGateway
 from src.plugins.ai_chat.media_library import MediaLibrary
 from src.plugins.ai_chat.model_catalog import ModelCapabilities, ModelProfile, ModelCatalog
+from src.plugins.ai_chat.model_billing import ModelBilling
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
 from src.plugins.ai_chat.vision_worker import VisionWorker
 from tests import test_qq_official_turn_endtoend as turn_fixture
@@ -70,6 +71,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
             capabilities=replace(profile.capabilities, vision=frontend_vision))}, default_profile='test')
         self.temp=TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.app.database=self.database
+        self.app.model_billing=ModelBilling(self.database)
         self.app.state_dir=Path(self.temp.name)
         self.app.project_runtime=None;self.app.sandbox_manager=None
         self.app.delivery_store=DeliveryStore(self.database,recover_interrupted=False)
@@ -173,6 +175,11 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('TEST external document',str(self.model_calls[-1]['messages']))
                 self.assertNotIn('signature=TEST_SECRET',str(self.vision_calls))
                 usage=self.query("SELECT * FROM usage_events WHERE source='official_ocr'")
+                bill=self.query('SELECT * FROM model_usage_calls')
+                self.assertEqual(len(bill),1)
+                self.assertEqual((bill[0]['purpose'],bill[0]['input_tokens']),('ocr',12))
+                self.assertTrue(bill[0]['turn_id'])
+                self.assertTrue(bill[0]['actor_key'])
                 self.assertEqual([(v['input_tokens'],v['output_tokens']) for v in usage],[(12,8)])
                 self.assertEqual(len(fake.received),1)
                 await runtime.stop()

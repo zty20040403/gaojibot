@@ -4,6 +4,7 @@ The durable row is a source/decision marker, never a dispatch queue. Interrupted
 classification is not recovered. Ordinary ingest retries cannot rescore it.
 """
 from dataclasses import dataclass
+from contextlib import nullcontext
 import asyncio
 import json
 import math
@@ -29,9 +30,10 @@ class ProactiveCandidate:
 
 
 class ProactiveIngress:
-    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls):
+    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls,billing=None):
         self.token,self.tx,self.admission,self.outbox=token,transaction,admission,outbox
         self.scorer,self.clock,self.calls=scorer,clock,database_calls
+        self.billing=billing
         self._issued=weakref.WeakKeyDictionary()
         self._latest={}
 
@@ -125,7 +127,8 @@ class ProactiveIngress:
         text,history,endpoint,actor=await self.calls(self._text,source)
         async def invoke():
             await self.current(source)
-            return await self.scorer(text=text,history=history,endpoint=endpoint,actor=actor)
+            with self.billing(endpoint,actor,lambda:self.current(source)) if self.billing else nullcontext():
+                return await self.scorer(text=text,history=history,endpoint=endpoint,actor=actor)
         return await guarded_wait(invoke(),lambda:self.current(source),timeout=30)
 
     def _send_policy(self,source,*,purpose,deadline):

@@ -74,6 +74,22 @@ class ProgramModelTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event['source'],'program_wake_bound')
         self.assertGreater(event['input_tokens'],0)
 
+    async def test_host_billing_receipt_is_bound_to_wake_without_human_actor(self):
+        from src.plugins.ai_chat.model_billing import ModelBilling
+        from src.plugins.ai_chat.llm_gateway import LLMGateway
+        self.app.model_billing = ModelBilling(self.database)
+        provider = SimpleNamespace(create_completion=AsyncMock(return_value=SimpleNamespace(
+            usage={'prompt_tokens':20,'completion_tokens':10,'prompt_tokens_details':{'cached_tokens':5}})))
+        gateway = LLMGateway({'openai-chat':provider})
+        async def model(*args,**options):
+            await gateway.create_completion(options['profile'],messages=[])
+            return 'TEST billed program reply'
+        self.model.llm = model
+        await self.model.ask(self.run)
+        rows = self.query('SELECT scope_key,purpose,actor_key,program_wake_id,input_tokens FROM model_usage_calls')
+        self.assertEqual(rows,[dict(scope_key=self.current.endpoint.scope.key,purpose='program_wake',actor_key=None,
+            program_wake_id=self.run['wake_id'],input_tokens=20)])
+
     async def test_disabled_ai_never_calls_model_or_reserves_usage(self):
         self.app.model_preferences.get_scope_enabled_override = lambda _:False
         self.model.llm = AsyncMock()

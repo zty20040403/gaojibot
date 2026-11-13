@@ -222,11 +222,15 @@ class MediaSession:
                                   or not callable(parent.reserve_request)):
             raise MediaDenied('guarded_model_budget_required')
         usage = OCRUsage(self, source)
+        row = await self.current()
+        from .billing import scoped
+        billing = scoped(self.service.app,self.inbound.endpoint,'ocr',self.inbound.actor,
+            turn_id=row['journal_turn_id'],current=usage.current)
         scope = (nullcontext() if parent is not None else model_budget_scope(ModelCallBudget(
             self.service.config.model_max_tokens, max_requests=1,
             before_request=usage.current, reserve_request=usage.reserve)))
         try:
-            with scope:
+            with scope,billing:
                 return await self.service.vision.recognize(source, resolver=self.resolver, fetcher=self.service.fetcher)
         finally:
             await usage.settle()

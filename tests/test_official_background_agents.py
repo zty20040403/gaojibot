@@ -129,14 +129,22 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(script.endswith(f'base64 -d > /work/.gaoji/jobs/job-{number}.md'))
         manager.write_file.assert_not_awaited()
         answer = 'TEST foreground result' if steer_error is None else 'TEST 追加要求未送达，请重新发起任务。'
+        async def render(*args,**kwargs):
+            from src.plugins.ai_chat.llm_gateway import LLMGateway
+            gateway = LLMGateway({'openai-chat':SimpleNamespace(create_completion=AsyncMock(return_value=SimpleNamespace(
+                usage={'input_tokens':2,'output_tokens':1,'input_tokens_details':{'cached_tokens':0}})))})
+            await gateway.create_completion(kwargs['profile'],messages=[])
+            return answer
         with patch('src.plugins.ai_chat.adapters.qq_official.background_delivery.ask_deepseek_with_tools',
-                   new=AsyncMock(return_value=answer)) as foreground:
+                   new=AsyncMock(side_effect=render)) as foreground:
             await present(service, row)
         if steer_error is not None:
             prompt = foreground.await_args.args[0]
             self.assertIn(f'[job#{number} failed]', prompt)
             self.assertIn(row['error'], prompt)
             self.assertIn('失败须说明具体原因，不能声称已经成功', prompt)
+        billed = f.query('SELECT background_job_id FROM model_usage_calls WHERE purpose=? AND input_tokens=2',('background_agent',))
+        self.assertEqual(billed,[dict(background_job_id=number)])
         self.assertEqual(service.store.get(number)['frontend_answer'], answer)
         self.assertIsNotNone(service.store.get(number)['delivered_at'])
         self.assertEqual(f.query("SELECT purpose FROM delivery_plans WHERE account_key=?", (f.account.key,))[0]['purpose'], 'background_result')

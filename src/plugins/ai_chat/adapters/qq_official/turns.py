@@ -394,7 +394,8 @@ def build_turn_consumer(runtime, token, app):
                 and (row["binding_state"] == "active" if endpoint.kind == "group"
                      else row["binding_state"] != "revoked"))
 
-    service_options = {"scope_enabled": scope_enabled}
+    from .billing import foreground
+    service_options = {"scope_enabled": scope_enabled, "billing_factory": foreground(runtime,app)}
     media = getattr(runtime, 'media_service', None)
     if media is not None:
         service_options['media_factory'] = media.foreground
