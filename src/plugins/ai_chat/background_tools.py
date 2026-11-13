@@ -23,7 +23,7 @@ class BackgroundPlatform:
         self.endpoint, self.account = endpoint, endpoint.account
 
 
-ASK_MAIN = definition('ask_main', '向前台提问，让它根据聊天记录回答或询问用户。最多等十分钟；没有答复时自己判断继续，并在报告里写明假设。',
+ASK_MAIN = definition('ask_main', '向前台提问，让它根据聊天记录回答或询问用户。最多等两小时，但不超过任务剩余时间；没有答复时自己判断继续，并在报告里写明假设，任务截止则保存结果并结束。',
     {'question': {'type': 'string'}}, ('question',))
 
 

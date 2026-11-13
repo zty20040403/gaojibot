@@ -68,8 +68,10 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         life = ExecutionBinding(turn_source, f.token, handle, f.job, f.admission)
         turn = TurnState(ToolContext(SimpleNamespace(context=app), inbound=inbound,
             platform=SimpleNamespace(account=f.account, execution=life)), model_profile=profile)
+        f.query('INSERT INTO conversation_settings(scope_key,agent_timeout_hours) VALUES (?,1)',(f.endpoint.scope.key,))
         submitted = await service.control(turn, 'agent', {'task': 'TEST research'})
         number = int(submitted['job'][4:])
+        self.assertEqual(service.store.get(number)['deadline_at'],f.now+3600)
         await service.control(turn, 'agent_steer', {'job': submitted['job'], 'message': 'TEST extra detail'})
         from datetime import datetime, timezone
         schedule = await service.schedules.control(turn, 'schedule_set', {'kind': 'reminder',

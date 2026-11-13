@@ -69,7 +69,8 @@ class ScheduleRuntime:
             key = f"schedule:{row['id']}:{row['next_at']}"
             if row['kind'] == 'routine':
                 self.agents.store.submit(cursor, kind=self.agents.kind, key=key, source=source,
-                    task=row['text'], title=row['text'][:80], profile=source['profile'], independent=True)
+                    task=row['text'], title=row['text'][:80], profile=source['profile'], independent=True,
+                    hours=self.agents.store.hours(cursor,endpoint))
             else:
                 nodes = [TextNode(1, '提醒：' + row['text'])]
                 if endpoint.kind == 'group':

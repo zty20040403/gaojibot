@@ -49,6 +49,7 @@ class ScheduleTests(unittest.TestCase):
             one = store.create(cursor, source, text='TEST meeting', at=datetime.fromtimestamp(f.now+60, ZONE).isoformat())
             two = store.create(cursor, source, kind='routine', text='TEST digest', cron='0 * * * *')
             self.assertFalse(store.cancel(cursor, f.endpoint.key, 'TEST_OTHER_ACTOR', one['id']))
+        f.query('INSERT INTO conversation_settings(scope_key,agent_timeout_hours) VALUES (?,3)',(f.endpoint.scope.key,))
         for row in (one, two):
             f.now = row['next_at']
             service.schedules.fire(row['id'], row['next_at'])
@@ -78,6 +79,7 @@ class ScheduleTests(unittest.TestCase):
         service.schedules.fire(two['id'],f.now)
         future = service.store.list(f.endpoint.key,f.actor.key)[0]
         self.assertEqual(future['state'],'queued')
+        self.assertEqual(future['deadline_at'],f.now+3*3600)
         self.assertEqual(future['conversation_generation'],1)
         with f.tx() as cursor:
             service.check(cursor,future)  # Future occurrences are not old-turn replays.

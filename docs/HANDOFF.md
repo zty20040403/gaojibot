@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· F3 时限底座
+
+- 0088_agent_time_limits 扩展物理会话设置：agent_timeout_hours 为1–6，默认6；手动 agent 与 routine 在创建时快照截止时间，重试/后改配置不延长旧任务。不会使用共享历史别名的配置。
+- 原代码 ask_main 实际仅等600秒，与方案的两小时不符；现改为独立7200秒上限，仍截断到任务剩余时间。五分钟提醒、停止取消保持；截止时明确要求保存现有结果并结束，不把一小时会话错误说成等了两小时。
+- 23项时限/后台任务/官方接线/定时任务/执行迁移组合通过，包含真实升级回退与显式非默认配置保护。管理台时限入口和命令列表/取消仍待接；不可宣称F3完成。
+- 固定 a83ae5d 的全套正在 `/tmp/gaoji-python-commands-full.log`，退出码待 `/tmp/gaoji-python-commands.exit`；快照不含本次时限改动，最新验证仍是分组测试。未部署。
+
 ## 开发记录（2026-11-12）· F3 run-bg HTTP/CLI 接通
 
 - VM-only `/vm/commands` 的登记、按命令/原 request_id 查询、单命令取消已注册。标准库 CLI 增加 run-bg、command-status、stop-bg；命令 argv 原样传入，不隐式套 shell。认证使用独立命令双代数，慢请求体不能穿过 kill，任务令牌与范围注入被拒绝。

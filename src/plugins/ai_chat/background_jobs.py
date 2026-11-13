@@ -15,7 +15,15 @@ class BackgroundJobs:
         self.jobs, self.clock = jobs, clock
         self.transaction = jobs._transaction
 
-    def submit(self, cursor, *, kind, key, source, task, title, profile, independent=False):
+    @staticmethod
+    def hours(cursor, endpoint):
+        row = cursor.execute('SELECT agent_timeout_hours FROM conversation_settings WHERE scope_key=?',
+            (endpoint.scope.key,)).fetchone()
+        return row['agent_timeout_hours'] if row else 6
+
+    def submit(self, cursor, *, kind, key, source, task, title, profile, independent=False, hours=6):
+        if type(hours) is not int or not 1<=hours<=6:
+            raise ValueError('后台任务时限必须是1–6小时。')
         # Serialize duplicate protection and the global limit across simultaneous turns.
         cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended('gaoji-background-agents',0))")
         existing = cursor.execute('''SELECT b.* FROM background_jobs b JOIN durable_jobs j USING(job_id)
@@ -42,7 +50,7 @@ class BackgroundJobs:
             'canonical_message_id', 'native_message_id', 'endpoint_generation', 'route_epoch')}
         fields.update(conversation_generation=source.get('conversation_generation',0),
                       job_id=job.job_id, task=task, title=title or task[:80], profile=profile,
-                      created_at=now, deadline_at=now + 7200)
+                      created_at=now, deadline_at=now + hours * 3600)
         row = cursor.execute('INSERT INTO background_jobs (' + ','.join(fields) + ') VALUES (' +
             ','.join('?' for _ in fields) + ') RETURNING *', tuple(fields.values())).fetchone()
         return dict(row)
@@ -150,7 +158,7 @@ class BackgroundRunner:
             asking = True
             try:
                 await self.ask_main(row, text)
-                until = min(self.clock() + 600, row['deadline_at'])
+                until = min(self.clock() + 7200, row['deadline_at'])
                 while self.clock() < until:
                     messages = await feedback(warn=False)
                     if messages:
@@ -158,7 +166,8 @@ class BackgroundRunner:
                     await asyncio.sleep(min(2, max(0, until - self.clock())))
             finally:
                 asking = False
-            assumption = '前台十分钟未回答，请自行判断继续，在报告中写清采用的假设。'
+            assumption = ('任务已到截止时间，未收到答复；停止扩展任务，保存现有文件并整理报告。'
+                if self.clock()>=row['deadline_at'] else '前台两小时未回答，请自行判断继续，在报告中写清采用的假设。')
             notes.append(assumption)
             return assumption
 
@@ -178,7 +187,7 @@ class BackgroundRunner:
             error = '用户取消了任务。' if state == 'cancelled' else '服务停止，任务已中断；工作区文件保留。'
             raise
         except TimeoutError:
-            state, error = 'failed', '任务超过两小时上限且没能正常停下；请查看工作区中的现有文件。'
+            state, error = 'failed', '任务超过创建时确定的截止时间且没能正常停下；请查看工作区中的现有文件。'
         except Exception as exc:
             state, error = 'failed', f'后台任务失败：{type(exc).__name__}: {exc}'
             self.logger.exception('Background job %s failed', row['job_id'])
