@@ -30,6 +30,7 @@ PAGE_ROUTES = (
     ("PUT", "/api/background-commands/settings"),
     ("POST", "/api/background-commands/{command_id}/cancel"),
     ("GET", "/api/host-apis"),
+    ("GET", "/api/ops-actions"),
     ("POST", "/api/background-agents/{job_id}/cancel"),
     ("POST", "/api/tasks/{task_id}/cancel"),
     ("GET", "/api/jobs"),

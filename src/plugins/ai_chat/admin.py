@@ -16,6 +16,7 @@ from .admin_api import (
     official_files,
     official_observability,
     official_identity,
+    ops,
     overview,
     sandboxes,
     background_agents,
@@ -49,6 +50,7 @@ __all__ = ["AdminServices", "AdminEventBroker", "AdminRealtimeMonitor", "registe
 _PAGE_ROUTERS = (
     browser,
     dashboard,
+    ops,
     overview,
     models,
     tasks,
