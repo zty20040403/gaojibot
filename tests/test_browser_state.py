@@ -27,7 +27,9 @@ class BrowserDomainTests(unittest.TestCase):
                 for name,expires in (('.Test.Example',0),('test.example',0),('expired.example',1),('other.example',2**62))])
             connection.commit(); connection.close()
             digest = hashlib.sha256(path.read_bytes()).digest()
-            result = browser.domains(profile=profile,now=1800000000)
+            with patch.object(sqlite3,'connect',wraps=sqlite3.connect) as connect:
+                result = browser.domains(profile=profile,now=1800000000)
+            connect.assert_called_once_with(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=1)
             self.assertEqual(result,{'domains':['other.example','test.example'],'truncated':False})
             self.assertNotIn('TEST_SECRET',json.dumps(result))
             self.assertEqual(hashlib.sha256(path.read_bytes()).digest(),digest)
@@ -36,6 +38,30 @@ class BrowserDomainTests(unittest.TestCase):
             connection.commit(); connection.close()
             result = browser.domains(profile=profile)
             self.assertTrue(result['truncated']); self.assertEqual(len(result['domains']),200)
+
+    def test_guest_connection_cannot_write_and_queries_never_read_cookie_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            path = profile/'Default/Cookies'; path.parent.mkdir(parents=True)
+            connection = sqlite3.connect(path)
+            connection.execute('CREATE TABLE cookies(host_key TEXT,value TEXT,encrypted_value BLOB,expires_utc INTEGER)')
+            connection.execute("INSERT INTO cookies VALUES ('test.example','TEST_SECRET',NULL,0)")
+            connection.commit(); connection.close()
+            connect = sqlite3.connect
+            reads = []
+            def checked(*args,**kwargs):
+                connection = connect(*args,**kwargs)
+                with self.assertRaisesRegex(sqlite3.OperationalError,'readonly'):
+                    connection.execute('DELETE FROM cookies')
+                def authorize(action,table,column,*_):
+                    if action==sqlite3.SQLITE_READ:
+                        reads.append((table,column))
+                    return sqlite3.SQLITE_OK
+                connection.set_authorizer(authorize)
+                return connection
+            with patch.object(sqlite3,'connect',side_effect=checked):
+                self.assertEqual(browser.domains(profile=profile),{'domains':['test.example'],'truncated':False})
+            self.assertEqual(set(reads),{('cookies','host_key'),('cookies','expires_utc')})
 
     def test_domains_are_hostnames_not_paths_urls_or_sql(self):
         self.assertEqual(browser.domain_name('.TEST.Example.'),'test.example')

@@ -5,7 +5,6 @@ import ipaddress
 import json
 from pathlib import Path
 import re
-import sqlite3
 import time
 from urllib.parse import urlsplit
 
@@ -37,7 +36,9 @@ def domain_name(value):
 
 
 def domains(*, profile=PROFILE, now=None):
-    """A bounded cookie-domain snapshot, not proof of an authenticated session."""
+    """Guest-only read of an existing Chromium file, never bot persistence."""
+    import sqlite3
+
     now = time.time() if now is None else now
     paths = [profile/'Default'/suffix for suffix in ('Network/Cookies','Cookies')]
     database = next((path for path in paths if path.is_file()),None)

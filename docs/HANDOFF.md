@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· 浏览器全套架构守卫修正
+
+- 固定 fe75855 的全套结束：1,784项、2失败、10跳过，exit1；/tmp/gaoji-python-browser-base-full.log。两项均为 PostgresOnlyArchitectureTests 将guest Chromium只读Cookie库误归类为SQLite业务存储，不是全套通过。
+- sqlite3 延迟到guest domains函数内部导入；架构检查只允许这个精确文件/函数及其Cookie夹具，仍禁止其建表及其他运行时代码引入SQLite。没有跳过检查或开放宿主SQLite存储。
+- 加真实SQLite只读写入拒绝与authorizer列读取证明（只读host_key/expiry，不读value/encrypted_value），并验证宿主BrowserRuntime全程不调用sqlite3.connect。31项架构/浏览器/原生命令组合通过；最新固定快照全套需重跑，真实浏览器验收仍待owner。
+
 ## 开发记录（2026-11-13）· F5 原生 /logout
 
 - `/logout <域名>` 已接通，使用原命令execution ID而非模型参数作为意图；原命令重入只处理已有回执，不重新清理。私聊本人无需owner，群内须原认证消息群主/管理员或当前宿主owner；原文/转发角色不授权，原始角色凭据被清理时拒绝。

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import json
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock,patch
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.browser_runtime import BrowserRuntime,BrowserUnavailable
@@ -46,7 +46,9 @@ class BrowserRuntimeTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         return await self.browser.snapshot(endpoint or self.endpoint,authorize=self.authorize)
 
     async def test_read_and_command_are_physical_not_history_alias_or_fake_login_success(self):
-        result = await self.snapshot()
+        with patch('sqlite3.connect',side_effect=AssertionError('Host must not open the guest Cookie file')) as sqlite:
+            result = await self.snapshot()
+        sqlite.assert_not_called()
         self.assertEqual(result,{'state':'ready','sandbox_id':'s123456','domains':['test.example'],'truncated':False})
         args = self.manager._guest_exec.await_args.args
         self.assertEqual(args[:2],('s123456','/usr/bin/python3'))
