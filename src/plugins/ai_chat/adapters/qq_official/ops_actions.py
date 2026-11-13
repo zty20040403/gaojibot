@@ -66,6 +66,7 @@ class OpsActions:
         if (row['account_epoch']!=self.token.epoch or grant.grant_id!=row['owner_grant_id'] or grant.revision!=row['owner_revision']
                 or any(row[key]!=source[key] for key in ('account_key','endpoint_key','actor_key','scope_key',
                     'endpoint_generation','route_epoch','conversation_generation'))
+                or row['intent_hash']!=fingerprint([row['plan_name'],json.loads(row['parameters_json']),row['binding_hash']])
                 or binding is not None and binding!=row['binding_hash']):
             raise PermissionError('ops_intent_source_changed')
         if row['state'] in {'sending','pending','approved'} and row['expires_at']<=int(self.clock()):

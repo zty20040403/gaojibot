@@ -86,6 +86,6 @@ class OpsNoticeTests(OpsFixture,unittest.IsolatedAsyncioTestCase):
 
     async def test_modified_question_or_source_is_rejected_before_enqueue(self):
         self.proposal.action['parameters_json'] = '{"unit":"TEST_OTHER.service"}'
-        with self.assertRaises(OutboxInvariantError):
+        with self.assertRaisesRegex(PermissionError,'ops_intent_source_changed'):
             self.prepare()
         self.assertEqual(self.query('SELECT plan_id FROM delivery_plans'),[])
