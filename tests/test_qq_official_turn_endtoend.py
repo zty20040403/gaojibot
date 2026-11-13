@@ -42,6 +42,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
     wait_db = runtime_fixture.OfficialRuntimeTests.wait_db
 
     def application(self):
+        from tests.test_codex_gateway import free_port
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         ledger, journal = MessageLedger(self.database), TurnJournal(self.database)
@@ -51,7 +52,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         calls = DatabaseCalls()
         self.addAsyncCleanup(calls.close)
         return SimpleNamespace(
-            settings=replace(settings, search_enabled=False), db_call=calls,
+            settings=replace(settings, search_enabled=False,background_gateway_port=free_port()), db_call=calls,
             logger=self.logger, model_preferences=ModelPreferenceStore(None),
             reasoning_preferences=ModelPreferenceStore(None), running_tasks=RunningTaskRegistry(),
             model_catalog=ModelCatalog.from_json(json.dumps({"default": "test", "profiles": {
@@ -94,12 +95,24 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         from src.plugins.ai_chat.adapters.qq_official.message_batch import MessageBatcher
         app=self.application()
         calls=[]
+        received = asyncio.Event()
+        class CompleteBurst(MessageBatcher):
+            def add(self, key, *args, **kwargs):
+                result = super().add(key,*args,**kwargs)
+                if key in self.pending and len(self.pending[key].messages)==3:
+                    received.set()
+                return result
+            async def _wait(self, key, batch):
+                # DB/gateway scheduling is not the debounce clock. The focused
+                # batcher tests cover the real timer; here test full composition.
+                await received.wait()
+                await super()._wait(key,batch)
         async def completion(**kwargs):
             calls.append(kwargs)
             return model_response('TEST complete answer',[],kwargs)
         with patch('src.plugins.ai_chat.agent_loop._create_completion',new=completion), \
                 patch('src.plugins.ai_chat.adapters.qq_official.message_batch.MessageBatcher',
-                      side_effect=lambda dispatch:MessageBatcher(dispatch,idle=.3,maximum=2)):
+                      side_effect=lambda dispatch:CompleteBurst(dispatch,idle=.01,maximum=2)):
             async with verified_ready_platform() as fake:
                 runtime=await self.open_runtime(fake,app)
                 await self.emit(fake,native='TEST_BATCH_UNBOUND',content='TEST setup',group=True)
@@ -121,9 +134,17 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def test_proactive_debounces_and_limits_conversation_to_eight_per_hour(self):
         from src.plugins.ai_chat.adapters.qq_official.native_background_factory import background_factory, ProactiveConfiguration
         app=self.application()
+        received,count = asyncio.Event(),0
+        async def debounce(_seconds):
+            nonlocal count
+            count += 1
+            if count>=3:
+                received.set()
+            await received.wait()
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',
                    return_value={'reply':'TEST spontaneous reply'}) as model, \
-                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.DEBOUNCE_SECONDS',.15):
+                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.asyncio',
+                      SimpleNamespace(sleep=debounce,timeout=asyncio.timeout)):
             async with verified_ready_platform() as fake:
                 runtime=self.runtime(loaded=runtime_fixture.loaded_config(fake.app_id,base=fake.base_url),
                     application=app,ledger=app.message_ledger,journal=app.turn_journal,
