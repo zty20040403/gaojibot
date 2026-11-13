@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F6 受限control客户端
+
+- ops_client只走固定catalog/prepare/approve/status路径，签名绑定原操作意图；检查远端actor/origin、参数、命令种类、幂等键、合同摘要和版本，拒绝另一条操作或变化的目标。准备不当作执行，排队不当作成功。
+- 每次请求20秒/1MiB、持续复查来源、关闭撤权/取消中的请求，不跟随跳转或自动重试写入。control的ops/call现接收严格整数deadline_at并传入既有截止逻辑，远端记录不得超过原任务期限；旧control若拒绝该参数，不降级省略。
+- 51项客户端/配置/只读/运维管理组合通过，包含实际FastAPI control路由与OpsManagementService的签名、准备、批准、状态测试（内存store/假backend，没有启动runner或SSH）。Ruff/导入检查通过。尚未向模型开放ops_act，下一步宿主执行状态机、运行时接线和管理页。
+- 固定33b477c（批准入站底座）的新全套仍在运行：/tmp/gaoji-python-ops-consent-full.log，同前缀.revision/.exit/.pid；隔离快照/tmp/gaoji-python-ops-consent-check，显式加载ffmpeg/ffprobe。不覆盖客户端及以后补丁。
+
 ## 开发记录（2026-11-13）· F6 认证批准入站底座
 
 - 0091_ops_replies保存来源承诺及消费回执，批准关联原认证gateway session/seq/inbox、物理私聊和原owner；与入站、checkpoint在同一TxA提交。回复短码在原始入站落盘前移除，只留HMAC；即使未配置运维处理器，嵌入/转发的短码也不进入历史或原始payload。
