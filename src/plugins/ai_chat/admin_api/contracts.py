@@ -97,6 +97,13 @@ class ConversationControlRequest(BaseModel):
     action: Literal['stop','start','kill']
 
 
+class BrowserClearRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    fence: str = Field(pattern=r'^[a-f0-9]{64}$')
+    confirmation: Literal['clear']
+
+
 class BackgroundCommandCancelRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     endpoint_key: str = Field(min_length=1,max_length=1000)

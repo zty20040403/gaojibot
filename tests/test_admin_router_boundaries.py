@@ -40,6 +40,8 @@ PAGE_ROUTES = (
     ("GET", "/api/stickers"),
     ("GET", "/api/tools"),
     ("PUT", "/api/tools/{tool_name}/enabled"),
+    ("GET", "/api/conversations/browser"),
+    ("POST", "/api/conversations/browser/clear"),
     ("GET", "/api/conversations"),
     ("POST", "/api/conversations/control"),
     ("GET", "/api/programs"),

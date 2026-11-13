@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F5 管理台 API 与全套复测
+
+- 固定138bdc8的重跑全套 **1,799项、0失败、10跳过，exit0**，耗时1029.660秒；/tmp/gaoji-python-browser-recheck.log/.revision/.exit一致。修复了前次1784项中的两个guest SQLite架构误判。此快照不覆盖之后5b27ef6的VM快照fence及管理台API。
+- `/api/conversations/browser` 只按选中的物理会话读取域名与近期清空记录；`/clear` 要登录管理员、CSRF、If-Match、快照fence和明确confirmation。写意图/版本/审计在账号事务内先提交，guest工作在事务外；结果另追加审计，不修改原审计。
+- 管理会话权限按真实session持续复查，不只信请求开始时的principal快照；撤销session会取消在途等待。取消HTTP/重启或丢失结果保留unknown，无后台worker重放；旧If-Match不能重复清理。未恢复QQ OTP。
+- 26项管理API/路由边界/宿主驱动组合通过，包括提交可见后才调用guest、并发版本、失败回滚、旧快照拒绝、会话撤销及HTTP取消。管理台页面还未接通，真实浏览器/QQ验收仍待owner。
+
 ## 开发记录（2026-11-13）· 管理台清空前的快照绑定
 
 - 浏览器域名与boot由同一个固定guest进程返回；宿主只向调用者给出绑定物理入口、VM、boot、路由及账号租约的摘要fence，不输出boot或Cookie值。管理清空可要求该fence，VM/boot/路由变化时在写调用前拒绝，原生/logout不依赖先查询。
