@@ -92,6 +92,9 @@ class OpsActions:
                 or type(summary) is not str or len(summary.encode())>16384):
             raise ValueError('invalid_ops_outcome')
         now = int(self.clock())
+        # Time can cross the consent deadline between repeated source checks.
+        if row['state']!='executing' and row['expires_at']<=now:
+            state = 'expired'
         return dict(cursor.execute('''UPDATE ops_actions SET state=?,code_hash='',error_code=?,output_summary=?,
             finished_at=?,updated_at=? WHERE action_id=? RETURNING *''',(state,error,summary,now,now,action_id)).fetchone())
 

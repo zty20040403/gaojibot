@@ -98,6 +98,17 @@ class OpsRuntimeTests(OpsFixture,unittest.IsolatedAsyncioTestCase):
             waiting.cancel(); await asyncio.gather(waiting,return_exceptions=True)
         self.assertEqual(self.trace,[])
 
+    async def test_expiry_between_source_and_configuration_checks_stays_expired(self):
+        pending = await self.pending()
+        original = self.service.ops.notices.check
+        def cross_deadline(cursor,row):
+            self.now = row['expires_at']
+            return original(cursor,row)
+        with patch.object(self.service.ops.notices,'check',side_effect=cross_deadline):
+            result = await asyncio.wait_for(pending,5)
+        self.assertEqual(result['state'],'expired')
+        self.assertEqual(self.trace,[])
+
     async def test_cancelled_duplicate_does_not_cancel_the_original_waiter(self):
         original = await self.pending(); inspected = asyncio.Event()
         prepare = self.service.ops.prepare

@@ -47,6 +47,8 @@ class OpsExecution:
             if consent is None or receipt is None:
                 return self.actions.close(cursor,action_id,state='cancelled',error='ops_notice_unconfirmed'),None
             now = int(self.actions.clock())
+            if row['expires_at']<=now:
+                return self.actions.close(cursor,action_id,state='expired',error='ops_consent_expired'),None
             cursor.execute("UPDATE ops_actions SET state='executing',started_at=?,updated_at=? WHERE action_id=?",(now,now,action_id))
             deadline = cursor.execute('SELECT deadline_at FROM background_jobs WHERE job_id=?',(row['job_id'],)).fetchone()['deadline_at']
             return self.actions.get(cursor,action_id),deadline

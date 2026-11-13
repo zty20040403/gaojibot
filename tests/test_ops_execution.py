@@ -76,6 +76,20 @@ class OpsExecutionTests(OpsFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute())['state'],'succeeded')
         self.assertEqual(self.trace,['prepare','approve','status'])
 
+    async def test_expiry_after_receipt_checks_cannot_claim_execution(self):
+        await self.approved()
+        original = self.notices.check
+        def cross_deadline(cursor,row):
+            result = original(cursor,row)
+            self.now = row['expires_at']
+            return result
+        with patch.object(self.notices,'check',side_effect=cross_deadline):
+            row,deadline = await self.calls(self.execution.claim,self.proposal.action['action_id'])
+        self.assertEqual(row['state'],'expired')
+        self.assertIsNone(deadline)
+        self.assertEqual(self.trace,[])
+        self.assertEqual((await self.execute())['state'],'expired')
+
     async def test_changed_parameters_after_consent_cannot_change_the_execution(self):
         await self.approved()
         self.query('UPDATE ops_actions SET parameters_json=? WHERE action_id=?',('{"unit":"TEST B.service"}',self.proposal.action['action_id']))

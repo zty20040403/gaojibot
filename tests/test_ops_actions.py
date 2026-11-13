@@ -36,6 +36,17 @@ class OpsActionTests(OpsFixture):
             self.ops.close(cursor,pending['action_id'],state='cancelled',error='test_cancel')
         self.assertEqual(self.request(request_id='TEST_SHORT').action['expires_at'],self.now+30)
 
+    def test_unexecuted_close_at_deadline_is_expired_not_cancelled_or_denied(self):
+        row = self.request().action
+        self.now = row['expires_at']
+        for state in ('cancelled','denied'):
+            with self.subTest(state=state),self.tx() as cursor:
+                cursor.execute('SAVEPOINT outcome')
+                closed = self.ops.close(cursor,row['action_id'],state=state,error='ops_source_closed')
+                self.assertEqual(closed['state'],'expired')
+                self.assertEqual(closed['code_hash'],'')
+                cursor.execute('ROLLBACK TO SAVEPOINT outcome')
+
     def test_original_owner_route_job_and_stop_generation_remain_current(self):
         row = self.request().action
         changes = ("UPDATE qq_official_owner_grants SET state='revoked',revision=revision+1",
