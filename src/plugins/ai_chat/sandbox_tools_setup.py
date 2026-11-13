@@ -2,15 +2,16 @@
 from pathlib import Path
 
 PACKAGES = ['chromium', 'python3-venv', 'ffmpeg', 'poppler-utils']
+PYTHON_RUN = '''#!/bin/sh
+export PYTHONPATH="/usr/local/share/gaoji${PYTHONPATH:+:$PYTHONPATH}"
+exec /opt/gaoji-tools/bin/python "$@"
+'''
 INSTALL = '''set -eu
 python3 -m venv --system-site-packages /opt/gaoji-tools
 /opt/gaoji-tools/bin/pip install 'playwright>=1.59,<2' trafilatura 'faster-whisper>=1.2,<2' 'av<19'
-/opt/gaoji-tools/bin/python -c "import shutil,site; shutil.copy('/usr/local/share/gaoji/sandbox_browser.py', site.getsitepackages()[0]+'/gaoji_browser.py')"
 rm -f /usr/local/bin/gaoji-python
 cat > /usr/local/bin/gaoji-python <<'EOF'
-#!/bin/sh
-exec /opt/gaoji-tools/bin/python "$@"
-EOF
+'''+PYTHON_RUN+'''EOF
 chmod 755 /usr/local/bin/gaoji-python
 cat > /usr/local/bin/webread <<'EOF'
 #!/bin/sh
@@ -22,14 +23,36 @@ cat > /usr/local/bin/gaoji-transcribe <<'EOF'
 exec /opt/gaoji-tools/bin/python /usr/local/share/gaoji/sandbox_transcribe.py "$@"
 EOF
 chmod 755 /usr/local/bin/gaoji-transcribe
+cat > /usr/local/bin/gaoji-video <<'EOF'
+#!/bin/sh
+exec /opt/gaoji-tools/bin/python /usr/local/share/gaoji/sandbox_video.py "$@"
+EOF
+chmod 755 /usr/local/bin/gaoji-video
+cat > /usr/local/bin/gaoji <<'EOF'
+#!/bin/sh
+exec /usr/bin/python3 /usr/local/share/gaoji/sandbox_gaoji.py "$@"
+EOF
+chmod 755 /usr/local/bin/gaoji
+cat > /usr/local/bin/gaoji-units <<'EOF'
+#!/bin/sh
+exec /usr/bin/python3 /usr/local/share/gaoji/sandbox_gaoji.py units "$@"
+EOF
+chmod 755 /usr/local/bin/gaoji-units
 '''
 
 
 def files():
     directory = Path(__file__).parent
-    return [{'path': '/usr/local/share/gaoji/' + name, 'permissions': '0644', 'owner': 'root:root',
+    return [{'path': '/usr/local/share/gaoji/' + ('gaoji_browser.py' if name=='sandbox_browser.py' else name),
+        'permissions': '0644', 'owner': 'root:root',
         'content': (directory / name).read_text()} for name in (
-            'sandbox_browser.py', 'sandbox_webread.py', 'sandbox_transcribe.py')] + [{
+            'sandbox_browser.py', 'sandbox_browser_state.py', 'sandbox_browser_actions.py', 'sandbox_webread.py', 'sandbox_transcribe.py', 'sandbox_video.py', 'sandbox_gaoji.py', 'sandbox_units.py',
+            'sandbox_commands.py', 'sandbox_command_process.py')] + [
+                {'path':'/usr/local/bin/gaoji-python','permissions':'0755','owner':'root:root','content':PYTHON_RUN},
+            ] + [
+                {'path':'/usr/local/bin/'+name,'permissions':'0755','owner':'root:root',
+                 'content':'#!/bin/sh\nexec /usr/bin/python3 /usr/local/share/gaoji/'+script+' "$@"\n'}
+                for name,script in (('gaoji','sandbox_gaoji.py'),('gaoji-units','sandbox_gaoji.py units'))] + [{
                 'path': '/etc/apt/apt.conf.d/80-gaoji-transport',
                 'permissions': '0644', 'owner': 'root:root',
                 'content': 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\n',

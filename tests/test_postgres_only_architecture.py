@@ -34,11 +34,17 @@ class PostgresOnlyArchitectureTests(unittest.TestCase):
         for path in paths:
             source = path.read_text()
             tree = ast.parse(source)
+            # Chromium owns a SQLite Cookie file inside the VM. Only its fixed
+            # read-only projection may import sqlite3; not every sandbox module,
+            # not host stores, and not schema creation even in this one file.
+            guest_reader = path == ROOT / 'src/plugins/ai_chat/sandbox_browser_state.py'
+            guest_nodes = {node for function in tree.body if guest_reader and isinstance(function,ast.FunctionDef)
+                and function.name=='domains' for node in ast.walk(function)}
             with self.subTest(path=str(path.relative_to(ROOT))):
                 for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
+                    if isinstance(node, ast.Import) and node not in guest_nodes:
                         self.assertNotIn("sqlite3", {item.name for item in node.names})
-                    if isinstance(node, ast.ImportFrom):
+                    if isinstance(node, ast.ImportFrom) and node not in guest_nodes:
                         self.assertNotEqual(node.module, "sqlite3")
                     if isinstance(node, ast.Constant) and isinstance(node.value, str):
                         self.assertIsNone(
@@ -47,8 +53,9 @@ class PostgresOnlyArchitectureTests(unittest.TestCase):
                     if isinstance(node, ast.Attribute):
                         self.assertNotEqual(node.attr, "_legacy_sqlite")
 
-    def test_only_legacy_import_tests_use_sqlite_as_bot_storage(self):
-        allowed = {"test_postgres_storage.py", "test_postgres_integration.py"}
+    def test_sqlite_fixtures_are_only_legacy_imports_or_guest_cookie_files(self):
+        allowed = {"test_postgres_storage.py", "test_postgres_integration.py",
+            "test_browser_state.py"}  # Creates only disposable Chromium fixtures.
         for path in (ROOT / "tests").glob("*.py"):
             tree = ast.parse(path.read_text())
             for node in ast.walk(tree):

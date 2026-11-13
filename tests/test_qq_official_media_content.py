@@ -301,6 +301,7 @@ class VisionTests(Fixtures):
         worker.vision_profile_name = profile.name
         worker.llm_gateway = LLMGateway(providers={'openai-chat': Provider()}, fallback_enabled=False)
         worker.max_vision_bytes, worker.prepare_threshold_bytes = 1024 * 1024, 1024 * 1024
+        worker.max_edge_pixels, worker.timeout_seconds, worker.ffmpeg_path = 1568, 5, 'ffmpeg'
         return worker
 
     async def test_existing_vision_and_llm_gateway_with_real_budget_no_queue(self):
@@ -312,7 +313,7 @@ class VisionTests(Fixtures):
             guard_calls.append(True)
         with model_budget_scope(ModelCallBudget(10000, before_request=before)):
             result = await VisionAdapter(worker).recognize(source, resolver=self.resolver, fetcher=self.reader())
-        self.assertEqual(result.text, '识别出的外部文本')
+        self.assertEqual(result.text, '一张测试图\n图中文字：识别出的外部文本')
         self.assertEqual(len(self.model_requests), 1)
         self.assertEqual(len(guard_calls), 1)
         self.assertIn('data:image/png;base64,', str(self.model_requests))

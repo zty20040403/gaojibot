@@ -50,6 +50,9 @@ async def start_background_tasks(context: AppContext, *, maintenance) -> None:
         context.logger.info(
             f"PostgreSQL durable application worker enabled for {', '.join(context.job_worker.registered_kinds) or 'registered jobs'}."
         )
+    if context.media_library is not None and context.vision_worker is not None:
+        from .official_caption_worker import OfficialCaptionWorker
+        context.media_library.official_caption_worker = OfficialCaptionWorker(context)
     if context.media_library is not None and context.background_tasks.start(
         "media-library", context.media_library.run_forever
     ):

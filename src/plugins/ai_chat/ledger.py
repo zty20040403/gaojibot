@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Iterable, Iterator, Literal
 
@@ -15,6 +15,7 @@ from .conversation_scope import ConversationScope
 from .platform_types import ActorKey, EndpointKey
 from .message_ir import (
     MessageBody,
+    MediaNode,
     body_from_json,
     body_to_json,
     canonicalize_for_storage,
@@ -109,7 +110,7 @@ class MessageLedger:
             rows = self._connection.execute(
                 """
                 SELECT m.*, c.scope_key
-                FROM messages AS m
+                FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
                 JOIN conversation_visibility AS v
@@ -322,7 +323,7 @@ class MessageLedger:
             row = self._connection.execute(
                 """
                 SELECT m.*, c.scope_key
-                FROM messages AS m
+                FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
                 JOIN conversation_visibility AS v
@@ -396,7 +397,7 @@ class MessageLedger:
                 """
                 SELECT * FROM (
                     SELECT m.*, c.scope_key
-                    FROM messages AS m
+                    FROM messages_with_captions AS m
                     JOIN conversations AS c
                       ON c.conversation_id = m.conversation_id
                     JOIN conversation_visibility AS v
@@ -424,7 +425,7 @@ class MessageLedger:
             rows = self._connection.execute(
                 """
                 SELECT m.*, c.scope_key
-                FROM messages AS m
+                FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
                 JOIN conversation_visibility AS v
@@ -488,7 +489,7 @@ class MessageLedger:
             rows = self._connection.execute(
                 f"""
                 SELECT m.*, c.scope_key
-                FROM messages AS m
+                FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
                 JOIN conversation_visibility AS v
@@ -516,7 +517,7 @@ class MessageLedger:
             rows = self._connection.execute(
                 """
                 SELECT m.*, c.scope_key
-                FROM messages AS m
+                FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
                 JOIN conversation_visibility AS v
@@ -544,6 +545,7 @@ class MessageLedger:
         *,
         terms: tuple[str, ...] = (),
         who: str = "",
+        actor_key: str = "",
         after_id: int = 0,
         before_id: int | None = None,
         limit: int = 50,
@@ -564,6 +566,9 @@ class MessageLedger:
         if before_id is not None:
             clauses.append("m.canonical_message_id < ?")
             params.append(int(before_id))
+        if actor_key:
+            clauses.append("m.sender_actor_key = ?")
+            params.append(actor_key)
         if who:
             clauses.append("lower(m.sender_display) LIKE ? ESCAPE '\\'")
             params.append(like(who))
@@ -575,7 +580,7 @@ class MessageLedger:
             rows = self._connection.execute(
                 f"""
                 SELECT m.*, c.scope_key
-                FROM messages AS m
+                FROM messages_with_captions AS m
                 JOIN conversations AS c ON c.conversation_id = m.conversation_id
                 JOIN conversation_visibility AS v ON v.conversation_id = m.conversation_id
                 WHERE {' AND '.join(clauses)}
@@ -949,7 +954,7 @@ class MessageLedger:
                 f"""
                 SELECT * FROM (
                     SELECT m.*, c.scope_key
-                    FROM messages AS m
+                    FROM messages_with_captions AS m
                     JOIN conversations AS c
                       ON c.conversation_id = m.conversation_id
                     JOIN conversation_visibility AS v
@@ -1234,6 +1239,11 @@ class MessageLedger:
     def _row_to_message(row: StoreRow) -> CanonicalMessage:
         canonical_message_id = int(row["canonical_message_id"])
         body = body_from_json(str(row["body_json"]))
+        captions = row.get('media_captions') or {}
+        from .prompt_context import quote_evidence
+        projected = MessageBody(tuple(replace(node, description=('视频：' if node.media_kind in {'video','file'} else '图片：') + quote_evidence(
+            str(captions[str(node.segment_index)])[:500], 'media_caption', stable=True).replace('\n', ' '))
+            if isinstance(node, MediaNode) and str(node.segment_index) in captions else node for node in body.nodes))
         return CanonicalMessage(
             canonical_message_id=canonical_message_id,
             scope_key=str(row["scope_key"]),
@@ -1250,7 +1260,7 @@ class MessageLedger:
             body=body,
             # rendered_text is a rebuildable search cache. The canonical IR is
             # the runtime authority for every prompt projection.
-            rendered_text=render_prompt_text(body, canonical_message_id),
+            rendered_text=render_prompt_text(projected, canonical_message_id),
             occurred_at=int(row["occurred_at"]),
             reply_to_native_message_id=(
                 str(row["reply_to_native_message_id"])

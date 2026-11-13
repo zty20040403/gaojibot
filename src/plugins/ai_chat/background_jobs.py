@@ -15,7 +15,15 @@ class BackgroundJobs:
         self.jobs, self.clock = jobs, clock
         self.transaction = jobs._transaction
 
-    def submit(self, cursor, *, kind, key, source, task, title, profile, independent=False):
+    @staticmethod
+    def hours(cursor, endpoint):
+        row = cursor.execute('SELECT agent_timeout_hours FROM conversation_settings WHERE scope_key=?',
+            (endpoint.scope.key,)).fetchone()
+        return row['agent_timeout_hours'] if row else 6
+
+    def submit(self, cursor, *, kind, key, source, task, title, profile, independent=False, hours=6):
+        if type(hours) is not int or not 1<=hours<=6:
+            raise ValueError('后台任务时限必须是1–6小时。')
         # Serialize duplicate protection and the global limit across simultaneous turns.
         cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended('gaoji-background-agents',0))")
         existing = cursor.execute('''SELECT b.* FROM background_jobs b JOIN durable_jobs j USING(job_id)
@@ -40,8 +48,9 @@ class BackgroundJobs:
         fields = {key: source[key] for key in (
             'account_key', 'endpoint_key', 'actor_key', 'scope_key', 'source_execution_id',
             'canonical_message_id', 'native_message_id', 'endpoint_generation', 'route_epoch')}
-        fields.update(job_id=job.job_id, task=task, title=title or task[:80], profile=profile,
-                      created_at=now, deadline_at=now + 7200)
+        fields.update(conversation_generation=source.get('conversation_generation',0),
+                      job_id=job.job_id, task=task, title=title or task[:80], profile=profile,
+                      created_at=now, deadline_at=now + hours * 3600)
         row = cursor.execute('INSERT INTO background_jobs (' + ','.join(fields) + ') VALUES (' +
             ','.join('?' for _ in fields) + ') RETURNING *', tuple(fields.values())).fetchone()
         return dict(row)
@@ -58,6 +67,17 @@ class BackgroundJobs:
             rows = cursor.execute(f'''SELECT * FROM background_jobs {where}
                 ORDER BY (state IN ('queued','running')) DESC,created_at DESC,job_id DESC LIMIT ?''', args).fetchall()
         return [dict(row) for row in rows]
+
+    def start(self, job_id):
+        with self.transaction() as cursor:
+            return cursor.execute("UPDATE background_jobs SET state='running',started_at=? WHERE job_id=? AND state='queued' RETURNING *",
+                (int(self.clock()),job_id)).fetchone()
+
+    def finish(self, job_id, *, state, error, report):
+        with self.transaction() as cursor:
+            return cursor.execute('''UPDATE background_jobs SET state=CASE WHEN state='cancelled' THEN state ELSE ? END,
+                error=CASE WHEN state='cancelled' THEN error ELSE ? END,report=?,finished_at=? WHERE job_id=? RETURNING state''',
+                (state,error,report,int(self.clock()),job_id)).fetchone()['state']
 
     def update(self, job_id, **fields):
         with self.transaction() as cursor:
@@ -110,10 +130,10 @@ class BackgroundRunner:
         self.logger, self.engine, self.clock = logger, engine, clock
 
     async def execute(self, durable_job):
-        row = await self.calls(self.store.get, durable_job.job_id)
-        if row['state'] != 'queued':
-            return {'state': row['state']}
-        await self.calls(self.store.update, row['job_id'], state='running', started_at=int(self.clock()))
+        row = await self.calls(self.store.start, durable_job.job_id)
+        if row is None:
+            current = await self.calls(self.store.get, durable_job.job_id)
+            return {'state': current['state'] if current else 'cancelled'}
         steering_offset, warned, asking = 0, False, False
         notes = []
         trace = AgentTrace()
@@ -138,7 +158,7 @@ class BackgroundRunner:
             asking = True
             try:
                 await self.ask_main(row, text)
-                until = min(self.clock() + 600, row['deadline_at'])
+                until = min(self.clock() + 7200, row['deadline_at'])
                 while self.clock() < until:
                     messages = await feedback(warn=False)
                     if messages:
@@ -146,7 +166,8 @@ class BackgroundRunner:
                     await asyncio.sleep(min(2, max(0, until - self.clock())))
             finally:
                 asking = False
-            assumption = '前台十分钟未回答，请自行判断继续，在报告中写清采用的假设。'
+            assumption = ('任务已到截止时间，未收到答复；停止扩展任务，保存现有文件并整理报告。'
+                if self.clock()>=row['deadline_at'] else '前台两小时未回答，请自行判断继续，在报告中写清采用的假设。')
             notes.append(assumption)
             return assumption
 
@@ -166,16 +187,16 @@ class BackgroundRunner:
             error = '用户取消了任务。' if state == 'cancelled' else '服务停止，任务已中断；工作区文件保留。'
             raise
         except TimeoutError:
-            state, error = 'failed', '任务超过两小时上限且没能正常停下；请查看工作区中的现有文件。'
+            state, error = 'failed', '任务超过创建时确定的截止时间且没能正常停下；请查看工作区中的现有文件。'
         except Exception as exc:
             state, error = 'failed', f'后台任务失败：{type(exc).__name__}: {exc}'
             self.logger.exception('Background job %s failed', row['job_id'])
         finally:
             report = '\n\n'.join(part for part in (report, error, '\n'.join(notes)) if part)
-            await self.calls(self.store.update, row['job_id'], state=state, error=error,
-                             report=report, finished_at=int(self.clock()))
+            state = await self.calls(self.store.finish, row['job_id'], state=state, error=error, report=report)
             try:
-                await self.save_report(row, report)
+                if state != 'cancelled':  # Do not restart a VM just to save a cancelled task's report.
+                    await self.save_report(row, report)
             except Exception as exc:
                 # The report is already stored and is what gets delivered; the
                 # copy in /work is a convenience, so its loss does not fail the job.

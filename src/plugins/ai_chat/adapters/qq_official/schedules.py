@@ -58,11 +58,19 @@ class ScheduleRuntime:
             if row is None:
                 return
             source = json.loads(row['source_json'])
-            endpoint, actor = self.agents.check(cursor, source)
+            endpoint, actor = self.agents.check(cursor, source, scheduled=True)
+            from .conversation_control import state
+            current = state(cursor,endpoint)
+            if current['stopped']:
+                due = next_time(cron=row['cron'],now=now) if row['cron'] else None
+                cursor.execute("UPDATE schedules SET next_at=?,last_error='会话已停止，本次未执行；不会补发' WHERE id=?",(due,identifier))
+                return
+            source['conversation_generation'] = current['stop_generation']
             key = f"schedule:{row['id']}:{row['next_at']}"
             if row['kind'] == 'routine':
                 self.agents.store.submit(cursor, kind=self.agents.kind, key=key, source=source,
-                    task=row['text'], title=row['text'][:80], profile=source['profile'], independent=True)
+                    task=row['text'], title=row['text'][:80], profile=source['profile'], independent=True,
+                    hours=self.agents.store.hours(cursor,endpoint))
             else:
                 nodes = [TextNode(1, '提醒：' + row['text'])]
                 if endpoint.kind == 'group':

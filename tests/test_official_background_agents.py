@@ -16,6 +16,7 @@ from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.conversation_window import ConversationStore
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
+from src.plugins.ai_chat.model_billing import ModelBilling
 from src.plugins.ai_chat.quota import UsageStore
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker
@@ -48,13 +49,13 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         store = SimpleNamespace(transaction=f.tx, admitted=f.admission, clock=lambda: f.now)
         runtime = SimpleNamespace(store=store, jobs=f.jobs, _calls=calls, sender=None, file_service=None, media_service=None,
             outbox=OfficialSendStore(deliveries, admission=f.admission, pepper=b'TEST_BACKGROUND_PEPPER' * 3, clock=lambda: f.now))
-        manager = SimpleNamespace(ensure_default=AsyncMock(return_value={'sandbox_id': 's123abc'}),
+        manager = SimpleNamespace(_conversation_locks={},ensure_default=AsyncMock(return_value={'sandbox_id': 's123abc'}),
             write_file=AsyncMock(), read_file=AsyncMock(return_value=b'TEST_REPORT'),
             start_owned=AsyncMock(), _guest_exec=AsyncMock(return_value=(0, b'', b'')))
         app = SimpleNamespace(logger=logging.getLogger(__name__), official_runtime=runtime, db_call=calls,
             model_catalog=ModelCatalog({'TEST_MODEL': profile}, default_profile='TEST_MODEL'),
             sandbox_manager=manager, settings=replace(settings, search_enabled=False),
-            conversations=conversations, message_ledger=f.ledger, usage_store=usage,
+            conversations=conversations, message_ledger=f.ledger, usage_store=usage,model_billing=ModelBilling(f.database),
             semantic_recall=None, skill_registry=SimpleNamespace(get=lambda _: None),
             model_preferences=SimpleNamespace(get_explicit=lambda _: None))
         service = OfficialBackgroundAgents(runtime, f.token, app)
@@ -68,8 +69,10 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         life = ExecutionBinding(turn_source, f.token, handle, f.job, f.admission)
         turn = TurnState(ToolContext(SimpleNamespace(context=app), inbound=inbound,
             platform=SimpleNamespace(account=f.account, execution=life)), model_profile=profile)
+        f.query('INSERT INTO conversation_settings(scope_key,agent_timeout_hours) VALUES (?,1)',(f.endpoint.scope.key,))
         submitted = await service.control(turn, 'agent', {'task': 'TEST research'})
         number = int(submitted['job'][4:])
+        self.assertEqual(service.store.get(number)['deadline_at'],f.now+3600)
         await service.control(turn, 'agent_steer', {'job': submitted['job'], 'message': 'TEST extra detail'})
         from datetime import datetime, timezone
         schedule = await service.schedules.control(turn, 'schedule_set', {'kind': 'reminder',
@@ -83,12 +86,19 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('send_file', names)
             self.assertEqual(await feedback(), ['TEST extra detail'])
             await progress('shell')
+            context = service.billing(SimpleNamespace(source=row,current=session.current))
+            receipt = context.request(profile)
+            await receipt.start()
+            receipt.observe({'input_tokens':10,'output_tokens':2,'input_tokens_details':{'cached_tokens':0}})
+            await receipt.finish()
+            billed = f.query('SELECT endpoint_key,actor_key,background_job_id,input_tokens FROM model_usage_calls')
+            self.assertEqual(billed,[dict(endpoint_key=f.endpoint.key,actor_key=f.actor.key,background_job_id=number,input_tokens=10)])
             return 'TEST finished /work/result.txt'
 
         service.runner.engine = engine
         if steer_error is not None:
             server = FakeAppServer(steer_error=steer_error, complete_on_rejection=True)
-            gateway = SimpleNamespace(start=AsyncMock(), open=lambda: ('TEST_TOKEN', server),
+            gateway = SimpleNamespace(start=AsyncMock(), open=lambda **kwargs: ('TEST_TOKEN', server),
                 revoke=Mock(), port=18640, failure=lambda token: '')
             service.runner.engine = CodexEngine(gateway, service.model_settings, start_vm=service.start_vm,
                                                guest_exec=service.guest_exec, clock=lambda: f.now)
@@ -119,14 +129,24 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(script.endswith(f'base64 -d > /work/.gaoji/jobs/job-{number}.md'))
         manager.write_file.assert_not_awaited()
         answer = 'TEST foreground result' if steer_error is None else 'TEST 追加要求未送达，请重新发起任务。'
+        async def render(*args,**kwargs):
+            from src.plugins.ai_chat.llm_gateway import LLMGateway
+            gateway = LLMGateway({'openai-chat':SimpleNamespace(create_completion=AsyncMock(return_value=SimpleNamespace(
+                usage={'input_tokens':2,'output_tokens':1,'input_tokens_details':{'cached_tokens':0}})))})
+            await gateway.create_completion(kwargs['profile'],messages=[])
+            return answer
         with patch('src.plugins.ai_chat.adapters.qq_official.background_delivery.ask_deepseek_with_tools',
-                   new=AsyncMock(return_value=answer)) as foreground:
+                   new=AsyncMock(side_effect=render)) as foreground:
             await present(service, row)
         if steer_error is not None:
             prompt = foreground.await_args.args[0]
             self.assertIn(f'[job#{number} failed]', prompt)
             self.assertIn(row['error'], prompt)
             self.assertIn('失败须说明具体原因，不能声称已经成功', prompt)
+        billed = f.query('SELECT background_job_id FROM model_usage_calls WHERE purpose=? AND input_tokens=2',('background_agent',))
+        self.assertEqual(billed,[dict(background_job_id=number)])
         self.assertEqual(service.store.get(number)['frontend_answer'], answer)
         self.assertIsNotNone(service.store.get(number)['delivered_at'])
         self.assertEqual(f.query("SELECT purpose FROM delivery_plans WHERE account_key=?", (f.account.key,))[0]['purpose'], 'background_result')
+        self.assertEqual(f.query("SELECT background_job_id FROM usage_events WHERE source='background_agent'"),
+            [{'background_job_id':number},{'background_job_id':number}])

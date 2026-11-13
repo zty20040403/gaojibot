@@ -21,6 +21,8 @@ import {
 import { LoginGate, MemberStatus, AccountsView, ApprovalNotice } from './AccountViews'
 import { StatusBadge } from './components'
 import { RequestsView } from './RequestsView'
+import { ProgramsView } from './ProgramsView'
+import { OperationsView } from './OperationsView'
 import { OfficialQQView } from './OfficialQQView'
 import { DETAIL_META, DetailView, type DetailViewId } from './detailViews'
 import { useControlPlane } from './useControlPlane'
@@ -45,7 +47,7 @@ const runtime = window.__GAOJI_ADMIN__ ?? {
   requiresLogin: true,
 }
 
-type ViewId = 'requests' | 'qq-official' | 'accounts' | 'overview' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'databases' | 'sandboxes' | 'media' | 'audit' | 'help'
+type ViewId = 'operations' | 'programs' | 'requests' | 'qq-official' | 'accounts' | 'overview' | 'usage' | 'groups' | 'tasks' | 'tools' | 'traces' | 'databases' | 'sandboxes' | 'media' | 'audit' | 'help'
 
 const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group: string; icon: ComponentType<{ size?: number }> }> = [
   { id: 'qq-official', label: 'QQ 官方机器人', description: '连接诊断、管理员关联与验收记录', group: '配置', icon: Bot },
@@ -55,11 +57,13 @@ const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group:
   { id: 'tasks', label: '任务与投递', description: 'Agent、持久任务和 QQ 消息回执', group: '运行', icon: ListChecks },
   { id: 'usage', label: '模型用量', description: '按日期、会话和来源统计 Token', group: '运行', icon: BarChart3 },
   { id: 'traces', label: 'Trace 与上下文', description: '回放回答链路与上下文选择过程', group: '运行', icon: BrainCircuit },
+  { id: 'programs', label: '常驻程序', description: '单元状态、日志、额度、停用与恢复', group: '资源', icon: Boxes },
   { id: 'sandboxes', label: '沙盒', description: '隔离环境、命令和资源使用情况', group: '资源', icon: Boxes },
   { id: 'media', label: '媒体审核', description: '表情候选、识图和分享内容记录', group: '资源', icon: Image },
   { id: 'groups', label: '模型与群友', description: '配置群开关、统一模型和个人模型', group: '配置', icon: Users },
   { id: 'tools', label: '工具权限', description: '控制 Agent 可见工具与执行策略', group: '配置', icon: Wrench },
   { id: 'databases', label: '数据库', description: '主备节点、连接池与复制状态', group: '基础设施', icon: Database },
+  { id: 'operations', label: '运维操作审计', description: '操作单、私聊批准和执行结果（只读）', group: '基础设施', icon: FileClock },
   { id: 'audit', label: '审计记录', description: '查询所有控制面修改及资源版本', group: '基础设施', icon: FileClock },
   { id: 'help', label: '使用说明', description: '每个功能的用途、操作方法和影响', group: '帮助', icon: BookOpen },
 ]
@@ -176,7 +180,9 @@ export function App() {
               {active === 'traces' && <TracesView plane={plane} onOpenDetail={openDetail} />}
               {active === 'databases' && <DatabasesView plane={plane} />}
               {active === 'sandboxes' && <SandboxesView plane={plane} />}
+              {active === 'programs' && <ProgramsView plane={plane} />}
               {active === 'media' && <MediaView plane={plane} onOpenDetail={openDetail} />}
+              {active === 'operations' && <OperationsView query={plane.query} />}
               {active === 'audit' && <AuditView plane={plane} onOpenDetail={openDetail} />}
               {active === 'help' && <HelpView />}
             </>

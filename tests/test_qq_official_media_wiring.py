@@ -45,7 +45,7 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         async def call(function,*args,**kwargs): return function(*args,**kwargs)
         @contextmanager
         def tx(): yield object()
-        self.app = SimpleNamespace(settings=SimpleNamespace(video_whisper_model_path='',video_whisper_threads=2),
+        self.app = SimpleNamespace(settings=SimpleNamespace(video_whisper_model_path='',video_whisper_threads=2,media_max_vision_bytes=20*1024*1024),
             db_call=call,usage_store=None,vision_worker=None,media_library=None,
             message_ledger=SimpleNamespace(get_in_scope=lambda scope,canonical:self.source if canonical==3 else None))
         self.runtime = SimpleNamespace(_token=self.token,_stopping=False,_calls=call,
@@ -69,7 +69,7 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(host.media_factory(self.runtime,self.token))
         session=await self.session(asr=True,ocr=True,stickers=True)
         self.assertTrue(session.enabled('transcribe_voice'))
-        self.assertFalse(session.enabled('read_image_text'))
+        self.assertFalse(session.enabled('view_image'))
         self.assertFalse(session.enabled('send_sticker'))
         session.service.token=SimpleNamespace(account_key='TEST_OTHER')
         with self.assertRaises(MediaDenied):await session.current()
@@ -89,7 +89,7 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(context.event)
         names={d['function']['name'] for d in registry.definitions(context)}
         self.assertNotIn('send_sticker',names)
-        self.assertNotIn('read_image_text',names)
+        self.assertNotIn('view_image',names)
 
     async def test_deadline_is_original_not_refreshed_and_source_replacement_denied(self):
         session=await self.session(asr=True)

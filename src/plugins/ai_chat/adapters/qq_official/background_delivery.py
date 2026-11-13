@@ -1,5 +1,6 @@
 """Wake the foreground with a report; reuse the ordinary file and text outbox."""
 from dataclasses import replace
+from contextlib import nullcontext
 import hashlib
 from types import SimpleNamespace
 
@@ -35,6 +36,13 @@ class ResultSource:
 
 
 async def present(service, row, *, question=None):
+    tasks = getattr(service.runtime,'conversation_tasks',None)
+    with tasks.track(row['endpoint_key'],row['conversation_generation'],
+            kind='agent' if question is not None else 'result',job_id=row['job_id']) if tasks else nullcontext():
+        return await _present(service,row,question=question)
+
+
+async def _present(service, row, *, question=None):
     app, runtime = service.app, service.runtime
     inbound = await service.calls(service.restore, row)
     profile = app.model_catalog.resolve_preference(row['profile'])
@@ -73,11 +81,17 @@ async def present(service, row, *, question=None):
                 f"完整报告：/work/.gaoji/jobs/job-{row['job_id']}.md\n"
                 '这是用户先前要求的后台任务结果，请用你的语气向用户交付。文件在当前会话工作区，用 send_file_from_sandbox 传报告中的路径即可发送，PNG、JPG、GIF 在群里直接显示成图片；报告不完整时用 sandbox_read_file 读全文。'
                 '任务取消时不要继续执行。失败须说明具体原因，不能声称已经成功。')
-            answer = await ask_deepseek_with_tools(report, [], tools, execute, profile=profile, trace=trace,
-                group_context=history, memory_context=memory, system_prompt=system_prompt(app.settings.system_prompt, examples=app.settings.style_examples),
-                tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True, policies={name: replace(
-                    policy_for_tool(name), timeout_seconds=310) for name in ('send_file', 'send_file_from_sandbox')}),
-                max_tool_rounds=24, max_total_calls=80, max_calls_per_round=24)
+            from .billing import scoped
+            def current():
+                with runtime.store.transaction() as cursor:
+                    ResultSource(service,row).current_source(cursor,None,int(service.clock()))
+            with scoped(app,inbound.endpoint,'background_agent',inbound.actor,background_job_id=row['job_id'],
+                    current=lambda:service.calls(current)):
+                answer = await ask_deepseek_with_tools(report, [], tools, execute, profile=profile, trace=trace,
+                    group_context=history, memory_context=memory, system_prompt=system_prompt(app.settings.system_prompt, examples=app.settings.style_examples),
+                    tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True, policies={name: replace(
+                        policy_for_tool(name), timeout_seconds=310) for name in ('send_file', 'send_file_from_sandbox')}),
+                    max_tool_rounds=24, max_total_calls=80, max_calls_per_round=24)
             if question is None:
                 await service.calls(service.store.update, row['job_id'], frontend_answer=answer)
     except Exception as error:

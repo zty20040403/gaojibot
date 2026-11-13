@@ -18,6 +18,7 @@ const INITIAL_RESOURCES: ResourceName[] = [
   'usage',
   'tasks',
   'backgroundAgents',
+  'commands',
   'jobs',
   'sandboxes',
   'stickers',
@@ -25,6 +26,9 @@ const INITIAL_RESOURCES: ResourceName[] = [
   'sources',
   'databases',
   'groups',
+  'conversations',
+  'browser',
+  'programs',
   'localModel',
   'tools',
   'traces',
@@ -187,7 +191,7 @@ export function useControlPlane(runtime: GaojiAdminRuntime) {
   useEffect(() => {
     if (!authenticated) return
     const timer = window.setInterval(() => {
-      void refreshMany(isAdmin ? ['qqOfficial', 'overview', 'databases', 'usage', 'backgroundAgents', 'localModel', 'approvals', 'accounts', 'securityAudit'] : ['status'])
+      void refreshMany(isAdmin ? ['qqOfficial', 'overview', 'databases', 'usage', 'backgroundAgents', 'commands', 'localModel', 'approvals', 'accounts', 'securityAudit', 'conversations'] : ['status'])
     }, 30000)
     return () => window.clearInterval(timer)
   }, [authenticated, refreshMany, initialResources])
@@ -199,9 +203,10 @@ export function useControlPlane(runtime: GaojiAdminRuntime) {
       method: 'POST' | 'PUT' | 'DELETE',
       body: unknown,
       refreshResources: ResourceName[],
+      expectedVersion?: number,
     ) => {
       try {
-        const payload = await client.mutate(path, method, body, versions[resource], setPendingApproval)
+        const payload = await client.mutate(path, method, body, expectedVersion ?? versions[resource], setPendingApproval)
         if (typeof payload.resource_version === 'number') {
           setVersions((current) => ({ ...current, [resource]: payload.resource_version }))
         }

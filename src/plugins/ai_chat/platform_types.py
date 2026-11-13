@@ -222,6 +222,8 @@ class InboundMessage:
     # history, never the actor, actual endpoint, reply window or authorization.
     canonical_scope: ConversationScope | None = None
     route_epoch: int = 0
+    # Trusted adapter batch membership, never parsed from user/model text.
+    batch_message_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_target(self.endpoint, self.actor, self.reply_credential)
@@ -272,6 +274,27 @@ class BackgroundToolSource:
             raise ValueError("background source reference is too long")
         if type(self.source_revision) is not int or not 1 <= self.source_revision <= 2**63-1:
             raise ValueError("background source revision must be positive")
+
+    @property
+    def scope(self) -> ConversationScope:
+        return self.endpoint.scope
+
+
+@dataclass(frozen=True)
+class ProgramToolSource:
+    """Conversation metadata, not a human actor, inbound event or authorization."""
+
+    endpoint: EndpointKey = field(repr=False)
+    program: str
+    source_ref: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.endpoint, EndpointKey) or self.endpoint.account.platform != 'qq-official':
+            raise ValueError('program source requires an official endpoint')
+        for value, name, maximum in ((self.program, 'program', 80), (self.source_ref, 'source_ref', 128)):
+            _text(value, name)
+            if len(value.encode()) > maximum:
+                raise ValueError('program source metadata is too long')
 
     @property
     def scope(self) -> ConversationScope:

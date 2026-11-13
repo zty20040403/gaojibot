@@ -47,7 +47,7 @@ def turn_window(app, inbound: InboundMessage, profile) -> tuple[str, str, str]:
         return "", "", ""
     scope = inbound.scope
     current = ledger.canonical_id_for_native(scope, inbound.native_message_id, endpoint=inbound.endpoint)
-    exclude = frozenset({current}) if current is not None else frozenset()
+    exclude = frozenset((*inbound.batch_message_ids, *((current,) if current is not None else ())))
     tail = build_tail(ledger, store, scope, high_tokens=tail_budget(profile), exclude_ids=exclude)
     quoted = ""
     if inbound.reply_to_native_message_id is not None:

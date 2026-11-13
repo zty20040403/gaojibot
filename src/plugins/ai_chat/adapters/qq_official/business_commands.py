@@ -16,7 +16,17 @@ def build_business_services(runtime, app):
                 or platform.execution.token is not life.token or platform.execution.admission is not life.admission
                 or inbound.endpoint!=life.handle.endpoint or inbound.actor!=life.handle.actor):
             raise CommandEffectDenied('business_command_source_mismatch')
-        callbacks={}
+        async def control(current,parsed):
+            def read():
+                with life.effect_scope(current) as cursor:
+                    row = cursor.execute('SELECT conversation_control FROM qq_official_inbound_events WHERE inbox_id=?',
+                        (life.handle.inbox_id,)).fetchone()
+                    result = row['conversation_control'] if row else None
+                    if result is None or result['action'] != parsed.name:
+                        return CommandResult('denied','没有有效的入站控制回执，会话未更改。')
+                    return CommandResult(result['status'],result['text'])
+            return await runtime._calls(read)
+        callbacks={'conversation_control':control}
         store=getattr(app,'conversations',None)
         if store is not None:
             async def memory(current,parsed):

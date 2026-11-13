@@ -292,15 +292,18 @@ class MediaLibrary:
                 if not self._supported_source(source_url):
                     continue
                 summary = str(data.get("summary") or "").strip()[:500]
+                conflict = ('(canonical_message_id,segment_index) WHERE canonical_message_id IS NOT NULL'
+                            if canonical_message_id is not None else
+                            '(scope_key,native_message_id,segment_index) WHERE canonical_message_id IS NULL')
                 cursor.execute(
-                    """
+                    f"""
                     INSERT INTO message_media (
                         scope_key, canonical_message_id, native_message_id,
                         sender_native_user_id, segment_index, media_kind,
                         source_type, source_url, source_summary, fetch_status,
                         created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-                    ON CONFLICT(scope_key, native_message_id, segment_index)
+                    ON CONFLICT {conflict}
                     DO UPDATE SET
                         canonical_message_id = COALESCE(
                             EXCLUDED.canonical_message_id,
@@ -394,6 +397,8 @@ class MediaLibrary:
             await asyncio.gather(*(run(job) for job in jobs))
 
     async def process_job(self, job: MediaJob) -> None:
+        if job.job_type == 'official_caption':
+            return await self.official_caption_worker.process(job)
         if job.job_type == "fetch":
             await self._process_fetch(job)
         elif job.job_type == "caption":
@@ -414,12 +419,12 @@ class MediaLibrary:
                 WITH due AS (
                     SELECT job_id
                     FROM media_jobs
-                    WHERE (
+                    WHERE ((
                         status = 'pending' AND next_attempt_at <= ?
                     ) OR (
                         status = 'running' AND lease_until IS NOT NULL
                         AND lease_until <= ?
-                    )
+                    )) AND (job_type <> 'official_caption' OR ?)
                     ORDER BY next_attempt_at, job_id
                     FOR UPDATE SKIP LOCKED
                     LIMIT ?
@@ -435,7 +440,8 @@ class MediaLibrary:
                 (
                     now,
                     now,
-                    self.batch_size,
+                    getattr(self, 'official_caption_worker', None) is not None,
+                    min(self.batch_size, self.worker_concurrency),
                     now + self.lease_seconds,
                     self.worker_id,
                     now,

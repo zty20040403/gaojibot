@@ -158,6 +158,7 @@ class VmSandboxManager:
         vcpus: int = 1,
         pids_limit: int = 256,
         disk_gib: int = 20,
+        resident_limit: int = 4,
     ) -> None:
         self.image = Path(image)
         self.root = Path(root)
@@ -182,6 +183,10 @@ class VmSandboxManager:
         self._last_execs: dict[str, SandboxExecutionActivity] = {}
         self._conversation_locks = {}
         self._conversation_guests = set()
+        self.github_identity = None  # Public login/id from protected host configuration, never a token.
+        self.conversation_lifecycle = None
+        from .vm_program_state import VMProgramState
+        self.program_state = VMProgramState(self,limit=resident_limit)
 
     @asynccontextmanager
     async def allocation_lock(self):
@@ -231,7 +236,11 @@ class VmSandboxManager:
             raise SandboxError("沙盒 ID 格式错误。")
         return self.root / sandbox_id
 
-    def _save_metadata(self, sandbox_id: str, data: dict[str, object]) -> None:
+    def _save_metadata(self, sandbox_id: str, data: dict[str, object], *, filename='metadata.json') -> None:
+        if filename not in {'metadata.json','programs.json'}:
+            raise ValueError('invalid_vm_metadata_file')
+        if filename=='metadata.json':
+            data = {key:value for key,value in data.items() if key!='programs'}
         directory = self._directory(sandbox_id)
         temporary = directory / (".metadata-" + secrets.token_hex(8))
         try:
@@ -239,7 +248,7 @@ class VmSandboxManager:
                 json.dump(data, stream, ensure_ascii=False)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, directory / "metadata.json")
+            os.replace(temporary, directory / filename)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -422,6 +431,8 @@ class VmSandboxManager:
             raise SandboxError("沙盒不存在或元数据不可读。") from exc
         if data.get("id") != sandbox_id or data.get("owner_hash") != self._owner_hash(owner):
             raise SandboxError("沙盒不属于当前会话。")
+        from .vm_program_state import VMProgramState
+        data['programs'] = VMProgramState.read(directory)
         return data
 
     async def _all_metadata(self) -> list[dict[str, object]]:
@@ -436,6 +447,8 @@ class VmSandboxManager:
             except (OSError, ValueError):
                 continue
             if data.get("id") == directory.name:
+                from .vm_program_state import VMProgramState
+                data['programs'] = VMProgramState.read(directory)
                 found.append(data)
         return found
 
@@ -500,6 +513,7 @@ class VmSandboxManager:
                 )
                 await self._virsh("define", str(directory / "domain.xml"))
                 defined = True
+                await self._conversation_event('starting',owner,sandbox_id)
                 await self._virsh("start", self._name(sandbox_id))
                 started = True
                 await self._wait_guest(sandbox_id, timeout=900 if owner == 'qqo:template' else 300)
@@ -508,6 +522,8 @@ class VmSandboxManager:
                 )
                 if code:
                     raise SandboxError(f"VM 初始化失败：{err.decode(errors='replace')[-500:]}")
+                await self._configure_github(owner,sandbox_id)
+                await self._conversation_event('ready',owner,sandbox_id)
                 metadata["state"] = "ready"
                 metadata["last_used"] = int(time.time())
                 self._save_metadata(sandbox_id, metadata)
@@ -517,6 +533,15 @@ class VmSandboxManager:
                     "purpose": str(metadata["purpose"]), "toolset": "vm",
                 }
             except (Exception, asyncio.CancelledError):
+                try:
+                    await self._conversation_event('failed',owner,sandbox_id)
+                except Exception as error:
+                    logger.warning('VM failure bookkeeping error=%s',type(error).__name__)
+                if started:
+                    try:
+                        await self._conversation_event('stopping',owner,sandbox_id)
+                    except Exception as error:
+                        logger.warning('VM credential cleanup failed error=%s',type(error).__name__)
                 clean = True
                 if started:
                     code, _, _ = await self._run(
@@ -824,8 +849,30 @@ class VmSandboxManager:
     async def search_nix_packages(self, query: str) -> list[dict[str, str]]:
         raise SandboxError("VM 使用 Debian 软件包；请用 sandbox_exec 的 packages 参数安装具体包名。")
 
-    async def start_owned(self, owner: str, sandbox_id: str) -> None:
+    async def _conversation_event(self, event, owner, sandbox_id, **kwargs):
+        if owner.startswith('qqo:conversation:') and self.conversation_lifecycle is not None:
+            return await getattr(self.conversation_lifecycle,event)(owner,sandbox_id,**kwargs)
+
+    async def _configure_github(self, owner, sandbox_id):
+        if self.github_identity is None or not owner.startswith('qqo:conversation:'):
+            return
+        code,_,_ = await self._guest_exec(sandbox_id,'/bin/sh',['-c',self.github_identity.script],timeout=30)
+        if code:
+            raise SandboxError('VM 的 Git 提交身份配置失败。')
+
+    async def start_owned(self, owner: str, sandbox_id: str, *, automatic=False) -> None:
+        try:
+            await self._start_owned(owner,sandbox_id,automatic=automatic)
+        except (Exception,asyncio.CancelledError):
+            try:
+                await self._conversation_event('failed',owner,sandbox_id)
+            except Exception as error:
+                logger.warning('VM failure bookkeeping error=%s',type(error).__name__)
+            raise
+
+    async def _start_owned(self, owner: str, sandbox_id: str, *, automatic=False) -> None:
         metadata = await self._metadata(owner, sandbox_id)
+        event_args = {'automatic':True} if automatic else {}
         async with self.allocation_lock():
             metadata = await self._metadata(owner, sandbox_id)
             if owner.startswith('qqo:conversation:'):
@@ -835,6 +882,8 @@ class VmSandboxManager:
             if await self._running(sandbox_id):
                 if owner.startswith('qqo:conversation:'):
                     await self._wait_guest(sandbox_id, timeout=60)
+                    await self._configure_github(owner,sandbox_id)
+                    await self._conversation_event('ready',owner,sandbox_id,**event_args)
                 return
             existing = await self._all_metadata()
             running = [item for item in existing if await self._running(str(item["id"]))]
@@ -844,18 +893,26 @@ class VmSandboxManager:
                 raise SandboxError("你正在运行的 VM 沙盒已达到上限。")
             if not await self._defined(sandbox_id):
                 await self._virsh("define", str(self._directory(sandbox_id) / "domain.xml"))
-            await self._virsh("start", self._name(sandbox_id))
+            async with self.io_lock(sandbox_id):
+                await self._conversation_event('starting',owner,sandbox_id,**event_args)
+                await self._virsh("start", self._name(sandbox_id))
             await self._wait_guest(sandbox_id)
+            await self._configure_github(owner,sandbox_id)
+            await self._conversation_event('ready',owner,sandbox_id,**event_args)
             metadata["last_started"] = int(time.time())
             self._save_metadata(sandbox_id, metadata)
 
-    async def stop_owned(self, owner: str, sandbox_id: str) -> None:
-        lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
-        async with lock:
-            await self._metadata(owner, sandbox_id)
+    async def stop_owned(self, owner: str, sandbox_id: str, *, if_idle=False) -> None:
+        async with self.io_lock(sandbox_id):
+            metadata = await self._metadata(owner, sandbox_id)
+            if if_idle and self.program_state.keeps_awake(metadata):
+                return
             if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
                 raise SandboxError("VM 正在执行命令，不能停止。")
+            if await self._conversation_event('stopping',owner,sandbox_id,**({'automatic':True} if if_idle else {})) is False:
+                return
             if not await self._running(sandbox_id):
+                await self._conversation_event('stopped',owner,sandbox_id)
                 return
             code, _, err = await self._guest_exec(sandbox_id, "/usr/bin/sync", [], timeout=20)
             if code:
@@ -868,13 +925,17 @@ class VmSandboxManager:
             except Exception:
                 await self._agent(sandbox_id, {"execute": "guest-fsfreeze-thaw"}, timeout=20)
                 raise
+            await self._conversation_event('stopped',owner,sandbox_id)
 
-    async def destroy(self, owner: str, sandbox_id: str) -> None:
+    async def destroy(self, owner: str, sandbox_id: str, *, if_unused=False) -> None:
         await self._metadata(owner, sandbox_id)
         if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
             raise SandboxError("VM 正在执行命令，不能销毁。")
-        lock = self._exec_locks.setdefault(sandbox_id, asyncio.Lock())
-        async with lock:
+        async with self.io_lock(sandbox_id):
+            if if_unused and self.program_state.keeps_disk(await self._metadata(owner,sandbox_id)):
+                return
+            if await self._conversation_event('stopping',owner,sandbox_id,**({'automatic':True} if if_unused else {})) is False:
+                return
             if await self._running(sandbox_id):
                 await self._virsh("destroy", self._name(sandbox_id))
             if await self._defined(sandbox_id):
@@ -920,12 +981,14 @@ class VmSandboxManager:
                 continue
             async with lock:
                 item = await self._metadata(owner, sid)
+                if self.program_state.keeps_awake(item):
+                    continue
                 age = now - int(item.get('last_used', item.get('last_started', item['created_at'])))
                 try:
-                    if age >= retention_seconds:
-                        await self.destroy(owner, sid)
+                    if age >= retention_seconds and not self.program_state.keeps_disk(item):
+                        await self.destroy(owner, sid,if_unused=True)
                     elif age >= idle_seconds:
-                        await self.stop_owned(owner, sid)
+                        await self.stop_owned(owner, sid,if_idle=True)
                 except Exception as error:
                     logger.warning('sandbox maintenance error=%s', type(error).__name__)
 

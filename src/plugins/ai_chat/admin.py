@@ -8,6 +8,7 @@ from fastapi.routing import APIRoute
 
 from .admin_api import (
     audit,
+    browser,
     dashboard,
     events,
     media,
@@ -15,9 +16,14 @@ from .admin_api import (
     official_files,
     official_observability,
     official_identity,
+    ops,
     overview,
     sandboxes,
     background_agents,
+    background_commands,
+    conversations,
+    host_apis,
+    programs,
     tasks,
     tools,
 )
@@ -42,11 +48,17 @@ __all__ = ["AdminServices", "AdminEventBroker", "AdminRealtimeMonitor", "registe
 
 
 _PAGE_ROUTERS = (
+    browser,
     dashboard,
+    ops,
     overview,
     models,
     tasks,
     background_agents,
+    background_commands,
+    conversations,
+    host_apis,
+    programs,
     sandboxes,
     tools,
     media,

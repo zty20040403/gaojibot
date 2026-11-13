@@ -18,9 +18,11 @@ class Batch:
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     messages: list = field(default_factory=list)
     last_at: float = 0
+    task: asyncio.Task | None = None
 
 
 class MessageBatcher:
+    """Keys are (physical endpoint, actor, route epoch, stop generation)."""
     def __init__(self, dispatch, *, idle=10, maximum=20, clock=time.monotonic):
         self.dispatch, self.idle, self.maximum, self.clock = dispatch, idle, maximum, clock
         self.pending, self.tasks = {}, set()
@@ -38,7 +40,7 @@ class MessageBatcher:
             if not requested or not (unfinished(text) or burst):
                 return False
             batch = self.pending[key] = Batch(source, now)
-            task = asyncio.create_task(self._wait(key, batch))
+            task = batch.task = asyncio.create_task(self._wait(key, batch))
             self.tasks.add(task)
             task.add_done_callback(self.tasks.discard)
         batch.messages.append((canonical_id, text))
@@ -58,9 +60,17 @@ class MessageBatcher:
                 break
         del self.pending[key]
         if len(batch.messages) > 1:
-            batch.source.payload['batch_text'] = '[连续消息，请合起来回答一次]\n' + '\n'.join(
-                f'[msg#{canonical}] {text}' for canonical, text in batch.messages)
+            batch.source.payload['batch_message_ids'] = [canonical for canonical, _ in batch.messages]
         await self.dispatch(batch.source)
+
+    def forget(self, endpoint, *, before_generation=None):
+        for key,batch in tuple(self.pending.items()):
+            if key[0]==endpoint and (before_generation is None or batch.source.conversation_generation<before_generation):
+                self.pending.pop(key)
+                batch.task.cancel()
+        for key in tuple(self.recent):
+            if key[0]==endpoint and (before_generation is None or key[3]<before_generation):
+                self.recent.pop(key)
 
     async def close(self):
         for task in self.tasks:

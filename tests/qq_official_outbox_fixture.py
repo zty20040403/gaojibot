@@ -9,12 +9,16 @@ from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease
 
 
 class OutboxFixture(unittest.TestCase):
+    endpoint_kind = 'group'
+
     def setUp(self):
         self.database = postgres_for_test(self)
         self.now = 1_800_000_000
         self.account = AccountKey("qq-official", "TEST_OUTBOX_" + secrets.token_hex(4), "test")
-        self.endpoint = EndpointKey(self.account, "group", "TEST_GROUP")
-        self.actor = ActorKey(self.account, "group_member", "TEST_GROUP", "TEST_MEMBER")
+        private = self.endpoint_kind=='private'
+        self.endpoint = EndpointKey(self.account,self.endpoint_kind,'TEST_PRIVATE' if private else 'TEST_GROUP')
+        self.actor = (ActorKey(self.account,'c2c_user','','TEST_PRIVATE') if private
+            else ActorKey(self.account,'group_member','TEST_GROUP','TEST_MEMBER'))
         self.provision(self.endpoint)
         self.account_lease = self.lease()
         self.token = self.account_lease.acquire()

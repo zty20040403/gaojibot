@@ -60,13 +60,16 @@ class OfficialTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(cancelled.is_set())
                 self.assertEqual(app.running_tasks.list_all(), [])
                 self.assertEqual(fake.received, [])
+                # A clean cancellation now finalizes its journal before releasing
+                # ownership; restart must not relabel it as an unexplained crash.
+                self.assertEqual(self.query("SELECT status FROM agent_turns"), [{"status": "aborted"}])
                 restarted = await self.open_runtime(fake, app)
                 await self.wait_db("SELECT execution_id FROM qq_official_turn_executions WHERE reason_code='restart_notified'")
                 await self.wait_db("SELECT delivery_id FROM deliveries WHERE status='committed'")
                 model.assert_awaited_once()
                 self.assertEqual(len(self.query("SELECT * FROM delivery_plans")), 1)
                 self.assertEqual(self.query("SELECT * FROM usage_events"), [])
-                self.assertEqual(self.query("SELECT status FROM agent_turns"), [{"status": "crashed"}])
+                self.assertEqual(self.query("SELECT status FROM agent_turns"), [{"status": "aborted"}])
                 self.assertIn('刚才重启了', json.dumps(fake.received, ensure_ascii=False))
                 await restarted.stop()
                 again = await self.open_runtime(fake, app)

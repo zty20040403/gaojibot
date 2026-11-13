@@ -173,6 +173,7 @@ class Settings:
     media_lease_seconds: int
     media_batch_size: int
     media_worker_concurrency: int
+    video_profile: str
     video_whisper_model_path: str
     video_whisper_threads: int
     archive_enabled: bool
@@ -237,6 +238,7 @@ class Settings:
     sandbox_pids_limit: int = 256
     sandbox_memory_mib: int = 8192
     sandbox_network: str = "isolated"
+    program_vm_limit: int = 4
     search_provider: str = "scrape"
     search_api_key: str = field(default="", repr=False)
 
@@ -355,6 +357,7 @@ class Settings:
             background_effort=environment.get('AI_BACKGROUND_EFFORT', 'high').strip(),
             background_upstream_profile=environment.get('AI_BACKGROUND_UPSTREAM_PROFILE', '').strip(),
             background_gateway_port=integer('AI_BACKGROUND_GATEWAY_PORT', 18640),
+            program_vm_limit=resource_limit('AI_PROGRAM_VM_LIMIT',4,0,32),
             search_auto_enabled=boolean("AI_SEARCH_AUTO_ENABLED", True),
             search_max_results=integer("AI_SEARCH_MAX_RESULTS", 5),
             search_timeout_seconds=integer("AI_SEARCH_TIMEOUT_SECONDS", 10),
@@ -411,6 +414,7 @@ class Settings:
             media_worker_concurrency=min(
                 max(integer("AI_MEDIA_WORKER_CONCURRENCY", 2), 1), 8
             ),
+            video_profile=environment.get('AI_VIDEO_PROFILE', '').strip(),
             video_whisper_model_path=environment.get(
                 "AI_VIDEO_WHISPER_MODEL_PATH", ""
             ).strip(),

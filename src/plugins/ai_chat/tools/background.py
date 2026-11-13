@@ -29,6 +29,13 @@ async def task_context(turn):
             + quote_evidence(json.dumps(jobs, ensure_ascii=False), 'background_jobs'))
 
 
+async def program_context(turn):
+    if not enabled(turn.context):
+        return ''
+    lifecycle = service(turn.context).vm_lifecycle
+    return await lifecycle.status.context(turn) if lifecycle is not None else ''
+
+
 async def execute(turn, arguments, *, name):
     try:
         result = await service(turn.context).control(turn, name, arguments)
@@ -39,7 +46,7 @@ async def execute(turn, arguments, *, name):
 
 JOB = {'type': 'string', 'description': 'agent 返回的 job#编号。'}
 DEFINITIONS = (
-    definition('agent', '仅为新的独立工作启动后台任务，不用于催进度、继续、修改或补充已有任务。先看后台任务快照；已有任务时先 agent_status，相关补充用 agent_steer。立即返回 job#，最多同时三个，每个两小时；先用 say 说明将开始，调用成功才说已启动。',
+    definition('agent', '仅为新的独立工作启动后台任务，不用于催进度、继续、修改或补充已有任务。先看后台任务快照；已有任务时先 agent_status，相关补充用 agent_steer。立即返回 job#，最多同时三个，默认六小时，管理员可按会话设1–6小时；先用 say 说明将开始，调用成功才说已启动。',
         {'task': {'type': 'string'}, 'title': {'type': 'string'},
          'independent': {'type': 'boolean', 'description': '仅当用户确实要求另外独立做一件事时设 true，以允许和已有任务并行；追问、质疑是否开始或修改要求不能设 true。'}}, ('task',)),
     definition('agent_steer', '给明确选中的 queued/running 任务补充或修改要求，也用于回答任务提出的问题。先 agent_status 核对；多个任务且指代不清先问用户，不向全部任务广播。成功只表示补充已入队，不表示已经执行完。',

@@ -27,6 +27,7 @@ from .local_model import LocalModelRuntime
 from .media_library import MediaLibrary
 from src.bot_storage.media_cleanup import LegacyMediaCleanup
 from .model_catalog import ModelCatalog
+from .model_billing import ModelBilling
 from .model_preferences import ModelPreferenceStore
 from .mobile_authorization import build_mobile_authorization
 from src.bot_security.service import MobileAuthorization
@@ -88,6 +89,7 @@ class AppContext:
     job_store: DurableJobStore | None = None
     job_worker: DurableJobWorker | None = None
     usage_store: UsageStore | None = None
+    model_billing: ModelBilling | None = None
     semantic_recall: SemanticRecallService | None = None
     turn_journal: TurnJournal | None = None
     media_library: MediaLibrary | None = None
@@ -566,6 +568,7 @@ def _build_app_context(
         job_store=job_store,
         job_worker=job_worker,
         usage_store=usage_store,
+        model_billing=ModelBilling(database) if database is not None else None,
         semantic_recall=semantic_recall,
         turn_journal=turn_journal,
         media_library=media_library,

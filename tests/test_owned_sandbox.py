@@ -55,6 +55,7 @@ class FakeManager:
     max_file_bytes = 1024 * 1024
     def __init__(self):
         self.items, self.calls = {}, []
+        self._conversation_locks = {}
         self.after, self.fail = None, None
         self.unembedded, self.cancel_exec = False, False
     def event(self, name, owner, sid=None):
@@ -82,6 +83,11 @@ class FakeManager:
     async def list(self, owner):
         self.event('list', owner)
         return [{'sandbox_id': sid} for sid, item in self.items.items() if item['owner'] == owner]
+    async def _all_metadata(self):
+        return [dict(id=sid,owner_ref=item['owner'],programs={}) for sid,item in self.items.items()]
+    async def _metadata(self, owner, sandbox_id):
+        self.own(owner,sandbox_id)
+        return dict(id=sandbox_id,owner_ref=owner,programs={})
     async def start_owned(self, owner, sandbox_id):
         self.own(owner, sandbox_id)
         self.event('start', owner, sandbox_id)

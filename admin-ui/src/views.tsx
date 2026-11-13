@@ -20,6 +20,9 @@ import {
   X,
 } from 'lucide-react'
 import { TokenUsageChart } from './TokenUsageChart'
+import { HostAPIAudit } from './HostAPIAudit'
+import { CommandsPanel } from './CommandsPanel'
+import { BrowserPanel } from './BrowserPanel'
 import { LocalModelPanel, ModelRouteSummary } from './LocalModelPanel'
 import {
   DataTable,
@@ -138,14 +141,31 @@ export function GroupsView({ plane }: { plane: Plane }) {
     { value: '', label: `跟随全局 (${payload.default?.profile ?? '-'})` },
     ...profiles.filter((profile) => profile.configured).map((profile) => ({ value: profile.name, label: `${profile.name} · ${profile.model}` })),
   ]
+  const conversationVersion = plane.data.conversations?.resource_version
+  const conversationsReady = Number.isInteger(conversationVersion) && conversationVersion >= 0
+  const proactive = (endpointKey: string, enabled: boolean) => plane.mutate('conversations', '/conversations/proactive', 'POST', { endpoint_key: endpointKey, enabled }, ['conversations'], conversationVersion)
+  const controlConversation = (endpointKey: string, action: 'stop' | 'start' | 'kill') => plane.mutate('conversations', '/conversations/control', 'POST', { endpoint_key: endpointKey, action }, ['conversations', 'tasks', 'backgroundAgents'], conversationVersion)
   const setGroupModel = (groupId: number, profile: string) => plane.mutate('groups', `/group-models/${groupId}/default`, 'PUT', { profile: profile || null }, ['groups', 'overview'])
   const setUserModel = (groupId: number, userId: number, profile: string) => plane.mutate('groups', `/group-models/${groupId}/users/${userId}`, 'PUT', { profile: profile || null }, ['groups', 'overview'])
   const setGroupEffort = (groupId: number, effort: string) => plane.mutate('groups', `/group-models/${groupId}/reasoning-effort`, 'PUT', { effort: effort || null }, ['groups', 'overview'])
   const setUserEffort = (groupId: number, userId: number, effort: string) => plane.mutate('groups', `/group-models/${groupId}/users/${userId}/reasoning-effort`, 'PUT', { effort: effort || null }, ['groups', 'overview'])
   return (
     <>
-      <PageHeader title="模型、群与用户" description="统一调配群友模型，同时保留管理员个人配置" action={<RefreshButton loading={plane.loading.has('groups')} onClick={() => void plane.refresh('groups')} />} />
+      <PageHeader title="模型、群与用户" description="统一调配群友模型，同时保留管理员个人配置" action={<RefreshButton loading={plane.loading.has('groups') || plane.loading.has('conversations')} onClick={() => void plane.refreshMany(['groups', 'conversations'])} />} />
       <LocalModelPanel plane={plane} />
+      <Section title="会话启停" description="停止后仍记录消息，但取消在途回复与后台任务；恢复不补发旧结果。主动接话开关仍需宿主启用分类器，不恢复已停止会话，不影响正常@回复。">
+        <DataTable><thead><tr><th>会话</th><th>类型</th><th>状态</th><th>主动接话</th><th>操作</th></tr></thead><tbody>
+          {rows(plane.data.conversations?.items).map((conversation) => <tr key={conversation.endpoint_key}>
+            <td><code>{conversation.endpoint_key}</code></td><td>{conversation.kind === 'group' ? '群聊' : '私聊'}</td>
+            <td><StatusBadge value={conversation.stopped ? 'paused' : 'active'} label={conversation.stopped ? '已停止' : '可运行'} /></td>
+            <td><Toggle checked={Boolean(conversation.proactive_enabled)} disabled={!conversationsReady || conversation.kind !== 'group'} label={`主动接话 ${conversation.endpoint_key}`} onChange={(enabled) => void proactive(conversation.endpoint_key, enabled)} /></td>
+            <td><div className="actions"><button disabled={!conversationsReady} onClick={() => void controlConversation(conversation.endpoint_key, conversation.stopped ? 'start' : 'stop')}>{conversation.stopped ? '恢复会话' : '停止会话'}</button>
+              <button disabled={!conversationsReady} onClick={() => { if (window.confirm(`取消此会话所有人的后台任务？停止状态不变。\n${conversation.endpoint_key}`)) void controlConversation(conversation.endpoint_key, 'kill') }}>取消后台任务</button></div></td>
+          </tr>)}
+        </tbody></DataTable>
+        {!rows(plane.data.conversations?.items).length && <EmptyState>尚无可控制的 QQ 会话</EmptyState>}
+      </Section>
+      <BrowserPanel plane={plane} />
       <Section title="可用模型" description="密钥只在服务端使用，控制台不会返回凭据">
         <div className="model-strip">
           {profiles.map((profile) => {
@@ -223,12 +243,14 @@ export function TasksView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail:
 
   return (
     <>
-      <PageHeader title="任务与投递" description="前台 Agent、持久任务和消息投递的统一操作面" action={<RefreshButton onClick={() => void plane.refreshMany(['tasks', 'backgroundAgents', 'jobs', 'deliveries'])} />} />
+      <PageHeader title="任务与投递" description="前台 Agent、持久任务和消息投递的统一操作面" action={<RefreshButton onClick={() => void plane.refreshMany(['tasks', 'backgroundAgents', 'commands', 'jobs', 'deliveries'])} />} />
       <Section title="后台任务" description="每个任务由群 VM 里的 Codex 执行，可插话、停止，完成后由前台交付">
         <BackgroundModelPicker plane={plane} />
         {agents.map((job) => <details key={job.job_id}><summary><code>job#{job.job_id}</code> {job.title} <StatusBadge value={job.state} /> · {job.last_tool || '尚未调用工具'}</summary><p>{job.error}</p><pre>{job.report}</pre>{['queued', 'running'].includes(job.state) && <button onClick={() => void plane.mutate('backgroundAgents', `/background-agents/${job.job_id}/cancel`, 'POST', {}, ['backgroundAgents'])}>停止任务</button>}</details>)}
         {!agents.length && <EmptyState>还没有后台任务</EmptyState>}
       </Section>
+      <CommandsPanel plane={plane} />
+      <HostAPIAudit query={plane.query} />
       <Section title="运行中的 Agent" description="取消会触发当前任务的取消路径">
         <DataTable><thead><tr><th>任务</th><th>会话</th><th>摘要</th><th>耗时</th><th></th></tr></thead><tbody>{tasks.map((task) => <tr key={task.task_id}><td><code>{task.task_id}</code></td><td>{task.conversation_id}</td><td>{task.summary}</td><td>{fmtDuration(task.elapsed_seconds)}</td><td className="actions"><button className="icon-button danger" title="取消任务" onClick={() => void plane.mutate('tasks', `/tasks/${task.task_id}/cancel`, 'POST', {}, ['tasks'])}><Square size={15} /></button></td></tr>)}</tbody></DataTable>
         {!tasks.length && <EmptyState>当前没有正在运行的 Agent</EmptyState>}
@@ -352,10 +374,15 @@ export function MediaView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail:
   const items = rows(media.items)
   const sources = rows(plane.data.sources?.items)
   const review = (mediaId: number, state: string) => plane.mutate('media', `/media/${mediaId}/review`, 'PUT', { state }, ['media', 'stickers'])
+  const captionsReady = Number.isInteger(media.caption_resource_version) && media.caption_resource_version >= 0
+  const captions = (scope: string, enabled: boolean, daily_limit: number) => plane.mutate('captions', '/media/captions/settings', 'PUT', { scope_key: scope, enabled, daily_limit }, ['media'], media.caption_resource_version)
   return (
     <>
-      <PageHeader title="媒体审核" description="普通图片不长期保存；表情候选经过识图、安全判断和人工审核" action={<RefreshButton onClick={() => void plane.refreshMany(['media', 'stickers', 'sources'])} />} />
+      <PageHeader title="媒体审核" description="图片说明按会话开关和日额度处理；普通图不会自动进入可发表情库" action={<RefreshButton onClick={() => void plane.refreshMany(['media', 'stickers', 'sources'])} />} />
       <div className="metric-grid compact"><Metric label="可发表情" value={fmtNumber(media.counts?.stickers)} /><Metric label="占用空间" value={fmtBytes(media.counts?.bytes)} /><Metric label="处理队列" value={fmtNumber(media.counts?.queued)} /><Metric label="失败任务" value={fmtNumber(media.counts?.failed)} /></div>
+      <Section title="图片说明" description="默认关闭；启用后默认每天 200 张，按北京时间计数。修改不补处理旧图片，关闭后未完成任务停止生成说明。">
+        <DataTable><thead><tr><th>会话</th><th>自动说明</th><th>每日上限</th><th>今日已排队</th><th>累计失败 / 超额</th></tr></thead><tbody>{rows(media.caption_settings).map((scope) => <tr key={scope.scope_key}><td><code>{scope.scope_key}</code></td><td><Toggle checked={Boolean(scope.image_captions)} disabled={!captionsReady} label="图片说明" onChange={(enabled) => void captions(scope.scope_key, enabled, scope.image_daily_limit)} /></td><td><input key={scope.image_daily_limit} disabled={!captionsReady} type="number" min="0" max="10000" aria-label={`每日图片上限 ${scope.scope_key}`} defaultValue={scope.image_daily_limit} onBlur={(event) => { const limit = Number(event.currentTarget.value); if (event.currentTarget.value !== '' && Number.isInteger(limit) && limit >= 0 && limit <= 10000 && limit !== scope.image_daily_limit) void captions(scope.scope_key, Boolean(scope.image_captions), limit) }} /></td><td>{scope.admitted}</td><td>{scope.failed} / {scope.quota_rejected}</td></tr>)}</tbody></DataTable>
+      </Section>
       <Section title="表情候选" description={`识图模型：${media.vision_profile ?? '-'}`} action={<ViewAllButton count={items.length} onClick={() => onOpenDetail('media-items')} />}>
         <DataTable><thead><tr><th>最后出现</th><th>媒体</th><th>标签</th><th>识图模型</th><th>安全</th><th>发送</th><th>审核</th></tr></thead><tbody>{items.slice(0, 5).map((item) => <tr key={item.media_id}><td>{fmtTime(item.last_seen_at)}</td><td><code>media#{item.media_id}</code><small className="cell-sub">{fmtBytes(item.byte_size)}</small></td><td><strong>{item.summary || '未命名'}</strong><div className="capabilities">{jsonRows(item.emotions_json).slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div></td><td>{item.vision_model}</td><td><StatusBadge value={item.safety} /></td><td>{item.enabled && !item.banned ? `已启用 · ${item.times_sent} 次` : item.banned ? '已拒绝' : '未启用'}</td><td className="actions"><button className="icon-button success" title="批准并允许发送" onClick={() => void review(item.media_id, 'approved')}><Check size={15} /></button><button className="icon-button" title="保留待审" onClick={() => void review(item.media_id, 'pending')}><Clock3 size={15} /></button><button className="icon-button danger" title="拒绝并禁止发送" onClick={() => void review(item.media_id, 'rejected')}><X size={15} /></button></td></tr>)}</tbody></DataTable>
       </Section>
@@ -402,7 +429,7 @@ const HELP_SECTIONS = [
     items: [
       ['模型与群友', '群开关决定机器人是否处理该群消息；“其他群友统一模型”和“统一推理强度”只作用于普通群友，不会覆盖“我自己”。管理员和成员详情可分别设置个人模型与推理强度；选择“跟随”会清除个人覆盖。所有修改立即生效并写入审计。'],
       ['工具权限', '开关决定下一轮 Agent 能否看到该工具。风险、幂等、副作用和超时由宿主执行器强制控制；关闭后不会中断已经开始的调用。'],
-      ['媒体审核', '审核识图 worker 生成的表情候选：勾号批准发送，时钟保留待审，叉号拒绝。普通图片不长期保存；分享内容区展示各平台帖子与视频解析状态。'],
+      ['媒体审核', '审核识图 worker 生成的表情候选：勾号批准发送，时钟保留待审，叉号拒绝。普通图片可按会话生成可搜索的说明，不会自动进入可发表情库；分享内容区展示各平台帖子与视频解析状态。'],
       ['审计记录', '查看谁在何时修改了哪个资源及版本。若提交时版本已经过期，控制台会拒绝覆盖并自动拉取最新版。'],
     ],
   },

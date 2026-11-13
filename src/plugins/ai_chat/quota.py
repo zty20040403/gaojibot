@@ -67,6 +67,7 @@ class UsageStore:
         output_tokens: int,
         cached_tokens: int = 0,
         turn_id: int | None = None,
+        background_job_id: int | None = None,
         occurred_at: int | None = None,
         transaction_cursor: StoreCursor | None = None,
     ) -> int:
@@ -76,26 +77,15 @@ class UsageStore:
             if transaction_cursor is not None
             else self._transaction()
         ) as cursor:
-            cursor.execute(
-                """
-                INSERT INTO usage_events (
-                    scope_key, source, provider, model,
-                    input_tokens, output_tokens, cached_tokens,
-                    turn_id, occurred_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    scope_key,
-                    str(source)[:50],
-                    str(provider)[:100],
-                    str(model)[:200],
-                    max(int(input_tokens), 0),
-                    max(int(output_tokens), 0),
-                    max(int(cached_tokens), 0),
-                    turn_id,
-                    timestamp,
-                ),
-            )
+            fields = dict(scope_key=scope_key,source=str(source)[:50],provider=str(provider)[:100],model=str(model)[:200],
+                input_tokens=max(int(input_tokens),0),output_tokens=max(int(output_tokens),0),
+                cached_tokens=max(int(cached_tokens),0),turn_id=turn_id,occurred_at=timestamp)
+            if background_job_id is not None:
+                if type(background_job_id) is not int or background_job_id < 1:
+                    raise ValueError('invalid_background_job_id')
+                fields['background_job_id'] = background_job_id
+            cursor.execute('INSERT INTO usage_events ('+','.join(fields)+') VALUES ('+
+                ','.join('?' for _ in fields)+')',tuple(fields.values()))
             return int(cursor.lastrowid)
 
     def status(

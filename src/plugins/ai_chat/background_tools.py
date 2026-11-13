@@ -23,7 +23,7 @@ class BackgroundPlatform:
         self.endpoint, self.account = endpoint, endpoint.account
 
 
-ASK_MAIN = definition('ask_main', '向前台提问，让它根据聊天记录回答或询问用户。最多等十分钟；没有答复时自己判断继续，并在报告里写明假设。',
+ASK_MAIN = definition('ask_main', '向前台提问，让它根据聊天记录回答或询问用户。最多等两小时，但不超过任务剩余时间；没有答复时自己判断继续，并在报告里写明假设，任务截止则保存结果并结束。',
     {'question': {'type': 'string'}}, ('question',))
 
 
@@ -47,9 +47,13 @@ class BackgroundToolSession:
         await self.current()
         if name not in {item['function']['name'] for item in self.tools}:
             raise ValueError('后台工具不可用')
+        if name in {'analyze_video','record_video_summary'}:
+            return json.dumps(await self.video.execute(name,arguments),ensure_ascii=False)
+        if name == 'ops_act':
+            return json.dumps(await self.ops_act(arguments),ensure_ascii=False)
         if name == 'ops_read':
             from .ops_read import read
-            return await read(self.app, self.inbound, arguments)
+            return await read(self.app, self.inbound, arguments, current=self.current)
         if name == 'ask_main':
             return json.dumps({'answer': await self.question(str(arguments['question']))}, ensure_ascii=False)
         return await self.registry.execute(self.turn, name, arguments)

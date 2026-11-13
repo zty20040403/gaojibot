@@ -55,11 +55,19 @@ def _assert_current(cursor, *, token, artifact_id, admission, now, job, plan_id,
     endpoint,actor=EndpointKey.parse(artifact['endpoint_key']),ActorKey.parse(artifact['requester_actor_key'])
     route=cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=? AND account_key=? FOR UPDATE',
         (endpoint.key,token.account_key)).fetchone()
-    if (endpoint.account.key!=token.account_key or not actor.matches_endpoint(endpoint) or actor.identity_kind=='bot'
+    program = artifact.get('source_program_action_id') is not None
+    if program:
+        from .program_file_source import assert_artifact
+        assert_artifact(cursor,token=token,artifact=artifact,admission=admission,now=now)
+    if (endpoint.account.key!=token.account_key or not actor.matches_endpoint(endpoint)
+            or (actor.identity_kind=='bot' and not program)
             or route is None or route['binding_state']=='revoked'
             or (endpoint.kind=='group' and route['binding_state']!='active') or route['membership_state']!='present'
-            or admission(cursor,endpoint,actor) is not True):
+            or (not program and admission(cursor,endpoint,actor) is not True)):
         raise LeaseLost('artifact_route_unavailable')
+    from .conversation_control import permitted
+    if not read_only and not permitted(cursor,endpoint,generation=artifact['conversation_generation']):
+        raise LeaseLost('conversation_stopped_or_replaced')
     delivery=cursor.execute('SELECT * FROM qq_official_file_deliveries WHERE artifact_id=?',(artifact_id,)).fetchone()
     denied={'cancelled','expired'} if read_only else {'failed','cancelled','expired','delivery_unknown'}
     if delivery is None or delivery['state'] in denied:

@@ -158,7 +158,7 @@ def _ledger_body(decoded: DecodedMessage) -> MessageBody:
 def process_inbox(
     cursor: StoreCursor, *, inbox_id: str, lease_token: LeaseToken,
     ledger: MessageLedger, jobs: DurableJobStore, epoch_guard: EpochGuard,
-    admission: Admission | None = None, now: int | None = None,
+    admission: Admission | None = None, now: int | None = None, owner_authority=None,
 ) -> IngestResult:
     """Atomically ingest one accepted message using the caller's transaction.
 
@@ -262,6 +262,8 @@ def process_inbox(
                    "codec_warnings": list(decoded.evidence.warnings), "truncated": decoded.evidence.truncated},
         transaction_cursor=cursor,
     )
+    from ...image_captions import ingest_captions
+    ingest_captions(cursor, recorded, timestamp)
     canonical = recorded.canonical_message_id
     cursor.execute("""INSERT INTO qq_official_messages
         (message_id,account_key,endpoint_key,native_message_id,canonical_message_id,
@@ -272,6 +274,11 @@ def process_inbox(
     _record_index(cursor, decoded, canonical, timestamp)
     observe_reply_window(cursor, decoded, endpoint_row, timestamp)
     reply = endpoint.kind == 'private' or row['trigger_requested'] or decoded.mentions_bot or reply_target is not None
-    cursor.execute('UPDATE qq_official_inbound_events SET trigger_requested=? WHERE inbox_id=?', (bool(reply), inbox_id))
     result = _finish(cursor, row, timestamp, canonical=canonical)
+    from .conversation_control import ingest as ingest_control
+    receipt, current = ingest_control(cursor,inbox_id=inbox_id,decoded=decoded,text=prepared_input.input_text,
+        now=timestamp,authority=owner_authority)
+    command = prepared_input.input_text.lstrip().startswith(('/', '!'))
+    reply = bool(receipt) or bool(reply and (not current['stopped'] or command))
+    cursor.execute('UPDATE qq_official_inbound_events SET trigger_requested=? WHERE inbox_id=?', (reply, inbox_id))
     return IngestResult(result.status, result.reason_code, canonical, echo_state=result.echo_state, reply_requested=reply)

@@ -46,6 +46,7 @@ class AdminServices:
     official_file_service: Any = None  # Live host getter; never a request-supplied route.
     official_identity_service: Any = None  # Exact live account host getter.
     official_observability: Any = None  # Live host getter; read-only aggregate diagnostics.
+    official_runtime: Any = None  # Live host getter for committed control notifications.
 
 
 @dataclass(frozen=True)
@@ -88,3 +89,60 @@ class ToolEnabledRequest(BaseModel):
 
 class MediaReviewRequest(BaseModel):
     state: str
+
+
+class ConversationControlRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    action: Literal['stop','start','kill']
+
+
+class ConversationProactiveRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid',strict=True)
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    enabled: bool
+
+
+class BrowserClearRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    fence: str = Field(pattern=r'^[a-f0-9]{64}$')
+    confirmation: Literal['clear']
+
+
+class BackgroundCommandCancelRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+
+
+class AgentTimeLimitRequest(BackgroundCommandCancelRequest):
+    hours: int = Field(ge=1,le=6,strict=True)
+
+
+class ProgramSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    enabled: bool = Field(strict=True)
+    say_limit: int = Field(ge=0,le=10000,strict=True)
+    wake_limit: int = Field(ge=0,le=1000,strict=True)
+
+
+class ProgramResumeRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    sandbox_id: str = Field(pattern=r'^s[a-f0-9]{6,32}$')
+    recovery_fence: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class ProgramControlRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    program_name: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9_.@-]{0,79}$')
+    enabled: bool = Field(strict=True)
+
+
+class ImageCaptionSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    scope_key: str = Field(min_length=1, max_length=1000)
+    enabled: bool = Field(strict=True)
+    daily_limit: int = Field(default=200, ge=0, le=10000, strict=True)

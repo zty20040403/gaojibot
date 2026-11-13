@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from contextlib import nullcontext
 import json
 from types import SimpleNamespace
 
@@ -20,7 +21,7 @@ from ..prompt import system_prompt
 from ..prompt_context import quote_evidence
 from ..tool_policy import ToolCatalog, approval_from_user_text, policy_for_tool
 from ..tools import neutral_registry_for
-from ..tools.background import task_context as background_task_context
+from ..tools.background import task_context as background_task_context, program_context
 from ..tools.state import ToolContext, TurnState
 from ..web_search import render_search_sources
 from ..workers.durable_jobs import JobDeferred
@@ -30,7 +31,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
-        generation_factory=None, media_factory=None,
+        generation_factory=None, media_factory=None, billing_factory=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -41,6 +42,11 @@ class PlatformChatService:
         self.llm = llm
         self.generation_factory = generation_factory
         self.media_factory = media_factory
+        self.billing_factory = billing_factory
+
+    async def _call_model(self,inbound,platform,turn_id,*args,**kwargs):
+        with self.billing_factory(inbound,platform,turn_id) if self.billing_factory is not None else nullcontext():
+            return await self.llm(*args,**kwargs)
 
     def _scope_enabled(self, scope) -> bool:
         override = self.context.model_preferences.get_scope_enabled_override(scope)
@@ -118,6 +124,7 @@ class PlatformChatService:
 
         media_session = (await self.media_factory(inbound, platform) if self.media_factory is not None else None)
         if media_session is not None:
+            media_session.frontend_vision = selected_profile.capabilities.vision
             platform.media_session = media_session
         capabilities = {"self"}
         if media_session is not None and media_session.enabled("send_sticker"):
@@ -164,20 +171,26 @@ class PlatformChatService:
                 group_context, memory_context, quoted = await self.context.db_call(
                     turn_window, self.context, inbound, selected_profile)
                 context_parts = [quoted] if quoted else []
+                input_images, image_warnings = await media_session.input_images() if media_session is not None else ((), '')
+                if image_warnings:
+                    context_parts.append(quote_evidence(image_warnings, 'image_load_status'))
                 if turn_context:
                     context_parts.append(quote_evidence(turn_context, "turn_context"))
                 background_context = await background_task_context(turn)
                 if background_context:
                     context_parts.append(background_context)
+                resident_context = await program_context(turn)
+                if resident_context:
+                    context_parts.append(resident_context)
                 skill_index = self.context.skill_registry.prompt_index()
                 system = system_prompt(self.context.settings.system_prompt, skill_index,
                                        self.context.settings.style_examples)
-                answer = await self.llm(
-                    user_text, [], tools, execute_tool,
+                answer = await self._call_model(
+                    inbound, platform, journal_turn_id, user_text, [], tools, execute_tool,
                     current_user=speaker(inbound),
                     group_context=group_context, memory_context=memory_context,
                     tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",
-                    profile=selected_profile,
+                    profile=selected_profile, input_images=input_images,
                     tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True, policies={
                         'send_file_from_sandbox': replace(policy_for_tool('send_file_from_sandbox'), timeout_seconds=310),
                         'send_file': replace(policy_for_tool('send_file_from_sandbox'), timeout_seconds=310),

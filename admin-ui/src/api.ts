@@ -9,6 +9,7 @@ export type ResourceName =
   | 'usage'
   | 'tasks'
   | 'backgroundAgents'
+  | 'commands'
   | 'jobs'
   | 'sandboxes'
   | 'stickers'
@@ -16,6 +17,9 @@ export type ResourceName =
   | 'sources'
   | 'databases'
   | 'groups'
+  | 'conversations'
+  | 'browser'
+  | 'programs'
   | 'localModel'
   | 'tools'
   | 'traces'
@@ -43,6 +47,7 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   usage: '/usage?days=90',
   tasks: '/tasks',
   backgroundAgents: '/background-agents',
+  commands: '/background-commands',
   jobs: '/jobs',
   sandboxes: '/sandboxes',
   stickers: '/stickers',
@@ -50,6 +55,9 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   sources: '/sources',
   databases: '/databases',
   groups: '/group-models',
+  conversations: '/conversations',
+  browser: '/conversations/browser',
+  programs: '/programs',
   localModel: '/local-model',
   tools: '/tools',
   traces: '/traces',
@@ -64,13 +72,18 @@ export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   usage: ['usage'],
   tasks: ['tasks'],
   backgroundAgents: ['backgroundAgents', 'tasks'],
+  commands: ['commands'],
   jobs: ['jobs'],
   sandboxes: ['sandboxes'],
   stickers: ['stickers'],
   media: ['media'],
+  captions: ['media'],
   sources: ['sources'],
   databases: ['databases'],
   groups: ['groups'],
+  conversations: ['conversations'],
+  browser: ['browser'],
+  programs: ['programs'],
   'local-model': ['localModel'],
   tools: ['tools'],
   traces: ['traces'],

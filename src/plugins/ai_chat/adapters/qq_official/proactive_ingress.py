@@ -4,6 +4,7 @@ The durable row is a source/decision marker, never a dispatch queue. Interrupted
 classification is not recovered. Ordinary ingest retries cannot rescore it.
 """
 from dataclasses import dataclass
+from contextlib import nullcontext
 import asyncio
 import json
 import math
@@ -16,6 +17,7 @@ from src.plugins.ai_chat.execution_control import JobFence,active_job_fence,Leas
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode
 from src.plugins.ai_chat.platform_types import EndpointKey,ActorKey
 from src.plugins.ai_chat.proactive import is_candidate_message
+from src.plugins.ai_chat.conversation_config import proactive_state
 from src.plugins.ai_chat.adapters.qq_official.proactive_delivery import ProactiveLifetime,score_and_deliver
 
 DEBOUNCE_SECONDS = 3
@@ -28,9 +30,10 @@ class ProactiveCandidate:
 
 
 class ProactiveIngress:
-    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls):
+    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls,billing=None):
         self.token,self.tx,self.admission,self.outbox=token,transaction,admission,outbox
         self.scorer,self.clock,self.calls=scorer,clock,database_calls
+        self.billing=billing
         self._issued=weakref.WeakKeyDictionary()
         self._latest={}
 
@@ -50,6 +53,12 @@ class ProactiveIngress:
         message=c.execute('SELECT m.*,co.scope_key FROM messages m JOIN conversations co USING(conversation_id) JOIN conversation_visibility v USING(conversation_id) WHERE canonical_message_id=? AND m.canonical_message_id>=v.min_canonical_message_id',
             (inbox['canonical_message_id'],)).fetchone()
         if message is None:raise MigrationDenied('proactive_source_unavailable')
+        from .conversation_control import permitted
+        if not permitted(c,ep,canonical=message['canonical_message_id']):
+            raise MigrationDenied('conversation_stopped_or_replaced')
+        enabled,generation = proactive_state(c,ep)
+        if not enabled or inbox['proactive_generation']!=generation:
+            raise MigrationDenied('conversation_proactive_disabled_or_replaced')
         actor=ActorKey.parse(message['sender_actor_key'])
         if getattr(self.admission,'require_inbox',None) is not None:
             self.admission.require_inbox(c,inbox_id,endpoint=ep,actor=actor,operation='execute' if job else 'send')
@@ -76,10 +85,11 @@ class ProactiveIngress:
             if count>=8:return None
             inserted=c.execute('''INSERT INTO qq_official_proactive_observations
                 (inbox_id,account_key,endpoint_key,actor_key,canonical_message_id,source_native_message_id,source_received_at,
-                 deadline_at,ingest_job_id,worker_owner,worker_generation,account_epoch,endpoint_generation,endpoint_route_epoch,state,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'scoring',?) ON CONFLICT DO NOTHING''',
+                 deadline_at,ingest_job_id,worker_owner,worker_generation,account_epoch,endpoint_generation,endpoint_route_epoch,state,created_at,proactive_generation)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'scoring',?,?) ON CONFLICT DO NOTHING''',
                 (inbox['inbox_id'],ep.account.key,ep.key,actor.key,inbox['canonical_message_id'],inbox['native_message_id'],inbox['received_at'],
-                 inbox['received_at']+30,job.job_id,job.lease_owner,job.lease_generation,self.token.epoch,inbox['endpoint_generation'],inbox['route_epoch'],now))
+                 inbox['received_at']+30,job.job_id,job.lease_owner,job.lease_generation,self.token.epoch,inbox['endpoint_generation'],inbox['route_epoch'],now,
+                 proactive_state(c,ep)[1]))
             if inserted.rowcount!=1:return None
             candidate=ProactiveCandidate(inbox['inbox_id'],job);self._issued[candidate]=True
             return candidate
@@ -89,7 +99,8 @@ class ProactiveIngress:
         loaded=self._load(c,source.inbox_id,job=source.job)
         row=c.execute('SELECT * FROM qq_official_proactive_observations WHERE inbox_id=?',(source.inbox_id,)).fetchone()
         if (row is None or row['state']!='scoring' or row['worker_owner']!=source.job.lease_owner
-                or row['worker_generation']!=source.job.lease_generation or row['account_epoch']!=self.token.epoch):
+                or row['worker_generation']!=source.job.lease_generation or row['account_epoch']!=self.token.epoch
+                or row['proactive_generation']!=proactive_state(c,loaded[1])[1]):
             raise MigrationDenied('proactive_source_lost')
         return row,loaded
 
@@ -112,8 +123,13 @@ class ProactiveIngress:
             return inbox['turn_text'],tuple(r['body_json'] for r in reversed(recent)),ep,actor
 
     async def score(self,source):
+        from .vision_adapter import guarded_wait
         text,history,endpoint,actor=await self.calls(self._text,source)
-        return await self.scorer(text=text,history=history,endpoint=endpoint,actor=actor)
+        async def invoke():
+            await self.current(source)
+            with self.billing(endpoint,actor,lambda:self.current(source)) if self.billing else nullcontext():
+                return await self.scorer(text=text,history=history,endpoint=endpoint,actor=actor)
+        return await guarded_wait(invoke(),lambda:self.current(source),timeout=30)
 
     def _send_policy(self,source,*,purpose,deadline):
         with self.tx() as c:
@@ -183,7 +199,8 @@ class ProactiveIngress:
             row=c.execute('SELECT * FROM qq_official_proactive_observations WHERE plan_id=?',(plan['plan_id'],)).fetchone()
             if row is None or row['state']!='queued':raise MigrationDenied('proactive_plan_source_missing')
             inbox,ep,actor,message,_=self._load(c,row['inbox_id'])
-        if (plan['purpose']!='unsolicited' or plan['account_key']!=ep.account.key or plan['endpoint_key']!=ep.key
+        if (row['proactive_generation']!=proactive_state(c,ep)[1]
+                or plan['purpose']!='unsolicited' or plan['account_key']!=ep.account.key or plan['endpoint_key']!=ep.key
                 or plan['requester_actor_key']!=actor.key or plan['source_canonical_message_id']!=message['canonical_message_id']
                 or plan['source_scope_key']!=message['scope_key'] or plan['endpoint_generation']!=inbox['endpoint_generation']
                 or plan['route_epoch']!=inbox['route_epoch'] or not self._now()<plan['expires_at']<=row['deadline_at']

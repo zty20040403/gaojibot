@@ -57,7 +57,6 @@ _READ_TOOLS = {
     "read_task_evidence_batch",
     "web_search",
     "web_fetch",
-    "read_image_text",
     "read_attachment",
     "view_image",
     "find_images",

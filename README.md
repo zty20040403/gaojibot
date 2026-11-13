@@ -1,86 +1,94 @@
 <p align="center">
-  <img src="docs/assets/gaoji-banner.svg" alt="gaoji — 像群友一样聊天，像 Agent 一样开工。官方 QQ、多模型对话、持久记忆与 Codex 后台任务。" width="100%" />
+  <img src="docs/assets/gaoji-banner.en.svg" alt="gaoji — chats like a friend in the group, gets to work like an agent. Official QQ, multi-model conversation, persistent memory and Codex background jobs." width="100%" />
 </p>
 
 <p align="center">
-  <a href="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml"><img src="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI 状态" /></a>
+  <strong>English</strong> &nbsp;·&nbsp; <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml"><img src="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&amp;logo=postgresql&amp;logoColor=white" alt="PostgreSQL 17" />
-  <img src="https://img.shields.io/badge/Deploy-NixOS-7E7BFF?style=flat-square&amp;logo=nixos&amp;logoColor=white" alt="NixOS 部署" />
+  <img src="https://img.shields.io/badge/Deploy-NixOS-7E7BFF?style=flat-square&amp;logo=nixos&amp;logoColor=white" alt="Deployed with NixOS" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22B8A2?style=flat-square" alt="MIT License" /></a>
 </p>
 
-<h3 align="center">会记事、会开工，也知道什么时候该安静。</h3>
+<h3 align="center">Remembers things, gets work done, and knows when to stay quiet.</h3>
 
 <p align="center">
-  一个面向官方 QQ 的多模型 AI 群友。<br />
-  前台认真聊天，后台把研究、代码、文件和视频任务交给隔离 VM 里的 Codex。<br />
-  从一句话，到一份真正能交付的结果。
+  A multi-model AI group member for the official QQ bot platform.<br />
+  The foreground agent chats; research, code, file and video tasks go to Codex in an isolated VM.<br />
+  From one sentence to a result you can actually use.
 </p>
 
 <p align="center">
-  <a href="#capabilities">核心能力</a> &nbsp; / &nbsp;
-  <a href="#architecture">系统架构</a> &nbsp; / &nbsp;
-  <a href="#quick-start">快速开始</a> &nbsp; / &nbsp;
-  <a href="#deployment">部署</a> &nbsp; / &nbsp;
-  <a href="#documentation">文档</a>
+  <a href="#capabilities">Capabilities</a> &nbsp; / &nbsp;
+  <a href="#architecture">Architecture</a> &nbsp; / &nbsp;
+  <a href="#quick-start">Quick start</a> &nbsp; / &nbsp;
+  <a href="#deployment">Deployment</a> &nbsp; / &nbsp;
+  <a href="#documentation">Documentation</a>
 </p>
 
 ---
 
 <a id="capabilities"></a>
-## 01 · 不止于聊天，也能把事情做完
+## 01 · More than chat: it finishes the job
 
-| **CONVERSATION · 自然对话** | **MEMORY · 持久记忆** | **EXECUTION · 后台执行** |
+| **CONVERSATION** | **MEMORY** | **EXECUTION** |
 | :--- | :--- | :--- |
-| 群聊与私聊、多模型切换、按自然段回复。<br />该安静时输出 `[silence]`，不强行刷存在感。 | 稳定时间线、`history` 原文查询、每会话独立记忆。<br />每天整理笔记，不把全部历史硬塞进提示词。 | 群独立 VM 内的 Codex 处理研究、代码、文件和视频。<br />支持状态查询、追加要求、反问和取消。 |
-| **MULTIMODAL · 不只读文字** | **AUTOMATION · 到点就做** | **CONTROL · 看得见过程** |
-| 图片理解、动态表情包、中文语音回复。<br />附件导入、浏览器、PDF、视频转写与文件交付。 | 一次性提醒和周期任务，统一使用 Asia/Shanghai。<br />周期任务交后台执行，结果再由前台送回。 | 管理台查看聊天、用量、任务和最近模型请求。<br />管理员私聊任务可通过宿主只读检查服务器。 |
+| Group and private chats, switchable models, replies sent paragraph by paragraph.<br />When it has nothing to add it outputs `[silence]` and sends nothing. | A stable timeline, a `history` tool that reads the original messages, and a separate memory per conversation.<br />Notes are tidied every night, so the prompt does not carry the whole history. | Codex runs research, code, file and video tasks in a VM that belongs to the group.<br />You can ask for status, add requirements, answer its questions, or cancel. |
+| **MULTIMODAL** | **AUTOMATION** | **CONTROL** |
+| Vision models receive up to four current/quoted images; `view_image` finds recent images, with descriptions for text-only models. Optional image captions (switches and daily limits isolated per physical conversation) and background video conclusions are searchable in history. Video uses frames/transcription or an explicitly configured host-side video model.<br />Animated stickers and voice replies in Chinese.<br />Attachment import, a browser, PDFs, video transcription and file delivery. | One-off reminders and recurring tasks, all in Asia/Shanghai time.<br />Recurring tasks run in the background, and the foreground agent delivers the result. | `/stop`, `/start` and `/kill` control this conversation, with persistent state and role checks; `/cancel` stays personal. `/config` reads fixed conversation settings; verified group admins or the private peer can change task limits, proactive replies, program quotas and image captions. The admin console offers the same controls alongside chats, usage and jobs.<br />Owner-private jobs can inspect servers and, when explicitly configured, request fixed host operations with ten-minute private approval codes. The console has a read-only operations audit. |
 
-> **聊天像聊天，任务像任务。** 前台不堵在长流程里；后台不直接向群里发消息，而是交回报告，让前台用一致的人设整理和交付。
+> **Chat stays chat, and tasks stay tasks.** The foreground agent is never blocked by a long job. The background agent never posts to the group itself: it hands back a report, and the foreground agent delivers it in the same persona.
 
-### 你说一句，它可以这样开工
+### What happens when you ask
 
-| 你想做的事 | Gaoji 的工作方式 |
+| What you ask for | How gaoji handles it |
 | :--- | :--- |
-| 「查一下最近的内存价格，整理成图和 CSV」 | 前台报告开始 → 后台检索和处理数据 → 交回带来源的结论与文件。 |
-| 「这段视频讲了什么？」 | 导入附件 → VM 内抽帧、看画面、转写音轨 → 前台给出总结。 |
-| 「顺便把另一款型号也加上」 | 找到当前任务并插话，不为同一件事重复开工。 |
-| 「明天下午三点提醒我开会」 | 创建一次性提醒，到点经官方消息通道投递。 |
+| "Look up recent RAM prices and give me a chart and a CSV." | The foreground agent says it has started → the background agent searches and processes the data → you get conclusions with sources, plus the files. |
+| "What is this video about?" | The attachment is imported → frames are extracted and viewed and the audio is transcribed in the VM → the foreground agent gives a summary. |
+| "Add the other model to that as well." | It finds the running job and steers it, so the same work is not started twice. |
+| "Remind me about the meeting at 3 pm tomorrow." | It creates a one-off reminder, delivered on time through the official message channel. |
 
-<sub>以上是能力与流程示例，不是平台截图或固定输出承诺。实际效果取决于模型、宿主配置与 QQ 平台权限。</sub>
+<sub>These are examples of capabilities and flows, not platform screenshots or a promise of fixed output. Real results depend on the model, the host configuration and the permissions QQ grants.</sub>
 
 <a id="architecture"></a>
-## 02 · 前台会聊，后台会做，边界清楚
+## 02 · The foreground chats, the background works, and the boundary is clear
 
 <p align="center">
-  <img src="docs/assets/gaoji-architecture.svg" alt="架构：QQ 经入站适配进入前台；复杂任务落库，由 Codex VM 执行；模型请求经宿主中转；报告回到前台，再经 Outbox 交付。" width="100%" />
+  <img src="docs/assets/gaoji-architecture.en.svg" alt="Architecture: QQ messages enter the foreground agent through the inbound adapter. Complex tasks are stored as jobs and run by Codex in a VM. Model requests go through a host relay. Reports return to the foreground agent and are delivered through the outbox." width="100%" />
 </p>
 
-- **对话层**：官方入站、绑定与权限 → 时间线和记忆 → 多模型 Agent → 统一投递。
-- **执行层**：持久 Job → 宿主驱动 Codex → 会话 VM 的 `/work` → 报告唤醒前台。
-- **状态层**：PostgreSQL 保存聊天、记忆、任务、授权、模型请求与发送回执。
+- **Conversation layer**: official inbound events, binding and permissions → timeline and memory → multi-model agent → one delivery path.
+- **Execution layer**: durable jobs → the host drives Codex → `/work` in the conversation's VM → the report wakes the foreground agent.
+- **State layer**: PostgreSQL stores chats, memory, jobs, grants, model requests and delivery receipts.
 
 <details>
-<summary><strong>展开运行边界与安全设计</strong></summary>
+<summary><strong>Runtime limits and security design</strong></summary>
 
-- 同时最多 **3 个**活跃后台任务，每个最长 **2 小时**；支持插话、中断和取消。
-- 同一会话复用自己的 VM 和 `/work`。运行任务在服务重启后标记中断，文件保留，不假装自动续跑。
-- **QQ 凭据、模型 Key 和运维凭据只留在宿主**。VM 只拿可撤销的任务 Token。
-- VM 网络限制宿主及内网访问，仅放行公网、DNS 和指定中转通道；不能把“用了 VM”当作隔离已经完成。
-- 后台不能直接发送 QQ。`history`、搜索和 `ask_main` 由宿主代调用；`ops_read` 仅供 owner 私聊发起的任务。
-- 任务完成、文件上传、消息入队和平台回执是不同阶段。**不把生成成功当作最终送达。**
+- At most **3** background jobs run at once, with a default **6-hour** limit configurable per conversation (**1–6 hours**) under Tasks & delivery. Existing deadlines never change; `ask_main` waits at most **2 hours**, clipped to the job's remaining time. Jobs can be steered, interrupted and cancelled.
+- Group owners/admins or a host owner can `/stop`, `/start` and `/kill`; an admitted private-chat peer controls only that private chat. Stop survives restart, keeps recording messages and optional image captions, and cancels old replies/jobs. Commands still respond. Start never replays old messages/results; skipped schedule occurrences stay skipped. A request already accepted by QQ cannot be unsent by stopping.
+- `/status` shows this physical conversation's recorded 24-hour/7-day model tokens, token-weighted cache hit rate and USD list-price cost at each request's rate snapshot, plus your running tasks. Missing prices/usage or unfinished requests produce a lower bound (`≥`), not a free/complete bill; old usage is not repriced. `/usage` remains your completed-turn totals and `/task` your task list. Per-dimension admin costs and daily budgets are not yet available; unfinished feature development is paused.
+- A conversation reuses its own VM and `/work`. A job that was running when the service restarted is marked as interrupted; its files are kept, and it is not silently resumed.
+- **QQ credentials, model keys and operations credentials stay on the host.** The VM only receives revocable job and conversation-scoped VM tokens, never credentials that can retrieve host secrets.
+- The VM's network cannot reach the host or the internal network. Only the public internet, DNS and the relay ports are allowed. Using a VM is not, by itself, treated as isolation.
+- Background jobs can use VM-scoped `gaoji say/send-file` without QQ credentials or impersonating a human. `history`, search and `ask_main` are called by the host; `ops_read` is available only to jobs started from the owner's private chat.
+- `ops_act` is off by default and only available in a verified owner's private job with unshared history. The host sends a separate one-time approval question; only that owner's authenticated private reply authorizes the exact recipe and parameters. No arbitrary shell or VM operations network. Cancelled/restarted intents and unknown outcomes are not replayed; queued is not succeeded. The operations audit page shows requester, approval, receipt and bounded output without offering an alternative approval button.
+- Personal browser logins belong only in a private conversation VM; group bot-account login requires a verified owner/admin request and a shared-use notice. `/logins` lists this conversation's cookie domains, not proof of valid login; offline VMs are not automatically booted. `/logout <domain>` clears that site's local state; group cleanup requires an owner/admin. Uncertain results are never retried automatically. The admin conversation browser panel lists domains and recent cleanup outcomes, and can clear all local browser data after explicit confirmation. It requires a current VM snapshot and resource version; uncertain outcomes never trigger an automatic replay.
+- A finished job, an uploaded file, a queued message and a platform receipt are separate stages. **A generated result is not counted as delivered.**
 
-详见 [沙箱安全边界](docs/sandbox-security.md) 与 [当前交接记录](docs/HANDOFF.md)。
+See [Sandbox security](docs/sandbox-security.md) and the [current handoff record](docs/HANDOFF.md).
 
 </details>
 
 <a id="quick-start"></a>
-## 03 · 从本地启动开始
+## 03 · Run it locally
 
-**准备好**：Python 3.12+、[uv](https://docs.astral.sh/uv/)、启用 pgvector 的 PostgreSQL 17、官方 QQ 机器人凭据和模型 API。完整文件/浏览器/视频能力推荐使用配置好的 Linux KVM 宿主。
+**You need**: Python 3.12+, [uv](https://docs.astral.sh/uv/), PostgreSQL 17 with pgvector, official QQ bot credentials and a model API. For the full file, browser and video features, use a Linux host with KVM configured.
 
-**① 获取项目与锁定依赖**
+**① Get the project and install the locked dependencies**
 
 ```sh
 git clone https://github.com/zty20040403/gaojibot.git
@@ -89,17 +97,17 @@ uv sync --locked
 cp .env.example .env
 ```
 
-**② 配置宿主环境**
+**② Configure the host**
 
-编辑 `.env`，至少配置数据库、模型，以及官方 QQ 的受保护凭据文件路径。文件能力还需要宿主配置和 VM 后端，不能只打开一个开关。
+Edit `.env`. At minimum, set the database, the model, and the paths of the protected credential files for the official QQ bot. File features also need the host configuration and a VM backend; a single switch does not enable them.
 
-| 配置入口 | 负责什么 |
+| Where | What it covers |
 | :--- | :--- |
-| [`.env.example`](.env.example) | 数据库、模型、人设、搜索、VM 和后台任务参数。 |
-| [官方 QQ 接入](docs/qq-official.md) | 机器人接入、绑定和官方发送行为。 |
-| [宿主配置](docs/qq-official-host-config.md) | 文件、媒体、主动接话及可选能力。 |
+| [`.env.example`](.env.example) | Database, models, persona, search, VM and background job settings. |
+| [Official QQ integration](docs/qq-official.md) | Connecting the bot, binding, and how official sending behaves. |
+| [Host configuration](docs/qq-official-host-config.md) | Files, media, proactive replies and optional features. |
 
-**③ 迁移数据库并启动**
+**③ Migrate the database and start**
 
 ```sh
 uv run python -m src.bot_storage.cli upgrade
@@ -107,12 +115,12 @@ uv run python bot.py
 ```
 
 > [!IMPORTANT]
-> AppID、AppSecret 和绑定 pepper 从宿主私有文件读取，权限使用 `0600`。不要提交密钥、真实 QQ/openid 或群号，不要把凭据复制进 VM。管理员身份来自核对过的官方私聊事件，普通 QQ 号不是 openid。
+> The AppID, AppSecret and binding pepper are read from private files on the host with mode `0600`. Do not commit secrets, real QQ numbers, openids or group numbers, and do not copy credentials into the VM. Admin identity comes from a verified official private-chat event; a plain QQ number is not an openid.
 
 <a id="deployment"></a>
-## 04 · 用 NixOS 管理运行环境
+## 04 · Deploy with NixOS
 
-Flake 提供默认包、`sandbox-image`、`nixosModules.default`，以及独立的 cluster-control / worker 模块。
+The flake provides the default package, `sandbox-image`, `nixosModules.default`, and separate cluster-control and worker modules.
 
 ```nix
 services.gaoji = {
@@ -128,28 +136,30 @@ services.gaoji = {
 };
 ```
 
-持久工作区还需 `sandbox.enable = true`、`sandbox.backend = "vm"`、固定版本 Debian cloud image 和 `sandbox.vmRoot`。上述最小示例不包含完整 VM 配置。
+Persistent workspaces also need `sandbox.enable = true`, `sandbox.backend = "vm"`, a pinned Debian cloud image and `sandbox.vmRoot`. The minimal example above does not include the full VM configuration.
 
-后台模型及推理强度可在管理台「任务与投递」修改。`opsRead.baseUrl/tokenFile` 仅供宿主读取；`voiceAsr.enable` 可启用短语音本地转写回退。已有 VM 需要显式升级，群文件继续保留。
+The background model and its reasoning effort can be changed on the console's jobs and delivery page. `opsRead.baseUrl` and `opsRead.tokenFile` are read only by the host. `voiceAsr.enable` turns on a local transcription fallback for short voice messages. Existing VMs must be upgraded explicitly; group files are kept.
 
-**上线前先读 → [部署与数据调整](docs/deploy-rework.md) · [沙箱安全](docs/sandbox-security.md)**
+**Read before going live → [Deployment and data changes](docs/deploy-rework.md) · [Sandbox security](docs/sandbox-security.md)**
 
 <a id="documentation"></a>
-## 05 · 文档导航
+## 05 · Documentation
 
-| 我想了解… | 从这里开始 |
+Most documents are currently written in Chinese.
+
+| I want to know… | Start here |
 | :--- | :--- |
-| QQ 如何接入、绑定与发送 | [官方 QQ 接入](docs/qq-official.md) |
-| 文件、媒体和主动接话如何启用 | [官方 QQ 宿主配置](docs/qq-official-host-config.md) |
-| VM 为什么不能访问宿主和内网 | [Sandbox Security](docs/sandbox-security.md) |
-| 如何部署、备份和调整历史数据 | [部署说明](docs/deploy-rework.md) |
-| 哪些已实现、哪些仍待验收 | [HANDOFF 最新执行记录](docs/HANDOFF.md) |
+| How QQ is connected, bound and sent to | [Official QQ integration](docs/qq-official.md) |
+| How files, media and proactive replies are enabled | [Official QQ host configuration](docs/qq-official-host-config.md) |
+| Why the VM cannot reach the host or the internal network | [Sandbox security](docs/sandbox-security.md) |
+| How to deploy, back up and adjust historical data | [Deployment guide](docs/deploy-rework.md) |
+| What is implemented and what still awaits acceptance | [Latest handoff record](docs/HANDOFF.md) |
 
 <details>
-<summary><strong>开发检查与贡献约定</strong></summary>
+<summary><strong>Development checks and contribution rules</strong></summary>
 
 ```sh
-# 先配置本地 PostgreSQL 测试容器所需的 GAOJI_TEST_PASSWORD。
+# First set GAOJI_TEST_PASSWORD for the local PostgreSQL test container.
 source tools/dev/testenv.sh gaoji_test
 python -m unittest discover -s tests -p 'test_*.py'
 ruff check bot.py src tests tools migrations nix
@@ -157,16 +167,16 @@ python tools/dev/check_unresolved_imports.py src
 cd admin-ui && npm ci && npm run build
 ```
 
-测试使用独立本地库，不使用正式 QQ 凭据。贡献前请读 [AGENTS.md](AGENTS.md)：每个 PR 聚焦一件事，功能验收看真实行为，不把模拟回执当作真实送达。
+Tests use a separate local database and never the production QQ credentials. Read [AGENTS.md](AGENTS.md) before contributing: each PR does one thing, features are accepted on real behaviour, and a simulated receipt does not count as a real delivery.
 
 </details>
 
 <details>
-<summary><strong>当前范围与旧版本</strong></summary>
+<summary><strong>Current scope and older versions</strong></summary>
 
-当前仅面向官方 QQ。旧 OneBot/NapCat、桌面 App、项目工作区、群百科、固定消息、MCP、桥接和多角色 Sub-Agent 已移除，旧实现保存在 `pre-rework-20261031` 标签；不是当前路线的待完成功能。
+gaoji currently targets the official QQ platform only. The old OneBot/NapCat adapter, the desktop app, project workspaces, the group wiki, pinned messages, MCP, bridges and multi-role sub-agents have been removed. Their code is kept under the `pre-rework-20261031` tag and is not planned work on the current roadmap.
 
-GitHub 机器人账号与自动提 PR 功能暂缓。长任务结果和提醒能否主动发出，还取决于目标群权限和官方配额。
+Optional host-keyed APIs let background jobs use a GitHub bot account for public repositories: credentials stay on the host, calls have per-conversation limits and an admin audit, and commits use a public noreply identity. The owner must configure the account and keys; real GitHub/VM acceptance is still pending. VM-token API access, direct program speech, quota-limited model wakes, scoped history/web reads, resumable chat events and bounded file sending and a stdlib `gaoji` CLI are wired; resident units now synchronize after boot, with bounded host recovery, idle keepalive and a persistent crash circuit. `/units` and the next chat turn show persisted program state and delivery failures. The resident-program admin page exposes scoped units, failure logs, quotas, switches, fenced recovery and program message receipts. `gaoji run-bg` now admits one-shot VM commands, streams bounded output and attempts a fenced completion wake; `command-status` and `stop-bg` distinguish acceptance, process exit and actual notification delivery. Tasks & delivery now lists and cancels commands and sets per-conversation agent time limits; stop requests remain pending until the guest confirms process exit. Real VM/QQ acceptance is still pending. See [official host configuration](docs/qq-official-host-config.md). Whether long-job results and reminders can be sent proactively also depends on the target group's permissions and the official quota.
 
 </details>
 
@@ -174,5 +184,5 @@ GitHub 机器人账号与自动提 PR 功能暂缓。长任务结果和提醒能
 
 <p align="center">
   <strong>Keep the conversation human. Let the agent do the work.</strong><br />
-  <sub>Built by Kenneth · <a href="LICENSE">MIT License</a> · <a href="https://github.com/zty20040403/gaojibot/issues">反馈与建议</a></sub>
+  <sub>Built by Kenneth · <a href="LICENSE">MIT License</a> · <a href="https://github.com/zty20040403/gaojibot/issues">Feedback and suggestions</a></sub>
 </p>

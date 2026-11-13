@@ -355,7 +355,9 @@ class ArtifactStore:
             source = current_source(cursor, binding, self._now())
             now = self._now()
             artifact_id = secrets.token_hex(16)
-            fields = dict(artifact_id=artifact_id, request_key=key, account_key=binding.endpoint.account.key,
+            from .conversation_control import state
+            fields = dict(conversation_generation=state(cursor,binding.endpoint)['stop_generation'],
+                artifact_id=artifact_id, request_key=key, account_key=binding.endpoint.account.key,
                 endpoint_key=binding.endpoint.key, requester_actor_key=binding.actor.key,
                 source_execution_id=binding.source_execution_id, source_task_id=binding.task_id,
                 source_task_revision=1 if binding.task_id is not None else None,
@@ -367,9 +369,11 @@ class ArtifactStore:
                 draft=draft, draft_reason=draft_reason, created_at=now,
                 pending_deadline_at=binding.pending_deadline_at, retain_until=binding.pending_deadline_at)
             if binding.extension is not None:
-                if binding.extension.kind not in {'project','migration','background'}:
+                if binding.extension.kind not in {'project','migration','background','program'}:
                     raise ArtifactError('artifact_extension_unavailable')
                 fields['source_extension_kind'] = binding.extension.kind
+                if binding.extension.kind=='program':
+                    fields['source_program_action_id'] = source['source_program_action_id']
                 if binding.extension.kind=='migration' or binding.source_migration_item_id is not None:
                     if (binding.source_migration_item_id is None or binding.source_execution_id is not None
                             or binding.source_native_message_id is not None

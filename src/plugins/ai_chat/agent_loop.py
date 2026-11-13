@@ -254,6 +254,7 @@ def _build_messages(
     replay_prefix: list[ChatMessage] | None = None,
     system_context: str = "",
     system_prompt: str | None = None,
+    input_images: tuple[ToolImage, ...] = (),
 ) -> list[ChatMessage]:
     if system_prompt is not None:
         # Chat layout: stable system and chat tail first, everything that changes last.
@@ -269,7 +270,11 @@ def _build_messages(
         if tool_context:
             current.append(tool_context)
         current.append("[新消息]\n" + (f"{current_user}：" if current_user else "") + user_text)
-        chat.append({"role": "user", "content": "\n\n".join(current)})
+        content = '\n\n'.join(current)
+        if input_images:
+            content = [{'type': 'text', 'text': content},
+                       *(part for image in input_images for part in image.parts())]
+        chat.append({"role": "user", "content": content})
         return chat
     messages = [
         {
@@ -292,7 +297,11 @@ def _build_messages(
     if tool_context:
         current.append("[本轮运行说明与上下文]\n" + tool_context)
     current.append("[当前用户问题]\n" + user_text)
-    messages.append({"role": "user", "content": "\n\n".join(current)})
+    content = '\n\n'.join(current)
+    if input_images:
+        content = [{'type': 'text', 'text': content},
+                   *(part for image in input_images for part in image.parts())]
+    messages.append({"role": "user", "content": content})
     return messages
 
 
@@ -442,6 +451,7 @@ async def ask_deepseek(
     final_stream_state: FinalStreamState | None = None,
     system_context: str = "",
     system_prompt: str | None = None,
+    input_images: tuple[ToolImage, ...] = (),
 ) -> str:
     _last_completion_profile.set(None)
     selected_profile = _resolve_profile(profile, model)
@@ -457,6 +467,7 @@ async def ask_deepseek(
         replay_prefix,
         system_context,
         system_prompt,
+        input_images=input_images,
     )
     response, emitted = await _completion_with_optional_stream(
         final_text_sink,
@@ -556,6 +567,7 @@ async def ask_deepseek_with_tools(
     system_context: str = "",
     tool_catalog: ToolCatalog | None = None,
     system_prompt: str | None = None,
+    input_images: tuple[ToolImage, ...] = (),
 ) -> str:
     async def publish_transcript(items):
         if transcript_sink is not None:
@@ -582,6 +594,7 @@ async def ask_deepseek_with_tools(
             final_text_sink=final_text_sink,
             final_stream_state=final_stream_state,
             system_prompt=system_prompt,
+            input_images=input_images,
         )
         await publish_transcript([*history, {"role": "user", "content": user_text}, {"role": "assistant", "content": answer}])
         return answer
@@ -596,6 +609,7 @@ async def ask_deepseek_with_tools(
         system_context=system_context,
         replay_prefix=replay_prefix,
         system_prompt=system_prompt,
+        input_images=input_images,
     )
     if trace is not None:
         _configure_trace(trace, selected_profile)
@@ -916,8 +930,7 @@ async def ask_deepseek_with_tools(
                 0,
             )
             if isinstance(tool_result, ToolImage):
-                tool_images.extend([{'type': 'text', 'text': tool_result.text},
-                    {'type': 'image_url', 'image_url': {'url': tool_result.data_url}}])
+                tool_images.extend(tool_result.parts())
             tool_result = _bounded_tool_result(
                 tool_result,
                 min(settings.tool_max_result_chars, remaining_context),

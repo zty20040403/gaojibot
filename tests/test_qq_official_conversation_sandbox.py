@@ -55,6 +55,20 @@ class ConversationSandboxTests(unittest.IsolatedAsyncioTestCase):
             await manager.maintain_conversations(now=31*86400)
             manager.destroy.assert_awaited_once()
 
+    async def test_resident_skips_idle_and_disabled_registry_keeps_disk(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = VmSandboxManager(image='/TEST_BASE',root=root)
+            item = dict(id='s123456',owner_ref='qqo:conversation:TEST',last_used=1,created_at=1,
+                programs=dict(retained=True,wanted=True))
+            manager._all_metadata = AsyncMock(return_value=[item])
+            manager._metadata = AsyncMock(return_value=item)
+            manager.stop_owned,manager.destroy = AsyncMock(),AsyncMock()
+            await manager.maintain_conversations(now=90*86400)
+            manager.stop_owned.assert_not_awaited(); manager.destroy.assert_not_awaited()
+            item['programs']['retained'] = False
+            await manager.maintain_conversations(now=90*86400)
+            manager.stop_owned.assert_awaited_once(); manager.destroy.assert_not_awaited()
+
     def test_prepared_conversation_image_does_not_reinstall_packages(self):
         raw = json.loads(VmSandboxManager._cloud_config(conversation=True).split('\n', 1)[1])
         prepared = json.loads(VmSandboxManager._cloud_config(conversation=True, prepared=True).split('\n', 1)[1])

@@ -30,7 +30,7 @@ def message(*, app="app-A", environment="test", group="group-A", user="opaque-me
 class CommandParsingTests(unittest.TestCase):
     def test_known_aliases_and_opaque_binding_secret(self):
         for text, name in (("/模型 profile", "model"), ("!reasoning 高", "effort"),
-                           ("/ps", "task"), ("/取消任务 t45", "cancel"), ("/帮助", "help")):
+                           ("/ps", "task"), ("/取消任务 t45", "cancel"), ("/帮助", "help"), ("/units", "units"), ("!程序", "units"), ("!config", "config")):
             self.assertEqual(parse_command(text).name, name)
         parsed = parse_command("/bind SECRET-WITH-NONNUMERIC-IDENTITY")
         self.assertEqual(parsed.argument, "SECRET-WITH-NONNUMERIC-IDENTITY")
@@ -74,6 +74,42 @@ class PlatformCommandTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(worker())
         self.workers.append(task)
         return await ready, task
+
+    async def test_program_status_is_read_only_and_explicitly_unavailable_without_host(self):
+        self.assertEqual((await self.run_command('/units')).status,'unavailable')
+        self.assertNotIn('/units',(await self.run_command('/help')).text)
+        called = []
+        def status(inbound,request):
+            called.append(inbound.endpoint)
+            return CommandResult('ok','TEST_UNITS')
+        services = replace(self.services,units=status)
+        self.assertIn('/units',(await self.run_command('/help',services=services)).text)
+        self.assertEqual((await self.run_command('/units',services=services)).text,'TEST_UNITS')
+        self.assertEqual((await self.run_command('/units TEST_OTHER',services=services)).status,'syntax')
+        self.assertEqual(called,[message().endpoint])
+
+    async def test_status_is_a_billing_command_not_an_alias_for_task_or_foreign_query(self):
+        self.assertEqual(parse_command('/status').name,'status')
+        self.assertEqual((await self.run_command('/status')).status,'unavailable')
+        self.assertNotIn('/status',(await self.run_command('/help')).text)
+        callback = Mock(return_value=CommandResult('ok','TEST_BILLING'))
+        services = replace(self.services,status=callback)
+        self.assertIn('/status',(await self.run_command('/help',services=services)).text)
+        text = (await self.run_command('/status',services=services)).text
+        self.assertIn('TEST_BILLING',text)
+        self.assertIn('本人',text)
+        self.assertEqual((await self.run_command('/status TEST_OTHER',services=services)).status,'syntax')
+        self.assertEqual(callback.call_count,1)
+        self.assertEqual((await self.run_command('/task')).status,'ok')
+
+    async def test_config_requires_native_host_callback_and_is_advertised_only_when_available(self):
+        self.assertEqual((await self.run_command('/config')).status,'unavailable')
+        self.assertNotIn('/config',(await self.run_command('/help')).text)
+        callback = Mock(return_value=CommandResult('ok','TEST_CONFIG'))
+        services = replace(self.services,config=callback)
+        self.assertIn('/config',(await self.run_command('/help',services=services)).text)
+        self.assertEqual((await self.run_command('/config program_say_limit 0',services=services)).text,'TEST_CONFIG')
+        self.assertEqual(callback.call_args.args[1].argument,'program_say_limit 0')
 
     async def test_missing_host_policy_and_platform_owner_cannot_change_models(self):
         inbound = replace(message(), platform_role="owner")

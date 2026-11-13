@@ -32,8 +32,10 @@ def background_factory(*,proactive_configuration=ProactiveConfiguration(),proact
             from src.plugins.ai_chat.runtime_clock import runtime_clock_prompt
             scorer=SharedProactiveScorer(profile=profile,persona=app.settings.system_prompt or PERSONA,clock_prompt=runtime_clock_prompt,
                 max_reply_chars=proactive_configuration.max_reply_chars,record_usage=usage)
+            from .billing import scoped
             proactive=ProactiveIngress(token=token,transaction=runtime.store.transaction,admission=runtime.store.admitted,
-                outbox=runtime.outbox,scorer=scorer,clock=runtime.store.clock,database_calls=runtime._calls)
+                outbox=runtime.outbox,scorer=scorer,clock=runtime.store.clock,database_calls=runtime._calls,
+                billing=lambda endpoint,actor,current:scoped(app,endpoint,'proactive',actor,current=current))
         service=NativeBackgroundService(runtime=runtime,token=token,proactive=proactive)
         service.attach()
         return service

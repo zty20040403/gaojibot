@@ -104,6 +104,120 @@ and shared disk ownership. tap or passt with explicit rules (as in maxx) needs
 a bridge, DHCP, NAT and a new relay address. The cgroup filter keeps slirp and
 the relay address as they are.
 
+### Host-mediated operations
+
+Operations are disabled unless the host declares fixed recipes. `ops_act` is a
+host tool for the original verified owner's private background job only; shared
+history aliases, groups and VM/program identities cannot acquire it. No SSH key,
+control address/token or operations network is provided to the guest. The tool
+catalog exposes only recipe descriptions and parameter validation, never argv.
+
+A separate ephemeral private notice gives the exact recipe, arguments and a
+one-time code. Only a fresh authenticated plain-text reply from that owner within
+ten minutes can approve it; the notice must also have a confirmed QQ receipt.
+Codes and notice bodies are not persisted in chat or inbound payloads. Task,
+owner grant/revision, account lease, route, stop generation and configuration
+remain checked during execution. Approval does not bypass these checks.
+
+A claim is never replayed after cancellation, restart or unknown remote results.
+An interrupted call may already have executed: cancelling locally does not prove
+remote rollback. Bounded summaries redact known host credentials (including JSON
+escapes) before storage; recipes must never print arbitrary business secrets.
+Only the original private task gets the output, marked as untrusted data. The
+admin operations page is a protected read-only audit, not another approval route.
+
+### Browser login state
+
+Personal QR/mobile-confirmation logins belong only in the requesting private
+conversation's VM, never a shared group VM or a shared-history alias. A group
+may use an explicitly requested bot public account only after host-verified
+owner/admin attribution and a notice that the login is usable by the whole
+group. This is not per-member encryption: members with guest root can read all
+state in their group VM. Host API keys and SSH credentials remain forbidden.
+
+The browser skill must not request or use passwords/SMS codes, export cookie or
+storage values, or treat login as permission for payment, publication or deletion.
+A site-specific login check waits at most 180 seconds; cookies, a missing QR code
+or a redirect alone are not evidence of success. QR files use the existing
+scoped file-delivery path and its real receipt, not a new unfenced sender.
+`/logins` and `/logout <domain>` use only the physical conversation's VM,
+without creating or booting it. Native cleanup requires the private peer or a
+verified group/host owner/admin and rechecks the original command, deadline,
+lease and route. The host dispatches fixed guest code with an operation ID,
+observed boot and short expiry; guest write-ahead receipts are outside the
+browser profile. Interrupted or uncertain operations never automatically replay,
+including after a new login. A parent-domain cookie requires an explicit broader
+request. Clearing local state does not revoke other devices or server sessions.
+The admin conversation panel reads only domains and cleanup receipts. Clearing
+requires a logged-in administrator, CSRF, If-Match, explicit confirmation and a
+snapshot fence bound to the physical endpoint, VM, boot, route and account lease.
+The intent, resource version and audit commit before guest work; results append a
+separate audit entry. The live admin session is rechecked during guest waits.
+Cancellation/restart leaves an unknown outcome, never a replayable work item.
+The page distinguishes confirmed cleanup, not applied and unknown; neither an
+empty domain list nor an offline VM proves every website is logged out.
+These workflow and local tests are not real website/QQ acceptance evidence.
+
+### Conversation VM credentials
+
+A conversation VM is shared by that conversation's members as root. Anyone in
+it can ask the bot to read `/run/gaoji/token`; this is intentionally a
+conversation capability, not a personal identity or a host/API secret. The host
+stores only its SHA-256 hash and binds it to the physical endpoint, VM, boot,
+account lease and route generation. It never inherits the creator's owner or
+operations privileges, and request headers/body cannot choose another scope.
+
+Creation/start writes the token through the guest agent; stopping/destroying a
+VM revokes it before stopping the guest. On host restart, a running VM must have
+the same observed boot and token-file hash before its capability is restored.
+New HTTP requests also check its current boot/file identity. Rotation/revocation
+cancels admitted API calls, including upstream header waits and binary streams;
+a partial download is a transport failure, not a successful EOF.
+
+The VM token currently authorizes configured `/api/<name>/…` routes, direct
+`/vm/say`, queued `/vm/wake`, bounded `/vm/send-file`, scoped `/vm/actions` status reads, and the
+read-only `/vm/history`, `/vm/web-search`, `/vm/web-fetch` tools and `/vm/events`. It
+cannot use `/v1/models`, model responses, or the Codex app-server tunnel. Job
+tokens remain separate; missing or expired job tokens never fall back to VM
+authority. Both callers share physical-conversation API quotas. `/stop` leaves
+VM `/api` access available by design; it does not terminate guest programs.
+Both `/vm/say` and `/vm/wake` capture the stop generation in the first authentication transaction,
+before waiting for the guest agent or request body, and checks it again at
+admission and before HTTP delivery. Read/API scopes are separate from write
+scopes, so stop/start cannot revive an old action. Program plans have durable
+non-human provenance, share a conversation quota and cannot borrow a member's
+passive-reply window. Other `/vm` action routes must retain these same fences.
+Wake turns have no human/owner identity and only explicit read-only tools. They
+share the foreground endpoint lock, check every merged input program, and are
+cancelled on stop or revocation. Model usage is reserved before each request;
+unknown usage keeps its bound, and interrupted model runs are not replayed.
+Read tools remain available while stopped, use physical-conversation identity,
+and accept no scope/actor/key override. They are capped at 4 concurrent calls
+per conversation and 16 per host, with a 60-second tool timeout; disconnect or
+VM revocation cancels the actual tool operation. Event streams allow 2 concurrent
+subscriptions per conversation and 16 per host, expose only visible physical-scope
+chat with internal person/message IDs, and never expose raw transport identity fields.
+Committed-ledger pagination supports reconnection without an in-memory-only gap.
+Program file exports are restricted to the authenticated VM workspace, use bounded
+regular-file reads with no-follow checks at every path component, and share the say
+quota. Two exports per conversation/four per host, a 60-second export deadline, and
+live source checks bound this path. Exported bytes are immutable before queuing;
+retries cannot silently substitute a changed file, and unknown deliveries are not replayed.
+Guest-agent integration tests use local doubles and do not prove real KVM or
+QQ acceptance; resident-program local implementation does not replace owner-run acceptance.
+
+VM-only `/vm/commands` admits bounded argv for a one-shot guest systemd command.
+It captures both stop and command generations before guest/body waits; job tokens
+are not accepted. The child runs as sandbox with a clean environment, never with
+host keys or an inherited job token. Eight unfinished commands per conversation,
+a six-hour guest deadline and 64 MiB captured output bound normal execution.
+Commands are arbitrary code in the existing conversation VM, not a new host shell.
+A stop tombstone fences a late start; unconfirmed stops retain capacity and idle
+keepalive. Host cancellation of a guest-agent wait does not prove process exit.
+The host uses boot/ownership checks, preserves terminal receipts and only enqueues
+completion wakes under the original source and quotas. Status and per-command
+stop remain readable/usable during conversation stop; no other scope is accepted.
+
 ### Verifying a host
 
 Run as root on the host after deployment:

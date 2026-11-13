@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from src.plugins.ai_chat.message_ir import MessageBody, TextNode
+from dataclasses import replace
+from src.plugins.ai_chat.ledger import MessageLedger
+from src.plugins.ai_chat.timeline import render_line
+from src.plugins.ai_chat.message_ir import MediaNode, MessageBody, TextNode
 import asyncio
 import logging
 import traceback
@@ -59,6 +62,20 @@ class OfficialTurnLifecycle:
                     raise LifecycleError("turn_deadline_expired")
         await self._calls(check)
 
+    def command_source(self, cursor, inbound):
+        """Validate a native command in the caller's short transaction."""
+        if (inbound.endpoint != self.handle.endpoint or inbound.actor != self.handle.actor
+                or inbound.route_epoch != self.handle.route_epoch or inbound.scope.key != self.handle.scope_key
+                or inbound.native_message_id != self.handle.source_native_message_id):
+            raise LifecycleError("execution_input_mismatch")
+        row = self._current(cursor)
+        route = cursor.execute('SELECT generation,route_epoch FROM qq_official_endpoints WHERE endpoint_key=?',
+            (self.handle.endpoint.key,)).fetchone()
+        if (row["state"] != "executing" or int(self.clock()) >= row["deadline_at"] or route is None
+                or (route['generation'],route['route_epoch'])!=(self.handle.endpoint_generation,self.handle.route_epoch)):
+            raise LifecycleError("execution_effect_not_current")
+        return row
+
     @contextmanager
     def effect_scope(self, inbound):
         """Hold both execution fences across one synchronous command effect.
@@ -67,14 +84,8 @@ class OfficialTurnLifecycle:
         settings-store commit is not claimed to be atomic with its reply;
         interruption retains needs_attention and cannot replay the effect.
         """
-        if (inbound.endpoint != self.handle.endpoint or inbound.actor != self.handle.actor
-                or inbound.route_epoch != self.handle.route_epoch or inbound.scope.key != self.handle.scope_key
-                or inbound.native_message_id != self.handle.source_native_message_id):
-            raise LifecycleError("execution_input_mismatch")
         with self.transactions.transaction() as cursor:
-            row = self._current(cursor)
-            if row["state"] != "executing" or int(self.clock()) >= row["deadline_at"]:
-                raise LifecycleError("execution_effect_not_current")
+            self.command_source(cursor,inbound)
             yield cursor
 
     async def begin(self, *, inbound, selected_profile, objective, prompt_version):
@@ -137,13 +148,37 @@ class OfficialTurnLifecycle:
                         occurred_at=int(self.clock()), transaction_cursor=cursor)
         await self._calls(finish)
 
-    async def interrupted(self, *, turn_id, reason):
+    async def interrupted(self, *, turn_id, reason, trace=None):
         def interrupt():
             with self.transactions.transaction() as cursor:
-                row = self._current(cursor)
-                if row["journal_turn_id"] != turn_id:
-                    raise LifecycleError("execution_journal_mismatch")
-                return self.api.interrupt_execution(cursor, **self.args(), reason=reason)
+                # Stopping forbids new effects, not accounting for an already
+                # running call. Keep account ownership and exact source fences.
+                assert_epoch(cursor,self.token)
+                row = cursor.execute('''SELECT * FROM qq_official_turn_executions WHERE execution_id=?
+                    AND account_key=? AND account_fencing_epoch=? FOR UPDATE''',
+                    (self.handle.execution_id,self.token.account_key,self.token.epoch)).fetchone()
+                if row is None or (row['endpoint_key'],row['requester_actor_key'],row['canonical_message_id'],row['scope_key']) != (
+                        self.handle.endpoint.key,self.handle.actor.key,self.handle.canonical_message_id,self.handle.scope_key):
+                    raise LifecycleError('execution_source_mismatch')
+                if row['journal_turn_id'] != turn_id:
+                    raise LifecycleError('execution_journal_mismatch')
+                if row['state'] not in {'prepared','executing'}:
+                    return row['state']
+                result = self.api.interrupt_execution(cursor, **self.args(), reason=reason)
+                if turn_id is not None:
+                    payload = trace.to_payload() if trace else {}
+                    payload.update(failure={'code':reason},usage_incomplete=True)
+                    from .conversation_control import permitted
+                    cancelled = reason=='turn_cancelled_or_owner_lost' or not permitted(cursor,self.handle.endpoint,
+                        canonical=self.handle.canonical_message_id,commands=row['execution_kind']=='command')
+                    self.journal.finish_turn(turn_id,status='aborted' if cancelled else 'crashed',final_text='',trace_payload=payload,
+                        input_tokens=trace.input_tokens if trace else 0,output_tokens=trace.output_tokens if trace else 0,
+                        total_tokens=trace.total_tokens if trace else 0,finished_at=int(self.clock()),transaction_cursor=cursor)
+                    if self.usage is not None and trace is not None and (trace.input_tokens or trace.output_tokens):
+                        self.usage.record(scope_key=self.handle.scope_key,source='turn',provider=trace.provider,
+                            model=trace.model,input_tokens=trace.input_tokens,output_tokens=trace.output_tokens,
+                            cached_tokens=trace.cached_tokens,turn_id=turn_id,occurred_at=int(self.clock()),transaction_cursor=cursor)
+                return result
         return await self._calls(interrupt)
 
 
@@ -193,7 +228,21 @@ class OfficialTurnConsumer:
                 return decision, None, None
             inbound = load_turn_input(cursor, execution_api=self.api, token=self.token,
                 handle=decision.handle, job=job, now=now, admission=self.store.admitted)
-            return decision, inbound, job.payload.get('batch_text', text)
+            ids = tuple(job.payload.get('batch_message_ids', ()))
+            if kind == 'chat' and (ids or any(isinstance(n, MediaNode) for n in inbound.body.nodes)):
+                lines = []
+                for canonical in ids or (decision.handle.canonical_message_id,):
+                    message_row = MessageLedger._message_row(cursor, canonical)
+                    if message_row is None:
+                        raise self.api.ExecutionError('batch_source_unavailable')
+                    message = MessageLedger._row_to_message(message_row)
+                    if (message.scope_key != inbound.scope.key or message.source_endpoint_key != inbound.endpoint.key
+                            or message.sender_actor_key != inbound.actor.key or message.direction != 'inbound'):
+                        raise self.api.ExecutionError('batch_source_mismatch')
+                    lines.append(render_line(message))
+                text = ('[连续消息，请合起来回答一次]\n' if ids else '') + '\n'.join(lines)
+                inbound = replace(inbound, batch_message_ids=ids)
+            return decision, inbound, text
 
     def _result(self, life):
         with self.outbox.deliveries.transaction() as cursor:
@@ -225,7 +274,7 @@ class OfficialTurnConsumer:
             return await self._execute(job)
         except asyncio.CancelledError:
             raise
-        except (ToolLeaseLost, LeaseLost):
+        except (ToolLeaseLost, LeaseLost, execution.ExecutionFenceLost):
             logging.getLogger(__name__).warning('QQ turn stopped: account or permission changed')
             return {'status': 'cancelled'}
         except Exception as error:
@@ -240,6 +289,9 @@ class OfficialTurnConsumer:
                     if row is None:
                         return
                     endpoint, actor = EndpointKey.parse(row['endpoint_key']), ActorKey.parse(row['requester_actor_key'])
+                    from .conversation_control import permitted
+                    if not permitted(cursor,endpoint,canonical=row['canonical_message_id'],commands=row['execution_kind']=='command'):
+                        return
                     self.outbox.enqueue(self.token, rendered=render_plan(MessageBody((TextNode(0, '这次处理失败了，请再试一次。'),)), endpoint),
                         requester=actor, logical_key='turn-error:' + row['execution_id'], source_scope_key=row['scope_key'],
                         source_native_message_id=row['source_native_message_id'], source_canonical_message_id=row['canonical_message_id'],
@@ -342,7 +394,8 @@ def build_turn_consumer(runtime, token, app):
                 and (row["binding_state"] == "active" if endpoint.kind == "group"
                      else row["binding_state"] != "revoked"))
 
-    service_options = {"scope_enabled": scope_enabled}
+    from .billing import foreground
+    service_options = {"scope_enabled": scope_enabled, "billing_factory": foreground(runtime,app)}
     media = getattr(runtime, 'media_service', None)
     if media is not None:
         service_options['media_factory'] = media.foreground
@@ -403,9 +456,27 @@ def build_turn_consumer(runtime, token, app):
         if agents is not None:
             from .background_agents import AgentCommands
             tasks = AgentCommands(tasks, agents)
-        services = CommandServices(running_tasks=tasks,
+        async def units(current, request):
+            def authorize(cursor):
+                return life.command_source(cursor,current)
+            return await agents.vm_lifecycle.status.command(current,request,authorize=authorize)
+        async def browser(current, request):
+            def authorize(cursor):
+                source = life.command_source(cursor,current)
+                if request.name=='logout' and current.endpoint.kind=='group':
+                    from .message_roles import source_role
+                    role = source_role(cursor,current.endpoint,current.actor,source['canonical_message_id'],now=int(runtime.store.clock()))
+                    if role not in {'owner','admin'} and runtime.store.authority.owner_for_actor(cursor,current.endpoint,current.actor) is None:
+                        raise PermissionError('browser_logout_denied')
+                return source
+            return await agents.vm_lifecycle.browser.command(current,request,authorize=authorize,key=life.handle.execution_id)
+        from .config_commands import command as config_command
+        from .status_commands import command as status_command
+        services = CommandServices(running_tasks=tasks,config=config_command(runtime,life,app),status=status_command(runtime,life,app),
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
-            host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls))
+            host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls),
+            units=units if agents is not None and agents.vm_lifecycle is not None else None,
+            browser=browser if agents is not None and agents.vm_lifecycle is not None else None)
         return guarded_services(services, inbound, effect_scope=effect_scope,
             database_call=runtime._calls)
 

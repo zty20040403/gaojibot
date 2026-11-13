@@ -52,12 +52,13 @@ class OfficialSendStore:
         self.mention_authority = mention_authority or (lambda cursor, endpoint: frozenset())
         self.max_wait_seconds = max_wait_seconds
         self.protected_payloads, self.approval_authority, self.source_guard = protected_payloads, approval_authority, source_guard
+        self.ops_authority = None
         self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
-                transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None):
+                transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None, ops_action_id=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -65,10 +66,11 @@ class OfficialSendStore:
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
                 admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if challenge_id is not None or approval_source_id is not None else None, binding_preview=binding_preview, control_reply_id=control_reply_id,
+                pepper=self.pepper if challenge_id is not None or approval_source_id is not None or ops_action_id is not None else None, binding_preview=binding_preview, control_reply_id=control_reply_id,
                 max_wait_seconds=self.max_wait_seconds, approval_source_id=approval_source_id,
-                approval_authority=self.approval_authority, source_guard=None if purpose=='progress' else self.source_guard, source_proof=source_proof)
-        if purpose in {"binding_otp", "approval_otp"} and ref.created:
+                approval_authority=self.approval_authority, source_guard=None if purpose=='progress' else self.source_guard, source_proof=source_proof,
+                ops_action_id=ops_action_id,ops_authority=self.ops_authority)
+        if purpose in {"binding_otp", "approval_otp", "ops_approval"} and ref.created:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
@@ -100,17 +102,19 @@ class OfficialSendStore:
         cursor = transaction_cursor
         endpoint = EndpointKey.parse(artifact['endpoint_key'])
         now = int(self.clock())
+        program = artifact.get('source_program_action_id')
         turn = cursor.execute('SELECT journal_turn_id FROM qq_official_turn_executions WHERE execution_id=?',
                               (artifact['source_execution_id'],)).fetchone()
         ref = enqueue_plan(cursor, token=token,
             rendered=render_plan(MessageBody((TextNode(0, '文件：' + artifact['filename']),)), endpoint),
             requester=ActorKey.parse(artifact['requester_actor_key']),
-            logical_key='file:' + artifact['artifact_id'], source_scope_key=artifact['source_scope_key'],
+            logical_key='program:'+program if program else 'file:'+artifact['artifact_id'], source_scope_key=artifact['source_scope_key'],
             source_native_message_id=artifact['source_native_message_id'] or '',
             source_canonical_message_id=artifact['source_canonical_message_id'],
             turn_id=turn['journal_turn_id'] if turn else None,
             expires_at=min(artifact['pending_deadline_at'], uploaded.expires_at), now=now,
-            purpose='requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds)
+            purpose='unsolicited' if program else 'requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds,
+            source_generation=artifact['conversation_generation'],program_action_id=program)
         if ref.created:
             manifest = stable_json({'v': 1, 'media': {'file_info': uploaded.file_info},
                 'artifact_id': artifact['artifact_id'], 'source_native_message_id': artifact['source_native_message_id'] or ''})
@@ -172,8 +176,9 @@ class OfficialSendStore:
 
     def get(self, token, delivery_id):
         with self.deliveries.transaction() as cursor:
-            return cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?',
-                (delivery_id, token.account_key)).fetchone()
+            return cursor.execute('''SELECT d.*,p.action_id AS program_action_id FROM deliveries d
+                LEFT JOIN qq_official_program_actions p ON p.plan_id=d.plan_id
+                WHERE d.delivery_id=? AND d.account_key=?''',(delivery_id, token.account_key)).fetchone()
 
     def latest_inbound(self, endpoint):
         with self.deliveries.transaction() as cursor:
@@ -204,6 +209,40 @@ class OfficialSendStore:
             cursor.execute("UPDATE qq_official_endpoints SET proactive_state='denied',updated_at=? WHERE endpoint_key=?",
                 (int(self.clock()), endpoint.key))
 
+    def _conversation_permitted(self, cursor, row):
+        from .conversation_control import permitted
+        if row['purpose'] in {'binding_otp','approval_otp'} or control_for_delivery(cursor,row):
+            return True
+        plan = cursor.execute('SELECT conversation_generation FROM delivery_plans WHERE plan_id=?',(row['plan_id'],)).fetchone()
+        command = cursor.execute("SELECT 1 FROM qq_official_turn_executions WHERE plan_id=? AND execution_kind='command'",
+            (row['plan_id'],)).fetchone() is not None
+        return plan is not None and permitted(cursor,EndpointKey.parse(row['endpoint_key']),
+            canonical=row['source_canonical_message_id'],generation=plan['conversation_generation'],commands=command)
+
+    def _program_authorized(self, cursor, token, row):
+        from .program_delivery import denial
+        program = cursor.execute('SELECT 1 FROM qq_official_program_actions WHERE plan_id=?',(row['plan_id'],)).fetchone()
+        if program or ActorKey.parse(row['requester_actor_key']).identity_kind=='bot':
+            reason = denial(cursor,token=token,delivery=row,admission=self.admission,now=int(self.clock()))
+            return reason is None,reason
+        return None,None  # Ordinary human/control sources keep their existing rules.
+
+    def attempt_current(self, token, reservation):
+        return self.attempt_denial(token,reservation) is None
+
+    def attempt_denial(self, token, reservation):
+        with self.deliveries.transaction() as cursor:
+            assert_epoch(cursor,token)
+            row = cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?',
+                (reservation.delivery_id,token.account_key)).fetchone()
+            if row is None or row['current_attempt_id']!=reservation.attempt_id or row['status']!='sending':
+                return 'delivery_attempt_replaced'
+            if not self._conversation_permitted(cursor,row):
+                return 'conversation_stopped_or_replaced'
+            if row['purpose']=='ops_approval' and (self.ops_authority is None or not self.ops_authority.delivery_current(cursor,token,row)):
+                return 'ops_notice_source_unavailable'
+            return self._program_authorized(cursor,token,row)[1]
+
     def prepare(self, token, delivery_id, *, send_mode, msg_id=None, msg_seq=None):
         now = int(self.clock())
         with self.deliveries.transaction() as cursor:
@@ -217,12 +256,18 @@ class OfficialSendStore:
             endpoint = EndpointKey.parse(row['endpoint_key'])
             actor = ActorKey.parse(row['requester_actor_key'])
             route = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
+            if not self._conversation_permitted(cursor,row):
+                return self._finish(cursor,token,row,'cancelled','conversation_stopped_or_replaced',now)
             control = control_for_delivery(cursor, row)
-            authorized = control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor)
+            program_authorized,program_error = self._program_authorized(cursor,token,row)
+            authorized = program_authorized if program_authorized is not None else (
+                control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor))
             if row['purpose'] == 'approval_otp':
                 authorized = authorized and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now)
+            if row['purpose']=='ops_approval':
+                authorized = authorized and self.ops_authority is not None and self.ops_authority.delivery_current(cursor,token,row)
             if not authorized or route['membership_state'] != 'present' or route['binding_state'] == 'revoked':
-                return self._finish(cursor, token, row, 'failed', 'delivery_not_authorized', now)
+                return self._finish(cursor, token, row, 'failed', program_error or 'delivery_not_authorized', now)
             if now >= row['expires_at']:
                 return self._finish(cursor, token, row, 'failed', 'delivery_expired', now)
             if row['payload_mode'] == 'ephemeral' and delivery_id not in self._ephemeral:

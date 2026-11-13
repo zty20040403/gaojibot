@@ -49,6 +49,7 @@ def catalog() -> dict[str, Any]:
     add("units.failed", {}, [], "List failed systemd units on configured hosts")
     for name in ("host.facts", "host.metrics"):
         add(name, {"host": host}, ["host"], "Read target identity, boot, resource and filesystem evidence")
+    add("units.list", {"host": host}, ["host"], "List up to 200 loaded service units, including inactive units; explicit truncation")
     add("units.status", {"host": host, "unit": unit}, ["host", "unit"], "Read current systemd unit state")
     add("units.logs", {"host": host, "unit": unit,
         "lines": {**positive, "maximum": 500}, "since_seconds": {**positive, "maximum": 604800}},

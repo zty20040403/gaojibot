@@ -194,7 +194,7 @@ class CodexEngine:
         model, _ = self.model_settings.get()
         trace.provider, trace.model = 'codex', model
         await self.gateway.start()
-        token, channel = self.gateway.open()
+        token, channel = self.gateway.open(source=row,current=session.current)
         run = CodexRun(channel, session, progress, trace)
         reader = None
         try:
@@ -229,10 +229,11 @@ class CodexEngine:
         except asyncio.CancelledError:
             if run.thread and run.turn and not run.done.is_set():
                 with contextlib.suppress(Exception):
-                    await asyncio.wait_for(asyncio.shield(run.interrupt()), 5)
+                    await asyncio.wait_for(run.interrupt(), 5)
             raise
         finally:
             self.gateway.revoke(token)
-            for task in (reader, *run.handlers):
-                if task is not None:
-                    task.cancel()
+            tasks = [task for task in (reader,*run.handlers) if task is not None]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks,return_exceptions=True)

@@ -92,7 +92,12 @@ class AdminEventBroker:
 
 _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "qq_official_accounts": ("qq-official",),
-    "qq_official_endpoints": ("qq-official",),
+    "qq_official_endpoints": ("qq-official", "conversations", "programs", "commands", "browser"),
+    "conversation_settings": ("conversations", "media", "programs", "commands"),
+    "qq_official_background_commands": ("commands",),
+    "qq_official_program_actions": ("programs", "commands"),
+    "qq_official_program_wakes": ("programs", "commands"),
+    "program_controls": ("programs",),
     "qq_official_admin_bindings": ("qq-official",),
     "qq_official_owner_grants": ("qq-official",),
     "delivery_receipts": ("qq-official",),
@@ -108,7 +113,7 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "messages": ("groups",),
     "conversation_visibility": ("groups",),
     "background_jobs": ("qq-official", "backgroundAgents", "tasks", "overview"),
-    "deliveries": ("qq-official", "deliveries", "backgroundAgents", "overview"),
+    "deliveries": ("qq-official", "deliveries", "backgroundAgents", "commands", "overview"),
     "delivery_attempts": ("qq-official", "deliveries", "backgroundAgents", "overview"),
     "usage_events": ("usage", "overview"),
     "agent_turns": ("traces",),

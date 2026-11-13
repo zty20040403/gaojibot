@@ -72,6 +72,7 @@ class OpsCallRequest(BaseModel):
     operation: str = Field(min_length=1, max_length=80)
     params: dict[str, object] = Field(default_factory=dict)
     idempotency_key: str = Field(default="", max_length=160)
+    deadline_at: int | None = Field(default=None,gt=0,strict=True)
 
 
 class WorkerHeartbeatRequest(BaseModel):
@@ -273,6 +274,10 @@ def create_app(
     async def host_metrics(host: str) -> dict[str, object]:
         return (await service.query_capability("host.metrics.read", {"host": valid_host(host)})).as_dict()
 
+    @app.get("/v1/hosts/{host}/units", dependencies=auth)
+    async def units(host: str) -> dict[str, object]:
+        return await service.unit_list(valid_host(host))
+
     @app.get("/v1/hosts/{host}/units/{unit}", dependencies=auth)
     async def unit(host: str, unit: str) -> dict[str, object]:
         return await service.unit_status(valid_host(host), valid_unit(unit))
@@ -414,7 +419,7 @@ def create_app(
     async def ops_call(body: OpsCallRequest, principal: tuple[str, str] = Depends(signed_principal)):
         try:
             return await management_service().call(body.operation, body.params, actor=principal[0],
-                origin=principal[1], idempotency_key=body.idempotency_key)
+                origin=principal[1], idempotency_key=body.idempotency_key,deadline_at=body.deadline_at)
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from None
         except ValueError as exc:

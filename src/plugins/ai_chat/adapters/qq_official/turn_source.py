@@ -10,6 +10,7 @@ from ...conversation_scope import ConversationScope
 import secrets
 
 from .lease import assert_epoch
+from .conversation_control import permitted
 from ...message_ir import MessageBody, body_from_json, body_to_json
 from ...platform_types import ActorKey, EndpointKey, InboundMessage, ReplyCredential
 
@@ -78,6 +79,8 @@ def claim_execution(cursor, *, token, job, now, deadline_at, admission, result_p
     endpoint, actor = EndpointKey.parse(inbox['endpoint_key']), ActorKey.parse(message['sender_actor_key'])
     if not admission(cursor, endpoint, actor):
         raise ExecutionError('turn_source_unavailable')
+    if not permitted(cursor,endpoint,canonical=inbox['canonical_message_id'],commands=execution_kind=='command'):
+        return ExecutionDecision('cancelled','conversation_stopped_or_replaced')
     existing = cursor.execute('SELECT * FROM qq_official_turn_executions WHERE inbox_id=?', (inbox['inbox_id'],)).fetchone()
     if existing is not None:
         return ExecutionDecision('already_running' if existing['state']=='executing' else existing['state'])
@@ -100,6 +103,8 @@ def assert_execution_current(cursor, *, token, handle, job, now, admission):
     row = cursor.execute('SELECT * FROM qq_official_turn_executions WHERE execution_id=?', (handle.execution_id,)).fetchone()
     if row is None or row['account_fencing_epoch'] != token.epoch or row['state'] in {'cancelled','needs_attention'}:
         raise ExecutionFenceLost('turn_closed')
+    if not permitted(cursor,handle.endpoint,canonical=row['canonical_message_id'],commands=row['execution_kind']=='command'):
+        raise ExecutionFenceLost('conversation_stopped_or_replaced')
     return row
 
 

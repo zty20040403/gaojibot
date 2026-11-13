@@ -31,10 +31,10 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.calls = DatabaseCalls()
         self.addAsyncCleanup(self.calls.close)
 
-    def submit(self, key='TEST_ONE', *, independent=True):
+    def submit(self, key='TEST_ONE', *, independent=True, hours=6):
         with self.store.transaction() as cursor:
             return self.store.submit(cursor, kind='TEST_AGENT', key=key, source=self.source,
-                                     task='research', title='prices', profile='TEST_MODEL', independent=independent)
+                                     task='research', title='prices', profile='TEST_MODEL', independent=independent,hours=hours)
 
     def test_three_jobs_limit_idempotency_and_actor_isolation(self):
         first = self.submit()
