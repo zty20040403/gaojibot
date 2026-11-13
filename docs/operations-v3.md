@@ -52,7 +52,7 @@ AI_GROUP_MODEL_PROFILES_JSON={"<GROUP_ID>":"openai"}
 | `pricing` | 可选的每百万 token 美元单价：`input_usd_per_million`、`cached_input_usd_per_million`、`output_usd_per_million` 三项须齐全；数字或十进制字符串，0–1,000,000，最多六位小数；未配置不等于免费 |
 | `capabilities` | 可覆盖 `tools`、`streaming`、`json_mode`、`model_listing`、`vision` |
 
-`pricing` 由宿主按供应商公布的适用单价填写，不自动联网查价。模型临时改成其他 ID 不继承原模型价格；应为该模型声明独立 profile。缓存读 token 从普通输入中扣除，缓存写入因没有声明单价只形成不完整报价，不能冒充完整账单。目前此配置和精确计价底座已实现，用量持久定价、`/status` 和预算仍在接线。
+`pricing` 由宿主按供应商公布的适用单价填写，不自动联网查价。模型临时改成其他 ID 不继承原模型价格；应为该模型声明独立 profile。缓存读 token 从普通输入中扣除，缓存写入因没有声明单价只形成不完整报价，不能冒充完整账单。逐请求账单保存宿主实际响应的用量和请求开始时的价格快照；每次重试/模型回退分别记账，Codex不信任VM自报用量。`/status` 已展示本物理会话的24小时/7天账单，缺价、未知用量及未收尾请求标为下界`≥`，未知缓存率不猜零；不按新价追算旧记录，不等同于供应商结算账单。费用维度管理页与每日预算仍在接线。
 
 当前 `openai-chat` 支持工具、流式输出和原生 JSON mode；它可连接实现 Chat
 Completions 协议的兼容 endpoint。`anthropic-messages` 已支持普通对话和客户端工具调用，

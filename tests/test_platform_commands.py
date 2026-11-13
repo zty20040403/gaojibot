@@ -88,6 +88,20 @@ class PlatformCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.run_command('/units TEST_OTHER',services=services)).status,'syntax')
         self.assertEqual(called,[message().endpoint])
 
+    async def test_status_is_a_billing_command_not_an_alias_for_task_or_foreign_query(self):
+        self.assertEqual(parse_command('/status').name,'status')
+        self.assertEqual((await self.run_command('/status')).status,'unavailable')
+        self.assertNotIn('/status',(await self.run_command('/help')).text)
+        callback = Mock(return_value=CommandResult('ok','TEST_BILLING'))
+        services = replace(self.services,status=callback)
+        self.assertIn('/status',(await self.run_command('/help',services=services)).text)
+        text = (await self.run_command('/status',services=services)).text
+        self.assertIn('TEST_BILLING',text)
+        self.assertIn('本人',text)
+        self.assertEqual((await self.run_command('/status TEST_OTHER',services=services)).status,'syntax')
+        self.assertEqual(callback.call_count,1)
+        self.assertEqual((await self.run_command('/task')).status,'ok')
+
     async def test_config_requires_native_host_callback_and_is_advertised_only_when_available(self):
         self.assertEqual((await self.run_command('/config')).status,'unavailable')
         self.assertNotIn('/config',(await self.run_command('/help')).text)

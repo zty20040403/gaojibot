@@ -471,7 +471,8 @@ def build_turn_consumer(runtime, token, app):
                 return source
             return await agents.vm_lifecycle.browser.command(current,request,authorize=authorize,key=life.handle.execution_id)
         from .config_commands import command as config_command
-        services = CommandServices(running_tasks=tasks,config=config_command(runtime,life,app),
+        from .status_commands import command as status_command
+        services = CommandServices(running_tasks=tasks,config=config_command(runtime,life,app),status=status_command(runtime,life,app),
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
             host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls),
             units=units if agents is not None and agents.vm_lifecycle is not None else None,
