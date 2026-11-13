@@ -61,8 +61,7 @@ class OfficialBackgroundAgents:
         self.model_settings = BackgroundModelSettings(app.model_preferences, settings)
 
         def upstream():
-            profile = upstream_profile(app.model_catalog, settings)
-            return profile.base_url, profile.api_key
+            return upstream_profile(app.model_catalog, settings)
         host = getattr(app,'official_host',None)
         self.ops = None
         if host is not None and host.config.account.key==token.account_key and host.config.operations is not None:
@@ -73,7 +72,8 @@ class OfficialBackgroundAgents:
         from ...host_api_proxy import HostAPIProxy
         self.api_proxy = HostAPIProxy(self.host_apis,HostAPICalls(app.database,clock=self.clock),calls=self.calls) if self.host_apis else None
         self.gateway = CodexGateway(port=settings.background_gateway_port, upstream=upstream,
-            model=self.model_settings.get, logger=app.logger,api_handler=self.api_proxy.handle if self.api_proxy else None)
+            model=self.model_settings.get, logger=app.logger,api_handler=self.api_proxy.handle if self.api_proxy else None,
+            billing=self.billing)
         self.vm_lifecycle = None
         if getattr(getattr(app,'sandbox_manager',None),'backend',None)=='vm':
             from .vm_lifecycle import OfficialVMLifecycle
@@ -85,6 +85,16 @@ class OfficialBackgroundAgents:
         self.runner = BackgroundRunner(self.store, calls=self.calls, session_factory=self.session,
             save_report=self.save_report, ask_main=self.ask_main, record_usage=self.record_usage,
             logger=app.logger, engine=engine, clock=self.clock)
+
+    def billing(self,channel):
+        from ...billing_context import BillingContext
+        from ...model_billing import BillingSource
+        store = getattr(self.app,'model_billing',None)
+        if store is None:return None
+        row = channel.source
+        source = BillingSource(EndpointKey.parse(row['endpoint_key']),'background_agent',
+            ActorKey.parse(row['actor_key']),background_job_id=row['job_id'])
+        return BillingContext(store,source,self.calls,current=channel.current)
 
     async def start(self):
         if self.ops is not None:

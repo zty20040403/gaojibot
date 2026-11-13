@@ -9,6 +9,7 @@ import unittest
 import httpx
 
 from src.plugins.ai_chat.codex_gateway import CodexGateway
+from tests.test_llm_gateway import profile
 
 
 def free_port():
@@ -36,7 +37,7 @@ class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
                                   headers={'content-type': 'text/event-stream'})
 
-        self.gateway = CodexGateway(port=free_port(), upstream=lambda: ('http://upstream.test/v1', 'TEST_REAL_KEY'),
+        self.gateway = CodexGateway(port=free_port(), upstream=lambda: profile('relay',base_url='http://upstream.test/v1',api_key='TEST_REAL_KEY'),
             model=lambda: ('TEST_HOST_MODEL', 'high'), logger=logging.getLogger(__name__),
             client=httpx.AsyncClient(transport=httpx.MockTransport(upstream)))
         await self.gateway.start()

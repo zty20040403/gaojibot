@@ -16,6 +16,7 @@ from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.conversation_window import ConversationStore
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
+from src.plugins.ai_chat.model_billing import ModelBilling
 from src.plugins.ai_chat.quota import UsageStore
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker
@@ -54,7 +55,7 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         app = SimpleNamespace(logger=logging.getLogger(__name__), official_runtime=runtime, db_call=calls,
             model_catalog=ModelCatalog({'TEST_MODEL': profile}, default_profile='TEST_MODEL'),
             sandbox_manager=manager, settings=replace(settings, search_enabled=False),
-            conversations=conversations, message_ledger=f.ledger, usage_store=usage,
+            conversations=conversations, message_ledger=f.ledger, usage_store=usage,model_billing=ModelBilling(f.database),
             semantic_recall=None, skill_registry=SimpleNamespace(get=lambda _: None),
             model_preferences=SimpleNamespace(get_explicit=lambda _: None))
         service = OfficialBackgroundAgents(runtime, f.token, app)
@@ -85,6 +86,13 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('send_file', names)
             self.assertEqual(await feedback(), ['TEST extra detail'])
             await progress('shell')
+            context = service.billing(SimpleNamespace(source=row,current=session.current))
+            receipt = context.request(profile)
+            await receipt.start()
+            receipt.observe({'input_tokens':10,'output_tokens':2,'input_tokens_details':{'cached_tokens':0}})
+            await receipt.finish()
+            billed = f.query('SELECT endpoint_key,actor_key,background_job_id,input_tokens FROM model_usage_calls')
+            self.assertEqual(billed,[dict(endpoint_key=f.endpoint.key,actor_key=f.actor.key,background_job_id=number,input_tokens=10)])
             return 'TEST finished /work/result.txt'
 
         service.runner.engine = engine

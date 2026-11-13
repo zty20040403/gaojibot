@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F9③后台Codex的宿主账单
+
+- Codex HTTP中转现按同一ModelProfile快照取得端点、密钥和价格；宿主改用其他model时，不继承旧模型价格。真实后台工厂绑定原job/endpoint/actor和持续current检查，AppContext账单存储独立于token配额开关。
+- 新增有界Responses用量观察器：只读取宿主上游的终态SSE/JSON usage，不从VM tokenUsage通知、请求body、输出文字或嵌套假JSON计费。支持任意分片、CRLF/CR、compact JSON和取消后的已知回执；超1MiB或冲突的usage标未知，不篡改转发正文。流关闭及SQL落账抵抗重复取消。
+- 39项解析器、真实loopback HTTP/PG、后台工厂、Codex引擎及VM/API隔离组合通过。没有请求真实模型或QQ。前台/主动分类/媒体/程序唤醒的来源挂载及/status、维度页、每日预算还待继续；不能把单个relay接线当作F9完成。
+
 ## 开发记录（2026-11-13）· F9③逐请求gateway计费边界
 
 - billing_context接入LLMGateway，每次兼容重试和模型回退分别记实际profile及当时单价；有账单上下文时关闭SDK内部重试，避免隐藏调用。流式正常结束、提前关闭、异常和取消均保存已收到的真实usage，没收到的保留未知；不拿ModelCallBudget预留数补账单。

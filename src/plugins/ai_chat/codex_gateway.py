@@ -19,6 +19,9 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 import uvicorn
 
+from .billing_context import drain
+from .responses_usage import ResponsesUsage
+
 MAX_BODY = 64 * 1024 * 1024
 IDLE_SECONDS = 120
 
@@ -134,11 +137,19 @@ class _ModelRequest:
         finally:
             channel.requests.discard(task)
             upstream = getattr(request.state,'model_upstream',None)
-            try:
-                if upstream is not None:
-                    await upstream.aclose()
-            finally:
-                await request.state.resources.aclose()
+            receipt = getattr(request.state,'model_receipt',None)
+            async def cleanup():
+                try:
+                    if upstream is not None:await upstream.aclose()
+                finally:
+                    try:await request.state.resources.aclose()
+                    finally:
+                        if receipt is not None:
+                            observer = getattr(request.state,'model_usage',None)
+                            if observer is not None:receipt.observe(observer.finish())
+                            await receipt.finish()
+            if receipt is not None:await drain(asyncio.create_task(cleanup()))
+            else:await cleanup()
 
 
 class _Server(uvicorn.Server):
@@ -148,9 +159,11 @@ class _Server(uvicorn.Server):
 
 
 class CodexGateway:
-    def __init__(self, *, port, upstream, model, logger, client=None, api_handler=None, vm_authority=None, vm_handler=None):
-        # upstream() -> (base_url, api_key); model() -> (model, effort)
+    def __init__(self, *, port, upstream, model, logger, client=None, api_handler=None, vm_authority=None, vm_handler=None, billing=None):
+        # upstream() -> ModelProfile; model() -> (model, effort). One snapshot
+        # provides both the actual route/key and its optional price.
         self.port, self.upstream, self.model, self.logger = port, upstream, model, logger
+        self.billing = billing
         self.api_handler,self.vm_authority,self.vm_handler = api_handler,vm_authority,vm_handler
         self.channels: dict[str, Channel] = {}
         self.failures: dict[str, str] = {}
@@ -242,11 +255,18 @@ class CodexGateway:
             payload['reasoning'] = {**(payload.get('reasoning') or {}), 'effort': effort}
         token = request.headers['authorization'][7:]
         try:
-            base_url, key = self.upstream()
+            profile = self.upstream()
+            base_url,key = profile.base_url,profile.api_key
         except Exception as exc:
             self.logger.exception('No upstream for background model calls')
             self.failures[token] = f'宿主没有可用的模型端点：{exc}'
             return JSONResponse({'error': self.failures[token]}, 503)
+        channel = request.state.channel
+        if channel.current is not None:await channel.current()
+        context = self.billing(channel) if self.billing is not None else None
+        if context is not None:
+            request.state.model_receipt = context.request(profile.with_model(model))
+            await request.state.model_receipt.start()
         upstream = await self.client.send(self.client.build_request(
             'POST', base_url.rstrip('/') + request.url.path.removeprefix('/v1'),
             json=payload, headers={'Authorization': 'Bearer ' + key, 'Accept': request.headers.get('accept', '*/*')}),
@@ -260,11 +280,13 @@ class CodexGateway:
                                     + content[:200].decode(errors='replace'))
             return Response(content, upstream.status_code, media_type=upstream.headers.get('content-type'))
 
+        observer = request.state.model_usage = ResponsesUsage(upstream.headers.get('content-type',''))
         async def chunks():
             # Decoded bytes: Content-Encoding is not passed on. A provider silent for
             # IDLE_SECONDS fails the call, and Codex retries it.
             try:
                 async for chunk in upstream.aiter_bytes():
+                    observer.feed(chunk)
                     yield chunk
             finally:
                 await upstream.aclose()

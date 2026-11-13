@@ -61,7 +61,8 @@ class RequestReceipt:
         if self.context.current is not None:await self.context.current()
 
     def observe(self,usage):
-        if usage is not None and self.finished is None:self.usage = TokenUsage.read(usage)
+        if usage is not None and self.finished is None:
+            self.usage = usage if isinstance(usage,TokenUsage) else TokenUsage.read(usage)
 
     async def finish(self):
         if self.call_id is None:return
