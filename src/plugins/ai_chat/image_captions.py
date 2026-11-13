@@ -1,5 +1,5 @@
 """Transactional image-caption admission and per-conversation operator controls."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -60,14 +60,15 @@ class CaptionSettings:
         finally:
             connection.close()
 
-    def set(self, scope_key, *, enabled, daily_limit):
+    def set(self, scope_key, *, enabled, daily_limit, transaction_cursor=None):
         if type(enabled) is not bool or type(daily_limit) is not int or not 0 <= daily_limit <= 10000:
             raise ValueError('invalid_caption_settings')
         scope = ConversationScope.from_key(scope_key)
         if scope.platform!='qq-official' or scope.account is None:
             raise ValueError('caption_scope_unavailable')
         endpoint = EndpointKey(scope.account,scope.kind,scope.native_conversation_id)
-        with self.transaction() as connection:
+        with self.transaction() if transaction_cursor is None else nullcontext(transaction_cursor) as connection:
+            connection.execute('SELECT account_key FROM qq_official_accounts WHERE account_key=? FOR UPDATE',(endpoint.account.key,))
             if connection.execute('SELECT 1 FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone() is None:
                 raise ValueError('caption_scope_unavailable')
             connection.execute('''INSERT INTO conversation_settings(scope_key,image_captions,image_daily_limit)
@@ -77,10 +78,15 @@ class CaptionSettings:
         return {'scope_key':scope_key,'image_captions':enabled,'image_daily_limit':daily_limit}
 
     def snapshot(self, now):
+        return self.versioned_snapshot(now)['items']
+
+    def versioned_snapshot(self, now):
         with self.transaction() as connection:
+            connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+            version = connection.execute("SELECT version FROM admin_resource_versions WHERE resource_key='captions'").fetchone()
             # Endpoint/scope keys have the exact same canonical JSON body; only
             # the kind tag changes. Never use the movable canonical history key.
-            return [dict(row) for row in connection.execute('''WITH endpoints AS (
+            items = [dict(row) for row in connection.execute('''WITH endpoints AS (
                 SELECT endpoint_key,regexp_replace(endpoint_key,'^endpoint:','scope:') AS scope_key
                 FROM qq_official_endpoints)
                 SELECT e.scope_key,COALESCE(s.image_captions,FALSE) AS image_captions,
@@ -92,3 +98,4 @@ class CaptionSettings:
                 FROM endpoints e LEFT JOIN conversation_settings s ON s.scope_key=e.scope_key
                 LEFT JOIN image_caption_daily d ON d.scope_key=e.scope_key AND d.day=?
                 ORDER BY e.scope_key''', (caption_day(now),)).fetchall()]
+            return {'items':items,'resource_version':version['version'] if version else 0}

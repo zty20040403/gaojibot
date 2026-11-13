@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· 图片说明配置与审计原子化
+
+- 为/config和管理台并用准备：图片说明使用独立captions版本，不再被无关的媒体审核版本覆盖。管理API必须If-Match；账号、配置、版本及审计同事务，审计失败不留下已应用设置。读取的设置与caption_resource_version来自同一只读快照。
+- UI传所见图片说明快照版本，不借最新全局版本；版本缺失时禁用写控件。真实PG验证宿主配置更新后旧管理页被409拒绝、无If-Match被428拒绝、审计错误回滚；18项管理/图片/配置/路由组合、另6项worker回归、UI构建及图片说明/运维React检查通过。
+- /config原生入口仍待接通；不恢复QQ OTP，不把新配置测试算入bf7e1bc全套。
+
 ## 开发记录（2026-11-13）· F9会话配置底座与主动接话代数
 
 - 固定六个设置及类型/范围/默认值：agent_timeout_hours、proactive_enabled、program_say_limit、program_wake_limit、image_captions、image_daily_limit；写入仅供已认证宿主调用，物理会话、资源版本和审计同事务，未增加模型配置工具。

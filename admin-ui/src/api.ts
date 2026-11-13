@@ -77,6 +77,7 @@ export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   sandboxes: ['sandboxes'],
   stickers: ['stickers'],
   media: ['media'],
+  captions: ['media'],
   sources: ['sources'],
   databases: ['databases'],
   groups: ['groups'],

@@ -4,6 +4,8 @@ from typing import Optional
 import time
 
 from ..image_captions import CaptionSettings
+from ..admin_control import AdminVersionConflict
+from ..conversation_scope import ConversationScope
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
@@ -68,7 +70,7 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             }
         try:
             snapshot = services.media_library.admin_snapshot(limit=limit)
-            caption_rows = CaptionSettings(services.media_library.database).snapshot(int(time.time()))
+            captions = CaptionSettings(services.media_library.database).versioned_snapshot(int(time.time()))
             vision = (
                 services.vision_worker.admin_snapshot(limit=limit)
                 if services.vision_worker is not None
@@ -99,7 +101,8 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             **snapshot,
             "vision": vision,
             "cleanup": cleanup,
-            "caption_settings": caption_rows,
+            "caption_settings": captions['items'],
+            "caption_resource_version": captions['resource_version'],
             "captions_available": services.vision_worker is not None,
             "configured": True,
             "available": True,
@@ -115,15 +118,34 @@ def create_router(context: AdminRouteContext) -> APIRouter:
         authorization: Optional[str] = Header(default=None),
     ) -> dict[str, object]:
         authorize(authorization)
-        if services.media_library is None or selection.enabled and services.vision_worker is None:
+        if services.media_library is None or not control_store.persistent or selection.enabled and services.vision_worker is None:
             raise HTTPException(status_code=503, detail='图片说明服务未配置')
+        if mutation_info.expected_version is None:
+            raise HTTPException(428,'请刷新图片说明设置，再提交带 If-Match 的操作')
+        store = CaptionSettings(services.media_library.database)
         try:
-            result = mutate(mutation_info, 'media', action='media.captions.set', target=selection.scope_key,
-                operation=lambda _version: CaptionSettings(services.media_library.database).set(
-                    selection.scope_key, enabled=selection.enabled, daily_limit=selection.daily_limit))
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)[:200]) from None
-        event_broker.publish('media')
+            scope = ConversationScope.from_key(selection.scope_key)
+            if scope.account is None or scope.platform!='qq-official':raise ValueError('caption_scope_unavailable')
+            with store.transaction() as connection:
+                cursor = connection.cursor()
+                try:
+                    cursor.execute('SELECT account_key FROM qq_official_accounts WHERE account_key=? FOR UPDATE',(scope.account.key,))
+                    def operation():
+                        row = cursor.execute('SELECT image_captions,image_daily_limit FROM conversation_settings WHERE scope_key=?',(scope.key,)).fetchone()
+                        before = dict(row) if row else {'image_captions':False,'image_daily_limit':200}
+                        return before,store.set(scope.key,enabled=selection.enabled,daily_limit=selection.daily_limit,transaction_cursor=cursor)
+                    result = control_store.mutate_transaction(cursor,'captions',expected_version=mutation_info.expected_version,
+                        actor=mutation_info.actor,action='media.captions.set',target=scope.key,operation=operation)
+                finally:
+                    cursor.close()
+        except AdminVersionConflict as error:
+            raise HTTPException(409,{'code':'resource_version_conflict','resource':error.resource_key,
+                'expected_version':error.expected,'current_version':error.current}) from None
+        except (TypeError,ValueError):
+            raise HTTPException(409,'图片说明会话或设置无效') from None
+        except Exception:
+            raise HTTPException(503,'图片说明设置未能提交，请刷新后重试') from None
+        event_broker.publish('captions','media')
         return mutation_payload(result, **(result.value if isinstance(result.value, dict) else {}))
 
     @router.put("/api/media/{media_id}/review")
