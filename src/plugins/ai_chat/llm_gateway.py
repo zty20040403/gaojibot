@@ -21,6 +21,8 @@ from .model_catalog import ModelCatalog, ModelProfile
 from .local_model import LocalModelRuntime
 from .observability import telemetry
 from .model_budget import BudgetedStream, active_model_budget
+from .billing_context import BilledStream, active_billing
+from .model_usage import field as _usage_field
 
 
 _logger = logging.getLogger(__name__)
@@ -403,8 +405,8 @@ class OpenAIChatProvider:
         from .execution_control import active_job_fence, active_route_fence
 
         client = self._client(profile)
-        if active_model_budget() is not None or active_job_fence.get() is not None or active_route_fence.get() is not None:
-            # SDK retries cannot revalidate our durable execution authority.
+        if active_model_budget() is not None or active_billing() is not None or active_job_fence.get() is not None or active_route_fence.get() is not None:
+            # SDK retries cannot revalidate authority or record each attempt.
             client = client.with_options(max_retries=0)
         request = {key: value for key, value in kwargs.items() if value is not None}
         if profile.max_output_tokens > 0 and not {"max_tokens", "max_completion_tokens"} & request.keys():
@@ -835,26 +837,39 @@ class LLMGateway:
             )
         if _request_contains_videos(kwargs.get('messages')) and not _supports_video(profile):
             raise LLMConfigError(f'model profile {profile.name!r} does not support video_url input')
-        budget = active_model_budget()
+        if 'model' in (kwargs.get('extra_body') or {}):
+            raise LLMConfigError('extra_body cannot override the priced model')
+        budget,billing = active_model_budget(),active_billing()
         _assert_model_job_owned()
-        if budget is None:
-            return await provider.create_completion(profile, **kwargs)
-        if budget.before_request is not None:
+        if budget is not None and budget.before_request is not None:
             await budget.before_request()
         _assert_model_job_owned()
-        request, reservation = budget.prepare(profile, kwargs)
+        request,reservation = budget.prepare(profile,kwargs) if budget is not None else (dict(kwargs),None)
+        receipt = billing.request(profile) if billing is not None else None
+        handed_off = False
         try:
-            if budget.reserve_request is not None:
+            if budget is not None and budget.reserve_request is not None:
                 await budget.reserve_request(reservation)
             _assert_model_job_owned()
-            response = await provider.create_completion(profile, **request)
-            if request.get("stream"):
-                return BudgetedStream(response, reservation)
-        except BaseException:
-            reservation.finish()
-            raise
-        reservation.finish(response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None))
-        return response
+            if receipt is not None:
+                await receipt.start()
+                if request.get('stream'):
+                    request['stream_options'] = {**(request.get('stream_options') or {}),'include_usage':True}
+            _assert_model_job_owned()
+            response = await provider.create_completion(profile,**request)
+            if request.get('stream'):
+                if receipt is not None:response = BilledStream(response,receipt)
+                if reservation is not None:response = BudgetedStream(response,reservation)
+                handed_off = True
+                return response
+            usage = _usage_field(response,'usage')
+            if receipt is not None:receipt.observe(usage)
+            if reservation is not None:reservation.finish(usage)
+            return response
+        finally:
+            if not handed_off:
+                if reservation is not None:reservation.finish()
+                if receipt is not None:await receipt.finish()
 
     def health_snapshot(self) -> dict[str, dict[str, object]]:
         names = (
