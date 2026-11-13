@@ -22,7 +22,7 @@ from .renderer import RenderedPlan, content_payload
 
 EPHEMERAL_BODY = '{"v":1,"nodes":[]}'
 EPHEMERAL_MANIFEST = '{"v":1,"ephemeral":true}'
-PURPOSE_PRIORITIES = {"final": 0, "requested_artifact": 0, "binding_otp": 0, "approval_otp": 0,
+PURPOSE_PRIORITIES = {"final": 0, "requested_artifact": 0, "binding_otp": 0, "approval_otp": 0, "ops_approval": 0,
                       "background_result": 10, "progress": 20, "unsolicited": 30}
 DEFAULT_MAX_WAIT_SECONDS = 86400
 MAX_WAIT_SECONDS = 7 * 86400
@@ -67,7 +67,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
                  digest_key_id: str = "v1", binding_preview=None, control_reply_id=None, epoch_guard=assert_epoch,
                  max_wait_seconds: int = DEFAULT_MAX_WAIT_SECONDS, protected_ref=None,
                  approval_source_id=None, approval_authority=None, source_guard=None, source_proof=None,
-                 source_generation=None, program_action_id=None) -> PlanRef:
+                 source_generation=None, program_action_id=None, ops_action_id=None, ops_authority=None) -> PlanRef:
     """The adapter must pass current admission, not a model-supplied grant.
 
     The rendered object is sealed by the pure renderer. A duplicate identity
@@ -76,6 +76,8 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     """
     epoch_guard(cursor, token)
     def require_source(plan_id):
+        if ops_action_id is not None:
+            ops_authority.bind_plan(cursor,ops_action_id,plan_id)
         if program_action_id is not None:
             from .program_delivery import bind
             bind(cursor,program_action_id,cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?',(plan_id,)).fetchone())
@@ -96,7 +98,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             or type(now) is not int or type(expires_at) is not int
             or not 0 <= now < expires_at <= 2**63 - 1):
         raise OutboxInvariantError("invalid_delivery_plan")
-    wait_limit = min(max_wait_seconds, SHORT_WAIT_SECONDS) if purpose in {"binding_otp", "approval_otp"} else max_wait_seconds
+    wait_limit = min(max_wait_seconds, SHORT_WAIT_SECONDS) if purpose in {"binding_otp", "approval_otp", "ops_approval"} else max_wait_seconds
     # Reject rather than clamp relative to each replay's now: the caller's
     # absolute deadline is part of the immutable idempotency contract.
     if expires_at - now > wait_limit:
@@ -123,20 +125,27 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     protected = protected_ref is not None
     if protected and (not isinstance(protected_ref, ProtectedContentRef)
             or purpose != "requested_artifact" or len(rendered.parts) != 1
-            or challenge_id is not None or approval_source_id is not None or control_reply_id is not None or binding_preview is not None
+            or challenge_id is not None or approval_source_id is not None or ops_action_id is not None or control_reply_id is not None or binding_preview is not None
             or pepper is not None or expires_at > protected_ref.expires_at
             or body_to_json(rendered.parts[0].canonical_body) != PROTECTED_BODY):
         raise OutboxInvariantError("invalid_protected_plan")
-    ephemeral = purpose in {"binding_otp", "approval_otp"}
+    ephemeral = purpose in {"binding_otp", "approval_otp", "ops_approval"}
     if ((purpose == 'binding_otp') != (challenge_id is not None)
             or (purpose == 'approval_otp') != (approval_source_id is not None)
+            or (purpose == 'ops_approval') != (ops_action_id is not None)
             or (ephemeral and pepper is None) or (not ephemeral and pepper is not None)
             or (not control_view and program_action_id is None and not admission(cursor, endpoint, requester))):
         raise OutboxInvariantError("delivery_not_authorized")
     challenge_expires = None
     approval_expires = None
-    ephemeral_ref = challenge_id or approval_source_id
-    if purpose == 'approval_otp':
+    ephemeral_ref = challenge_id or approval_source_id or ops_action_id
+    if purpose == 'ops_approval':
+        if ops_authority is None or control_reply_id is not None or binding_preview is not None or program_action_id is not None:
+            raise OutboxInvariantError('ops_notice_source_unavailable')
+        ops_authority.validate_plan(cursor,token=token,action_id=ops_action_id,rendered=rendered,requester=requester,
+            logical_key=logical_key,source_scope_key=source_scope_key,source_native_message_id=source_native_message_id,
+            source_canonical_message_id=source_canonical_message_id,turn_id=turn_id,expires_at=expires_at,now=now)
+    elif purpose == 'approval_otp':
         if approval_authority is None or turn_id is not None or source_canonical_message_id is not None or binding_preview is not None:
             raise OutboxInvariantError('approval_source_unavailable')
         proof = approval_authority.validate_plan(cursor, token=token, source_id=approval_source_id,
@@ -197,6 +206,8 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         part_count=len(rendered.parts), expires_at=expires_at, priority=PURPOSE_PRIORITIES[purpose],
         challenge_id=challenge_id, challenge_expires_at=challenge_expires,
         approval_source_id=approval_source_id, approval_source_expires_at=approval_expires)
+    if ops_action_id is not None:
+        immutable['ops_action_id'] = ops_action_id
     existing = cursor.execute("SELECT * FROM delivery_plans WHERE idempotency_key=?", (idem,)).fetchone()
     if existing is not None:
         rows = cursor.execute("SELECT delivery_id FROM deliveries WHERE plan_id=? ORDER BY part_index", (existing["plan_id"],)).fetchall()

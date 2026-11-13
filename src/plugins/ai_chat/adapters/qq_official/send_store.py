@@ -52,12 +52,13 @@ class OfficialSendStore:
         self.mention_authority = mention_authority or (lambda cursor, endpoint: frozenset())
         self.max_wait_seconds = max_wait_seconds
         self.protected_payloads, self.approval_authority, self.source_guard = protected_payloads, approval_authority, source_guard
+        self.ops_authority = None
         self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
-                transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None):
+                transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None, ops_action_id=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -65,10 +66,11 @@ class OfficialSendStore:
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
                 admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if challenge_id is not None or approval_source_id is not None else None, binding_preview=binding_preview, control_reply_id=control_reply_id,
+                pepper=self.pepper if challenge_id is not None or approval_source_id is not None or ops_action_id is not None else None, binding_preview=binding_preview, control_reply_id=control_reply_id,
                 max_wait_seconds=self.max_wait_seconds, approval_source_id=approval_source_id,
-                approval_authority=self.approval_authority, source_guard=None if purpose=='progress' else self.source_guard, source_proof=source_proof)
-        if purpose in {"binding_otp", "approval_otp"} and ref.created:
+                approval_authority=self.approval_authority, source_guard=None if purpose=='progress' else self.source_guard, source_proof=source_proof,
+                ops_action_id=ops_action_id,ops_authority=self.ops_authority)
+        if purpose in {"binding_otp", "approval_otp", "ops_approval"} and ref.created:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
@@ -237,6 +239,8 @@ class OfficialSendStore:
                 return 'delivery_attempt_replaced'
             if not self._conversation_permitted(cursor,row):
                 return 'conversation_stopped_or_replaced'
+            if row['purpose']=='ops_approval' and (self.ops_authority is None or not self.ops_authority.delivery_current(cursor,token,row)):
+                return 'ops_notice_source_unavailable'
             return self._program_authorized(cursor,token,row)[1]
 
     def prepare(self, token, delivery_id, *, send_mode, msg_id=None, msg_seq=None):
@@ -260,6 +264,8 @@ class OfficialSendStore:
                 control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor))
             if row['purpose'] == 'approval_otp':
                 authorized = authorized and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now)
+            if row['purpose']=='ops_approval':
+                authorized = authorized and self.ops_authority is not None and self.ops_authority.delivery_current(cursor,token,row)
             if not authorized or route['membership_state'] != 'present' or route['binding_state'] == 'revoked':
                 return self._finish(cursor, token, row, 'failed', program_error or 'delivery_not_authorized', now)
             if now >= row['expires_at']:
