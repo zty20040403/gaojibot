@@ -1,4 +1,6 @@
 """Guest systemd payload: stream a sandbox-user process to a bounded work file."""
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,20 @@ else:
 STATE = Path('/run/gaoji/commands')
 OUTPUT = Path('/workspace/.gaoji/out')
 MAX_OUTPUT = 64*1024*1024
+
+
+class CommandCancelled(PermissionError):
+    pass
+
+
+@contextmanager
+def locked(fd, identity, *, blocking=True):
+    file = os.open(identity+'.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=fd)
+    try:
+        fcntl.flock(file,fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        yield
+    finally:
+        os.close(file)
 
 
 def validate(data):
@@ -72,8 +88,17 @@ def execute(data, *, state=STATE, output=OUTPUT, cwd='/work', identity=None, lim
             os.fchown(stream.fileno(),*identity)
             environment = dict(PATH='/usr/local/bin:/usr/bin:/bin',HOME=cwd,USER='sandbox',LOGNAME='sandbox',
                 GAOJI_PROGRAM=data['program'],LANG='C.UTF-8')
-            process = subprocess.Popen(data['argv'],cwd=cwd,env=environment,stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,stderr=subprocess.STDOUT,**privileges)
+            with locked(state_fd,data['command_id']):
+                # The controller records stop even before systemd has accepted
+                # start. A late unit may run this wrapper, never its command.
+                try:
+                    os.stat(data['command_id']+'.stop',dir_fd=state_fd,follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise CommandCancelled()
+                process = subprocess.Popen(data['argv'],cwd=cwd,env=environment,stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,stderr=subprocess.STDOUT,**privileges)
             try:
                 while True:
                     chunk = process.stdout.read1(16384)
@@ -93,7 +118,7 @@ def execute(data, *, state=STATE, output=OUTPUT, cwd='/work', identity=None, lim
                 process.stdout.close()
             os.fsync(stream.fileno())
     except Exception as exception:
-        error = 'command_process_'+type(exception).__name__
+        error = 'command_cancelled' if isinstance(exception,CommandCancelled) else 'command_process_'+type(exception).__name__
     finally:
         if process is not None and process.poll() is None:
             process.kill()

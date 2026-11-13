@@ -44,7 +44,8 @@ def files():
     directory = Path(__file__).parent
     return [{'path': '/usr/local/share/gaoji/' + name, 'permissions': '0644', 'owner': 'root:root',
         'content': (directory / name).read_text()} for name in (
-            'sandbox_browser.py', 'sandbox_webread.py', 'sandbox_transcribe.py', 'sandbox_video.py', 'sandbox_gaoji.py', 'sandbox_units.py')] + [
+            'sandbox_browser.py', 'sandbox_webread.py', 'sandbox_transcribe.py', 'sandbox_video.py', 'sandbox_gaoji.py', 'sandbox_units.py',
+            'sandbox_commands.py', 'sandbox_command_process.py')] + [
                 {'path':'/usr/local/bin/'+name,'permissions':'0755','owner':'root:root',
                  'content':'#!/bin/sh\nexec /usr/bin/python3 /usr/local/share/gaoji/'+script+' "$@"\n'}
                 for name,script in (('gaoji','sandbox_gaoji.py'),('gaoji-units','sandbox_gaoji.py units'))] + [{

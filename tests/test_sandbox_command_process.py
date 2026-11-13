@@ -70,6 +70,13 @@ class SandboxCommandProcessTests(unittest.TestCase):
         self.assertNotIn('GAOJI_JOB_TOKEN',options['env'])
         self.assertEqual(result['exit_code'],0)
 
+    def test_late_systemd_payload_cannot_spawn_after_stop_tombstone(self):
+        (self.state/(ID+'.stop')).write_text('{"cancelled":true}')
+        with patch.object(command.subprocess,'Popen') as launch:
+            result = self.execute("print('TEST_MUST_NOT_RUN')")
+        launch.assert_not_called()
+        self.assertEqual((result['error'],result['exit_code']),('command_cancelled',None))
+
     def test_output_cap_stops_copying_and_reports_partial_result(self):
         result = self.execute("import sys;sys.stdout.write('X'*4096);sys.stdout.flush()",limit=1024)
         self.assertEqual(result['error'],'command_output_limit')

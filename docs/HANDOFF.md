@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· F3 guest systemd 控制器
+
+- sandbox_commands.py 接固定 start/status/stop 协议，仅接受宿主分配的命令 ID 与观察到的 boot；systemd 单元不自动重启，六小时内硬截止，共享半 VM 内存的低权重 slice，停止整个 cgroup。
+- root 持久启动意图先于 systemd 请求，丢失响应不重启同 ID；stop tombstone 与子进程 Popen 用同一个文件锁，先 stop 后延迟到达的启动不执行用户命令。结束回执在确认单元/进程组停止后缓存，不因 systemd 回收而丢失超时/退出事实。
+- 命令载荷和控制器已纳入 prepared VM 的 write_files。22 项临时文件、真实无害子进程和替身 systemd 组合通过，Ruff 与两项导入检查通过；测试不操作宿主 systemd，不算真实 VM 验收。
+- 尚待宿主监护、保活、完成唤醒、HTTP/CLI 与管理台/时限设置；run-bg 仍不可用。固定 19fcda7 全套仍在运行，不包含本补丁。
+
 ## 开发记录（2026-11-12）· 新固定快照复测
 
 - 固定 **19fcda7**（含 F2 测试修正、F3 命令底座及独立 guest 载荷）在 `/tmp/gaoji-python-f2-recheck` 全套复测；日志 `/tmp/gaoji-python-f2-recheck.log`，PID 文件 `/tmp/gaoji-python-f2-recheck-test.pid`，退出码 `/tmp/gaoji-python-f2-recheck.exit`。本轮启用逐用例名称，已预检 ffmpeg/ffprobe，结果待定。
