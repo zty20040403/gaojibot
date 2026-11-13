@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F6 宿主操作单配置
+
+- ops_plans.py与HostConfiguration.operations接通默认关闭配置：固定control地址/私有凭据/actor、固定host与argv模板。参数只有有限enum、有界整数或完整Git revision；变量是完整argv项，不插入shell，不允许调用者提供URL/host/命令/环境。模型目录只给说明及参数规则，不含接口、凭据或命令模板。
+- 批准绑定包含操作单语义、control目标/actor及凭据摘要；任何相关变更失效。Git revision格式不证明已合并，部署固定脚本必须验证已合并版本；模板不得包含或输出密钥。
+- 9项配置/模板/脱敏/宿主功能隔离测试通过，Ruff通过。仅配置底座，ops_act、十分钟短码、持久审计与管理页尚未接通；没有访问control或执行任何运维命令。
+
 ## 开发记录（2026-11-13）· F5全套通过与F6只读扩充
 
 - 固定313a62f188201c43144bd5acebdab96855c6b2ad的全套 **1,806项、0失败、10跳过，exit0，1317.103秒**。/tmp/gaoji-python-browser-final.log/.revision/.exit一致，覆盖F5完整本地链路；不包含其后的F6，真实网站/QQ/VM验收仍待owner。

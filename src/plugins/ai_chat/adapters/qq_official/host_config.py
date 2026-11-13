@@ -74,6 +74,7 @@ class HostConfiguration:
     proactive_profile: str | None = None
     apis: dict = field(default_factory=dict,repr=False)
     github: object | None = None
+    operations: object | None = field(default=None,repr=False)
 
     @classmethod
     def parse(cls,text):
@@ -87,7 +88,9 @@ class HostConfiguration:
         from .media_runtime import MediaConfig
         from ...host_apis import parse_apis
         from ...host_github import GitHubIdentity
-        values=dict(apis=_optional('host_apis',lambda:parse_apis(raw.get('apis',{})),{}),
+        from ...ops_plans import OpsConfiguration
+        values=dict(operations=_optional('operations',lambda:OpsConfiguration.parse(raw['operations']) if raw.get('operations') is not None else None),
+            apis=_optional('host_apis',lambda:parse_apis(raw.get('apis',{})),{}),
             github=_optional('github',lambda:GitHubIdentity.parse(raw['github']) if raw.get('github') is not None else None),
             files=_optional('files',lambda:_files(raw.get('files'))),
             media=_optional('media',lambda:MediaConfig(**raw['media']) if raw.get('media') is not None else None))
