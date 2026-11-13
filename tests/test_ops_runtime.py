@@ -151,6 +151,9 @@ class OpsRuntimeTests(OpsFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await asyncio.wait_for(pending,5))['state'],'cancelled')
         await self.service.close()
         self.assertIsNot(self.store.ops_replies,self.service.ops.replies)
+        later = self.request(request_id='TEST_LATER_RUNTIME')
+        await self.service.ops.close()  # repeated old cleanup must not cancel a newer owner's intent
+        self.assertEqual(self.query('SELECT state FROM ops_actions WHERE action_id=?',(later.action['action_id'],))[0]['state'],'sending')
         with self.assertRaises(PermissionError):await self.call()
         self.assertEqual(self.trace,[])
 

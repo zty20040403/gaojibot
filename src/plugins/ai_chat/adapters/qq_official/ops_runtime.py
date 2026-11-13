@@ -57,6 +57,7 @@ class OfficialOps:
                 self.actions.close(cursor,row['action_id'],state=state,error='ops_runtime_closed' if closing else 'ops_runtime_restarted')
 
     async def close(self):
+        if self.closed:return
         self.closed = True
         if self.runtime.outbox.ops_authority is self.notices:self.runtime.outbox.ops_authority = self.previous[0]
         if self.runtime.store.ops_replies is self.replies:self.runtime.store.ops_replies = self.previous[1]
