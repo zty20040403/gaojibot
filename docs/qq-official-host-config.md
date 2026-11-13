@@ -97,6 +97,16 @@ VM 后端启动时中转服务随账号运行时启动，无需先有后台任�
 - 模型答案也占每小时 60 条的发言额度；`completed` 且 `silent=true` 表示模型选择 `[silence]`，没有发送 QQ 消息；其他成功完成必须有真实发送回执。
 - 停止、停用、凭据撤销及事件过期均会拒绝或取消。重启后未完成的模型回合标记 `ambiguous`，不重复调用；已保存答案可在来源仍有效时接续投递。
 
+### 单次后台命令（F3）
+
+`gaoji run-bg --request-id TEST_BUILD -- sh -lc 'cd /work/build && make'` 调用 VM-only `POST /vm/commands`。JSON 为 `{"request_id":"TEST_BUILD","program":"TEST_BUILD","argv":["make"]}`；program 可省略。请求最多 32 KiB，argv JSON 最多 16 KiB/128 项，不能带 scope、actor、VM 或任意宿主路径。任务令牌不能使用该入口。
+
+- 返回 202 只表示持久登记；保存 command_id 和 request_id，不用 sleep 占住 agent。用 `gaoji command-status --command-id <id>` 或 `--request-id <原ID>` 查询，对应 `GET /vm/commands/<id>` 或 `/vm/commands?request_id=…`。退出结果与 notification 的送达状态分开。
+- `gaoji stop-bg <id>` 对应 `POST /vm/commands/<id>/stop`，正文空对象。查询/取消在聊天停止期间仍允许；新命令在 guest/body 等待前捕获停止与 kill 双代数，旧启动和旧完成通知均被拒绝。
+- 每物理会话最多八个未确认结束的命令；最长六小时、输出捕获最多 64 MiB，在 `/work` 以 sandbox 用户执行，不继承 agent 任务令牌。先准备 sandbox 可写目录；shell 语法须显式使用 sh -lc。命令和常驻程序是不同 systemd 单元。
+- 控制器和监护只使用固定 guest helper。未知启动不重发，停止不明不释放名额；活跃/不明命令阻止空闲关机或清盘。宿主换租约后停止旧来源而不重执行，VM 重启也不重跑。新 boot 的程序读取旧命令状态不会恢复旧写权限。
+- 完成通知走 F2 的受限模型唤醒和主动发送，额度/权限/平台失败都保留状态。VM 输出是资料，不授予真人/owner 权限。真实 QQ/VM/systemd 验收、后台命令管理页与 agent 1–6 小时配置仍待完成。
+
 ### 单元同步
 
 `AI_PROGRAM_VM_LIMIT=4` 限制常驻 VM 名额（0–32；0 不加载登记单元），仍受 `AI_SANDBOX_MAX_TOTAL` 总 VM 上限约束。ready/运行中 VM 的宿主恢复会自动同步；未知同步结果保留名额，已登记但停用的程序保留磁盘。30 分钟两次非计划重启/启动失败后不再加载，VM 客户端不能解除暂停。宿主启动恢复离线常驻 VM，随后每 30 秒巡检、最多两路启动/恢复；人工停机不会被自动启动覆盖，容量不足不计崩溃。管理员可在“常驻程序”页检查日志后恢复自动加载；恢复任务不会解除停用或 `/stop`。`/units` 只读展示本会话持久单元状态和 24 小时已接收请求次数；前台下一轮上下文也包含停用、崩溃保护及最近投递错误，不把请求计数当成送达计数。

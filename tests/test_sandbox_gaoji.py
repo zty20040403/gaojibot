@@ -84,6 +84,20 @@ class SandboxGaojiTests(unittest.TestCase):
         self.assertEqual(self.run_cli('status','--request-id','TEST_REQUEST')[0],0)
         self.assertEqual(self.server.seen[-1][:2],('GET','/vm/actions?request_id=TEST_REQUEST'))
 
+    def test_background_command_argv_is_not_shell_expanded_and_uses_separate_status(self):
+        result,_,error = self.run_cli('run-bg','--request-id','TEST_BG','--program','TEST_UNIT','--','printf','TEST literal; $HOME')
+        self.assertEqual(result,0); self.assertIn('TEST_BG',error)
+        self.assertEqual(self.server.seen[-1][1],'/vm/commands')
+        self.assertEqual(self.server.seen[-1][3],dict(argv=['printf','TEST literal; $HOME'],program='TEST_UNIT',request_id='TEST_BG'))
+        self.assertEqual(self.run_cli('command-status','--request-id','TEST_BG')[0],0)
+        self.assertEqual(self.server.seen[-1][:2],('GET','/vm/commands?request_id=TEST_BG'))
+        self.assertEqual(self.run_cli('command-status','--command-id','a'*32)[0],0)
+        self.assertEqual(self.run_cli('stop-bg','a'*32)[0],0)
+        self.assertEqual(self.server.seen[-1][1],'/vm/commands/'+'a'*32+'/stop')
+        count = len(self.server.seen)
+        self.assertEqual(self.run_cli('run-bg','--')[0],1)
+        self.assertEqual(len(self.server.seen),count)
+
     def test_http_denials_are_nonzero_and_writes_are_never_retried(self):
         self.server.status,self.server.value = 429,{'error':'program_rate_limited'}
         result,out,_ = self.run_cli('wake','TEST','--request-id','TEST_REQUEST')

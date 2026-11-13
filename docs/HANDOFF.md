@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· F3 run-bg HTTP/CLI 接通
+
+- VM-only `/vm/commands` 的登记、按命令/原 request_id 查询、单命令取消已注册。标准库 CLI 增加 run-bg、command-status、stop-bg；命令 argv 原样传入，不隐式套 shell。认证使用独立命令双代数，慢请求体不能穿过 kill，任务令牌与范围注入被拒绝。
+- CLI/真实 HTTP → PostgreSQL → guest 替身 → 模型替身 → FakePlatform 真回执组合通过。通知状态与命令退出结果分开；退出0但主动消息被拒绝时，notification 明确 failed/proactive_denied，不说已经通知。
+- 后台提示词与技能要求提交后结束 agent，不 sleep/轮询；说明 sandbox 用户的目录权限、保留请求 ID、不盲重试、停止未确认与重启边界。同步更新宿主配置、安全文档和双语 README。
+- 37 项 HTTP/监护/执行观察/CLI/认证/网关/技能组合通过（包含输出 NUL 文本化防止 PostgreSQL 拒绝完成证据），Ruff 和两项导入检查通过；此前14项小组合通过，不能与37相加。真实 VM/systemd/QQ 验收未做，最新补丁尚未全套。
+- F3 仍待后台命令管理入口、agent 默认六小时及会话1–6小时配置、ask_main 独立两小时；F3 尚未完成。
+
 ## 开发记录（2026-11-12）· F2 修正后全套与 F3 监护接线
 
 - 固定 **19fcda7** 全套完成：**1,715 项、0 失败、10 跳过，2533.319 秒，exit 0**；日志 `/tmp/gaoji-python-f2-recheck.log`。覆盖 F2 本地功能与回归修正、F3 最初状态底座/独立载荷；不覆盖之后 77940aa 的 guest 控制器、e1a3190 的执行观察或本次监护接线。

@@ -186,7 +186,9 @@ class CodexGateway:
                     app.router.routes.append(Route(path,_ModelRequest(self,self.api_handler),methods=sorted(METHODS)))
             if self.vm_handler is not None:
                 for path,method,write in (('/vm/say','POST',True),('/vm/wake','POST',True),('/vm/send-file','POST',True),('/vm/actions/{action_id}','GET',False),('/vm/actions','GET',False),
-                        ('/vm/events','GET',False),('/vm/units','POST',False),('/vm/history','POST',False),('/vm/web-search','POST',False),('/vm/web-fetch','POST',False)):
+                        ('/vm/events','GET',False),('/vm/units','POST',False),('/vm/history','POST',False),('/vm/web-search','POST',False),('/vm/web-fetch','POST',False),
+                        ('/vm/commands','POST','command'),('/vm/commands','GET',False),('/vm/commands/{command_id}','GET',False),
+                        ('/vm/commands/{command_id}/stop','POST',False)):
                     app.router.routes.append(Route(path,_ModelRequest(self,self.vm_handler,vm_only=True,write=write),methods=[method]))
             self.http = _Server(uvicorn.Config(app, host='127.0.0.1', port=self.port, log_level='warning',
                                                access_log=False, lifespan='off'))

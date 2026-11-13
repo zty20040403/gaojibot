@@ -46,8 +46,9 @@ class Client:
     def open(self, method, route, data=None):
         host,port,token = self.credentials() # Re-read for every request/boot.
         body = None if data is None else json.dumps(data,ensure_ascii=False).encode()
-        if body is not None and len(body)>16384:
-            raise ClientError('request exceeds 16 KiB')
+        maximum = 32768 if route=='/vm/commands' else 16384
+        if body is not None and len(body)>maximum:
+            raise ClientError('request exceeds '+str(maximum//1024)+' KiB')
         connection = http.client.HTTPConnection(host,port,timeout=120)
         try:
             connection.request(method,route,body,{'Authorization':'Bearer '+token,'Content-Type':'application/json'})
@@ -56,7 +57,7 @@ class Client:
                 raise ClientError('redirect refused; VM credentials are never forwarded')
             yield response
         except (OSError,http.client.HTTPException):
-            raise ClientError('connection failed; do not repeat writes with a new request_id; use status') from None
+            raise ClientError('connection failed; do not repeat writes with a new request_id; use status or command-status') from None
         finally:
             connection.close()
 
@@ -119,6 +120,13 @@ def parser():
         command.add_argument('--request-id',help='reuse for retries of this exact action')
         if name=='send-file':
             command.add_argument('--filename')
+    command = commands.add_parser('run-bg',help='persist a background command; acceptance is not completion')
+    command.add_argument('--program',default=os.environ.get('GAOJI_PROGRAM','manual'))
+    command.add_argument('--request-id',help='reuse for this exact command; never blindly retry with a new ID')
+    command.add_argument('argv',nargs=argparse.REMAINDER,help='-- executable arg ...; use sh -lc explicitly for shell syntax')
+    command = commands.add_parser('command-status').add_mutually_exclusive_group(required=True)
+    command.add_argument('--request-id'); command.add_argument('--command-id')
+    commands.add_parser('stop-bg').add_argument('command_id')
     commands.add_parser('events').add_argument('--after',type=int)
     commands.add_parser('units',help='sync registered units through the host, not a guest sudo shell')
     command = commands.add_parser('history')
@@ -142,21 +150,30 @@ def main(argv=None, *, client=None):
             for line in client.events(args['after']):
                 print(line,end='',flush=True)
             return 0
-        if command=='status':
-            route = '/vm/actions/'+quote(args['action_id'],safe='') if args['action_id'] else '/vm/actions?'+urlencode({'request_id':args['request_id']})
+        if command in {'status','command-status'}:
+            identifier = args.get('action_id') if command=='status' else args.get('command_id')
+            base = '/vm/actions' if command=='status' else '/vm/commands'
+            route = base+'/'+quote(identifier,safe='') if identifier else base+'?'+urlencode({'request_id':args['request_id']})
             status,value = client.request('GET',route)
+        elif command=='stop-bg':
+            status,value = client.request('POST','/vm/commands/'+quote(args['command_id'],safe='')+'/stop',{})
         else:
             data = {key:value for key,value in args.items() if value is not None}
-            if command in {'say','wake','send-file'}:
+            if command in {'say','wake','send-file','run-bg'}:
                 data.setdefault('request_id',secrets.token_hex(16))
                 print('request_id='+data['request_id'],file=sys.stderr,flush=True)
                 if data.get('text')=='-':
                     data['text'] = sys.stdin.read(4001)
                 if 'text' in data and len(data['text'])>(1800 if command=='say' else 4000):
                     raise ClientError('text exceeds action limit')
+            if command=='run-bg':
+                if data['argv'][:1]==['--']:
+                    data['argv'] = data['argv'][1:]
+                if not data['argv']:
+                    raise ClientError('run-bg requires -- executable arg ...')
             if command=='history' and not any(data.get(key) for key in ('query','who','from','to','around')):
                 data['to'] = '#9223372036854775807' # Latest records, not a VM-local timezone guess.
-            status,value = client.request('POST','/vm/'+command,data)
+            status,value = client.request('POST','/vm/'+('commands' if command=='run-bg' else command),data)
         print(json.dumps(value,ensure_ascii=False),flush=True)
         return 0 if 200<=status<300 else 1
     except (ClientError,BrokenPipeError) as error:

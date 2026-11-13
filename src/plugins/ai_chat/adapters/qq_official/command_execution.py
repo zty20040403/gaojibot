@@ -29,7 +29,7 @@ def observed(value):
     for key in ('output_head','output_tail'):
         if type(value[key]) is not str or len(value[key])>2048:
             raise ValueError('invalid_command_observation')
-        text = re.sub(r'gvm_[A-Za-z0-9_-]{43}','[VM_TOKEN]',value[key])
+        text = re.sub(r'gvm_[A-Za-z0-9_-]{43}','[VM_TOKEN]',value[key]).replace('\0','\\0')
         result[key] = text.encode()[:4096].decode(errors='ignore')
     return result
 

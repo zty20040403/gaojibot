@@ -29,6 +29,17 @@ gaoji events --after 123
 
 写动作的 request_id 会先输出到 stderr，JSON 结果在 stdout；非零退出表示失败或结果不明。保存 ID，用 status 检查，不换 ID 盲目重试。events 保留空行心跳，断流时报告最后完整输出的 ID；用它续读。`--program` 默认使用 GAOJI_PROGRAM，没有时用 manual。
 
+## 单次后台命令
+
+只需要等待、不需要模型判断的长构建或下载，用 `gaoji run-bg --request-id TEST_BUILD_1 -- sh -lc 'cd /work/build && make'`，先准备好 sandbox 用户可读写的文件。命令以 sandbox 用户在 `/work` 运行，不继承后台 agent 的任务令牌；仍可通过 `gaoji` 使用本会话 VM 能力。
+
+保存返回的 command_id 和 `/work/.gaoji/out/<command_id>.txt` 后结束后台 agent，不要 sleep 或轮询等完成。被用户问进度时才读文件尾部；命令完成会尝试唤醒前台，受原命令权限与 F2 额度约束。202/CLI 返回 0 只表示已登记，不代表命令成功或消息送达。
+
+- 查询：`gaoji command-status --request-id TEST_BUILD_1`，或 `--command-id <id>`；看退出码、用时、error_code、notification_error 和 notification 的真实状态。
+- 取消：`gaoji stop-bg <id>`；`stopping` 不等于已停止。`ambiguous` 也不能换 request_id 重跑。同 ID 不接受改动后的命令。
+- 每会话最多八个未确认结束的命令，最长六小时，输出捕获上限 64 MiB；运行或停止不明时保留 VM。宿主重启不会重执行旧命令，新租约会请求停止原单元；VM 重启也不会自动重跑。
+- 对应 VM-only 接口是 `POST /vm/commands`（argv、request_id、可选 program）、`GET /vm/commands/<id>` 或 `?request_id=…`、`POST /vm/commands/<id>/stop`（空对象）。`/kill` 和 `/stop` 禁止旧启动与旧完成通知；已暂停会话仍可查状态和取消，不能新建命令。
+
 ## 手动同步单元
 
 工具包已有 `gaoji-units`（也可 `gaoji units`），把单元文件放在 `/work/.gaoji/systemd/` 后运行它。命令通过本会话 VM 接口请求宿主运行固定 guest 同步器，不需要 sudo，也不能传任意命令或路径。新增会启动、改动会重启、删除会停止；不覆盖系统同名单元。宿主停用的程序（服务与同名 timer）保持暂停，不能靠重跑命令绕过。每次查看 JSON 的 ok、units 和 errors；失败会附最近几行日志，不要把文件已保存当作启动成功。

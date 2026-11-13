@@ -10,11 +10,14 @@ from .send_types import OutboxInvariantError
 
 
 class ProgramHTTP:
-    def __init__(self, actions, runtime, calls, logger, *, programs=None, reads=None, stream=None, files=None, units=None):
+    def __init__(self, actions, runtime, calls, logger, *, programs=None, reads=None, stream=None, files=None, units=None, commands=None):
         self.actions,self.runtime,self.calls,self.logger = actions,runtime,calls,logger
         self.programs,self.reads,self.stream,self.files,self.units = programs,reads,stream,files,units
+        self.commands = commands
 
     async def handle(self, request):
+        if request.url.path=='/vm/commands' or request.url.path.startswith('/vm/commands/'):
+            return await self.commands.handle(request) if self.commands is not None else JSONResponse({'error':'command_runner_unavailable'},503)
         if request.url.path=='/vm/units':
             return await self.units.handle(request) if self.units is not None else JSONResponse({'error':'program_units_unavailable'},503)
         if request.url.path=='/vm/events':

@@ -150,7 +150,19 @@ quota. Two exports per conversation/four per host, a 60-second export deadline, 
 live source checks bound this path. Exported bytes are immutable before queuing;
 retries cannot silently substitute a changed file, and unknown deliveries are not replayed.
 Guest-agent integration tests use local doubles and do not prove real KVM or
-QQ acceptance; the remaining resident-program facilities are not yet complete.
+QQ acceptance; resident-program local implementation does not replace owner-run acceptance.
+
+VM-only `/vm/commands` admits bounded argv for a one-shot guest systemd command.
+It captures both stop and command generations before guest/body waits; job tokens
+are not accepted. The child runs as sandbox with a clean environment, never with
+host keys or an inherited job token. Eight unfinished commands per conversation,
+a six-hour guest deadline and 64 MiB captured output bound normal execution.
+Commands are arbitrary code in the existing conversation VM, not a new host shell.
+A stop tombstone fences a late start; unconfirmed stops retain capacity and idle
+keepalive. Host cancellation of a guest-agent wait does not prove process exit.
+The host uses boot/ownership checks, preserves terminal receipts and only enqueues
+completion wakes under the original source and quotas. Status and per-command
+stop remain readable/usable during conversation stop; no other scope is accepted.
 
 ### Verifying a host
 

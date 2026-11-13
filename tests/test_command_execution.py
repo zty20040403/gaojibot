@@ -49,7 +49,7 @@ class CommandExecutionTests(OutboxFixture):
     def test_terminal_snapshot_notifies_once_and_late_running_cannot_erase_exit(self):
         self.execution.next(self.id)
         self.execution.record(self.id,report(state='completed',stopped=True,exit_code=0,elapsed_seconds=12,
-            output_head=self.credential.token+'X'*1900,output_tail='Z'*2048))
+            output_head=self.credential.token+'\0'+'X'*1900,output_tail='Z'*2048))
         self.execution.record(self.id,report())
         self.assertEqual((self.stored()['state'],self.stored()['exit_code'],self.stored()['elapsed_seconds']),('completed',0,12))
         self.assertTrue(self.execution.notify(self.id)); self.assertFalse(self.execution.notify(self.id))
@@ -60,6 +60,7 @@ class CommandExecutionTests(OutboxFixture):
         self.assertLessEqual(len(text),4000)
         self.assertNotIn(self.credential.token,text); self.assertIn('[VM_TOKEN]',text)
         self.assertIn('12 秒',text)
+        self.assertNotIn('\0',text); self.assertIn('\\0',text)
         self.assertNotIn(self.id,self.execution.pending())
         self.assertFalse(self.query('SELECT * FROM usage_events'))
 

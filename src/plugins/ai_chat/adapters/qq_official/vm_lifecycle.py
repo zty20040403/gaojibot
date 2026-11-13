@@ -33,8 +33,9 @@ class OfficialVMLifecycle:
         self.status = ProgramStatus(transaction=self.transaction,manager=self.manager,calls=self.calls,
             clock=self.store.clock,route=self.store._route)
         self.files = ProgramFiles(self,runtime,logger)
+        from .command_http import CommandHTTP
         self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs,reads=ProgramReads(app),
-            stream=ProgramStream(self.store,calls,logger),files=self.files,units=self.units)
+            stream=ProgramStream(self.store,calls,logger),files=self.files,units=self.units,commands=CommandHTTP(self.commands))
         self.closed,self.restoring = False,None
         from .program_keeper import ProgramKeeper
         self.keeper = ProgramKeeper(self)
