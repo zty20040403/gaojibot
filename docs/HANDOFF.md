@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· 新固定快照复测
+
+- 固定 **19fcda7**（含 F2 测试修正、F3 命令底座及独立 guest 载荷）在 `/tmp/gaoji-python-f2-recheck` 全套复测；日志 `/tmp/gaoji-python-f2-recheck.log`，PID 文件 `/tmp/gaoji-python-f2-recheck-test.pid`，退出码 `/tmp/gaoji-python-f2-recheck.exit`。本轮启用逐用例名称，已预检 ffmpeg/ffprobe，结果待定。
+- 固定快照前最新相关组合 **39 项**、独立 guest 载荷/单元组合 **14 项**通过；Ruff、两项导入检查通过。旧 7fde49f 的四项失败仍保留原始结果，不能据此改写为通过。
+- 后续先审查此轮结果，继续接 F3 的 systemd 控制器、宿主监护、CLI/管理台与 1–6 小时时限；未部署。
+
 ## 开发记录（2026-11-12）· F3 guest 进程载荷
 
 - 新增 sandbox_command_process.py，预备由 VM systemd 执行：命令子进程降为 sandbox 用户/组并清空补充组；仅显式环境，不继承任务令牌。逐块写 `/work/.gaoji/out/<command_id>.txt`，64 MiB 上限后终止并报告部分结果。
