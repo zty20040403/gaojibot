@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F6 只读运维传输边界
+
+- 原ops_read仅请求前查owner且无有界响应/持续取消；现要求原后台任务current回调，等待HTTP头/正文、返回前持续复查任务与owner。群、非owner、跨账号/私聊actor和共享历史别名都不授权；VM/程序无此工具。
+- 固定GET及精确host/unit/日志范围校验；总20秒、最多1MiB、禁止重定向/不透明压缩、私有凭据文件及HTTPS（仅字面loopback允许HTTP）。接口地址/token不进入错误，回显凭据脱敏，不自动重试。
+- 16项真实PostgreSQL来源、HTTP替身、后台agent及程序工具隔离组合通过；不是真实运维验收。仍待服务列表/部署版本、操作单、10分钟短码审批及审计页。
+- F5固定313a62f的新全套在 /tmp/gaoji-python-browser-final.log；同前缀.revision/.exit/.pid，快照/tmp/gaoji-python-browser-final-check。当前尚无退出码，不算完成；不含后续F6改动。
+
 ## 开发记录（2026-11-13）· F5 管理页接通
 
 - “模型、群与用户”增加“会话浏览器”，按物理 endpoint 读取域名及近五次清空结果；不因查询或清理开机，不把 Cookie 域名/空列表当作登录/退出证明。UI绑定所见 endpoint/fence/version，切换会话丢弃旧快照，显式确认后才清空。

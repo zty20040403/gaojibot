@@ -190,4 +190,4 @@ owner 自行注册专用账号，并在宿主配置两个 API；仅用 `public_r
 
 没有在本地测试中连接真实 GitHub 或创建 PR；账号、token 权限及真实推送由 owner 测试环境验收。
 
-旧的项目授权、迁移路线、Wiki、主机写操作策略已移除。管理员后台只读运维另用 `AI_OPS_READ_BASE_URL` 和 `AI_OPS_READ_TOKEN_FILE`；token 只在宿主读取。
+旧的项目授权、迁移路线、Wiki、主机写操作策略已移除。owner 私聊后台只读运维另用 `AI_OPS_READ_BASE_URL` 和 `AI_OPS_READ_TOKEN_FILE`；token 只在宿主读取。基址必须 HTTPS（仅字面 loopback 可用 HTTP），不含用户信息、query 或 fragment；token 文件必须是非公开可读的普通文件。只发固定 GET、不跟随跳转；总等待最多20秒、响应最多1MiB，凭据和接口地址不进入返回值/错误。等待响应头或正文时持续复查原任务和 owner 权限，撤权或停止会取消读取；无自动重试。
