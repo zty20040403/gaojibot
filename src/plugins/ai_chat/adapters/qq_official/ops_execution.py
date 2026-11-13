@@ -11,7 +11,11 @@ def summary(client,value):
     text = json.dumps({'remote_status':value['status'],'result':value.get('result',{}),
         'error_code':value.get('error_code','')},ensure_ascii=False,allow_nan=False)
     address = urlsplit(client.config.base_url)
-    for secret in sorted({client.secret,client.config.base_url,client.config.secret_file,address.netloc,address.hostname or ''},key=len,reverse=True):
+    secrets = {client.secret,client.config.base_url,client.config.secret_file,address.netloc,address.hostname or ''}
+    # ASCII credentials may contain quotes/backslashes; the serialized response
+    # then contains their JSON escape form, not the original byte string.
+    secrets |= {json.dumps(value,ensure_ascii=False)[1:-1] for value in secrets}
+    for secret in sorted(secrets,key=len,reverse=True):
         if secret:text = text.replace(secret,'[redacted]')
     raw = text.encode()
     return text if len(raw)<=16000 else raw[:15000].decode('utf-8',errors='ignore')+'\n[输出摘要已截断]'

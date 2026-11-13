@@ -1,14 +1,25 @@
 """Real consent/receipt/job fences, with a non-network control protocol double."""
 import asyncio
 import threading
+import json
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock,patch
 
-from src.plugins.ai_chat.adapters.qq_official.ops_execution import OpsExecution
+from src.plugins.ai_chat.adapters.qq_official.ops_execution import OpsExecution,summary
 from src.plugins.ai_chat.ops_client import OpsTransportError,Reference
 from tests.ops_action_fixture import OpsFixture
 from tests import test_ops_replies as replies_fixture
+
+
+class OpsSummaryTests(unittest.TestCase):
+    def test_json_escaped_credentials_are_removed_before_audit_or_model_output(self):
+        secret = 'TEST_"SECRET\\'+'x'*32
+        client = SimpleNamespace(secret=secret,config=SimpleNamespace(base_url='https://control.example.test',secret_file='/TEST_PRIVATE'))
+        value = {'status':'failed','result':{'stdout':secret,'nested':[secret,'https://control.example.test/path']}}
+        output = summary(client,value)
+        self.assertNotIn('TEST_',output); self.assertNotIn('control.example.test',output)
+        self.assertEqual(json.loads(output)['result']['stdout'],'[redacted]')
 
 
 class OpsExecutionTests(OpsFixture,unittest.IsolatedAsyncioTestCase):
