@@ -453,10 +453,17 @@ def build_turn_consumer(runtime, token, app):
                 if source['endpoint_key']!=current.endpoint.key or source['requester_actor_key']!=current.actor.key:
                     raise PermissionError('program_status_source_mismatch')
             return await agents.vm_lifecycle.status.command(current,request,authorize=authorize)
+        async def browser(current, request):
+            def authorize(cursor):
+                source = life.current(cursor,int(runtime.store.clock()))
+                if source['endpoint_key']!=current.endpoint.key or source['requester_actor_key']!=current.actor.key:
+                    raise PermissionError('browser_source_mismatch')
+            return await agents.vm_lifecycle.browser.command(current,request,authorize=authorize)
         services = CommandServices(running_tasks=tasks,
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
             host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls),
-            units=units if agents is not None and agents.vm_lifecycle is not None else None)
+            units=units if agents is not None and agents.vm_lifecycle is not None else None,
+            browser=browser if agents is not None and agents.vm_lifecycle is not None else None)
         return guarded_services(services, inbound, effect_scope=effect_scope,
             database_call=runtime._calls)
 

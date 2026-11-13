@@ -16,7 +16,7 @@ from ..platform_types import InboundMessage
 from ..tasks import RunningTaskRegistry
 
 
-CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory", "clear", "stop", "start", "kill", "units"]
+CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory", "clear", "stop", "start", "kill", "units", "logins"]
 CommandStatus = Literal["ok", "unknown", "syntax", "denied", "unavailable", "not_found", "unsupported", "error"]
 _ALIASES: dict[str, CommandName] = {
     "memory": "memory", "记忆": "memory",
@@ -30,6 +30,7 @@ _ALIASES: dict[str, CommandName] = {
     "cancel": "cancel", "停止": "cancel", "取消": "cancel", "取消任务": "cancel",
     "stop": "stop", "start": "start", "kill": "kill",
     "units": "units", "程序": "units",
+    "logins": "logins",
 }
 _RESETS = frozenset({"default", "reset", "默认", "重置"})
 _STATUS = frozenset({"status", "list", "ls", "状态", "列表"})
@@ -106,6 +107,7 @@ class CommandServices:
     clear: ResultCallback | None = None
     conversation_control: ResultCallback | None = None
     units: ResultCallback | None = None
+    browser: ResultCallback | None = None
 
 
 async def _await(value):
@@ -134,7 +136,7 @@ async def dispatch_command(
     if request.name == "help":
         if request.argument:
             return CommandResult("syntax", "用法：/help")
-        extras = [label for key, label in (("memory", "/memory"), ("clear", "/clear"), ("units", "/units"))
+        extras = [label for key, label in (("memory", "/memory"), ("clear", "/clear"), ("units", "/units"), ("browser", "/logins"))
                   if getattr(services, key) is not None]
         if services.conversation_control is not None:
             extras += ['/stop', '/start', '/kill']
@@ -143,6 +145,16 @@ async def dispatch_command(
         if services.conversation_control is not None:
             hint += '\n/stop、/start、/kill 是会话级控制，需要群主、群管理员或宿主 owner；私聊仅控制自己的会话。'
         return CommandResult('ok','可用命令：'+commands+'。\n'+hint)
+    if request.name=='logins':
+        if request.argument:
+            return CommandResult('syntax','用法：/logins')
+        if services.browser is None:
+            return CommandResult('unavailable','浏览器状态服务尚未配置。')
+        try:
+            result = await _await(services.browser(inbound,request))
+            return result if isinstance(result,CommandResult) else CommandResult('error','命令服务返回无效结果。')
+        except Exception:
+            return CommandResult('unavailable','浏览器状态暂时不可用。')
     if request.name=='units':
         if request.argument:
             return CommandResult('syntax','用法：/units')

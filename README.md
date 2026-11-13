@@ -73,7 +73,8 @@
 - A conversation reuses its own VM and `/work`. A job that was running when the service restarted is marked as interrupted; its files are kept, and it is not silently resumed.
 - **QQ credentials, model keys and operations credentials stay on the host.** The VM only receives revocable job and conversation-scoped VM tokens, never credentials that can retrieve host secrets.
 - The VM's network cannot reach the host or the internal network. Only the public internet, DNS and the relay ports are allowed. Using a VM is not, by itself, treated as isolation.
-- The background agent cannot send QQ messages. `history`, search and `ask_main` are called by the host on its behalf; `ops_read` is available only to jobs started from the owner's private chat.
+- Background jobs can use VM-scoped `gaoji say/send-file` without QQ credentials or impersonating a human. `history`, search and `ask_main` are called by the host; `ops_read` is available only to jobs started from the owner's private chat.
+- Personal browser logins belong only in a private conversation VM; group bot-account login requires a verified owner/admin request and a shared-use notice. `/logins` lists this conversation's cookie domains, not proof of valid login; offline VMs are not automatically booted. Chat logout and admin profile clearing are still pending.
 - A finished job, an uploaded file, a queued message and a platform receipt are separate stages. **A generated result is not counted as delivered.**
 
 See [Sandbox security](docs/sandbox-security.md) and the [current handoff record](docs/HANDOFF.md).

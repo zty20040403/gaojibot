@@ -32,6 +32,8 @@ class OfficialVMLifecycle:
         from .program_status import ProgramStatus
         self.status = ProgramStatus(transaction=self.transaction,manager=self.manager,calls=self.calls,
             clock=self.store.clock,route=self.store._route)
+        from .browser_runtime import BrowserRuntime
+        self.browser = BrowserRuntime(self)
         self.files = ProgramFiles(self,runtime,logger)
         from .command_http import CommandHTTP
         self.http = ProgramHTTP(self.actions,runtime,calls,logger,programs=self.programs,reads=ProgramReads(app),
