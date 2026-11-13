@@ -9,6 +9,8 @@ from types import MappingProxyType
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
+from .model_pricing import ModelPricing
+
 
 SUPPORTED_MODEL_PROTOCOLS = frozenset(
     {
@@ -113,6 +115,7 @@ class ModelProfile:
     fallback_profiles: tuple[str, ...] = ()
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
     circuit_breaker_enabled: bool = True
+    pricing: ModelPricing | None = None
 
     @property
     def configured(self) -> bool:
@@ -141,9 +144,10 @@ class ModelProfile:
 
     def with_model(self, model: str) -> "ModelProfile":
         selected = str(model).strip()
-        if not selected:
+        if not selected or selected==self.model:
             return self
-        return replace(self, model=selected)
+        # A caller-selected model must not inherit the configured model's rate.
+        return replace(self, model=selected, pricing=None)
 
     def with_reasoning_effort(self, effort: str | None) -> "ModelProfile":
         selected = str(effort or "").strip().lower()
@@ -491,6 +495,10 @@ def _parse_profile(
             + ", ".join(sorted(SUPPORTED_REASONING_EFFORTS))
         )
 
+    try:
+        pricing = ModelPricing.from_mapping(raw.get('pricing'))
+    except ValueError as error:
+        raise ModelCatalogError(f'{name}.pricing: {error}') from None
     default_output_tokens = 4096 if protocol == "anthropic-messages" else 0
     return ModelProfile(
         name=name,
@@ -516,6 +524,7 @@ def _parse_profile(
         aliases=aliases,
         fallback_profiles=fallback_profiles,
         circuit_breaker_enabled=_mapping_bool(raw, "circuit_breaker_enabled", True),
+        pricing=pricing,
         capabilities=ModelCapabilities.from_mapping(
             protocol,
             raw.get("capabilities"),

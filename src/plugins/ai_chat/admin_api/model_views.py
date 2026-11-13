@@ -29,6 +29,7 @@ def _model_overview(
                 "protocol": profile.protocol,
                 "model": profile.model,
                 "configured": profile.configured,
+                "pricing": profile.pricing.to_mapping() if profile.pricing is not None else None,
                 "reasoning_effort": profile.reasoning_effort or None,
                 "supports_reasoning_effort": profile.provider
                 in {"openai", "cliproxy"},
