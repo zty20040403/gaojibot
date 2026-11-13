@@ -76,6 +76,29 @@ class CaptionAdmissionTests(unittest.TestCase):
         self.process(inbox)
         self.assertEqual(len(self.query('SELECT * FROM media_jobs')), 1)
 
+    def test_history_routes_never_lend_caption_switch_or_daily_allowance(self):
+        from src.plugins.ai_chat.platform_types import EndpointKey
+        other = EndpointKey(self.account,'group','TEST_OTHER_"群\\')
+        self.provision(other)
+        # Active history routes are unique. Swap them through an unused route;
+        # settings must still belong to physical A/B, not their history keys.
+        unused = EndpointKey(self.account,'group','TEST_UNUSED').scope.key
+        self.query('UPDATE qq_official_endpoints SET canonical_scope_key=?,route_epoch=2 WHERE endpoint_key=?',(unused,self.endpoint.key))
+        self.query('UPDATE qq_official_endpoints SET canonical_scope_key=?,route_epoch=2 WHERE endpoint_key=?',(self.endpoint.scope.key,other.key))
+        self.query('UPDATE qq_official_endpoints SET canonical_scope_key=? WHERE endpoint_key=?',(other.scope.key,self.endpoint.key))
+        self.settings(1)
+        self.process(self.image(endpoint=other,route=2))
+        self.assertEqual(self.query('SELECT fetch_status FROM message_media')[0]['fetch_status'],'disabled')
+        CaptionSettings(self.database).set(other.scope.key,enabled=True,daily_limit=1)
+        for endpoint in (other,self.endpoint,other):
+            self.process(self.image(endpoint=endpoint,route=2))
+        self.assertEqual([r['fetch_status'] for r in self.query('SELECT fetch_status FROM message_media ORDER BY message_media_id')],
+            ['disabled','pending','pending','quota'])
+        rows = {row['scope_key']:row for row in CaptionSettings(self.database).snapshot(ingress.NOW)}
+        self.assertEqual(set(rows),{self.endpoint.scope.key,other.scope.key})
+        self.assertEqual([rows[key]['admitted'] for key in (self.endpoint.scope.key,other.scope.key)],[1,1])
+        self.assertEqual([rows[key]['quota_rejected'] for key in (self.endpoint.scope.key,other.scope.key)],[0,1])
+
     def test_settings_reject_unknown_scope_and_invalid_limits(self):
         store = CaptionSettings(self.database)
         for limit in (-1,10001,True):

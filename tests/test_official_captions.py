@@ -116,6 +116,22 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
         cleanup = LegacyMediaCleanup(self.database,media_root=Path(self.temp.name))
         self.assertEqual(cleanup.preview()['candidate_count'],0)
 
+    async def test_history_alias_caption_uses_physical_settings_not_history_permissions(self):
+        from src.plugins.ai_chat.platform_types import EndpointKey
+        other = EndpointKey(self.account,'group','TEST_OTHER_HISTORY')
+        self.provision(other,binding='revoked')
+        self.query('UPDATE qq_official_endpoints SET canonical_scope_key=?,route_epoch=2 WHERE endpoint_key=?',
+            (other.scope.key,self.endpoint.key))
+        canonical = self.process(self.image(route=2)).canonical_message_id
+        await self.run_job()
+        self.assertEqual(self.query('SELECT status FROM media_jobs')[0]['status'],'succeeded')
+        self.assertEqual(len(self.model_calls),1)
+        self.assertIn('猫坐在窗边',self.ledger.get_in_scope(other.scope,canonical).prompt_text)
+        rows = {row['scope_key']:row for row in CaptionSettings(self.database).snapshot(ingress.NOW)}
+        self.assertEqual(rows[self.endpoint.scope.key]['admitted'],1)
+        self.assertEqual(rows[other.scope.key]['admitted'],0)
+        self.assertFalse(rows[other.scope.key]['image_captions'])
+
     async def test_disable_during_model_call_preserves_cost_but_rejects_caption(self):
         self.enqueue()
         self.provider_action = lambda: CaptionSettings(self.database).set(self.endpoint.scope.key,enabled=False,daily_limit=200)

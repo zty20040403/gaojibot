@@ -30,7 +30,7 @@ class OfficialCaptionWorker:
             JOIN conversation_visibility v ON v.conversation_id=c.conversation_id
             JOIN qq_official_endpoints e ON e.endpoint_key=m.source_endpoint_key AND e.canonical_scope_key=mm.scope_key
             JOIN qq_official_accounts a ON a.account_key=e.account_key
-            JOIN conversation_settings s ON s.scope_key=mm.scope_key
+            JOIN conversation_settings s ON s.scope_key=regexp_replace(e.endpoint_key,'^endpoint:','scope:')
             WHERE j.job_id=? AND j.status='running' AND j.worker_id=? AND j.attempts=? AND j.lease_until>?
               AND a.enabled AND a.gateway_state<>'paused' AND s.image_captions
               AND m.direction='inbound' AND m.message_kind='chat' AND m.canonical_message_id>=v.min_canonical_message_id
