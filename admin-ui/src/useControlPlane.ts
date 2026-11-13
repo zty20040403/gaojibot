@@ -27,6 +27,7 @@ const INITIAL_RESOURCES: ResourceName[] = [
   'databases',
   'groups',
   'conversations',
+  'browser',
   'programs',
   'localModel',
   'tools',

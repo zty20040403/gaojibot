@@ -147,6 +147,12 @@ VM 令牌可 `POST /vm/history`（例如 `{"query":"TEST"}`）、`/vm/web-search
 
 写动作可指定 `--program`（默认 GAOJI_PROGRAM 或 manual）和 `--request-id`。自动生成的 ID 会先写 stderr；超时或断线不要换 ID 重发，使用 `gaoji status --request-id <id>`。`gaoji events --after <id>` 保留空行心跳，断流非零退出并在 stderr 报告可恢复游标；只将完整消息行交给调用者。
 
+## 会话浏览器
+
+管理台“模型、群与用户”→“会话浏览器”按实际 endpoint 读取 Cookie 域名与最近五次清空结果；不读取 Cookie 值，不自动创建或启动 VM。域名不是有效登录的证明，空列表也不代表所有站点均已退出。
+
+`GET /api/conversations/browser?endpoint_key=…` 返回所见快照和资源版本；`POST /api/conversations/browser/clear` 要求登录管理员、CSRF、`If-Match`，以及正文 `endpoint_key`、快照 `fence` 和 `confirmation: "clear"`。清空全部本地资料会关闭此会话浏览器，不能撤销其他设备/服务器会话。变更意图与审计先入库，guest 调用在事务外，返回后另记结果。管理会话撤销会取消在途等待；未知结果不重放，先核对再重新登录。这里没有恢复 QQ OTP。
+
 ## GitHub 机器人账号
 
 owner 自行注册专用账号，并在宿主配置两个 API；仅用 `public_repo` classic token，不给私有仓库或删除仓库权限。不将 token、basic-auth 编码、私人邮箱带进 VM。以下是合并到上述 host JSON 的示例片段，均为测试占位值：

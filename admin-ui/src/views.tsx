@@ -22,6 +22,7 @@ import {
 import { TokenUsageChart } from './TokenUsageChart'
 import { HostAPIAudit } from './HostAPIAudit'
 import { CommandsPanel } from './CommandsPanel'
+import { BrowserPanel } from './BrowserPanel'
 import { LocalModelPanel, ModelRouteSummary } from './LocalModelPanel'
 import {
   DataTable,
@@ -160,6 +161,7 @@ export function GroupsView({ plane }: { plane: Plane }) {
         </tbody></DataTable>
         {!rows(plane.data.conversations?.items).length && <EmptyState>尚无可控制的 QQ 会话</EmptyState>}
       </Section>
+      <BrowserPanel plane={plane} />
       <Section title="可用模型" description="密钥只在服务端使用，控制台不会返回凭据">
         <div className="model-strip">
           {profiles.map((profile) => {

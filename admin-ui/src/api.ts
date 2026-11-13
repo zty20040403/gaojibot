@@ -18,6 +18,7 @@ export type ResourceName =
   | 'databases'
   | 'groups'
   | 'conversations'
+  | 'browser'
   | 'programs'
   | 'localModel'
   | 'tools'
@@ -55,6 +56,7 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   databases: '/databases',
   groups: '/group-models',
   conversations: '/conversations',
+  browser: '/conversations/browser',
   programs: '/programs',
   localModel: '/local-model',
   tools: '/tools',
@@ -79,6 +81,7 @@ export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   databases: ['databases'],
   groups: ['groups'],
   conversations: ['conversations'],
+  browser: ['browser'],
   programs: ['programs'],
   'local-model': ['localModel'],
   tools: ['tools'],

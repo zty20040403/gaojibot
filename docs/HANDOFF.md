@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F5 管理页接通
+
+- “模型、群与用户”增加“会话浏览器”，按物理 endpoint 读取域名及近五次清空结果；不因查询或清理开机，不把 Cookie 域名/空列表当作登录/退出证明。UI绑定所见 endpoint/fence/version，切换会话丢弃旧快照，显式确认后才清空。
+- 区分已确认清空当时的资料、未执行及结果不明；请求期间防重复点击，网络错误或未知结果不自动重试。原始Cookie值不渲染，域名与错误按React文本转义。browser资源接SSE和回退刷新；未恢复QQ OTP。
+- npm run build、node tools/test-browser.mjs 与 test-commands.mjs 通过；26项管理/路由/宿主组合复测通过。前端既有依赖审计告警仍另列处理，未在此功能升级依赖。
+- F5本地链路已齐；固定138bdc8全套1,799项通过不包含最新管理/fence/UI补丁，最新固定快照全套仍需核验。真实网站/QQ/VM验收仍待owner；未部署或访问生产。接下来推进F6。
+
 ## 开发记录（2026-11-13）· F5 管理台 API 与全套复测
 
 - 固定138bdc8的重跑全套 **1,799项、0失败、10跳过，exit0**，耗时1029.660秒；/tmp/gaoji-python-browser-recheck.log/.revision/.exit一致。修复了前次1784项中的两个guest SQLite架构误判。此快照不覆盖之后5b27ef6的VM快照fence及管理台API。

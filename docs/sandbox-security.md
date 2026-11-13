@@ -126,6 +126,14 @@ observed boot and short expiry; guest write-ahead receipts are outside the
 browser profile. Interrupted or uncertain operations never automatically replay,
 including after a new login. A parent-domain cookie requires an explicit broader
 request. Clearing local state does not revoke other devices or server sessions.
+The admin conversation panel reads only domains and cleanup receipts. Clearing
+requires a logged-in administrator, CSRF, If-Match, explicit confirmation and a
+snapshot fence bound to the physical endpoint, VM, boot, route and account lease.
+The intent, resource version and audit commit before guest work; results append a
+separate audit entry. The live admin session is rechecked during guest waits.
+Cancellation/restart leaves an unknown outcome, never a replayable work item.
+The page distinguishes confirmed cleanup, not applied and unknown; neither an
+empty domain list nor an offline VM proves every website is logged out.
 These workflow and local tests are not real website/QQ acceptance evidence.
 
 ### Conversation VM credentials
