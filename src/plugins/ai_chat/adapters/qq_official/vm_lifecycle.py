@@ -21,6 +21,9 @@ class OfficialVMLifecycle:
         self.api = VMAPIAuthority(self.credentials,actions=self.actions)
         from .program_runner import ProgramRunner
         self.programs = ProgramRunner(self,runtime,app)
+        from .command_runner import CommandRunner
+        self.commands = CommandRunner(self)
+        self.api.commands = self.commands.commands
         from .program_reads import ProgramReads
         from .program_stream import ProgramStream
         from .program_files import ProgramFiles
@@ -90,11 +93,13 @@ class OfficialVMLifecycle:
         await self.manager.program_state.stopped(owner,sandbox_id)
 
     async def stopping(self, owner, sandbox_id, *, automatic=False):
+        if not await self.calls(self.store.revoke_vm,sandbox_id,if_idle=automatic):
+            return False
         self.api.revoke(sandbox_id)
         self.units.cancel(sandbox_id)
-        await self.calls(self.store.revoke_vm,sandbox_id)
         if (self.manager._directory(sandbox_id)/'metadata.json').is_file():
             await self.manager.program_state.stopping(owner,sandbox_id,paused=not automatic)
+        return True
 
     async def start(self):
         if getattr(self.manager,'conversation_lifecycle',None) not in (None,self):
@@ -104,6 +109,7 @@ class OfficialVMLifecycle:
         self.gateway.vm_handler = self.http.handle
         await self.calls(self.files.recover)
         await self.programs.start()
+        self.commands.start()
         await self.gateway.start()
         self.restoring = asyncio.create_task(self.restore())
 
@@ -123,5 +129,6 @@ class OfficialVMLifecycle:
             self.restoring.cancel()
             await asyncio.gather(self.restoring,return_exceptions=True)
         await self.keeper.close()
+        await self.commands.close()
         await self.programs.close()
         await self.api.close()

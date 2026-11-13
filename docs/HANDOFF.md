@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· F2 修正后全套与 F3 监护接线
+
+- 固定 **19fcda7** 全套完成：**1,715 项、0 失败、10 跳过，2533.319 秒，exit 0**；日志 `/tmp/gaoji-python-f2-recheck.log`。覆盖 F2 本地功能与回归修正、F3 最初状态底座/独立载荷；不覆盖之后 77940aa 的 guest 控制器、e1a3190 的执行观察或本次监护接线。
+- CommandRunner 已接 VM 生命周期：最多四路有界 guest 控制，不在等待中占模型；启动后响应丢失只查原命令，不重执行；完成通知持久进入 F2 唤醒队列。关闭宿主只取消等待，不冒称 VM 命令已停止；新租约下旧来源不能继续启动/通知，监护请求停止原 boot 的单元。
+- 空闲关机/清盘在账号事务内将“无未完成命令”和凭据撤销做成原子操作；pending、结果不明和未确认停止均保活，晚到预留不能穿过撤销。人工关机仍可进行，确认 VM 离线后收尾，不因旧命令自动开机。
+- 48 项命令/VM 生命周期/常驻恢复/观察迁移组合通过，Ruff 与两项导入检查通过；包括同 VM shell 持锁时提交不死锁、在途撤权、四路上限、重复取消与空闲停机竞态。另有此前34项组合通过，组间有重叠。未真实 VM/systemd/QQ 验收。
+- 下一步接 HTTP/CLI、管理台与 agent 1–6 小时时限；当前仍未开放 run-bg。未部署或访问生产。
+
 ## 开发记录（2026-11-12）· F3 宿主执行状态与完成通知
 
 - command_execution.py 在账号锁下认领启动；starting/ambiguous 只查状态、不重发启动，未确认结束仍占名额。0087 保存用时、输出字节数与公平巡检时间；原始 argv 不进入模型通知。
@@ -16,7 +24,7 @@
 
 ## 开发记录（2026-11-12）· 新固定快照复测
 
-- 固定 **19fcda7**（含 F2 测试修正、F3 命令底座及独立 guest 载荷）在 `/tmp/gaoji-python-f2-recheck` 全套复测；日志 `/tmp/gaoji-python-f2-recheck.log`，PID 文件 `/tmp/gaoji-python-f2-recheck-test.pid`，退出码 `/tmp/gaoji-python-f2-recheck.exit`。本轮启用逐用例名称，已预检 ffmpeg/ffprobe，结果待定。
+- 固定 **19fcda7**（含 F2 测试修正、F3 命令底座及独立 guest 载荷）在 `/tmp/gaoji-python-f2-recheck` 全套复测；日志 `/tmp/gaoji-python-f2-recheck.log`，PID 文件 `/tmp/gaoji-python-f2-recheck-test.pid`，退出码 `/tmp/gaoji-python-f2-recheck.exit`。本轮启用逐用例名称，已预检 ffmpeg/ffprobe；最终 1,715 项、0 失败、10 跳过，exit 0，见顶部。
 - 固定快照前最新相关组合 **39 项**、独立 guest 载荷/单元组合 **14 项**通过；Ruff、两项导入检查通过。旧 7fde49f 的四项失败仍保留原始结果，不能据此改写为通过。
 - 后续先审查此轮结果，继续接 F3 的 systemd 控制器、宿主监护、CLI/管理台与 1–6 小时时限；未部署。
 

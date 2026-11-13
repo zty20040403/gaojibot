@@ -98,6 +98,30 @@ class BackgroundCommandTests(OutboxFixture):
         with self.assertRaisesRegex(ProgramDenied,'not_found'):
             self.commands.get(self.current,'TEST_UNKNOWN')
 
+    def test_idle_shutdown_holds_pending_and_uncertain_commands_and_serializes_new_starts(self):
+        row,_ = self.reserve()
+        self.assertFalse(self.sessions.revoke_vm('s123456',if_idle=True))
+        self.assertEqual(self.sessions.authenticate(self.credential.token),self.current)
+        self.query("UPDATE qq_official_background_commands SET state='ambiguous'")
+        self.control('kill')
+        self.assertFalse(self.sessions.revoke_vm('s123456',if_idle=True))
+        self.query("UPDATE qq_official_background_commands SET state='cancelled',finished_at=?",(self.now,))
+        self.assertTrue(self.sessions.revoke_vm('s123456',if_idle=True))
+        with self.assertRaises(PermissionError):
+            self.sessions.authenticate(self.credential.token)
+        for index in range(4):
+            self.current = self.sessions.issue(self.endpoint,'s123456',BOOT,expected_route=(1,1)).source
+            def reserve():
+                try:
+                    return self.reserve('TEST_RACE_'+str(index),generation=(0,1))[1]
+                except PermissionError:
+                    return False
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                admitted = pool.submit(reserve)
+                revoked = pool.submit(self.sessions.revoke_vm,'s123456',if_idle=True)
+                self.assertNotEqual(admitted.result(),revoked.result())
+            self.query("UPDATE qq_official_background_commands SET state='cancelled',finished_at=?",(self.now,))
+
     def test_real_downgrade_cannot_drop_command_evidence(self):
         import os
         from unittest.mock import patch

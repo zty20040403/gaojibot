@@ -85,6 +85,13 @@ class CommandExecution:
                 ' WHERE command_id=?',(*(row[key] for key in fields),command_id))
             return operation,row
 
+    def authorize_start(self, command_id):
+        with self.transaction() as cursor:
+            row = self._row(cursor,command_id)
+            self.commands.check(cursor,row)
+            if row['state']!='starting' or row['deadline_at']<=int(self.clock()):
+                raise ProgramDenied('command_start_no_longer_current')
+
     def record(self, command_id, value):
         report = observed(value)
         with self.transaction() as cursor:

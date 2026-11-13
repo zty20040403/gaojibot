@@ -80,6 +80,21 @@ class VMLifecycleTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         # An unregistered/removed VM must still be stoppable.
         await self.lifecycle.stopping('qqo:conversation:TEST_RETIRED','s654321')
 
+    async def test_idle_stop_keeps_scopes_and_programs_until_commands_are_finished(self):
+        from src.plugins.ai_chat.adapters.qq_official.background_commands import BackgroundCommands
+        await self.lifecycle.commands.close()  # This case tests the atomic idle gate, not guest execution.
+        commands = BackgroundCommands(self.lifecycle.store)
+        current = self.lifecycle.store.authenticate(self.token_value)
+        row,_ = commands.reserve(current,generation=(0,0),program='TEST_PROGRAM',request_id='TEST_COMMAND',argv=['true'])
+        scope = await self.lifecycle.api.authorize(self.token_value)
+        self.assertFalse(await self.lifecycle.stopping(self.owner,'s123456',automatic=True))
+        self.assertFalse(scope.revoked)
+        state = (await self.manager._metadata(self.owner,'s123456'))['programs']
+        self.assertFalse(state.get('planned_stop'))
+        commands.cancel(current,row['command_id'])
+        self.assertTrue(await self.lifecycle.stopping(self.owner,'s123456',automatic=True))
+        self.assertTrue(scope.revoked)
+
     async def test_boot_rotation_closes_old_scope_without_revalidating_old_token(self):
         scope = await self.lifecycle.api.authorize(self.token_value)
         self.boot.write_text('00000000-0000-4000-8000-000000000002')
@@ -119,6 +134,14 @@ class VMManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.hook.ready.reset_mock()
         await self.manager.start_owned('qqo:template','s123456')
         self.hook.ready.assert_not_awaited()
+
+    async def test_cleanup_honors_atomic_command_hold_before_guest_or_disk_io(self):
+        self.hook.stopping.return_value = False
+        self.manager._guest_exec.reset_mock(); self.manager._virsh.reset_mock()
+        await self.manager.stop_owned(self.owner,'s123456',if_idle=True)
+        await self.manager.destroy(self.owner,'s123456',if_unused=True)
+        self.assertEqual(self.hook.stopping.await_count,2)
+        self.manager._guest_exec.assert_not_awaited(); self.manager._virsh.assert_not_awaited()
 
     async def test_cleanup_rechecks_resident_before_revoking_or_touching_guest(self):
         original = self.manager._metadata.return_value

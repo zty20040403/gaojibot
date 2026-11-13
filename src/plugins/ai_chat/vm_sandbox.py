@@ -851,7 +851,7 @@ class VmSandboxManager:
 
     async def _conversation_event(self, event, owner, sandbox_id, **kwargs):
         if owner.startswith('qqo:conversation:') and self.conversation_lifecycle is not None:
-            await getattr(self.conversation_lifecycle,event)(owner,sandbox_id,**kwargs)
+            return await getattr(self.conversation_lifecycle,event)(owner,sandbox_id,**kwargs)
 
     async def _configure_github(self, owner, sandbox_id):
         if self.github_identity is None or not owner.startswith('qqo:conversation:'):
@@ -909,7 +909,8 @@ class VmSandboxManager:
                 return
             if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
                 raise SandboxError("VM 正在执行命令，不能停止。")
-            await self._conversation_event('stopping',owner,sandbox_id,**({'automatic':True} if if_idle else {}))
+            if await self._conversation_event('stopping',owner,sandbox_id,**({'automatic':True} if if_idle else {})) is False:
+                return
             if not await self._running(sandbox_id):
                 await self._conversation_event('stopped',owner,sandbox_id)
                 return
@@ -933,7 +934,8 @@ class VmSandboxManager:
         async with self.io_lock(sandbox_id):
             if if_unused and self.program_state.keeps_disk(await self._metadata(owner,sandbox_id)):
                 return
-            await self._conversation_event('stopping',owner,sandbox_id)
+            if await self._conversation_event('stopping',owner,sandbox_id,**({'automatic':True} if if_unused else {})) is False:
+                return
             if await self._running(sandbox_id):
                 await self._virsh("destroy", self._name(sandbox_id))
             if await self._defined(sandbox_id):
