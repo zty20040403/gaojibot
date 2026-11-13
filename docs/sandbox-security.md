@@ -104,6 +104,22 @@ and shared disk ownership. tap or passt with explicit rules (as in maxx) needs
 a bridge, DHCP, NAT and a new relay address. The cgroup filter keeps slirp and
 the relay address as they are.
 
+### Browser login state
+
+Personal QR/mobile-confirmation logins belong only in the requesting private
+conversation's VM, never a shared group VM or a shared-history alias. A group
+may use an explicitly requested bot public account only after host-verified
+owner/admin attribution and a notice that the login is usable by the whole
+group. This is not per-member encryption: members with guest root can read all
+state in their group VM. Host API keys and SSH credentials remain forbidden.
+
+The browser skill must not request or use passwords/SMS codes, export cookie or
+storage values, or treat login as permission for payment, publication or deletion.
+A site-specific login check waits at most 180 seconds; cookies, a missing QR code
+or a redirect alone are not evidence of success. QR files use the existing
+scoped file-delivery path and its real receipt, not a new unfenced sender.
+These workflow and local tests are not real website/QQ acceptance evidence.
+
 ### Conversation VM credentials
 
 A conversation VM is shared by that conversation's members as root. Anyone in

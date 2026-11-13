@@ -4,12 +4,11 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from playwright.async_api import async_playwright
-
 _driver = _browser = None
 
 
 async def page():
+    from playwright.async_api import async_playwright
     global _driver, _browser
     if _browser is None:
         _driver = await async_playwright().start()
@@ -37,6 +36,27 @@ async def page():
                         raise
     context = _browser.contexts[0]
     return context.pages[-1] if context.pages else await context.new_page()
+
+
+async def wait_for_login(check, *, timeout=180, interval=3):
+    """A site-specific boolean check; neither QR disappearance nor cookies suffice."""
+    if (type(timeout) not in (int,float) or not 0<timeout<=180
+            or type(interval) not in (int,float) or not 0<interval<=10):
+        raise ValueError('登录检查最多180秒，间隔必须大于0且不超过10秒。')
+    deadline = asyncio.timeout(timeout)
+    try:
+        async with deadline:
+            while True:
+                authenticated = await check()
+                if type(authenticated) is not bool:
+                    raise TypeError('登录检查必须返回真实登录标志的布尔结果。')
+                if authenticated:
+                    return True
+                await asyncio.sleep(interval)
+    except TimeoutError:
+        if not deadline.expired():
+            raise
+        return False
 
 
 async def snapshot(current):

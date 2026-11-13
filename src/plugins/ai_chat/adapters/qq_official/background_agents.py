@@ -19,8 +19,8 @@ from .keys import account_job_kind
 # A guest-exec argument is capped at 128 KiB, and base64 grows it by a third.
 REPORT_BYTES = 90_000
 
-PROMPT = '''你是 gaoji 的后台 agent，在本群的持久 Linux VM 里工作：命令以 root 运行，/work 会一直保留，可以装软件。
-你看不到群聊，也不能直接给用户发消息或文件。你的最后一条消息就是报告，前台会转述它，并发送你在报告里写出路径的文件。
+PROMPT = '''你是 gaoji 的后台 agent，在本会话的持久 Linux VM 里工作：命令以 root 运行，/work 会一直保留，可以装软件。
+聊天记录要用 history 查；可用 gaoji say/send-file 向本会话交付中间结果，须核对真实回执，登记成功不等于已发出。你的最后一条消息就是报告，前台会转述它，并发送你在报告里写出路径的文件；不要重复交付已经发出的文件。
 - 报告先结论后要点，写明来源和日期、生成文件的绝对路径和没做完的事，2000 字以内。
 - 只需等待、不需模型判断的长构建/下载用 `gaoji run-bg -- <可执行文件> <参数>`，记下 command_id、request_id 和输出路径后结束任务，不要 sleep 或轮询等结果。它在 /work 以 sandbox 用户运行，先准备好可读写权限；需要 shell 语法时显式用 `-- sh -lc '…'`。最多八个、六小时，完成后宿主尝试唤醒前台。
 - run-bg 返回只表示已登记，不等于命令成功或 QQ 已收到通知。传输失败用 `gaoji command-status --request-id 原ID` 查原记录，不能换 ID 盲重试；被问进度时读输出文件尾部。取消用 `gaoji stop-bg 命令ID`，请求取消不等于已停止；以状态、退出码和通知回执为准。
@@ -139,9 +139,11 @@ class OfficialBackgroundAgents:
             endpoint, actor = self.check(cursor, row)
             message = cursor.execute('SELECT * FROM messages WHERE canonical_message_id=?',
                                      (row['canonical_message_id'],)).fetchone()
+            from .message_roles import source_role
+            role = source_role(cursor,endpoint,actor,row['canonical_message_id'],now=int(self.clock()))
         scope = ConversationScope.from_key(row['scope_key'])
         return InboundMessage(endpoint=endpoint, actor=actor, event_id=None,
-            native_message_id=row['native_message_id'], sender_display=message['sender_display'], platform_role='',
+            native_message_id=row['native_message_id'], sender_display=message['sender_display'], platform_role=role,
             body=body_from_json(message['body_json']), mentions_bot=False, reply_to_native_message_id=None,
             occurred_at=message['occurred_at'], reply_credential=None,
             canonical_scope=scope if scope != endpoint.scope else None, route_epoch=row['route_epoch'])
@@ -162,9 +164,18 @@ class OfficialBackgroundAgents:
                 check_transaction(cursor)
         async def current():
             await self.calls(check)
+        def shared_login():
+            with self.runtime.store.transaction() as cursor:
+                check_transaction(cursor)
+                authority = getattr(self.runtime.store,'authority',None)
+                return inbound.platform_role in {'owner','admin'} or (authority is not None
+                    and authority.owner_for_actor(cursor,inbound.endpoint,inbound.actor) is not None)
+        from ...browser_policy import instructions as browser_instructions
         from ...host_api_proxy import api_instructions
+        browser = browser_instructions(inbound.endpoint,
+            shared_allowed=await self.calls(shared_login) if inbound.endpoint.kind=='group' else False)
         session = BackgroundToolSession(self.app, inbound, question=question, current=current,
-            prompt=PROMPT+api_instructions(self.host_apis,self.app.settings.background_gateway_port))
+            prompt=PROMPT+browser+api_instructions(self.host_apis,self.app.settings.background_gateway_port))
         from ...background_video import VideoSession
         session.video = VideoSession(self.app,inbound,current=current,check=check_transaction,job_id=job.job_id)
         session.tools += session.video.tools
