@@ -58,6 +58,7 @@ class Acceptance:
     _native_admission: object = field(default=None, repr=False)
     _identity_input: object = field(default=None, repr=False)
     ingested: object = field(default=None, repr=False)
+    _ops_input: object = field(default=None, repr=False)
 
 
 class OfficialInboxStore:
@@ -82,6 +83,7 @@ class OfficialInboxStore:
         self.approval_store = None
         self.source_authority = None
         self.admin_identity_service = None
+        self.ops_replies = None
 
     def close(self):
         with self._lock:
@@ -231,6 +233,9 @@ class OfficialInboxStore:
                 control = apply_control(cursor, store=self.approval_store, inbox_id=result.inbox_id,
                     session_id=session_id, seq=seq, command=result._approval_input, now=now)
                 result = replace(result, approval=control, _approval_input=None)
+            if result._ops_input is not None:
+                self.ops_replies.observe(cursor,inbox_id=result.inbox_id,session_id=session_id,seq=seq,reply=result._ops_input)
+                result = replace(result,_ops_input=None)
             if ledger is not None and result.disposition == 'inbox':
                 from .ingest import process_inbox
                 ingested = process_inbox(cursor, inbox_id=result.inbox_id, lease_token=token,
@@ -366,6 +371,8 @@ class OfficialInboxStore:
                 return result
         decision = None
         approval_input = None
+        ops_reply = None
+        ops_sensitive = False
         identity_input = None
         approval = None
         payload = None
@@ -383,8 +390,12 @@ class OfficialInboxStore:
             command = prepared_input.command
             admin_input = prepare_approval_input(dispatch, endpoint)
             identity_command = prepare_identity_input(dispatch)
+            from .ops_replies import sensitive
+            ops_sensitive = sensitive(dispatch.data)
             if sent is not None:
                 reason, echo = "self_echo", "confirmed_self"
+            elif ops_sensitive:
+                status,reason = ('processed','ops_control') if endpoint.kind=='private' else ('quarantined','input_sensitive_ops')
             elif identity_command.kind != 'ordinary':
                 # Never retain the raw challenge, even without a configured service.
                 if (identity_command.kind=='control' and endpoint.kind=='private'
@@ -434,9 +445,13 @@ class OfficialInboxStore:
                     status, reason, payload = "quarantined", "payload_storage_limit", None
                 else:
                     status, reason = "pending", None
+            if sent is None and self.ops_replies is not None:
+                ops_reply = self.ops_replies.prepare(cursor,decoded,dispatch)
         inbox_id = self._insert(cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=endpoint_row,
             native_id=native_id, event_id=event_id, status=status, reason=reason, payload=payload, echo=echo,
             trigger=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending")
+        if ops_reply is not None:
+            self.ops_replies.capture(cursor,inbox_id,ops_reply)
         if identity_input is not None:
             cursor.execute("""UPDATE qq_official_inbound_events SET identity_control_actor_key=?,identity_control_occurred_at=?,identity_control_commitment=? WHERE inbox_id=?""",
                 (decoded.actor.key,decoded.platform_occurred_at,command_commitment(self.binding._pepper,inbox_id=inbox_id,endpoint=endpoint,actor=decoded.actor,native_id=native_id,command=identity_input),inbox_id))
@@ -451,8 +466,8 @@ class OfficialInboxStore:
                 SET control_actor_key=?,control_action=?,control_decision_code=? WHERE inbox_id=?""",
                 (decoded.actor.key, command.action, decision.status, inbox_id))
         self._save_aliases(cursor, account, aliases, inbox_id, now)
-        disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision or approval or identity_input else "skipped"
-        return Acceptance(disposition, inbox_id, reason or "", decision, approval, approval_input, native_admission, identity_input)
+        disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision or approval or identity_input or ops_sensitive else "skipped"
+        return Acceptance(disposition, inbox_id, reason or "", decision, approval, approval_input, native_admission, identity_input,_ops_input=ops_reply)
 
     def _lifecycle(self, cursor, account, dispatch, now):
         body = dispatch.data

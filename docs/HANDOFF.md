@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F6 认证批准入站底座
+
+- 0091_ops_replies保存来源承诺及消费回执，批准关联原认证gateway session/seq/inbox、物理私聊和原owner；与入站、checkpoint在同一TxA提交。回复短码在原始入站落盘前移除，只留HMAC；即使未配置运维处理器，嵌入/转发的短码也不进入历史或原始payload。
+- 只接原owner新鲜纯文本“批准 <短码>”，群/其他人的消息不消费待批；owner其他回复（含错误短码、转发内容）拒绝，普通消息仍正常入库。撤权/变更配置/到期不能复活；事务失败不吃掉短码或gateway序号。
+- 极快回复可以先保存批准，但没有真实确认的通知回执仍不能执行；通知结果不明会取消该批准。此轮没有开放ops_act或调用任何运维接口，下一步仍需宿主运行时挂载和执行器的回执、来源双重复查。
+- 43项真实PostgreSQL/FakePlatform/认证入站/迁移组合通过；真实QQ验收仍待owner。
+
 ## 开发记录（2026-11-13）· F6 独立短码通知底座
 
 - 0090_ops_notices新增独立ops_approval用途与操作意图/投递计划的双向来源约束，不复用admin_approvals或恢复全局QQ OTP。代码、正文和wire只在发送内存，持久化空body及HMAC；成功回执仍正常入账为不含正文的command。
@@ -12,7 +19,7 @@
 - 0089_ops_actions记录操作单/参数、原任务与租约、物理私聊/路由/停止代数、owner grant及revision、配置/凭据绑定摘要。短码仅留HMAC，原码只生成一次；同job/request ID必须同意图，不能重发短码或替换参数。过期<=600秒且不超原任务截止时间。
 - 每私聊最多一个待回答问题，避免“回复别的内容视为拒绝”在并行任务间产生歧义；事务用账号锁串行。撤权、重新授予、共享历史、停机会话、任务取消、租约或路由变化均拒绝旧意图；新宿主epoch取消旧待批记录，不恢复授权。
 - 35项真实PostgreSQL来源/租约/并发、迁移升降级、配置及架构组合通过，含此前配置测试；有审计记录不能降级丢数据。输出和终态字段已预留，但尚未开放批准消息或执行HTTP，不能声称ops_act完成。
-- 固定bae056e全套已启动：/tmp/gaoji-python-ops-intents-full.log，同前缀状态文件为/tmp/gaoji-python-ops-intents.revision/.exit/.pid，隔离快照/tmp/gaoji-python-ops-intents-check；显式加载ffmpeg/ffprobe。尚未结束，不算全套通过。
+- 固定bae056e全套已核验：1,833项、0失败、10跳过，1959.660秒，exit0。/tmp/gaoji-python-ops-intents-full.log与同前缀.revision/.exit一致，显式加载ffmpeg/ffprobe。只覆盖意图底座，不覆盖之后0090短码通知及0091认证入站。
 - 下一步：独立ops批准消息的短码投递/原认证入站消费（不经过模型、不恢复admin OTP）、配置绑定重查、有界控制请求、结果审计与管理页。仍不访问生产。
 
 ## 开发记录（2026-11-13）· F6 宿主操作单配置
