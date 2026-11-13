@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F9会话配置底座与主动接话代数
+
+- 固定六个设置及类型/范围/默认值：agent_timeout_hours、proactive_enabled、program_say_limit、program_wake_limit、image_captions、image_daily_limit；写入仅供已认证宿主调用，物理会话、资源版本和审计同事务，未增加模型配置工具。
+- 0093为主动接话增加开关及代数，入站时捕获，分类前/中/后和最终发送复查。快速off→on不让旧消息、旧分类结果或旧发送计划复活，等待中的模型请求会取消；平台已经确认的回执不改。独立于stop_generation，不中止普通@回合。
+- 22项配置/真实FakePlatform主动接话/停止/回合组合通过，含权限中断、旧输入、恢复新输入、真实回执与迁移保护；Ruff和导入检查通过。技能先说明命令边界，但原生/config入口、媒体设置独立版本及管理接线仍未开放，不能把底座称为功能完成。
+
 ## 开发记录（2026-11-13）· 阶段C全套复测通过
 
 - 固定bf7e1bc（/tmp/gaoji-python-stage-c-final-check）的日志、revision与exit已核对一致：1,890项、0失败、10跳过，1769.373秒、exit0；日志/tmp/gaoji-python-stage-c-final.log。覆盖F5/F6本地实现，不包含之后0092图片说明隔离和正在实施的/config。

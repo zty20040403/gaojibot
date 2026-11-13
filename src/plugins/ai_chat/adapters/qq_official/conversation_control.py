@@ -101,6 +101,8 @@ def ingest(cursor, *, inbox_id, decoded, text, now, authority=None):
             authorized = (decoded.endpoint.kind=='private' or decoded.platform_role in {'owner','admin'} or owner)
             receipt = change(cursor,decoded.endpoint,parsed.name,now=now,actor=decoded.actor.key,authorized=authorized)
     current = state(cursor,decoded.endpoint)
-    cursor.execute('''UPDATE qq_official_inbound_events SET conversation_generation=?,conversation_stopped=?,conversation_control=?
-        WHERE inbox_id=?''',(current['stop_generation'],current['stopped'],json.dumps(receipt) if receipt else None,inbox_id))
+    from ...conversation_config import proactive_state
+    cursor.execute('''UPDATE qq_official_inbound_events SET conversation_generation=?,conversation_stopped=?,conversation_control=?,proactive_generation=?
+        WHERE inbox_id=?''',(current['stop_generation'],current['stopped'],json.dumps(receipt) if receipt else None,
+            proactive_state(cursor,decoded.endpoint)[1],inbox_id))
     return receipt,current
