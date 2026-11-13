@@ -133,19 +133,24 @@ class ProgramActions:
         """A scoped read can inspect past failures even while stopped or rotated."""
         with self.transaction() as cursor:
             self.sessions.check(cursor,current)
-            column = 'request_id' if by_request else 'action_id'
-            row = cursor.execute('''SELECT a.action_id,a.request_id,a.program_name,a.kind,a.created_at,
-                COALESCE(a.plan_id,r.plan_id) AS plan_id,w.wake_id,w.due_at,w.answer_text='[silence]' AS silent,
-                CASE WHEN a.state IN ('cancelled','failed') THEN a.state ELSE
-                    COALESCE(CASE d.status WHEN 'committed' THEN 'completed' WHEN 'pending' THEN 'queued' ELSE d.status END,
-                    CASE WHEN w.state='queued' THEN a.state ELSE w.state END,a.state) END AS state,
-                CASE WHEN a.state IN ('cancelled','failed') THEN a.error_code ELSE
-                    COALESCE(d.wait_reason,w.error_code,a.error_code) END AS error_code
-                FROM qq_official_program_actions a LEFT JOIN qq_official_program_wakes w ON w.wake_id=a.wake_id
-                LEFT JOIN qq_official_program_actions r ON r.action_id=w.reply_action_id
-                LEFT JOIN deliveries d ON d.plan_id=COALESCE(a.plan_id,r.plan_id) AND d.part_index=0
-                WHERE a.endpoint_key=? AND a.'''+column+'=?',
-                (current.endpoint.key,identifier)).fetchone()
-            if row is None:
-                raise ProgramDenied('program_action_not_found',404)
-            return dict(row)
+            return read_action(cursor,current.endpoint.key,identifier,by_request=by_request)
+
+
+def read_action(cursor, endpoint_key, identifier, *, by_request=False):
+    """Fact projection shared by authenticated VM and admin reads, not an authority check."""
+    column = 'request_id' if by_request else 'action_id'
+    row = cursor.execute('''SELECT a.action_id,a.request_id,a.program_name,a.kind,a.created_at,
+        COALESCE(a.plan_id,r.plan_id) AS plan_id,w.wake_id,w.due_at,w.answer_text='[silence]' AS silent,
+        CASE WHEN a.state IN ('cancelled','failed') THEN a.state ELSE
+            COALESCE(CASE d.status WHEN 'committed' THEN 'completed' WHEN 'pending' THEN 'queued' ELSE d.status END,
+            CASE WHEN w.state='queued' THEN a.state ELSE w.state END,a.state) END AS state,
+        CASE WHEN a.state IN ('cancelled','failed') THEN a.error_code ELSE
+            COALESCE(d.wait_reason,w.error_code,a.error_code) END AS error_code
+        FROM qq_official_program_actions a LEFT JOIN qq_official_program_wakes w ON w.wake_id=a.wake_id
+        LEFT JOIN qq_official_program_actions r ON r.action_id=w.reply_action_id
+        LEFT JOIN deliveries d ON d.plan_id=COALESCE(a.plan_id,r.plan_id) AND d.part_index=0
+        WHERE a.endpoint_key=? AND a.'''+column+'=?',
+        (endpoint_key,identifier)).fetchone()
+    if row is None:
+        raise ProgramDenied('program_action_not_found',404)
+    return dict(row)

@@ -97,6 +97,15 @@ class ConversationControlRequest(BaseModel):
     action: Literal['stop','start','kill']
 
 
+class BackgroundCommandCancelRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+
+
+class AgentTimeLimitRequest(BackgroundCommandCancelRequest):
+    hours: int = Field(ge=1,le=6,strict=True)
+
+
 class ProgramSettingsRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     endpoint_key: str = Field(min_length=1,max_length=1000)

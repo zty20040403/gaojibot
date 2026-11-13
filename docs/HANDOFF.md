@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-12）· F3 管理 API
+
+- `/api/background-commands` 读取运行中或最近命令及独立通知回执；按物理 endpoint 筛选，限制100条并明确截断，运行时离线仍可读。复用 VM 的动作事实投影，不把命令退出0当作已发送QQ。
+- `/settings` 设置1–6小时，仅作用于新 agent；`/<command_id>/cancel` 在账号锁下写取消意图，与版本/审计同事务，提交后才通知监护。正在运行/结果不明的命令不提前释放名额，不伪造VM身份，也不在管理请求里执行 guest RPC。
+- 登录+CSRF+If-Match；22项管理API/路由/VM HTTP/程序动作组合通过，Ruff与导入检查通过。并发版本及注入回滚验证通过；资源键使用小写 `commands`，避免 AdminControlStore 归一化后读到错误版本。管理页面仍待接；没有部署或真实QQ/VM验收。
+
 ## 开发记录（2026-11-12）· F3 时限底座
 
 - 0088_agent_time_limits 扩展物理会话设置：agent_timeout_hours 为1–6，默认6；手动 agent 与 routine 在创建时快照截止时间，重试/后改配置不延长旧任务。不会使用共享历史别名的配置。
