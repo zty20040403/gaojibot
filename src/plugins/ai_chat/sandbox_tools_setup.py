@@ -46,7 +46,7 @@ def files():
     return [{'path': '/usr/local/share/gaoji/' + ('gaoji_browser.py' if name=='sandbox_browser.py' else name),
         'permissions': '0644', 'owner': 'root:root',
         'content': (directory / name).read_text()} for name in (
-            'sandbox_browser.py', 'sandbox_webread.py', 'sandbox_transcribe.py', 'sandbox_video.py', 'sandbox_gaoji.py', 'sandbox_units.py',
+            'sandbox_browser.py', 'sandbox_browser_state.py', 'sandbox_webread.py', 'sandbox_transcribe.py', 'sandbox_video.py', 'sandbox_gaoji.py', 'sandbox_units.py',
             'sandbox_commands.py', 'sandbox_command_process.py')] + [
                 {'path':'/usr/local/bin/gaoji-python','permissions':'0755','owner':'root:root','content':PYTHON_RUN},
             ] + [

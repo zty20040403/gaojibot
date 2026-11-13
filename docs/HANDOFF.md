@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-13）· F5 guest 域名与站点清理底座
+
+- sandbox_browser_state.py 在 VM 内只读 SQLite cookie 库，最多返回200个未过期的域名/站点主机和截断标志，不读取 value/encrypted_value 列，不把 cookie 存在说成已登录。
+- guest logout 关闭目标页面、清除域名及子域的 cookie/站点存储，保留无关站点；如果请求的子域仍继承父域 cookie，先返回父域提示而不是假称退出或悄悄扩大清理范围。所有状态值只在 VM 内存，协议只输出域名/结果；错误输出不包含浏览器异常正文。
+- 载荷已进入 prepared VM 的 write_files。20项真实临时SQLite/guest替身/浏览器包装器/单元组合通过，非真实网站登录/退出验收。
+- 这里只是 guest 底座；/logins、/logout 的宿主权限/幂等接线及管理台清空资料仍未开放，不能宣称 F5 完成。
+
 ## 开发记录（2026-11-13）· 阶段B最终全套通过
 
 - 固定 **acf6e80f2f3c6d375fc34a5fe21a13a079aeba58** 完整回归：**1,756项、0失败、10跳过，1438.279秒，exit0**。日志 `/tmp/gaoji-python-f3-final.log`，revision `/tmp/gaoji-python-f3-revision`，退出码 `/tmp/gaoji-python-f3.exit`，三者已核对。
