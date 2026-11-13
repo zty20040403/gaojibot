@@ -153,7 +153,7 @@ VM 令牌可 `POST /vm/history`（例如 `{"query":"TEST"}`）、`/vm/web-search
 
 `GET /api/conversations/browser?endpoint_key=…` 返回所见快照和资源版本；`POST /api/conversations/browser/clear` 要求登录管理员、CSRF、`If-Match`，以及正文 `endpoint_key`、快照 `fence` 和 `confirmation: "clear"`。清空全部本地资料会关闭此会话浏览器，不能撤销其他设备/服务器会话。变更意图与审计先入库，guest 调用在事务外，返回后另记结果。管理会话撤销会取消在途等待；未知结果不重放，先核对再重新登录。这里没有恢复 QQ OTP。
 
-## 运维操作单（配置底座；执行/审批尚未开放）
+## 运维操作单（默认关闭；仅 owner 独立私聊后台任务）
 
 `operations` 缺省关闭，错误配置只关闭本能力。地址、凭据路径和命令模板只在宿主；不把它放进 `apis` 中给 VM 使用。示例仅使用测试标识：
 
@@ -176,7 +176,7 @@ VM 令牌可 `POST /vm/history`（例如 `{"query":"TEST"}`）、`/vm/web-search
 
 操作单必须固定目标主机和绝对可执行文件，变量只能占一个完整 argv 项，不做 shell 拼接；所有参数必填，不接受额外参数。校验规则为有限字符串 `enum`、整数 `minimum/maximum`，或完整小写提交哈希 `format: "git_revision"`。提交哈希校验只是格式检查，不证明已经合并；部署操作单的固定脚本必须验证已合并版本，不准模型自行合并或绕过 owner 确认。模板不能包含/输出宿主密钥；凭据单独保留在宿主。
 
-令牌为私有文件中的32–512字节ASCII，control需预先授权固定actor和对应host helper。改变命令、参数规则、目标、描述、接口或凭据会改变批准绑定。此时仅能解析配置，尚未接 `ops_act`，不代表批准或执行已经可用；不会恢复旧项目授权或全局QQ OTP。
+令牌为私有文件中的32–512字节ASCII，control需预先授权固定actor和对应host helper。改变命令、参数规则、目标、描述、接口或凭据会改变批准绑定。配置后后台公开 `ops_act`：宿主独立私聊发送操作单、参数和短码，原owner十分钟内亲自回复 `批准 <短码>` 才可执行。批准还必须有已确认的通知回执，回复其他内容或到期拒绝。不会恢复旧项目授权或全局QQ OTP。每次重试沿用原request_id；未知结果不自动重做，关闭/重启不恢复旧批准。control必须支持签名操作意图和原任务deadline_at，不兼容时明确失败，不降级省略约束。接口/凭据不进VM；模型仅收到当前私聊的有界脱敏摘要。审计页面仍在接线，真实control/QQ验收待owner。
 
 ## GitHub 机器人账号
 

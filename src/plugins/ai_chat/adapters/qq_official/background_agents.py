@@ -64,6 +64,10 @@ class OfficialBackgroundAgents:
             profile = upstream_profile(app.model_catalog, settings)
             return profile.base_url, profile.api_key
         host = getattr(app,'official_host',None)
+        self.ops = None
+        if host is not None and host.config.account.key==token.account_key and host.config.operations is not None:
+            from .ops_runtime import OfficialOps
+            self.ops = OfficialOps(runtime,token,app)
         self.host_apis = host.config.apis if host is not None and host.config.account.key==token.account_key else {}
         from ...host_api_calls import HostAPICalls
         from ...host_api_proxy import HostAPIProxy
@@ -83,6 +87,8 @@ class OfficialBackgroundAgents:
             logger=app.logger, engine=engine, clock=self.clock)
 
     async def start(self):
+        if self.ops is not None:
+            await self.ops.start()
         if self.vm_lifecycle is not None:
             await self.vm_lifecycle.start()
 
@@ -182,6 +188,11 @@ class OfficialBackgroundAgents:
         from ...ops_read import TOOL, owner_allowed
         if await self.calls(owner_allowed, self.app, inbound):
             session.tools += (TOOL,)
+        if self.ops is not None and (catalog := await self.calls(self.ops.catalog,job)):
+            from functools import partial
+            from .ops_runtime import tool
+            session.tools += (tool(catalog),)
+            session.ops_act = partial(self.ops.act,job,current=current)
         return session
 
     async def start_vm(self, row):
@@ -239,6 +250,8 @@ class OfficialBackgroundAgents:
                 self.results[row['job_id']] = asyncio.create_task(present(self, row))
 
     async def close(self):
+        if self.ops is not None:
+            await self.ops.close()
         if self.vm_lifecycle is not None:
             await self.vm_lifecycle.close()
         for task in self.results.values():
