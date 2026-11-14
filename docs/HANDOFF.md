@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8原认证TxA与原消息证明（尚未发行）
+
+- OfficialInboxStore.link_ingress默认None，未挂载仍body-free quarantine；显式挂载LinkIngress时，原认证且非self-echo的普通消息也更新无正文角色证据，不只看/link。独立归一化控制分支调用原权限reducer并在同一TxA写body-free actor/receipt/platform时间与原source_inbox_id，gateway checkpoint与挑战/角色一起提交；Acceptance只携repr-hidden transient code。
+- 发码来源读口仅取冻结原source_inbox_id，复核原account/physical endpoint/actor/native/event/received/platform、route/generation和HMAC及实际gateway控制回执，返回前再次复查双边current；后来合法管理员消息也不能替换原回复源。普通role撤权立刻栅栏旧挑战/来源，无需先进canonical历史。原账号工厂尚未挂载/实际sender尚未接，不能称真实QQ发行或完整运行时完成。
+- 6项真实PG/dedicated lease/实际OfficialInboxStore新例覆盖body-free/duplicate/快速确认待发行/普通撤权/原gateway及末检/TxA rollback/伪造前缀/私聊peer/坏时间；合计62项原收件/迁移/reducer/权限/旧F6/架构组合通过56.810秒，Ruff/导入/diff通过。删普通角色观察、真实gateway证明、末current的3个负对照各1failure RED。一次DELETE夹具误用fetchall及重复收集module已纠正，最终数字不含重复。
+- Task37仍in_progress：一次ephemeral码/原消息窗口与真实send_ledger、cancel/revoke/list/status和account runtime剩余；ask/管理页另续。未新完整全套/实际QQ/合并/部署/生产/Java变更。
+
 ## 开发记录（2026-11-14）· F8原入站/一次发行计划存储（尚未接发送）
 
 - 0101_link_notices仅准备独立link_otp ephemeral种类及原source_inbox_id/notice_plan_id，不借bind/admin/ops。入站body-free原account/endpoint/actor/receipt/platform时间/native/event/收到时间被冻结；5字段复合FK把挑战绑到同一原认证输入，不能换原消息或actor。单挑战最多一个发行plan，原端点/账号/requester的复合FK及首次来源不可改，终态不能事后绑定新plan。

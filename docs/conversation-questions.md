@@ -1,6 +1,6 @@
 # F8 双边连接与跨会话问答
 
-状态（2026-11-14）：连接存储、可撤销权限证据、独立敏感输入隔离、纯双边reducer及原入站/单次发行计划schema已建立；未发行连接码或开放 `/link` / `ask`，未合并/部署。权威功能要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
+状态（2026-11-14）：连接存储、可撤销权限证据、独立敏感输入隔离、纯双边reducer、原入站/单次发行计划schema及可选原认证TxA接线已建立；未发行连接码或开放 `/link` / `ask`，未合并/部署。权威功能要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
 
 ## 连接不是身份映射
 
@@ -20,7 +20,8 @@
 - 0101独立link_otp原source_inbox_id/notice_plan_id：5字段FK绑定原入站账号/物理端点/actor/HMAC回执，原native/event/platform/收到时间不可换；单挑战至多一个原端点/requester发行plan。schema未接实际enqueue/sender/TxA时不开放发码，旧来源NULL不补猜，已有新审计禁止无导出回退。
 - 验证码与输入参数不进入 raw inbox、canonical history、LLM、普通发送账本或审计明文。独立 link namespace 与敏感隔离已接入归一化/TxA/普通router/旧误分类TxB；服务未接齐时明确 `link_control_unavailable`，不落回普通消息。提及伪造或嵌入敏感命令仅隔离，不授予权限。
 - 所有状态在 account 锁下提交；DB 用复合 FK 拦跨账号，两个认证确认固定来源。迁移不补猜旧链接；已有连接/挑战审计阻止无导出降级。
-- 0099/LinkAuthority已提供无正文的顶层认证角色证据：角色/路由变化推进代数，同秒矛盾撤销、迟到旧角色不升权；owner用原grant/revision，返回前再核600秒截止。这仅反映已观察的角色，不是实时上游角色查询，不能立即发现未收到证据的QQ撤权。原认证发起与确认、固定短期挑战仍不可省；TxA与发送接线尚待后续。
+- OfficialInboxStore.link_ingress默认None，显式挂载才用原TxA取proof/reduce/capture；普通认证消息也观察撤权，checkpoint/角色/挑战/原入站同事务。LinkIngress.source只读原source_inbox_id并验证实际gateway控制回执、HMAC与末current，不借后来消息。真实account工厂/一次实际发码仍未挂载，测试不是QQ验收。
+- 0099/LinkAuthority已提供无正文的顶层认证角色证据：角色/路由变化推进代数，同秒矛盾撤销、迟到旧角色不升权；owner用原grant/revision，返回前再核600秒截止。这仅反映已观察的角色，不是实时上游角色查询，不能立即发现未收到证据的QQ撤权。原认证发起与确认、固定短期挑战仍不可省；TxA可选支路已接，实际account工厂与发送接线尚待后续。
 
 ## 问答的权限与生命周期
 
