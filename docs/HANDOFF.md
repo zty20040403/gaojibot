@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8原入站/一次发行计划存储（尚未接发送）
+
+- 0101_link_notices仅准备独立link_otp ephemeral种类及原source_inbox_id/notice_plan_id，不借bind/admin/ops。入站body-free原account/endpoint/actor/receipt/platform时间/native/event/收到时间被冻结；5字段复合FK把挑战绑到同一原认证输入，不能换原消息或actor。单挑战最多一个发行plan，原端点/账号/requester的复合FK及首次来源不可改，终态不能事后绑定新plan。
+- 四个发送约束从0066/0090的精确baseline有限扩展，保留ops/ordinary/protected原不变量；空0101增量可回退且四个PG重建表达式与原版本逐字相等，已有入站/计划审计必须导出。旧数据字段NULL，不猜来源。link_otp目前仍未加入实际enqueue/sender/TxA，不能把schema当作已实发。
+- 42项PG schema/迁移/reducer/原角色/输入/旧bind/F6/架构组合通过44.353秒，静态/导入/diff通过；删原入站不可变2failure RED、删source actor/receipt复合绑定1failure RED。初始计划夹具idempotency格式错误与两处对重复约束执行顺序的预期已修，负例最终验证实际相关constraint，未放宽产品授权。
+- Task37继续接一次ephemeral发行/原源窗口/真实send_ledger与TxA角色观察、控制查询/撤边/runtime；仍未新固定全套、实际QQ、合并/部署/生产/Java变更，ask/管理页另续。
+
 ## 开发记录（2026-11-14）· F8纯双边短码状态机（尚未接TxA/发送）
 
 - LinkReducer在宿主账号锁事务中固定原认证LinkAuthority证明、600秒HMAC六位码与双边物理端点；原source/target回执重复不重发码。最多8次随机避碰，独立HMAC持久限流，并限制20个live挑战，避免固定窗口边界突发使21行有界扫描漏候选。确认只能一次固定不同物理目标、不能以裸actor/成员/别名推导授权。
