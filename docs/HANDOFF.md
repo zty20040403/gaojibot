@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F10向量任务存储与原子来源栅栏（运行时待接）
+
+- MessageVectorJobs复用durable_jobs/semantic_documents，不加新表。任务只存消息编号、IR+图片/视频说明hash及模型服务identity，不复制正文；同一授权/内容版本只排一次，max_attempts=1、resume_on_lease_loss=false，原job不复跑。新账号/route/stop授权下的新派生回填可重算未获得向量的读取，单独真实账单，不能声称未知读取没有费用。
+- 当前lease、实际endpoint账号/私聊peer入口、canonical路由、stop代数、job租约/原payload、可见floor及内容/模型版本在短事务核验。旧任务在stop→start、撤权、换lease/route、说明变化后拒绝；别名回填归当前物理reader，而非猜原真人。文本/卡片及F1说明是真实内容，纯媒体标记/工具noise不调用模型，command不入索引。
+- PgVectorBackend.upsert可加入调用者StoreCursor；来源检查与向量/metadata写入同一事务，metadata变更即使文本/model同名也更新。原先独立事务路径继续给表情使用；不同服务同名模型的向量空间由identity隔离，后续查询仍须按当前IR/说明hash、scope/filter复查而非返回cache原文。
+- 60项真实PG消息任务/lease/alias/说明/metadata/外层回滚、embedding/语义/队列/runtime/迁移组合通过，Ruff/两项导入通过。三组删栅栏/改回独立提交的临时负对照共3failures RED；原source与原子用例通过。初次9个错误是尚未注册semantic lane，之后测试media sender/source_type缺字段、actor应传key以及LeaseLost类型、一个未用import均已修正，不放宽实现门槛。
+- 本段只有任务存储/原子底座；尚未启动消息worker、挂运行时账单或改history，不标F10完成或全套通过。F7本地2048项不覆盖此新增代码。保持小Draft、未合并/部署/生产访问/改Java。
+
 ## 开发记录（2026-11-14）· F10 embedding协议与keyless运行时底座
 
 - 复用EmbeddingClient，批次index必须是完整唯一整数集合，顺序重排但不补猜缺index；向量严格数值/有限/非零且维数与数量一致。拒绝重定向、含凭据/查询/片段或不规范的宿主URL；不信任环境代理，HTTP正文最多4MiB、整次调用受配置超时限制，错误不打印URL/响应体/密钥，不自动重试。
