@@ -2,13 +2,17 @@
 import hmac
 
 from .linking import LinkReducer
+from .link_management import LinkManagement
 from .lease import assert_epoch
 
 
 class LinkIngress:
-    def __init__(self,authority):self.authority = authority; self.reducer = LinkReducer(authority)
+    def __init__(self,authority):
+        self.authority = authority; self.reducer = LinkReducer(authority); self.management = LinkManagement(self.reducer)
     def __repr__(self):return 'LinkIngress(<protected authority>)'
-    def apply(self,cursor,token,message,command):return self.reducer.apply(cursor,token,message,command)
+    def apply(self,cursor,token,message,command):
+        if command.action in {'create','confirm'}:return self.reducer.apply(cursor,token,message,command)
+        return self.management.apply(cursor,token,message,command)
 
     def capture(self,cursor,token,message,inbox_id,decision):
         assert_epoch(cursor,token)
