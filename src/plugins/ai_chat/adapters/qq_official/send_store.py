@@ -176,8 +176,9 @@ class OfficialSendStore:
 
     def get(self, token, delivery_id):
         with self.deliveries.transaction() as cursor:
-            return cursor.execute('''SELECT d.*,p.action_id AS program_action_id FROM deliveries d
+            return cursor.execute('''SELECT d.*,p.action_id AS program_action_id,b.day_start AS budget_notice_day FROM deliveries d
                 LEFT JOIN qq_official_program_actions p ON p.plan_id=d.plan_id
+                LEFT JOIN conversation_budget_days b ON b.notice_plan_id=d.plan_id
                 WHERE d.delivery_id=? AND d.account_key=?''',(delivery_id, token.account_key)).fetchone()
 
     def latest_inbound(self, endpoint):
@@ -220,6 +221,10 @@ class OfficialSendStore:
             canonical=row['source_canonical_message_id'],generation=plan['conversation_generation'],commands=command)
 
     def _program_authorized(self, cursor, token, row):
+        if cursor.execute('SELECT 1 FROM conversation_budget_days WHERE notice_plan_id=?',(row['plan_id'],)).fetchone():
+            from .budget_notices import denial
+            reason = denial(cursor,token=token,delivery=row,now=int(self.clock()),admission=self.admission)
+            return reason is None,reason
         from .program_delivery import denial
         program = cursor.execute('SELECT 1 FROM qq_official_program_actions WHERE plan_id=?',(row['plan_id'],)).fetchone()
         if program or ActorKey.parse(row['requester_actor_key']).identity_kind=='bot':
@@ -314,6 +319,10 @@ class OfficialSendStore:
     def _finish(self, cursor, token, row, status, reason, now):
         cursor.execute('UPDATE deliveries SET status=?,wait_reason=?,last_error=?,lease_until=NULL,updated_at=? WHERE delivery_id=?',
             (status, reason or None, '' if row['payload_mode']=='ephemeral' else reason, now, row['delivery_id']))
+        notice_status = {'committed':'committed','failed':'failed','cancelled':'cancelled','ambiguous':'unknown'}.get(status)
+        if notice_status is not None:
+            cursor.execute('UPDATE conversation_budget_days SET notice_state=? WHERE notice_plan_id=?',
+                (notice_status,row['plan_id']))
         return SendOutcome(status, reason, row['delivery_id'])
 
     def fail(self, token, delivery_id, reason, *, reservation=None, error=None, retry=False, plain=False):

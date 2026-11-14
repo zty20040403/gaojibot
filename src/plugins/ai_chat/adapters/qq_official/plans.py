@@ -67,7 +67,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
                  digest_key_id: str = "v1", binding_preview=None, control_reply_id=None, epoch_guard=assert_epoch,
                  max_wait_seconds: int = DEFAULT_MAX_WAIT_SECONDS, protected_ref=None,
                  approval_source_id=None, approval_authority=None, source_guard=None, source_proof=None,
-                 source_generation=None, program_action_id=None, ops_action_id=None, ops_authority=None) -> PlanRef:
+                 source_generation=None, program_action_id=None, ops_action_id=None, ops_authority=None, budget_day=None) -> PlanRef:
     """The adapter must pass current admission, not a model-supplied grant.
 
     The rendered object is sealed by the pure renderer. A duplicate identity
@@ -76,6 +76,9 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     """
     epoch_guard(cursor, token)
     def require_source(plan_id):
+        if budget_day is not None:
+            from .budget_notices import bind
+            bind(cursor,rendered.endpoint,budget_day,cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?',(plan_id,)).fetchone())
         if ops_action_id is not None:
             ops_authority.bind_plan(cursor,ops_action_id,plan_id)
         if program_action_id is not None:
@@ -89,7 +92,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             raise OutboxInvariantError('delivery_source_unavailable')
     validate_wait_limit(max_wait_seconds)
     if (not isinstance(rendered, RenderedPlan) or rendered.status != "ready" or not rendered.parts
-            or not isinstance(requester, ActorKey) or requester.identity_kind == "bot" and program_action_id is None
+            or not isinstance(requester, ActorKey) or requester.identity_kind == "bot" and program_action_id is None and budget_day is None
             or not requester.matches_endpoint(rendered.endpoint)
             or token.account_key != rendered.endpoint.account.key
             or purpose not in PURPOSE_PRIORITIES or not callable(admission)
@@ -113,6 +116,15 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         WHERE account_key=? AND endpoint_key=? FOR UPDATE""", (token.account_key, endpoint.key)).fetchone()
     if endpoint_row is None or EndpointKey.parse(endpoint_row["endpoint_key"]) != endpoint:
         raise OutboxInvariantError("delivery_endpoint_unavailable")
+    if budget_day is not None:
+        if any(value is not None for value in (program_action_id,ops_action_id,challenge_id,approval_source_id,
+                protected_ref,control_reply_id,binding_preview)):
+            raise OutboxInvariantError('budget_notice_plan_mismatch')
+        from .budget_notices import validate
+        validate(cursor,token=token,day=budget_day,plan=rendered,requester=requester,logical_key=logical_key,
+            source_scope_key=source_scope_key,source_native_message_id=source_native_message_id,
+            source_canonical_message_id=source_canonical_message_id,turn_id=turn_id,purpose=purpose,
+            expires_at=expires_at,source_generation=source_generation,now=now,admission=admission)
     if program_action_id is not None:
         from .program_delivery import validate
         validate(cursor,token=token,action_id=program_action_id,rendered=rendered,requester=requester,
@@ -134,7 +146,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             or (purpose == 'approval_otp') != (approval_source_id is not None)
             or (purpose == 'ops_approval') != (ops_action_id is not None)
             or (ephemeral and pepper is None) or (not ephemeral and pepper is not None)
-            or (not control_view and program_action_id is None and not admission(cursor, endpoint, requester))):
+            or (not control_view and program_action_id is None and budget_day is None and not admission(cursor, endpoint, requester))):
         raise OutboxInvariantError("delivery_not_authorized")
     challenge_expires = None
     approval_expires = None

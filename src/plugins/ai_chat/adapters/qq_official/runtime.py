@@ -627,6 +627,8 @@ class OfficialRuntime:
                      asyncio.create_task(monitor())]
             if self.sender is not None:
                 tasks.append(asyncio.create_task(self.sender.run()))
+                from .budget_notice_worker import BudgetNoticeWorker
+                tasks.append(asyncio.create_task(BudgetNoticeWorker(self,token).run()))
             if self.approval_service is not None:
                 tasks.append(asyncio.create_task(self.approval_service.run()))
             if agent_worker is not None:
