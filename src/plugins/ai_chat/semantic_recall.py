@@ -11,9 +11,14 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator, Protocol, Sequence
+from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import httpx
 from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
+
+from src.plugins.ai_chat.billing_context import active_billing
+from src.plugins.ai_chat.model_usage import TokenUsage
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,15 @@ class EmbeddingClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        if self.base_url:
+            try:
+                target = urlsplit(self.base_url)
+                _ = target.port
+            except ValueError:raise ValueError('invalid_embedding_endpoint') from None
+            if (target.scheme not in {'http','https'} or not target.hostname or target.username is not None
+                or target.password is not None or target.query or target.fragment or re.search(r'\s',self.base_url) or '\\' in self.base_url
+                or any(part in {'.','..'} for part in target.path.split('/'))):
+                raise ValueError('invalid_embedding_endpoint')
         self.api_key = api_key.strip()
         self.model = model.strip()
         self.dimensions = max(int(dimensions), 1)
@@ -91,44 +105,54 @@ class EmbeddingClient:
             raise ValueError("embedding input must not be empty")
         if not self.configured:
             raise RuntimeError("embedding provider is not configured")
-        payload: dict[str, object] = {
-            "model": self.model,
-            "input": cleaned,
-        }
-        if self.dimensions > 0:
-            payload["dimensions"] = self.dimensions
-        async with httpx.AsyncClient(
-            timeout=self.timeout_seconds,
-            transport=self._transport,
-        ) as client:
-            response = await client.post(
-                f"{self.base_url}/embeddings",
-                headers={
-                    **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
-        raw_data = body.get("data") if isinstance(body, dict) else None
-        if not isinstance(raw_data, list):
-            raise RuntimeError("embedding response has no data array")
-        ordered = sorted(
-            (item for item in raw_data if isinstance(item, dict)),
-            key=lambda item: int(item.get("index") or 0),
-        )
-        vectors: list[list[float]] = []
-        for item in ordered:
-            raw_vector = item.get("embedding")
-            if not isinstance(raw_vector, list):
-                raise RuntimeError("embedding response contains an invalid vector")
-            vector = [float(value) for value in raw_vector]
-            _validate_vector(vector, self.dimensions)
-            vectors.append(vector)
-        if len(vectors) != len(cleaned):
-            raise RuntimeError("embedding response count does not match input")
-        return vectors
+        profile = SimpleNamespace(provider='openai-embeddings',name='embedding',model=self.model,pricing=None)
+        context = active_billing()
+        receipt = context.request(profile) if context is not None else None
+        async def current():
+            if context is not None and context.current is not None:await context.current()
+        async def trace(name,_info):
+            if name in {'http11.send_request_headers.started','http2.send_request_headers.started'}:await current()
+        try:
+            if receipt is not None:await receipt.start()
+            async with asyncio.timeout(self.timeout_seconds),httpx.AsyncClient(
+                timeout=self.timeout_seconds,transport=self._transport,trust_env=False,follow_redirects=False,
+            ) as client:
+                await current()
+                async with client.stream('POST',f'{self.base_url}/embeddings',json={
+                    'model':profile.model,'input':cleaned,'dimensions':self.dimensions},
+                    headers={**({'Authorization':'Bearer '+self.api_key} if self.api_key else {}),'Content-Type':'application/json'},
+                    extensions={'trace':trace}) as response:
+                    if not 200<=response.status_code<300:raise RuntimeError('embedding_provider_rejected')
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        await current()
+                        if len(content)+len(chunk)>4*1024*1024:raise RuntimeError('embedding_response_too_large')
+                        content.extend(chunk)
+                try:body = json.loads(content)
+                except (ValueError,UnicodeError,RecursionError):raise RuntimeError('invalid_embedding_response') from None
+                if not isinstance(body,dict) or body.get('error') is not None:raise RuntimeError('invalid_embedding_response')
+                if receipt is not None:
+                    usage = TokenUsage.read(body.get('usage'))
+                    receipt.observe(TokenUsage(usage.input_tokens,0,usage.cached_tokens,usage.cache_write_tokens))
+                raw = body.get('data')
+                if (not isinstance(raw,list) or len(raw)!=len(cleaned) or any(not isinstance(item,dict)
+                    or type(item.get('index')) is not int for item in raw)
+                    or {item['index'] for item in raw}!=set(range(len(cleaned)))):
+                    raise RuntimeError('embedding_indices_or_count_invalid')
+                vectors = []
+                for item in sorted(raw,key=lambda item:item['index']):
+                    vector = item.get('embedding')
+                    if not isinstance(vector,list) or any(type(value) not in {int,float} for value in vector):
+                        raise ValueError('embedding_vector_invalid')
+                    _validate_vector(vector,self.dimensions)
+                    if not any(vector):raise ValueError('embedding_vector_zero')
+                    vectors.append([float(value) for value in vector])
+                await current()
+                return vectors
+        except httpx.HTTPError:
+            raise RuntimeError('embedding_transport_ambiguous') from None
+        finally:
+            if receipt is not None:await receipt.finish()
 
 
 class PgVectorBackend:
@@ -471,8 +495,9 @@ def _validate_vector(vector: Sequence[float], dimensions: int) -> None:
         raise ValueError(
             f"embedding dimension mismatch: expected {dimensions}, got {len(vector)}"
         )
-    if any(not math.isfinite(float(value)) for value in vector):
-        raise ValueError("embedding contains a non-finite value")
+    try:finite = all(math.isfinite(float(value)) for value in vector)
+    except (TypeError,ValueError,OverflowError):finite = False
+    if not finite:raise ValueError("embedding contains an invalid or non-finite value")
 
 
 def _vector_literal(vector: Sequence[float]) -> str:
