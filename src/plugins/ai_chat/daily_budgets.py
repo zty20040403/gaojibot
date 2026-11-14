@@ -86,10 +86,11 @@ def refresh(cursor,endpoint,*,now):
             (endpoint.key,)).fetchone()
         if physical is None:raise ValueError('budget_endpoint_unavailable')
         cursor.execute('''INSERT INTO conversation_budget_days(scope_key,day_start,endpoint_key,account_epoch,endpoint_generation,
-            route_epoch,first_exceeded_at,budget_usd,spent_usd,last_blocked_generation)
-            VALUES (?,?,?,?,?,?,?,?,?,?)''',
+            route_epoch,first_exceeded_at,budget_usd,spent_usd,last_blocked_generation,conversation_generation,notice_budget_generation)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
             (endpoint.scope.key,state.day_start,endpoint.key,account['fencing_epoch'],physical['generation'],physical['route_epoch'],
-             now,state.limit,state.spent,generation))
+             now,state.limit,state.spent,generation,cursor.execute('SELECT stop_generation FROM conversation_settings WHERE scope_key=?',
+                 (endpoint.scope.key,)).fetchone()[0],generation))
     else:
         cursor.execute('UPDATE conversation_budget_days SET last_blocked_generation=? WHERE scope_key=? AND day_start=?',
             (generation,endpoint.scope.key,state.day_start))
