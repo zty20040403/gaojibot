@@ -414,6 +414,8 @@
 
 **敏感输入准备（2026-11-14）**：独立LinkCommand与原认证TxA/普通router/旧误分类TxB隔离已接，不让未开启link服务把验证码存入raw/canonical/model/普通执行。72项PG/原收件/bind/ops/权限组合通过、边界与独立删隔离负对照RED；当前仍明确link_control_unavailable，未发行连接码或开放ask/管理页，Task37继续实现确认/真实回执。
 
+**定向管理组件（2026-11-14）**：list/status/cancel/revoke接可选原TxA，每次原owner/群管 proof与查找后600秒复核，仅同账号/物理端点涉及记录；单向撤边不可逆gen+1，反向不受影响，list先范围后LIMIT并仅用散列会话标签。active且真实回执成立的持久同意可跨code期限/lease epoch，双方冻结权限/route/成员仍须匹配；重授不恢复旧边，新双边证明建新ID。58项PG/真实TxA+FakePlatform/F6/迁移组合通过，3个物理范围/目标证明/末尾期限负对照RED。控制回复原证明及实际账号工厂仍待接，ask/UI另续，未开放/link或真实验收。
+
 **一次发行组件（2026-11-14）**：LinkNotices验证原认证码/正文/source并接link_otp的RAM正文、HMAC计划和实际sender/command空账本；被动只用原消息，claim后HTTP前复查，401/429/格式/主动拒绝不重试，底层retry/plain亦拒绝。到期/重启/丢正文关闭原码，实际accepted迟到与双取消回执保留事实不复活授权。85项实际PG/TxA/RestClient+loopback FakePlatform/旧F6/预算/迁移/架构组合通过，3个原窗口/末检查/迟到事实负对照RED；账号工厂/管理命令、ask及管理页另续，未真实QQ或新固定全套。
 
 **认证TxA准备（2026-11-14）**：默认None的LinkIngress可选支路调用原权限reducer并同事务捕获无正文原输入/gateway checkpoint，普通角色撤权也持续观察；来源读口只认冻结原消息与真实gateway/末current，不换新消息。62项实际PG/OfficialInboxStore/旧F6组合通过，3个去观察/gateway/末检负对照RED；实际account工厂/一次ephemeral码和控制查询/撤边仍待接，未完整Runtime/实发/全套。

@@ -125,6 +125,19 @@ class LinkNoticeTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         edge = self.query('SELECT * FROM qq_official_conversation_links')[0]
         self.assertEqual((edge['source_endpoint_key'],edge['target_endpoint_key'],edge['state']),(self.endpoint.key,target.key,'active'))
 
+    async def test_actual_tx_a_management_after_confirmed_issuance_is_body_free_and_directional(self):
+        delivery = self.queue(); target = EndpointKey(self.account,'group','TEST_LINK_TARGET'); self.provision(target)
+        self.dispatch('/link 723891',endpoint=target)
+        self.assertEqual((await self.sender.send_delivery(delivery)).status,'committed')
+        listed = self.dispatch('/link list')
+        self.assertEqual(listed._link_input.status,'listed'); link_id = listed._link_input.entries[0].link_id
+        self.assertEqual(listed._link_input.entries[0].direction,'outgoing')
+        self.assertEqual(self.dispatch('/unlink '+link_id,endpoint=target)._link_input.status,'revoked')
+        self.assertEqual(self.query('SELECT state,generation FROM qq_official_conversation_links'),[dict(state='revoked',generation=2)])
+        self.assertEqual(len(self.fake.received),1)  # Only the earlier code; control replies are not wired yet.
+        self.assertEqual(self.query('SELECT * FROM qq_official_inbound_events WHERE payload_json IS NOT NULL'),[])
+        self.assertEqual(len(self.query('SELECT * FROM messages')),1)  # The empty confirmed command, no inbound control body.
+
     async def test_expired_queue_and_lower_level_retry_request_cannot_leave_live_code(self):
         delivery = self.queue(); self.now += 31
         self.assertNotIn(delivery,self.outbox.list_due(self.token)); self.assertEqual(self.row()['code_hmac'],'')
