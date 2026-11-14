@@ -412,6 +412,8 @@
 
 **认证证据准备（2026-11-14）**：0099/LinkAuthority以无正文的原顶层角色与平台时间记录观察，角色/路由代数、原owner grant/revision、完整actor/account/原时间HMAC防旧权限恢复；lookup跨截止负例RED→GREEN，32项PG/迁移/旧链路组合通过，三个删除保护负对照各RED。仅反映已观察的群角色，不冒充实时QQ权限查询；TxA、link码投递与ask未接，未完整全套/真实验收/部署。
 
+**敏感输入准备（2026-11-14）**：独立LinkCommand与原认证TxA/普通router/旧误分类TxB隔离已接，不让未开启link服务把验证码存入raw/canonical/model/普通执行。72项PG/原收件/bind/ops/权限组合通过、边界与独立删隔离负对照RED；当前仍明确link_control_unavailable，未发行连接码或开放ask/管理页，Task37继续实现确认/真实回执。
+
 **用户看到什么**：私聊它"群里今天聊了啥""帮我去群里说一声晚上聚餐改到 7 点"。
 
 **maxx 怎么做**：见 `Asking another conversation`。`/link` 建一条单向的边；`ask` 作为一种任务等回答，最多 2 小时；问题和回答只在两边的 Max 之间传，不出现在聊天里。
