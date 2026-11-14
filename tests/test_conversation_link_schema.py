@@ -35,8 +35,11 @@ class ConversationLinkSchemaTests(OutboxFixture):
             target_scope_key=self.target.scope.key,target_generation=1,target_route_epoch=1,
             target_receipt_hash=secrets.token_hex(32),target_authority_hash=secrets.token_hex(32),target_confirmed_at=self.now+1)
 
+    def receipt(self):
+        return dict(delivery_receipt_hash=secrets.token_hex(32),delivery_received_at=self.now+1)
+
     def active(self):
-        return self.challenge(**self.confirmation(),state='active',delivery_state='committed',code_hmac='',activated_at=self.now+2)
+        return self.challenge(**self.confirmation(),**self.receipt(),state='active',delivery_state='committed',code_hmac='',activated_at=self.now+2)
 
     def link(self,challenge,**changes):
         names = ('challenge_id','account_key','source_endpoint_key','target_endpoint_key','source_scope_key','target_scope_key',
@@ -52,8 +55,9 @@ class ConversationLinkSchemaTests(OutboxFixture):
         with self.assertRaises(psycopg.Error):
             self.query("UPDATE qq_official_link_challenges SET state='active',code_hmac='',activated_at=? WHERE challenge_id=?",
                 (self.now+2,pending['challenge_id']))
-        self.query("UPDATE qq_official_link_challenges SET state='active',delivery_state='committed',code_hmac='',activated_at=? WHERE challenge_id=?",
-            (self.now+2,pending['challenge_id']))
+        self.query("""UPDATE qq_official_link_challenges SET state='active',delivery_state='committed',code_hmac='',activated_at=?,
+            delivery_receipt_hash=?,delivery_received_at=? WHERE challenge_id=?""",
+            (self.now+2,'d'*64,self.now+1,pending['challenge_id']))
         pending['activated_at'] = self.now+2; link = self.link(pending)
         self.assertEqual(self.query('SELECT source_endpoint_key,target_endpoint_key FROM qq_official_conversation_links'),
             [dict(source_endpoint_key=self.endpoint.key,target_endpoint_key=self.target.key)])
@@ -96,7 +100,7 @@ class ConversationLinkSchemaTests(OutboxFixture):
         for changes in (dict(expires_at=self.now),dict(expires_at=self.now+601),dict(code_hmac='123456'),dict(source_receipt_hash='TEST_FAKE')):
             with self.subTest(changes=changes),self.assertRaises(psycopg.Error):self.challenge(**changes)
         with self.assertRaises(psycopg.Error):
-            self.challenge(**self.confirmation(),state='active',delivery_state='committed',code_hmac='',activated_at=self.now+600)
+            self.challenge(**self.confirmation(),**self.receipt(),state='active',delivery_state='committed',code_hmac='',activated_at=self.now+600)
 
     def test_link_revocation_requires_new_generation_and_never_reactivates_old_edge(self):
         challenge = self.active(); link = self.link(challenge)
