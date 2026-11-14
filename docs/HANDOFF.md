@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F10 embedding协议与keyless运行时底座
+
+- 复用EmbeddingClient，批次index必须是完整唯一整数集合，顺序重排但不补猜缺index；向量严格数值/有限/非零且维数与数量一致。拒绝重定向、含凭据/查询/片段或不规范的宿主URL；不信任环境代理，HTTP正文最多4MiB、整次调用受配置超时限制，错误不打印URL/响应体/密钥，不自动重试。
+- 如宿主提供BillingContext，使用独立embedding/openai-embeddings请求快照，宿主usage.prompt_tokens入真实账单，输出为0；缺usage/缓存/未配置单价仍未知或下界，不把服务说成免费。当前回调在请求、连接后发送头、正文和返回前复查，真实已读usage在坏向量/取消后仍收尾，双重取消排空同一回执。后续worker/VM history须另外接来源，未宣称所有旧embedding已挂账。
+- runtime允许显式无密钥embedding_base_url/model，默认AI_SEMANTIC_ENABLED仍false；真实应用工厂+隔离PG+HTTP替身验证keyless启动与1024维入库，未连接真实模型。初次6个测试16 failure/2 error稳定RED，修后47项embedding/语义/runtime/表情/网关账单组合及Ruff/两项导入通过；含早先10项，不能相加。
+- 尚未实现聊天/F1说明后台索引或history混合检索，参数和默认路径未改；F10未完成，新补丁未固定全套。F7完整固定b32ff08及CI另外跟踪，不计本F10覆盖；未合并/部署/生产访问或改Java。
+
 ## 前置核对（2026-11-14）· 用户选择F10→F8先行，F7保持待实测
 
 - 用户明确选择先做F10，再F8；F7的独立测试账号/群/普通参与者尚未给定，不开放moderate、不借用线上身份。F7协议/引擎/CLI分三小Draft #84/#85/#86；完整固定b32ff084028482236132fa0d7e20ee152b4ba5d9在/tmp/gaoji-python-f7-probe-full.log运行、PID33141，Linux CI仍待核验，未标通过。

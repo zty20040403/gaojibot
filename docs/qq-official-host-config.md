@@ -151,6 +151,12 @@ VM 令牌可 `POST /vm/history`（例如 `{"query":"TEST"}`）、`/vm/web-search
 
 写动作可指定 `--program`（默认 GAOJI_PROGRAM 或 manual）和 `--request-id`。自动生成的 ID 会先写 stderr；超时或断线不要换 ID 重发，使用 `gaoji status --request-id <id>`。`gaoji events --after <id>` 保留空行心跳，断流非零退出并在 stderr 报告可恢复游标；只将完整消息行交给调用者。
 
+## F10 语义检索底座（聊天索引与混合入口仍待接）
+
+`AI_SEMANTIC_ENABLED` 默认 `false`。宿主开启后，复用 `AI_EMBEDDING_BASE_URL`（默认 `http://127.0.0.1:11434/v1`）、`AI_EMBEDDING_MODEL`（默认 `bge-m3`）、可空的 `AI_EMBEDDING_API_KEY` 和超时设置；没有密钥的明确本地服务也可配置。不从模型/VM 接受这些参数，不自动连接部署中的服务或选择新的地址。
+
+现有 PostgreSQL 表为 `vector(1024)`，维数设置须匹配；坏批次 index、重复/缺失结果、非数值/非有限/零向量、重定向与过大正文均明确失败，不默换为另一个 embedding 服务。开启但配置/服务失败应显式报告，关闭则保留字面检索。宿主已挂 BillingContext 的请求记录真实输入 usage，缺单价/用量仍未知或下界；底座测试不代表消息索引、查询来源接线或实际服务能力已验收。当前 `history` 仍仅字面查找，后台聊天/F1说明索引与混合检索待下一步。
+
 ## 会话浏览器
 
 管理台“模型、群与用户”→“会话浏览器”按实际 endpoint 读取 Cookie 域名与最近五次清空结果；不读取 Cookie 值，不自动创建或启动 VM。域名不是有效登录的证明，空列表也不代表所有站点均已退出。
