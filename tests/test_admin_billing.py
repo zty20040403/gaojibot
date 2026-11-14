@@ -159,10 +159,12 @@ class SharedBillingTests(source_fixture.ProgramBillingSourcesTests):
         import json
         from src.plugins.ai_chat.adapters.qq_official.background_commands import BackgroundCommands
         run = self.batch()
-        command,_ = BackgroundCommands(self.sessions).reserve(self.current,generation=(0,0),program='TEST_A',
+        command,_ = BackgroundCommands(self.sessions).reserve(self.current,generation=(0,0),program='TEST_B',
             request_id='TEST_COMMAND',argv=['printf','TEST'])
-        self.query('UPDATE qq_official_program_actions SET source_command_id=? WHERE action_id=?',
-            (command['command_id'],json.loads(run['input_ids_json'])[0]))
+        inputs = json.loads(run['input_ids_json'])
+        attached = next(row['action_id'] for row in self.query('SELECT action_id,program_name FROM qq_official_program_actions WHERE wake_id=?',
+            (run['wake_id'],)) if row['action_id'] in inputs and row['program_name']=='TEST_B')
+        self.query('UPDATE qq_official_program_actions SET source_command_id=? WHERE action_id=?',(command['command_id'],attached))
         store = ModelBilling(self.database,clock=lambda:self.now)
         call = store.begin(BillingSource(self.endpoint,'program_wake',program_wake_id=run['wake_id']),
             replace(profile('test'),pricing=ModelPricing('2','0.2','8')))
@@ -171,7 +173,7 @@ class SharedBillingTests(source_fixture.ProgramBillingSourcesTests):
             view = snapshot(self.database,dimension=dimension,days=1,as_of=self.now+1,scope_key=self.endpoint.scope.key)
             self.assertEqual(len(view['items']),1)
             item = view['items'][0]
-            self.assertEqual(item['commands'],[command['command_id']]); self.assertEqual(item['programs'],['TEST_A','TEST_B'])
+            self.assertEqual(item['commands'],[command['command_id']]); self.assertEqual(item['programs'],['TEST_A'])
             self.assertTrue(item['shared']); self.assertEqual(item['cost_usd'],'0.00132')
 
     def test_coalesced_programs_are_one_joint_cost_and_not_a_fake_person_or_agent(self):
