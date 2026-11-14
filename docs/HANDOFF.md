@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8一次ephemeral码与实际发送账本取证（账号工厂待接）
+
+- LinkNotices接独立link_otp enqueue/claim/发送/实际send_ledger：只接受原认证source_inbox及原actor/物理端点/route/epoch/current，HMAC验证六位码并比对固定正文，不允许普通/ops/程序来源混用。每挑战一个原计划，RAM正文、磁盘空body/manifest及HMAC，实际发送回执写command空正文，验证码不进普通历史/模型/审计明文。
+- Sender在被动模式只读冻结原msg_id，不拿后来的合法管理员消息窗口；claim后、HTTP前再次查原来源。401/429/主动拒绝及格式失败不重试、不转普通文字重发；底层fail也拒retry/plain。队列到期及发送重启关闭原码；captured但未applied的实际回执须完成账本收尾才记committed，迟到事实可覆盖unknown但不恢复授权。重复取消排空真实回执，原QQ作用已接受后取消仍保留command/receipt与发行事实。
+- 13项新例涵盖群、普通私聊拒绝/宿主owner本人原窗口、真实双边快速确认、原窗口/正文修改、401/429/丢响应/丢RAM、到期/重启/撤权、双取消及迟到接受；85项PG/TxA/loopback FakePlatform实际RestClient/原sender/F6/预算/旧迁移/架构组合通过86.289秒（包含native ID与实际applied回执的精确匹配），Ruff/导入/diff通过。删原窗口选择、HTTP前current、取消后真实回执保存的3个独立负对照各1failure RED。两项新增测试的任意wait_reason违反既有白名单、固定随机码碰撞live挑战已修正夹具，未放宽协议或授权。
+- link管理是显式命令，停止聊天时可发行但不清stop；ask/自动动作仍须各自停止门槛。这里只接宿主组件，真实账号工厂/发行服务入口、cancel/revoke/list/status仍待接；Task37仍in_progress，ask/管理页另续。无新完整快照全套、真实QQ/合并/部署/生产/Java变更；85项不替代固定快照或真实验收。
+
 ## 开发记录（2026-11-14）· F8原认证TxA与原消息证明（尚未发行）
 
 - OfficialInboxStore.link_ingress默认None，未挂载仍body-free quarantine；显式挂载LinkIngress时，原认证且非self-echo的普通消息也更新无正文角色证据，不只看/link。独立归一化控制分支调用原权限reducer并在同一TxA写body-free actor/receipt/platform时间与原source_inbox_id，gateway checkpoint与挑战/角色一起提交；Acceptance只携repr-hidden transient code。

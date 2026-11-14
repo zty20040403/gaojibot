@@ -33,7 +33,7 @@ def record_receipt(cursor, reservation, body, now):
 
 def _canonical_body(delivery):
     if delivery["payload_mode"] == "ephemeral":
-        if delivery["purpose"] not in {"binding_otp", "approval_otp", "ops_approval"} or delivery["body_json"] != '{"v":1,"nodes":[]}':
+        if delivery["purpose"] not in {"binding_otp", "approval_otp", "ops_approval", "link_otp"} or delivery["body_json"] != '{"v":1,"nodes":[]}':
             raise OutboxInvariantError("invalid_ephemeral_body")
         return MessageBody()
     try:
@@ -132,13 +132,14 @@ def _record_reference(cursor, endpoint, native, canonical, ref_idx, now):
     return conflict
 
 
-def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
+def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now,link_authority=None):
     assert_epoch(cursor, token)
     receipt = cursor.execute('SELECT * FROM delivery_receipts WHERE receipt_id=? AND account_key=? FOR UPDATE',
         (receipt_id, token.account_key)).fetchone()
     attempt = cursor.execute('SELECT * FROM delivery_attempts WHERE attempt_id=?', (receipt['attempt_id'],)).fetchone()
     delivery = cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? FOR UPDATE', (attempt['delivery_id'],)).fetchone()
     if receipt['applied_at'] is not None:
+        if delivery['purpose']=='link_otp' and link_authority is not None:link_authority.settled(cursor,token,delivery['plan_id'])
         return SendOutcome('committed', '', delivery['delivery_id'])
     endpoint = EndpointKey.parse(delivery['endpoint_key'])
     actor = ActorKey.parse(attempt['bot_actor_key'])
@@ -183,6 +184,7 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     cursor.execute("""UPDATE deliveries SET status='committed',native_message_id=?,lease_until=NULL,
         wait_reason=NULL,last_error='',updated_at=? WHERE delivery_id=?""", (native, now, delivery['delivery_id']))
     cursor.execute('UPDATE delivery_receipts SET applied_at=? WHERE receipt_id=?', (now, receipt_id))
+    if delivery['purpose']=='link_otp' and link_authority is not None:link_authority.settled(cursor,token,delivery['plan_id'])
     if budget:
         cursor.execute("UPDATE conversation_budget_days SET notice_state='committed' WHERE notice_plan_id=?",(delivery['plan_id'],))
     if wake:

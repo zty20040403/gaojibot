@@ -54,12 +54,14 @@ class OfficialSendStore:
         self.max_wait_seconds = max_wait_seconds
         self.protected_payloads, self.approval_authority, self.source_guard = protected_payloads, approval_authority, source_guard
         self.ops_authority = None
+        self.link_authority = None
         self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
-                transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None, ops_action_id=None):
+                transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None, ops_action_id=None,
+                link_challenge_id=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -67,11 +69,12 @@ class OfficialSendStore:
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
                 admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if challenge_id is not None or approval_source_id is not None or ops_action_id is not None else None, binding_preview=binding_preview, control_reply_id=control_reply_id,
+                pepper=self.pepper if any(value is not None for value in (challenge_id,approval_source_id,ops_action_id,link_challenge_id)) else None,
+                binding_preview=binding_preview, control_reply_id=control_reply_id,
                 max_wait_seconds=self.max_wait_seconds, approval_source_id=approval_source_id,
                 approval_authority=self.approval_authority, source_guard=None if purpose=='progress' else self.source_guard, source_proof=source_proof,
-                ops_action_id=ops_action_id,ops_authority=self.ops_authority)
-        if purpose in {"binding_otp", "approval_otp", "ops_approval"} and ref.created:
+                ops_action_id=ops_action_id,ops_authority=self.ops_authority,link_challenge_id=link_challenge_id,link_authority=self.link_authority)
+        if purpose in {"binding_otp", "approval_otp", "ops_approval", "link_otp"} and ref.created:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
@@ -164,8 +167,11 @@ class OfficialSendStore:
         now = int(self.clock())
         with self.deliveries.transaction() as cursor:
             assert_epoch(cursor, token)
-            cursor.execute("""UPDATE deliveries SET status='failed',wait_reason='delivery_expired',updated_at=?
-                WHERE account_key=? AND status='pending' AND expires_at<=?""", (now, token.account_key, now))
+            expired = cursor.execute("""UPDATE deliveries SET status='failed',wait_reason='delivery_expired',updated_at=?
+                WHERE account_key=? AND status='pending' AND expires_at<=? RETURNING plan_id,purpose""", (now, token.account_key, now)).fetchall()
+            if self.link_authority is not None:
+                for row in expired:
+                    if row['purpose']=='link_otp':self.link_authority.settled(cursor,token,row['plan_id'])
             rows = cursor.execute("""SELECT delivery_id FROM deliveries WHERE account_key=?
                 AND status='pending' AND next_attempt_at<=? ORDER BY delivery_id LIMIT ?""",
                 (token.account_key, now, limit)).fetchall()
@@ -190,6 +196,12 @@ class OfficialSendStore:
                 AND echo_state='not_echo' AND status NOT IN ('quarantined','revoked')
                 ORDER BY accepted_order DESC LIMIT 1""", (endpoint.key,)).fetchone()
 
+    def original_inbound(self, endpoint, native_id):
+        with self.deliveries.transaction() as cursor:
+            return cursor.execute('''SELECT native_message_id,received_at FROM qq_official_inbound_events
+                WHERE account_key=? AND endpoint_key=? AND native_message_id=? AND echo_state='not_echo'
+                AND status='processed' AND reason_code='link_control' ''',(endpoint.account.key,endpoint.key,native_id)).fetchone()
+
     def passive_history(self, endpoint, msg_id):
         # Seed RAM counters after restart from actual attempts; no quota table.
         with self.deliveries.transaction() as cursor:
@@ -213,7 +225,7 @@ class OfficialSendStore:
 
     def _conversation_permitted(self, cursor, row):
         from .conversation_control import permitted
-        if row['purpose'] in {'binding_otp','approval_otp'} or control_for_delivery(cursor,row):
+        if row['purpose'] in {'binding_otp','approval_otp','link_otp'} or control_for_delivery(cursor,row):
             return True
         plan = cursor.execute('SELECT conversation_generation FROM delivery_plans WHERE plan_id=?',(row['plan_id'],)).fetchone()
         command = cursor.execute("SELECT 1 FROM qq_official_turn_executions WHERE plan_id=? AND execution_kind='command'",
@@ -247,6 +259,9 @@ class OfficialSendStore:
                 return 'conversation_stopped_or_replaced'
             if row['purpose']=='ops_approval' and (self.ops_authority is None or not self.ops_authority.delivery_current(cursor,token,row)):
                 return 'ops_notice_source_unavailable'
+            if row['purpose']=='link_otp' and (int(self.clock())>=row['expires_at'] or self.link_authority is None
+                or not self.link_authority.delivery_current(cursor,token,row)):
+                return 'link_notice_source_unavailable'
             return self._program_authorized(cursor,token,row)[1]
 
     def prepare(self, token, delivery_id, *, send_mode, msg_id=None, msg_seq=None):
@@ -272,6 +287,9 @@ class OfficialSendStore:
                 authorized = authorized and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now)
             if row['purpose']=='ops_approval':
                 authorized = authorized and self.ops_authority is not None and self.ops_authority.delivery_current(cursor,token,row)
+            if row['purpose']=='link_otp':
+                authorized = authorized and self.link_authority is not None and self.link_authority.delivery_current(cursor,token,row)
+                if send_mode=='passive' and msg_id!=row['reply_to_native_message_id']:authorized = False
             if not authorized or route['membership_state'] != 'present' or route['binding_state'] == 'revoked':
                 return self._finish(cursor, token, row, 'failed', program_error or 'delivery_not_authorized', now)
             if now >= row['expires_at']:
@@ -324,6 +342,8 @@ class OfficialSendStore:
         if notice_status is not None and is_bot_notice_candidate(row):
             cursor.execute('UPDATE conversation_budget_days SET notice_state=? WHERE notice_plan_id=?',
                 (notice_status,row['plan_id']))
+        if row['purpose']=='link_otp' and self.link_authority is not None:
+            self.link_authority.settled(cursor,token,row['plan_id'])
         return SendOutcome(status, reason, row['delivery_id'])
 
     def fail(self, token, delivery_id, reason, *, reservation=None, error=None, retry=False, plain=False):
@@ -339,6 +359,7 @@ class OfficialSendStore:
                     ('ambiguous' if unknown else 'confirmed_unaccepted', 'unknown' if unknown else 'confirmed_no',
                      now, reason, error.stage if error else None, error.status if error else None,
                      error.code if error else None, reservation.attempt_id))
+            if row['purpose']=='link_otp':retry,plain = False,False
             if plain:
                 cursor.execute("UPDATE deliveries SET variant='plain_fallback',format_fallback_used=TRUE WHERE delivery_id=?", (delivery_id,))
             return self._finish(cursor, token, row, 'ambiguous' if unknown else 'pending' if retry else 'failed', reason, now)
@@ -351,7 +372,8 @@ class OfficialSendStore:
     def finalize(self, token, receipt_id, *, ledger, journal=None):
         from .send_ledger import finalize_receipt
         with self.deliveries.transaction() as cursor:
-            result = finalize_receipt(cursor, token=token, receipt_id=receipt_id, ledger=ledger, journal=journal, now=int(self.clock()))
+            result = finalize_receipt(cursor, token=token, receipt_id=receipt_id, ledger=ledger, journal=journal,
+                now=int(self.clock()),link_authority=self.link_authority)
             return result
 
     def recover(self, token):
@@ -362,6 +384,11 @@ class OfficialSendStore:
                 WHERE account_key=? AND state IN ('reserved','dispatched')""", (int(self.clock()), token.account_key))
             cursor.execute("""UPDATE deliveries SET status='ambiguous',wait_reason='restart_during_send',lease_until=NULL
                 WHERE account_key=? AND status='sending'""", (token.account_key,))
+            if self.link_authority is not None:
+                rows = cursor.execute("""SELECT d.plan_id FROM deliveries d JOIN qq_official_link_challenges c ON c.notice_plan_id=d.plan_id
+                    WHERE d.account_key=? AND d.purpose='link_otp' AND c.delivery_state='pending'
+                    AND d.status IN ('failed','cancelled','ambiguous')""",(token.account_key,)).fetchall()
+                for row in rows:self.link_authority.settled(cursor,token,row['plan_id'])
             return tuple(r['receipt_id'] for r in cursor.execute('SELECT receipt_id FROM delivery_receipts WHERE account_key=? AND applied_at IS NULL', (token.account_key,)).fetchall())
 
     def forget_ephemeral(self, delivery_id):

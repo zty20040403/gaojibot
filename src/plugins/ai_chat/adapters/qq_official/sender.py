@@ -162,12 +162,13 @@ class OfficialSender:
         await self._fence()
         return await asyncio.shield(await self._submit(delivery_id))
 
-    async def _credential(self, endpoint, route, *, proactive_only=False):
+    async def _credential(self, endpoint, route, *, proactive_only=False,original_native_id=None):
         if route['proactive_state'] != 'denied':
             return 'proactive', None, None
         if proactive_only:
             return None
-        source = await self._calls(self.outbox.latest_inbound, endpoint)
+        source = (await self._calls(self.outbox.original_inbound,endpoint,original_native_id) if original_native_id is not None
+            else await self._calls(self.outbox.latest_inbound, endpoint))
         if source is None or self.wall_clock() - source['received_at'] >= 300:
             return None
         msg_id = source['native_message_id']
@@ -197,7 +198,9 @@ class OfficialSender:
                 return await self._calls(self.outbox.fail, self.token, delivery_id, 'token_unavailable')
             program = row.get('program_action_id') is not None
             budget_notice = row.get('budget_notice_day') is not None
-            credential = await self._credential(endpoint, route,proactive_only=program or budget_notice)
+            link_notice = row['purpose']=='link_otp'
+            credential = await self._credential(endpoint, route,proactive_only=program or budget_notice,
+                original_native_id=row['reply_to_native_message_id'] if link_notice else None)
             if credential is None:
                 log.warning('QQ send failed: 这个群没开主动发言，请群主打开')
                 return await self._calls(self.outbox.fail, self.token, delivery_id, PASSIVE_UNAVAILABLE)
@@ -276,7 +279,7 @@ class OfficialSender:
                 plain_retry, retry, plain, reason = True, True, True, 'markdown_rejected'
             else:
                 reason = error.category
-            if budget_notice:
+            if budget_notice or link_notice:
                 retry,plain,delay = False,False,0  # One attempt, even for confirmed rejection.
             result = await self._calls(self.outbox.fail, self.token, delivery_id, reason,
                 reservation=reservation, error=error, retry=retry, plain=plain)
