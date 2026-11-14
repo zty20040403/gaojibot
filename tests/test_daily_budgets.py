@@ -5,6 +5,7 @@ from decimal import Decimal
 import unittest
 
 from src.plugins.ai_chat import daily_budgets as budgets
+from src.plugins.ai_chat.model_billing import BillingSource
 from src.plugins.ai_chat.model_usage import TokenUsage
 from tests import test_model_billing as fixture
 from tests import test_model_billing_views as views
@@ -63,7 +64,7 @@ class DailyBudgetTests(unittest.TestCase):
                 budgets.require(cursor,self.endpoint,now=state.day_end,generation=state.generation-1)
 
     def test_concurrent_crossing_restart_and_stop_preserve_once_only_marker(self):
-        self.setting('0.001'); self.receipt()
+        self.receipt(); self.setting('0.001')
         with self.store.transaction() as cursor:
             cursor.execute('UPDATE conversation_settings SET stopped=TRUE,stop_generation=7 WHERE scope_key=?',(self.endpoint.scope.key,))
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -91,6 +92,19 @@ class DailyBudgetTests(unittest.TestCase):
             self.assertEqual(cursor.execute('SELECT count(*) FROM conversation_budget_days').fetchone()[0],1)
             self.assertEqual(cursor.execute('SELECT budget_usd FROM conversation_budget_days').fetchone()[0],Decimal('0.001'))
             with self.assertRaisesRegex(PermissionError,'exceeded'):budgets.require(cursor,self.endpoint,now=self.now)
+
+    def test_receipt_crossing_commits_before_auto_denial_while_addressed_calls_still_work(self):
+        self.setting('0.001')
+        call = self.store.begin(self.source,self.profile)
+        self.assertEqual(self.state().generation,0)
+        self.store.finish(call,TokenUsage(1000,50,600,0))
+        self.assertEqual(self.state().generation,1)
+        for purpose in ('proactive','program_wake'):
+            with self.assertRaisesRegex(PermissionError,'daily_budget_exceeded'):
+                self.store.begin(BillingSource(self.endpoint,purpose),self.profile)
+        self.receipt()  # Explicitly addressed work is not a hard spending cap.
+        self.assertEqual(self.state().spent,Decimal('0.00264'))
+        self.assertEqual(self.state().generation,1)
 
     def test_denied_guard_is_read_only_and_transactions_do_not_leave_half_marker(self):
         self.setting('0'); self.assertTrue(self.state().blocked)
