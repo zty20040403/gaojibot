@@ -196,7 +196,8 @@ class OfficialSender:
             except QQAPIError:
                 return await self._calls(self.outbox.fail, self.token, delivery_id, 'token_unavailable')
             program = row.get('program_action_id') is not None
-            credential = await self._credential(endpoint, route,proactive_only=program)
+            budget_notice = row.get('budget_notice_day') is not None
+            credential = await self._credential(endpoint, route,proactive_only=program or budget_notice)
             if credential is None:
                 log.warning('QQ send failed: 这个群没开主动发言，请群主打开')
                 return await self._calls(self.outbox.fail, self.token, delivery_id, PASSIVE_UNAVAILABLE)
@@ -275,6 +276,8 @@ class OfficialSender:
                 plain_retry, retry, plain, reason = True, True, True, 'markdown_rejected'
             else:
                 reason = error.category
+            if budget_notice:
+                retry,plain,delay = False,False,0  # One attempt, even for confirmed rejection.
             result = await self._calls(self.outbox.fail, self.token, delivery_id, reason,
                 reservation=reservation, error=error, retry=retry, plain=plain)
             if not retry:

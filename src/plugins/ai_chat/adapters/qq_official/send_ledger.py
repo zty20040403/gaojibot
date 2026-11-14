@@ -145,6 +145,8 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     program = cursor.execute('SELECT action_id,program_name FROM qq_official_program_actions WHERE plan_id=?',
         (delivery['plan_id'],)).fetchone()
     provenance = dict(by='program',program=program['program_name'],program_action_id=program['action_id']) if program else {}
+    budget = cursor.execute('SELECT day_start FROM conversation_budget_days WHERE notice_plan_id=?',(delivery['plan_id'],)).fetchone()
+    if budget:provenance.update(system_notice='daily_budget',budget_day_start=budget['day_start'])
     display = '程序 '+program['program_name'] if program else 'Bot'
     wake = cursor.execute('SELECT wake_id,input_ids_json FROM qq_official_program_wakes WHERE reply_action_id=?',
         (program['action_id'],)).fetchone() if program else None
@@ -179,6 +181,8 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     cursor.execute("""UPDATE deliveries SET status='committed',native_message_id=?,lease_until=NULL,
         wait_reason=NULL,last_error='',updated_at=? WHERE delivery_id=?""", (native, now, delivery['delivery_id']))
     cursor.execute('UPDATE delivery_receipts SET applied_at=? WHERE receipt_id=?', (now, receipt_id))
+    if budget:
+        cursor.execute("UPDATE conversation_budget_days SET notice_state='committed' WHERE notice_plan_id=?",(delivery['plan_id'],))
     if wake:
         cursor.execute("UPDATE qq_official_program_wakes SET state='completed',error_code='',finished_at=? WHERE wake_id=?",(now,wake['wake_id']))
     from .file_projection import apply_file_receipt
