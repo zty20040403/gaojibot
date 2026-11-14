@@ -33,10 +33,10 @@ async def route_command(text, inbound: InboundMessage, *, services: CommandServi
         return RouteResult("suppressed")
     if not isinstance(text, str) or not text.lstrip().startswith(("/", "!")):
         return RouteResult("not_command")
-    # Binding tokens never reach the shared command callback, an execution row,
-    # the normal inbox body or an LLM. M2 has already handled this trusted route.
+    # Binding/link tokens never reach the shared command callback, an execution
+    # row, the normal inbox body or an LLM. M2 handles these trusted routes.
     prefix = text.lstrip()[1:].split(None, 1)[0].casefold() if text.lstrip()[1:] else ""
-    if prefix in {"bind", "绑定", "whoami"}:
+    if prefix in {"bind", "绑定", "whoami", "link", "unlink"}:
         return RouteResult("control")
     if await _await(admission(inbound)) is not True:
         return RouteResult("suppressed")
