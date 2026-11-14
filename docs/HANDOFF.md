@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F7独立探测CLI本地接齐（仍无真实群管验收）
+
+- 独立入口src.qq_official.probe_moderation_cli默认read，mutation须显式选项与一次确认；账号/唯一群/普通成员都从私有scope文件绑定凭据。操作者必须明确independent_test_account/exclusive_moderation=true，终端仅假名/步骤/最大请求数；这不是平台授权证明。不接受任意网络地址，不连接应用运行时、VM或线上tank。
+- 专用Unix intake拒绝非当前用户、group/other权限、链接、超长输入或不私有报告目录；Darwin使用已打开FD和固定/bin/ls -e拒绝扩展/不可核实ACL，Linux私有mode依赖ACL mask，未知/Windows不开放CLI。没有改现有Credentials/Windows旧问题。新报告仍拒绝覆盖，不泄露响应体/原文/密钥。
+- 默认2次业务读取；mute60秒/验证/解除最多8次，独立新消息recall最多2次，unknown/中断不重试不补清理。86项本地CLI/引擎/协议/旧HTTP与文件组合、Ruff/两项导入和--help通过（包含81项）。初次Ruff的未用测试导入已移除并完整重跑。
+- 使用步骤与私有scope结构见docs/qq-official-probe.md。准备工作已接齐，但当前Gaoji账号真实群管权限/普通成员撤回仍无证据，产品moderate不得开放；下一步需owner提供独立测试凭据文件及授权目标。F9固定77c3055的2028项全套不覆盖本探测补丁，未合并/部署/网络实测/改Java。
+
 ## 开发记录（2026-11-14）· F7单成员探测引擎（CLI待接）
 
 - probe_moderation.py固定独立测试账号/单群/单普通成员；显式确认前不连接，只有原认证顶层普通成员、同入口、@bot的当次随机文案/新消息ID可作为测试来源。转发/引用/附件、旧时间、错人/错群/owner/admin或机器人不提供来源，读写及token/TLS等待后仍检查原五分钟内批次和两分钟消息期限，不能借新事件续权。
