@@ -16,6 +16,8 @@ class LinkDecision:
     challenge_id: str = ''
     link_id: str = ''
     code: str | None = field(default=None,repr=False)
+    entries: tuple = field(default=(),repr=False)
+    more: bool = False
 
 
 class LinkReducer:
@@ -159,7 +161,8 @@ class LinkReducer:
         if now>=row['expires_at']:return self.close(cursor,row)
         if existing:
             names = ('source_scope_key','target_scope_key','source_generation','source_route_epoch','target_generation','target_route_epoch')
-            if existing['delivery_receipt_hash'] and all(existing[name]==row[name] for name in names):
+            from .link_management import LinkManagement
+            if existing['delivery_receipt_hash'] and all(existing[name]==row[name] for name in names) and LinkManagement(self).current(cursor,token,existing):
                 self.close(cursor,row); return LinkDecision('already_linked',row['challenge_id'],existing['link_id'])
             cursor.execute("UPDATE qq_official_conversation_links SET state='revoked',generation=generation+1,revoked_at=? WHERE link_id=?",(now,existing['link_id']))
         link_id = secrets.token_hex(16)

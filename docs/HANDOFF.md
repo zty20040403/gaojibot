@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8定向连接管理与持久同意（控制回复/工厂待接）
+
+- LinkManagement在原认证TxA可选支路接list/status/cancel/revoke：每次用当前原owner/群管证明并在查找后复查原600秒截止；仅完整账号及当前物理端点涉及的记录，不从共享历史或普通私聊peer推导授权。任一端撤销单条有向边，generation只推进一次，反向边不受影响；待确认挑战可取消，已成边须明确/unlink。
+- 只有active且真实回执有证据的已消费挑战才形成持久同意：600秒是验证码/命令期限，不是连接寿命。已成边可跨宿主lease epoch保留，但双方冻结的owner grant/revision或已观察角色revision、原scope/route/generation及成员状态仍须匹配；撤权重授、路由/成员/密钥变化或旧NULL回执均不得恢复旧边。这里不是实时QQ角色查询，也不向远端传真人/owner/VM权限。
+- list先按完整账号/物理端点过滤再LIMIT33，最多32条并明确more，只给不含原始openid的散列会话标签/方向/状态/版本。查询发现已失效同意会不可逆撤边；新双边证明面对同路由但原权限已失效的旧active，不再误报already_linked，而是留旧gen+1、建新ID。
+- 10项新PG管理例和1项实际TxA+RestClient/FakePlatform确认后管理例；58项reducer/角色/发码/实际接收/旧F6/迁移/架构组合通过80.274秒，Ruff/导入/diff通过。删物理范围、目标侧证明、查找后的截止保护的3个独立负对照各1failure RED。首轮3个夹具错误（重复active pair、非法membership枚举、非法account environment）已纠正，未改约束；foreign审计用已撤销旧边而不放宽active唯一性。
+- Task37仍in_progress：管理组件仅可选TxA，尚无独立控制回复原证明/一次反馈计划或真实account factory；未开放产品/link。下一步持久原控制回复证明，不借bind/admin渠道，再接真实账号生命周期；ask/管理页另续。固定4471365全套后台仍在运行且不覆盖本补丁，不能替代新快照验证；未真实QQ/合并/部署/生产/Java变更。
+
 ## 开发记录（2026-11-14）· F8一次ephemeral码与实际发送账本取证（账号工厂待接）
 
 - LinkNotices接独立link_otp enqueue/claim/发送/实际send_ledger：只接受原认证source_inbox及原actor/物理端点/route/epoch/current，HMAC验证六位码并比对固定正文，不允许普通/ops/程序来源混用。每挑战一个原计划，RAM正文、磁盘空body/manifest及HMAC，实际发送回执写command空正文，验证码不进普通历史/模型/审计明文。
