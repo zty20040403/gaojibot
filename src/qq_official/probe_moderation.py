@@ -59,7 +59,10 @@ async def run_moderation_probe(options,protocol,gateway,*,confirm,output=print,c
         'group':aliases.get('group',options.group,namespace=account),
         'member':aliases.get('member',options.member,namespace=options.group),'requests':[],
         'invalid_events':0,'dropped_events':0,'manual_verification_required':True}
+    report['max_business_requests'] = sum({'read':2,'mute':8,'recall':2}[check] for check in options.checks)
     report_file.write(report)
+    output('测试范围：'+report['account']+' / '+report['group']+' / '+report['member']+'；步骤 '+','.join(options.checks)
+        +'；最多 '+str(report['max_business_requests'])+' 次业务HTTP（不含鉴权/网关），请先核对私有scope文件。')
     if confirm('Only the selected independent test group/member. Mute lasts 60s; recall deletes a fresh test message. YES?') is not True:
         report['status'] = 'cancelled'; report_file.write(report)
         return report
