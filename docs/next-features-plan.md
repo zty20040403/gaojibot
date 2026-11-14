@@ -412,6 +412,8 @@
 
 **认证证据准备（2026-11-14）**：0099/LinkAuthority以无正文的原顶层角色与平台时间记录观察，角色/路由代数、原owner grant/revision、完整actor/account/原时间HMAC防旧权限恢复；lookup跨截止负例RED→GREEN，32项PG/迁移/旧链路组合通过，三个删除保护负对照各RED。仅反映已观察的群角色，不冒充实时QQ权限查询；TxA、link码投递与ask未接，未完整全套/真实验收/部署。
 
+**真实账号连接控制（2026-11-14）**：OfficialRuntime在gateway.run前挂LinkRuntime/原TxA/一次发行/控制反馈/定向管理，先关闭旧RAM授权再sender.recover保留旧applied事实，退出先drain发送再关闭未消费码/清authority。独立32任务与每5秒20+1 live检查，busy/取消/失权/到期不重放；默认private owner不改变/bind历史。6新实际factory/gateway/TxA/RestClient+FakePlatform例及115项F8/原runtime/F6/预算/旧schema组合通过，3个挂载/回执恢复顺序/shutdown旧码门槛负对照RED。本地连接控制已接，不是F8整体完成或QQ验收；ask/目标taint模型/账单及管理页另续。旧3912652 schema本机/Linux全套2182项通过/10跳过、exit0，不覆盖后续反馈/默认入口/此运行时，旧Windows失败仍在；未合并/部署/生产/Java。
+
 **敏感输入准备（2026-11-14）**：独立LinkCommand与原认证TxA/普通router/旧误分类TxB隔离已接，不让未开启link服务把验证码存入raw/canonical/model/普通执行。72项PG/原收件/bind/ops/权限组合通过、边界与独立删隔离负对照RED；当前仍明确link_control_unavailable，未发行连接码或开放ask/管理页，Task37继续实现确认/真实回执。
 
 **默认私聊入口修补（2026-11-14）**：未手工provision的新private/unbound原物理scope只核验owner/准入，不借/bind历史；unbound群/public peer/revoked/foreign-scope仍拒绝。旧实现误拒owner、继而未核实主动窗口先POST而失败，两独立RED→GREEN；未明确主动allowed时首选原认证msg_id，不重试或借后来窗口。104项PG/实际TxA/RestClient+FakePlatform/F6/预算/sender组合及静态通过，private scope门槛独立负对照RED。PR#103旧3912652 schema Linux2182项通过、10跳过；不覆盖反馈/本修补，真实account factory另续，不称产品开放或QQ验收。
