@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8控制反馈单次计划schema（enqueue/sender待接）
+
+- 0103_link_feedback只扩展独立ephemeral反馈种类：每原0102控制结果最多一个plan；复合FK固定原完整账号/端点/requester，不借bind/ops。原scope/route/generation/收到时间及源截止必须匹配，排队最长30秒，不能带canonical消息或turn；计划来源/内容不可更新或删除，禁止删计划后以同原输入重发。
+- 原四个发送约束仅有限扩展link_feedback，保留ordinary/protected/binding/approval/ops/link_otp不变量。无新plan可回退并逐字恢复四个PG约束表达式、保留0102原结果；已有反馈计划需导出，不丢审计。它只是schema，还没实现反馈enqueue、RAM正文、claim/current、sender或实际账号工厂。
+- 5项新PG schema/迁移例及73项F8角色/管理/状态机/发行/原控制结果/F6/迁移/架构组合通过122.013秒；Ruff/导入/diff通过。删原actor复合FK、30秒截止、计划不可变的三独立负对照分别1/1/4failure RED；不以schema假manifest当真实QQ回执。
+- Task37继续单次反馈与真实账号运行时，随后ask/UI；未开放产品link、最新完整快照/真实QQ验收、合并/部署/生产/Java变更。旧4471365的2156项全套不覆盖此0103/0102/管理及新截止。
+
 ## 开发记录（2026-11-14）· F8独立原控制回复证据（尚未发送反馈）
 
 - 0102_link_replies保存每原inbox一条不可改/删的安全结果快照，不保存输入/验证码/正文。复合FK绑定原账号/物理端点/actor/回执HMAC；触发器匹配原收到时间/route/generation及原平台起算600秒，旧数据不补猜，已有结果须导出才降级。发行code仍只走0101，不同时生成反馈结果。
