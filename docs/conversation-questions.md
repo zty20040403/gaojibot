@@ -1,6 +1,6 @@
 # F8 双边连接与跨会话问答
 
-状态（2026-11-14）：连接存储、可撤销权限证据、独立敏感输入隔离、纯双边reducer、原入站/单次发行计划schema及可选原认证TxA接线已建立；未发行连接码或开放 `/link` / `ask`，未合并/部署。权威功能要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
+状态（2026-11-14）：连接存储、可撤销权限证据、独立敏感输入隔离、纯双边reducer、原入站/单次发行计划schema、可选原认证TxA及一次ephemeral发送/实际账本取证已建立；真实账号工厂与管理命令尚待接，未开放 `/link` / `ask`，未真实QQ验收或合并/部署。权威功能要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
 
 ## 连接不是身份映射
 
@@ -15,13 +15,15 @@
 - 复用 `/bind` 的交互形式，不复用 binding challenge、历史重绑定或 owner grant。六位码最多600秒，只存专用 HMAC；原命令收到/批准时间不被等待、重试或后台执行延长。
 - 只有原认证消息能发起/确认。原账号 epoch、source endpoint/route generation、actor/权限凭证与原入站回执固定；源权限变化、原租约失效或重启取消旧挑战。
 - 发行、送达确认、兑换分开：发送不明或重启不自动重发/猜码；快速兑换可持久保存确认，但未核实发行投递的真实成功不得激活连接。
-- 纯LinkReducer只实现账号锁中的create/confirm/一次HMAC/双边证明/发行状态转换：持久独立限流、最多20个live挑战及8次随机避碰，确保有界查询包含所有可能验证码。快速确认未核实发行不能激活，最终current之后再次核实期限且以同一受检时间写激活。原认证TxA/ephemeral发码/真实账本取证与取消/撤边/查询运行时尚未接，不能视为link已开放。
-- 0100把真实发行回执与授权终态分开：迟到committed可在取消/过期后一次补记HMAC/原宿主收到时间，但不能恢复码/目标/授权。新增激活/连接要求回执证据；旧无证据active只保留审计，不猜成功、不授予新的访问。实际QQ取回执/发码尚未接。
-- 0101独立link_otp原source_inbox_id/notice_plan_id：5字段FK绑定原入站账号/物理端点/actor/HMAC回执，原native/event/platform/收到时间不可换；单挑战至多一个原端点/requester发行plan。schema未接实际enqueue/sender/TxA时不开放发码，旧来源NULL不补猜，已有新审计禁止无导出回退。
+- 纯LinkReducer只实现账号锁中的create/confirm/一次HMAC/双边证明/发行状态转换：持久独立限流、最多20个live挑战及8次随机避碰，确保有界查询包含所有可能验证码。快速确认未核实发行不能激活，最终current之后再次核实期限且以同一受检时间写激活。原认证TxA与LinkNotices发送/实际账本取证已接，真实账号工厂与取消/撤边/查询运行时尚待接，不能视为link已开放。
+- 0100把真实发行回执与授权终态分开：迟到committed可在取消/过期后一次补记HMAC/原宿主收到时间，但不能恢复码/目标/授权。新增激活/连接要求回执证据；旧无证据active只保留审计，不猜成功、不授予新的访问。LinkNotices只从实际发送账本的applied response回执保存发行事实；组件已用loopback FakePlatform验收，真实QQ仍待验收。
+- 0101独立link_otp原source_inbox_id/notice_plan_id：5字段FK绑定原入站账号/物理端点/actor/HMAC回执，原native/event/platform/收到时间不可换；单挑战至多一个原端点/requester发行plan。已接LinkNotices原码/原来源验证、enqueue/claim/sender/TxA；真实账号工厂未挂载前不开放发码，旧来源NULL不补猜，已有新审计禁止无导出回退。
 - 验证码与输入参数不进入 raw inbox、canonical history、LLM、普通发送账本或审计明文。独立 link namespace 与敏感隔离已接入归一化/TxA/普通router/旧误分类TxB；服务未接齐时明确 `link_control_unavailable`，不落回普通消息。提及伪造或嵌入敏感命令仅隔离，不授予权限。
 - 所有状态在 account 锁下提交；DB 用复合 FK 拦跨账号，两个认证确认固定来源。迁移不补猜旧链接；已有连接/挑战审计阻止无导出降级。
-- OfficialInboxStore.link_ingress默认None，显式挂载才用原TxA取proof/reduce/capture；普通认证消息也观察撤权，checkpoint/角色/挑战/原入站同事务。LinkIngress.source只读原source_inbox_id并验证实际gateway控制回执、HMAC与末current，不借后来消息。真实account工厂/一次实际发码仍未挂载，测试不是QQ验收。
-- 0099/LinkAuthority已提供无正文的顶层认证角色证据：角色/路由变化推进代数，同秒矛盾撤销、迟到旧角色不升权；owner用原grant/revision，返回前再核600秒截止。这仅反映已观察的角色，不是实时上游角色查询，不能立即发现未收到证据的QQ撤权。原认证发起与确认、固定短期挑战仍不可省；TxA可选支路已接，实际account工厂与发送接线尚待后续。
+- OfficialInboxStore.link_ingress默认None，显式挂载才用原TxA取proof/reduce/capture；普通认证消息也观察撤权，checkpoint/角色/挑战/原入站同事务。LinkIngress.source只读原source_inbox_id并验证实际gateway控制回执、HMAC与末current，不借后来消息。Sender只用冻结原msg_id，后来的合法消息不能提供新窗口；claim后HTTP前复查来源，401/429/主动拒绝/格式失败不重试或降级重发，底层fail亦拦retry/plain。真实account工厂未挂载，组件测试不是QQ验收。
+- 0099/LinkAuthority已提供无正文的顶层认证角色证据：角色/路由变化推进代数，同秒矛盾撤销、迟到旧角色不升权；owner用原grant/revision，返回前再核600秒截止。这仅反映已观察的角色，不是实时上游角色查询，不能立即发现未收到证据的QQ撤权。原认证发起与确认、固定短期挑战仍不可省；TxA/一次发送及真实账本取证组件已接，实际account工厂与管理命令尚待后续。
+
+- 发行排队最多30秒；队列到期、丢RAM与重启关闭原码，unknown不重发。已accepted的迟到或双取消回执必须排空到账本且只保存事实，不能将已取消/过期挑战重新授权。显式link管理命令在聊天停止时仍可用但不清stop，问答/自动动作另外核验停止。
 
 ## 问答的权限与生命周期
 
