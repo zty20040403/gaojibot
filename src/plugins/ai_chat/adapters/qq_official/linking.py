@@ -156,13 +156,19 @@ class LinkReducer:
             JOIN qq_official_link_challenges c USING(challenge_id) WHERE l.account_key=? AND l.source_endpoint_key=?
             AND l.target_endpoint_key=? AND l.state='active' FOR UPDATE OF l''',
             (token.account_key,row['source_endpoint_key'],row['target_endpoint_key'])).fetchone()
+        same_consent = False
+        if existing:
+            names = ('source_scope_key','target_scope_key','source_generation','source_route_epoch','target_generation','target_route_epoch')
+            from .link_management import LinkManagement
+            same_consent = (existing['delivery_receipt_hash'] and all(existing[name]==row[name] for name in names)
+                and LinkManagement(self).current(cursor,token,existing))
+        # Persistent-consent lookup may cross this NEW challenge's deadline.
+        # Recheck bilateral authorization/time after all lookups, then use it once.
         if not self.current(cursor,token,row):return self.close(cursor,row)
         now = self.now()
         if now>=row['expires_at']:return self.close(cursor,row)
         if existing:
-            names = ('source_scope_key','target_scope_key','source_generation','source_route_epoch','target_generation','target_route_epoch')
-            from .link_management import LinkManagement
-            if existing['delivery_receipt_hash'] and all(existing[name]==row[name] for name in names) and LinkManagement(self).current(cursor,token,existing):
+            if same_consent:
                 self.close(cursor,row); return LinkDecision('already_linked',row['challenge_id'],existing['link_id'])
             cursor.execute("UPDATE qq_official_conversation_links SET state='revoked',generation=generation+1,revoked_at=? WHERE link_id=?",(now,existing['link_id']))
         link_id = secrets.token_hex(16)

@@ -16,6 +16,7 @@
 - 复用 `/bind` 的交互形式，不复用 binding challenge、历史重绑定或 owner grant。六位码最多600秒，只存专用 HMAC；原命令收到/批准时间不被等待、重试或后台执行延长。
 - 只有原认证消息能发起/确认。原账号 epoch、source endpoint/route generation、actor/权限凭证与原入站回执固定；源权限变化、原租约失效或重启取消旧挑战。
 - 发行、送达确认、兑换分开：发送不明或重启不自动重发/猜码；快速兑换可持久保存确认，但未核实发行投递的真实成功不得激活连接。
+- 新挑战的最终双边current/期限检查必须在已有边持久同意查找之后；旧查找跨期限时不能误报already_linked，更不能用先前时间激活新边。到期保留发行事实，仅关闭新挑战；旧边不因新请求过期而撤销。
 - 纯LinkReducer只实现账号锁中的create/confirm/一次HMAC/双边证明/发行状态转换：持久独立限流、最多20个live挑战及8次随机避碰，确保有界查询包含所有可能验证码。快速确认未核实发行不能激活，最终current之后再次核实期限且以同一受检时间写激活。原认证TxA与LinkNotices发送/实际账本取证已接，定向取消/撤边/查询已接可选TxA，控制回复及真实账号工厂仍待接，不能视为link已开放。
 - 0100把真实发行回执与授权终态分开：迟到committed可在取消/过期后一次补记HMAC/原宿主收到时间，但不能恢复码/目标/授权。新增激活/连接要求回执证据；旧无证据active只保留审计，不猜成功、不授予新的访问。LinkNotices只从实际发送账本的applied response回执保存发行事实；组件已用loopback FakePlatform验收，真实QQ仍待验收。
 - 0101独立link_otp原source_inbox_id/notice_plan_id：5字段FK绑定原入站账号/物理端点/actor/HMAC回执，原native/event/platform/收到时间不可换；单挑战至多一个原端点/requester发行plan。已接LinkNotices原码/原来源验证、enqueue/claim/sender/TxA；真实账号工厂未挂载前不开放发码，旧来源NULL不补猜，已有新审计禁止无导出回退。
