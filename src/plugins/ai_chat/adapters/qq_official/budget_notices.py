@@ -2,7 +2,7 @@
 from ...daily_budgets import interval,read
 from ...message_ir import MessageBody,TextNode
 from ...model_billing_views import usd
-from ...platform_types import EndpointKey
+from ...platform_types import ActorKey,EndpointKey
 from .conversation_control import permitted
 from .identity_store import snapshot
 from .lease import assert_epoch
@@ -10,6 +10,13 @@ from .renderer import render_plan
 from .send_types import OutboxInvariantError,digest,stable_json
 
 TTL = 300
+
+
+def is_bot_notice_candidate(delivery):
+    # Only independently verified bot unsolicited effects can be budget notices.
+    # Human/OTP/operations sends keep their own source contract, including the
+    # intentionally old schemas used to test those migrations.
+    return delivery['purpose']=='unsolicited' and ActorKey.parse(delivery['requester_actor_key']).identity_kind=='bot'
 
 
 def deadline(row):return min(row['first_exceeded_at']+TTL,interval(row['day_start'])[1])
@@ -25,7 +32,7 @@ def rendered(row):
     return render_plan(MessageBody((TextNode(0,text),)),endpoint,markdown=False,max_parts=1)
 
 
-def check(cursor,token,row,*,now):
+def check(cursor,token,row,*,now,admission=None):
     assert_epoch(cursor,token)
     endpoint = EndpointKey.parse(row['endpoint_key'])
     route = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?',(endpoint.key,)).fetchone()
@@ -40,6 +47,12 @@ def check(cursor,token,row,*,now):
             or endpoint.kind=='group' and route['binding_state']!='active'
             or not permitted(cursor,endpoint,generation=row['conversation_generation'])):
         raise PermissionError('budget_notice_source_unavailable')
+    if endpoint.kind=='private':
+        # Endpoint access only, like VM admission; the requester remains bot and
+        # never inherits this peer's owner or operations privileges.
+        peer = ActorKey(endpoint.account,'c2c_user','',endpoint.native_conversation_id)
+        if not callable(admission) or not admission(cursor,endpoint,peer):
+            raise PermissionError('budget_notice_source_unavailable')
     author = snapshot(cursor,endpoint.account)
     if author is None:raise PermissionError('budget_notice_identity_unavailable')
     return endpoint,author.bot_actor
@@ -55,9 +68,9 @@ def load(cursor,endpoint,day):
 
 
 def validate(cursor,*,token,day,plan,requester,logical_key,source_scope_key,source_native_message_id,
-        source_canonical_message_id,turn_id,purpose,expires_at,source_generation,now):
+        source_canonical_message_id,turn_id,purpose,expires_at,source_generation,now,admission=None):
     row = load(cursor,plan.endpoint,day)
-    _,bot = check(cursor,token,row,now=now)
+    _,bot = check(cursor,token,row,now=now,admission=admission)
     if (plan.to_json()!=rendered(row).to_json() or requester!=bot or logical_key!='budget:'+str(day)
             or source_scope_key!=row['scope_key'] or source_native_message_id or source_canonical_message_id is not None
             or turn_id is not None or purpose!='unsolicited' or expires_at!=deadline(row)
@@ -85,11 +98,20 @@ def bind(cursor,endpoint,day,plan):
         (plan['plan_id'],endpoint.scope.key,day))
 
 
-def denial(cursor,*,token,delivery,now):
+def enqueue(cursor,token,row,*,admission,now):
+    from .plans import enqueue_plan
+    endpoint,bot = check(cursor,token,row,now=now,admission=admission)
+    return enqueue_plan(cursor,token=token,rendered=rendered(row),requester=bot,
+        logical_key='budget:'+str(row['day_start']),source_scope_key=endpoint.scope.key,
+        expires_at=deadline(row),now=now,purpose='unsolicited',admission=admission,
+        source_generation=row['conversation_generation'],budget_day=row['day_start'])
+
+
+def denial(cursor,*,token,delivery,now,admission=None):
     row = cursor.execute('SELECT * FROM conversation_budget_days WHERE notice_plan_id=?',(delivery['plan_id'],)).fetchone()
     if row is None:return 'budget_notice_source_unavailable'
     try:
-        check(cursor,token,row,now=now)
+        check(cursor,token,row,now=now,admission=admission)
         plan = cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?',(delivery['plan_id'],)).fetchone()
         return None if plan is not None and matches(cursor,row,plan) else 'budget_notice_plan_mismatch'
     except PermissionError as error:return str(error)
