@@ -55,7 +55,7 @@ const NAVIGATION: Array<{ id: ViewId; label: string; description: string; group:
   { id: 'requests', label: '最近请求', description: '模型实际看到的消息和工具', group: '运行', icon: BrainCircuit },
   { id: 'overview', label: '概览', description: '服务状态、Token 趋势与最近投递', group: '运行', icon: Gauge },
   { id: 'tasks', label: '任务与投递', description: 'Agent、持久任务和 QQ 消息回执', group: '运行', icon: ListChecks },
-  { id: 'usage', label: '模型用量', description: '按日期、会话和来源统计 Token', group: '运行', icon: BarChart3 },
+  { id: 'usage', label: '模型用量与费用', description: '四维真实账单来源与旧 Token 额度统计', group: '运行', icon: BarChart3 },
   { id: 'traces', label: 'Trace 与上下文', description: '回放回答链路与上下文选择过程', group: '运行', icon: BrainCircuit },
   { id: 'programs', label: '常驻程序', description: '单元状态、日志、额度、停用与恢复', group: '资源', icon: Boxes },
   { id: 'sandboxes', label: '沙盒', description: '隔离环境、命令和资源使用情况', group: '资源', icon: Boxes },
