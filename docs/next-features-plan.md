@@ -414,6 +414,8 @@
 
 **敏感输入准备（2026-11-14）**：独立LinkCommand与原认证TxA/普通router/旧误分类TxB隔离已接，不让未开启link服务把验证码存入raw/canonical/model/普通执行。72项PG/原收件/bind/ops/权限组合通过、边界与独立删隔离负对照RED；当前仍明确link_control_unavailable，未发行连接码或开放ask/管理页，Task37继续实现确认/真实回执。
 
+**原发行存储准备（2026-11-14）**：0101独立link_otp/原source_inbox_id/notice_plan_id，body-free输入不可变与actor/receipt复合FK、原端点/requester的一次计划绑定；42项实际PG/旧F6/回退组合通过，删原输入不可变/actor回执绑定负对照RED。只准备schema，未接实际enqueue/sender/TxA或真实QQ，任务继续。
+
 **纯状态机准备（2026-11-14）**：原认证LinkAuthority的双边HMAC六位确认、真实发行才激活、独立持久限流及完整有界避碰、一次来源、撤权/旧epoch/重启取消与迟到事实本地完成；38项实际PG/旧bind/F6组合通过，删current/最终期限/live上限3个负对照RED。尚未接TxA/一次实际ephemeral投递/真实账本、取消/撤边/查询，ask/管理页另续，F8整体仍未完成。
 
 **回执存储准备（2026-11-14）**：0100独立冻结发行HMAC/宿主收到时间，允许取消/过期/unknown补迟到真实committed而不恢复终态/码/权限/目标；新激活必须有证据，旧unknown不补猜/不授新访问。29项PG/迁移/权限/输入/架构组合通过，旧终态锁死及删证据门槛负对照RED。尚未接实际QQ发行或完整LinkReducer，未新全套/真实验收/部署。
