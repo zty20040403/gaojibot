@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 固定快照核验（2026-11-14）· F7探测工具本地收尾，不是群管功能验收
+
+- /tmp/gaoji-python-f7-probe-full.log、.revision、.exit一致：b32ff084028482236132fa0d7e20ee152b4ba5d9本机2048项、0失败、10跳过、exit0，1330.411秒。代码tree相同的383563e/PR#86 Linux run43608038613/job132486803554通过2048项/10跳过（653.380秒），Nix/Secret scan通过；旧Windows ACL依旧失败，整体CIconclusion为failure，不声称全绿。
+- UI构建与实际7个React脚本、Ruff/两项导入通过。三个小Draft #84协议/#85引擎/#86CLI已推送，未合并/部署/访问生产；b32ff08不覆盖其后8daa3e4的F10传输和后续消息索引。
+- F7只有独立探测准备/本机验证完成，没有当前Gaoji账号管理员权限、禁言/解除、普通成员撤回的真实报告，moderate仍不开放。用户选择F10→F8先行，测试账号/私有scope与普通参与者由owner另行指定；不通过本地结果或新文档刷新旧权限。
+
 ## 开发记录（2026-11-14）· F7独立探测CLI本地接齐（仍无真实群管验收）
 
 - 独立入口src.qq_official.probe_moderation_cli默认read，mutation须显式选项与一次确认；账号/唯一群/普通成员都从私有scope文件绑定凭据。操作者必须明确independent_test_account/exclusive_moderation=true，终端仅假名/步骤/最大请求数；这不是平台授权证明。不接受任意网络地址，不连接应用运行时、VM或线上tank。
