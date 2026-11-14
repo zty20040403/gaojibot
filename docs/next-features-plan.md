@@ -470,6 +470,8 @@
 
 ### F10 按意思搜历史
 
+**worker接线（2026-11-14）**：账号lease独立后台索引文本/卡片/F1说明，默认仍关闭，无真人/VM权限或QQ发送；每5秒最多4入口/每页128消息、账号最多128在排/执行任务、并发2，原source头等待/正文/保存持续复查，双取消排空真实宿主semantic_index账单并关闭原job。84项PG/分页/背压/真实账号工厂/协议/语义/旧schema/账单/队列组合及静态检查通过，取消defer/头无限等待负例RED。history混合、最新固定全套及真实服务验收尚待；不标F10完成，不部署。
+
 **向量任务底座（2026-11-14）**：复用durable_jobs与semantic_documents，IR+F1说明/服务identity版本去重，原task单次、不恢复旧租约，当前物理reader/账号/route/stop/可见floor/job/内容栅栏与向量写入原子提交；不复制正文。60项PG/原子回滚/lease/alias/说明/语义/embedding/队列/runtime组合通过，3个删门槛/独立提交负对照RED。worker运行与账单来源、history混合尚待接，不能借底座或F7全套标完成。
 
 **第一步（2026-11-14）**：embedding传输批次index/有限非零向量严格校验、4MiB/整次超时/不跳转/不重试、源复查与宿主usage收尾已补；runtime支持显式keyless服务，默认仍关闭。47项本机协议/真实工厂PG/语义/表情/网关账单组合及Ruff/导入通过，先验负例RED；聊天/图片说明worker与history合并尚待，不把底座当功能已完成或真实模型验收。
