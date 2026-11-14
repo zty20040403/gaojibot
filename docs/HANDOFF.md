@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8私有问答等待任务schema（工具/模型待接）
+
+- 0104_conversation_questions只建立原执行/单向link绑定的私有问答任务，复用durable_jobs的question账号种类和固定qqq:hash目标物理lane；队列仅存CQ-ID、不复制问题正文。完整account/source endpoint/actor的原execution复合FK、同账号且同方向link复合FK，初始要求executing/chat/原epoch/route/scope/revision/真实committed证据及一次不重启重试的pending job；不从普通成员推导连接管理权限。
+- 原问题/HMAC、link generation、双方scope/route/generation、双方stop代数及目标budget代数全部冻结；原任务截止不可延长，等待最多7200秒且不超过原deadline。问答正文只在独立私有表，不进history/inbox/普通发送/VM events；queued→running→回答/拒绝或取消/过期/unknown，终态与一次consume不恢复，禁止删后重发/无导出降级。这里只约束存储，实时双端准入/可见性/停止/预算与原current仍须由下一reader/reducer实现，未开放ask。
+- 9项新schema/真实0099→0104旧NULL回执迁移/空回退与审计阻退例及21项F8 link/F6旧库/架构组合通过37.809秒，静态通过。删原actor复合FK、两小时限制、元数据不可变、旧NULL回执门槛的4独立负对照分别1/1/6/1failure RED。初轮resume_on_lease_loss整数列误比bool及异常包装断言已修；旧NULL直接改写被既有activation CHECK拒绝后改为真实旧迁移种子，不削弱约束或触发器。
+- Task38仍in_progress：先接原来源reader/双端current/等待状态机，再ask与目标taint模型/回答拒绝/账单/生命周期，管理页另续。固定e4a2893连接runtime全套在/tmp/gaoji-python-f8-link-runtime-full.*运行，显式PG+ffmpeg/ffprobe，只覆盖该固定快照，不含本0104。既有Windows ACL仍单列；未真实QQ、合并/部署/生产/Java变更，不称F8完成。
+
 ## 开发记录（2026-11-14）· F8真实账号连接控制运行时（ask/UI待接）
 
 - LinkRuntime在实际OfficialRuntime构造RestClient/sender之后、gateway.run之前挂载原认证LinkIngress/LinkNotices/LinkFeedback；先recover关闭旧RAM码，后sender.recover排空真实旧回执，不能在授权组件缺席时提前消费回执。原TxA→一次码/反馈→双边确认及list/status/cancel/unlink走真实账号工厂；默认owner私聊不手工provision、不改变/bind历史。
