@@ -29,7 +29,9 @@ class MessageVectorJobs:
         self.identity = embedding_identity(embedder)
         self.kind = account_job_kind('semantic',token.account_key)
         self.prefix = 'semantic.message.v1:'+self.identity
+        self.page_before = {}
         if backend.schema!=database.schema:raise ValueError('semantic_database_schema_mismatch')
+        if embedder.dimensions!=backend.dimensions or backend.dimensions!=1024:raise ValueError('semantic_dimensions_mismatch')
 
     @contextmanager
     def transaction(self):
@@ -57,16 +59,29 @@ class MessageVectorJobs:
         if scope.account!=endpoint.account:raise PermissionError('semantic_history_account_mismatch')
         return dict(row)
 
-    def endpoints(self):
+    def endpoints(self,*,after='',limit=64):
         with self.transaction() as cursor:
             assert_epoch(cursor,self.token)
             return [EndpointKey.parse(row['endpoint_key']) for row in cursor.execute(
-                'SELECT endpoint_key FROM qq_official_endpoints WHERE account_key=? ORDER BY endpoint_key',
-                (self.token.account_key,)).fetchall()]
+                'SELECT endpoint_key FROM qq_official_endpoints WHERE account_key=? AND endpoint_key>? ORDER BY endpoint_key LIMIT ?',
+                (self.token.account_key,after,min(max(int(limit),1),64))).fetchall()]
 
-    def enqueue(self,endpoint,*,limit=16):
+    def enqueue(self,endpoint,*,limit=16,before=None):
         with self.transaction() as cursor:
             route = self._route(cursor,endpoint)
+            self.page_before.pop(endpoint.key,None)
+            pending = cursor.execute("SELECT count(*) AS n FROM durable_jobs WHERE kind=? AND status IN ('pending','running')",
+                (self.kind,)).fetchone()['n']
+            bounded = min(max(int(limit),1),32,128-pending)
+            if bounded<=0:return []
+            page = cursor.execute('''SELECT m.canonical_message_id FROM messages m JOIN conversations c USING(conversation_id)
+                JOIN conversation_visibility v USING(conversation_id) WHERE c.scope_key=?
+                  AND m.canonical_message_id>=v.min_canonical_message_id AND m.message_kind='chat'
+                  AND m.direction IN ('inbound','outbound') AND (CAST(? AS bigint) IS NULL OR m.canonical_message_id<?)
+                ORDER BY m.canonical_message_id DESC LIMIT 128''',(route['canonical_scope_key'],before,before)).fetchall()
+            ids = [row['canonical_message_id'] for row in page]
+            self.page_before[endpoint.key] = min(ids) if ids else None
+            if not ids:return []
             generation = state(cursor,endpoint)['stop_generation']
             admission = hashlib.sha256((endpoint.key+str((self.token.epoch,route['generation'],route['route_epoch'],generation))).encode()).hexdigest()[:16]
             prefix = self.prefix+':'+admission
@@ -74,7 +89,7 @@ class MessageVectorJobs:
                 FROM messages_with_captions m JOIN conversations c USING(conversation_id)
                 JOIN conversation_visibility v USING(conversation_id)
                 WHERE c.scope_key=? AND m.canonical_message_id>=v.min_canonical_message_id
-                  AND m.message_kind='chat' AND m.direction IN ('inbound','outbound')
+                  AND m.canonical_message_id=ANY(?) AND m.message_kind='chat' AND m.direction IN ('inbound','outbound')
                   AND NOT EXISTS (SELECT 1 FROM semantic_documents d WHERE d.scope_key=c.scope_key
                     AND d.source_type='message' AND d.source_handle='msg#' || m.canonical_message_id::text
                     AND d.embedding_model=? AND d.metadata_json->>'embedding_identity'=?
@@ -82,7 +97,8 @@ class MessageVectorJobs:
                   AND NOT EXISTS (SELECT 1 FROM durable_jobs j WHERE
                     j.idempotency_key=? || ':' || m.canonical_message_id::text || ':' || {REVISION})
                 ORDER BY m.canonical_message_id DESC LIMIT ?''',
-                (route['canonical_scope_key'],self.embedder.model,self.identity,prefix,min(max(int(limit),1),32))).fetchall()
+                (route['canonical_scope_key'],ids,self.embedder.model,self.identity,prefix,bounded)).fetchall()
+            if len(rows)==bounded:self.page_before[endpoint.key] = before
             created = []
             for row in rows:
                 payload = {'endpoint':endpoint.key,'scope':route['canonical_scope_key'],'account_epoch':self.token.epoch,
