@@ -20,7 +20,7 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
     application = base.OfficialTurnEndToEndTests.application
     emit = base.OfficialTurnEndToEndTests.emit
 
-    async def test_off_skips_ingress_and_rapid_restore_never_sends_old_model_or_plan(self):
+    async def exercise(self,*,budget=False):
         app = self.application()
         entered,release,cancelled = asyncio.Event(),asyncio.Event(),asyncio.Event()
         async def completion(*args,**kwargs):
@@ -49,7 +49,12 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.sender.refresh_bound_groups()
                 def configure(value):
                     with runtime.store.transaction() as cursor:
-                        change(cursor,endpoint,'proactive_enabled',value,actor='TEST_ADMIN',now=int(runtime.store.clock()))
+                        change(cursor,endpoint,'daily_budget_usd' if budget else 'proactive_enabled',
+                            ('off' if value else '0') if budget else value,actor='TEST_ADMIN',now=int(runtime.store.clock()))
+                        if budget:
+                            # Isolate classifier/plan fencing from independent
+                            # budget notice delivery.
+                            cursor.execute("UPDATE conversation_budget_days SET notice_state='cancelled' WHERE scope_key=?",(endpoint.scope.key,))
                 async def topic(native):
                     await fake.emit('GROUP_MESSAGE_CREATE',{'id':native,'content':'TEST conversation topic',
                         'timestamp':datetime.now(timezone.utc).isoformat(),
@@ -80,3 +85,9 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
                 # Policy changes cannot erase a real accepted platform receipt.
                 self.assertEqual(self.query('SELECT status FROM deliveries')[0]['status'],'committed')
                 await runtime.stop()
+
+    async def test_off_skips_ingress_and_rapid_restore_never_sends_old_model_or_plan(self):
+        await self.exercise()
+
+    async def test_budget_skips_classifier_and_rapid_restore_never_replays_model_or_plan(self):
+        await self.exercise(budget=True)

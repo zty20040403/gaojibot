@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F9④VM唤醒与主动接话预算栅栏
+
+- /vm/wake独立使用wake认证，原stop/budget双代数在同一宿主账号事务捕获，再做guest核验和HTTP正文读取。慢guest/慢上传期间预算off→on/恢复不能重新授权旧请求；scope持续检查并取消等待中的旧wake，不取消只读、模型外say/file或独立command scope。
+- 每条持久wake固定budget_generation，排队、合并、模型进行中、答案/发送前均穿过既有ProgramExecution来源检查；新预算代数参与next-hour batch key，旧/新批次不混合，次日只允许新工作，不复活旧action或同request_id。主动接话在入站eligibility、classifier current和plan guard检查预算，预算更改仍推进proactive代数，已有真实发送回执不改写。
+- 34项真实本地PG/VM认证/实际HTTP/FakePlatform/执行/队列/主动接话组合通过，Ruff及两项导入检查通过；新覆盖认证前拒绝（没有guest I/O）、慢正文以服务端scope.requests证明已认证后再切预算、模型在途取消、只读和不经模型say仍可用，以及恢复/次日/合并不补跑。与此前45项组合部分重叠；真实VM/QQ/模型未验收。
+- 独立超额通知及预算管理设置/status展示仍未接齐，F9预算不能标完成；固定61f2e51底座全套仍单独跟踪，不覆盖这些后续补丁。没有部署或访问生产。
+
 ## 开发记录（2026-11-14）· F9④预算原生配置与模型入口（局部接线）
 
 - 原生/config加入daily_budget_usd：精确美元字符串、最多6位小数；off/default写NULL关闭，0为明确禁用自动动作。任何人可查，修改仍只接受原认证群主/群管/当前宿主owner或已准入私聊本人。独立budgets资源版本与同事务审计，不把off当只读、不清除/stop。

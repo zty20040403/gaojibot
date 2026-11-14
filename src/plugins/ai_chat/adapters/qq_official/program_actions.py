@@ -7,6 +7,7 @@ import secrets
 
 from .conversation_control import permitted,state
 from .vm_sessions import source
+from ... import daily_budgets
 
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.@-]{0,79}')
 REQUEST = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}')
@@ -67,6 +68,9 @@ class ProgramActions:
         if row.get('source_command_id'):
             from .background_commands import check_notification
             check_notification(cursor,self.sessions,row['source_command_id'],current=current,program=row['program_name'])
+        if row['kind']=='wake':
+            try:daily_budgets.require(cursor,current.endpoint,now=int(self.clock()),generation=row['budget_generation'])
+            except PermissionError as error:raise ProgramDenied(str(error)) from None
         limits = settings(cursor,current.scope_key,row['program_name'])
         if limits['program_wake_limit' if row['kind']=='wake' else 'program_say_limit']==0:
             raise ProgramDenied('program_action_disabled')
@@ -75,7 +79,7 @@ class ProgramActions:
         return current
 
     def reserve(self, current, *, generation, kind, program, request_id, payload, transaction_cursor=None, queue_wake=False,
-                source_command_id=None):
+                source_command_id=None,budget_generation=None):
         if (type(kind) is not str or kind not in {'say','wake','send_file'} or type(program) is not str or NAME.fullmatch(program) is None
                 or type(request_id) is not str or REQUEST.fullmatch(request_id) is None
                 or type(payload) is not dict or type(generation) is not int or generation<0 or queue_wake and kind!='wake'
@@ -98,6 +102,10 @@ class ProgramActions:
             if source_command_id is not None:
                 from .background_commands import check_notification
                 check_notification(cursor,self.sessions,source_command_id,current=current,program=program)
+            budget = 0
+            if kind=='wake':
+                try:budget = daily_budgets.require(cursor,current.endpoint,now=now,generation=budget_generation)
+                except PermissionError as error:raise ProgramDenied(str(error)) from None
             limits = settings(cursor,scope,program)
             row = cursor.execute('SELECT * FROM qq_official_program_actions WHERE endpoint_key=? AND request_id=?',
                 (current.endpoint.key,request_id)).fetchone()
@@ -121,10 +129,10 @@ class ProgramActions:
                 sandbox_id=current.sandbox_id,boot_id=current.boot_id,token_hash=current.token_hash,
                 token_generation=current.token_generation,account_epoch=current.account_epoch,
                 endpoint_generation=current.endpoint_generation,route_epoch=current.route_epoch,
-                conversation_generation=generation,created_at=now,expires_at=now+300,source_command_id=source_command_id)
+                conversation_generation=generation,budget_generation=budget,created_at=now,expires_at=now+300,source_command_id=source_command_id)
             if queue_wake:
                 from .program_wakes import allocate
-                fields.update(allocate(cursor,current,generation,now,encoded,deferred=deferred))
+                fields.update(allocate(cursor,current,generation,now,encoded,deferred=deferred,budget_generation=budget))
             row = cursor.execute('INSERT INTO qq_official_program_actions ('+','.join(fields)+') VALUES ('+
                 ','.join('?' for _ in fields)+') RETURNING *',tuple(fields.values())).fetchone()
             return dict(row),True
