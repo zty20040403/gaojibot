@@ -103,6 +103,24 @@ class LinkManagementTests(fixture.LinkReducerTests):
             self.assertTrue(self.current_edge(second))
             self.manage('/unlink '+second.link_id); self.now += 601
 
+    def test_expiry_during_existing_consent_lookup_never_consumes_new_bilateral_proof(self):
+        original = LinkManagement.current
+        for stale in (False,True):
+            with self.subTest(stale=stale):
+                old = self.active(); self.now += 1
+                if stale:
+                    self.proof(self.message('member')); self.now += 1; self.proof()
+                candidate = self.issue(); self.confirm(candidate); deadline = self.row(candidate)['expires_at']
+                def crosses(instance,*args):
+                    allowed = original(instance,*args); self.now = deadline; return allowed
+                with patch.object(LinkManagement,'current',crosses):
+                    result = self.accepted(candidate,native='TEST_CONSENT_LOOKUP_'+str(stale))
+                self.assertEqual(result.status,'expired')
+                self.assertEqual(self.row(candidate)['delivery_state'],'committed')
+                self.assertEqual((self.edge(old)['state'],self.edge(old)['generation']),('active',1))
+                self.assertEqual(self.query('SELECT * FROM qq_official_conversation_links WHERE challenge_id=?',(candidate.challenge_id,)),[])
+            self.manage('/unlink '+old.link_id); self.now += 601
+
     def test_route_membership_and_missing_receipt_are_not_durable_consents(self):
         result = self.active(); row = self.row(result)
         with patch.object(self.reducer,'get',return_value=dict(row)|dict(delivery_receipt_hash=None)):
