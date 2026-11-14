@@ -1,6 +1,6 @@
 # F8 双边连接与跨会话问答
 
-状态（2026-11-14）：连接存储、可撤销权限证据、独立敏感输入隔离、纯双边reducer、原入站/单次发行计划schema、可选原认证TxA及一次ephemeral发送/实际账本取证已建立；定向管理已接可选TxA，独立控制回复与真实账号工厂尚待接，未开放 `/link` / `ask`，未真实QQ验收或合并/部署。权威功能要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
+状态（2026-11-14）：连接存储、可撤销权限证据、独立敏感输入隔离、纯双边reducer、原入站/单次发行计划schema、可选原认证TxA及一次ephemeral发送/实际账本取证已建立；定向管理与独立原回复证据已接可选TxA，一次控制反馈发送与真实账号工厂尚待接，未开放 `/link` / `ask`，未真实QQ验收或合并/部署。权威功能要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
 
 ## 连接不是身份映射
 
@@ -19,6 +19,7 @@
 - 新挑战的最终双边current/期限检查必须在已有边持久同意查找之后；旧查找跨期限时不能误报already_linked，更不能用先前时间激活新边。到期保留发行事实，仅关闭新挑战；旧边不因新请求过期而撤销。
 - 纯LinkReducer只实现账号锁中的create/confirm/一次HMAC/双边证明/发行状态转换：持久独立限流、最多20个live挑战及8次随机避碰，确保有界查询包含所有可能验证码。快速确认未核实发行不能激活，最终current之后再次核实期限且以同一受检时间写激活。原认证TxA与LinkNotices发送/实际账本取证已接，定向取消/撤边/查询已接可选TxA，控制回复及真实账号工厂仍待接，不能视为link已开放。
 - 0100把真实发行回执与授权终态分开：迟到committed可在取消/过期后一次补记HMAC/原宿主收到时间，但不能恢复码/目标/授权。新增激活/连接要求回执证据；旧无证据active只保留审计，不猜成功、不授予新的访问。LinkNotices只从实际发送账本的applied response回执保存发行事实；组件已用loopback FakePlatform验收，真实QQ仍待验收。
+- 0102独立每inbox一条控制结果/来源快照：不保存原文或验证码，绑定原actor/回执/epoch/route/原600秒与结果HMAC，不可更新/删除。当前原权限/准入及真实gateway control回执在读取和末尾期限检查中复核；list只用授权散列标签，无权限只准空结果的通用拒绝，不降格泄露。一次ephemeral反馈计划和实际账号工厂另接；不能把存储证明当作发出回复。
 - 0101独立link_otp原source_inbox_id/notice_plan_id：5字段FK绑定原入站账号/物理端点/actor/HMAC回执，原native/event/platform/收到时间不可换；单挑战至多一个原端点/requester发行plan。已接LinkNotices原码/原来源验证、enqueue/claim/sender/TxA；真实账号工厂未挂载前不开放发码，旧来源NULL不补猜，已有新审计禁止无导出回退。
 - 验证码与输入参数不进入 raw inbox、canonical history、LLM、普通发送账本或审计明文。独立 link namespace 与敏感隔离已接入归一化/TxA/普通router/旧误分类TxB；服务未接齐时明确 `link_control_unavailable`，不落回普通消息。提及伪造或嵌入敏感命令仅隔离，不授予权限。
 - 所有状态在 account 锁下提交；DB 用复合 FK 拦跨账号，两个认证确认固定来源。迁移不补猜旧链接；已有连接/挑战审计阻止无导出降级。
