@@ -116,8 +116,8 @@ class LinkFeedbackTests(fixture.LinkNoticeTests):
         self.assertEqual((await self.sender.send_delivery(self.queue())).status,'committed')
         self.assertTrue(self.query('SELECT stopped FROM conversation_settings')[0]['stopped'])
 
-    async def test_component_private_owner_uses_own_original_window_and_regrant_does_not_revive_feedback(self):
-        private = EndpointKey(self.account,'private','TEST_FEEDBACK_OWNER'); self.provision(private)
+    async def test_default_private_owner_feedback_uses_own_window_and_regrant_does_not_revive(self):
+        private = EndpointKey(self.account,'private','TEST_FEEDBACK_OWNER')
         self.input.apply_configuration(self.token,(private.native_conversation_id,))
         delivery = self.queue(endpoint=private)
         self.dispatch('TEST_LATER_PRIVATE_MESSAGE',endpoint=private)

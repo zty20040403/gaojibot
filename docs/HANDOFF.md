@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8默认私聊入口与未核实主动窗口修补
+
+- 实际新C2C入站未手工provision：默认owner的private endpoint为unbound，旧LinkAuthority误当作未准入，原发行断言稳定RED（denied而非sending）。仅允许private/unbound/原物理canonical scope/present读口，owner grant与私聊准入照常核验；不启用历史绑定、不放开unbound群、public peer、revoked或unbound外部历史。
+- 权限修正后仍稳定RED：默认private主动状态unknown，却先主动POST并获proactive_denied，不能以重试/回退补发。一次link控制在主动尚未明确allowed时首选原认证msg_id窗口；普通/程序/预算发送不变，已明确allowed仍按原规则一次尝试。最终原入站/实际RestClient+loopback FakePlatform私聊发行与反馈通过，endpoint保持unbound。
+- 3项新默认入口/群与peer拒绝/revoked与foreign-scope例，既有private反馈改为无手工provision；104项F8/F6/预算/sender/旧schema组合通过161.561秒及静态检查。原权限与默认窗口两RED→GREEN，删除private物理scope匹配的独立负对照1failure RED；未放宽断言/重试或借后来消息。
+- Task37仍须真实账号工厂/dispatch/monitor/recover/close；此处只验实际store默认入口，未挂生产factory或开放产品link。旧3912652的全套仍运行；其PR#103 Linux run43639867618/job132584830795已核验2182项、0失败、10跳过、772.539秒，/tmp/gaoji-f8-feedback-schema-linux.log。Nix/Secret通过，既有Windows仍失败；该快照不含420dfd2反馈或此默认入口修补。未QQ实测、合并/部署/生产/Java变更。
+
 ## 开发记录（2026-11-14）· F8实际单次控制反馈组件（账号工厂待接）
 
 - LinkFeedback从0102冻结原控制结果生成安全反馈，不从原输入或当前对端补猜；同原inbox只建一条0103 ephemeral plan，RAM正文/磁盘空body与HMAC，不借bind/ops/普通发送。enqueue/source/current验证原账号、端点、actor、epoch/route、原gateway回执、权限revision及准入；body与冻结结果精确匹配，不能换正文或原native窗口。
