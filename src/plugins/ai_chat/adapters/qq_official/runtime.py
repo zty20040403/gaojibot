@@ -120,6 +120,7 @@ class OfficialRuntime:
         self.migration_factory, self.migration_service = migration_factory, None
         self.background_factory, self.background_service = background_factory, None
         self.admin_identity_service = None
+        self.link_service = None
         self.approval_factory = approval_factory
         self.media_factory = media_factory
         self.media_service = None
@@ -366,6 +367,8 @@ class OfficialRuntime:
                 await run_inbox(accepted.inbox_id, accepted.ingested)
             if self.sender is not None:
                 self.sender.wake()
+            if self.link_service is not None:
+                await self.link_service.consume(accepted)
             if accepted.approval is not None and self.approval_service is not None:
                 await self.approval_service.consume(accepted.approval)
             if accepted.binding is not None and accepted.binding.effect is None and self.sender is not None:
@@ -490,6 +493,8 @@ class OfficialRuntime:
                 if self.agent_service is not None and loop.time() >= next_result_scan:
                     await self.agent_service.reconcile()
                     next_result_scan = loop.time() + 5
+                if self.link_service is not None:
+                    await self.link_service.maintain()
                 if self.migration_service is not None:
                     await self.migration_service.maintain()
                 if self.file_service is not None and loop.time() >= next_file_scan:
@@ -530,6 +535,11 @@ class OfficialRuntime:
                 self.sender = OfficialSender(self.loaded.account, token, self.outbox, rest, self.ledger,
                     journal=self.journal, database_calls=self._calls, observer=self.observer,
                     ensure_current=lambda: self._ensure_current(token))
+                from .link_runtime import LinkRuntime
+                links = LinkRuntime(self,token)
+                resources.push_async_callback(links.close)
+                await links.attach()
+                self.link_service = links
                 await self.sender.recover()
                 await self.sender.refresh_bound_groups()
             if self.approval_factory is not None and self.sender is not None:
