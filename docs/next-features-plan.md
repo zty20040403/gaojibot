@@ -412,6 +412,8 @@
 
 **认证证据准备（2026-11-14）**：0099/LinkAuthority以无正文的原顶层角色与平台时间记录观察，角色/路由代数、原owner grant/revision、完整actor/account/原时间HMAC防旧权限恢复；lookup跨截止负例RED→GREEN，32项PG/迁移/旧链路组合通过，三个删除保护负对照各RED。仅反映已观察的群角色，不冒充实时QQ权限查询；TxA、link码投递与ask未接，未完整全套/真实验收/部署。
 
+**问答来源读口（2026-11-14）**：QuestionAuthority只捕获原实际executing/chat ExecutionBinding的完整account/endpoint/actor/epoch/scope/route/revision/deadline/native/canonical；普通caller不继承建边owner/群管身份。重试稳定intent HMAC用于去重，current核实际不可变question行而非调用方修复的stop/budget/期限/终态，再复查原准入/执行、单向同账号双端同意/物理路由/stop、目标只读预算与最终期限，target_input只给问题和散列来源标签。12新真实PG例及43项来源/schema/连接实际factory/F6旧库/架构组合通过，5独立负对照各1failure RED，静态通过。只是纯组件，等待状态机/ask/目标taint模型/账单/管理页另续，Task38仍in_progress，未新增QQ效果或部署。连接runtime固定e4a2893本机/等价958b0cf Linux全套2207项通过/10跳过，Nix/Secret通过，旧Windows仍失败；该固定结果不含0104或来源读口，不称全部CI绿。
+
 **私有等待schema（2026-11-14）**：0104独立私有问答表绑原executing/chat execution的完整account/endpoint/actor及单向link复合FK；固定原epoch/route/scope/revision/原deadline，双方stop和目标budget代数不可改，最多7200秒且不超原任务。复用durable_jobs的question账号kind/fixed目标hash lane，body不进队列/history/QQ；只许一次单向状态/consume，不删后重发，有审计须导出。9项新PG/schema/旧0099 NULL回执真实迁移/回退例及21项组合与静态通过，actor/7200秒/immutable/receipt四独立负对照RED。只是schema；原current/双端准入可见性及停止预算reader、reducer、ask/目标模型/管理页另续，Task38保持in_progress，不称功能已开放或F8完成；未QQ/合并/部署/生产/Java。
 
 **真实账号连接控制（2026-11-14）**：OfficialRuntime在gateway.run前挂LinkRuntime/原TxA/一次发行/控制反馈/定向管理，先关闭旧RAM授权再sender.recover保留旧applied事实，退出先drain发送再关闭未消费码/清authority。独立32任务与每5秒20+1 live检查，busy/取消/失权/到期不重放；默认private owner不改变/bind历史。6新实际factory/gateway/TxA/RestClient+FakePlatform例及115项F8/原runtime/F6/预算/旧schema组合通过，3个挂载/回执恢复顺序/shutdown旧码门槛负对照RED。本地连接控制已接，不是F8整体完成或QQ验收；ask/目标taint模型/账单及管理页另续。旧3912652 schema本机/Linux全套2182项通过/10跳过、exit0，不覆盖后续反馈/默认入口/此运行时，旧Windows失败仍在；未合并/部署/生产/Java。

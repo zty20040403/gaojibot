@@ -18,7 +18,9 @@ class QuestionFixture(ExecutionFixture):
         self.auth = LinkAuthority(b'TEST_QUESTION_AUTHORITY_PEPPER_1234567',clock=lambda:self.now)
         self.reducer = LinkReducer(self.auth); self.target = EndpointKey(self.account,'group','TEST_QUESTION_TARGET'); self.provision(self.target)
         def command(text,endpoint):
-            message = authority_fixture.LinkAuthorityTests.message(self,endpoint=endpoint,content=text)
+            author = ({'author':{'member_openid':self.link_approver,'member_role':'admin'}}
+                if endpoint.kind=='group' and getattr(self,'link_approver',None) else {})
+            message = authority_fixture.LinkAuthorityTests.message(self,endpoint=endpoint,content=text,**author)
             with self.tx() as cursor:
                 self.auth.observe(cursor,self.token,message)
                 return self.reducer.apply(cursor,self.token,message,parse_link_command(text))
