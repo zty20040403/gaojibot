@@ -24,6 +24,7 @@ PAGE_ROUTES = (
     ("POST", "/api/deliveries/{delivery_id}/retry"),
     ("POST", "/api/deliveries/{delivery_id}/cancel"),
     ("GET", "/api/usage"),
+    ("GET", "/api/model-costs"),
     ("GET", "/api/tasks"),
     ("GET", "/api/background-agents"),
     ("GET", "/api/background-commands"),
