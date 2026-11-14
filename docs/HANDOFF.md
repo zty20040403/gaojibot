@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8一次持久问答reducer（实际worker/模型/ask待接）
+
+- Questions只提供私有submit/claim/current/respond/consume/close/recover：原来源capture后按稳定intent HMAC账号事务去重，限定live每账号128/目标16/原任务4；查重/限额后重新capture，不延长原截止。队列仅CQ-ID与固定目标hash lane，max_attempts1/resume0；并发同请求只创建一条。它不挂QQ/VM/history/model或前台工具，不把持久排队当作实际唤醒。
+- 实际目标job的完整kind/lane/payload/id、原owner/lease_generation、有效lease和第一次generation/attempt必须匹配；领取前、模型current及答复前再次查原来源/双端current和最终lease/期限。无权伪造目标worker或用源ExecutionBinding回答；旧任务被defer/requeue后不能取得新的模型调用。queued/running到回答/拒绝或取消/expired/unknown单向，不明在途与restart保留unknown，超时统一expired；终态不变、消费只许原来源binding且一次，超时未消费不改已有回答事实。
+- 关闭及回答/拒绝与durable_jobs终态同事务，队列result只存CQ-ID、不存问答正文；显式关闭阻止worker取消路径defer把原请求复活，监测到已defer的在途任务也关闭unknown。新account恢复有界关闭旧queued/running，已完成事实不改，旧epoch不能消费或重答。原来源与费用收尾/实际HTTP取消仍须未来worker接线，不能把纯状态机当作已验收运行时。
+- 14项新增真实PG/实际queue并发去重、普通caller、原worker/代数/目标lane、延迟到期、最终lease跨界、双端停止/预算恢复、一次回答拒绝/消费、defer/requeue/restart及public表无正文回归；46项reducer/来源/schema/连接真实factory/F6旧库/架构组合通过48.489秒，Ruff/导入/diff通过。删目标worker证明、关闭queue终态、答复末尾lease、消费原binding的四独立负对照分别2/1/1/3failure RED。
+- Task38仍in_progress：实际账号question worker/原来源监测与取消、目标taint上下文/同ask回答拒绝/真实费用、前台ask及管理页另续，然后新固定全套。既有e4a2893 runtime2207和0104 schema2216全套不覆盖来源读口或本reducer；Windows既有ACL失败仍单列。未真实QQ、合并/部署/生产/Java变更，不称F8整体完成。
+
 ## 开发记录（2026-11-14）· F8原问答来源与双端current读口（等待状态机/ask待接）
 
 - QuestionAuthority仅接宿主原ExecutionBinding：原executing/chat、完整account/endpoint/actor及epoch/scope/route/revision/deadline/native/canonical与实际执行记录匹配，源当前准入与stop不可绕过；只读同账号本物理源的已授权单向link，复核双边持久同意。普通提问成员无需也不继承建边管理员/owner权限，测试将二者设为不同actor。
