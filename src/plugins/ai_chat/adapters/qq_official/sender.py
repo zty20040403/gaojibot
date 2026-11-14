@@ -198,7 +198,7 @@ class OfficialSender:
                 return await self._calls(self.outbox.fail, self.token, delivery_id, 'token_unavailable')
             program = row.get('program_action_id') is not None
             budget_notice = row.get('budget_notice_day') is not None
-            link_notice = row['purpose']=='link_otp'
+            link_notice = row['purpose'] in {'link_otp','link_feedback'}
             credential = await self._credential(endpoint, route,proactive_only=program or budget_notice,
                 original_native_id=row['reply_to_native_message_id'] if link_notice else None)
             if credential is None:

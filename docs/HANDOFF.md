@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8实际单次控制反馈组件（账号工厂待接）
+
+- LinkFeedback从0102冻结原控制结果生成安全反馈，不从原输入或当前对端补猜；同原inbox只建一条0103 ephemeral plan，RAM正文/磁盘空body与HMAC，不借bind/ops/普通发送。enqueue/source/current验证原账号、端点、actor、epoch/route、原gateway回执、权限revision及准入；body与冻结结果精确匹配，不能换正文或原native窗口。
+- sender/prepare/HTTP前检查覆盖link_feedback；被动发送只用原msg_id，401/429/主动拒绝均一次，不重试/不plain，底层fail也拦重发。计划队列最多30秒，丢RAM/到期/旧租约/撤权重授不恢复；聊天stop不清除，显式控制反馈可用。已accepted后的撤权/重复取消仍排空真实回执，发送账本保留command空正文，不把排队当实发。32条含大版本的反馈遵守2000字单条限制，显示不下时明确剩余未显示，不静默截断。
+- 16项实际TxA/RestClient+loopback FakePlatform新例及117项F8/F6/预算/程序/sender/旧schema/迁移/架构组合通过165.473秒；Ruff/导入/diff通过。删除原窗口选择、HTTP前current、RAM正文匹配的3个独立负对照各1failure RED。私聊owner例是组件手工provision，不冒充真实默认入口或工厂验收。
+- 真实account factory/on_dispatch/monitor/recover/close仍待接；Task37 in_progress，产品link仍未开放，ask/UI另续。固定3912652的schema全套仍运行，PR#103 Linux已通过但尚未核验完整计数；此前4471365发行2156项通过不覆盖本组件。未真实QQ、合并/部署/生产/Java变更，既有Windows ACL仍失败，不称全部CI绿色。
+
 ## 开发记录（2026-11-14）· F8控制反馈单次计划schema（enqueue/sender待接）
 
 - 0103_link_feedback只扩展独立ephemeral反馈种类：每原0102控制结果最多一个plan；复合FK固定原完整账号/端点/requester，不借bind/ops。原scope/route/generation/收到时间及源截止必须匹配，排队最长30秒，不能带canonical消息或turn；计划来源/内容不可更新或删除，禁止删计划后以同原输入重发。

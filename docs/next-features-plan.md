@@ -414,6 +414,8 @@
 
 **敏感输入准备（2026-11-14）**：独立LinkCommand与原认证TxA/普通router/旧误分类TxB隔离已接，不让未开启link服务把验证码存入raw/canonical/model/普通执行。72项PG/原收件/bind/ops/权限组合通过、边界与独立删隔离负对照RED；当前仍明确link_control_unavailable，未发行连接码或开放ask/管理页，Task37继续实现确认/真实回执。
 
+**实际单次反馈组件（2026-11-14）**：LinkFeedback只从冻结原控制结果生成ephemeral反馈，原native/actor/权限/epoch/route及RAM正文在enqueue、claim和HTTP前复查；每inbox一次，401/429/主动拒绝/底层retry/plain不重发，丢RAM/旧租约/撤权重授不恢复。真实accepted回执在迟到撤权或双取消后保留，普通账本空command；2000字单条不足时明确未显示结果。16项新实际PG/TxA/RestClient+FakePlatform例及117项F8/F6/预算/程序/sender/迁移组合通过，3个原窗口/HTTP前current/RAM内容负对照RED。真实账号工厂/入口/monitor/recover/close待接，私聊仍需验真实默认unbound入口，不称link开放或QQ验收；ask/UI另续。
+
 **反馈单次计划schema（2026-11-14）**：0103每原控制结果一个独立ephemeral link_feedback，复合FK固定原account/endpoint/requester；scope/route/原期限和30秒队列限制，来源/内容不可改删。旧四个发送约束空增量回退逐字恢复，保留原结果；已有计划须导出。73项PG F8/F6/迁移组合及静态通过，原actor/30秒/不可变三负对照RED；实际enqueue/RAM/claim/sender/factory待接，不称已回复或功能完成。
 
 **原控制回复证据（2026-11-14）**：0102每inbox一条不可改/删的安全结果，绑定原认证actor/回执/epoch/route/600秒与结果HMAC，不留原文/码。可选TxA捕获；source复核实际gateway及原权限/准入/末尾截止，不借后来消息，重启不复活。无权限只给空引用/列表的通用拒绝。68项PG/原TxA/管理/发行/F6/迁移组合通过，四原回执/时钟/权限降格/不可变负对照RED；一次反馈计划/发送和账号工厂未接，ask/UI另续，不称/link开放或真实验收。
