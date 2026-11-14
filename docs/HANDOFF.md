@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F10完整快照本地/ Linux收尾
+
+- 固定0505f22938da12363052f57a7d0d6f9f6d29eb21的PostgreSQL+显式ffmpeg/ffprobe全套2096项、0失败、10跳过、exit0，1533.222秒；/tmp/gaoji-python-f10-full.log、.revision、.exit一致。涵盖F10传输、消息/F1说明索引和history混合入口，不代表真实embedding或QQ验收。
+- 等价tree的Draft PR#91（4e675be899acc9d760e768cb8f662e252a3f97c3）Linux run43621650752/job132528450180同为2096项、10跳过，714.163秒；日志/tmp/gaoji-f10-history-linux-ci.log。Nix/Secret通过，79项针对性/静态/前端构建/7脚本亦通过。Windows旧ACL仍1失败/2错误（note12），相关源码未改，不能称总体CI绿色；本记录只改文档。
+- F10本地实现/固定全套完成，未合并或部署。接下来按用户选择推进F8；F7仍等待私密独立测试scope，不开放moderate。真实QQ/VM/模型验收与全部功能综合收尾仍在task9，不改Java或tank。
+
 ## 开发记录（2026-11-14）· F10 history混合入口本地接线
 
 - 原history参数/读取形状不变；启用时查询embedding与字面/F1说明候选等权RRF合并去重，最终从当前可见canonical IR投影。默认关闭保留字面；启用但宿主来源/服务失败明确报错，不静默回退。补未来日期空区间，字面搜索也可找到F1说明。
