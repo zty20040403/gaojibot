@@ -24,6 +24,7 @@ import { BillingView } from './BillingView'
 import { HostAPIAudit } from './HostAPIAudit'
 import { CommandsPanel } from './CommandsPanel'
 import { BrowserPanel } from './BrowserPanel'
+import { BudgetsPanel } from './BudgetsPanel'
 import { LocalModelPanel, ModelRouteSummary } from './LocalModelPanel'
 import {
   DataTable,
@@ -153,7 +154,7 @@ export function GroupsView({ plane }: { plane: Plane }) {
   const setUserEffort = (groupId: number, userId: number, effort: string) => plane.mutate('groups', `/group-models/${groupId}/users/${userId}/reasoning-effort`, 'PUT', { effort: effort || null }, ['groups', 'overview'])
   return (
     <>
-      <PageHeader title="模型、群与用户" description="统一调配群友模型，同时保留管理员个人配置" action={<RefreshButton loading={plane.loading.has('groups') || plane.loading.has('conversations')} onClick={() => void plane.refreshMany(['groups', 'conversations'])} />} />
+      <PageHeader title="模型、群与用户" description="统一调配群友模型，同时保留管理员个人配置" action={<RefreshButton loading={plane.loading.has('groups') || plane.loading.has('conversations') || plane.loading.has('budgets')} onClick={() => void plane.refreshMany(['groups', 'conversations', 'budgets'])} />} />
       <LocalModelPanel plane={plane} />
       <Section title="会话启停" description="停止后仍记录消息，但取消在途回复与后台任务；恢复不补发旧结果。主动接话开关仍需宿主启用分类器，不恢复已停止会话，不影响正常@回复。">
         <DataTable><thead><tr><th>会话</th><th>类型</th><th>状态</th><th>主动接话</th><th>操作</th></tr></thead><tbody>
@@ -167,6 +168,7 @@ export function GroupsView({ plane }: { plane: Plane }) {
         </tbody></DataTable>
         {!rows(plane.data.conversations?.items).length && <EmptyState>尚无可控制的 QQ 会话</EmptyState>}
       </Section>
+      <BudgetsPanel plane={plane} />
       <BrowserPanel plane={plane} />
       <Section title="可用模型" description="密钥只在服务端使用，控制台不会返回凭据">
         <div className="model-strip">
