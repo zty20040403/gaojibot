@@ -3,12 +3,14 @@ import hmac
 
 from .linking import LinkReducer
 from .link_management import LinkManagement
+from .link_replies import LinkReplies
 from .lease import assert_epoch
 
 
 class LinkIngress:
-    def __init__(self,authority):
+    def __init__(self,authority,*,admission=None):
         self.authority = authority; self.reducer = LinkReducer(authority); self.management = LinkManagement(self.reducer)
+        self.replies = LinkReplies(self,admission)
     def __repr__(self):return 'LinkIngress(<protected authority>)'
     def apply(self,cursor,token,message,command):
         if command.action in {'create','confirm'}:return self.reducer.apply(cursor,token,message,command)
@@ -31,6 +33,7 @@ class LinkIngress:
             if challenge is None or challenge['source_actor_key']!=message.actor.key or not hmac.compare_digest(challenge['source_receipt_hash'],receipt):
                 raise ValueError('link_original_challenge_mismatch')
             cursor.execute('UPDATE qq_official_link_challenges SET source_inbox_id=? WHERE challenge_id=?',(inbox_id,decision.challenge_id))
+        self.replies.capture(cursor,token,message,inbox_id,decision)
 
     def source(self,cursor,token,row):
         """One original gateway receipt, not a later convenient reply window."""
