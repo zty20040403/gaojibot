@@ -11,6 +11,7 @@ import secrets
 import time
 
 from .billing_sources import metadata
+from . import daily_budgets
 from .model_pricing import ModelPricing
 from .model_usage import TokenUsage
 from .platform_types import ActorKey,EndpointKey
@@ -58,6 +59,8 @@ class ModelBilling:
             with self.transaction() as cursor:return self.begin(source,profile,transaction_cursor=cursor)
         cursor = transaction_cursor
         if not isinstance(source,BillingSource):raise ValueError('billing_requires_host_source')
+        if source.purpose in {'proactive','program_wake'}:
+            daily_budgets.require(cursor,source.endpoint,now=int(self.clock()))
         if source.background_job_id is not None:
             job = cursor.execute('SELECT endpoint_key,actor_key FROM background_jobs WHERE job_id=?',
                 (source.background_job_id,)).fetchone()
@@ -84,12 +87,22 @@ class ModelBilling:
     def finish(self,call_id,usage):
         if not isinstance(usage,TokenUsage):raise ValueError('billing_requires_provider_receipt')
         with self.transaction() as cursor:
+            origin = cursor.execute('SELECT endpoint_key FROM model_usage_calls WHERE call_id=?',(call_id,)).fetchone()
+            if origin is None:return False
+            endpoint = EndpointKey.parse(origin['endpoint_key'])
+            # Account precedes receipt/day locks, matching native config/admission.
+            # Even a previously-disabled budget may be enabled during this receipt.
+            cursor.execute('SELECT account_key FROM qq_official_accounts WHERE account_key=? FOR UPDATE',(endpoint.account.key,))
             row = cursor.execute('SELECT * FROM model_usage_calls WHERE call_id=? FOR UPDATE',(call_id,)).fetchone()
-            if row is None or row['finished_at'] is not None:return False
+            if row['finished_at'] is not None:return False
             pricing = ModelPricing.from_mapping(json.loads(row['pricing_json'])) if row['pricing_json'] else None
             quote = usage.quote(pricing)
             cursor.execute('''UPDATE model_usage_calls SET input_tokens=?,output_tokens=?,cached_tokens=?,cache_write_tokens=?,
                 cost_usd=?,cost_complete=?,finished_at=? WHERE call_id=?''',
                 (usage.input_tokens,usage.output_tokens,usage.cached_tokens,usage.cache_write_tokens,
                  quote.usd,quote.complete,max(int(self.clock()),row['started_at']),call_id))
+            enabled = cursor.execute('SELECT daily_budget_usd FROM conversation_settings WHERE scope_key=?',
+                (endpoint.scope.key,)).fetchone()
+            if enabled is not None and enabled['daily_budget_usd'] is not None:
+                daily_budgets.refresh(cursor,endpoint,now=int(self.clock()))
             return True
