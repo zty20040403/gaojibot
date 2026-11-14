@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8受控目标worker与独立真实用量来源（模型/factory/ask待接）
+
+- 先固定问答提示/执行器契约：QuestionTarget只给目标物理endpoint/冻结history scope/CQ-ID/问题/散列来源标签/current，问题用quote_evidence转义且不是真人权限、无源actor/窗口/owner/VM/文件；提示限定目标可见内容、隐私可拒绝、不能自动QQ，普通文本不是已提交回答。QuestionDecision仅候选，执行器排空后由Questions.respond最终授权再存；真正history/同ask工具白名单及模型路由还待接，不能把测试注入executor当实际模型已运行。
+- QuestionWorker组件复用实际账号question队列、并发2/目标1，模型等待期间持续current；source/target stop-start、已观察角色撤权/预算/期限/lease变化立即取消原等待而非只在模型返回后拒绝。等待task只cancel一次并shield/drain，双取消必须先排空同一socket/账单，再显式question/queue终态，不能让通用defer复活。执行器失败不把问题或地址写进通用队列异常/日志，来源已关闭/未知在途明确关闭，不猜答复。
+- BillingSource独立conversation_question且必须无真人/turn/后台agent/程序归因；真实运行的同账号/目标question与原第一代job核验后仅冻结CQ-ID/job-ID十进制字符串到既有不可变source_metadata_json，无新表/正文复制。账单归目标物理会话/请求时单价，真实usage收尾后预算crossing保留费用但关闭旧答案；F9后台任务维度单列会话问答、不冒充agent/程序/源人。
+- 当前11项真实PG/队列/Gateway+注入executor回归通过12.596秒；最终63项worker/来源/reducer/账单/API/F6旧库/架构组合180.314秒通过，静态检查另独立完成。删current轮询、等待shield、显式queue关闭、问答独立账单来源门槛的4独立负对照分别1/1/1/4failure RED。最初source stop后的重新submit误期待可用，改为原ExecutionFenceLost拒绝，未修复原binding；role分支从for/break漏测改为实际DecodedMessage/auth.observe独立等待撤权例，task39完成。
+- Task38仍in_progress：组件尚未挂实际OfficialRuntime question factory/worker，不开放前台ask；下一目标模型/本端history/同ask回答拒绝、source工具、恢复与shutdown、管理页和新固定全套。旧2207/2216全套不覆盖此worker，Windows既有ACL失败仍单列；未真实QQ/模型验收、合并/部署/生产/Java变更，不称F8整体完成。
+
 ## 开发记录（2026-11-14）· F8一次持久问答reducer（实际worker/模型/ask待接）
 
 - Questions只提供私有submit/claim/current/respond/consume/close/recover：原来源capture后按稳定intent HMAC账号事务去重，限定live每账号128/目标16/原任务4；查重/限额后重新capture，不延长原截止。队列仅CQ-ID与固定目标hash lane，max_attempts1/resume0；并发同请求只创建一条。它不挂QQ/VM/history/model或前台工具，不把持久排队当作实际唤醒。
