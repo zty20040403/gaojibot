@@ -35,6 +35,7 @@
 
 - 验证码/管理命令的600秒期限与已成边的持久同意分开。LinkManagement.current仅对active且有真实committed证据的边验证双方冻结的权限凭证和物理路由；已消费码不会因重启而恢复，但正常已成边可跨lease epoch保留。已观察的撤权/重授、成员/路由/密钥变化或旧NULL回执使旧同意失效，不向远端继承原actor身份。新双边证明必须建新边，不能借旧ID复活等待请求。
 
+- 0104私有question任务schema已建立，复用durable_jobs且队列只保存CQ-ID；完整source execution/account/endpoint/actor与定向link复合FK，原epoch/route/scope/revision/deadline及双方stop/目标budget代数冻结。等待最长7200秒且不超原任务；回答/拒绝或取消/过期/unknown终态及一次consume不可恢复/删除。它只证明结构，原来源/双端current reader、状态机、ask与目标模型仍待接，不自动创建/读取问答或增加QQ效果。
 - `ask` 提交有限长度的问题，立即返回独立等待任务编号；截止不超过两小时，使用原 source current。无连接和不存在的目标统一拒绝，不枚举他人会话。
 - B 只收到问题及安全的来源会话标签，不收到 A 的历史、记忆、文件、原 actor 的 owner/群管授权或被动回复窗口。B 的模型/历史/账单归 B 的物理会话；跨会话来源须独立 taint，不能冒充真人或常驻程序。
 - 目标按自身规则回答或拒绝；来源及问题作为 untrusted 资料进入易变上下文。不得挂载需要原 owner 真人私聊的 ops、浏览器个人授权、文件/VM 权限等工具。连接不放开 VM 的跨会话接口，也不复制另一台 `/work`。
