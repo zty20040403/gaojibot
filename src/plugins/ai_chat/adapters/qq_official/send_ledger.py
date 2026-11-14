@@ -33,7 +33,7 @@ def record_receipt(cursor, reservation, body, now):
 
 def _canonical_body(delivery):
     if delivery["payload_mode"] == "ephemeral":
-        if delivery["purpose"] not in {"binding_otp", "approval_otp", "ops_approval", "link_otp"} or delivery["body_json"] != '{"v":1,"nodes":[]}':
+        if delivery["purpose"] not in {"binding_otp", "approval_otp", "ops_approval", "link_otp", "link_feedback"} or delivery["body_json"] != '{"v":1,"nodes":[]}':
             raise OutboxInvariantError("invalid_ephemeral_body")
         return MessageBody()
     try:
