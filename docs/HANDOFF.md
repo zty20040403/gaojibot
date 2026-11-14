@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8真实账号连接控制运行时（ask/UI待接）
+
+- LinkRuntime在实际OfficialRuntime构造RestClient/sender之后、gateway.run之前挂载原认证LinkIngress/LinkNotices/LinkFeedback；先recover关闭旧RAM码，后sender.recover排空真实旧回执，不能在授权组件缺席时提前消费回执。原TxA→一次码/反馈→双边确认及list/status/cancel/unlink走真实账号工厂；默认owner私聊不手工provision、不改变/bind历史。
+- 每账号最多32个独立控制任务（不借普通模型ConversationTasks），busy/失败/取消关闭未发行挑战；monitor每5秒最多20+1 live检查，异常超量明确报错，授权/期限失效关闭码。退出先drain sender，再取消/drain独立任务、关闭未消费码和清authority；旧码不能随下一epoch重授。已active持久边与真实committed发行事实不被shutdown当成未发生。
+- 6项新增实际账号factory+gateway+TxA+RestClient/loopback FakePlatform覆盖双私聊owner定向确认/列表/撤销且body-free、领取后撤owner、busy/monitor expiry、退出前未prepare、已发行未消费的shutdown/restart拒绝、真实旧captured未applied回执新epoch保留fact不恢复码。115项运行时/F8/F6/预算/旧schema/架构组合通过121.379秒，静态通过。删factory挂载、把sender recovery放在attach之前、删shutdown旧码关闭的3个独立负对照各1failure RED。
+- 核验旧schema快照3912652cd189228c94cea150b4b4fade20210f52：隔离PG+ffmpeg/ffprobe本机全套2182项、0失败、10跳过、exit0、1867.148秒；日志/revision/exit一致(/tmp/gaoji-python-f8-feedback-schema-full.*)。PR#103 Linux同2182项/10跳过772.539秒，Nix/Secret通过；既有Windows ACL仍失败，不称全部CI绿色。此旧全套不含反馈420dfd2、默认入口ebcd917或本运行时。
+- Task37连接控制本地接齐，未真实QQ验收或生产开放/合并/部署/Java修改；F8不是整体完成。下一步独立ask等待任务及目标taint模型/回答拒绝/停止预算与账单、管理台，然后新固定完整快照，真实环境仍task9。
+
 ## 开发记录（2026-11-14）· F8默认私聊入口与未核实主动窗口修补
 
 - 实际新C2C入站未手工provision：默认owner的private endpoint为unbound，旧LinkAuthority误当作未准入，原发行断言稳定RED（denied而非sending）。仅允许private/unbound/原物理canonical scope/present读口，owner grant与私聊准入照常核验；不启用历史绑定、不放开unbound群、public peer、revoked或unbound外部历史。
