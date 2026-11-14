@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8原问答来源与双端current读口（等待状态机/ask待接）
+
+- QuestionAuthority仅接宿主原ExecutionBinding：原executing/chat、完整account/endpoint/actor及epoch/scope/route/revision/deadline/native/canonical与实际执行记录匹配，源当前准入与stop不可绕过；只读同账号本物理源的已授权单向link，复核双边持久同意。普通提问成员无需也不继承建边管理员/owner权限，测试将二者设为不同actor。
+- 0104等待任务的intent HMAC绑定原任务/账号/actor/link/问题且跨重试时间稳定，用于去重，不用新的时间/stop/budget代数重签复活。current先复核实际不可变question行，拒绝调用方“修正”旧stop/budget/期限或终态副本，再核intent HMAC、原执行/准入、双端物理scope/route/权限与stop、目标预算只读require及最终截止；目标input入口自行current，只给问题与散列来源标签，绝不传原actor/owner/历史/窗口。这里是纯来源组件，尚未挂ask/队列worker/目标模型，不能当作问答运行时或taint模型已完成。
+- 12项新真实PG源证明/独立普通caller/伪造handle/unsigned行/调用方修复旧证据/撤权重授/stop-start/预算恢复/已结束原回合/查权限时跨deadline例，43项来源/schema/实际连接factory/管理/F6旧库/架构组合通过50.607秒；Ruff、导入及diff检查通过。删源stop、目标budget、存储原快照、末尾clock、intent HMAC五独立负对照各1failure RED，原实现未放宽断言。首轮stop循环复用已失效原任务、upsert列歧义及generator断言均只修夹具。
+- 另核验连接runtime固定e4a2893c8d7f6a4dfbddd8ad8782a6dd04c5a873本机PG+ffmpeg/ffprobe全套2207项、0失败、10跳过、exit0，1926.397秒，/tmp/gaoji-python-f8-link-runtime-full.{revision,exit,log}一致；PR#106等价958b0cf0d6dab20a377f2c44f8bd38d09cb34f66 Linux run43644690501/job132599723880同2207项通过1138.548秒，代码树相同，原日志/tmp/gaoji-f8-link-runtime-linux.log。Nix/Secret通过，Windows旧ACL仍失败，不能称全CI绿；此2207快照不含0104或本来源读口。另PR#107的0104 schema等价187aa14 Linux run43647024453/job132606992198通过2216项/10跳过、808.907秒，原日志/tmp/gaoji-f8-question-schema-linux.log；Nix/Secret通过，旧Windows失败，亦不覆盖本来源读口。
+- Task38仍in_progress：继续账号持久去重/排队领取/等待/回答拒绝/一次消费/取消重启状态机，再目标taint模型、前台ask、账单与生命周期、管理页及新固定全套；未真实QQ/合并/部署/生产/Java变更，不称F8整体完成。
+
 ## 开发记录（2026-11-14）· F8私有问答等待任务schema（工具/模型待接）
 
 - 0104_conversation_questions只建立原执行/单向link绑定的私有问答任务，复用durable_jobs的question账号种类和固定qqq:hash目标物理lane；队列仅存CQ-ID、不复制问题正文。完整account/source endpoint/actor的原execution复合FK、同账号且同方向link复合FK，初始要求executing/chat/原epoch/route/scope/revision/真实committed证据及一次不重启重试的pending job；不从普通成员推导连接管理权限。
