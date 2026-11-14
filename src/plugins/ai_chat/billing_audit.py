@@ -11,7 +11,8 @@ from .model_billing_views import METRICS,metrics,usd
 ORIGINS = "jsonb_build_object('programs',COALESCE(b.meta->'programs','[]'::jsonb),'commands',COALESCE(b.meta->'commands','[]'::jsonb))::text"
 BUCKETS = {
     'scope':"''",
-    'job':"CASE WHEN b.background_job_id IS NOT NULL THEN 'job:'||b.background_job_id::text "
+    'job':"CASE WHEN b.meta->'question'->>'id' IS NOT NULL THEN 'question:'||(b.meta->'question'->>'id') "
+        "WHEN b.background_job_id IS NOT NULL THEN 'job:'||b.background_job_id::text "
         "WHEN jsonb_array_length(COALESCE(b.meta->'commands','[]'::jsonb))>0 THEN 'origins:'||"+ORIGINS+" ELSE 'none' END",
     'program':"CASE WHEN jsonb_array_length(COALESCE(b.meta->'programs','[]'::jsonb))>0 "
         "THEN 'origins:'||"+ORIGINS+" ELSE 'none' END",
@@ -44,6 +45,7 @@ def _item(row,dimension):
     elif dimension=='job':
         if bucket.startswith('job:'):
             result.update(job=bucket[4:],label='job#'+bucket[4:])
+        elif bucket.startswith('question:'):result.update(job=bucket[9:],label='会话问答 '+bucket[9:])
         else:result['label'] = '非后台任务／未关联任务'
     elif dimension=='program':
         result['label'] = '非程序调用／未记录程序归属'
