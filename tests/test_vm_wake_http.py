@@ -119,6 +119,66 @@ class VMWakeHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.runner.model.llm.assert_awaited_once()
         self.assertEqual(self.fake.received,[])
 
+    def budget(self,value):
+        from src.plugins.ai_chat.conversation_config import change
+        with self.tx() as cursor:
+            change(cursor,self.endpoint,'daily_budget_usd',value,actor='TEST_ADMIN',now=self.now)
+
+    async def test_budget_denial_is_explicit_at_http_but_model_free_say_still_works(self):
+        self.budget('0')
+        response = await self.post('TEST_BUDGET_BLOCKED')
+        self.assertEqual(response.status_code,403,response.text)
+        self.assertEqual(response.json()['error'],'conversation_daily_budget_exceeded')
+        self.assertEqual(self.prompts,[])
+        said = await self.client.post(self.base+'/vm/say',json={'text':'TEST_FREE_SAY','program':'TEST_PROGRAM','request_id':'TEST_FREE'})
+        self.assertEqual(said.status_code,200,said.text)
+        self.assertEqual(len(self.fake.received),1)
+        self.assertEqual(self.query('SELECT * FROM qq_official_program_wakes'),[])
+
+    async def test_budget_restore_during_http_body_wait_rejects_captured_old_epoch(self):
+        entered,release = asyncio.Event(),asyncio.Event()
+        async def body():
+            yield b'{"text":"TEST_BODY",'
+            entered.set()
+            await release.wait()
+            yield b'"program":"TEST_PROGRAM","request_id":"TEST_SLOW_BODY"}'
+        posting = asyncio.create_task(self.client.post(self.base+'/vm/wake',content=body()))
+        try:
+            await asyncio.wait_for(entered.wait(),3)
+            # Wait until server-side bearer admission has captured the epoch;
+            # the client beginning upload alone is not proof of authentication.
+            async with asyncio.timeout(3):
+                while not any(scope.requests for identity,scope in self.lifecycle.api.scopes.items() if identity.operation=='wake'):
+                    await asyncio.sleep(0.01)
+            self.budget('0'); self.budget('off'); release.set()
+            response = await asyncio.wait_for(posting,5)
+            self.assertEqual(response.status_code,403,response.text)
+            self.assertEqual(response.json()['error'],'conversation_daily_budget_replaced')
+            self.assertEqual(self.query('SELECT * FROM qq_official_program_actions'),[])
+            self.assertEqual(self.prompts,[])
+        finally:
+            release.set()
+            if not posting.done():posting.cancel()
+            await asyncio.gather(posting,return_exceptions=True)
+
+    async def test_budget_interrupts_inflight_model_and_restore_does_not_replay_it(self):
+        entered,cancelled = asyncio.Event(),asyncio.Event()
+        async def slow(*args,**kwargs):
+            entered.set()
+            try:await asyncio.Future()
+            finally:cancelled.set()
+        self.runner.model.llm = slow
+        action = (await self.post()).json()['action_id']
+        await asyncio.wait_for(entered.wait(),3)
+        self.budget('0'); self.budget('off')
+        await asyncio.wait_for(cancelled.wait(),3)
+        self.assertEqual((await self.wait_state(action,'cancelled'))['error_code'],'conversation_daily_budget_replaced')
+        self.runner.model.llm = AsyncMock(return_value='[silence]')
+        fresh = (await self.post('TEST_FRESH_BUDGET')).json()['action_id']
+        self.assertTrue((await self.wait_state(fresh,'completed'))['silent'])
+        self.runner.model.llm.assert_awaited_once()
+        self.assertEqual(self.fake.received,[])
+
     async def test_foreground_lock_delays_program_and_expired_work_is_not_started(self):
         lock = self.runtime.turn_locks.setdefault(self.endpoint.key,asyncio.Lock())
         async with lock:
