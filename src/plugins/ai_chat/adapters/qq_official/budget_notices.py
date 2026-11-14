@@ -12,6 +12,13 @@ from .send_types import OutboxInvariantError,digest,stable_json
 TTL = 300
 
 
+def is_bot_notice_candidate(delivery):
+    # Only independently verified bot unsolicited effects can be budget notices.
+    # Human/OTP/operations sends keep their own source contract, including the
+    # intentionally old schemas used to test those migrations.
+    return delivery['purpose']=='unsolicited' and ActorKey.parse(delivery['requester_actor_key']).identity_kind=='bot'
+
+
 def deadline(row):return min(row['first_exceeded_at']+TTL,interval(row['day_start'])[1])
 
 

@@ -6,6 +6,7 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from .protected_plans import load_protected_ref, verify_protected_attempt
+from .budget_notices import is_bot_notice_candidate
 from .lease import assert_epoch
 from .send_types import OutboxInvariantError, SendOutcome, digest, stable_json
 
@@ -145,7 +146,8 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     program = cursor.execute('SELECT action_id,program_name FROM qq_official_program_actions WHERE plan_id=?',
         (delivery['plan_id'],)).fetchone()
     provenance = dict(by='program',program=program['program_name'],program_action_id=program['action_id']) if program else {}
-    budget = cursor.execute('SELECT day_start FROM conversation_budget_days WHERE notice_plan_id=?',(delivery['plan_id'],)).fetchone()
+    budget = cursor.execute('SELECT day_start FROM conversation_budget_days WHERE notice_plan_id=?',
+        (delivery['plan_id'],)).fetchone() if is_bot_notice_candidate(delivery) else None
     if budget:provenance.update(system_notice='daily_budget',budget_day_start=budget['day_start'])
     display = '程序 '+program['program_name'] if program else 'Bot'
     wake = cursor.execute('SELECT wake_id,input_ids_json FROM qq_official_program_wakes WHERE reply_action_id=?',
