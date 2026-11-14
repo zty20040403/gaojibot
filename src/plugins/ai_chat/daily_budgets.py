@@ -41,26 +41,35 @@ class BudgetState:
     generation: int
     day_start: int
     day_end: int
+    stopped: bool = False
 
     @property
     def blocked(self):return self.limit is not None and self.spent>=self.limit
 
 
-def read(cursor,endpoint,*,now):
-    if not isinstance(endpoint,EndpointKey) or endpoint.account.platform!='qq-official':
+def read_many(cursor,endpoints,*,now):
+    if len(endpoints)>500 or any(not isinstance(endpoint,EndpointKey) or endpoint.account.platform!='qq-official' for endpoint in endpoints):
         raise ValueError('budget_requires_physical_endpoint')
     start,end = interval(now)
-    # One MVCC statement covers settings and actual cost. Both endpoint and
-    # physical scope must match; canonical history or current price is irrelevant.
-    row = cursor.execute('''SELECT s.daily_budget_usd,COALESCE(s.budget_generation,0) AS generation,
+    if not endpoints:return {}
+    # One MVCC statement covers settings and actual cost, including the admin
+    # batch. Both endpoint and physical scope match; never join canonical history.
+    endpoints = tuple({endpoint.key:endpoint for endpoint in endpoints}.values())
+    args = tuple(value for endpoint in endpoints for value in (endpoint.key,endpoint.scope.key))
+    rows = cursor.execute('''WITH targets(endpoint_key,scope_key) AS (VALUES '''+
+        ','.join('(?,?)' for _ in endpoints)+''') SELECT t.endpoint_key,s.daily_budget_usd,
+        COALESCE(s.budget_generation,0) AS generation,COALESCE(s.stopped,FALSE) AS stopped,
         COALESCE(SUM(b.cost_usd),0) AS spent,
         COUNT(b.call_id) FILTER(WHERE NOT b.cost_complete) AS incomplete,
         COUNT(b.call_id) FILTER(WHERE b.finished_at IS NULL) AS pending
-        FROM (SELECT 1) seed LEFT JOIN conversation_settings s ON s.scope_key=?
-        LEFT JOIN model_usage_calls b ON b.endpoint_key=? AND b.scope_key=? AND b.started_at>=? AND b.started_at<?
-        GROUP BY s.daily_budget_usd,s.budget_generation''',
-        (endpoint.scope.key,endpoint.key,endpoint.scope.key,start,end)).fetchone()
-    return BudgetState(row['daily_budget_usd'],Decimal(row['spent']),row['incomplete'],row['pending'],row['generation'],start,end)
+        FROM targets t LEFT JOIN conversation_settings s ON s.scope_key=t.scope_key
+        LEFT JOIN model_usage_calls b ON b.endpoint_key=t.endpoint_key AND b.scope_key=t.scope_key AND b.started_at>=? AND b.started_at<?
+        GROUP BY t.endpoint_key,s.daily_budget_usd,s.budget_generation,s.stopped''',args+(start,end)).fetchall()
+    return {row['endpoint_key']:BudgetState(row['daily_budget_usd'],Decimal(row['spent']),row['incomplete'],row['pending'],
+        row['generation'],start,end,row['stopped']) for row in rows}
+
+
+def read(cursor,endpoint,*,now):return read_many(cursor,(endpoint,),now=now)[endpoint.key]
 
 
 def refresh(cursor,endpoint,*,now):
