@@ -179,47 +179,32 @@ class PgVectorBackend:
         vector: Sequence[float],
         *,
         model: str,
+        transaction_cursor=None,
     ) -> None:
         _validate_vector(vector, self.dimensions)
+        if transaction_cursor is not None:
+            self._upsert(transaction_cursor,document,vector,model)
+            return
         self._ensure_schema()
-        encoded_vector = _vector_literal(vector)
         with self._connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO semantic_documents (
-                        scope_key, source_type, source_handle,
-                        content, content_hash, metadata_json,
-                        embedding_model, embedding, created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s::jsonb,
-                              %s, %s::vector, %s, %s)
-                    ON CONFLICT(scope_key, source_type, source_handle)
-                    DO UPDATE SET
-                        content = EXCLUDED.content,
-                        content_hash = EXCLUDED.content_hash,
-                        metadata_json = EXCLUDED.metadata_json,
-                        embedding_model = EXCLUDED.embedding_model,
-                        embedding = EXCLUDED.embedding,
-                        updated_at = EXCLUDED.updated_at
-                    WHERE semantic_documents.content_hash
-                          IS DISTINCT FROM EXCLUDED.content_hash
-                       OR semantic_documents.embedding_model
-                          IS DISTINCT FROM EXCLUDED.embedding_model
-                    """,
-                    (
-                        document.scope_key,
-                        document.source_type,
-                        document.source_handle,
-                        document.content,
-                        document.content_hash,
-                        json.dumps(document.metadata, ensure_ascii=False),
-                        model,
-                        encoded_vector,
-                        int(time.time()),
-                        int(time.time()),
-                    ),
-                )
+            with connection.cursor() as cursor:self._upsert(cursor,document,vector,model)
             connection.commit()
+
+    def _upsert(self,cursor,document,vector,model):
+        cursor.execute('''INSERT INTO semantic_documents (
+            scope_key,source_type,source_handle,content,content_hash,metadata_json,
+            embedding_model,embedding,created_at,updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s::vector,%s,%s)
+            ON CONFLICT(scope_key,source_type,source_handle) DO UPDATE SET
+              content=EXCLUDED.content,content_hash=EXCLUDED.content_hash,
+              metadata_json=EXCLUDED.metadata_json,embedding_model=EXCLUDED.embedding_model,
+              embedding=EXCLUDED.embedding,updated_at=EXCLUDED.updated_at
+            WHERE semantic_documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+              OR semantic_documents.embedding_model IS DISTINCT FROM EXCLUDED.embedding_model
+              OR semantic_documents.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json''',
+            (document.scope_key,document.source_type,document.source_handle,document.content,
+             document.content_hash,json.dumps(document.metadata,ensure_ascii=False),model,
+             _vector_literal(vector),int(time.time()),int(time.time())))
 
     def search(
         self,

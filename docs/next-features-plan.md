@@ -470,6 +470,8 @@
 
 ### F10 按意思搜历史
 
+**向量任务底座（2026-11-14）**：复用durable_jobs与semantic_documents，IR+F1说明/服务identity版本去重，原task单次、不恢复旧租约，当前物理reader/账号/route/stop/可见floor/job/内容栅栏与向量写入原子提交；不复制正文。60项PG/原子回滚/lease/alias/说明/语义/embedding/队列/runtime组合通过，3个删门槛/独立提交负对照RED。worker运行与账单来源、history混合尚待接，不能借底座或F7全套标完成。
+
 **第一步（2026-11-14）**：embedding传输批次index/有限非零向量严格校验、4MiB/整次超时/不跳转/不重试、源复查与宿主usage收尾已补；runtime支持显式keyless服务，默认仍关闭。47项本机协议/真实工厂PG/语义/表情/网关账单组合及Ruff/导入通过，先验负例RED；聊天/图片说明worker与history合并尚待，不把底座当功能已完成或真实模型验收。
 
 **前置核对（2026-11-14）**：用户选择先继续F10，再F8，F7保持待独立账号实测。Python已有semantic_recall/EmbeddingClient/PgVectorBackend，0010将semantic_documents改为vector(1024)，AI_SEMANTIC_ENABLED默认false；目前仅表情索引接worker，history仍仅字面搜索。运行时错误要求非空embedding_api_key，需允许宿主显式配置的无密钥服务；解析需补批次index唯一/精确映射、有限非零向量、限体积/超时/不跳转及宿主真实usage收尾。后台索引须覆盖当前可见消息与F1图片说明，并以内容hash/模型检测更新；查询不能混入表情/其他会话/已清理旧消息，日期/发言人过滤在向量候选分页前生效。关闭功能保持字面路径，启用但失败明确反馈，工具参数不变；未实现或验收本段接线，不借用F7/F9全套覆盖。
