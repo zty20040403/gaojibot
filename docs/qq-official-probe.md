@@ -140,6 +140,31 @@ python -m src.qq_official.probe \
 
 报告区分请求接受、GET 核实和未执行/未知，使用假名，不保存消息原文、openid、响应体或凭据；客户端观察仍须人工确认。引擎与协议/旧探测组合 81 项本机回归通过，含此前 71 项；尚无 CLI 和当前账号实测结果，不能以本机结果开放产品 `moderate`。
 
+### F7 显式 Unix 命令入口
+
+入口为 `python -m src.qq_official.probe_moderation_cli`，不是 Gaoji 启动选项或模型/VM 工具。默认 `--checks read` 只查 bot 状态与禁言规则；`mute,recall` 必须明确选择。凭据、scope 必须是当前操作者所有、无 group/other 权限的普通文件，拒绝符号链接/超长输入；新报告放在操作者私有目录。Darwin 按已打开 FD 调用固定系统 `ls -e` 检查扩展 ACL，发现或无法核实则拒绝；Linux 依赖私有 mode 的 ACL mask。Windows/未知 ACL 平台不开放此入口，不改写既有凭据读取策略或 Windows 待修问题。
+
+先在**独立测试账号**对应的受保护 `scope.json` 写入以下结构（全部 `TEST_…` 为假值，真实值只留私有文件）：
+
+```json
+{"app_id":"TEST_APP_ID","group":"TEST_GROUP","member":"TEST_MEMBER","independent_test_account":true,"exclusive_moderation":true}
+```
+
+`app_id` 必须匹配独立凭据文件；两个布尔值是操作者的明确范围声明，不是平台能力证明。不能复用正在运行的线上 AppID，不能选择未同意测试的成员。对目标的确认依赖这份私有映射；终端只显示稳定假名、步骤及最多业务请求数。测试窗口内不进行并行人工群管。私有目录/文件示例权限为 `0700`/`0600`，不在命令行、PR 或聊天粘贴真实身份或密钥。
+
+```bash
+python -m src.qq_official.probe_moderation_cli \
+  --app-id-file "$HOME/.local/state/gaoji-f7-test/app-id" \
+  --app-secret-file "$HOME/.local/state/gaoji-f7-test/app-secret" \
+  --scope-file "$HOME/.local/state/gaoji-f7-test/scope.json" \
+  --report "$HOME/.local/state/gaoji-f7-test/new-report.json" \
+  --checks mute,recall --duration 300
+```
+
+输入一次 `YES` 后，再让指定普通成员按提示发当次文案；两个动作需要不同的新消息 ID。最大全流程为 10 次业务请求（不含鉴权/网关）；默认只读 2 次，另加只读检查最多 12 次。`--confirm-moderation-batch` 仅替代本次交互确认；不续期、不签发能力证明。`--sandbox` 只选择固定沙箱地址，失败不切到另一环境。
+
+CLI/引擎/既有 HTTP、消息与文件探测组合 **86 项通过**（含此前 81 项），Ruff/导入和实际 `--help` 通过。尚未调用真实账号，未完成 F7 平台探测或产品 `moderate`；独立工具固定 `b32ff08` 的本机全套已通过 2,048 项、0 失败、10 跳过、exit0（1330.411 秒），tree 相同的 `383563e`/PR #86 Linux CI 也通过 2,048 项/10 跳过，Nix/Secret scan 通过；既有 Windows ACL 仍失败，不能称全部 CI 绿色。它不覆盖随后 F10，也不替代真实账号试验，不能借用 F9 的全套或本地假服务开放 `moderate`。
+
 ## 剩余受控验收与记录
 
 按 [方案第 11 节](qq-official-plan.md#11-用户真机验收清单执行者整理好交给用户) 使用既有受保护控制面、产品入口和人工检查继续验收，不另建验收会话系统或自动签发证明。以下步骤不会由阅读本文自动执行；仍受原唯一群范围及具体操作授权约束，增加私聊、普通身份或其他目标时须先明确允许的范围。用户未参与的人工呈现、下载或身份步骤保持待验收，不推断为成功。
