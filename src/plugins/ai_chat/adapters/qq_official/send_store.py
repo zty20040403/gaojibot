@@ -55,13 +55,14 @@ class OfficialSendStore:
         self.protected_payloads, self.approval_authority, self.source_guard = protected_payloads, approval_authority, source_guard
         self.ops_authority = None
         self.link_authority = None
+        self.link_feedback_authority = None
         self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
                 transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None, ops_action_id=None,
-                link_challenge_id=None):
+                link_challenge_id=None,link_reply_inbox_id=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -69,12 +70,13 @@ class OfficialSendStore:
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
                 admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if any(value is not None for value in (challenge_id,approval_source_id,ops_action_id,link_challenge_id)) else None,
+                pepper=self.pepper if any(value is not None for value in (challenge_id,approval_source_id,ops_action_id,link_challenge_id,link_reply_inbox_id)) else None,
                 binding_preview=binding_preview, control_reply_id=control_reply_id,
                 max_wait_seconds=self.max_wait_seconds, approval_source_id=approval_source_id,
                 approval_authority=self.approval_authority, source_guard=None if purpose=='progress' else self.source_guard, source_proof=source_proof,
-                ops_action_id=ops_action_id,ops_authority=self.ops_authority,link_challenge_id=link_challenge_id,link_authority=self.link_authority)
-        if purpose in {"binding_otp", "approval_otp", "ops_approval", "link_otp"} and ref.created:
+                ops_action_id=ops_action_id,ops_authority=self.ops_authority,link_challenge_id=link_challenge_id,link_authority=self.link_authority,
+                link_reply_inbox_id=link_reply_inbox_id,link_feedback_authority=self.link_feedback_authority)
+        if purpose in {"binding_otp", "approval_otp", "ops_approval", "link_otp", "link_feedback"} and ref.created:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
@@ -225,7 +227,7 @@ class OfficialSendStore:
 
     def _conversation_permitted(self, cursor, row):
         from .conversation_control import permitted
-        if row['purpose'] in {'binding_otp','approval_otp','link_otp'} or control_for_delivery(cursor,row):
+        if row['purpose'] in {'binding_otp','approval_otp','link_otp','link_feedback'} or control_for_delivery(cursor,row):
             return True
         plan = cursor.execute('SELECT conversation_generation FROM delivery_plans WHERE plan_id=?',(row['plan_id'],)).fetchone()
         command = cursor.execute("SELECT 1 FROM qq_official_turn_executions WHERE plan_id=? AND execution_kind='command'",
@@ -262,6 +264,9 @@ class OfficialSendStore:
             if row['purpose']=='link_otp' and (int(self.clock())>=row['expires_at'] or self.link_authority is None
                 or not self.link_authority.delivery_current(cursor,token,row)):
                 return 'link_notice_source_unavailable'
+            if row['purpose']=='link_feedback' and (int(self.clock())>=row['expires_at'] or self.link_feedback_authority is None
+                or not self.link_feedback_authority.delivery_current(cursor,token,row)):
+                return 'link_feedback_source_unavailable'
             return self._program_authorized(cursor,token,row)[1]
 
     def prepare(self, token, delivery_id, *, send_mode, msg_id=None, msg_seq=None):
@@ -289,6 +294,9 @@ class OfficialSendStore:
                 authorized = authorized and self.ops_authority is not None and self.ops_authority.delivery_current(cursor,token,row)
             if row['purpose']=='link_otp':
                 authorized = authorized and self.link_authority is not None and self.link_authority.delivery_current(cursor,token,row)
+                if send_mode=='passive' and msg_id!=row['reply_to_native_message_id']:authorized = False
+            if row['purpose']=='link_feedback':
+                authorized = authorized and self.link_feedback_authority is not None and self.link_feedback_authority.delivery_current(cursor,token,row)
                 if send_mode=='passive' and msg_id!=row['reply_to_native_message_id']:authorized = False
             if not authorized or route['membership_state'] != 'present' or route['binding_state'] == 'revoked':
                 return self._finish(cursor, token, row, 'failed', program_error or 'delivery_not_authorized', now)
@@ -359,7 +367,7 @@ class OfficialSendStore:
                     ('ambiguous' if unknown else 'confirmed_unaccepted', 'unknown' if unknown else 'confirmed_no',
                      now, reason, error.stage if error else None, error.status if error else None,
                      error.code if error else None, reservation.attempt_id))
-            if row['purpose']=='link_otp':retry,plain = False,False
+            if row['purpose'] in {'link_otp','link_feedback'}:retry,plain = False,False
             if plain:
                 cursor.execute("UPDATE deliveries SET variant='plain_fallback',format_fallback_used=TRUE WHERE delivery_id=?", (delivery_id,))
             return self._finish(cursor, token, row, 'ambiguous' if unknown else 'pending' if retry else 'failed', reason, now)
