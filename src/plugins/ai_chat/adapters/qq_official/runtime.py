@@ -621,6 +621,8 @@ class OfficialRuntime:
                 factory = lambda current, lease_token: build_turn_consumer(current, lease_token, self.application)
             if factory is not None:
                 self.turn_consumer = factory(self, token)
+            from ...message_vector_worker import build_worker as build_vector_worker
+            vector_worker = await self._optional_feature('semantic',build_vector_worker,self,token)
             self.state, self.reason = "running", "receiving_events"
             await self._calls(self._recover_interrupted_turns, token)
             tasks = [asyncio.create_task(gateway.run(on_dispatch)), asyncio.create_task(worker.run_forever()),
@@ -633,6 +635,8 @@ class OfficialRuntime:
                 tasks.append(asyncio.create_task(self.approval_service.run()))
             if agent_worker is not None:
                 tasks.append(asyncio.create_task(agent_worker.run_forever()))
+            if vector_worker is not None:
+                tasks.append(asyncio.create_task(vector_worker.run()))
             if program_admin_worker is not None:
                 tasks.append(asyncio.create_task(program_admin_worker.run_forever()))
             if file_worker is not None:

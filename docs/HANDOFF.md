@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F10消息/F1说明worker与宿主账单接齐（history待接）
+
+- QQ真实账号lease运行时在AI_SEMANTIC_ENABLED=true且provider/ModelBilling存在时启动独立worker；默认关闭不建模型通道。只使用当前物理reader来源，不猜真人或VM创建人，semantic_index/embedding记录宿主真实usage，缺价/用量仍未知或下界；无QQ发送或VM效果。
+- 每5秒按endpoint keyset看至多4入口；在内容hash/说明查询前，每入口消息按ID分页至多128条、最多新排32个（默认16），同账号pending/running上限128、执行并发2/每scope1。完整/空页轮转、重启从最新消息开始并由已有任务/向量去重，不能因为缓存已全覆盖而在账号锁下每5秒扫描全部历史；同名服务不同identity仍隔离，非1024或client/backend不一致维数在付费前拒绝。
+- 模型请求、等待头/正文及入库复查原source，复用guarded_wait在等待HTTP时轮询。stop→start头永不返回的确定性负例先Timeout RED，修后不等provider即可取消，排空未知账单。双取消也排空账单且将原job置terminal；移除该收尾的负对照实证genericworker会把原job变pending（1failure RED），不能依赖max_attempts=1阻止defer重放。
+- 84项PG消息/分页/背压/维数/worker/真实QQ工厂+FakePlatform/embedding/语义/账号运行时/旧0091迁移/网关账单/持久队列组合通过，81.337秒；Ruff、两项导入检查、diff检查通过。先前42项组合含导入测试class造成11项重复，已改模块引用，最终计数不重复这11项。错误的DatabaseCalls导入与_started终生初始化标记断言均已按实际接口修正；停机检查state=stopped而不改运行时语义。
+- 任务底座ae89f71/Draft#88，worker另一个小Draft；此处还没有history混合查询或覆盖新代码的固定全套/真实模型验收。F7离线全套2048项不覆盖此新增代码；F7仍待owner指定测试范围，不开放moderate。未合并/部署/生产访问或改Java，随后继续history，再F8。
+
 ## 开发记录（2026-11-14）· F10向量任务存储与原子来源栅栏（运行时待接）
 
 - MessageVectorJobs复用durable_jobs/semantic_documents，不加新表。任务只存消息编号、IR+图片/视频说明hash及模型服务identity，不复制正文；同一授权/内容版本只排一次，max_attempts=1、resume_on_lease_loss=false，原job不复跑。新账号/route/stop授权下的新派生回填可重算未获得向量的读取，单独真实账单，不能声称未知读取没有费用。

@@ -133,6 +133,22 @@ class MessageVectorTests(OutboxFixture):
         with self.assertRaises(LeaseLost):self.catalog.current(job)
         self.catalog = self.make_catalog(); self.assertEqual(len(self.catalog.enqueue(self.endpoint)),1)
 
+    def test_backfill_pages_and_account_queue_are_bounded_before_content_hash_work(self):
+        messages = [self.message(label='TEST_PAGE_'+str(index)) for index in range(130)]
+        for _ in range(4):self.assertEqual(len(self.catalog.enqueue(self.endpoint,limit=32)),32)
+        self.assertEqual(self.catalog.enqueue(self.endpoint),[])
+        self.assertEqual(self.query("SELECT count(*) AS n FROM durable_jobs WHERE status='pending'")[0]['n'],128)
+        self.query("UPDATE durable_jobs SET status='failed',finished_at=?",(self.now,))
+        self.assertEqual(self.catalog.enqueue(self.endpoint,limit=32),[])
+        before = self.catalog.page_before[self.endpoint.key]
+        self.assertEqual(before,messages[2].canonical_message_id)
+        old = self.catalog.enqueue(self.endpoint,limit=32,before=before)
+        self.assertEqual({job.payload['message_id'] for job in old},{message.canonical_message_id for message in messages[:2]})
+
+    def test_wrong_dimension_configuration_is_rejected_before_a_paid_request(self):
+        self.embedder.dimensions = 1536; self.backend.dimensions = 1536
+        with self.assertRaisesRegex(ValueError,'semantic_dimensions_mismatch'):self.make_catalog()
+
     def test_cards_are_real_content_while_commands_and_tool_noise_do_not_embed(self):
         self.message(body=MessageBody((CardNode(0,title='TEST presentation app',url='https://example.invalid/TEST_SLIDES'),)))
         self.message(kind='command',label='TEST_COMMAND')
