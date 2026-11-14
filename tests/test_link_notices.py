@@ -82,6 +82,37 @@ class LinkNoticeTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake.received[0]['kind'],'user')
         self.assertEqual(self.fake.received[0]['payload']['msg_id'],self.outbox.get(self.token,delivery)['reply_to_native_message_id'])
 
+    async def test_default_unbound_private_owner_can_issue_without_history_binding_or_manual_provision(self):
+        private = EndpointKey(self.account,'private','TEST_DEFAULT_LINK_OWNER')
+        self.input.apply_configuration(self.token,(private.native_conversation_id,))
+        source = self.dispatch(endpoint=private)
+        self.assertEqual(source._link_input.status,'sending')
+        endpoint = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?',(private.key,))[0]
+        self.assertEqual((endpoint['binding_state'],endpoint['canonical_scope_key']),('unbound',private.scope.key))
+        with self.tx() as cursor:ref = self.notices.prepare(cursor,self.token,source._link_input)
+        outcome = await self.sender.send_delivery(ref.delivery_ids[0])
+        self.assertEqual((outcome.status,outcome.reason),('committed',''))
+        self.assertEqual(self.fake.received[0]['payload']['msg_id'],self.outbox.get(self.token,ref.delivery_ids[0])['reply_to_native_message_id'])
+        self.assertEqual(self.query('SELECT binding_state FROM qq_official_endpoints WHERE endpoint_key=?',(private.key,)),[dict(binding_state='unbound')])
+
+    async def test_unbound_group_and_public_private_peer_never_gain_link_authority(self):
+        group = EndpointKey(self.account,'group','TEST_DEFAULT_UNBOUND_GROUP'); source = self.dispatch(endpoint=group)
+        self.assertTrue(source._link_input is None or source._link_input.status=='denied')
+        self.input.private_policy = 'public'; private = EndpointKey(self.account,'private','TEST_DEFAULT_PUBLIC_PEER')
+        self.assertEqual(self.dispatch(endpoint=private)._link_input.status,'denied')
+        self.assertEqual(self.query('SELECT * FROM qq_official_link_challenges'),[])
+
+    async def test_private_owner_cannot_link_revoked_or_unbound_foreign_history_endpoint(self):
+        for state in ('revoked','unbound'):
+            private = EndpointKey(self.account,'private','TEST_DEFAULT_OWNER_'+state)
+            self.input.apply_configuration(self.token,(private.native_conversation_id,))
+            self.assertEqual(self.dispatch('/link list',endpoint=private)._link_input.status,'listed')
+            foreign = EndpointKey(self.account,'private','TEST_OTHER_PRIVATE_HISTORY').scope.key
+            self.query('UPDATE qq_official_endpoints SET binding_state=?,canonical_scope_key=? WHERE endpoint_key=?',
+                (state,foreign if state=='unbound' else private.scope.key,private.key))
+            self.assertEqual(self.dispatch(endpoint=private)._link_input.status,'denied')
+        self.assertEqual(self.query('SELECT * FROM qq_official_link_challenges'),[]); self.assertEqual(self.fake.received,[])
+
     async def test_explicit_link_control_is_available_when_chat_is_stopped(self):
         self.query('INSERT INTO conversation_settings(scope_key,stopped,stop_generation) VALUES (?,TRUE,1)',(self.endpoint.scope.key,))
         self.assertEqual((await self.sender.send_delivery(self.queue())).status,'committed')
