@@ -163,7 +163,9 @@ class OfficialSender:
         return await asyncio.shield(await self._submit(delivery_id))
 
     async def _credential(self, endpoint, route, *, proactive_only=False,original_native_id=None):
-        if route['proactive_state'] != 'denied':
+        # One-shot link control cannot recover from an unverified proactive probe.
+        # Prefer its authenticated ORIGINAL window unless proactive is explicitly allowed.
+        if route['proactive_state'] != 'denied' and (original_native_id is None or route['proactive_state']=='allowed'):
             return 'proactive', None, None
         if proactive_only:
             return None

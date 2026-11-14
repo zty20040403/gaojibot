@@ -36,7 +36,11 @@ class LinkAuthority:
         if endpoint.account.key!=token.account_key:raise PermissionError('link_account_mismatch')
         row = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=? AND account_key=?',
             (endpoint.key,token.account_key)).fetchone()
-        return row if row and row['binding_state']=='active' and row['membership_state']=='present' else None
+        # Private admission/owner grants are independent of /bind history routing.
+        # A new physical private endpoint remains unbound; never relax group or foreign-history admission.
+        allowed = row and (row['binding_state']=='active' or (endpoint.kind=='private' and row['binding_state']=='unbound'
+            and row['canonical_scope_key']==endpoint.scope.key))
+        return row if allowed and row['membership_state']=='present' else None
 
     @staticmethod
     def _message(message):

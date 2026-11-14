@@ -9,6 +9,7 @@
 - `/link` 在 A 由当前宿主 owner 或原认证群主/群管申请；私聊不把普通 peer 当作全局 owner。B 的 owner/原认证群管在 B 输入 `/link <code>` 才确认 A→B。相同 endpoint 不能兑换；重复确认不重复建立，反向要另做一次。
 - 普通成员不能因知道验证码就建立连接；引用、转发、模型文本、网页、文件、VM 请求与裸 role 字段都不是认证命令。禁止自动按成员关系建立边。
 - LinkManagement的list/status/cancel/revoke可选TxA已接，仅原认证owner/群管读写自己物理端点涉及的同账号记录，查找后复查原600秒期限。list在LIMIT前限定范围，最多32条及more；只返回散列会话标签、方向/状态/版本，不泄露其他账号/会话的openid。控制反馈组件已接，真实账号工厂仍待接。
+- 默认owner私聊不依赖/bind历史绑定：新private/unbound/present且canonical scope为原物理私聊时可核验owner grant/准入；不放开unbound群、普通public peer、revoked或unbound外部历史。一次link控制在主动状态尚未明确allowed时只选择原认证msg_id窗口，不先探测失败再重试；已有明确allowed仍遵守一次尝试。此默认store入口已验，真实账号factory另续。
 - `/unlink` 和管理台撤销提供明确方向；任一端可撤销涉及自己的授权，不能删除无关边。现有链接保留独立版本，重建不能复活旧问答。
 
 ## 独立短码与持久来源
