@@ -5,6 +5,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 import unittest
+import httpx
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official import turn_source
@@ -17,6 +18,8 @@ from src.plugins.ai_chat.conversation_window import ConversationStore
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
 from src.plugins.ai_chat.model_billing import ModelBilling
+from src.plugins.ai_chat.message_vectors import REVISION,embedding_identity
+from src.plugins.ai_chat.semantic_recall import EmbeddingClient,PgVectorBackend,SemanticDocument,SemanticRecallService
 from src.plugins.ai_chat.quota import UsageStore
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker
@@ -31,7 +34,10 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejected_steer_is_saved_as_failure_and_sent_to_foreground(self):
         await self.exercise_background(steer_error='TEST steering rejected')
 
-    async def exercise_background(self, *, steer_error=None):
+    async def test_dynamic_history_query_keeps_original_job_actor_and_real_receipt(self):
+        await self.exercise_background(semantic=True)
+
+    async def exercise_background(self, *, steer_error=None,semantic=False):
         f = ExecutionFixture('runTest')
         f.setUp()
         self.addCleanup(f.doCleanups)
@@ -58,6 +64,17 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             conversations=conversations, message_ledger=f.ledger, usage_store=usage,model_billing=ModelBilling(f.database),
             semantic_recall=None, skill_registry=SimpleNamespace(get=lambda _: None),
             model_preferences=SimpleNamespace(get_explicit=lambda _: None))
+        if semantic:
+            embedder = EmbeddingClient(base_url='https://embedding.example.invalid/v1',api_key='',model='TEST_EMBED',dimensions=1024,
+                transport=httpx.MockTransport(lambda _:httpx.Response(200,json={'data':[{'index':0,'embedding':[1]+[0]*1023}],
+                    'usage':{'prompt_tokens':7}})))
+            backend = PgVectorBackend(f.database.dsn,dimensions=1024,schema=f.database.schema)
+            revision = f.query(f'SELECT {REVISION} AS revision FROM messages_with_captions m WHERE canonical_message_id=?',
+                (f.message.canonical_message_id,))[0]['revision']
+            backend.upsert(SemanticDocument(f.endpoint.scope.key,'message','msg#'+str(f.message.canonical_message_id),f.message.prompt_text,
+                {'source_revision':revision,'embedding_identity':embedding_identity(embedder)}),[1]+[0]*1023,model=embedder.model)
+            app.settings = replace(app.settings,semantic_enabled=True)
+            app.semantic_recall = SemanticRecallService(embedder,backend)
         service = OfficialBackgroundAgents(runtime, f.token, app)
         runtime.agent_service = service
         source = dict(account_key=f.account.key, endpoint_key=f.endpoint.key, actor_key=f.actor.key,
@@ -93,6 +110,11 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             await receipt.finish()
             billed = f.query('SELECT endpoint_key,actor_key,background_job_id,input_tokens FROM model_usage_calls')
             self.assertEqual(billed,[dict(endpoint_key=f.endpoint.key,actor_key=f.actor.key,background_job_id=number,input_tokens=10)])
+            if semantic:
+                result = json.loads(await session.execute_tool('history',{'query':'换个说法查原来的内容'}))
+                self.assertTrue(result['ok']); self.assertIn('#'+str(f.message.canonical_message_id),result['results'][0])
+                query = f.query("SELECT actor_key,background_job_id,input_tokens FROM model_usage_calls WHERE profile='embedding'")[0]
+                self.assertEqual(query,dict(actor_key=f.actor.key,background_job_id=number,input_tokens=7))
             return 'TEST finished /work/result.txt'
 
         service.runner.engine = engine

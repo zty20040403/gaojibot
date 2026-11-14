@@ -151,11 +151,11 @@ VM 令牌可 `POST /vm/history`（例如 `{"query":"TEST"}`）、`/vm/web-search
 
 写动作可指定 `--program`（默认 GAOJI_PROGRAM 或 manual）和 `--request-id`。自动生成的 ID 会先写 stderr；超时或断线不要换 ID 重发，使用 `gaoji status --request-id <id>`。`gaoji events --after <id>` 保留空行心跳，断流非零退出并在 stderr 报告可恢复游标；只将完整消息行交给调用者。
 
-## F10 语义检索底座（聊天索引与混合入口仍待接）
+## F10 可选消息索引与 history 混合检索
 
 `AI_SEMANTIC_ENABLED` 默认 `false`。宿主开启后，复用 `AI_EMBEDDING_BASE_URL`（默认 `http://127.0.0.1:11434/v1`）、`AI_EMBEDDING_MODEL`（默认 `bge-m3`）、可空的 `AI_EMBEDDING_API_KEY` 和超时设置；没有密钥的明确本地服务也可配置。不从模型/VM 接受这些参数，不自动连接部署中的服务或选择新的地址。
 
-现有 PostgreSQL 表为 `vector(1024)`，维数设置须匹配；坏批次 index、重复/缺失结果、非数值/非有限/零向量、重定向与过大正文均明确失败，不默换为另一个 embedding 服务。开启但配置/服务失败应显式报告，关闭则保留字面检索。宿主已挂 BillingContext 的请求记录真实输入 usage，缺单价/用量仍未知或下界；底座测试不代表消息索引、查询来源接线或实际服务能力已验收。QQ账号运行时已接默认关闭的聊天/F1说明索引（文本/卡片/说明，不索引纯媒体标记/命令/工具noise），宿主 `semantic_index` 请求记录真实usage，不猜发起人或把未知计作免费。每5秒轮转最多4入口，内容查询前每页最多128消息，账号在排/执行最多128任务、并发2；旧授权任务在等待头/正文、入库边界持续核验，取消后不defer重放。维数不符在付费前拒绝。当前 `history` 仍仅字面查找，混合查询待下一步；没有真实服务验收或部署。
+现有 PostgreSQL 表为 `vector(1024)`，维数设置须匹配；坏批次 index、重复/缺失结果、非数值/非有限/零向量、重定向与过大正文均明确失败，不默换为另一个 embedding 服务。开启但配置/服务失败应显式报告，关闭则保留字面检索。宿主已挂 BillingContext 的请求记录真实输入 usage，缺单价/用量仍未知或下界；底座测试不代表消息索引、查询来源接线或实际服务能力已验收。QQ账号运行时已接默认关闭的聊天/F1说明索引（文本/卡片/说明，不索引纯媒体标记/命令/工具noise），宿主 `semantic_index` 请求记录真实usage，不猜发起人或把未知计作免费。每5秒轮转最多4入口，内容查询前每页最多128消息，账号在排/执行最多128任务、并发2；旧授权任务在等待头/正文、入库边界持续核验，取消后不defer重放。维数不符在付费前拒绝。`history` 的 `query` 已接本地混合检索：字面/说明与当前向量候选等权RRF合并去重，发言人/区间在向量LIMIT前筛选，证据从当前可见canonical IR重取，不使用旧cache正文。原参数、原文/around读取不变；前台与后台查询分别挂原turn/job的actor/current，VM history只挂原凭据current和无真人actor的宿主embedding账单，不开放任意模型调用。缺来源或服务失败明确返回错误，默认关闭不发embedding请求。最新固定全套和真实服务验收仍待，没有部署。
 
 ## 会话浏览器
 

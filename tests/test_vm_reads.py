@@ -2,12 +2,16 @@
 import asyncio
 from dataclasses import replace
 import unittest
+import httpx
 from unittest.mock import AsyncMock, patch
 
 from tests import test_vm_lifecycle as fixture
 from tests.qq_official_outbox_fixture import OutboxFixture
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
+from src.plugins.ai_chat.message_vectors import REVISION,embedding_identity
+from src.plugins.ai_chat.model_billing import ModelBilling
+from src.plugins.ai_chat.semantic_recall import EmbeddingClient,PgVectorBackend,SemanticDocument,SemanticRecallService
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.web_fetch import FetchedPage
 from src.plugins.ai_chat.web_search import SearchResult
@@ -43,6 +47,34 @@ class VMReadTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post('history',query='TEST',scope_key=other.scope.key)).status_code,400)
         self.assertEqual((await self.post('history',limit=True)).status_code,400)
         self.assertEqual((await self.post('history')).status_code,400)
+
+    async def test_vm_history_semantic_query_is_fixed_host_read_and_not_a_human_model_channel(self):
+        ledger = self.app.message_ledger
+        message = ledger.record_message(self.endpoint.scope,native_message_id='TEST_SEMANTIC_EVIDENCE',sender_native_user_id='TEST_ACTOR',
+            sender_display='TEST_DISPLAY',body=MessageBody((TextNode(0,'TEST SlidesForge builds presentations'),)),occurred_at=self.now,
+            actor=ActorKey(self.account,'group_member',self.endpoint.native_conversation_id,'TEST_ACTOR'),source_endpoint=self.endpoint)
+        requests = []
+        def provider(request):
+            requests.append(request)
+            return httpx.Response(200,json={'data':[{'index':0,'embedding':[1]+[0]*1023}],'usage':{'prompt_tokens':8}})
+        embedder = EmbeddingClient(base_url='https://embedding.example.invalid/v1',api_key='',model='TEST_EMBED',dimensions=1024,
+            transport=httpx.MockTransport(provider))
+        backend = PgVectorBackend(self.database.dsn,dimensions=1024,schema=self.database.schema)
+        revision = self.query(f'SELECT {REVISION} AS revision FROM messages_with_captions m WHERE canonical_message_id=?',
+            (message.canonical_message_id,))[0]['revision']
+        backend.upsert(SemanticDocument(self.endpoint.scope.key,'message','msg#'+str(message.canonical_message_id),message.prompt_text,
+            {'source_revision':revision,'embedding_identity':embedding_identity(embedder)}),[1]+[0]*1023,model=embedder.model)
+        self.app.settings = replace(self.app.settings,semantic_enabled=True)
+        self.app.model_billing = ModelBilling(self.database)
+        self.app.semantic_recall = SemanticRecallService(embedder,backend)
+        self.query('INSERT INTO conversation_settings(scope_key,stopped,programs_enabled) VALUES (?,TRUE,FALSE)',(self.endpoint.scope.key,))
+        response = await self.post('history',query='怎么排版幻灯片')
+        self.assertEqual(response.status_code,200,response.text); self.assertIn('SlidesForge',response.text)
+        row = self.query('SELECT * FROM model_usage_calls')[0]
+        self.assertEqual((row['purpose'],row['input_tokens'],row['actor_key']),('semantic_index',8,None))
+        self.assertEqual(row['scope_key'],self.endpoint.scope.key); self.assertIsNotNone(row['finished_at'])
+        self.assertEqual((await self.post('history',query='TEST',model='TEST_ARBITRARY')).status_code,400)
+        self.assertEqual(len(requests),1)
 
     async def test_web_tools_keep_host_provider_and_public_only_fetch_policy(self):
         search = AsyncMock(return_value=[SearchResult('TEST_TITLE','https://example.test','TEST_SNIPPET')])

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 from ...background_jobs import BackgroundJobs, BackgroundRunner
 from ...background_tools import BackgroundToolSession, workspace_owner
@@ -195,6 +196,7 @@ class OfficialBackgroundAgents:
             shared_allowed=await self.calls(shared_login) if inbound.endpoint.kind=='group' else False)
         session = BackgroundToolSession(self.app, inbound, question=question, current=current,
             prompt=PROMPT+browser+api_instructions(self.host_apis,self.app.settings.background_gateway_port))
+        session.billing_context = self.billing(SimpleNamespace(source=row,current=current))
         from ...background_video import VideoSession
         session.video = VideoSession(self.app,inbound,current=current,check=check_transaction,job_id=job.job_id)
         session.tools += session.video.tools

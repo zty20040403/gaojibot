@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F10 history混合入口本地接线
+
+- 原history参数/读取形状不变；启用时查询embedding与字面/F1说明候选等权RRF合并去重，最终从当前可见canonical IR投影。默认关闭保留字面；启用但宿主来源/服务失败明确报错，不静默回退。补未来日期空区间，字面搜索也可找到F1说明。
+- 前台沿用原turn/actor/current，后台动态工具沿用原job/actor/current，VM只读沿用原VM凭据current且无真人actor；均只调用固定宿主embedding，不开放通用模型配置/跨会话。宿主实际usage落同一账单，缺价保持未知，发送前来源检查不由查询绕过。
+- 新增9项工具来源/关闭/失败/换说法/日期/头等待撤权/末检/可见性/双取消收尾回归，真实consumer+FakePlatform工具循环、后台worker动态工具及真实VM HTTP各有对应账单回归。删actor匹配、返回前current和最终可见性重取的3个独立负对照均RED；底座PR#90的3个scope/hash/前置过滤负例仍保留。79项协议/索引/查询/真实工厂/账单/旧schema组合回归（67.822秒）、Ruff/导入/diff、UI构建与7个实际检查脚本通过；新固定快照全套待收尾，不借F7/F9旧全套标F10完成或真实模型验收；不合并/部署/改Java。
+
 ## 开发记录（2026-11-14）· F10消息候选与合并底座（工具尚未开放语义查询）
 
 - message_recall只从message向量按当前模型/服务identity、canonical IR+说明hash取候选；scope、可见floor、chat方向/类型、发言人及ID区间在向量LIMIT前约束。排除其他会话、表情、无旧来源证据及过时向量；只从messages_with_captions重新投影证据，不返回semantic_documents.content。等权RRF合并字面/语义排行并按消息ID去重。
