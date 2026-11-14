@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8纯双边短码状态机（尚未接TxA/发送）
+
+- LinkReducer在宿主账号锁事务中固定原认证LinkAuthority证明、600秒HMAC六位码与双边物理端点；原source/target回执重复不重发码。最多8次随机避碰，独立HMAC持久限流，并限制20个live挑战，避免固定窗口边界突发使21行有界扫描漏候选。确认只能一次固定不同物理目标、不能以裸actor/成员/别名推导授权。
+- 快速确认只进入confirming，真实发行事实才可能激活；查找及最终领取同时复查双边原权限/epoch/route与期限，用同一最终受检时间保存激活，避免再读时钟触发SQL失败并回滚已接受回执。sending的已知回执与issued/取消原子更新以满足数据库约束；unknown/失败、撤权重授、重启及旧epoch皆不复活，迟到真实事实独立保存。旧边路由已失效需新双边证明建新ID，旧generation推进并保留；重复旧回执也不把revoked边报告active。
+- 首轮7例中的3个SQL约束error已定位修复；复测新增确定性截止例后8例通过，另一次StoreRow误当dict的夹具错误已修。最终38项实际PG reducer/回执/迁移/角色/输入/旧bind/F6/架构组合通过40.100秒，静态/导入/diff通过；删双边current、末尾期限、独立live上限的3个负对照分别1failure/1error/1failure RED。
+- 这里只是纯事务状态机，不把测试假native ID当真实QQ发行。原TxA observer/一次ephemeral发码/原端点源窗口/真实send_ledger核验、取消/撤边/查询与runtime仍待接，ask和管理页另续。Task37仍in_progress；未新完整全套、实际QQ、合并/部署/生产/Java变更。
+
 ## 开发记录（2026-11-14）· F8发行事实与授权终态分离（尚未接发送）
 
 - 0100_link_receipts为独立挑战增加一次冻结的发行回执HMAC/宿主收到时间；取消/过期/unknown后可补真实committed信息，但终态、码、原权限/路由、确认目标不可恢复/改写。回执唯一且不可替换；激活新连接必须另外有成对回执证据，不仅凭committed字符串。实际取QQ/send_ledger回执与发码仍待后续，DB假值测试不是平台验收。
