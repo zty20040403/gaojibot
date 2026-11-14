@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8双边连接存储（认证入口尚未开放）
+
+- 先核对maxx单向边/双方确认/2小时等待设计和现有bind/TxA/owner角色边界；docs/conversation-questions.md记录独立授权，不按成员/别名自动连接，远端不继承owner/VM身份，问答不自动发到QQ。
+- 0098_conversation_links新增独立挑战与有向边：只保存HMAC/原权限及回执承诺，复合FK限制同账号物理端点；双端确认与发行committed缺一不可，最多600秒、明确原route/generation/epoch，来源/终态不可改，撤边推进新代数且旧边不能恢复。旧库不推导连接；有挑战证据阻止未导出回退。
+- 19项真实PG双边/快速确认等待投递/同端与跨账号/不可变hash与路由/过期/撤销/旧设置保存/空回退及旧F6/预算/架构组合通过，33.802秒；Ruff/导入/diff通过。独立移除激活证明门槛及目标复合FK/同端限制的负对照分别1与2失败RED。首次CASE括号语法及测试把StoreCursor清洗异常误当原PG异常已修正，最终检验真实constraint cause。
+- 这只是schema/设计小步，未接短码投递、原认证/link命令、ask模型回合或管理台；不标F8完成，F10的2096项旧全套不覆盖0098。未合并/部署/生产访问/改Java；下一步接独立HMAC码与认证入站。
+
 ## 开发记录（2026-11-14）· F10完整快照本地/ Linux收尾
 
 - 固定0505f22938da12363052f57a7d0d6f9f6d29eb21的PostgreSQL+显式ffmpeg/ffprobe全套2096项、0失败、10跳过、exit0，1533.222秒；/tmp/gaoji-python-f10-full.log、.revision、.exit一致。涵盖F10传输、消息/F1说明索引和history混合入口，不代表真实embedding或QQ验收。
