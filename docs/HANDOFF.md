@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8无正文的可撤销角色证据（尚未接TxA）
+
+- 0099_link_role_evidence与LinkAuthority仅接受宿主原认证DecodedMessage：原顶层角色、原平台时间与HMAC回执，不保存body/code/显示名，不从旧历史/转发/裸role/私聊普通peer补权限。角色或路由变化推进代数；迟到升权忽略，同秒矛盾撤销，删除证据被拒绝以免重建代数复活旧许可。owner沿用当前完整actor的grant/revision；原epoch/route/scope/原时间和HMAC同时复查。
+- lookup过程中跨600秒截止的两个原断言均RED，修复proof与current返回前复查；32项真实PG权限/撤权重授/迟到/旧lease/作用域/HMAC篡改/迁移及旧F6/bind/预算/架构组合通过（44.711秒），Ruff/导入/diff通过。去掉角色代数、末尾期限及按到达顺序重写角色的三个独立负对照各1失败RED。
+- 此缓存仅反映已观察到的原认证角色，不是实时QQ角色查询，不能立即发现未收到证据的上游撤权；挑战仍受原600秒界限，发起与确认各要求自己的原认证角色。迁移不回填当前权限，空增量可回退、已有证据要求导出。
+- 仍未把observer/link reducer/独立码发送接到TxA或开放ask/管理页；F10旧全套不覆盖本段，仅Draft小步，不做真实QQ或部署完成声明。下一步Task37接敏感命令、原确认与一次性发行回执。
+
 ## 开发记录（2026-11-14）· F8双边连接存储（认证入口尚未开放）
 
 - 先核对maxx单向边/双方确认/2小时等待设计和现有bind/TxA/owner角色边界；docs/conversation-questions.md记录独立授权，不按成员/别名自动连接，远端不继承owner/VM身份，问答不自动发到QQ。
