@@ -27,6 +27,7 @@ const INITIAL_RESOURCES: ResourceName[] = [
   'databases',
   'groups',
   'conversations',
+  'budgets',
   'browser',
   'programs',
   'localModel',
@@ -191,7 +192,7 @@ export function useControlPlane(runtime: GaojiAdminRuntime) {
   useEffect(() => {
     if (!authenticated) return
     const timer = window.setInterval(() => {
-      void refreshMany(isAdmin ? ['qqOfficial', 'overview', 'databases', 'usage', 'backgroundAgents', 'commands', 'localModel', 'approvals', 'accounts', 'securityAudit', 'conversations'] : ['status'])
+      void refreshMany(isAdmin ? ['qqOfficial', 'overview', 'databases', 'usage', 'backgroundAgents', 'commands', 'localModel', 'approvals', 'accounts', 'securityAudit', 'conversations', 'budgets'] : ['status'])
     }, 30000)
     return () => window.clearInterval(timer)
   }, [authenticated, refreshMany, initialResources])
