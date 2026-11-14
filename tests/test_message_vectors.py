@@ -181,6 +181,7 @@ class MessageVectorTests(OutboxFixture):
             cursor.execute('''INSERT INTO message_media(scope_key,native_message_id,sender_native_user_id,canonical_message_id,segment_index,media_kind,
                 source_type,source_url,media_id,fetch_status,created_at,updated_at) VALUES (?,?,?,?,0,'image','official','',?,'ready',?,?)''',
                 (message.scope_key,message.native_message_id,message.sender_native_user_id,message.canonical_message_id,media,self.now,self.now))
+        self.assertIn('TEST slideshow tool',self.ledger.history(self.endpoint.scope,terms=('slideshow',))[0].prompt_text)
         self.assertEqual(len(self.catalog.enqueue(self.endpoint)),1)
         job = self.claim(); _,caption = self.catalog.current(job)
         self.assertIn('TEST slideshow tool',caption.content); self.assertNotIn('TEST_SECRET',caption.content)

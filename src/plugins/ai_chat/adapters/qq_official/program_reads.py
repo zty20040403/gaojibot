@@ -75,7 +75,9 @@ class ProgramReads:
         async def disconnected():
             while (await request.receive())['type']!='http.disconnect':
                 pass
-        work = asyncio.create_task(registry.execute(turn,name,arguments))
+        from .billing import scoped
+        with scoped(self.app,request.state.channel.identity.endpoint,'semantic_index',current=request.state.channel.current):
+            work = asyncio.create_task(registry.execute(turn,name,arguments))
         closed = asyncio.create_task(disconnected())
         try:
             await asyncio.wait((work,closed),return_when=asyncio.FIRST_COMPLETED)
