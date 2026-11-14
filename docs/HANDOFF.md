@@ -1,5 +1,11 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F10消息候选与合并底座（工具尚未开放语义查询）
+
+- message_recall只从message向量按当前模型/服务identity、canonical IR+说明hash取候选；scope、可见floor、chat方向/类型、发言人及ID区间在向量LIMIT前约束。排除其他会话、表情、无旧来源证据及过时向量；只从messages_with_captions重新投影证据，不返回semantic_documents.content。等权RRF合并字面/语义排行并按消息ID去重。
+- 5项真实PG候选/同账号另一会话/表情/未知元数据/正文改写/隐藏/command/同名模型服务变化/过滤前LIMIT/去重/零向量测试通过；删scope/identity/hash的2个负对照以及把发言人/区间过滤挪到LIMIT后的1个负对照均RED。旧缓存正文仍在库里时也不能返回为当前匹配。
+- 这是纯候选/排序底座，不是已开放history语义功能；原history参数/字面路径未改。接下来必须挂原BillingContext/current、原物理来源与回执，再做工具/后台/VM读取接线、最终可见性投影和真实工厂回归。F10固定全套/真实服务验收仍未完成，不部署/合并/改Java。
+
 ## 开发记录（2026-11-14）· F10消息/F1说明worker与宿主账单接齐（history待接）
 
 - QQ真实账号lease运行时在AI_SEMANTIC_ENABLED=true且provider/ModelBilling存在时启动独立worker；默认关闭不建模型通道。只使用当前物理reader来源，不猜真人或VM创建人，semantic_index/embedding记录宿主真实usage，缺价/用量仍未知或下界；无QQ发送或VM效果。
