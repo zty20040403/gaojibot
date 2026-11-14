@@ -405,6 +405,10 @@ class OfficialInboxStore:
                     status,reason='quarantined','input_sensitive_identity'
             elif prepared_input.kind == "quarantine":
                 status, reason = "quarantined", prepared_input.reason
+            elif prepared_input.kind=='link_control':
+                # Fail closed until the independent authenticated link reducer
+                # and ephemeral issuance receipts are wired; never retain its code.
+                status,reason = 'quarantined','link_control_unavailable'
             elif command is not None:
                 decision = self.binding.apply(cursor,
                     context=BindingContext(endpoint, decoded.actor,

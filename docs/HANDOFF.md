@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-14）· F8独立敏感命令隔离（尚未发行连接码）
+
+- 独立LinkCommand仅识别/link、六位ASCII确认、list/status/cancel与按opaque link_id撤销的/unlink，不借bind/admin命令或显示名；code不入repr。结构自提及才可剥离，伪造/矛盾/嵌入link命令只做敏感隔离，不授予认证身份。
+- TxA对尚未接好的link服务明确body-free quarantine link_control_unavailable；普通router在admission/effect checkpoint前拦link/unlink，不把验证码变成普通命令/账本。旧误分类TxB仍在入canonical历史前清raw payload与turn_text。不会因服务未开而静默落回普通消息。
+- 实际PG认证链/普通router两个边界先RED，修复后72项parser/原认证收件/旧bind/ops回复/可撤销权限组合通过（48.766秒），Ruff/导入/diff通过；独立删嵌入敏感隔离的纯归一化与PG收件负对照2失败RED。没有发码、创建链接或QQ/模型效果。
+- Task37继续在进行：原权限LinkReducer、HMAC短码、一致的双边确认、发行真实回执及运行时尚未接齐，ask/管理页另续；不标F8完成，未新固定全套/合并/部署/生产/Java变更。
+
 ## 开发记录（2026-11-14）· F8无正文的可撤销角色证据（尚未接TxA）
 
 - 0099_link_role_evidence与LinkAuthority仅接受宿主原认证DecodedMessage：原顶层角色、原平台时间与HMAC回执，不保存body/code/显示名，不从旧历史/转发/裸role/私聊普通peer补权限。角色或路由变化推进代数；迟到升权忽略，同秒矛盾撤销，删除证据被拒绝以免重建代数复活旧许可。owner沿用当前完整actor的grant/revision；原epoch/route/scope/原时间和HMAC同时复查。
