@@ -37,8 +37,8 @@
 
 - 0104私有question任务schema已建立，复用durable_jobs且队列只保存CQ-ID；完整source execution/account/endpoint/actor与定向link复合FK，原epoch/route/scope/revision/deadline及双方stop/目标budget代数冻结。等待最长7200秒且不超原任务；回答/拒绝或取消/过期/unknown终态及一次consume不可恢复/删除。它只证明结构，不自动创建/读取问答或增加QQ效果。
 - QuestionAuthority纯来源读口已接：只接受原宿主ExecutionBinding且匹配实际executing/chat完整来源；普通提问actor不需要或继承双方建边管理员/owner权限。原任务/link/问题的intent HMAC在不同重试时间稳定，current必须读取实际不可变任务行，不能由调用方修正旧stop/budget/时间/终态。双端同意/物理路由/准入、双端stop、目标预算及末尾期限复查；target_input自身current后只给问题和散列标签。读口通过不是已运行问答或已完成taint模型。
-- Questions纯持久reducer已接submit/去重/claim/current/回答拒绝/一次consume/关闭恢复，账号锁下live限额128/目标16/原任务4；队列只保存CQ-ID，不复制问答到普通表或result。实际job第一代/一次attempt、owner/lease/kind/payload/物理hash lane持续核验，defer/requeue不重放；关闭/终态queue同事务，过期规范expired，在途未知/restart不猜回答，已完成事实不改。消费必须原来源binding与最终current/期限。实际worker、模型取消与费用收尾已挂账号工厂，ask源入口尚待接，不把排队当目标已收到。
-- `ask` 提交有限长度的问题，建立独立等待任务；源模型在原任务期限内等待并取得结果和任务编号，最长两小时但不延长原source current。QuestionAsks等待读口028082d/Draft#113（等价e85342e）已实现，仅原ExecutionBinding能poll/close/一次consume；重复取消也保留CQ-ID并关闭队列。领取后的runtime/双端/预算/clock失效拒绝返回正文但保留真实领取事实，consumed_at不是送达。前台catalog/factory已通过本地双端真实工厂回归，实际Source入口与日志隔离已组合验收；审计UI、新全套和真实QQ/模型验收另续。无连接和不存在的目标统一拒绝，不枚举他人会话。
+- Questions纯持久reducer已接submit/去重/claim/current/回答拒绝/一次consume/关闭恢复，账号锁下live限额128/目标16/原任务4；队列只保存CQ-ID，不复制问答到普通表或result。实际job第一代/一次attempt、owner/lease/kind/payload/物理hash lane持续核验，defer/requeue不重放；关闭/终态queue同事务，过期规范expired，在途未知/restart不猜回答，已完成事实不改。消费必须原来源binding与最终current/期限。实际worker、模型取消与费用收尾已挂账号工厂，ask源入口及只读管理UI已接，不把排队当目标已收到。
+- `ask` 提交有限长度的问题，建立独立等待任务；源模型在原任务期限内等待并取得结果和任务编号，最长两小时但不延长原source current。QuestionAsks等待读口028082d/Draft#113（等价e85342e）已实现，仅原ExecutionBinding能poll/close/一次consume；重复取消也保留CQ-ID并关闭队列。领取后的runtime/双端/预算/clock失效拒绝返回正文但保留真实领取事实，consumed_at不是送达。前台catalog/factory已通过本地双端真实工厂回归，实际Source入口与日志隔离已组合验收；只读审计UI已接，新本机固定全套和真实QQ/模型验收另续。无连接和不存在的目标统一拒绝，不枚举他人会话。
 - B 只收到问题及安全的来源会话标签，不收到 A 的历史、记忆、文件、原 actor 的 owner/群管授权或被动回复窗口。B 的模型/历史/账单归 B 的物理会话；跨会话来源须独立 taint，不能冒充真人或常驻程序。
 - 目标按自身规则回答或拒绝；来源及问题作为 untrusted 资料进入易变上下文。不得挂载需要原 owner 真人私聊的 ops、浏览器个人授权、文件/VM 权限等工具。连接不放开 VM 的跨会话接口，也不复制另一台 `/work`。
 - 问答及模型内部通知只在等待任务/回合审计中保存，不是公共聊天消息，不进入 `history` / VM events。目标普通发言仍须显式工具动作与自身主动消息权限/额度/停止门槛；不能把问题、回答或“已收到”自动作为 QQ 通知。
@@ -53,12 +53,23 @@
 
 - QuestionRuntime在原LinkIngress可用后、gateway.run前恢复旧请求再挂目标worker，即使当前没有AI也关闭旧epoch授权；每5秒128+1 live复查并异常超量拒绝。模型或同库账单不可用时明确拒新question。退出先排空socket/真实费用，再关闭待处理question/queue，保留已完成事实/连接；current在领域DB检查前后复查原runtime token，不能因SQL epoch在清理期间仍有效而让SDK取消后返回工具调用继续请求。群聊用本物理群偏好、私聊用宿主默认模型，不把私聊传进group-only偏好读口或借源真人配置。
 
-- Source PrivateQuestionAudit隔离组件2e2c931/Draft#114（等价5411fb4）由内核在同批模型说明前获得ask标记；后续普通request记录关闭，loop事件（含其他工具的被污染参数/结果/fingerprint）仅安全元数据，source trace只留真实usage/模型元数据，不保存私有正文。非ask回合继续原日志；私有工具后模型失败也执行隔离。正常本端用户回复仍按原权限，不自动QQ转发问答。3个实际Source factory/PG/Gateway回归只注入工具验证隔离，不等于Source ask catalog/factory已接。
+- Source PrivateQuestionAudit隔离组件2e2c931/Draft#114（等价5411fb4）由内核在同批模型说明前获得ask标记；后续普通request记录关闭，loop事件（含其他工具的被污染参数/结果/fingerprint）仅安全元数据，source trace只留真实usage/模型元数据，不保存私有正文。非ask回合继续原日志；私有工具后模型失败也执行隔离。正常本端用户回复仍按原权限，不自动QQ转发问答。3个实际Source factory/PG/Gateway回归只注入工具验证隔离，随后Source ask catalog/factory已另接并验收。
 
 - 共享guarded_wait的current失效可能先进入模型取消清理，外层账号取消随后到达；清理必须shield/drain同一模型task而非直接await，防止二次取消打断真实socket/usage收尾、提前关闭question/queue。真实factory确定性退出回归保持stopping未完成、question仍running、原requests=1及真实usage断言。
 
 - 前台ask组件3965080/Draft117（等价c9b86c9）按target/question调用原QuestionAsks；只能由原OfficialTurnPlatform/token/ExecutionBinding的chat/final入口建立session，source/endpoints/actor/scope/route/native全部匹配。宿主先范围后LIMIT33读取本物理source当前双边同意的可用方向，给不透明连接ID/散列标签供模型选取；不按群名、历史别名、openid猜目标，反向/停止/预算不可用目标不列出，旧目录不授权新请求。后台/VM/目标question元数据不能借前台session递归ask。目录超过32明确拒绝，tool timeout7205只容纳领域7200上限且仍受原任务deadline。
-- 4实际默认unbound双端私聊/Gateway/TxA/link/队列对话测试及61组合通过，五独立CF RED；这不代表真实账号验收或管理UI完成。target自己的ask回答/拒绝候选和Source的ask提问由不同宿主上下文限定，不互借能力。
+- 4实际默认unbound双端私聊/Gateway/TxA/link/队列对话测试及61组合通过，五独立CF RED；只读管理UI已随后接齐，但不代表真实账号验收。target自己的ask回答/拒绝候选和Source的ask提问由不同宿主上下文限定，不互借能力。
+
+## 目标侧显式公开通知（待实现，不是现有能力）
+
+权威F8例子“帮我去群里说一声晚上聚餐改到7点”不能由当前只读QuestionModel完成；只完成私有总结并不等于整个F8已验收。目标普通文本/私有ask回答绝不能自动变成QQ消息。
+
+- 拟只为当前首代question worker开放绑定qid的目标本物理群 `say(text)`，无account/endpoint/actor/owner/program/回复窗口参数，不开放递归提问、VM、browser、ops、file、管理或模型配置。问题仍是taint，目标可拒绝；只有目标明确调用say才产生独立公开效果，私有问题/答案本身仍不进公共聊天。
+- 使用认证READY/self的真实Bot身份，冻结identity revision、同完整account/目标endpoint/route/capability/stop/budget、原qid/job首代lease/原期限及双边许可。每qid最多一次2000字纯文本、单条、排队最多30秒且不超过原问答截止；稳定承诺不能通过新任务、重启或更换正文重新发送。
+- 群必须已确认proactive_state=allowed；unknown/denied明确拒绝，不探测POST、不借A/B任何真人被动消息或后来窗口。预算通知是固定预算专用许可，不能借用；program身份也不可借。需独立新purpose/source及存储约束，旧schema的普通/控制/预算发送保持原路径，不无条件查询新表或捕获缺表。
+- enqueue、claim与HTTP前复查同一原runtime和问答/双端current；已接收的QQ效果不可撤回。401/429/格式/主动拒绝、超时/取消及底层retry/plain均不得重放；RAM正文丢失/重启关闭原意图。返回成功只认匹配真实send_ledger applied回执，不把fake native-ID、排队或模型承诺当成功。
+- 私有问答结果、公开通知授权终态、迟到真实accepted事实须分开，取消/停止/预算变化后仍保存实际回执但不恢复旧许可/私有答案。启动先关闭旧授权再sender恢复事实；退出排空已accepted事实。管理审计分别展示公开效果与私有回答/原领取，平台接受不等于群友已读。
+- 后续分小PR完成schema、纯源/一次计划、Sender接线、目标工具/runtime与实际默认入口测试；独立负对照需覆盖Bot身份、group-only/allowed、首代job/双端current、窗口/重试、一次承诺、取消/迟到回执/恢复。真实QQ主动权限仍由owner测试群验收，不借F7或maxx能力推断。
 
 ## 小步实施及验收
 
