@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-15）· 护栏失效排空与账号取消交叠修复
+
+- Source ask组合初次51项130.159秒通过，但最终143.991秒重检在旧QuestionRuntime shutdown测试发现1failure，不能将初次通过当最终验收。guarded_wait因current失效进入finally并已cancel模型后，账号退出再次cancel外层waiter，旧直接await task会把第二次取消传入SDK/socket/真实费用清理，提前关闭question/queue。
+- 在真实OfficialRuntime/PG/FakePlatform退出的token失效→gateway.stop→worker.cancel顺序中，用gateway.stop等guard进入清理，再放行worker取消，确定性复现1failure/无error；不是放宽stopping.done、running状态或usage/requests断言。guarded_wait清理改drain同一模型task，shield且不再传递取消，保留已接受usage、拒绝退出后的新请求，排空后再关闭question/queue。
+- 原实现RED日志/tmp/gaoji-f8-guard-drain-original-red.log，修复GREEN及62项runtime/worker/model/embedding/program/vision/OCR/架构组合116.931秒通过；Ruff/两导入/diff通过。修复只涉及共享等待清理与确定性旧测试，不混SourceFrontend挂载；前台Source提交须在本修复后最终重检。
+- 另已核验旧23059aeb27be5b75f76e3049360e395f787f66f7的本机PG+ffmpeg全套/tmp/gaoji-python-f8-question-runtime-full.*：2270项、1failure、10skip、3397.020秒、exit1，MediaPipelineTests.test_media_only_batch_renders_canonical_handles_and_reads_previous_image缺连续消息标记，task42待独立定位。旧Linux同快照通过不替代本机失败，不改写旧回执或称最新全套通过；未合并/部署/生产/Java/真实QQ模型验收。
+
 ## 开发记录（2026-11-15）· F8前台私有问答日志隔离（ask catalog/factory待接）
 
 - 隔离组件2e2c931（Draft PR #114，等价5411fb4）的PrivateQuestionAudit在同批模型说明之前接受内核tool_batch_sink的ask标记，不等tool_started；清旧request引用并拒存以后含私有结果的turn_requests，所有后续loop事件含其他工具的被污染参数/结果/无密钥fingerprint只留安全元数据，结束时清source trace的messages/execution_decisions/model_routing，真实usage与模型元数据仍保留。

@@ -9,6 +9,7 @@ import asyncio
 import copy
 from contextlib import suppress
 
+from src.plugins.ai_chat.billing_context import drain
 from src.plugins.ai_chat.model_budget import active_model_budget
 from src.plugins.ai_chat.vision_worker import VisionJob, VisionWorker
 from .media_refs import ExternalText, MediaDenied, bounded_text
@@ -28,8 +29,11 @@ async def guarded_wait(awaitable, current, *, timeout=45, interval=0.2):
     finally:
         if not task.done():
             task.cancel()
+            # A current/timeout failure may already be draining the cancelled
+            # model when its outer worker is cancelled. Never forward that
+            # second cancellation into the same socket/known-usage cleanup.
             with suppress(asyncio.CancelledError):
-                await task
+                await drain(task)
 
 
 class _GuardedGateway:
