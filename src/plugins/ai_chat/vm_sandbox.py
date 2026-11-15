@@ -31,6 +31,10 @@ from .sandbox import (
 PACKAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,79}$")
 VM_PREFIX = "gaoji-vm-"
 logger = logging.getLogger(__name__)
+
+
+class GuestAgentBroken(SandboxError):
+    pass
 INSTALL_FILE_SCRIPT = """
 import os, shutil, sys, uuid
 source, target, readonly = sys.argv[1], sys.argv[2], sys.argv[3] == '1'
@@ -358,11 +362,16 @@ class VmSandboxManager:
 
     async def _agent(self, sandbox_id: str, request: dict[str, object], *, timeout: int = 20) -> object:
         target = self._name(sandbox_id)
-        answer = await self._virsh(
-            "qemu-agent-command", target,
-            json.dumps(request, separators=(",", ":")), "--timeout", str(timeout),
-            timeout=timeout + 5,
-        )
+        try:
+            answer = await self._virsh(
+                "qemu-agent-command", target,
+                json.dumps(request, separators=(",", ":")), "--timeout", str(timeout),
+                timeout=timeout + 5,
+            )
+        except SandboxError as exc:
+            if "not available due to an error" in str(exc):
+                raise GuestAgentBroken(str(exc)) from exc
+            raise
         try:
             parsed = json.loads(answer)
         except json.JSONDecodeError as exc:
@@ -415,6 +424,8 @@ class VmSandboxManager:
             try:
                 await self._agent(sandbox_id, {"execute": "guest-ping"}, timeout=5)
                 return
+            except GuestAgentBroken:
+                raise
             except (SandboxError, asyncio.TimeoutError):
                 await asyncio.sleep(2)
         raise SandboxError("VM 启动超时，客体代理未就绪。")
@@ -796,7 +807,7 @@ class VmSandboxManager:
         try:
             while True:
                 response = await self._guest_file(sandbox_id, "guest-file-read", {
-                    "handle": handle, "count": 48 * 1024,
+                    "handle": handle, "count": 1024 * 1024,
                 })
                 if not isinstance(response, dict):
                     raise SandboxError("VM 文件读取状态无效。")
@@ -835,7 +846,7 @@ class VmSandboxManager:
             if type(file_only) is not bool:
                 raise SandboxError("Invalid export mode")
             if file_only:
-                from src.sandbox_runtime.artifact_export import EXPORT_FILE_SCRIPT
+                from src.sandbox_runtime.artifact_export import STAGE_FILE_SCRIPT
 
                 if (type(self.max_file_bytes) is not int or self.max_file_bytes <= 0
                         or type(max_bytes) is not int or max_bytes <= 0):
@@ -843,9 +854,18 @@ class VmSandboxManager:
                 limit = min(self.max_file_bytes, max_bytes, 256 * 1024 * 1024)
                 await self._owned_running(owner, sandbox_id)
                 target = self._workspace_path(path).removeprefix("/workspace/")
-                code, content, _ = await self._guest_exec(sandbox_id, "/usr/bin/python3",
-                    ["-I", "-c", EXPORT_FILE_SCRIPT, target, str(limit)], timeout=300)
-                if code or not 0 < len(content) <= limit:
+                staged = "/root/gaoji-export-" + secrets.token_hex(12)
+                try:
+                    code, _, _ = await self._guest_exec(
+                        sandbox_id, "/usr/bin/python3",
+                        ["-I", "-c", STAGE_FILE_SCRIPT, target, str(limit), staged], timeout=300,
+                    )
+                    if code:
+                        raise SandboxError("Bounded regular-file export failed")
+                    content = await self._read_guest_file(sandbox_id, staged, max_bytes=limit)
+                finally:
+                    await self._guest_exec(sandbox_id, "/bin/rm", ["-f", staged])
+                if not 0 < len(content) <= limit:
                     raise SandboxError("Bounded regular-file export failed")
                 return content, False
             return await self._export_artifact_locked(owner, sandbox_id, path)
@@ -919,9 +939,19 @@ class VmSandboxManager:
                 self._save_metadata(sandbox_id, metadata)
             if await self._running(sandbox_id):
                 if owner.startswith('qqo:conversation:'):
-                    await self._wait_guest(sandbox_id, timeout=60)
-                    await self._conversation_event('ready',owner,sandbox_id,**event_args)
-                return
+                    try:
+                        await self._wait_guest(sandbox_id, timeout=60)
+                    except GuestAgentBroken:
+                        if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
+                            raise
+                        logger.warning("VM guest agent broken; restarting vm=%s", sandbox_id)
+                        async with self.io_lock(sandbox_id):
+                            await self._virsh("destroy", self._name(sandbox_id))
+                    else:
+                        await self._conversation_event('ready',owner,sandbox_id,**event_args)
+                        return
+                else:
+                    return
             existing = await self._all_metadata()
             running = [item for item in existing if await self._running(str(item["id"]))]
             if len(running) >= self.max_total:
@@ -950,17 +980,22 @@ class VmSandboxManager:
             if not await self._running(sandbox_id):
                 await self._conversation_event('stopped',owner,sandbox_id)
                 return
-            code, _, err = await self._guest_exec(sandbox_id, "/usr/bin/sync", [], timeout=20)
-            if code:
-                raise SandboxError(f"VM 文件同步失败：{err.decode(errors='replace')[-500:]}")
-            frozen = await self._agent(sandbox_id, {"execute": "guest-fsfreeze-freeze"}, timeout=20)
-            if not isinstance(frozen, int) or frozen < 1:
-                raise SandboxError("VM 文件系统冻结失败，保留运行状态。")
             try:
+                code, _, err = await self._guest_exec(sandbox_id, "/usr/bin/sync", [], timeout=20)
+                if code:
+                    raise SandboxError(f"VM 文件同步失败：{err.decode(errors='replace')[-500:]}")
+                frozen = await self._agent(sandbox_id, {"execute": "guest-fsfreeze-freeze"}, timeout=20)
+                if not isinstance(frozen, int) or frozen < 1:
+                    raise SandboxError("VM 文件系统冻结失败，保留运行状态。")
+            except GuestAgentBroken:
+                logger.warning("VM guest agent broken during stop; forcing destroy vm=%s", sandbox_id)
                 await self._virsh("destroy", self._name(sandbox_id))
-            except Exception:
-                await self._agent(sandbox_id, {"execute": "guest-fsfreeze-thaw"}, timeout=20)
-                raise
+            else:
+                try:
+                    await self._virsh("destroy", self._name(sandbox_id))
+                except Exception:
+                    await self._agent(sandbox_id, {"execute": "guest-fsfreeze-thaw"}, timeout=20)
+                    raise
             await self._conversation_event('stopped',owner,sandbox_id)
 
     async def destroy(self, owner: str, sandbox_id: str, *, if_unused=False) -> None:

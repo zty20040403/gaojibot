@@ -139,3 +139,15 @@ class ProgramKeeperTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertTrue(task.done())
         self.assertTrue((await self.state())['wanted'])
         self.assertTrue((await self.state())['retained'])
+
+    async def test_visit_logs_error_detail_and_throttles_consecutive_failures(self):
+        self.manager._metadata = AsyncMock(side_effect=PermissionError('TEST_PERMISSION_DENIED_DETAIL'))
+        with patch.object(self.lifecycle.logger, 'warning') as warn, \
+                patch('src.plugins.ai_chat.adapters.qq_official.program_keeper._monotonic', side_effect=[100.0, 200.0, 705.0]):
+            await self.lifecycle.keeper.visit(self.owner, 's123456')
+            await self.lifecycle.keeper.visit(self.owner, 's123456')
+            await self.lifecycle.keeper.visit(self.owner, 's123456')
+        self.assertEqual(warn.call_count, 2)
+        self.assertIn('detail=%s', warn.call_args_list[0].args[0])
+        self.assertEqual(warn.call_args_list[0].args[2], 'PermissionError')
+        self.assertIn('TEST_PERMISSION_DENIED_DETAIL', warn.call_args_list[0].args[3])

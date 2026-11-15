@@ -168,3 +168,53 @@ class VMManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.manager._virsh.side_effect = virsh
         await self.manager.stop_owned(self.owner,'s123456')
         self.assertEqual(seen,['revoke','destroy'])
+
+    async def test_start_owned_restarts_vm_when_qga_is_broken(self):
+        from src.plugins.ai_chat.sandbox import SandboxError, SandboxExecutionActivity
+        from src.plugins.ai_chat.vm_sandbox import GuestAgentBroken
+
+        self.manager._running.return_value = True
+        calls = []
+        broken = True
+
+        async def virsh(*args, timeout=30):
+            nonlocal broken
+            calls.append(args)
+            if args[0] == 'qemu-agent-command':
+                if broken:
+                    raise SandboxError('error: QEMU guest agent is not available due to an error')
+                return '{"return":{}}'
+            if args[0] == 'destroy':
+                broken = False
+                return ''
+            if args[0] == 'start':
+                return ''
+            raise AssertionError(f'unexpected virsh call: {args}')
+
+        self.manager._virsh.side_effect = virsh
+        self.manager._wait_guest = self.manager.__class__._wait_guest.__get__(self.manager)
+        self.manager._agent = self.manager.__class__._agent.__get__(self.manager)
+        self.manager._defined = AsyncMock(return_value=True)
+        await self.manager.start_owned(self.owner, 's123456')
+        self.assertIn(('destroy', 'gaoji-vm-s123456'), calls)
+        self.assertIn(('start', 'gaoji-vm-s123456'), calls)
+        self.hook.ready.assert_awaited_once_with(self.owner, 's123456')
+
+        # If an execution is active, do not force destroy on broken QGA.
+        broken = True
+        self.manager._active_execs['act1'] = SandboxExecutionActivity('act1', 's123456', self.owner, 'cmd', 1)
+        try:
+            with self.assertRaises(GuestAgentBroken):
+                await self.manager.start_owned(self.owner, 's123456')
+        finally:
+            self.manager._active_execs.clear()
+
+    async def test_stop_owned_forces_destroy_when_qga_is_broken(self):
+        from src.plugins.ai_chat.vm_sandbox import GuestAgentBroken
+
+        self.manager._running.return_value = True
+        self.manager._guest_exec.side_effect = GuestAgentBroken('QEMU guest agent is not available due to an error')
+        self.manager._virsh.reset_mock()
+        await self.manager.stop_owned(self.owner, 's123456')
+        self.manager._virsh.assert_awaited_once_with('destroy', 'gaoji-vm-s123456')
+        self.hook.stopped.assert_awaited_once_with(self.owner, 's123456')

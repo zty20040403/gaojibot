@@ -9,7 +9,8 @@ from tests import test_vm_program_http as fixture
 from tests.qq_official_outbox_fixture import OutboxFixture
 from tests.qq_official_file_http_fixture import FileMediaFake
 from src.plugins.ai_chat.adapters.qq_official.file_services import FileServices,FileServiceConfig
-from src.sandbox_runtime.artifact_export import bounded_regular_file
+from src.sandbox_runtime.artifact_export import EXPORT_FILE_SCRIPT, STAGE_FILE_SCRIPT, bounded_regular_file, stage_regular_file
+from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
 
 
 class VMFileHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
@@ -203,3 +204,160 @@ class VMFileHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post()).json()['state'],'failed')
         self.manager.export_artifact.assert_awaited_once()
         self.assertEqual(self.lifecycle.files.active,{})
+
+
+class VMLargeExportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_30mib_export_uses_1mib_chunks_and_cleans_staged_file(self):
+        import base64
+        import hashlib
+        import json
+        import tempfile
+        from pathlib import Path
+        from src.plugins.ai_chat.sandbox import SANDBOX_ID_PATTERN
+
+        self.assertRegex('s123456', SANDBOX_ID_PATTERN)
+        payload = (b'GAOJI30M' * (4 * 1024 * 1024))[:30 * 1024 * 1024]
+        expected_sha = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            work = root_path / 'workspace'
+            guest_root = root_path / 'guest_root'
+            work.mkdir(); guest_root.mkdir()
+            (work / 'big.mp4').write_bytes(payload)
+            vms_root = root_path / 'vms'
+            vms_root.mkdir(mode=0o700)
+            manager = VmSandboxManager(image='/TEST_base.qcow2', root=str(vms_root), max_file_bytes=64 * 1024 * 1024)
+            vm_dir = manager._directory('s123456')
+            vm_dir.mkdir(parents=True)
+            (vm_dir / 'metadata.json').write_text(json.dumps({
+                'id': 's123456',
+                'owner_hash': manager._owner_hash('qqo:conversation:TEST'),
+                'owner_ref': 'qqo:conversation:TEST',
+                'runtime': 'debian',
+                'purpose': 'task',
+            }), encoding='utf-8')
+            manager._running = AsyncMock(return_value=True)
+            manager._wait_guest = AsyncMock()
+            handles = {}
+            next_handle = 1
+            max_response_bytes = 0
+
+            def map_staged(guest_path: str) -> Path:
+                if guest_path.startswith('/root/'):
+                    return guest_root / guest_path.removeprefix('/root/')
+                raise AssertionError(f'unexpected guest path: {guest_path}')
+
+            async def fake_guest_exec_raw(sandbox_id, path, args, *, timeout=60, input_bytes=None):
+                if path == '/usr/bin/python3' and args[:2] == ['-I', '-c']:
+                    staged = map_staged(args[5])
+                    size = stage_regular_file(str(work), args[3], int(args[4]), str(staged))
+                    return 0, f'{size}\n'.encode(), b''
+                if path == '/usr/bin/stat' and args[:1] == ['-c']:
+                    target = map_staged(args[2])
+                    return 0, f'regular file:{target.stat().st_size}\n'.encode(), b''
+                if path == '/bin/rm' and args[:1] == ['-f']:
+                    map_staged(args[1]).unlink(missing_ok=True)
+                    return 0, b'', b''
+                raise AssertionError(f'unexpected guest exec: {path} {args}')
+
+            async def fake_virsh(*args, timeout=30):
+                nonlocal next_handle, max_response_bytes
+                assert args[0] == 'qemu-agent-command'
+                req = json.loads(args[2])
+                op = req['execute']
+                arguments = req.get('arguments', {})
+                if op == 'guest-file-open':
+                    target = map_staged(arguments['path'])
+                    f = open(target, 'rb')
+                    hid = next_handle; next_handle += 1
+                    handles[hid] = f
+                    resp = {'return': hid}
+                elif op == 'guest-file-read':
+                    data = handles[arguments['handle']].read(arguments['count'])
+                    resp = {'return': {'count': len(data), 'buf-b64': base64.b64encode(data).decode('ascii'), 'eof': not data}}
+                elif op == 'guest-file-close':
+                    handles.pop(arguments['handle']).close()
+                    resp = {'return': {}}
+                else:
+                    raise AssertionError(f'unexpected QGA op: {op}')
+                encoded = json.dumps(resp)
+                max_response_bytes = max(max_response_bytes, len(encoded.encode('utf-8')))
+                return encoded
+
+            manager._guest_exec_raw = AsyncMock(side_effect=fake_guest_exec_raw)
+            manager._virsh = AsyncMock(side_effect=fake_virsh)
+
+            exported, is_dir = await manager.export_artifact(
+                'qqo:conversation:TEST', 's123456', 'big.mp4',
+                file_only=True, max_bytes=64 * 1024 * 1024,
+            )
+            self.assertFalse(is_dir)
+            self.assertEqual(hashlib.sha256(exported).hexdigest(), expected_sha)
+            self.assertLess(max_response_bytes, 2 * 1024 * 1024)
+            self.assertEqual(list(guest_root.iterdir()), [])
+
+    def test_staging_rejects_the_same_unsafe_sources_and_preserves_existing_output(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            work = base / 'work'; work.mkdir()
+            outside = base / 'outside'; outside.write_bytes(b'TEST_OUTSIDE')
+            (work / 'good').write_bytes(b'TEST_CONTENT')
+            (work / 'empty').touch()
+            (work / 'link').symlink_to(outside)
+            (work / 'dirlink').symlink_to(base, target_is_directory=True)
+            staged = base / 'staged'
+            for path, limit in (('../outside', 1024), ('/outside', 1024), ('link', 1024),
+                                ('dirlink/outside', 1024), ('empty', 1024), ('good', 0), ('good', 3)):
+                with self.subTest(path=path, limit=limit):
+                    with self.assertRaises((ValueError, OSError)):
+                        bounded_regular_file(str(work), path, limit)
+                    with self.assertRaises((ValueError, OSError)):
+                        stage_regular_file(str(work), path, limit, str(staged))
+                    self.assertFalse(staged.exists())
+            staged.write_bytes(b'TEST_EXISTING')
+            with self.assertRaises(FileExistsError):
+                stage_regular_file(str(work), 'good', 1024, str(staged))
+            self.assertEqual(staged.read_bytes(), b'TEST_EXISTING')
+            self.assertEqual(outside.read_bytes(), b'TEST_OUTSIDE')
+
+    def test_stage_and_export_scripts_standalone_and_clean_on_change(self):
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            work = root_path / 'work'
+            work.mkdir()
+            (work / 'hello.txt').write_bytes(b'TEST_PAYLOAD')
+            # Verify EXPORT_FILE_SCRIPT still compiles and runs standalone (docker.py relies on it).
+            proc = subprocess.run(
+                [sys.executable, '-I', '-c', EXPORT_FILE_SCRIPT.replace("'/workspace'", repr(str(work))), 'hello.txt', '1024'],
+                capture_output=True, check=False,
+            )
+            self.assertEqual((proc.returncode, proc.stdout), (0, b'TEST_PAYLOAD'))
+
+            staged_ok = root_path / 'staged_ok'
+            proc2 = subprocess.run(
+                [sys.executable, '-I', '-c', STAGE_FILE_SCRIPT.replace("'/workspace'", repr(str(work))), 'hello.txt', '1024', str(staged_ok)],
+                capture_output=True, check=False,
+            )
+            self.assertEqual((proc2.returncode, proc2.stdout.strip()), (0, b'12'))
+            self.assertEqual(staged_ok.read_bytes(), b'TEST_PAYLOAD')
+
+            staged_changed = root_path / 'staged_changed'
+            real_read = os.read
+            def mutating_read(fd, n):
+                chunk = real_read(fd, n)
+                if chunk:
+                    (work / 'hello.txt').write_bytes(b'TEST_MUTATED_BYTES!')
+                return chunk
+            with patch('os.read', side_effect=mutating_read):
+                with self.assertRaisesRegex(ValueError, 'export_file_changed'):
+                    stage_regular_file(str(work), 'hello.txt', 1024, str(staged_changed))
+            self.assertFalse(staged_changed.exists())
