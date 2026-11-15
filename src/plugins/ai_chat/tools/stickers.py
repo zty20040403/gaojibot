@@ -35,7 +35,7 @@ async def find_stickers(turn: TurnState, arguments: dict[str, object]) -> str:
             query,
             limit=limit,
         )
-        turn.sticker_handles_this_turn.update(item.handle for item in records)
+        turn.sticker_handles_seen.update(item.handle for item in records)
     except (OSError, RuntimeError, ValueError, DatabaseError) as exc:
         turn.context.app.logger.warning(f"Media search tool failed: {exc}")
         records = []

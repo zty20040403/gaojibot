@@ -76,7 +76,10 @@ class TurnState:
     image_sources: list[str] = field(default_factory=list)
     voice_message_id: int | None = None
     search_results: list[SearchResult] = field(default_factory=list)
+    # Tried or sent this turn; a query never picks these again.
     sticker_handles_this_turn: set[str] = field(default_factory=set)
+    # Shown by find_stickers; the model may send one of these by handle.
+    sticker_handles_seen: set[str] = field(default_factory=set)
     sticker_sent: bool = False
     model_profile: Any = None
 
