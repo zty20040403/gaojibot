@@ -53,7 +53,7 @@
 
 - QuestionRuntime在原LinkIngress可用后、gateway.run前恢复旧请求再挂目标worker，即使当前没有AI也关闭旧epoch授权；每5秒128+1 live复查并异常超量拒绝。模型或同库账单不可用时明确拒新question。退出先排空socket/真实费用，再关闭待处理question/queue，保留已完成事实/连接；current在领域DB检查前后复查原runtime token，不能因SQL epoch在清理期间仍有效而让SDK取消后返回工具调用继续请求。群聊用本物理群偏好、私聊用宿主默认模型，不把私聊传进group-only偏好读口或借源真人配置。
 
-- Source PrivateQuestionAudit由内核在同批模型说明前获得ask标记；后续普通request记录关闭，loop事件（含其他工具的被污染参数/结果/fingerprint）仅安全元数据，source trace只留真实usage/模型元数据，不保存私有正文。非ask回合继续原日志；私有工具后模型失败也执行隔离。正常本端用户回复仍按原权限，不自动QQ转发问答。3个实际Source factory/PG/Gateway回归只注入工具验证隔离，不等于Source ask catalog/factory已接。
+- Source PrivateQuestionAudit隔离组件2e2c931/Draft#114（等价5411fb4）由内核在同批模型说明前获得ask标记；后续普通request记录关闭，loop事件（含其他工具的被污染参数/结果/fingerprint）仅安全元数据，source trace只留真实usage/模型元数据，不保存私有正文。非ask回合继续原日志；私有工具后模型失败也执行隔离。正常本端用户回复仍按原权限，不自动QQ转发问答。3个实际Source factory/PG/Gateway回归只注入工具验证隔离，不等于Source ask catalog/factory已接。
 
 ## 小步实施及验收
 
