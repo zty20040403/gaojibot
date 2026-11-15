@@ -94,6 +94,9 @@ async def _deliver_sticker(session, turn, candidates, *, chosen):
             continue
         turn.sticker_handles_this_turn.add(handle)
         turn.sticker_sent = True
+        if (isinstance(result, dict) and result.get('artifact_id') and result.get('state') in {
+                'stored', 'uploading', 'uploaded', 'publishing', 'published', 'handed_off', 'message_accepted'}):
+            turn.delivered = True
         await _record_sent(turn, handle)
         return result
 
@@ -122,7 +125,11 @@ def media_registry(registry, context):
                 return json.dumps({'ok':False,'code':'media_unavailable'})
             try:
                 if name=='view_image':result=await session.view_image(arguments)
-                elif name=='reply_with_voice':result=await session.reply_with_voice(arguments)
+                elif name=='reply_with_voice':
+                    result=await session.reply_with_voice(arguments)
+                    if (isinstance(result,dict) and result.get('artifact_id')
+                            and result.get('state') in {'pending','committed'}):
+                        turn.delivered = True
                 elif name=='import_file_to_sandbox':result=await session.import_file(arguments)
                 elif name=='transcribe_voice':result=await session.voice(arguments)
                 elif name=='read_attachment':result=await session.document(arguments)

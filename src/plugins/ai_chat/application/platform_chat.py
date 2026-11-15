@@ -236,11 +236,18 @@ class PlatformChatService:
             except Exception as exc:
                 raise ChatFailure("我这边处理消息时出错了。", code="internal") from exc
             if not answer:
-                raise ChatFailure("模型没有返回内容。", code="empty_response")
+                if not turn.delivered:
+                    raise ChatFailure("模型没有返回内容。", code="empty_response")
+                answer = ""
             assert_job_owned()
             if media_session is not None:
                 await media_session.current()
                 answer = media_session.finish(answer)
+                answer = media_session.finish(answer or "")
+            if not answer or not answer.strip():
+                if turn.delivered:
+                    return "[silence]"
+                raise ChatFailure("模型没有返回内容。", code="empty_response")
             stripped = answer.strip()
             if stripped == "[silence]" or stripped.startswith("[silence:"):
                 return stripped
