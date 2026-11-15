@@ -473,7 +473,7 @@
 
 **原来源等待组件（2026-11-15，Draft#113，028082d/等价e85342e）**：QuestionAsks绑定实际runtime token/原ExecutionBinding和opaque link-ID，0.5秒轮询原私有等待、不延长原任务或两小时上限；同一提交/cleanup任务shield/drain，双取消不丢已提交CQ-ID或等待DB slot的关闭。原binding一次consume后再复查runtime/双端/预算/最终clock，保留领取事实不等于已返回/QQ送达。12新真实PG/queue与52项组合最终151.407秒通过，六独立CF各1failure RED；前台catalog/factory/普通日志隔离、管理页和新固定全套另接，未合并/部署/真实QQ验收。
 
-**Source私有正文隔离（2026-11-15）**：PrivateQuestionAudit通过内核早批次标记，在model_note之前识别ask，拒存后续turn_requests、仅记录安全loop元数据并清source trace正文/决策/路由明细，保留真实用量；非ask回合日志不变。3实际Source factory/PG/Gateway注入工具回归与29项组合95.182秒通过，4独立CF各1failure RED，静态通过；还需实际Source ask catalog/factory与双端对话、管理页、新固定全套，未合并/部署/QQ验收。
+**Source私有正文隔离（2026-11-15，Draft#114，2e2c931/等价5411fb4）**：PrivateQuestionAudit通过内核早批次标记，在model_note之前识别ask，拒存后续turn_requests、仅记录安全loop元数据并清source trace正文/决策/路由明细，保留真实用量；非ask回合日志不变。3实际Source factory/PG/Gateway注入工具回归与29项组合95.182秒通过，4独立CF各1failure RED，静态通过；还需实际Source ask catalog/factory与双端对话、管理页、新固定全套，未合并/部署/QQ验收。
 
 ### F9 群内控制和账单
 
