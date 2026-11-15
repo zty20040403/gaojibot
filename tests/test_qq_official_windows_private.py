@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from src.qq_official.windows_private import AccessEntry, private_acl
 
@@ -88,6 +89,58 @@ class WindowsLocalVolumePolicyTests(unittest.TestCase):
         for path in (None, "\\\\?\\Z:\\credential", "\\\\?\\UNC\\server\\share\\credential"):
             with self.subTest(path=path), self.assertRaises(OSError):
                 self.api(path).regular_local_file(1)
+
+
+class WindowsCredentialDispatchTests(unittest.TestCase):
+    def test_nt_verify_private_file_requires_valid_acl_without_leaking(self):
+        from src.qq_official.credentials import CredentialError, verify_private_file
+        with tempfile.TemporaryDirectory() as directory:
+            secret = Path(directory) / "secret"
+            secret.write_text("TEST_SECRET", encoding="utf-8")
+            with secret.open("rb") as stream, patch("src.qq_official.credentials.os.name", "nt"):
+                verify_private_file(stream.fileno(), acl_validator=lambda fd: fd == stream.fileno())
+                with self.assertRaises(CredentialError):
+                    verify_private_file(stream.fileno(), acl_validator=lambda _fd: False)
+                with self.assertRaises(CredentialError) as caught:
+                    verify_private_file(
+                        stream.fileno(),
+                        acl_validator=lambda _fd: (_ for _ in ()).throw(OSError("TEST_SECRET")),
+                    )
+                self.assertNotIn("TEST_SECRET", str(caught.exception))
+
+    def test_nt_read_secret_opens_verifies_and_always_closes_fd(self):
+        from src.qq_official.credentials import CredentialError, _read_secret
+        with tempfile.TemporaryDirectory() as directory:
+            secret = Path(directory) / "secret"
+            secret.write_text("TEST_SECRET\n", encoding="utf-8")
+            opened = []
+
+            def fake_open(path):
+                fd = os.open(path, os.O_RDONLY)
+                opened.append(fd)
+                return fd
+
+            with (
+                patch("src.qq_official.credentials.os.name", "nt"),
+                patch("src.qq_official.windows_private.open_windows_private_readonly", side_effect=fake_open),
+            ):
+                self.assertEqual(_read_secret(secret, acl_validator=lambda _fd: True), "TEST_SECRET")
+                with self.assertRaises(OSError):
+                    os.fstat(opened[-1])
+
+                with self.assertRaises(CredentialError):
+                    _read_secret(secret, acl_validator=lambda _fd: False)
+                with self.assertRaises(OSError):
+                    os.fstat(opened[-1])
+
+            with (
+                patch("src.qq_official.credentials.os.name", "nt"),
+                patch("src.qq_official.windows_private.open_windows_private_readonly", side_effect=OSError("TEST_SECRET")),
+                self.assertRaises(CredentialError) as caught,
+            ):
+                _read_secret(secret, None)
+            self.assertNotIn("TEST_SECRET", str(caught.exception))
+            self.assertNotIn(str(secret), str(caught.exception))
 
 
 @unittest.skipUnless(os.name == "nt", "Actual Windows DACL filesystem checks")
@@ -185,22 +238,21 @@ class WindowsPrivateFileTests(unittest.TestCase):
         self.assertEqual(_read_secret(self.path, None), "TEST_SECRET")
         self.acl("/grant", "*S-1-1-0:(R)")
         with self.assertRaises(CredentialError) as caught:
-            open_windows_private_readonly(self.path)
+            _read_secret(self.path, None)
         self.assertNotIn("TEST_SECRET", str(caught.exception))
         self.assertNotIn(str(self.path), str(caught.exception))
 
     def test_acl_change_on_open_descriptor_is_checked_again(self):
-        from src.qq_official.credentials import verify_private_file
-        from src.qq_official.windows_private import verify_windows_private_file
+        from src.qq_official.credentials import verify_private_file, CredentialError
         with self.path.open("rb") as stream:
             self.assert_native_descriptor_private(stream.fileno())
             verify_private_file(stream.fileno())
             self.acl("/grant", "*S-1-1-0:(R)")
-            self.assertFalse(verify_windows_private_file(stream.fileno()))
+            with self.assertRaises(CredentialError):
+                verify_private_file(stream.fileno())
 
     def test_symlink_is_rejected_when_symlinks_are_available(self):
-        from src.qq_official.credentials import CredentialError
-        from src.qq_official.windows_private import open_windows_private_readonly
+        from src.qq_official.credentials import _read_secret, CredentialError
         link = self.path.with_name("linked-credential")
         try:
             link.symlink_to(self.path)
@@ -209,4 +261,4 @@ class WindowsPrivateFileTests(unittest.TestCase):
                 self.skipTest("Windows runner lacks symbolic-link privilege")
             raise
         with self.assertRaises(CredentialError):
-            open_windows_private_readonly(link)
+            _read_secret(link, None)
