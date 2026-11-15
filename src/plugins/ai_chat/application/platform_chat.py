@@ -32,7 +32,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
-        generation_factory=None, media_factory=None, billing_factory=None,
+        generation_factory=None, media_factory=None, billing_factory=None, question_factory=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -43,6 +43,7 @@ class PlatformChatService:
         self.llm = llm
         self.generation_factory = generation_factory
         self.media_factory = media_factory
+        self.question_factory = question_factory
         self.billing_factory = billing_factory
 
     async def _call_model(self,inbound,platform,turn_id,*args,**kwargs):
@@ -136,9 +137,10 @@ class PlatformChatService:
             capabilities.add("context")
         if self.context.settings.search_enabled and (force_search or self.context.settings.search_auto_enabled):
             capabilities.add("web")
+        question_session = (await self.question_factory(inbound,platform) if self.question_factory is not None else None)
         context = ToolContext(
             self.services, event=None, capabilities=frozenset(capabilities),
-            journal_turn_id=journal_turn_id, inbound=inbound, platform=platform,
+            journal_turn_id=journal_turn_id, inbound=inbound, platform=platform,question_session=question_session,
         )
         file_session = (await self.generation_factory(inbound, platform)
                         if self.generation_factory is not None else None)

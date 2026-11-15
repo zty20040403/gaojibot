@@ -180,6 +180,7 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         side_effects=("write:sandbox", "destructive"), approval="never",
         timeout_seconds=90.0, max_identical_calls=1,
     )
+    policies['ask'] = ToolPolicy(idempotency='keyed',side_effects=('private:question',),timeout_seconds=7205,max_identical_calls=1)
     policies['agent'] = ToolPolicy(idempotency='keyed', side_effects=('spawn:agent',))
     policies['agent_steer'] = ToolPolicy(side_effects=('write:job',))
     policies['agent_status'] = ToolPolicy(risk='low', idempotency='pure', side_effects=())
