@@ -475,7 +475,7 @@
 
 **Source私有正文隔离（2026-11-15，Draft#114，2e2c931/等价5411fb4）**：PrivateQuestionAudit通过内核早批次标记，在model_note之前识别ask，拒存后续turn_requests、仅记录安全loop元数据并清source trace正文/决策/路由明细，保留真实用量；非ask回合日志不变。3实际Source factory/PG/Gateway注入工具回归与29项组合95.182秒通过，4独立CF各1failure RED，静态通过；还需实际Source ask catalog/factory与双端对话、管理页、新固定全套，未合并/部署/QQ验收。
 
-**前台ask原来源接线（2026-11-15）**：真实OfficialTurnPlatform/token/ExecutionBinding限定Source session，模型只接target连接ID/question；物理单向目录同账号先范围后33上限，给散列标签并复核同意/route/停止/预算，不继承owner/后台/VM/目标问答能力。Source私有日志隔离和目标actor=None账单保留；4实际双端默认unbound对话及61项最终组合156.832秒通过，5独立CF各1failure RED。guard dbaba9d/Draft115和夹具8cf04d9/Draft116独立修复，旧23059ae全套exit1不得记绿色。管理API/UI、新固定全套、真实QQ模型验收仍待，未合并/部署。
+**前台ask原来源接线（2026-11-15，3965080/Draft117，等价c9b86c9）**：真实OfficialTurnPlatform/token/ExecutionBinding限定Source session，模型只接target连接ID/question；物理单向目录同账号先范围后33上限，给散列标签并复核同意/route/停止/预算，不继承owner/后台/VM/目标问答能力。Source私有日志隔离和目标actor=None账单保留；4实际双端默认unbound对话及61项最终组合156.832秒通过，5独立CF各1failure RED。guard dbaba9d/Draft115和夹具8cf04d9/Draft116独立修复，旧23059ae全套exit1不得记绿色。管理API/UI、新固定全套、真实QQ模型验收仍待，未合并/部署。
 
 ### F9 群内控制和账单
 
