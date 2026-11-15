@@ -24,6 +24,26 @@ from .renderer import content_payload, render_plan, restore_plan
 
 GROUP_PROACTIVE_DAILY_LIMIT = 1000
 
+
+def quote_needed(cursor, row):
+    """Quote the asker like a person would: once, and only when others spoke since.
+
+    Only the first message of a reply may quote, and only if someone else has
+    posted in the conversation after the message being answered; otherwise the
+    reply is plainly about the latest message and a quote is just noise.
+    """
+    if not row['reply_to_native_message_id'] or row['source_canonical_message_id'] is None:
+        return False
+    if row['turn_id'] is not None and cursor.execute(
+            'SELECT 1 FROM deliveries WHERE turn_id=? AND delivery_id<? LIMIT 1',
+            (row['turn_id'], row['delivery_id'])).fetchone() is not None:
+        return False
+    return cursor.execute('''SELECT 1 FROM messages origin JOIN messages later
+        ON later.conversation_id=origin.conversation_id AND later.canonical_message_id>origin.canonical_message_id
+        WHERE origin.canonical_message_id=? AND later.direction='inbound' LIMIT 1''',
+        (row['source_canonical_message_id'],)).fetchone() is not None
+
+
 def begin_official_attempt(cursor, delivery_id, context, now):
     assert_epoch(cursor, context.token)
     row = cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? AND account_key=? FOR UPDATE",
@@ -329,7 +349,7 @@ class OfficialSendStore:
                 payload.update(msg_id=msg_id, msg_seq=msg_seq)
             indexes = cursor.execute("""SELECT index_value,ambiguous FROM qq_official_message_indexes
                 WHERE endpoint_key=? AND native_message_id=? AND index_kind IN ('msg_idx','ref_idx')""",
-                (endpoint.key, row['reply_to_native_message_id'])).fetchall()
+                (endpoint.key, row['reply_to_native_message_id'])).fetchall() if quote_needed(cursor, row) else []
             if indexes and not any(r['ambiguous'] for r in indexes) and len({r['index_value'] for r in indexes}) == 1:
                 payload['message_reference'] = {'message_id': indexes[0]['index_value']}
             wire = stable_json(payload)
