@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-15）· F8前台私有问答日志隔离（ask catalog/factory待接）
+
+- PrivateQuestionAudit在同批模型说明之前接受内核tool_batch_sink的ask标记，不等tool_started；清旧request引用并拒存以后含私有结果的turn_requests，所有后续loop事件含其他工具的被污染参数/结果/无密钥fingerprint只留安全元数据，结束时清source trace的messages/execution_decisions/model_routing，真实usage与模型元数据仍保留。
+- 非ask回合保持普通request/trace/工具正文记录；模型在私有工具后失败也执行隔离与真实费用收尾，本端正常最终用户回复仍走原发送权限，不自动转发问答或新增QQ通知。目标QuestionModel自己的request_sink隔离仍保留；本步不提供新权限、actor或连接。
+- 3项实际Source OfficialRuntime/原TxA/Gateway工具循环/PG/journal回归使用注入工具只验日志，不冒充Source ask已挂载。29项内核/Source账单/目标Model/工具/架构组合最终95.182秒、exit0及Ruff/两导入/diff通过；4独立CF删早批次标记/事件/trace/request门槛各1failure且无error RED，覆盖同批说明、后续其他工具、zlib archive及请求副本。首轮失败案例错误期待execution cancelled，按既有ChatFailure的crashed journal+原用户错误回复验证，没有放宽权限或改原失败语义。
+- Task38继续catalog/原runtime source session挂载与实际双端对话验收，再管理API/UI、新固定全套；既有2270的Linux只覆盖账号factory，本机23059ae固定全套仍待最终回执，均不覆盖本隔离或Source等待组件。未真实QQ/模型验收、合并/部署/生产/Java变更，不称F8整体完成。
+
 ## 开发记录（2026-11-15）· F8原任务问答等待读口（前台catalog/日志隔离待接）
 
 - 原来源组件028082d（Draft PR #113，等价e85342e）的QuestionAsks只绑定同一实际runtime token和原ExecutionBinding，目标只取已双边授权的opaque link-ID，不接受原始endpoint、canonical别名或新actor；原任务截止/两小时上限不延长。0.5秒有界等待实际question队列，答复/拒绝只从真实终态和原binding一次consume取得，不缓存旧答案或重签旧intent，未连接/停止/预算/过期明确回报安全原因。
