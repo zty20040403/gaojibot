@@ -471,7 +471,7 @@
 
 **PR 拆分**：① 连接表和 `/link`；② `ask` 和等待任务；③ 管理台。
 
-**原来源等待组件（2026-11-15）**：QuestionAsks绑定实际runtime token/原ExecutionBinding和opaque link-ID，0.5秒轮询原私有等待、不延长原任务或两小时上限；同一提交/cleanup任务shield/drain，双取消不丢已提交CQ-ID或等待DB slot的关闭。原binding一次consume后再复查runtime/双端/预算/最终clock，保留领取事实不等于已返回/QQ送达。12新真实PG/queue与52项组合最终151.407秒通过，六独立CF各1failure RED；前台catalog/factory/普通日志隔离、管理页和新固定全套另接，未合并/部署/真实QQ验收。
+**原来源等待组件（2026-11-15，Draft#113，028082d/等价e85342e）**：QuestionAsks绑定实际runtime token/原ExecutionBinding和opaque link-ID，0.5秒轮询原私有等待、不延长原任务或两小时上限；同一提交/cleanup任务shield/drain，双取消不丢已提交CQ-ID或等待DB slot的关闭。原binding一次consume后再复查runtime/双端/预算/最终clock，保留领取事实不等于已返回/QQ送达。12新真实PG/queue与52项组合最终151.407秒通过，六独立CF各1failure RED；前台catalog/factory/普通日志隔离、管理页和新固定全套另接，未合并/部署/真实QQ验收。
 
 ### F9 群内控制和账单
 

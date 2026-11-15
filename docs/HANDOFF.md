@@ -2,7 +2,7 @@
 
 ## 开发记录（2026-11-15）· F8原任务问答等待读口（前台catalog/日志隔离待接）
 
-- QuestionAsks只绑定同一实际runtime token和原ExecutionBinding，目标只取已双边授权的opaque link-ID，不接受原始endpoint、canonical别名或新actor；原任务截止/两小时上限不延长。0.5秒有界等待实际question队列，答复/拒绝只从真实终态和原binding一次consume取得，不缓存旧答案或重签旧intent，未连接/停止/预算/过期明确回报安全原因。
+- 原来源组件028082d（Draft PR #113，等价e85342e）的QuestionAsks只绑定同一实际runtime token和原ExecutionBinding，目标只取已双边授权的opaque link-ID，不接受原始endpoint、canonical别名或新actor；原任务截止/两小时上限不延长。0.5秒有界等待实际question队列，答复/拒绝只从真实终态和原binding一次consume取得，不缓存旧答案或重签旧intent，未连接/停止/预算/过期明确回报安全原因。
 - 取消期间shield/drain同一begin以保留已经提交的CQ-ID，再关闭question/queue；重复取消不能丢掉等待DB slot的cleanup。poll/close须匹配完整原执行/actor/scope/revision/deadline；consume后仍复查原runtime、双端权限/预算和最终clock，保留answered/consumed事实不等于已经返回或QQ送达。
 - 12项新真实PG/queue回归及52项source/reducer/authority/schema/真实旧F6/架构组合最终通过151.407秒、exit0；六独立CF删提交drain/cleanup shield/原close绑定/runtime current/领取后复查/末尾clock，各1failure且无error RED。初轮store mock漏admitted的10errors只修夹具，不改权限；Ruff/两导入检查/diff最终通过。
 - 另核验先前账号factory PR#112等价a8506cfb7a88b9cf5a2b8cac36a457decc0d8a76的Linux run43664739181/job132661562524：2270项、10跳过、1209.383秒通过，/tmp/gaoji-f8-question-runtime-linux.log；Nix/Secret通过，旧Windows仍失败。该结果不覆盖本source等待组件，本机23059ae固定全套仍未取得最终回执。
