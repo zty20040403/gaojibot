@@ -66,11 +66,13 @@
 - 前台ask组件3965080/Draft117（等价c9b86c9）按target/question调用原QuestionAsks；只能由原OfficialTurnPlatform/token/ExecutionBinding的chat/final入口建立session，source/endpoints/actor/scope/route/native全部匹配。宿主先范围后LIMIT33读取本物理source当前双边同意的可用方向，给不透明连接ID/散列标签供模型选取；不按群名、历史别名、openid猜目标，反向/停止/预算不可用目标不列出，旧目录不授权新请求。后台/VM/目标question元数据不能借前台session递归ask。目录超过32明确拒绝，tool timeout7205只容纳领域7200上限且仍受原任务deadline。
 - 4实际默认unbound双端私聊/Gateway/TxA/link/队列对话测试及61组合通过，五独立CF RED；只读管理UI已随后接齐，但不代表真实账号验收。target自己的ask回答/拒绝候选和Source的ask提问由不同宿主上下文限定，不互借能力。
 
-## 目标侧显式公开通知（仅来源存储完成，发送尚未接）
+## 目标侧显式公开通知（仅0105来源与0106计划/回执存储完成，发送尚未接）
 
 0105新增`qq_official_question_notice_sources`：每CQ-ID至多一条不可改删/清空的正文HMAC承诺，复合FK固定完整账号、目标物理端点及原job；验证首代running job、原epoch/holder、真实READY/self Bot、目标group/allowed及路由/capability快照，期限最多30秒且不超原question。它不创建delivery plan、不发送QQ，也不能代替后续runtime/Question.current与双端stop/budget/原同意的持续复查。
 
 18项新增真实PG/schema/旧0104迁移与75项组合122.572秒通过；Bot/group/worker/FK/once/TRUNCATE/rollback/expiry八个最终独立CF各1failure、无error。审查发现的TRUNCATE绕过与查空后并发插入/误删审计已真实复现并补语句级触发器及查空前ACCESS EXCLUSIVE锁。受保护表让旧测试reset失败的问题已修复于仅允许loopback测试库/随机拥有schema的disposable reset：事务内临时暂停语句TRUNCATE guard，提交前还原原O/A/R/D状态，失败回滚，不在生产触发器里开测试后门。原失败及最终日志见`~/.cache/gaoji-test-runs/f8-question-notice-source/`。
+
+0106新增`qq_official_question_notices`并扩充`delivery_plans(purpose='question_notice')`：每条来源记录最多挂一个`ephemeral_content=TRUE`、`delivery_mode='proactive'`、`fallback_policy='never'`、`reply_window_id IS NULL`且匹配原真实READY/self Bot的发送计划，拒绝真人/他Bot/持久正文及终态补挂；行级/语句级保护阻止DELETE/UPDATE/TRUNCATE，降级先持`ACCESS EXCLUSIVE`锁再查空并在存在通知或计划审计时阻断回退。`committed`严格要求同账号/同端点/同Bot的真实`proactive` `applied_at IS NOT NULL`（`delivery_reply_to=''`）`qq_official_delivery_receipts`，允许在取消/过期/unknown后一次补记迟到accepted回执而不恢复授权。61项真实PG/schema/迁移/问询/审计组合95.036秒通过，Ruff/导入检查通过；bot/proactive/receipt/truncate/downgrade-lock五个独立CF均RED。当前仍仅存储迁移，纯`QuestionNotices`授权、Sender与目标`say`尚未接线。
 
 权威F8例子“帮我去群里说一声晚上聚餐改到7点”不能由当前只读QuestionModel完成；只完成私有总结并不等于整个F8已验收。目标普通文本/私有ask回答绝不能自动变成QQ消息。
 
