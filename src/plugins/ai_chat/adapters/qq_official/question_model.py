@@ -68,7 +68,7 @@ class QuestionModel:
     def context(self,target):
         with self.runtime.store.transaction() as cursor:self.source(cursor,target)
         app,physical = self.app,target.endpoint.scope
-        preference = app.model_preferences.get_scope_default(physical) or app.settings.model_profile_for_scope(physical)
+        preference = (app.model_preferences.get_scope_default(physical) if target.endpoint.kind=='group' else None) or app.settings.model_profile_for_scope(physical)
         if target.endpoint.kind=='group':
             enabled = app.model_preferences.get_scope_enabled_override(physical)
             if not (enabled if enabled is not None else app.settings.is_scope_enabled(physical)):raise PermissionError('question_target_ai_disabled')

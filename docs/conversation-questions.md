@@ -1,6 +1,6 @@
 # F8 双边连接与跨会话问答
 
-状态（2026-11-15）：连接控制已接真实账号factory/dispatch/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型组件本地已实现，实际question工厂、`ask`源入口和管理页尚待接，未真实QQ验收或合并/部署。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
+状态（2026-11-15）：连接控制与私有question已接真实账号factory/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型本地已实现，`ask`源入口和管理页尚待接，未真实QQ验收或合并/部署。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
 
 ## 连接不是身份映射
 
@@ -37,7 +37,7 @@
 
 - 0104私有question任务schema已建立，复用durable_jobs且队列只保存CQ-ID；完整source execution/account/endpoint/actor与定向link复合FK，原epoch/route/scope/revision/deadline及双方stop/目标budget代数冻结。等待最长7200秒且不超原任务；回答/拒绝或取消/过期/unknown终态及一次consume不可恢复/删除。它只证明结构，不自动创建/读取问答或增加QQ效果。
 - QuestionAuthority纯来源读口已接：只接受原宿主ExecutionBinding且匹配实际executing/chat完整来源；普通提问actor不需要或继承双方建边管理员/owner权限。原任务/link/问题的intent HMAC在不同重试时间稳定，current必须读取实际不可变任务行，不能由调用方修正旧stop/budget/时间/终态。双端同意/物理路由/准入、双端stop、目标预算及末尾期限复查；target_input自身current后只给问题和散列标签。读口通过不是已运行问答或已完成taint模型。
-- Questions纯持久reducer已接submit/去重/claim/current/回答拒绝/一次consume/关闭恢复，账号锁下live限额128/目标16/原任务4；队列只保存CQ-ID，不复制问答到普通表或result。实际job第一代/一次attempt、owner/lease/kind/payload/物理hash lane持续核验，defer/requeue不重放；关闭/终态queue同事务，过期规范expired，在途未知/restart不猜回答，已完成事实不改。消费必须原来源binding与最终current/期限。实际worker、模型取消与费用收尾、ask入口尚待挂载，不把排队当目标已收到。
+- Questions纯持久reducer已接submit/去重/claim/current/回答拒绝/一次consume/关闭恢复，账号锁下live限额128/目标16/原任务4；队列只保存CQ-ID，不复制问答到普通表或result。实际job第一代/一次attempt、owner/lease/kind/payload/物理hash lane持续核验，defer/requeue不重放；关闭/终态queue同事务，过期规范expired，在途未知/restart不猜回答，已完成事实不改。消费必须原来源binding与最终current/期限。实际worker、模型取消与费用收尾已挂账号工厂，ask源入口尚待接，不把排队当目标已收到。
 - `ask` 提交有限长度的问题，立即返回独立等待任务编号；截止不超过两小时，使用原 source current。无连接和不存在的目标统一拒绝，不枚举他人会话。
 - B 只收到问题及安全的来源会话标签，不收到 A 的历史、记忆、文件、原 actor 的 owner/群管授权或被动回复窗口。B 的模型/历史/账单归 B 的物理会话；跨会话来源须独立 taint，不能冒充真人或常驻程序。
 - 目标按自身规则回答或拒绝；来源及问题作为 untrusted 资料进入易变上下文。不得挂载需要原 owner 真人私聊的 ops、浏览器个人授权、文件/VM 权限等工具。连接不放开 VM 的跨会话接口，也不复制另一台 `/work`。
@@ -48,8 +48,10 @@
 ## 目标worker契约（先固定输入，再挂模型）
 
 - 目标执行器只收到本端物理endpoint、冻结本端history scope、CQ-ID、问题、散列来源标签和原current回调；没有源actor、真人消息、窗口、owner/群管、VM或文件能力。问题与标签由quote_evidence转义为conversation_question资料；固定提示要求只用目标会话可见内容，可拒绝隐私，不自动发QQ、不把普通文本当作提交回答。
-- QuestionModel组件仅开放目标本端history及绑定当前CQ-ID的ask回答/拒绝，无递归/ops/浏览器/agent/VM/文件/任意模型配置；物理模型偏好、本端冻结scope/tail/memory及每请求current/ModelBudget/真实费用已接。QuestionToolSource独立只读且无actor，支持本端F10 embedding；工具先保留候选，普通文本拒绝，清除继承的普通request_sink，取消也排空quota，最终仍由worker current后存私有答复。组件108项组合/五CF通过，不代表实际账号question factory或真实模型验收。
+- QuestionModel组件仅开放目标本端history及绑定当前CQ-ID的ask回答/拒绝，无递归/ops/浏览器/agent/VM/文件/任意模型配置；物理模型偏好、本端冻结scope/tail/memory及每请求current/ModelBudget/真实费用已接。QuestionToolSource独立只读且无actor，支持本端F10 embedding；工具先保留候选，普通文本拒绝，清除继承的普通request_sink，取消也排空quota，最终仍由worker current后存私有答复。组件108项组合/五CF通过，后续账号工厂已接且125项组合/六CF通过，均不代表真实模型验收。
 - worker复用账号question队列，并发2/每目标1；模型等待期间持续复查双端/来源/job/期限，取消先排空同一模型等待与真实账单，再原子关闭question/queue。真实用量以conversation_question及目标物理会话计费，actor=None，冻结CQ-ID/队列job来源但不复制问题正文或源身份；费用任务维度单列问答、不冒充后台agent/程序。
+
+- QuestionRuntime在原LinkIngress可用后、gateway.run前恢复旧请求再挂目标worker，即使当前没有AI也关闭旧epoch授权；每5秒128+1 live复查并异常超量拒绝。模型或同库账单不可用时明确拒新question。退出先排空socket/真实费用，再关闭待处理question/queue，保留已完成事实/连接；current在领域DB检查前后复查原runtime token，不能因SQL epoch在清理期间仍有效而让SDK取消后返回工具调用继续请求。群聊用本物理群偏好、私聊用宿主默认模型，不把私聊传进group-only偏好读口或借源真人配置。
 
 ## 小步实施及验收
 
