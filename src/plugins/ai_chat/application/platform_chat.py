@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from src.bot_storage import DatabaseError
 from . import ChatFailure
 from .turn_context import record_loop_event, speaker, turn_window
+from .private_questions import PrivateQuestionAudit
 from ..execution_control import assert_job_owned
 from ..agent_loop import AgentTrace, DeepSeekConfigError, ask_deepseek_with_tools, request_sink
 from ..ai_tools import WEB_SEARCH_TOOL_NAME, force_tool
@@ -142,11 +143,12 @@ class PlatformChatService:
         file_session = (await self.generation_factory(inbound, platform)
                         if self.generation_factory is not None else None)
         sent: list[dict] = []
+        private_audit = PrivateQuestionAudit(sent,turn_trace)
+        async def loop_event(event):
+            safe = private_audit.event(event)
+            if journal_turn_id is not None:await record_loop_event(self.context,journal_turn_id,safe)
 
-        def keep_last(request: dict) -> None:
-            sent[:] = [request]
-
-        sink_token = request_sink.set(keep_last)
+        sink_token = request_sink.set(private_audit.request)
         try:
             if file_session is not None:
                 context = file_session.context(context)
@@ -202,9 +204,8 @@ class PlatformChatService:
                     ),
                     tool_context="\n\n".join(context_parts), system_prompt=system,
                     trace=turn_trace, feedback_provider=feedback_provider,
-                    event_sink=(
-                        lambda event: record_loop_event(self.context, journal_turn_id, event)
-                    ) if journal_turn_id is not None else None,
+                    tool_batch_sink=private_audit.batch,
+                    event_sink=loop_event,
                     final_text_sink=final_stream_sink, final_stream_state=final_stream_state,
                     approval_checker=lambda _policy, name, arguments: approval_from_user_text(user_text, name, arguments),
                 )
@@ -236,6 +237,7 @@ class PlatformChatService:
 
         finally:
             request_sink.reset(sink_token)
+            private_audit.finish()
             if sent and getattr(self.context, "conversations", None) is not None:
                 try:
                     await self.context.db_call(self.context.conversations.record_request, turn_id=journal_turn_id,
