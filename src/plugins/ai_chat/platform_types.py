@@ -302,6 +302,28 @@ class ProgramToolSource:
 
 
 @dataclass(frozen=True)
+class QuestionToolSource:
+    """Host-checked target history address; no actor or transferable authority."""
+
+    endpoint: EndpointKey = field(repr=False)
+    question_id: str = field(repr=False)
+    history_scope: ConversationScope = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.endpoint,EndpointKey) or self.endpoint.account.platform!='qq-official':
+            raise ValueError('question source requires an official endpoint')
+        if (type(self.question_id) is not str or not self.question_id.startswith('CQ-') or len(self.question_id)!=35
+            or any(char not in '0123456789abcdef' for char in self.question_id[3:])):
+            raise ValueError('question source reference invalid')
+        if not isinstance(self.history_scope,ConversationScope) or self.history_scope.account!=self.endpoint.account:
+            raise ValueError('question history account mismatch')
+
+    @property
+    def scope(self) -> ConversationScope:
+        return self.history_scope
+
+
+@dataclass(frozen=True)
 class PlatformFeatures:
     """Implementation support only; not platform or local authorization."""
 

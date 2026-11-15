@@ -1,6 +1,6 @@
 # F8 双边连接与跨会话问答
 
-状态（2026-11-14）：连接存储、可撤销权限证据、独立敏感输入隔离、纯双边reducer、原入站/单次发行计划schema、可选原认证TxA及一次ephemeral发送/实际账本取证已建立；定向管理、原回复证据、一次控制反馈及真实账号factory/dispatch/monitor/recover/close已接，`/link` 控制本地可用；`ask`、目标模型与管理页尚待实现，未真实QQ验收或合并/部署。权威功能要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
+状态（2026-11-15）：连接控制已接真实账号factory/dispatch/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型组件本地已实现，实际question工厂、`ask`源入口和管理页尚待接，未真实QQ验收或合并/部署。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
 
 ## 连接不是身份映射
 
@@ -48,7 +48,7 @@
 ## 目标worker契约（先固定输入，再挂模型）
 
 - 目标执行器只收到本端物理endpoint、冻结本端history scope、CQ-ID、问题、散列来源标签和原current回调；没有源actor、真人消息、窗口、owner/群管、VM或文件能力。问题与标签由quote_evidence转义为conversation_question资料；固定提示要求只用目标会话可见内容，可拒绝隐私，不自动发QQ、不把普通文本当作提交回答。
-- 下一模型执行器仅开放目标本端history及绑定当前CQ-ID的ask回答/拒绝；不开放递归跨会话ask、ops、浏览器个人授权、后台agent/VM/文件或任意模型配置。工具提交先保留本轮候选，模型/真实账单排空后由worker最终current检查并保存私有答复；实际模型接线前不能宣称这些工具已经可用。
+- QuestionModel组件仅开放目标本端history及绑定当前CQ-ID的ask回答/拒绝，无递归/ops/浏览器/agent/VM/文件/任意模型配置；物理模型偏好、本端冻结scope/tail/memory及每请求current/ModelBudget/真实费用已接。QuestionToolSource独立只读且无actor，支持本端F10 embedding；工具先保留候选，普通文本拒绝，清除继承的普通request_sink，取消也排空quota，最终仍由worker current后存私有答复。组件108项组合/五CF通过，不代表实际账号question factory或真实模型验收。
 - worker复用账号question队列，并发2/每目标1；模型等待期间持续复查双端/来源/job/期限，取消先排空同一模型等待与真实账单，再原子关闭question/queue。真实用量以conversation_question及目标物理会话计费，actor=None，冻结CQ-ID/队列job来源但不复制问题正文或源身份；费用任务维度单列问答、不冒充后台agent/程序。
 
 ## 小步实施及验收
