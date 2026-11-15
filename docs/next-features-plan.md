@@ -408,7 +408,7 @@
 
 ### F8 跨会话提问
 
-**管理审计公开通知投影（2026-11-15）**：`admin_api/questions.py`、`admin_api/realtime.py`与`admin-ui/src/QuestionAuditView.tsx`已分别展示目标群公开通知状态/真实回执与私有回答/原任务领取，不含通知正文及HMAC/plan/receipt内部密钥；UI明确标注平台接受不等于群友已读及迟到回执不恢复原授权。70项9模块组合（131.149秒）、`npm run build`与8个UI脚本、Ruff/两导入/diff通过，API/UI两独立CF均RED。覆盖全部改动的新固定快照全套及真实QQ/embedding/模型验收仍待，未合并/部署。
+**管理审计公开通知投影与固定全套收尾（2026-11-15，3c3696e）**：`admin_api/questions.py`、`admin_api/realtime.py`与`admin-ui/src/QuestionAuditView.tsx`已分别展示目标群公开通知状态/真实回执与私有回答/原任务领取，不含通知正文及HMAC/plan/receipt内部密钥；UI明确标注平台接受不等于群友已读及迟到回执不恢复原授权。70项9模块组合（131.149秒）、`npm run build`与8个UI脚本、Ruff/两导入/diff通过，API/UI两独立CF均RED。固定完整快照`3c3696e670c806cef2a8b857eae58f4393e2b7a5`（`0106_question_notices`）本机隔离PostgreSQL+`umask 077`+显式`ffmpeg`/`ffprobe`全套通过：`Ran 2,337 tests in 1375.374s`、`0 failures`、`10 skipped`、`exit 0`（证据`~/.cache/gaoji-test-runs/f8-final-3c3696e/`），同轮Ruff/两导入/UI构建及8个UI脚本通过。F8与`next-features-plan.md`Python侧本地实现和全套复核已全部完成，真实QQ/embedding/模型验收与F7实测范围仍待owner，未合并/部署。
 
 **目标侧`say`与`QuestionRuntime`接线（2026-11-15，d59c011）**：`QuestionModel`/`QuestionWorker`/`QuestionRuntime`已接入单次纯文本`say(text<=2000)`：仅目标群`proactive_state='allowed'`、真实READY/self Bot有效且本qid无先前来源时开放，私聊与`unknown`/`denied`隐藏并拒绝；发送任务以`shield`+`drain`防超时/取消遗失回执，仅真实`committed`+`delivery_receipt_hash`回报`ok=true`且仍须`ask`收尾；`QuestionRuntime`在`sender.recover()`前执行`notices.recover`、每轮`maintain()`复查并退场清`question_notice_authority`，并修正`qq-official`群目标AI默认开启判断与`turns.py`对齐。实际双端私聊→目标群`OfficialRuntime`+`FakePlatform`端到端通过，确认`delivery_plans`/`deliveries`/outbound`messages`/审计表无明文泄漏；149项16模块组合（173.781秒）、Ruff/两导入/diff通过，`say-proactive`/`say-single-use`/`say-recover`三独立串行CF各2/1/1 failure、0 error RED。
 
