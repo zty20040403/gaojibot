@@ -16,7 +16,9 @@ class QuestionFixture(ExecutionFixture):
     def setUp(self):
         super().setUp()
         self.auth = LinkAuthority(b'TEST_QUESTION_AUTHORITY_PEPPER_1234567',clock=lambda:self.now)
-        self.reducer = LinkReducer(self.auth); self.target = EndpointKey(self.account,'group','TEST_QUESTION_TARGET'); self.provision(self.target)
+        self.reducer = LinkReducer(self.auth); self.target = EndpointKey(self.account,getattr(self,'target_kind','group'),'TEST_QUESTION_TARGET'); self.provision(self.target)
+        if self.target.kind=='private':
+            with self.tx() as cursor:self.auth.owners.apply_trusted_config(cursor,self.account,(self.target.native_conversation_id,),'TEST_QUESTION_TARGET_OWNER_CONFIG')
         def command(text,endpoint):
             author = ({'author':{'member_openid':self.link_approver,'member_role':'admin'}}
                 if endpoint.kind=='group' and getattr(self,'link_approver',None) else {})

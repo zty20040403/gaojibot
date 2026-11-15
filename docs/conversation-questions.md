@@ -66,7 +66,11 @@
 - 前台ask组件3965080/Draft117（等价c9b86c9）按target/question调用原QuestionAsks；只能由原OfficialTurnPlatform/token/ExecutionBinding的chat/final入口建立session，source/endpoints/actor/scope/route/native全部匹配。宿主先范围后LIMIT33读取本物理source当前双边同意的可用方向，给不透明连接ID/散列标签供模型选取；不按群名、历史别名、openid猜目标，反向/停止/预算不可用目标不列出，旧目录不授权新请求。后台/VM/目标question元数据不能借前台session递归ask。目录超过32明确拒绝，tool timeout7205只容纳领域7200上限且仍受原任务deadline。
 - 4实际默认unbound双端私聊/Gateway/TxA/link/队列对话测试及61组合通过，五独立CF RED；只读管理UI已随后接齐，但不代表真实账号验收。target自己的ask回答/拒绝候选和Source的ask提问由不同宿主上下文限定，不互借能力。
 
-## 目标侧显式公开通知（待实现，不是现有能力）
+## 目标侧显式公开通知（仅来源存储完成，发送尚未接）
+
+0105新增`qq_official_question_notice_sources`：每CQ-ID至多一条不可改删/清空的正文HMAC承诺，复合FK固定完整账号、目标物理端点及原job；验证首代running job、原epoch/holder、真实READY/self Bot、目标group/allowed及路由/capability快照，期限最多30秒且不超原question。它不创建delivery plan、不发送QQ，也不能代替后续runtime/Question.current与双端stop/budget/原同意的持续复查。
+
+18项新增真实PG/schema/旧0104迁移与75项组合122.572秒通过；Bot/group/worker/FK/once/TRUNCATE/rollback/expiry八个最终独立CF各1failure、无error。审查发现的TRUNCATE绕过与查空后并发插入/误删审计已真实复现并补语句级触发器及查空前ACCESS EXCLUSIVE锁。受保护表让旧测试reset失败的问题已修复于仅允许loopback测试库/随机拥有schema的disposable reset：事务内临时暂停语句TRUNCATE guard，提交前还原原O/A/R/D状态，失败回滚，不在生产触发器里开测试后门。原失败及最终日志见`~/.cache/gaoji-test-runs/f8-question-notice-source/`。
 
 权威F8例子“帮我去群里说一声晚上聚餐改到7点”不能由当前只读QuestionModel完成；只完成私有总结并不等于整个F8已验收。目标普通文本/私有ask回答绝不能自动变成QQ消息。
 
@@ -75,7 +79,7 @@
 - 群必须已确认proactive_state=allowed；unknown/denied明确拒绝，不探测POST、不借A/B任何真人被动消息或后来窗口。预算通知是固定预算专用许可，不能借用；program身份也不可借。需独立新purpose/source及存储约束，旧schema的普通/控制/预算发送保持原路径，不无条件查询新表或捕获缺表。
 - enqueue、claim与HTTP前复查同一原runtime和问答/双端current；已接收的QQ效果不可撤回。401/429/格式/主动拒绝、超时/取消及底层retry/plain均不得重放；RAM正文丢失/重启关闭原意图。返回成功只认匹配真实send_ledger applied回执，不把fake native-ID、排队或模型承诺当成功。
 - 私有问答结果、公开通知授权终态、迟到真实accepted事实须分开，取消/停止/预算变化后仍保存实际回执但不恢复旧许可/私有答案。启动先关闭旧授权再sender恢复事实；退出排空已accepted事实。管理审计分别展示公开效果与私有回答/原领取，平台接受不等于群友已读。
-- 后续分小PR完成schema、纯源/一次计划、Sender接线、目标工具/runtime与实际默认入口测试；独立负对照需覆盖Bot身份、group-only/allowed、首代job/双端current、窗口/重试、一次承诺、取消/迟到回执/恢复。真实QQ主动权限仍由owner测试群验收，不借F7或maxx能力推断。
+- 后续分小PR完成发送plan/真实回执schema、纯current授权/一次计划、Sender接线、目标工具/runtime与实际默认入口测试；独立负对照需覆盖Bot身份、group-only/allowed、首代job/双端current、窗口/重试、一次承诺、取消/迟到回执/恢复。真实QQ主动权限仍由owner测试群验收，不借F7或maxx能力推断。
 
 ## 小步实施及验收
 
