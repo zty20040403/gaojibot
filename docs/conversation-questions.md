@@ -55,6 +55,8 @@
 
 - Source PrivateQuestionAudit隔离组件2e2c931/Draft#114（等价5411fb4）由内核在同批模型说明前获得ask标记；后续普通request记录关闭，loop事件（含其他工具的被污染参数/结果/fingerprint）仅安全元数据，source trace只留真实usage/模型元数据，不保存私有正文。非ask回合继续原日志；私有工具后模型失败也执行隔离。正常本端用户回复仍按原权限，不自动QQ转发问答。3个实际Source factory/PG/Gateway回归只注入工具验证隔离，不等于Source ask catalog/factory已接。
 
+- 共享guarded_wait的current失效可能先进入模型取消清理，外层账号取消随后到达；清理必须shield/drain同一模型task而非直接await，防止二次取消打断真实socket/usage收尾、提前关闭question/queue。真实factory确定性退出回归保持stopping未完成、question仍running、原requests=1及真实usage断言。
+
 ## 小步实施及验收
 
 1. 连接/独立挑战 schema 与真实PG约束回归；再接认证短码与一次性投递及原命令。

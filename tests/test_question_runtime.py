@@ -177,7 +177,16 @@ class QuestionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 runtime = await self.start_account(fake,app); self.addCleanup(release.set)
                 edge = await self.prepare_source(fake,runtime)
                 row,_ = await runtime._calls(runtime.question_service.submit,self.binding,edge['link_id'],'TEST_DRAIN_ORIGINAL')
-                await asyncio.wait_for(entered.wait(),10); stopping = asyncio.create_task(runtime.stop())
+                await asyncio.wait_for(entered.wait(),10)
+                # Real _serve invalidates its token before gateway.stop and before
+                # cancelling worker tasks. Force the guard to enter model cleanup
+                # in that interval, then let the outer worker cancellation arrive.
+                gateway = runtime._gateway; original_stop = gateway.stop
+                async def stop_after_guard_cleanup():
+                    await asyncio.wait_for(cleaning.wait(),5)
+                    await original_stop()
+                gateway.stop = stop_after_guard_cleanup
+                stopping = asyncio.create_task(runtime.stop())
                 try:
                     await asyncio.wait_for(cleaning.wait(),5); await asyncio.sleep(.05)
                     self.assertFalse(stopping.done())
