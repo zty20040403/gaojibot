@@ -17,10 +17,11 @@ def _base_registry() -> ToolRegistry:
     from .progress import HANDLERS as PROGRESS_HANDLERS
     from .background import HANDLERS as BACKGROUND_HANDLERS
     from .schedules import HANDLERS as SCHEDULE_HANDLERS
+    from .questions import HANDLERS as QUESTION_HANDLERS
 
     return ToolRegistry(handler for handler in (
         *HISTORY_HANDLERS, *MEMORY_HANDLERS, *SOURCE_HANDLERS, *STICKER_HANDLERS,
-        *OWNED_SANDBOX_HANDLERS, *PROGRESS_HANDLERS, *BACKGROUND_HANDLERS, *SCHEDULE_HANDLERS
+        *OWNED_SANDBOX_HANDLERS, *PROGRESS_HANDLERS, *BACKGROUND_HANDLERS, *SCHEDULE_HANDLERS, *QUESTION_HANDLERS
     ) if handler.platform_neutral)
 
 

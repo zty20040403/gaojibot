@@ -34,6 +34,58 @@ class QuestionRuntime:
             ensure_current=lambda:self.runtime._ensure_current(self.token))
         return True
 
+    def _references(self,binding):
+        from ... import daily_budgets
+        from ...platform_types import EndpointKey
+        from .conversation_control import permitted
+        authority = self.questions.authority
+        with self.runtime.store.transaction() as cursor:
+            row = binding.current(cursor,authority.now()); handle = binding.handle
+            expected = dict(account_key=self.token.account_key,endpoint_key=handle.endpoint.key,requester_actor_key=handle.actor.key,
+                scope_key=handle.scope_key,route_epoch=handle.route_epoch,endpoint_generation=handle.endpoint_generation,
+                account_fencing_epoch=self.token.epoch,execution_revision=handle.execution_revision,deadline_at=handle.deadline_at,
+                canonical_message_id=handle.canonical_message_id,source_native_message_id=handle.source_native_message_id)
+            route = cursor.execute('SELECT * FROM qq_official_endpoints WHERE account_key=? AND endpoint_key=?',
+                (self.token.account_key,handle.endpoint.key)).fetchone()
+            if (row['state']!='executing' or row['execution_kind']!='chat' or any(row[key]!=value for key,value in expected.items())
+                or not route or (route['canonical_scope_key'],route['route_epoch'],route['generation'])!=
+                    (handle.scope_key,handle.route_epoch,handle.endpoint_generation)):
+                raise PermissionError('question_source_unavailable')
+            rows = cursor.execute('''SELECT * FROM qq_official_conversation_links WHERE account_key=? AND source_endpoint_key=?
+                AND state='active' ORDER BY created_at DESC,link_id DESC LIMIT 33''',(self.token.account_key,handle.endpoint.key)).fetchall()
+            if len(rows)>32:raise PermissionError('question_directory_limit_exceeded')
+            entries = []
+            for edge in rows:
+                if not authority.ingress.management.current(cursor,self.token,edge):continue
+                target = EndpointKey.parse(edge['target_endpoint_key'])
+                if not permitted(cursor,target):continue
+                try:daily_budgets.require(cursor,target,now=authority.now())
+                except PermissionError:continue
+                view = authority.ingress.management.view(edge,handle.endpoint)
+                entries.append(dict(target=view.link_id,peer=view.peer))
+            binding.current(cursor,authority.now())
+            if authority.now()>=handle.deadline_at:raise PermissionError('question_source_expired')
+            return tuple(entries)
+
+    async def frontend(self,inbound,platform):
+        from ...platform_types import InboundMessage
+        from . import turn_source
+        from .question_asks import QuestionAsks
+        from .turn_platform import ExecutionBinding,OfficialTurnPlatform
+        if (not isinstance(inbound,InboundMessage) or not isinstance(platform,OfficialTurnPlatform)
+            or platform.inbound!=inbound or not isinstance(platform.execution,ExecutionBinding)
+            or platform.execution.token is not self.token or platform.execution.api is not turn_source
+            or platform.execution.handle.execution_kind!='chat' or platform.execution.handle.result_purpose!='final'
+            or (inbound.endpoint,inbound.actor,inbound.scope.key,inbound.route_epoch,inbound.native_message_id)!=
+                (platform.execution.handle.endpoint,platform.execution.handle.actor,platform.execution.handle.scope_key,
+                    platform.execution.handle.route_epoch,platform.execution.handle.source_native_message_id)):
+            raise PermissionError('question_source_binding_required')
+        session = QuestionAsks(self,platform.execution)
+        await session.current()
+        session.references = await self.runtime._calls(self._references,session.binding)
+        await session.current()
+        return session
+
     def submit(self,binding,reference,question):
         if not self.available:raise RuntimeError('question_model_unavailable')
         with self.runtime.store.transaction() as cursor:return self.questions.submit(cursor,self.token,binding,reference,question)

@@ -26,6 +26,7 @@ class QuestionAsks:
         if (not isinstance(service,QuestionRuntime) or not isinstance(binding,ExecutionBinding)
             or binding.token is not service.token):raise ValueError('question_source_binding_required')
         self.service,self.binding = service,binding
+        self.references = ()  # Host-checked opaque directory; never an authorization grant.
 
     async def current(self):
         if not self.service.available:raise PermissionError('question_model_unavailable')

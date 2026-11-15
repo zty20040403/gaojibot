@@ -44,6 +44,7 @@ class ToolContext:
     background_source: BackgroundToolSource | None = None
     program_source: ProgramToolSource | None = None
     question_source: QuestionToolSource | None = None
+    question_session: Any = None  # Original foreground execution port, never source metadata.
 
     def __post_init__(self) -> None:
         if self.inbound is not None and not isinstance(self.inbound, InboundMessage):

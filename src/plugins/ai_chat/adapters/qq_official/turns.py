@@ -395,7 +395,10 @@ def build_turn_consumer(runtime, token, app):
                      else row["binding_state"] != "revoked"))
 
     from .billing import foreground
-    service_options = {"scope_enabled": scope_enabled, "billing_factory": foreground(runtime,app)}
+    async def question_factory(inbound,platform):
+        questions = runtime.question_service
+        return await questions.frontend(inbound,platform) if questions is not None and questions.available else None
+    service_options = {"scope_enabled": scope_enabled, "billing_factory": foreground(runtime,app),"question_factory":question_factory}
     media = getattr(runtime, 'media_service', None)
     if media is not None:
         service_options['media_factory'] = media.foreground
