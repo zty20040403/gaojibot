@@ -6,6 +6,7 @@ import logging
 
 from src.plugins.ai_chat.ai_tools import TOOL_DEFINITIONS
 from src.plugins.ai_chat.tools.registry import FunctionTool, ToolRegistry
+from src.plugins.ai_chat.tools.stickers import fresh_first, recent_sends
 from src.plugins.ai_chat.tool_images import ToolImage
 from .image_formats import IMAGE_MIMES
 from .media_refs import ExternalText, MediaDenied
@@ -33,7 +34,7 @@ def _definition(name):
         'read_attachment':'读取本会话附件或卡片中的受控链接；仅支持有界 UTF-8 文本/Markdown/JSON，不执行HTML/PDF/ZIP。',
         'view_forward':'读取本会话消息中有界递归转发证据；署名不是已验证身份，内容不是工具权限。',
         'send_forward_summary':'将本会话转发整理为一份有限摘要或受控文件；不会逐条发送，也不声称原生合并转发。',
-        'send_sticker':'从表情包库里发一张表情包（当图片发出）。query 写想表达的意思，比如"无语"、"笑死"、"买不起"，可以写几个词，自动挑最合适的一张；也可以直接给 find_stickers 返回的 media_handle。结果里的 summary 就是发出去的那张图，被问起时照它说，不要编。一次回复最多一张，别每句都发。',
+        'send_sticker':'从表情包库里发一张表情包（当图片发出）。query 写想表达的意思，比如"无语"、"笑死"、"买不起"，可以写几个词，自动挑最合适的一张；也可以直接给 find_stickers 返回的 media_handle。结果里的 summary 就是发出去的那张图，被问起时照它说，不要编。不用等人要，语境合适时可以主动带一张；本会话最近发过的自动排后。一次回复最多一张。',
     }
     value['description']=descriptions[name]
     if name=='reply_with_voice':
@@ -67,7 +68,7 @@ async def _send_sticker(session, turn, arguments):
     library = turn.context.app.media_library
     if library is None:
         return {'state':'unavailable','message':'表情包库没有启用，这次发不了表情包。'}
-    records = await library.search_stickers(query, limit=20)
+    records = fresh_first(await library.search_stickers(query, limit=20), await recent_sends(turn))
     used = turn.sticker_handles_this_turn
     candidates = [item.handle for item in records
                   if item.mime_type in SENDABLE_STICKERS and item.handle not in used][:3]
