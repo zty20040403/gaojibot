@@ -36,8 +36,10 @@ class QuestionTarget:
 
 
 class QuestionWorker:
-    def __init__(self,runtime,token,questions,executor):
+    def __init__(self,runtime,token,questions,executor,*,ensure_current=None):
         self.runtime,self.token,self.questions,self.executor = runtime,token,questions,executor
+        if ensure_current is not None and not callable(ensure_current):raise ValueError('question_account_guard_invalid')
+        self.ensure_current = ensure_current
         if not callable(executor) or getattr(runtime.application,'model_billing',None) is None:
             raise ValueError('question_executor_and_accounting_required')
         self.worker = DurableJobWorker(runtime.jobs,logger=runtime.logger,concurrency=2,per_scope_limit=1,
@@ -80,9 +82,13 @@ class QuestionWorker:
 
     async def execute(self,job):
         try:
+            if self.ensure_current is not None:await self.ensure_current()
             row,data = await self.runtime._calls(self.claim,job)
             if data is None:raise PermissionError('question_original_closed')
-            async def current():await self.runtime._calls(self.current,job)
+            async def current():
+                if self.ensure_current is not None:await self.ensure_current()
+                await self.runtime._calls(self.current,job)
+                if self.ensure_current is not None:await self.ensure_current()
             target = QuestionTarget(EndpointKey.parse(row['target_endpoint_key']),row['target_scope_key'],
                 row['question_id'],data['question'],data['source_label'],current)
             with scoped(self.runtime.application,target.endpoint,'conversation_question',current=current,conversation_question_id=target.question_id):
