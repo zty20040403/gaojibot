@@ -1,12 +1,19 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-15）· F8管理台账号隔离与私有问答视图
+
+- 承接只读API e9f288e/Draft#118（等价9c34b36），新增独立“会话问答审计”导航：完整账号/environment先选，物理endpoint精确筛选；账号/连接/问答分页可继续读取，问答保留原job-ID游标上界。目录/SSE/30秒更新只加载元数据并提示手动刷新，正文必须显式打开，私有结果只按转义文本呈现，不加载到列表、普通请求日志或浏览器持久存储。
+- QuestionAuditReader同步清除换账号/范围/分页的私有结果，对账号epoch与独立lane检查原AbortController；即使HTTP忽略abort或旧详情迟到也不能回填新选择。401/403及卸载清私有状态，不自动重试。保存active不表示当前授权，真实发行回执与当前访问分开；answered/refused与consumed_at分开，领取不表示已返回或QQ送达。只读页面没有建边/撤边/代批/重发/发送按钮。
+- 新UI脚本覆盖实际React表格/按钮、元数据不含正文、XSS转义、大job-ID字符串、账号/物理筛选、忽略abort/同lane迟到、分页、权限失效及close；全部8个UI脚本和tsc/Vite构建通过。三独立CF删清私有状态、返回current和文本转义，各触发AssertionError RED；日志/tmp/gaoji-f8-question-ui-{scope,current,escape}-red.log。CI新增Admin UI作业，用锁定npm依赖构建并执行全部tools/test-*.mjs，不再只验证打包。
+- 本地管理API/UI已接齐，但3965080旧Source固定全套仍运行且不覆盖本组件。F8“去群里说一声”目标侧显式say差距（note13）、含最新管理代码的新全套及真实QQ/embedding/模型验收仍待，不称F8整体完成；没有合并、部署、生产或Java变更。
+
 ## 开发记录（2026-11-15）· F8管理台只读连接与问答审计API
 
 - 新增登录管理员专用conversation-questions账号目录、单向连接、问答元数据分页及显式正文详情；legacy/v1和自定义prefix共用原secure_route，匿名401、成员403。完整AccountKey含environment及物理endpoint在LIMIT前限定，不借canonical历史别名；详情同时匹配account与CQ-ID。列表不查询问答正文，不返回权限HMAC/actor/验证码；正文仅在已选账号的显式详情返回，不开放模型/VM接口或新授权。
 - 读取使用REPEATABLE READ READ ONLY，不调用current/reducer/consume/recover，不更改旧边、过期或已完成事实、不执行QQ或模型。连接state只表示保存的active/revoked，authorization=not_checked，不冒充当前可用权；发行回执事实独立展示。consumed_at只是一次领取，delivery_state固定not_tracked，不表示已返回或QQ送达。
 - 连接按created_at/link-ID严格seek且状态实时；问答按唯一job-ID严格seek并冻结首个最大ID上界，后续新ID即使旧timestamp也不混入，状态仍实时、不宣称跨页MVCC冻结。每页最多100，账号可继续分页；SSE只发布questions资源名，不携私有正文。
 - 7项新实际PG/queue/认证session回归及43项管理权限/路由/诊断/0104/旧F6/架构组合216.514秒、exit0通过，Ruff/两导入/diff通过；四独立CF删物理范围、详情账号、严格seek、领取不等于送达，各1failure且无error RED。首次非法别名active冲突/错误7201秒夹具只修测试，未放宽DDL；旧190秒组合timeout及不存在模块不计通过，最终重跑日志/tmp/gaoji-f8-admin-questions-combo-recheck.log。
-- API组件已完成，管理页另续；3965080的固定全套仍运行且不覆盖本补丁。真实QQ/模型/embedding验收仍task9，F7范围待owner；无合并、部署、生产或Java变更，不称F8整体完成。
+- API e9f288e/Draft#118（等价9c34b36）已提交，管理页随后接齐，见最新记录；3965080的固定全套仍运行且不覆盖本补丁。真实QQ/模型/embedding验收仍task9，F7范围待owner；无合并、部署、生产或Java变更，不称F8整体完成。
 
 ## 开发记录（2026-11-15）· F8前台ask真实来源挂载（审计UI/新全套待续）
 

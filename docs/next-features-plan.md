@@ -477,7 +477,9 @@
 
 **前台ask原来源接线（2026-11-15，3965080/Draft117，等价c9b86c9）**：真实OfficialTurnPlatform/token/ExecutionBinding限定Source session，模型只接target连接ID/question；物理单向目录同账号先范围后33上限，给散列标签并复核同意/route/停止/预算，不继承owner/后台/VM/目标问答能力。Source私有日志隔离和目标actor=None账单保留；4实际双端默认unbound对话及61项最终组合156.832秒通过，5独立CF各1failure RED。guard dbaba9d/Draft115和夹具8cf04d9/Draft116独立修复，旧23059ae全套exit1不得记绿色。管理审计只读API已完成（见下一条），UI、新固定全套、真实QQ模型验收仍待，未合并/部署。
 
-**管理审计API（2026-11-15）**：登录管理员按完整账号/物理端点读取单向链接、问答元数据分页及显式正文详情；scope在LIMIT前限定，详情必须同时匹配账号/CQ-ID，不借历史别名或源owner权限。只读事务不调用current/consume/recover/模型/QQ，active不是当前授权，consumed_at不是送达，列表/SSE不携正文或权限HMAC。问答按job-ID严格seek并保留首个上界、状态实时；连接实时seek，最多100条/页且账号可分页。7项新PG/session回归及43项组合216.514秒通过，4独立CF各1failure无error RED，静态/导入通过；UI及覆盖本补丁的新全套另续，未合并/部署或真实验收。
+**管理审计API（2026-11-15）**：登录管理员按完整账号/物理端点读取单向链接、问答元数据分页及显式正文详情；scope在LIMIT前限定，详情必须同时匹配账号/CQ-ID，不借历史别名或源owner权限。只读事务不调用current/consume/recover/模型/QQ，active不是当前授权，consumed_at不是送达，列表/SSE不携正文或权限HMAC。问答按job-ID严格seek并保留首个上界、状态实时；连接实时seek，最多100条/页且账号可分页。7项新PG/session回归及43项组合216.514秒通过，4独立CF各1failure无error RED，静态/导入通过；UI随后接齐（见下一条），覆盖本补丁的新全套另续，未合并/部署或真实验收。
+
+**管理审计UI（2026-11-15）**：独立“会话问答审计”页按完整账号/物理端点分页连接和最近问答，正文须显式查看，列表/目录/SSE只读元数据；换账号/范围/分页、401/403及卸载清正文，原epoch/lane/AbortController拒绝迟到回填。active不是当前授权，answered/refused、一次领取和真实送达严格分开，只按文本转义显示私有外部资料、无发送/重发/代批按钮。全部8个UI脚本与构建通过，清正文/current/转义三独立CF AssertionError RED；CI新增锁定依赖的Admin UI构建/全部脚本作业。F8目标侧显式say例子差距（note13）、最新固定全套和真实验收仍另续，不称F8整体完成，未合并/部署。
 
 ### F9 群内控制和账单
 

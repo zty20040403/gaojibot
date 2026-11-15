@@ -21,6 +21,7 @@ export type ResourceName =
   | 'budgets'
   | 'browser'
   | 'programs'
+  | 'questions'
   | 'localModel'
   | 'tools'
   | 'traces'
@@ -60,6 +61,7 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   budgets: '/conversations/budgets',
   browser: '/conversations/browser',
   programs: '/programs',
+  questions: '/conversation-questions',
   localModel: '/local-model',
   tools: '/tools',
   traces: '/traces',
@@ -87,6 +89,7 @@ export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   budgets: ['budgets'],
   browser: ['browser'],
   programs: ['programs'],
+  questions: ['questions'],
   'local-model': ['localModel'],
   tools: ['tools'],
   traces: ['traces'],

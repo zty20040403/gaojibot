@@ -1,6 +1,6 @@
 # F8 双边连接与跨会话问答
 
-状态（2026-11-15）：连接控制与私有question已接真实账号factory/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型本地已实现，`ask`源入口已接，管理审计只读API已验而UI尚待接，未真实QQ验收或合并/部署。账号问答组件23059ae见Draft PR #112（等价a863385）。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
+状态（2026-11-15）：连接控制与私有question已接真实账号factory/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型本地已实现，`ask`源入口已接，管理审计只读API/UI已验，未真实QQ验收或合并/部署。账号问答组件23059ae见Draft PR #112（等价a863385）。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
 
 ## 连接不是身份映射
 
@@ -10,7 +10,7 @@
 - 普通成员不能因知道验证码就建立连接；引用、转发、模型文本、网页、文件、VM 请求与裸 role 字段都不是认证命令。禁止自动按成员关系建立边。
 - LinkManagement的list/status/cancel/revoke已接真实账号原认证TxA，仅原认证owner/群管读写自己物理端点涉及的同账号记录，查找后复查原600秒期限。list在LIMIT前限定范围，最多32条及more；只返回散列会话标签、方向/状态/版本，不泄露其他账号/会话的openid。控制反馈与真实账号工厂已接，本地可验而非QQ实测。
 - 默认owner私聊不依赖/bind历史绑定：新private/unbound/present且canonical scope为原物理私聊时可核验owner grant/准入；不放开unbound群、普通public peer、revoked或unbound外部历史。一次link控制在主动状态尚未明确allowed时只选择原认证msg_id窗口，不先探测失败再重试；已有明确allowed仍遵守一次尝试。默认store入口及真实账号factory已用loopback验，本地结果不代表QQ权限。
-- `/unlink` 和管理台撤销提供明确方向；任一端可撤销涉及自己的授权，不能删除无关边。现有链接保留独立版本，重建不能复活旧问答。
+- 原认证 `/link revoke <link-id>` 提供明确方向；任一端可撤销涉及自己的授权，不能删除无关边。现有链接保留独立版本，重建不能复活旧问答。当前管理审计页只读，不提供管理台撤销或独立 `/unlink` 的替代授权通道。
 
 ## 独立短码与持久来源
 
@@ -43,7 +43,7 @@
 - 目标按自身规则回答或拒绝；来源及问题作为 untrusted 资料进入易变上下文。不得挂载需要原 owner 真人私聊的 ops、浏览器个人授权、文件/VM 权限等工具。连接不放开 VM 的跨会话接口，也不复制另一台 `/work`。
 - 问答及模型内部通知只在等待任务/回合审计中保存，不是公共聊天消息，不进入 `history` / VM events。目标普通发言仍须显式工具动作与自身主动消息权限/额度/停止门槛；不能把问题、回答或“已收到”自动作为 QQ 通知。
 - 原等待任务、链接版本、双端物理路由、双端停止代数、目标自动动作预算代数及账号 epoch 在排队、模型等待、返回和通知边界复查。`/stop`、取消、撤链接、过期或重启关闭旧问答；恢复仅接受新请求，不重放已读结果/未知效果。
-- 管理审计API只向登录管理员按完整宿主账号/物理端点列出单向链接和问答元数据；详情需显式账号与CQ-ID，正文不进列表/SSE/普通审计。读取是只读事务，不消费/关闭/授权/执行模型或QQ；active只是存储状态，current授权仍由实际动作复查。连接按created_at/ID实时seek，问答按job-ID上界排除后来的新ID但状态实时；consumed_at不表示结果已返回或QQ送达。UI另续；不提供代替QQ双边确认的通道，未来写入仍须CSRF、独立资源版本与事务审计。
+- 管理审计API只向登录管理员按完整宿主账号/物理端点列出单向链接和问答元数据；详情需显式账号与CQ-ID，正文不进列表/SSE/普通审计。读取是只读事务，不消费/关闭/授权/执行模型或QQ；active只是存储状态，current授权仍由实际动作复查。连接按created_at/ID实时seek，问答按job-ID上界排除后来的新ID但状态实时；consumed_at不表示结果已返回或QQ送达。UI已接“会话问答审计”，换账号/范围/分页即清正文，旧或忽略abort的请求不回填，权限失效/卸载也清私有状态；只显式打开正文并按文本转义显示，无自动QQ或代批。8个UI脚本/构建及三独立CF验证通过；不提供代替QQ双边确认的通道，未来写入仍须CSRF、独立资源版本与事务审计。
 
 ## 目标worker契约（先固定输入，再挂模型）
 
