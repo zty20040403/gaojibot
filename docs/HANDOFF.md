@@ -2,7 +2,7 @@
 
 ## 开发记录（2026-11-15）· F8真实账号问答生命周期（source ask/UI待接）
 
-- QuestionRuntime在实际LinkRuntime挂载后、gateway.run前接问答authority/reducer/受限model/worker；先有界recover旧queued/running，即使此次application=None也关闭旧授权，已完成事实与active持久边不改。每5秒最多128+1 live复查原source/双端/期限/queue，异常超量拒绝；available/status明确表示模型接线，缺AI或同库真实账单时拒新question、不静默降级。
+- 组件23059ae（Draft PR #112，等价a863385）的QuestionRuntime在实际LinkRuntime挂载后、gateway.run前接问答authority/reducer/受限model/worker；先有界recover旧queued/running，即使此次application=None也关闭旧授权，已完成事实与active持久边不改。每5秒最多128+1 live复查原source/双端/期限/queue，异常超量拒绝；available/status明确表示模型接线，缺AI或同库真实账单时拒新question、不静默降级。
 - 每账号并发2/目标1。退出先drain模型/socket/已知usage，再关闭question/queue；runtime原token在current数据库检查前后核验。真实SDK取消后返回ask工具调用曾触发第二个模型请求（确定性1failure RED），现拒旧候选/新请求但保存已接受费用。实际默认private/unbound目标暴露群偏好读口误用，私聊改用宿主默认模型、群聊仍读本物理配置，不改偏好存储或借源actor。
 - 6项新实际account/gateway/原TxA/真实双边发行回执/queue/Gateway工具循环回归通过19.421秒；125项F8/model/worker/来源/schema/原runtime/F6/预算/F9账单/架构组合通过289.757秒、exit0，Ruff/两导入/diff通过。六独立CF删挂载/启动recover/monitor/关闭pending/原runtime current/private选择，各1failure且无error RED。初始async mock返回未await协程与journal=None夹具已修；退出等待改为有界第二请求断言而非靠超时，最初290秒组合工具限时不算通过，完整重跑通过。
 - 另核验旧受限Model固定317e1e1fd34ee848863526ce741c3a928d9161b8本机PG+ffmpeg/ffprobe全套2264项、0失败、10跳过、exit0、1853.027秒，/tmp/gaoji-python-f8-question-model-full.{revision,exit,log}一致。等价d4b0efe2f080f572801a7635d4052fccecfd4fca PR#111 Linux run43656314751/job132635557800同2264项/10跳过、977.900秒，/tmp/gaoji-f8-question-model-linux.log；Nix/Secret通过，旧Windows仍失败，不称全CI绿。这些旧全套不覆盖本factory/private选择/退出修补。

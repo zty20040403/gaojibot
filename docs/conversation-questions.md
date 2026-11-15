@@ -1,6 +1,6 @@
 # F8 双边连接与跨会话问答
 
-状态（2026-11-15）：连接控制与私有question已接真实账号factory/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型本地已实现，`ask`源入口和管理页尚待接，未真实QQ验收或合并/部署。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
+状态（2026-11-15）：连接控制与私有question已接真实账号factory/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型本地已实现，`ask`源入口和管理页尚待接，未真实QQ验收或合并/部署。账号问答组件23059ae见Draft PR #112（等价a863385）。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
 
 ## 连接不是身份映射
 
