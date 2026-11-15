@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-15）· F8受限目标模型组件（账号factory/source ask待接）
+
+- QuestionModel本地接目标物理模型偏好、冻结本端history scope/tail/memory，QuestionToolSource无actor/窗口且不混真人/程序/legacy；通用registry对此来源仅history，本轮另有同qid的ask回答/拒绝候选，拒额外目标/范围/递归/ops/浏览器/VM/文件/agent。问题保持untrusted，普通文本不提交答复；模型/费用排空后仍由worker最终respond授权。
+- 每请求复查原current并共享ModelBudget，真实usage以目标conversation_question/actor=None记账；legacy quota先保守预留，已知usage取消后也排空并只结一次，未知不退款或猜免费。清除继承的request_sink，私有问答不能流入源turn普通请求日志；目标history embedding使用真实question来源/current/账单，不冒充program或human。
+- 11项新PG/实际Gateway工具循环/目标embedding及108项worker/reducer/来源/F9/typed tools/旧F6/架构组合通过209.769秒，Ruff/两导入检查/diff通过。五独立CF分别删冻结scope、普通文本拒绝、request_sink隔离、quota drain、工具末current，各1failure RED；最初并行PG迁移max_locks环境error不算RED，改串行。读取期间stop例改为真实首代claim/账单内直接验Model，五次聚焦通过，不删除外层guard；两旧测试模块命令名已纠正。
+- Task40完成、Task38续：真实OfficialRuntime question工厂/监测/recover/shutdown、前台ask原任务绑定/等待/消费及管理API/UI另接，新固定全套仍待。此前2207/2216旧快照不覆盖本组件，既有Windows ACL仍单列；未QQ/模型真实验收、合并/部署/生产/Java变更，不称F8整体完成。
+
 ## 开发记录（2026-11-14）· F8受控目标worker与独立真实用量来源（模型/factory/ask待接）
 
 - 先固定问答提示/执行器契约：QuestionTarget只给目标物理endpoint/冻结history scope/CQ-ID/问题/散列来源标签/current，问题用quote_evidence转义且不是真人权限、无源actor/窗口/owner/VM/文件；提示限定目标可见内容、隐私可拒绝、不能自动QQ，普通文本不是已提交回答。QuestionDecision仅候选，执行器排空后由Questions.respond最终授权再存；真正history/同ask工具白名单及模型路由还待接，不能把测试注入executor当实际模型已运行。

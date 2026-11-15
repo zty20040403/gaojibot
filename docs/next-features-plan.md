@@ -412,6 +412,8 @@
 
 **认证证据准备（2026-11-14）**：0099/LinkAuthority以无正文的原顶层角色与平台时间记录观察，角色/路由代数、原owner grant/revision、完整actor/account/原时间HMAC防旧权限恢复；lookup跨截止负例RED→GREEN，32项PG/迁移/旧链路组合通过，三个删除保护负对照各RED。仅反映已观察的群角色，不冒充实时QQ权限查询；TxA、link码投递与ask未接，未完整全套/真实验收/部署。
 
+**受限目标模型组件（2026-11-15）**：QuestionModel按目标物理偏好选模型，只读冻结本端history/tail/memory；QuestionToolSource无actor/窗口且registry仅history，另有绑定qid的ask回答/拒绝候选，无递归或ops/浏览器/VM/文件/agent权限。原current/ModelBudget/真实账单及取消quota收尾已接，清除继承request_sink，普通文本不当回答；F10 embedding归真实question来源。11新PG/Gateway/embedding例及108项组合209.769秒通过，五CF各1failure RED、静态通过；实际账号question factory/source ask/管理页及新固定全套仍待，不称F8整体完成或QQ/模型实测，未合并/部署。
+
 **受控目标worker组件（2026-11-14）**：QuestionTarget仅本端endpoint/冻结history scope/qid/问题/安全label/current，quote_evidence明确不是真人/owner、仅目标可见内容/隐私可拒绝、无自动QQ，模型/本端history/同ask白名单待接。QuestionWorker复用队列2并发/目标1，原current轮询跨模型等待、双取消只cancel一次并drain同一socket/真实账单再原子queue关闭；实际用量独立conversation_question/目标物理scope/actor=None，冻结qid/job来源到已有不可变元数据，F9任务维度单列问答，无正文复制或假真人/agent/程序。11新PG/queue/Gateway+注入executor例及最新63组合180.314秒通过，静态另独立核验；轮询/shield/queue关闭/账单来源四CF各1/1/1/4failure RED。只是组件，不是实际OfficialRuntime factory/模型/ask已接；Task38续，F8未整体完成、未QQ/部署，旧全套不覆盖。
 
 **持久等待reducer（2026-11-14）**：Questions纯submit/claim/current/回答拒绝/一次consume/close/recover已接；稳定HMAC账号去重/live128-目标16-原任务4，限额查找后再capture不延长期限，队列仅CQ-ID/hash目标lane/一次非resume。实际job原owner/第一lease-generation/attempt/kind/payload/lane/有效lease持续复查及最终答复lease/期限，关闭queue终态同事务，defer/requeue/restart不复活旧请求，过期expired/在途不明unknown、已完成事实不改；消费只原binding且current。14新PG/真实queue例及46项来源/schema/连接实际factory/F6旧库/架构组合通过，worker证明/queue关闭/末lease/原消费binding四CF分别2/1/1/3failure RED，静态通过。尚未挂实际worker、taint模型/同ask回答/真实费用及前台ask/管理页，Task38仍in_progress，不称F8完成或QQ验收，未部署；旧2207/2216全套不覆盖此reducer。
