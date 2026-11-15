@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 
 from src.bot_storage import DatabaseCalls
-from src.plugins.ai_chat.background_jobs import BackgroundJobs, BackgroundRunner
+from src.plugins.ai_chat.background_jobs import BackgroundJobs, BackgroundRunner, outcome_of
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
@@ -183,4 +183,25 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored['error'], '')
         self.assertTrue(stored['report'].startswith('TEST chart at /work/chart.png'))
         self.assertIn('PermissionError', stored['report'])
+
+    async def test_failed_outcome_report_marks_job_failed_in_postgres(self):
+        row = self.submit('TEST_OUTCOME_FAILED')
+
+        async def nothing(*args):
+            pass
+
+        async def session(*args):
+            return SimpleNamespace(prompt='TEST', tools=(), close=nothing)
+
+        async def engine(row, session, *, feedback, progress, trace):
+            return '结果：失败\n/root/missing 不存在'
+
+        runner = BackgroundRunner(self.store, calls=self.calls, session_factory=session, save_report=nothing,
+            ask_main=nothing, record_usage=nothing, logger=logging.getLogger(__name__), engine=engine, clock=lambda: self.now)
+        await runner.execute(self.queue.get(row['job_id']))
+        stored = self.store.get(row['job_id'])
+        self.assertEqual(stored['state'], 'failed')
+        self.assertEqual(outcome_of(stored['report']), 'failed')
+        self.assertEqual(stored['error'], '后台报告任务失败：/root/missing 不存在')
+        self.assertEqual(stored['report'], '结果：失败\n/root/missing 不存在')
 
