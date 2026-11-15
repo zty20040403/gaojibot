@@ -15,9 +15,10 @@ def chunk(kind, data):
     return len(data).to_bytes(4, 'big') + kind + data + (binascii.crc32(kind + data) & 0xffffffff).to_bytes(4, 'big')
 
 
-def png(width=1, height=1, pixels=b'\0\x20\x40\x80', **kwargs):
-    header = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
-    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header) + chunk(b'IDAT', zlib.compress(pixels)) + chunk(b'IEND', b'')
+def png(width=1, height=1, pixels=b'\0\x20\x40\x80', *, depth=8, color=2, interlace=0, extra=b''):
+    header = struct.pack('>IIBBBBB', width, height, depth, color, 0, 0, interlace)
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header) + extra
+            + chunk(b'IDAT', zlib.compress(pixels)) + chunk(b'IEND', b''))
 
 
 def jpeg():
@@ -43,12 +44,16 @@ class ImageTests(unittest.TestCase):
         for name in ('photo.jpg', 'photo.JPEG'):
             self.assertEqual(detect_image(jpeg(), name), 'image/jpeg')
 
-    def test_magic_suffix_mime_polyglot_and_trailer_rejected(self):
+    def test_magic_suffix_and_mime_mismatch_rejected(self):
         for content, name in ((png(), 'photo.jpg'), (jpeg(), 'photo.png'),
-                              (png() + b'<html>', 'a.png'), (jpeg() + b'junk', 'a.jpg'),
                               (b'<svg/>', 'a.png'), (b'GIF89a', 'a.gif')):
             with self.subTest(name=name), self.assertRaises(ImageFormatError):
                 detect_image(content, name)
+
+    def test_bytes_after_the_end_marker_are_ignored(self):
+        # Phones and chat apps append metadata; it is never decoded.
+        self.assertEqual(detect_image(png() + b'<html>', 'a.png'), 'image/png')
+        self.assertEqual(detect_image(jpeg() + b'junk', 'a.jpg'), 'image/jpeg')
 
     def test_gif_frames_stay_and_broken_gifs_are_rejected(self):
         self.assertEqual(detect_image(gif(frames=3), 'sticker.gif'), 'image/gif')
@@ -59,22 +64,54 @@ class ImageTests(unittest.TestCase):
                 detect_image(content, name)
 
     def test_truncation_crc_and_fake_image_rejected(self):
-        for content in (png()[:-1], png()[:8], png()[:20] + b'broken' + png()[26:], jpeg()[:-2], b'\xff\xd8\xff\xd9'):
+        before_scan = jpeg()[:jpeg().index(b'\xff\xda')]
+        for content in (png()[:-1], png()[:8], png()[:20] + b'broken' + png()[26:], before_scan, b'\xff\xd8\xff\xd9'):
             with self.subTest(content=content[:10]), self.assertRaises(ImageFormatError):
                 detect_image(content, 'a.png' if content.startswith(b'\x89') else 'a.jpg')
+
+    def test_jpeg_cut_off_after_its_scan_started_is_shown(self):
+        self.assertEqual(detect_image(jpeg()[:-2], 'a.jpg'), 'image/jpeg')
+        self.assertEqual(detect_image(jpeg()[:-3], 'a.jpg'), 'image/jpeg')
+
+    def test_extended_jpeg_accepted_arithmetic_rejected(self):
+        content = jpeg()
+        sof = content.index(b'\xff\xc0')
+        self.assertEqual(detect_image(content[:sof + 1] + b'\xc1' + content[sof + 2:], 'a.jpg'), 'image/jpeg')
+        with self.assertRaises(ImageFormatError):
+            detect_image(content[:sof + 1] + b'\xc9' + content[sof + 2:], 'a.jpg')
 
     def test_dimensions_and_decompression_bomb_limits(self):
         for content in (png(width=9000), png(width=5000, height=5000), png(pixels=b'x' * 1000000)):
             with self.assertRaises(ImageFormatError):
                 detect_image(content, 'a.png')
 
-    def test_apng_palette_and_interlaced_not_implicitly_enabled(self):
+    def test_apng_still_rejected(self):
         content = png()
         with self.assertRaises(ImageFormatError):
             detect_image(content[:33] + chunk(b'acTL', b'\0' * 8) + content[33:], 'a.png')
-        header = struct.pack('>IIBBBBB', 1, 1, 8, 3, 0, 0, 0)
+
+    def test_palette_png_needs_a_bounded_palette_before_pixels(self):
+        palette = chunk(b'PLTE', b'\x10\x20\x30' * 2)
+        self.assertEqual(detect_image(png(pixels=b'\0\x01', color=3, extra=palette), 'a.png'), 'image/png')
+        # Four-bit indices: nine pixels pack into five bytes.
+        self.assertEqual(detect_image(png(9, 1, b'\0' + b'\x01' * 5, depth=4, color=3, extra=palette), 'a.png'),
+                         'image/png')
+        too_big = chunk(b'PLTE', b'\0' * 9)
+        for extra in (b'', too_big, palette + palette):
+            with self.subTest(extra=len(extra)), self.assertRaises(ImageFormatError):
+                detect_image(png(pixels=b'\0\x01', depth=1, color=3, extra=extra), 'a.png')
+
+    def test_low_and_high_bit_depths_and_interlace(self):
+        self.assertEqual(detect_image(png(9, 1, b'\0\xff\x80', depth=1, color=0), 'a.png'), 'image/png')
+        self.assertEqual(detect_image(png(1, 1, b'\0' + b'\x12' * 6, depth=16), 'a.png'), 'image/png')
+        # 3x3 RGB with Adam7: non-empty passes 1, 4, 5, 6 (two rows) and 7.
+        rows = [1 + 3, 1 + 3, 1 + 6, 1 + 3, 1 + 3, 1 + 9]
+        pixels = b''.join(b'\0' + b'\x40' * (size - 1) for size in rows)
+        self.assertEqual(detect_image(png(3, 3, pixels, interlace=1), 'a.png'), 'image/png')
         with self.assertRaises(ImageFormatError):
-            detect_image(content[:8] + chunk(b'IHDR', header) + content[33:], 'a.png')
+            detect_image(png(3, 3, pixels[:-1], interlace=1), 'a.png')
+        with self.assertRaises(ImageFormatError):
+            detect_image(png(1, 1, b'\0\x20\x40\x80', depth=4), 'a.png')
 
     def test_image_byte_budget_and_bad_filter(self):
         with self.assertRaises(ImageFormatError):

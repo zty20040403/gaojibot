@@ -4,6 +4,11 @@ This adapter validates container structure, dimensions and the complete PNG
 scanline stream, and the GIF block structure (frames stay animated on QQ). It is
 not an OCR/image-content safety classifier. Animated PNG, SVG, WebP and
 video/audio remain unavailable.
+
+Ordinary files from phones and chat apps must pass: palette, low/high bit depth
+and interlaced PNG, extended-sequential and CMYK JPEG, bytes after the end
+marker (never decoded; downloads are served as nosniff attachments, like GIF),
+and a JPEG cut off after its first complete scan header (decoders show it).
 """
 import binascii
 from pathlib import PurePath
@@ -63,8 +68,28 @@ def _dimensions(width, height):
         raise ImageFormatError('image_dimension_limit')
 
 
+_PNG_DEPTHS = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8}, 4: {8, 16}, 6: {8, 16}}
+_PNG_CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+# Adam7 passes: (x start, y start, x step, y step).
+_ADAM7 = ((0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2))
+
+
+def _png_rows(width, height, bits, interlace):
+    """Byte length of every filtered scanline, filter byte included."""
+    if not interlace:
+        return [1 + (width * bits + 7) // 8] * height
+    rows = []
+    for x, y, dx, dy in _ADAM7:
+        columns = (width - x + dx - 1) // dx if width > x else 0
+        count = (height - y + dy - 1) // dy if height > y else 0
+        if columns:
+            rows.extend([1 + (columns * bits + 7) // 8] * count)
+    return rows
+
+
 def _png(data):
     offset, chunks, header, ended, after_idat = 8, 0, None, False, False
+    color, palette = None, False
     compressed = bytearray()
     while offset < len(data):
         if offset + 12 > len(data) or chunks >= 4096:
@@ -81,45 +106,52 @@ def _png(data):
                 raise ImageFormatError('invalid_png_header')
             width, height, depth, color, method, filter_method, interlace = struct.unpack('>IIBBBBB', value)
             _dimensions(width, height)
-            if depth != 8 or color not in {0, 2, 4, 6} or method or filter_method or interlace:
+            if (depth not in _PNG_DEPTHS.get(color, ()) or method or filter_method
+                    or interlace not in {0, 1}):
                 raise ImageFormatError('png_variant_unavailable')
-            channels = {0: 1, 2: 3, 4: 2, 6: 4}[color]
-            row_size = 1 + width * channels
-            expected = height * row_size
+            rows = _png_rows(width, height, _PNG_CHANNELS[color] * depth, interlace)
+            expected = sum(rows)
             if expected > MAX_IMAGE_DECODED_BYTES:
                 raise ImageFormatError('image_decoded_limit')
-            header = (height, row_size, expected)
+            header = (rows, expected, depth)
         elif kind == b'IHDR' or kind in {b'acTL', b'fcTL', b'fdAT'}:
             raise ImageFormatError('png_variant_unavailable')
         elif kind == b'IDAT':
-            if after_idat:
+            if after_idat or (color == 3 and not palette):
                 raise ImageFormatError('invalid_png_structure')
             compressed.extend(value)
         elif kind == b'IEND':
-            if length or end != len(data):
+            if length:
                 raise ImageFormatError('invalid_png_structure')
+            # Bytes after IEND are never decoded.
             ended = True
+            break
         else:
             if compressed:
                 after_idat = True
-            # Unknown critical chunks are not safe to ignore. PLTE optional for
-            # RGB; its entries are bounded and not used to decode admitted types.
+            # Unknown critical chunks are not safe to ignore. A palette is
+            # bounded by the bit depth when it indexes the pixels.
             if kind == b'PLTE':
-                if length % 3 or not 3 <= length <= 768:
+                limit = 3 * (1 << header[2]) if color == 3 else 768
+                if palette or compressed or length % 3 or not 3 <= length <= min(limit, 768):
                     raise ImageFormatError('invalid_png_palette')
+                palette = True
             elif not 97 <= kind[0] <= 122:
                 raise ImageFormatError('png_variant_unavailable')
         offset = end
     if not header or not ended or not compressed:
         raise ImageFormatError('invalid_png_structure')
-    height, row_size, expected = header
+    rows, expected, _ = header
     try:
         stream = zlib.decompressobj()
         decoded = stream.decompress(bytes(compressed), expected + 1)
         if len(decoded) != expected or not stream.eof or stream.unused_data or stream.unconsumed_tail:
             raise ImageFormatError('invalid_png_pixels')
-        if any(decoded[i * row_size] > 4 for i in range(height)):
-            raise ImageFormatError('invalid_png_filter')
+        position = 0
+        for size in rows:
+            if decoded[position] > 4:
+                raise ImageFormatError('invalid_png_filter')
+            position += size
     except zlib.error:
         raise ImageFormatError('invalid_png_pixels') from None
 
@@ -140,7 +172,8 @@ def _jpeg(data):
         if markers > 16384:
             raise ImageFormatError('image_marker_limit')
         if marker == 0xD9:
-            if frame and scan and quantization and huffman and offset == len(data):
+            # Bytes after EOI are never decoded.
+            if frame and scan and quantization and huffman:
                 return
             break
         if marker in {0, 0xD8} or 0xD0 <= marker <= 0xD7 or offset + 2 > len(data):
@@ -158,15 +191,17 @@ def _jpeg(data):
             if len(value) < 17:
                 break
             huffman = True
-        elif marker in {0xC0, 0xC2}:
-            if frame or len(value) < 6 or value[0] != 8 or value[5] not in {1, 3} or len(value) != 6 + value[5] * 3:
+        elif marker in {0xC0, 0xC1, 0xC2}:
+            # Baseline, extended sequential and progressive Huffman; grey, YCbCr or CMYK.
+            if (frame or len(value) < 6 or value[0] != 8 or value[5] not in {1, 3, 4}
+                    or len(value) != 6 + value[5] * 3):
                 break
             _dimensions(int.from_bytes(value[3:5], 'big'), int.from_bytes(value[1:3], 'big'))
             frame = True
         elif 0xC0 <= marker <= 0xCF and marker not in {0xC4, 0xC8, 0xCC}:
             raise ImageFormatError('jpeg_variant_unavailable')
         elif marker == 0xDA:
-            if not frame or len(value) < 4 or value[0] not in {1, 3} or len(value) != 4 + 2 * value[0]:
+            if not frame or len(value) < 4 or not 1 <= value[0] <= 4 or len(value) != 4 + 2 * value[0]:
                 break
             scan = True
             # Entropy bytes are opaque; only escaped FF/restart markers may be
@@ -179,6 +214,9 @@ def _jpeg(data):
                     offset += 2
                     continue
                 break
+            if offset + 1 >= len(data) and quantization and huffman:
+                # Cut off inside or right after scan data: decoders show what arrived.
+                return
     raise ImageFormatError('invalid_jpeg_structure')
 
 
