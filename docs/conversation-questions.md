@@ -1,6 +1,6 @@
 # F8 双边连接与跨会话问答
 
-状态（2026-11-15）：连接控制与私有question已接真实账号factory/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型本地已实现，`ask`源入口和管理页尚待接，未真实QQ验收或合并/部署。账号问答组件23059ae见Draft PR #112（等价a863385）。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
+状态（2026-11-15）：连接控制与私有question已接真实账号factory/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型本地已实现，`ask`源入口已接，管理审计只读API已验而UI尚待接，未真实QQ验收或合并/部署。账号问答组件23059ae见Draft PR #112（等价a863385）。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
 
 ## 连接不是身份映射
 
@@ -43,7 +43,7 @@
 - 目标按自身规则回答或拒绝；来源及问题作为 untrusted 资料进入易变上下文。不得挂载需要原 owner 真人私聊的 ops、浏览器个人授权、文件/VM 权限等工具。连接不放开 VM 的跨会话接口，也不复制另一台 `/work`。
 - 问答及模型内部通知只在等待任务/回合审计中保存，不是公共聊天消息，不进入 `history` / VM events。目标普通发言仍须显式工具动作与自身主动消息权限/额度/停止门槛；不能把问题、回答或“已收到”自动作为 QQ 通知。
 - 原等待任务、链接版本、双端物理路由、双端停止代数、目标自动动作预算代数及账号 epoch 在排队、模型等待、返回和通知边界复查。`/stop`、取消、撤链接、过期或重启关闭旧问答；恢复仅接受新请求，不重放已读结果/未知效果。
-- 管理台只向登录管理员按宿主账号列出链接/方向/当前状态和问答记录，写入使用 CSRF、独立资源版本与事务审计，不提供代替 QQ 双边确认的通道。
+- 管理审计API只向登录管理员按完整宿主账号/物理端点列出单向链接和问答元数据；详情需显式账号与CQ-ID，正文不进列表/SSE/普通审计。读取是只读事务，不消费/关闭/授权/执行模型或QQ；active只是存储状态，current授权仍由实际动作复查。连接按created_at/ID实时seek，问答按job-ID上界排除后来的新ID但状态实时；consumed_at不表示结果已返回或QQ送达。UI另续；不提供代替QQ双边确认的通道，未来写入仍须CSRF、独立资源版本与事务审计。
 
 ## 目标worker契约（先固定输入，再挂模型）
 

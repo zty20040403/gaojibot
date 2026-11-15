@@ -1,5 +1,13 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-15）· F8管理台只读连接与问答审计API
+
+- 新增登录管理员专用conversation-questions账号目录、单向连接、问答元数据分页及显式正文详情；legacy/v1和自定义prefix共用原secure_route，匿名401、成员403。完整AccountKey含environment及物理endpoint在LIMIT前限定，不借canonical历史别名；详情同时匹配account与CQ-ID。列表不查询问答正文，不返回权限HMAC/actor/验证码；正文仅在已选账号的显式详情返回，不开放模型/VM接口或新授权。
+- 读取使用REPEATABLE READ READ ONLY，不调用current/reducer/consume/recover，不更改旧边、过期或已完成事实、不执行QQ或模型。连接state只表示保存的active/revoked，authorization=not_checked，不冒充当前可用权；发行回执事实独立展示。consumed_at只是一次领取，delivery_state固定not_tracked，不表示已返回或QQ送达。
+- 连接按created_at/link-ID严格seek且状态实时；问答按唯一job-ID严格seek并冻结首个最大ID上界，后续新ID即使旧timestamp也不混入，状态仍实时、不宣称跨页MVCC冻结。每页最多100，账号可继续分页；SSE只发布questions资源名，不携私有正文。
+- 7项新实际PG/queue/认证session回归及43项管理权限/路由/诊断/0104/旧F6/架构组合216.514秒、exit0通过，Ruff/两导入/diff通过；四独立CF删物理范围、详情账号、严格seek、领取不等于送达，各1failure且无error RED。首次非法别名active冲突/错误7201秒夹具只修测试，未放宽DDL；旧190秒组合timeout及不存在模块不计通过，最终重跑日志/tmp/gaoji-f8-admin-questions-combo-recheck.log。
+- API组件已完成，管理页另续；3965080的固定全套仍运行且不覆盖本补丁。真实QQ/模型/embedding验收仍task9，F7范围待owner；无合并、部署、生产或Java变更，不称F8整体完成。
+
 ## 开发记录（2026-11-15）· F8前台ask真实来源挂载（审计UI/新全套待续）
 
 - Source组件3965080（Draft PR #117，等价c9b86c9）的OfficialRuntime原turn consumer通过QuestionRuntime.frontend建立本回合QuestionAsks，限定真实OfficialTurnPlatform、原token身份、原ExecutionBinding/api、chat/final及原endpoint/actor/scope/route/native；不借模型参数、历史别名、后台/程序/目标问答的元数据。目录只查同账号物理source的active单向边、先范围后LIMIT33并超32拒绝，复核双边同意、当前路由/停止/预算与末尾时钟，只给不透明连接ID和散列会话标签；提交仍重新授权，目录不是权限。
