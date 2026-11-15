@@ -162,7 +162,9 @@ class OfficialSender:
         await self._fence()
         return await asyncio.shield(await self._submit(delivery_id))
 
-    async def _credential(self, endpoint, route, *, proactive_only=False,original_native_id=None):
+    async def _credential(self, endpoint, route, *, proactive_only=False,original_native_id=None,confirmed_proactive_only=False):
+        if confirmed_proactive_only:
+            return ('proactive', None, None) if endpoint.kind == 'group' and route['proactive_state'] == 'allowed' else None
         # One-shot link control cannot recover from an unverified proactive probe.
         # Prefer its authenticated ORIGINAL window unless proactive is explicitly allowed.
         if route['proactive_state'] != 'denied' and (original_native_id is None or route['proactive_state']=='allowed'):
@@ -201,8 +203,10 @@ class OfficialSender:
             program = row.get('program_action_id') is not None
             budget_notice = row.get('budget_notice_day') is not None
             link_notice = row['purpose'] in {'link_otp','link_feedback'}
-            credential = await self._credential(endpoint, route,proactive_only=program or budget_notice,
-                original_native_id=row['reply_to_native_message_id'] if link_notice else None)
+            question_notice = row['purpose'] == 'question_notice'
+            credential = await self._credential(endpoint, route,proactive_only=program or budget_notice or question_notice,
+                original_native_id=row['reply_to_native_message_id'] if link_notice else None,
+                confirmed_proactive_only=question_notice)
             if credential is None:
                 log.warning('QQ send failed: 这个群没开主动发言，请群主打开')
                 return await self._calls(self.outbox.fail, self.token, delivery_id, PASSIVE_UNAVAILABLE)
@@ -281,7 +285,7 @@ class OfficialSender:
                 plain_retry, retry, plain, reason = True, True, True, 'markdown_rejected'
             else:
                 reason = error.category
-            if budget_notice or link_notice:
+            if budget_notice or link_notice or question_notice:
                 retry,plain,delay = False,False,0  # One attempt, even for confirmed rejection.
             result = await self._calls(self.outbox.fail, self.token, delivery_id, reason,
                 reservation=reservation, error=error, retry=retry, plain=plain)

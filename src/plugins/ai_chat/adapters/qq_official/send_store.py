@@ -56,13 +56,14 @@ class OfficialSendStore:
         self.ops_authority = None
         self.link_authority = None
         self.link_feedback_authority = None
+        self.question_notice_authority = None
         self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
                 transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None, ops_action_id=None,
-                link_challenge_id=None,link_reply_inbox_id=None):
+                link_challenge_id=None,link_reply_inbox_id=None,question_notice_id=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -70,13 +71,14 @@ class OfficialSendStore:
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
                 admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if any(value is not None for value in (challenge_id,approval_source_id,ops_action_id,link_challenge_id,link_reply_inbox_id)) else None,
+                pepper=self.pepper if any(value is not None for value in (challenge_id,approval_source_id,ops_action_id,link_challenge_id,link_reply_inbox_id,question_notice_id)) else None,
                 binding_preview=binding_preview, control_reply_id=control_reply_id,
                 max_wait_seconds=self.max_wait_seconds, approval_source_id=approval_source_id,
                 approval_authority=self.approval_authority, source_guard=None if purpose=='progress' else self.source_guard, source_proof=source_proof,
                 ops_action_id=ops_action_id,ops_authority=self.ops_authority,link_challenge_id=link_challenge_id,link_authority=self.link_authority,
-                link_reply_inbox_id=link_reply_inbox_id,link_feedback_authority=self.link_feedback_authority)
-        if purpose in {"binding_otp", "approval_otp", "ops_approval", "link_otp", "link_feedback"} and ref.created:
+                link_reply_inbox_id=link_reply_inbox_id,link_feedback_authority=self.link_feedback_authority,
+                question_notice_id=question_notice_id,question_notice_authority=self.question_notice_authority)
+        if purpose in {"binding_otp", "approval_otp", "ops_approval", "link_otp", "link_feedback", "question_notice"} and ref.created:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
@@ -174,6 +176,9 @@ class OfficialSendStore:
             if self.link_authority is not None:
                 for row in expired:
                     if row['purpose']=='link_otp':self.link_authority.settled(cursor,token,row['plan_id'])
+            if self.question_notice_authority is not None:
+                for row in expired:
+                    if row['purpose']=='question_notice':self.question_notice_authority.settled(cursor,token,row['plan_id'])
             rows = cursor.execute("""SELECT delivery_id FROM deliveries WHERE account_key=?
                 AND status='pending' AND next_attempt_at<=? ORDER BY delivery_id LIMIT ?""",
                 (token.account_key, now, limit)).fetchall()
@@ -236,6 +241,8 @@ class OfficialSendStore:
             canonical=row['source_canonical_message_id'],generation=plan['conversation_generation'],commands=command)
 
     def _program_authorized(self, cursor, token, row):
+        if row['purpose'] == 'question_notice':
+            return None, None
         if is_bot_notice_candidate(row) and cursor.execute('SELECT 1 FROM conversation_budget_days WHERE notice_plan_id=?',(row['plan_id'],)).fetchone():
             from .budget_notices import denial
             reason = denial(cursor,token=token,delivery=row,now=int(self.clock()),admission=self.admission)
@@ -267,6 +274,9 @@ class OfficialSendStore:
             if row['purpose']=='link_feedback' and (int(self.clock())>=row['expires_at'] or self.link_feedback_authority is None
                 or not self.link_feedback_authority.delivery_current(cursor,token,row)):
                 return 'link_feedback_source_unavailable'
+            if row['purpose']=='question_notice' and (int(self.clock())>=row['expires_at'] or self.question_notice_authority is None
+                or not self.question_notice_authority.delivery_current(cursor,token,row)):
+                return 'question_notice_source_unavailable'
             return self._program_authorized(cursor,token,row)[1]
 
     def prepare(self, token, delivery_id, *, send_mode, msg_id=None, msg_seq=None):
@@ -298,6 +308,9 @@ class OfficialSendStore:
             if row['purpose']=='link_feedback':
                 authorized = authorized and self.link_feedback_authority is not None and self.link_feedback_authority.delivery_current(cursor,token,row)
                 if send_mode=='passive' and msg_id!=row['reply_to_native_message_id']:authorized = False
+            if row['purpose']=='question_notice':
+                authorized = (send_mode=='proactive' and route['proactive_state']=='allowed' and endpoint.kind=='group'
+                    and self.question_notice_authority is not None and self.question_notice_authority.delivery_current(cursor,token,row))
             if not authorized or route['membership_state'] != 'present' or route['binding_state'] == 'revoked':
                 return self._finish(cursor, token, row, 'failed', program_error or 'delivery_not_authorized', now)
             if now >= row['expires_at']:
@@ -352,6 +365,8 @@ class OfficialSendStore:
                 (notice_status,row['plan_id']))
         if row['purpose']=='link_otp' and self.link_authority is not None:
             self.link_authority.settled(cursor,token,row['plan_id'])
+        if row['purpose']=='question_notice' and self.question_notice_authority is not None:
+            self.question_notice_authority.settled(cursor,token,row['plan_id'])
         return SendOutcome(status, reason, row['delivery_id'])
 
     def fail(self, token, delivery_id, reason, *, reservation=None, error=None, retry=False, plain=False):
@@ -367,7 +382,7 @@ class OfficialSendStore:
                     ('ambiguous' if unknown else 'confirmed_unaccepted', 'unknown' if unknown else 'confirmed_no',
                      now, reason, error.stage if error else None, error.status if error else None,
                      error.code if error else None, reservation.attempt_id))
-            if row['purpose'] in {'link_otp','link_feedback'}:retry,plain = False,False
+            if row['purpose'] in {'link_otp','link_feedback','question_notice'}:retry,plain = False,False
             if plain:
                 cursor.execute("UPDATE deliveries SET variant='plain_fallback',format_fallback_used=TRUE WHERE delivery_id=?", (delivery_id,))
             return self._finish(cursor, token, row, 'ambiguous' if unknown else 'pending' if retry else 'failed', reason, now)
@@ -381,7 +396,8 @@ class OfficialSendStore:
         from .send_ledger import finalize_receipt
         with self.deliveries.transaction() as cursor:
             result = finalize_receipt(cursor, token=token, receipt_id=receipt_id, ledger=ledger, journal=journal,
-                now=int(self.clock()),link_authority=self.link_authority)
+                now=int(self.clock()),link_authority=self.link_authority,
+                question_notice_authority=self.question_notice_authority)
             return result
 
     def recover(self, token):
@@ -397,6 +413,11 @@ class OfficialSendStore:
                     WHERE d.account_key=? AND d.purpose='link_otp' AND c.delivery_state='pending'
                     AND d.status IN ('failed','cancelled','ambiguous')""",(token.account_key,)).fetchall()
                 for row in rows:self.link_authority.settled(cursor,token,row['plan_id'])
+            if self.question_notice_authority is not None:
+                rows = cursor.execute("""SELECT d.plan_id FROM deliveries d JOIN qq_official_question_notices n ON n.plan_id=d.plan_id
+                    WHERE d.account_key=? AND d.purpose='question_notice' AND n.delivery_state='pending'
+                    AND d.status IN ('failed','cancelled','ambiguous')""",(token.account_key,)).fetchall()
+                for row in rows:self.question_notice_authority.settled(cursor,token,row['plan_id'])
             return tuple(r['receipt_id'] for r in cursor.execute('SELECT receipt_id FROM delivery_receipts WHERE account_key=? AND applied_at IS NULL', (token.account_key,)).fetchall())
 
     def forget_ephemeral(self, delivery_id):
