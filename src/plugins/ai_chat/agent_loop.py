@@ -911,6 +911,7 @@ async def ask_deepseek_with_tools(
             except ModelBudgetExceeded:
                 raise
             except Exception:
+                _logger.exception("Tool %s failed", name)
                 tool_result = json.dumps(
                     {"ok": False, "error": "工具执行时发生内部错误。"},
                     ensure_ascii=False,

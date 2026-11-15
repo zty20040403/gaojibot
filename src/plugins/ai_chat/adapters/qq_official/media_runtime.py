@@ -2,6 +2,7 @@
 from contextlib import nullcontext
 from dataclasses import dataclass
 import hashlib
+import logging
 import os
 from pathlib import Path
 import re
@@ -12,7 +13,7 @@ from src.plugins.ai_chat.model_budget import ModelCallBudget, active_model_budge
 from .content_reader import PinnedContentReader, read_text_document
 from .file_artifacts import foreground_source, current_source
 from .forward_render import forward_text, render_forward
-from .image_formats import detect_image, IMAGE_MIMES, MAX_IMAGE_BYTES
+from .image_formats import detect_image, IMAGE_MIMES, ImageFormatError, MAX_IMAGE_BYTES
 from .local_asr import LocalASR, LocalASRConfig
 from .media_refs import LedgerMediaResolver, MediaRef, MediaDenied, transcribe, text_link
 from .media_budget import OCRUsage
@@ -342,20 +343,37 @@ class MediaSession:
             if record is None or record.handle != handle or record.mime_type != row['mime_type']:
                 raise MediaDenied('sticker_content_unavailable')
             content = _read_library_bytes(library.root,record.storage_path,row['byte_size'],row['sha256'])
-            filename = 'sticker.' + {'image/png':'png','image/jpeg':'jpg','image/gif':'gif'}[row['mime_type']]
-            if detect_image(content,filename)!=row['mime_type']:
+            filename = sticker_filename(record.summary, row['mime_type'])
+            try:
+                detected = detect_image(content,filename)
+            except ImageFormatError as error:
+                _logger.warning('Sticker %s is not a sendable image: %s', handle, error)
+                raise MediaDenied('sticker_content_unavailable') from None
+            if detected!=row['mime_type']:
                 raise MediaDenied('sticker_content_unavailable')
-            return content,filename
-        content,filename = await self.service.runtime._calls(read)
+            return content,filename,record
+        content,filename,sticker = await self.service.runtime._calls(read)
         await self.current()
         record = await self.register_bytes(content,filename,'sticker:'+handle)
+        # The model must know what it sent, or it will invent a description later.
         return {'state':record.delivery_state,'artifact_id':record.artifact_id,
-                'message':'贴纸已进入受控图片投递，尚未确认平台接收。'}
+                'media_handle':handle,'summary':sticker.summary,'emotion':list(sticker.emotions),
+                'message':'贴纸已进入受控图片投递，尚未确认平台接收。被问起时按 summary 描述这张图。'}
 
     def finish(self, answer):
         # These are bounded original texts; final M3 rendering escapes all native
         # markup. No tool directly sends an extra message or spends a window.
         return '\n\n'.join([answer,*self.pending_text])
+
+
+_logger = logging.getLogger(__name__)
+_EXTENSIONS = {'image/png':'png','image/jpeg':'jpg','image/gif':'gif'}
+
+
+def sticker_filename(summary, mime):
+    """The ledger shows our own sticker by filename, so name it after its tag."""
+    words = re.sub(r'[^\w一-鿿]+', '', str(summary or ''))[:24]
+    return f"表情-{words}.{_EXTENSIONS[mime]}" if words else f"sticker.{_EXTENSIONS[mime]}"
 
 
 def _read_library_bytes(root,path,size,digest):

@@ -65,6 +65,14 @@ STICKER_ALIAS_GROUPS = (
     ("饿", "挨饿", "饥饿"),
     ("狗", "小狗", "狗狗"),
     ("猫", "猫咪", "橘猫"),
+    ("酷", "酷炫", "炫酷", "帅", "帅气", "拽", "装酷", "装逼", "墨镜", "霸气"),
+    ("得意", "骄傲", "嘚瑟", "自信"),
+    ("嫌弃", "鄙视", "白眼", "不屑", "懒得"),
+    ("嘲讽", "挑衅", "阴阳怪气", "调侃"),
+    ("点赞", "厉害", "好强", "牛逼", "666"),
+    ("害羞", "脸红", "羞涩", "尴尬"),
+    ("累", "困", "躺平", "摆烂", "睡觉"),
+    ("有钱", "炫富", "富贵", "买不起", "穷"),
     ("鲸鱼", "小鲸鱼"),
     ("吐舌", "搞怪"),
 )
@@ -932,7 +940,9 @@ class MediaLibrary:
             MediaRecord(
                 **{
                     **record.__dict__,
-                    "score": self._sticker_relevance(record, terms),
+                    "score": self._sticker_relevance(
+                        record, terms, self._sticker_own_terms(cleaned),
+                    ),
                 }
             )
             for record in records
@@ -984,6 +994,7 @@ class MediaLibrary:
             lexical_score = self._sticker_relevance(
                 record,
                 self._sticker_query_terms(cleaned),
+                self._sticker_own_terms(cleaned),
             )
             combined_score = (
                 0.7 * lexical_score + 0.3 * hit.score
@@ -1171,6 +1182,10 @@ class MediaLibrary:
                 """,
                 (now, now, int(media_id)),
             )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 
@@ -1606,16 +1621,29 @@ class MediaLibrary:
         )
 
     @classmethod
-    def _sticker_query_terms(cls, query: str) -> tuple[str, ...]:
-        normalized = cls._normalize_sticker_text(query)
-        content = normalized
+    def _sticker_word(cls, value: str) -> str:
+        content = cls._normalize_sticker_text(value)
         for filler in STICKER_QUERY_FILLERS:
             content = content.replace(cls._normalize_sticker_text(filler), "")
         if content.startswith("更") and len(content) > 1:
             content = content[1:]
         if content.endswith("的") and len(content) > 1:
             content = content[:-1]
+        return content
+
+    @classmethod
+    def _sticker_words(cls, query: str) -> tuple[str, ...]:
+        """Models often write several words; each one is matched on its own."""
+        words = (cls._sticker_word(part) for part in re.split(r"[\W_]+", str(query)))
+        return tuple(dict.fromkeys(word for word in words if word))
+
+    @classmethod
+    def _sticker_query_terms(cls, query: str) -> tuple[str, ...]:
+        content = cls._sticker_word(query)
+        words = cls._sticker_words(query)
         terms: list[str] = [content] if content else []
+        if len(words) > 1:
+            terms.extend(words)
         for group in STICKER_ALIAS_GROUPS:
             if any(cls._normalize_sticker_text(alias) in content for alias in group):
                 terms.extend(cls._normalize_sticker_text(alias) for alias in group)
@@ -1627,11 +1655,15 @@ class MediaLibrary:
         query: str,
     ) -> tuple[tuple[str, ...], ...]:
         normalized = cls._normalize_sticker_text(query)
-        return tuple(
+        groups = tuple(
             tuple(cls._normalize_sticker_text(alias) for alias in group)
             for group in STICKER_ALIAS_GROUPS
             if any(cls._normalize_sticker_text(alias) in normalized for alias in group)
         )
+        if len(cls._sticker_words(query)) > 1 and groups:
+            # Several words are alternatives ("嫌弃 无语"): any one of them is enough.
+            return (tuple(dict.fromkeys(alias for group in groups for alias in group)),)
+        return groups
 
     @classmethod
     def _record_matches_sticker_groups(
@@ -1649,6 +1681,7 @@ class MediaLibrary:
         cls,
         record: MediaRecord,
         terms: Sequence[str],
+        own_terms: int = 1,
     ) -> float:
         fields = (
             (" ".join(record.subjects), 5.0),
@@ -1676,9 +1709,28 @@ class MediaLibrary:
             )
             for term in terms
         ]
-        primary_score = term_scores[0]
-        supporting_score = sum(sorted(term_scores[1:], reverse=True)[:3]) / 3.0
+        # The asker's own best-matching word leads; a synonym may lead only at
+        # a discount, so "猫娘" in a title still beats "猫耳" in the tags.
+        # Synonyms of one group overlap ("猫耳" in "猫耳少女"), so each group
+        # counts once, at a discount below the asker's own words.
+        own = max(1, min(int(own_terms), len(term_scores)))
+        synonyms = dict(zip(terms[own:], term_scores[own:]))
+        candidates = [*term_scores[:own]]
+        for group in STICKER_ALIAS_GROUPS:
+            found = [synonyms[alias] for alias in map(cls._normalize_sticker_text, group) if alias in synonyms]
+            if found:
+                candidates.append(0.75 * max(found))
+        ranked = sorted(candidates, reverse=True)
+        primary_score = ranked[0]
+        supporting_score = sum(ranked[1:4]) / 3.0
         return min(primary_score * 0.7 + supporting_score * 0.3, 1.0)
+
+    @classmethod
+    def _sticker_own_terms(cls, query: str) -> int:
+        """How many leading query terms are the asker's words, not synonyms."""
+        words = cls._sticker_words(query)
+        own = [cls._sticker_word(query), *(words if len(words) > 1 else ())]
+        return max(len(dict.fromkeys(term for term in own if term)), 1)
 
     @staticmethod
     def _normalize_sticker_text(value: str) -> str:

@@ -313,5 +313,6 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(fake.uploaded[('users','TEST_RUNTIME_OWNER')],png())
                 self.assertEqual(sum(v['payload']['msg_type']==7 for v in fake.received),1)
                 self.assertEqual(len(self.query('SELECT * FROM delivery_receipts WHERE applied_at IS NOT NULL')),2)
-                self.assertEqual(self.query('SELECT times_sent FROM sticker_library')[0]['times_sent'],0)
+                # Counted so the least-sent stickers come first next time.
+                self.assertEqual(self.query('SELECT times_sent FROM sticker_library')[0]['times_sent'],1)
                 await runtime.stop()
