@@ -1,5 +1,12 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-15）· 媒体批次集成夹具同步（仅测试）
+
+- task42的旧23059ae全套1failure并非证明生产漏合并：夹具把idle缩至.3秒，却假设连续fake.emit经过媒体入库/DB之后仍落在同一窗口。受控等第一条真实execution领取后再发第二条，稳定重现原标记断言1failure/无error（/tmp/gaoji-f8-media-batch-late-input-red.log）；此时原batcher按过期窗口拆批符合预期。
+- 测试CompleteMediaBatch等已知两条canonical输入到达，再执行原_wait；不改src或生产idle/max/stop逻辑，不放宽连续标记、四种handle、正文、脱敏、OCR一次及QQ一次断言。时间/stop行为仍由未修改的batcher测试验证；本夹具只验canonical媒体聚合。
+- PG+显式ffmpeg/ffprobe环境18项media pipeline/control batch/真实turn/架构组合50.082秒通过，Ruff/两导入/diff通过。首组合环境缺ffmpeg/ffprobe导致另一vision输入image_preparation_unavailable断言失败，日志/tmp/gaoji-f8-media-batch-sync-combo.log不计通过；使用与固定全套相同PATH重跑/tmp/gaoji-f8-media-batch-sync-ffmpeg.log通过，未改系统PATH或生产配置。
+- 共享guard排空dbaba9d/Draft#115（等价0d22c42）已独立修复；SourceFrontend需回原worktree在两修补之上重检并小步提交，再管理页和新固定全套。旧23059ae全套仍是exit1历史事实，不能改记绿色或把本18项当全套；未合并/部署/生产/Java/真实QQ验收。
+
 ## 开发记录（2026-11-15）· 护栏失效排空与账号取消交叠修复
 
 - Source ask组合初次51项130.159秒通过，但最终143.991秒重检在旧QuestionRuntime shutdown测试发现1failure，不能将初次通过当最终验收。guarded_wait因current失效进入finally并已cancel模型后，账号退出再次cancel外层waiter，旧直接await task会把第二次取消传入SDK/socket/真实费用清理，提前关闭question/queue。
