@@ -38,7 +38,7 @@
 - 0104私有question任务schema已建立，复用durable_jobs且队列只保存CQ-ID；完整source execution/account/endpoint/actor与定向link复合FK，原epoch/route/scope/revision/deadline及双方stop/目标budget代数冻结。等待最长7200秒且不超原任务；回答/拒绝或取消/过期/unknown终态及一次consume不可恢复/删除。它只证明结构，不自动创建/读取问答或增加QQ效果。
 - QuestionAuthority纯来源读口已接：只接受原宿主ExecutionBinding且匹配实际executing/chat完整来源；普通提问actor不需要或继承双方建边管理员/owner权限。原任务/link/问题的intent HMAC在不同重试时间稳定，current必须读取实际不可变任务行，不能由调用方修正旧stop/budget/时间/终态。双端同意/物理路由/准入、双端stop、目标预算及末尾期限复查；target_input自身current后只给问题和散列标签。读口通过不是已运行问答或已完成taint模型。
 - Questions纯持久reducer已接submit/去重/claim/current/回答拒绝/一次consume/关闭恢复，账号锁下live限额128/目标16/原任务4；队列只保存CQ-ID，不复制问答到普通表或result。实际job第一代/一次attempt、owner/lease/kind/payload/物理hash lane持续核验，defer/requeue不重放；关闭/终态queue同事务，过期规范expired，在途未知/restart不猜回答，已完成事实不改。消费必须原来源binding与最终current/期限。实际worker、模型取消与费用收尾已挂账号工厂，ask源入口尚待接，不把排队当目标已收到。
-- `ask` 提交有限长度的问题，建立独立等待任务；源模型在原任务期限内等待并取得结果和任务编号，最长两小时但不延长原source current。QuestionAsks等待读口已实现，仅原ExecutionBinding能poll/close/一次consume；重复取消也保留CQ-ID并关闭队列。领取后的runtime/双端/预算/clock失效拒绝返回正文但保留真实领取事实，consumed_at不是送达。前台catalog/factory和普通日志隔离另接。无连接和不存在的目标统一拒绝，不枚举他人会话。
+- `ask` 提交有限长度的问题，建立独立等待任务；源模型在原任务期限内等待并取得结果和任务编号，最长两小时但不延长原source current。QuestionAsks等待读口028082d/Draft#113（等价e85342e）已实现，仅原ExecutionBinding能poll/close/一次consume；重复取消也保留CQ-ID并关闭队列。领取后的runtime/双端/预算/clock失效拒绝返回正文但保留真实领取事实，consumed_at不是送达。前台catalog/factory和普通日志隔离另接。无连接和不存在的目标统一拒绝，不枚举他人会话。
 - B 只收到问题及安全的来源会话标签，不收到 A 的历史、记忆、文件、原 actor 的 owner/群管授权或被动回复窗口。B 的模型/历史/账单归 B 的物理会话；跨会话来源须独立 taint，不能冒充真人或常驻程序。
 - 目标按自身规则回答或拒绝；来源及问题作为 untrusted 资料进入易变上下文。不得挂载需要原 owner 真人私聊的 ops、浏览器个人授权、文件/VM 权限等工具。连接不放开 VM 的跨会话接口，也不复制另一台 `/work`。
 - 问答及模型内部通知只在等待任务/回合审计中保存，不是公共聊天消息，不进入 `history` / VM events。目标普通发言仍须显式工具动作与自身主动消息权限/额度/停止门槛；不能把问题、回答或“已收到”自动作为 QQ 通知。
