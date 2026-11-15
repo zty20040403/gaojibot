@@ -2,6 +2,12 @@
 
 状态（2026-11-15）：连接控制与私有question已接真实账号factory/monitor/recover/close，`/link` 本地可用；问答schema/来源/reducer/worker与受限目标模型本地已实现，`ask`源入口已接，管理审计只读API/UI已验，未真实QQ验收或合并/部署。账号问答组件23059ae见Draft PR #112（等价a863385）。权威要求见 `next-features-plan.md` F8，参考 maxx 固定设计的 `Asking another conversation`。
 
+## 最新本机固定快照验证
+
+- `d8bb7e03dcaa0adc75698754348194ed3e6918b5`：Ran2296、1failure、10skip、exit1、1067.332秒；原 `.revision/.exit/.log` 保存于 `~/.cache/gaoji-test-runs/f8-admin-audit-d8bb7e0/`，不能以Linux通过改记本机通过。
+- 唯一失败为收据目录测试：保护性umask077将`mkdir(mode=0755)`过滤成0700。独立修复只在测试明确chmod0755并断言实际mode，生产权限/符号链接门槛及保护性umask不改。26项host_control在022/077分别通过，删除权限或符号链接门槛的两个独立CF各1failure、无error；日志位于`~/.cache/gaoji-test-runs/host-receipt-directory/`。
+- 修复后的新固定全套及真实QQ/模型验收仍待；上述局部夹具结果不代表F8整体完成。
+
 ## 连接不是身份映射
 
 - 单向 A→B 只允许 A 的 bot 向 B 的 bot 提问；没有反向权利。连接面向实际物理 endpoint，不是 canonical 历史、姓名、人员编号或跨群 openid 的推测。
