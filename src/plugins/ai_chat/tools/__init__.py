@@ -17,10 +17,11 @@ def _base_registry() -> ToolRegistry:
     from .progress import HANDLERS as PROGRESS_HANDLERS
     from .background import HANDLERS as BACKGROUND_HANDLERS
     from .schedules import HANDLERS as SCHEDULE_HANDLERS
+    from .questions import HANDLERS as QUESTION_HANDLERS
 
     return ToolRegistry(handler for handler in (
         *HISTORY_HANDLERS, *MEMORY_HANDLERS, *SOURCE_HANDLERS, *STICKER_HANDLERS,
-        *OWNED_SANDBOX_HANDLERS, *PROGRESS_HANDLERS, *BACKGROUND_HANDLERS, *SCHEDULE_HANDLERS
+        *OWNED_SANDBOX_HANDLERS, *PROGRESS_HANDLERS, *BACKGROUND_HANDLERS, *SCHEDULE_HANDLERS, *QUESTION_HANDLERS
     ) if handler.platform_neutral)
 
 
@@ -28,9 +29,9 @@ def neutral_registry_for(context: ToolContext) -> ToolRegistry:
     """Catalog for an actual structured inbound, with fail-closed gates."""
     if structured_tool_source(context) is None or context.platform is None:
         raise ValueError("neutral tool registry requires inbound and platform")
-    if context.program_source is not None:
+    if context.program_source is not None or context.question_source is not None:
         # Metadata is not a grant to borrow a foreground host/media session.
-        names = {'history', 'web_search', 'web_fetch', 'use_skill', 'inspect_source'}
+        names = {'history'} if context.question_source is not None else {'history', 'web_search', 'web_fetch', 'use_skill', 'inspect_source'}
         return ToolRegistry(handler for handler in _base_registry().handlers
                             if handler.definition['function']['name'] in names)
     from ..adapters.qq_official.media_tools import media_registry

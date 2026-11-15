@@ -57,6 +57,13 @@ class OpsActionMigrationTests(unittest.TestCase):
         from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
         from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
         migration.migrate(schema,'0091_ops_replies')
+        # A pinned legacy schema must not query unrelated new budget tables in
+        # authorization, rejection cleanup or accepted-receipt finalization.
+        with case.tx() as cursor:
+            cursor.execute('SAVEPOINT test_old_notice_failure')
+            delivery = cursor.execute('SELECT * FROM deliveries WHERE delivery_id=?',(ref.delivery_ids[0],)).fetchone()
+            self.assertEqual(outbox._finish(cursor,case.token,delivery,'failed','delivery_not_authorized',case.now).status,'failed')
+            cursor.execute('ROLLBACK TO SAVEPOINT test_old_notice_failure')
         with case.tx() as cursor:
             observe_ready(cursor,case.token,{'op':0,'t':'READY','d':{'session_id':'TEST_OPS_SESSION','user':{'id':'TEST_REAL_BOT','bot':True}}},case.now)
         binding = BindingReducer(case.ops.pepper,epoch_guard=assert_epoch,authority=case.authority,clock=lambda:case.now)
@@ -64,10 +71,14 @@ class OpsActionMigrationTests(unittest.TestCase):
         store.ops_replies = OpsReplies(notices)
         store.accept({'op':0,'s':0,'t':'READY','d':{'session_id':'TEST_OPS_SESSION'}},token=case.token,session_id='TEST_OPS_SESSION')
         with patch.object(type(case.config),'secret',return_value='TEST_SECRET_'*4):
-            outbox.prepare(case.token,ref.delivery_ids[0],send_mode='passive',msg_id='TEST_SOURCE',msg_seq=1)
+            reserved = outbox.prepare(case.token,ref.delivery_ids[0],send_mode='passive',msg_id='TEST_SOURCE',msg_seq=1)
             accepted = store.accept({'op':0,'s':1,'t':'C2C_MESSAGE_CREATE','d':{'id':'TEST_REPLY','content':'批准 '+proposal.code,
                 'author':{'user_openid':case.actor.native_user_id},'timestamp':datetime.fromtimestamp(case.now,timezone.utc).isoformat()}},
                 token=case.token,session_id='TEST_OPS_SESSION')
+        from src.plugins.ai_chat.ledger import MessageLedger
+        ledger = MessageLedger(database); self.addCleanup(ledger.close)
+        receipt = outbox.capture_receipt(reserved,{'id':'TEST_APPROVAL_NOTICE_ACCEPTED'})
+        self.assertEqual(outbox.finalize(case.token,receipt,ledger=ledger).status,'committed')
         with self.assertRaisesRegex(RuntimeError,'ops_replies_require_export'):
             migration.migrate(schema,'0090_ops_notices',downgrade=True)
         with migration.connect(schema) as connection:

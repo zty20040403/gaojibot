@@ -20,9 +20,11 @@ import {
   X,
 } from 'lucide-react'
 import { TokenUsageChart } from './TokenUsageChart'
+import { BillingView } from './BillingView'
 import { HostAPIAudit } from './HostAPIAudit'
 import { CommandsPanel } from './CommandsPanel'
 import { BrowserPanel } from './BrowserPanel'
+import { BudgetsPanel } from './BudgetsPanel'
 import { LocalModelPanel, ModelRouteSummary } from './LocalModelPanel'
 import {
   DataTable,
@@ -117,7 +119,8 @@ export function UsageView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail:
   }), { calls: 0, input: 0, output: 0, cached: 0 })
   return (
     <>
-      <PageHeader title="模型用量" description="按日期、会话和来源查看模型调用与 Token 消耗" action={<RefreshButton loading={plane.loading.has('usage')} onClick={() => void plane.refresh('usage')} />} />
+      <PageHeader title="模型用量与费用" description="真实账单来源与旧 Token 额度统计分开展示" action={<RefreshButton loading={plane.loading.has('usage')} onClick={() => void plane.refresh('usage')} />} />
+      <BillingView query={plane.query} />
       <div className="metric-grid compact">
         <Metric label="总 Token" value={fmtNumber(totals.input + totals.output)} hint="输入 + 输出，不重复计算缓存命中" />
         <Metric label="输入 Token" value={fmtNumber(totals.input)} />
@@ -125,7 +128,7 @@ export function UsageView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail:
         <Metric label="模型调用" value={fmtNumber(totals.calls)} hint={`缓存命中 ${fmtNumber(totals.cached)}`} />
       </div>
       <TokenUsageChart rows={usage} />
-      <Section title="用量明细" description="同一天可能按群、私聊和系统任务拆成多条记录" action={<ViewAllButton count={usage.length} onClick={() => onOpenDetail('usage-records')} />}>
+      <Section title="旧 Token 额度统计明细" description="可能包含保守预留，不用于计算上面的实际费用" action={<ViewAllButton count={usage.length} onClick={() => onOpenDetail('usage-records')} />}>
         <DataTable><thead><tr><th>日期</th><th>Scope</th><th>来源</th><th>调用</th><th>输入 Token</th><th>输出 Token</th><th>缓存命中</th></tr></thead><tbody>{usage.slice(0, 5).map((item, index) => <tr key={`${item.day}-${item.scope_key}-${item.source}-${index}`}><td>{item.day}</td><td><code>{item.scope_key || '-'}</code></td><td>{item.source || '-'}</td><td>{fmtNumber(item.calls)}</td><td>{fmtNumber(item.input_tokens)}</td><td>{fmtNumber(item.output_tokens)}</td><td>{fmtNumber(item.cached_tokens)}</td></tr>)}</tbody></DataTable>
         {!usage.length && <EmptyState>当前统计周期没有模型用量</EmptyState>}
       </Section>
@@ -151,7 +154,7 @@ export function GroupsView({ plane }: { plane: Plane }) {
   const setUserEffort = (groupId: number, userId: number, effort: string) => plane.mutate('groups', `/group-models/${groupId}/users/${userId}/reasoning-effort`, 'PUT', { effort: effort || null }, ['groups', 'overview'])
   return (
     <>
-      <PageHeader title="模型、群与用户" description="统一调配群友模型，同时保留管理员个人配置" action={<RefreshButton loading={plane.loading.has('groups') || plane.loading.has('conversations')} onClick={() => void plane.refreshMany(['groups', 'conversations'])} />} />
+      <PageHeader title="模型、群与用户" description="统一调配群友模型，同时保留管理员个人配置" action={<RefreshButton loading={plane.loading.has('groups') || plane.loading.has('conversations') || plane.loading.has('budgets')} onClick={() => void plane.refreshMany(['groups', 'conversations', 'budgets'])} />} />
       <LocalModelPanel plane={plane} />
       <Section title="会话启停" description="停止后仍记录消息，但取消在途回复与后台任务；恢复不补发旧结果。主动接话开关仍需宿主启用分类器，不恢复已停止会话，不影响正常@回复。">
         <DataTable><thead><tr><th>会话</th><th>类型</th><th>状态</th><th>主动接话</th><th>操作</th></tr></thead><tbody>
@@ -165,6 +168,7 @@ export function GroupsView({ plane }: { plane: Plane }) {
         </tbody></DataTable>
         {!rows(plane.data.conversations?.items).length && <EmptyState>尚无可控制的 QQ 会话</EmptyState>}
       </Section>
+      <BudgetsPanel plane={plane} />
       <BrowserPanel plane={plane} />
       <Section title="可用模型" description="密钥只在服务端使用，控制台不会返回凭据">
         <div className="model-strip">

@@ -18,6 +18,8 @@ class VMRequestIdentity:
 class VMAPIAuthority:
     def __init__(self, credentials, *, actions=None, commands=None):
         self.credentials,self.actions,self.commands = credentials,actions,commands
+        from .program_budgets import WakeAdmission
+        self.wakes = WakeAdmission(actions) if actions is not None else None
         self.scopes = {}
         self.authenticating = set()
         self.retired = set()
@@ -30,8 +32,8 @@ class VMAPIAuthority:
         task = asyncio.current_task()
         self.authenticating.add(task)
         try:
-            operation = 'command' if write=='command' else 'write' if write else 'read'
-            actions = self.commands if operation=='command' else self.actions
+            operation = 'command' if write=='command' else 'wake' if write=='wake' else 'write' if write else 'read'
+            actions = self.commands if operation=='command' else self.wakes if operation=='wake' else self.actions
             if write:
                 if actions is None:
                     raise PermissionError('vm_actions_unavailable')

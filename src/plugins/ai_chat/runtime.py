@@ -380,7 +380,7 @@ def _build_app_context(
     if settings.semantic_enabled:
         if not (
             settings.postgres_dsn
-            and settings.embedding_api_key
+            and settings.embedding_base_url
             and settings.embedding_model
         ):
             logger.error(

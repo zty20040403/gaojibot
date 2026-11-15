@@ -6,6 +6,7 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from .protected_plans import load_protected_ref, verify_protected_attempt
+from .budget_notices import is_bot_notice_candidate
 from .lease import assert_epoch
 from .send_types import OutboxInvariantError, SendOutcome, digest, stable_json
 
@@ -32,7 +33,7 @@ def record_receipt(cursor, reservation, body, now):
 
 def _canonical_body(delivery):
     if delivery["payload_mode"] == "ephemeral":
-        if delivery["purpose"] not in {"binding_otp", "approval_otp", "ops_approval"} or delivery["body_json"] != '{"v":1,"nodes":[]}':
+        if delivery["purpose"] not in {"binding_otp", "approval_otp", "ops_approval", "link_otp", "link_feedback", "question_notice"} or delivery["body_json"] != '{"v":1,"nodes":[]}':
             raise OutboxInvariantError("invalid_ephemeral_body")
         return MessageBody()
     try:
@@ -131,13 +132,15 @@ def _record_reference(cursor, endpoint, native, canonical, ref_idx, now):
     return conflict
 
 
-def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
+def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now, link_authority=None, question_notice_authority=None):
     assert_epoch(cursor, token)
     receipt = cursor.execute('SELECT * FROM delivery_receipts WHERE receipt_id=? AND account_key=? FOR UPDATE',
         (receipt_id, token.account_key)).fetchone()
     attempt = cursor.execute('SELECT * FROM delivery_attempts WHERE attempt_id=?', (receipt['attempt_id'],)).fetchone()
     delivery = cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? FOR UPDATE', (attempt['delivery_id'],)).fetchone()
     if receipt['applied_at'] is not None:
+        if delivery['purpose']=='link_otp' and link_authority is not None:link_authority.settled(cursor,token,delivery['plan_id'])
+        if delivery['purpose']=='question_notice' and question_notice_authority is not None:question_notice_authority.settled(cursor,token,delivery['plan_id'])
         return SendOutcome('committed', '', delivery['delivery_id'])
     endpoint = EndpointKey.parse(delivery['endpoint_key'])
     actor = ActorKey.parse(attempt['bot_actor_key'])
@@ -145,6 +148,12 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     program = cursor.execute('SELECT action_id,program_name FROM qq_official_program_actions WHERE plan_id=?',
         (delivery['plan_id'],)).fetchone()
     provenance = dict(by='program',program=program['program_name'],program_action_id=program['action_id']) if program else {}
+    budget = cursor.execute('SELECT day_start FROM conversation_budget_days WHERE notice_plan_id=?',
+        (delivery['plan_id'],)).fetchone() if is_bot_notice_candidate(delivery) else None
+    if budget:provenance.update(system_notice='daily_budget',budget_day_start=budget['day_start'])
+    qnotice = cursor.execute('SELECT notice_id,question_id FROM qq_official_question_notices WHERE plan_id=?',
+        (delivery['plan_id'],)).fetchone() if delivery['purpose']=='question_notice' else None
+    if qnotice:provenance.update(system_notice='question_notice',notice_id=qnotice['notice_id'],question_id=qnotice['question_id'])
     display = '程序 '+program['program_name'] if program else 'Bot'
     wake = cursor.execute('SELECT wake_id,input_ids_json FROM qq_official_program_wakes WHERE reply_action_id=?',
         (program['action_id'],)).fetchone() if program else None
@@ -179,6 +188,10 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     cursor.execute("""UPDATE deliveries SET status='committed',native_message_id=?,lease_until=NULL,
         wait_reason=NULL,last_error='',updated_at=? WHERE delivery_id=?""", (native, now, delivery['delivery_id']))
     cursor.execute('UPDATE delivery_receipts SET applied_at=? WHERE receipt_id=?', (now, receipt_id))
+    if delivery['purpose']=='link_otp' and link_authority is not None:link_authority.settled(cursor,token,delivery['plan_id'])
+    if delivery['purpose']=='question_notice' and question_notice_authority is not None:question_notice_authority.settled(cursor,token,delivery['plan_id'])
+    if budget:
+        cursor.execute("UPDATE conversation_budget_days SET notice_state='committed' WHERE notice_plan_id=?",(delivery['plan_id'],))
     if wake:
         cursor.execute("UPDATE qq_official_program_wakes SET state='completed',error_code='',finished_at=? WHERE wake_id=?",(now,wake['wake_id']))
     from .file_projection import apply_file_receipt

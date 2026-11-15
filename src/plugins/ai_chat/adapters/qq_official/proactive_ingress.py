@@ -18,6 +18,7 @@ from src.plugins.ai_chat.message_ir import MessageBody,TextNode
 from src.plugins.ai_chat.platform_types import EndpointKey,ActorKey
 from src.plugins.ai_chat.proactive import is_candidate_message
 from src.plugins.ai_chat.conversation_config import proactive_state
+from src.plugins.ai_chat import daily_budgets
 from src.plugins.ai_chat.adapters.qq_official.proactive_delivery import ProactiveLifetime,score_and_deliver
 
 DEBOUNCE_SECONDS = 3
@@ -56,6 +57,8 @@ class ProactiveIngress:
         from .conversation_control import permitted
         if not permitted(c,ep,canonical=message['canonical_message_id']):
             raise MigrationDenied('conversation_stopped_or_replaced')
+        try:daily_budgets.require(c,ep,now=self._now())
+        except PermissionError as error:raise MigrationDenied(str(error)) from None
         enabled,generation = proactive_state(c,ep)
         if not enabled or inbox['proactive_generation']!=generation:
             raise MigrationDenied('conversation_proactive_disabled_or_replaced')

@@ -23,6 +23,15 @@ class ConfigParsingTests(unittest.TestCase):
             with self.assertRaises(ValueError):config.SETTINGS['agent_timeout_hours'].validate(value)
 
 
+    def test_daily_dollar_budget_is_exact_off_is_not_read_and_invalid_values_reject(self):
+        self.assertEqual(config.parse('daily_budget_usd 0.001000'),('daily_budget_usd','0.001'))
+        self.assertEqual(config.parse('daily_budget_usd off'),('daily_budget_usd','off'))
+        self.assertEqual(config.parse('daily_budget_usd default'),('daily_budget_usd','off'))
+        self.assertEqual(config.parse('daily_budget_usd 0'),('daily_budget_usd','0'))
+        for value in (None,True,1,1.0,'1e2','NaN','-1','１','0.0000001'):
+            with self.assertRaises(ValueError):config.SETTINGS['daily_budget_usd'].validate(value)
+
+
 class ConversationConfigTests(unittest.TestCase):
     setUp = fixture.QQOfficialIngestTests.setUp
     tx = fixture.QQOfficialIngestTests.tx
@@ -55,6 +64,19 @@ class ConversationConfigTests(unittest.TestCase):
         self.assertEqual(len(self.query('SELECT * FROM admin_audit_log')),8)
         self.assertEqual({row['resource_key']:row['version'] for row in self.query('SELECT * FROM admin_resource_versions')},
             {'conversations':4,'programs':2,'commands':1,'captions':1})
+
+    def test_budget_change_uses_exact_audit_and_generations_without_clearing_stop(self):
+        self.query('INSERT INTO conversation_settings(scope_key,stopped,stop_generation) VALUES (?,TRUE,7)',(self.endpoint.scope.key,))
+        self.assertEqual(self.change('daily_budget_usd','0.001000')['daily_budget_usd'],'0.001')
+        self.change('daily_budget_usd','0.001')
+        row = self.query('SELECT budget_generation,proactive_generation,stop_generation,stopped FROM conversation_settings')[0]
+        self.assertEqual((row['budget_generation'],row['proactive_generation'],row['stop_generation'],row['stopped']),(1,1,7,True))
+        self.assertEqual(self.change('daily_budget_usd','off')['daily_budget_usd'],'off')
+        row = self.query('SELECT daily_budget_usd,budget_generation FROM conversation_settings')[0]
+        self.assertEqual((row['daily_budget_usd'],row['budget_generation']),(None,2))
+        self.assertEqual(self.query('SELECT version FROM admin_resource_versions WHERE resource_key=?',('budgets',))[0]['version'],3)
+        audit = self.query('SELECT after_json FROM admin_audit_log WHERE resource_key=? ORDER BY audit_id',('budgets',))
+        self.assertIn('"0.001"',audit[0]['after_json']); self.assertIn('"off"',audit[-1]['after_json'])
 
     def test_invalid_write_and_transaction_rollback_leave_no_settings_or_audit(self):
         for name,value in (('program_say_limit',True),('image_captions',1),('unknown',2)):

@@ -63,6 +63,25 @@ class NativeConfigTests(unittest.IsolatedAsyncioTestCase):
         row = self.f.query('SELECT stopped,stop_generation,command_generation,program_say_limit FROM conversation_settings')[0]
         self.assertEqual(tuple(row.values()),(True,4,9,60))
 
+    async def test_budget_admin_write_is_exact_once_and_default_off_is_a_mutation(self):
+        text,audits = await self.exercise('/config daily_budget_usd 0.001000',role='admin')
+        self.assertIn('daily_budget_usd = $0.001',text); self.assertEqual(len(audits),1)
+        self.assertEqual(audits[0]['resource_key'],'budgets')
+        row = self.f.query('SELECT daily_budget_usd,budget_generation FROM conversation_settings')[0]
+        self.assertEqual(str(row['daily_budget_usd']),'0.001000'); self.assertEqual(row['budget_generation'],1)
+
+    async def test_budget_off_does_not_get_misinterpreted_as_a_read(self):
+        self.f.query('INSERT INTO conversation_settings(scope_key,daily_budget_usd,budget_generation) VALUES (?,1,1)',(self.f.endpoint.scope.key,))
+        text,audits = await self.exercise('/config daily_budget_usd default',role='admin')
+        self.assertIn('已保存',text); self.assertIn('daily_budget_usd = off',text); self.assertEqual(len(audits),1)
+        row = self.f.query('SELECT daily_budget_usd,budget_generation FROM conversation_settings')[0]
+        self.assertIsNone(row['daily_budget_usd']); self.assertEqual(row['budget_generation'],2)
+
+    async def test_budget_member_cannot_write_even_with_forwarded_owner(self):
+        text,audits = await self.exercise('/config daily_budget_usd 0')
+        self.assertIn('普通成员',text); self.assertEqual(audits,[])
+        self.assertEqual(self.f.query('SELECT * FROM conversation_settings'),[])
+
     async def test_explicit_foreign_target_is_rejected_without_writing_any_scope(self):
         text,audits = await self.exercise('/config program_wake_limit 0 TEST_FOREIGN',role='admin')
         self.assertIn('用法',text); self.assertEqual(audits,[])
@@ -104,6 +123,12 @@ class PrivateConfigTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         with patch.object(base.fixture,'ExecutionFixture',PrivateFixture):base.ConsumerTests.setUp(self)
+
+    async def test_private_budget_default_off_is_explicitly_writable(self):
+        text,audits = await self.exercise('/config daily_budget_usd off')
+        self.assertIn('已保存',text); self.assertEqual(len(audits),1)
+        row = self.f.query('SELECT scope_key,daily_budget_usd FROM conversation_settings')[0]
+        self.assertEqual(row['scope_key'],self.f.endpoint.scope.key); self.assertIsNone(row['daily_budget_usd'])
 
     async def test_admitted_private_peer_changes_only_own_physical_conversation(self):
         text,audits = await self.exercise('/config program_wake_limit 0')

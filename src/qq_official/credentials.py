@@ -21,19 +21,55 @@ class CredentialError(ValueError):
     """Safe diagnostic; intentionally excludes filesystem paths and values."""
 
 
-def verify_private_file(fd: int, *, acl_validator=None) -> None:
-    """Only require a regular file which is not world-readable."""
-    info = os.fstat(fd)
+def verify_private_file(fd: int, *, acl_validator: Callable[[int], bool] | None = None) -> None:
+    """Verify a private regular file by descriptor (POSIX mode or Windows DACL)."""
+    try:
+        info = os.fstat(fd)
+    except OSError:
+        raise CredentialError("Credential file descriptor could not be verified") from None
     if not stat.S_ISREG(info.st_mode):
         raise CredentialError("Credential storage must be a regular file")
-    if os.name != 'nt' and info.st_mode & stat.S_IROTH:
+    if os.name == "nt":
+        if acl_validator is None:
+            from .windows_private import verify_windows_private_file
+            acl_validator = verify_windows_private_file
+        try:
+            valid = acl_validator(fd)
+        except (OSError, AttributeError, ValueError):
+            valid = False
+        if not valid:
+            raise CredentialError("Private file ACL could not be verified")
+        return
+    if info.st_mode & stat.S_IROTH:
         raise CredentialError("Credential file must not be world-readable")
 
 
-def _read_secret(path: str | Path, acl_validator=None) -> str:
+def _read_secret(path: str | Path, acl_validator: Callable[[int], bool] | None = None) -> str:
+    if os.name == "nt":
+        from .windows_private import open_windows_private_readonly
+        try:
+            fd = open_windows_private_readonly(path)
+        except OSError:
+            raise CredentialError("Credential file could not be securely opened") from None
+        try:
+            verify_private_file(fd, acl_validator=acl_validator)
+            if os.fstat(fd).st_size > 16384:
+                raise CredentialError("Credential must be a small regular file")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                value = stream.read(16385)
+            if len(value) > 16384:
+                raise CredentialError("Credential file is too large")
+            try:
+                return value.decode("utf-8").strip()
+            except UnicodeError:
+                raise CredentialError("Credential file is not UTF-8") from None
+        except OSError:
+            raise CredentialError("Credential file could not be read") from None
+        finally:
+            os.close(fd)
     try:
         with open(path, 'r', encoding='utf-8') as stream:
-            verify_private_file(stream.fileno())
+            verify_private_file(stream.fileno(), acl_validator=acl_validator)
             return stream.read().strip()
     except (OSError, UnicodeError):
         raise CredentialError("Credential file could not be read") from None

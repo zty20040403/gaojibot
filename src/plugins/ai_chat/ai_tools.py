@@ -627,7 +627,7 @@ HISTORY_TOOL: ToolDefinition = {
     "function": {
         "name": "history",
         "description": (
-            "查本会话的聊天记录（比上下文里更早的也有）。给 query 就按内容搜，空格隔开多个词，"
+            "查本会话的聊天记录（比上下文里更早的也有）。给 query 就按内容搜；宿主启用语义检索时也按意思匹配。空格隔开多个字面词，"
             "命中任一个就算；不给 query 就按时间读原文。都能用 who（发言人名字里的几个字）和 "
             "from/to（YYYY-MM-DD、YYYY-MM-DD HH:MM 或 #消息编号）筛选。around=#编号 读那条前后各 10 条。"
             "读原文时有 from 就从区间开头往后读，没有就读最新的；返回 next 时原样传回能接着读。"

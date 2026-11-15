@@ -563,6 +563,7 @@ async def ask_deepseek_with_tools(
     compensate_tool: ToolCompensator | None = None,
     transcript_sink: TranscriptSink | None = None,
     after_tool_round: Callable[[], None] | None = None,
+    tool_batch_sink: Callable[[tuple[str, ...]], None] | None = None,
     final_feedback: Callable[[str], str | None] | None = None,
     system_context: str = "",
     tool_catalog: ToolCatalog | None = None,
@@ -644,6 +645,8 @@ async def ask_deepseek_with_tools(
             trace.add_usage(response)
         message = response.choices[0].message
         tool_calls = list(getattr(message, "tool_calls", None) or [])
+        if tool_calls and tool_batch_sink is not None:
+            tool_batch_sink(tuple(str(getattr(getattr(call, 'function', None), 'name', '')) for call in tool_calls))
         if not tool_calls:
             content = (message.content or "").strip()
             feedback = final_feedback(content) if final_feedback is not None else None

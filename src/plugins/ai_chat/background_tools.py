@@ -33,6 +33,7 @@ class BackgroundToolSession:
     def __init__(self, app, inbound, *, prompt, question, current):
         self.app, self.inbound, self.prompt = app, inbound, prompt
         self.question, self.current = question, current
+        self.billing_context = None
         capabilities = {'self', 'context'}
         if app.settings.search_enabled:
             capabilities.add('web')
@@ -56,7 +57,9 @@ class BackgroundToolSession:
             return await read(self.app, self.inbound, arguments, current=self.current)
         if name == 'ask_main':
             return json.dumps({'answer': await self.question(str(arguments['question']))}, ensure_ascii=False)
-        return await self.registry.execute(self.turn, name, arguments)
+        from .billing_context import active_billing,billing_scope
+        with billing_scope(self.billing_context or active_billing()):
+            return await self.registry.execute(self.turn, name, arguments)
 
     async def close(self):
         # The conversation keeps its VM and /work across independent jobs.

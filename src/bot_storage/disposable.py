@@ -125,6 +125,18 @@ class IsolatedPostgres:
                 (self.schema,),
             ).fetchall()
             if tables:
+                # This validated disposable schema is explicitly destroyed/reset by
+                # its owner. Suspend only statement TRUNCATE guards atomically;
+                # restore before commit, or roll back all DDL on reset failure.
+                guards = connection.execute(
+                    "SELECT c.relname,t.tgname,t.tgenabled FROM pg_trigger t "
+                    "JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace "
+                    "WHERE n.nspname=%s AND NOT t.tgisinternal AND (t.tgtype::int & 32)<>0 AND t.tgenabled<>'D'",
+                    (self.schema,),
+                ).fetchall()
+                for table, trigger, _ in guards:
+                    connection.execute(sql.SQL("ALTER TABLE {} DISABLE TRIGGER {}").format(
+                        sql.Identifier(self.schema,table),sql.Identifier(trigger)))
                 connection.execute(
                     sql.SQL("TRUNCATE {} RESTART IDENTITY CASCADE").format(
                         sql.SQL(", ").join(
@@ -132,6 +144,10 @@ class IsolatedPostgres:
                         )
                     )
                 )
+                for table, trigger, enabled in guards:
+                    mode = {'O':'ENABLE','A':'ENABLE ALWAYS','R':'ENABLE REPLICA'}[enabled]
+                    connection.execute(sql.SQL("ALTER TABLE {} {} TRIGGER {}").format(
+                        sql.Identifier(self.schema,table),sql.SQL(mode),sql.Identifier(trigger)))
 
     def close(self) -> None:
         if self._closed:

@@ -14,20 +14,23 @@ import unicodedata
 
 from src.qq_official.events import Dispatch
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingCommand, parse_binding_command
+from .link_commands import LinkCommand,parse_link_command
 
 NORMALIZATION_VERSION = 1
 MAX_INPUT_BYTES = 262144
 MAX_PREFIX_MENTIONS = 16
 _PREFIX = re.compile(r"<@([^<>\r\n]{1,257})>")
 _BINDING_MARKER = re.compile(r"(?:^|[\s>])[/!](?:bind|绑定)(?=$|\s)", re.IGNORECASE)
+_LINK_MARKER = re.compile(r"(?:^|[\s>])[/!](?:link|unlink)(?=$|\s)",re.IGNORECASE)
 _WHOAMI = re.compile(r"^[/!]whoami(?=$|\s)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
 class NormalizedInput:
-    kind: str  # message | control | quarantine
+    kind: str  # message | control | link_control | quarantine
     input_text: str | None = field(default=None, repr=False)
     command: BindingCommand | None = field(default=None, repr=False)
+    link_command: LinkCommand | None = field(default=None,repr=False)
     version: int = NORMALIZATION_VERSION
     stripped_mentions: int = 0
     reason: str = ""
@@ -67,7 +70,8 @@ def _trusted_tokens(mentions):
 def normalize_input(dispatch: Dispatch) -> NormalizedInput:
     """Pure, bounded preparation for TxA classification and TxB turn_text.
 
-    TxA: control -> existing reducer only; quarantine -> body-free fixed-reason
+    TxA: control -> binding reducer only; link_control -> independent link route
+    (body-free denial while unavailable); quarantine -> body-free fixed-reason
     receipt only; message -> normal admission. TxB reruns the same function on
     the still-retained authenticated frame, verifies its source identity, and
     persists message input_text/version with ledger and canonical inbox pointer.
@@ -93,6 +97,9 @@ def normalize_input(dispatch: Dispatch) -> NormalizedInput:
         offset = match.end()
         count += 1
     normalized = text[offset:].lstrip() if count else text
+    link = parse_link_command(normalized)
+    if link is not None:
+        return NormalizedInput('link_control',link_command=link,stripped_mentions=count)
     binding = parse_binding_command(normalized)
     if binding is not None:
         return NormalizedInput("control", command=binding, stripped_mentions=count)
@@ -106,4 +113,6 @@ def normalize_input(dispatch: Dispatch) -> NormalizedInput:
     # from raw inbox/ledger/LLM so malformed addressing cannot disclose an OTP.
     if _BINDING_MARKER.search(text):
         return NormalizedInput("quarantine", stripped_mentions=count, reason="input_sensitive_control")
+    if _LINK_MARKER.search(text):
+        return NormalizedInput('quarantine',stripped_mentions=count,reason='input_sensitive_link')
     return NormalizedInput("message", input_text=normalized, stripped_mentions=count)

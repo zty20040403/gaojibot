@@ -34,7 +34,7 @@ def _boundary(ledger, scope, value: str, *, end: bool) -> int | None:
     moment = datetime.strptime(value, "%Y-%m-%d %H:%M" if " " in value else "%Y-%m-%d")
     stamp = int(moment.timestamp()) + (86400 if end and " " not in value else 0)
     found = ledger.first_id_at(scope, stamp)
-    return found if found is not None else (2**62 if end else None)
+    return found if found is not None else 2**62
 
 
 async def history(turn: TurnState, arguments: dict[str, object]) -> str:
@@ -68,11 +68,19 @@ async def history(turn: TurnState, arguments: dict[str, object]) -> str:
     after_id = (start - 1) if start is not None else 0
     if query:
         terms = tuple(dict.fromkeys(term[:50] for term in query.split()))[:8]
-        found = await app.db_call(ledger.history, scope, terms=terms, who=who, after_id=after_id,
-                                  before_id=end, limit=limit * 3, newest=True)
-        found = [message for message in found if not is_noise(message)]
-        found.sort(key=lambda message: (-sum(term.lower() in message.prompt_text.lower() for term in terms),
-                                        -message.canonical_message_id))
+        if getattr(getattr(app,'settings',None),'semantic_enabled',False):
+            from ..message_recall import search_messages
+            try:
+                found = await search_messages(app,source,query,terms=terms,who=who,after_id=after_id,before_id=end,limit=limit)
+            except (RuntimeError,ValueError,PermissionError):
+                return _error('语义检索不可用：宿主来源、配置或服务检查未通过；没有静默退回字面结果。')
+        else:
+            found = await app.db_call(ledger.history, scope, terms=terms, who=who, after_id=after_id,
+                                      before_id=end, limit=limit * 3, newest=True)
+            found = [message for message in found if not is_noise(message)
+                     and any(term.casefold() in message.prompt_text.casefold() for term in terms)]
+            found.sort(key=lambda message: (-sum(term.lower() in message.prompt_text.lower() for term in terms),
+                                            -message.canonical_message_id))
         lines = [render_line(message, max_chars=300) for message in found[:limit]]
         return json.dumps({"ok": True, "results": lines or ["（没有搜到）"],
                            "hint": "用 around=#编号 读某条前后的原文"}, ensure_ascii=False)

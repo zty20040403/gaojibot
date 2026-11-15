@@ -98,12 +98,15 @@ async def request_json_response(
     stage: str = "request", timeout: float = 30.0,
     secrets: tuple[str, ...] = (),
     before_dispatch: Callable[[], None] | None = None,
+    empty_moderation_delete: bool = False,
 ) -> ProtocolResponse:
     """Internal transport helper. Callers must validate URL before this call.
 
     Do not call raise_for_status: its exception contains request URLs and may
     retain credentials. Do not follow redirects, including on injected clients.
     """
+    if type(empty_moderation_delete) is not bool or empty_moderation_delete and (method!='DELETE' or stage!='moderation'):
+        raise ValueError('Empty success is limited to the fixed moderation DELETE')
     # This is before transport and outside HTTPError classification: denied
     # local authority never becomes a misleading ambiguous provider outcome.
     guard = _request_guard.get()
@@ -154,6 +157,8 @@ async def request_json_response(
         # Read/write timeout, disconnect, malformed transport and 5xx may happen
         # after acceptance. Preserve ambiguity; never retry here.
         raise QQAPIError("transport_ambiguous", stage=stage) from None
+    if not content and status==200 and empty_moderation_delete:
+        return ProtocolResponse(status,{})
     try:
         data = json_module.loads(content)
     except (ValueError, UnicodeError, RecursionError):
@@ -233,12 +238,13 @@ class RestClient:
         return response.body
 
     async def _request_response_with_token(self, method, path, token, json, *, stage,
-                                           before_dispatch=None):
+                                           before_dispatch=None, empty_moderation_delete=False):
         try:
             return await request_json_response(
                 self._client, method, self.base_url + path,
                 headers={"Authorization": "QQBot " + token}, json=json,
                 stage=stage, timeout=self._timeout, before_dispatch=before_dispatch,
+                empty_moderation_delete=empty_moderation_delete,
                 secrets=(token, self.token_manager.credentials.app_id, self.token_manager.credentials.app_secret),
             )
         except QQAPIError as error:

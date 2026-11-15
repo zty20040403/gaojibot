@@ -9,10 +9,10 @@ from .program_actions import ProgramDenied, settings
 MAX_BATCH_COUNT, MAX_BATCH_BYTES = 64, 65536
 
 
-def allocate(cursor, current, generation, now, encoded, *, deferred):
+def allocate(cursor, current, generation, now, encoded, *, deferred, budget_generation=0):
     hour = now//3600
     key = hashlib.sha256(json.dumps([current.endpoint.key,current.token_hash,current.account_epoch,
-        current.token_generation,current.endpoint_generation,current.route_epoch,generation,hour]).encode()).hexdigest() if deferred else None
+        current.token_generation,current.endpoint_generation,current.route_epoch,generation,budget_generation,hour]).encode()).hexdigest() if deferred else None
     wake = cursor.execute('SELECT * FROM qq_official_program_wakes WHERE batch_key=?',(key,)).fetchone() if key else None
     if wake is None:
         wake = cursor.execute('''INSERT INTO qq_official_program_wakes
@@ -70,11 +70,17 @@ class ProgramWakes:
             raise ProgramDenied('invalid_program_text',400)
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.transaction()) as cursor:
             self.actions.sessions.check(cursor,current)
+            budget = None
+            if type(generation) is tuple:
+                from .program_budgets import WakeAdmission
+                WakeAdmission(self.actions).check(cursor,current,generation)
+                generation,budget = generation
             if generation!=self.actions._capture(cursor,current):
                 raise ProgramDenied('conversation_stopped_or_replaced')
             self.activate(cursor,current)
             result = self.actions.reserve(current,generation=generation,kind='wake',program=program,
-                request_id=request_id,payload={'text':text},transaction_cursor=cursor,queue_wake=True,source_command_id=source_command_id)
+                request_id=request_id,payload={'text':text},transaction_cursor=cursor,queue_wake=True,
+                source_command_id=source_command_id,budget_generation=budget)
             if source_command_id is not None:
                 cursor.execute('UPDATE qq_official_background_commands SET notification_action_id=? WHERE command_id=?',
                     (result[0]['action_id'],source_command_id))

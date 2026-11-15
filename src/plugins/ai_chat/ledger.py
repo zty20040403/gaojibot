@@ -573,7 +573,7 @@ class MessageLedger:
             clauses.append("lower(m.sender_display) LIKE ? ESCAPE '\\'")
             params.append(like(who))
         if terms:
-            clauses.append("(" + " OR ".join("lower(m.rendered_text) LIKE ? ESCAPE '\\'" for _ in terms) + ")")
+            clauses.append("(" + " OR ".join("lower(m.rendered_text || chr(10) || COALESCE(m.media_captions::text,'')) LIKE ? ESCAPE '\\'" for _ in terms) + ")")
             params.extend(like(term) for term in terms)
         params.append(min(max(int(limit), 1), 500))
         with self._lock:

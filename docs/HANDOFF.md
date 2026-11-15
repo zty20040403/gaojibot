@@ -1,5 +1,374 @@
 # gaojibot 改造交接文件
 
+## 开发记录（2026-11-15）· 审计PR核验与持久全套证据
+
+- 管理只读API e9f288e/Draft#118（等价9c34b36）和UI d8bb7e0/Draft#119（等价f381267）已提交；源码/测试/配置树等价核验通过。PR#119 Linux run43676133744/job132696582701：2,296项、10跳过、0失败，1110.191秒；新增Admin UI job132696582671构建和8个实际脚本通过，Nix/Secret通过。旧Windows ACL仍失败，不能称全部CI绿色。持久原日志位于 ~/.cache/gaoji-test-runs/f8-admin-audit-d8bb7e0/linux-{python,admin-ui}.log。
+- 继续执行时旧/tmp Source固定快照的脚本、revision、exit、日志及进程均不在，Docker也未运行；不能再称本机全套仍运行或通过。恢复Docker Desktop，仅启动专用gaoji-s0-test（127.0.0.1:25440），没有启动其他postgres容器或访问生产。已核验固定完整d8bb7e03dcaa0adc75698754348194ed3e6918b5本机全套：Ran 2,296项、1 failure、10 skip、exit1，1067.332秒；唯一失败是HostControlTests.test_symlink_or_public_receipt_directory_rejected未抛CheckError。原失败记录保留，不能改记绿色。证据改存 ~/.cache/gaoji-test-runs/f8-admin-audit-d8bb7e0/{run.sh,full.revision,full.log,full.exit}，不再只放临时目录。首个验证agent在任何工具执行前因模型429失败，0工具/0测试，不算产品失败或已启动全套。
+- F8目标侧公开发言仍是明确差距：预算通知只允许固定预算正文，不能借其Bot许可发送任意内容；未知Bot来源仍被plans/send_store拒绝或送到程序许可检查。已有主动发送在unknown时可能探测且可走普通重试/被动回退，新问答通知必须独立绑定真实目标Bot/首代qid-job/双端current，仅已确认allowed的目标群可发送，一次/原截止/无真人窗口/不重试；迟到accepted事实独立保存，不恢复私有答案或旧授权。此为下一组件设计，当前模型仍不提供say。
+
+## 开发记录（2026-11-15）· F8管理台账号隔离与私有问答视图
+
+- 承接只读API e9f288e/Draft#118（等价9c34b36），新增独立“会话问答审计”导航：完整账号/environment先选，物理endpoint精确筛选；账号/连接/问答分页可继续读取，问答保留原job-ID游标上界。目录/SSE/30秒更新只加载元数据并提示手动刷新，正文必须显式打开，私有结果只按转义文本呈现，不加载到列表、普通请求日志或浏览器持久存储。
+- QuestionAuditReader同步清除换账号/范围/分页的私有结果，对账号epoch与独立lane检查原AbortController；即使HTTP忽略abort或旧详情迟到也不能回填新选择。401/403及卸载清私有状态，不自动重试。保存active不表示当前授权，真实发行回执与当前访问分开；answered/refused与consumed_at分开，领取不表示已返回或QQ送达。只读页面没有建边/撤边/代批/重发/发送按钮。
+- 新UI脚本覆盖实际React表格/按钮、元数据不含正文、XSS转义、大job-ID字符串、账号/物理筛选、忽略abort/同lane迟到、分页、权限失效及close；全部8个UI脚本和tsc/Vite构建通过。三独立CF删清私有状态、返回current和文本转义，各触发AssertionError RED；日志/tmp/gaoji-f8-question-ui-{scope,current,escape}-red.log。CI新增Admin UI作业，用锁定npm依赖构建并执行全部tools/test-*.mjs，不再只验证打包。
+- 本地管理API/UI已接齐；旧3965080 Source本机全套已无可核验证据，固定d8bb7e0本机新全套已失败并保存原记录，Linux通过不覆盖本机失败。
+- 目录失败已独立定位为测试夹具：run.sh的umask077把mkdir(mode=0755)过滤成0700，安全目录本来就不该被拒绝。仅测试补显式chmod0755及实际mode断言，不改src/host_control.py、保护性umask或原符号链接/公开目录拒绝断言。旧夹具在022通过、077稳定1 failure RED；修复后的26项host_control分别在022/077通过，权限/符号链接门槛两个独立CF各1 failure、无error RED，Ruff/两项导入通过。证据在 ~/.cache/gaoji-test-runs/host-receipt-directory/；这些局部通过不是修复后全套结论。
+- 收据夹具修复bb4754e/Draft120（等价7a2edd3）已提交推送；固定完整bb4754e9d5674cf3706a6c2f862e9471e095ecbb本机全套已核验通过：Ran 2,296项、0失败、10跳过、1265.057秒、exit 0，证据位于`~/.cache/gaoji-test-runs/f8-host-receipt-bb4754e/{run.sh,full.revision,full.log,full.exit}`（不覆盖之后0105/0106）。初次agent请求不可用haiku在启动前失败，0工具/0测试；随后默认模型agent接手。
+- 目标通知来源0105（7f831cc/Draft#121，等价18e34d8）本地存储已实现：每qid一次正文HMAC，原完整账号/物理group/首代job/真实Bot/epoch-holder/route-capability-stop-budget快照、30秒且不超question，不产生plan或QQ效果。
+- 目标通知单次计划与真实回执0106存储已实现：`qq_official_question_notices`与`delivery_plans(purpose='question_notice', ephemeral_content=TRUE, delivery_mode='proactive', fallback_policy='never')`每来源最多一计划，复合FK固定原账号/目标群/Bot身份；禁止真人/他Bot/持久正文/终态补挂计划与DELETE/TRUNCATE。`committed`仅认匹配真实`proactive`且`applied_at IS NOT NULL`（`delivery_reply_to=''`）的`qq_official_delivery_receipts`，允许取消/过期/unknown后补记迟到accepted回执而不恢复授权；降级先加`ACCESS EXCLUSIVE`锁再查空，有审计或计划禁止回退。61项PG/schema/迁移/来源/问询/审计组合95.036秒通过，Ruff/两项导入/diff通过；bot/proactive/receipt/truncate/downgrade-lock五独立CF均RED。
+- `QuestionNotices`发码/投递授权组件已实现并接入`plans.py`、`send_store.py`、`send_ledger.py`、`sender.py`：复用0105/0106持久计划与真实`proactive`回执，限定真实READY/self Bot、目标群`proactive_state='allowed'`、首代running job与双端current；`unknown`/`denied`直接拒绝且不探测或借用真人被动窗口，401/429/主动拒绝/底层retry与plain均仅1次尝试不重放，RAM正文`content_hmac`/`plan_hash`与HTTP前`attempt_denial`复核拦截篡改或途停/撤权，重启/取消保留迟到真实accepted回执事实而不恢复授权，outbound仅记录`system_notice='question_notice'`元数据。8项新增PG/TxA/RestClient+loopback FakePlatform回归及99项组合（113.124秒）、Ruff/两项导入/diff通过；`proactive`/`http`/`ram`三独立串行CF各1failure无error RED。
+- 目标侧显式`say`工具与`QuestionRuntime`/`QuestionWorker`/`QuestionModel`已接线并核验（`d59c011`）：仅当目标群已确认`proactive_state='allowed'`且真实READY/self Bot可用、本qid尚未创建通知来源时暴露单次纯文本`say(text<=2000)`；`unknown`/`denied`或私聊不暴露且直接拒绝，已发`say`不可重用且仍须调用`ask`汇报。`QuestionWorker._make_say`以`asyncio.shield(send_task)`+`drain(send_task)`处理超时与取消并只认真实`committed`+`delivery_receipt_hash`；`QuestionRuntime`在`sender.recover()`前执行`notices.recover`、每轮`maintain()`复核`pending/sending`通知并在退出清理`question_notice_authority`。`QuestionModel.context`按`turns.py`对齐`qq-official`默认群组AI开关（仅显式禁用或非`qq-official`未启用时拒绝）。33项4模块专项（71.003秒）及149项16模块组合（173.781秒）、Ruff/两项导入/diff通过；`say-proactive`/`say-single-use`/`say-recover`三独立串行CF各2/1/1 failure、0 error RED。
+- 管理审计公开通知投影已接通`admin_api/questions.py`、`admin_api/realtime.py`与`admin-ui/src/QuestionAuditView.tsx`（`3c3696e`）：列表/详情仅投影`qq_official_question_notice_sources`与`qq_official_question_notices`元数据（`notice_id`/`state`/`delivery_state`/`receipt_recorded`/`delivery_received_at`/`bot_native_id`/`bot_identity_source`/时间戳），不含通知正文、`content_hmac`、`bot_actor_key`、`plan_id`、`receipt_id`或`delivery_receipt_hash`；保持私有回答`delivery_state='not_tracked'`与`consumed_at`隔离，并在UI明确区分“平台已接受主动投递（不等于群友已读）”、“已保存迟到平台接受回执（未恢复原授权，不等于群友已读）”与私有回答/原领取。SSE对`qq_official_question_notice_sources`/`qq_official_question_notices`映射仅元数据`questions`刷新信号。70项9模块PG/API/迁移/架构组合（131.149秒）、`tsc --noEmit && vite build`及全部8个UI脚本（含`tools/test-questions.mjs`）、Ruff/两项导入/diff通过；API/UI两独立CF均1 failure/AssertionError RED。
+- 固定完整快照 `3c3696e670c806cef2a8b857eae58f4393e2b7a5`（`0106_question_notices`）本机隔离PostgreSQL（`gaoji-s0-test` 127.0.0.1:25440）+ `umask 077` + 显式`ffmpeg`/`ffprobe`全套已核验通过：`Ran 2,337 tests in 1375.374s`、`0 failures`、`10 skipped`、`exit 0`，同轮`ruff`、两项导入检查、`admin-ui`构建及全部8个UI脚本通过；证据位于 `~/.cache/gaoji-test-runs/f8-final-3c3696e/{run.sh,full.revision,full.tools,full.log,full.exit}`。至此`/Users/kenneth/Desktop/comp390/bot/docs/next-features-plan.md`中Python侧全部本地新功能实现与固定全套复核已完成（F7探测就绪待owner提供独立实测范围，moderate保持关闭）；真实QQ/embedding/模型实测验收仍待owner环境，未合并、未部署、未修改Java或访问生产。
+
+## 开发记录（2026-11-15）· F8管理台只读连接与问答审计API
+
+- 新增登录管理员专用conversation-questions账号目录、单向连接、问答元数据分页及显式正文详情；legacy/v1和自定义prefix共用原secure_route，匿名401、成员403。完整AccountKey含environment及物理endpoint在LIMIT前限定，不借canonical历史别名；详情同时匹配account与CQ-ID。列表不查询问答正文，不返回权限HMAC/actor/验证码；正文仅在已选账号的显式详情返回，不开放模型/VM接口或新授权。
+- 读取使用REPEATABLE READ READ ONLY，不调用current/reducer/consume/recover，不更改旧边、过期或已完成事实、不执行QQ或模型。连接state只表示保存的active/revoked，authorization=not_checked，不冒充当前可用权；发行回执事实独立展示。consumed_at只是一次领取，delivery_state固定not_tracked，不表示已返回或QQ送达。
+- 连接按created_at/link-ID严格seek且状态实时；问答按唯一job-ID严格seek并冻结首个最大ID上界，后续新ID即使旧timestamp也不混入，状态仍实时、不宣称跨页MVCC冻结。每页最多100，账号可继续分页；SSE只发布questions资源名，不携私有正文。
+- 7项新实际PG/queue/认证session回归及43项管理权限/路由/诊断/0104/旧F6/架构组合216.514秒、exit0通过，Ruff/两导入/diff通过；四独立CF删物理范围、详情账号、严格seek、领取不等于送达，各1failure且无error RED。首次非法别名active冲突/错误7201秒夹具只修测试，未放宽DDL；旧190秒组合timeout及不存在模块不计通过，最终重跑日志/tmp/gaoji-f8-admin-questions-combo-recheck.log。
+- API e9f288e/Draft#118（等价9c34b36）已提交，管理页随后接齐，见最新记录；旧3965080本机全套最终结果未核验且证据现已不在，新固定验证见最新记录。真实QQ/模型/embedding验收仍task9，F7范围待owner；无合并、部署、生产或Java变更，不称F8整体完成。
+
+## 开发记录（2026-11-15）· F8前台ask真实来源挂载（审计UI/新全套待续）
+
+- Source组件3965080（Draft PR #117，等价c9b86c9）的OfficialRuntime原turn consumer通过QuestionRuntime.frontend建立本回合QuestionAsks，限定真实OfficialTurnPlatform、原token身份、原ExecutionBinding/api、chat/final及原endpoint/actor/scope/route/native；不借模型参数、历史别名、后台/程序/目标问答的元数据。目录只查同账号物理source的active单向边、先范围后LIMIT33并超32拒绝，复核双边同意、当前路由/停止/预算与末尾时钟，只给不透明连接ID和散列会话标签；提交仍重新授权，目录不是权限。
+- ToolContext的question_session只能用于原前台ask；目标ask仍是同qid回答/拒绝候选，其他表面不开放递归ask。源参数target/question无模型配置或身份参数，工具等待7205秒容纳最多7200秒领域上限但不延长原任务，旧结果只由原binding一次领取；排队/consume不等于返回或QQ送达。原Source私有request/loop/trace隔离和目标sink隔离均保留，独立目标账单actor=None不借Source真人。
+- 4项实际双端默认unbound私聊/原TxA/link/Source和Target factory/Gateway/PG回归覆盖回答、拒绝、未连接、真实/stop，校验原任务consume、目标只用自身历史、双边真实账单、无自动QQ私有正文、无普通日志、方向目录及伪造平台/token/原native/route拒绝；不手工provision private active。61项包含两修补的组合在显式ffmpeg/ffprobe环境156.832秒通过，Ruff/两导入/diff通过；5独立CF删mount/真实平台/原inbound/物理目录/等待容纳各1failure无error，最终日志/tmp/gaoji-f8-native-ask-*-final-red.log。
+- 已启动包含原Source等待/日志隔离/guard/媒体夹具及本前台入口的3965080固定PG+ffmpeg/ffprobe全套，脚本与日志/revision/exit位于/tmp/gaoji-python-f8-foreground-ask-full.*，目前未有最终回执，且不覆盖后续审计API/UI。
+- 原51组合最终曾有guard交叠失败，已独立dbaba9d/Draft115修复；媒体夹具独立8cf04d9/Draft116修复，两修补不混入本Source PR。本地前台链路已接，但管理API/UI、新固定完整快照及真实QQ/embedding/模型验收未完成，不称F8整体完成。旧23059ae全套2270项1failure/10skip/exit1保持真实记录，旧Linux通过也不覆盖本组件；无合并/部署/生产/Java变更。
+
+## 开发记录（2026-11-15）· 媒体批次集成夹具同步（仅测试）
+
+- task42的旧23059ae全套1failure并非证明生产漏合并：夹具把idle缩至.3秒，却假设连续fake.emit经过媒体入库/DB之后仍落在同一窗口。受控等第一条真实execution领取后再发第二条，稳定重现原标记断言1failure/无error（/tmp/gaoji-f8-media-batch-late-input-red.log）；此时原batcher按过期窗口拆批符合预期。
+- 测试CompleteMediaBatch等已知两条canonical输入到达，再执行原_wait；不改src或生产idle/max/stop逻辑，不放宽连续标记、四种handle、正文、脱敏、OCR一次及QQ一次断言。时间/stop行为仍由未修改的batcher测试验证；本夹具只验canonical媒体聚合。
+- PG+显式ffmpeg/ffprobe环境18项media pipeline/control batch/真实turn/架构组合50.082秒通过，Ruff/两导入/diff通过。首组合环境缺ffmpeg/ffprobe导致另一vision输入image_preparation_unavailable断言失败，日志/tmp/gaoji-f8-media-batch-sync-combo.log不计通过；使用与固定全套相同PATH重跑/tmp/gaoji-f8-media-batch-sync-ffmpeg.log通过，未改系统PATH或生产配置。
+- 共享guard排空dbaba9d/Draft#115（等价0d22c42）已独立修复；SourceFrontend需回原worktree在两修补之上重检并小步提交，再管理页和新固定全套。旧23059ae全套仍是exit1历史事实，不能改记绿色或把本18项当全套；未合并/部署/生产/Java/真实QQ验收。
+
+## 开发记录（2026-11-15）· 护栏失效排空与账号取消交叠修复
+
+- Source ask组合初次51项130.159秒通过，但最终143.991秒重检在旧QuestionRuntime shutdown测试发现1failure，不能将初次通过当最终验收。guarded_wait因current失效进入finally并已cancel模型后，账号退出再次cancel外层waiter，旧直接await task会把第二次取消传入SDK/socket/真实费用清理，提前关闭question/queue。
+- 在真实OfficialRuntime/PG/FakePlatform退出的token失效→gateway.stop→worker.cancel顺序中，用gateway.stop等guard进入清理，再放行worker取消，确定性复现1failure/无error；不是放宽stopping.done、running状态或usage/requests断言。guarded_wait清理改drain同一模型task，shield且不再传递取消，保留已接受usage、拒绝退出后的新请求，排空后再关闭question/queue。
+- 原实现RED日志/tmp/gaoji-f8-guard-drain-original-red.log，修复GREEN及62项runtime/worker/model/embedding/program/vision/OCR/架构组合116.931秒通过；Ruff/两导入/diff通过。修复只涉及共享等待清理与确定性旧测试，不混SourceFrontend挂载；前台Source提交须在本修复后最终重检。
+- 另已核验旧23059aeb27be5b75f76e3049360e395f787f66f7的本机PG+ffmpeg全套/tmp/gaoji-python-f8-question-runtime-full.*：2270项、1failure、10skip、3397.020秒、exit1，MediaPipelineTests.test_media_only_batch_renders_canonical_handles_and_reads_previous_image缺连续消息标记，task42待独立定位。旧Linux同快照通过不替代本机失败，不改写旧回执或称最新全套通过；未合并/部署/生产/Java/真实QQ模型验收。
+
+## 开发记录（2026-11-15）· F8前台私有问答日志隔离（ask catalog/factory待接）
+
+- 隔离组件2e2c931（Draft PR #114，等价5411fb4）的PrivateQuestionAudit在同批模型说明之前接受内核tool_batch_sink的ask标记，不等tool_started；清旧request引用并拒存以后含私有结果的turn_requests，所有后续loop事件含其他工具的被污染参数/结果/无密钥fingerprint只留安全元数据，结束时清source trace的messages/execution_decisions/model_routing，真实usage与模型元数据仍保留。
+- 非ask回合保持普通request/trace/工具正文记录；模型在私有工具后失败也执行隔离与真实费用收尾，本端正常最终用户回复仍走原发送权限，不自动转发问答或新增QQ通知。目标QuestionModel自己的request_sink隔离仍保留；本步不提供新权限、actor或连接。
+- 3项实际Source OfficialRuntime/原TxA/Gateway工具循环/PG/journal回归使用注入工具只验日志，不冒充Source ask已挂载。29项内核/Source账单/目标Model/工具/架构组合最终95.182秒、exit0及Ruff/两导入/diff通过；4独立CF删早批次标记/事件/trace/request门槛各1failure且无error RED，覆盖同批说明、后续其他工具、zlib archive及请求副本。首轮失败案例错误期待execution cancelled，按既有ChatFailure的crashed journal+原用户错误回复验证，没有放宽权限或改原失败语义。
+- Task38继续catalog/原runtime source session挂载与实际双端对话验收，再管理API/UI、新固定全套；既有2270的Linux只覆盖账号factory，本机23059ae固定全套仍待最终回执，均不覆盖本隔离或Source等待组件。未真实QQ/模型验收、合并/部署/生产/Java变更，不称F8整体完成。
+
+## 开发记录（2026-11-15）· F8原任务问答等待读口（前台catalog/日志隔离待接）
+
+- 原来源组件028082d（Draft PR #113，等价e85342e）的QuestionAsks只绑定同一实际runtime token和原ExecutionBinding，目标只取已双边授权的opaque link-ID，不接受原始endpoint、canonical别名或新actor；原任务截止/两小时上限不延长。0.5秒有界等待实际question队列，答复/拒绝只从真实终态和原binding一次consume取得，不缓存旧答案或重签旧intent，未连接/停止/预算/过期明确回报安全原因。
+- 取消期间shield/drain同一begin以保留已经提交的CQ-ID，再关闭question/queue；重复取消不能丢掉等待DB slot的cleanup。poll/close须匹配完整原执行/actor/scope/revision/deadline；consume后仍复查原runtime、双端权限/预算和最终clock，保留answered/consumed事实不等于已经返回或QQ送达。
+- 12项新真实PG/queue回归及52项source/reducer/authority/schema/真实旧F6/架构组合最终通过151.407秒、exit0；六独立CF删提交drain/cleanup shield/原close绑定/runtime current/领取后复查/末尾clock，各1failure且无error RED。初轮store mock漏admitted的10errors只修夹具，不改权限；Ruff/两导入检查/diff最终通过。
+- 另核验先前账号factory PR#112等价a8506cfb7a88b9cf5a2b8cac36a457decc0d8a76的Linux run43664739181/job132661562524：2270项、10跳过、1209.383秒通过，/tmp/gaoji-f8-question-runtime-linux.log；Nix/Secret通过，旧Windows仍失败。该结果不覆盖本source等待组件，本机23059ae固定全套仍未取得最终回执。
+- 这里只是原来源等待组件，前台ask的catalog/原账号factory挂载与私有正文从普通request/loop/trace日志隔离仍下一步；不是F8整体或真实QQ验收。管理API/UI与新固定完整快照另续，未合并/部署/生产/Java变更。
+
+## 开发记录（2026-11-15）· F8真实账号问答生命周期（source ask/UI待接）
+
+- 组件23059ae（Draft PR #112，等价a863385）的QuestionRuntime在实际LinkRuntime挂载后、gateway.run前接问答authority/reducer/受限model/worker；先有界recover旧queued/running，即使此次application=None也关闭旧授权，已完成事实与active持久边不改。每5秒最多128+1 live复查原source/双端/期限/queue，异常超量拒绝；available/status明确表示模型接线，缺AI或同库真实账单时拒新question、不静默降级。
+- 每账号并发2/目标1。退出先drain模型/socket/已知usage，再关闭question/queue；runtime原token在current数据库检查前后核验。真实SDK取消后返回ask工具调用曾触发第二个模型请求（确定性1failure RED），现拒旧候选/新请求但保存已接受费用。实际默认private/unbound目标暴露群偏好读口误用，私聊改用宿主默认模型、群聊仍读本物理配置，不改偏好存储或借源actor。
+- 6项新实际account/gateway/原TxA/真实双边发行回执/queue/Gateway工具循环回归通过19.421秒；125项F8/model/worker/来源/schema/原runtime/F6/预算/F9账单/架构组合通过289.757秒、exit0，Ruff/两导入/diff通过。六独立CF删挂载/启动recover/monitor/关闭pending/原runtime current/private选择，各1failure且无error RED。初始async mock返回未await协程与journal=None夹具已修；退出等待改为有界第二请求断言而非靠超时，最初290秒组合工具限时不算通过，完整重跑通过。
+- 另核验旧受限Model固定317e1e1fd34ee848863526ce741c3a928d9161b8本机PG+ffmpeg/ffprobe全套2264项、0失败、10跳过、exit0、1853.027秒，/tmp/gaoji-python-f8-question-model-full.{revision,exit,log}一致。等价d4b0efe2f080f572801a7635d4052fccecfd4fca PR#111 Linux run43656314751/job132635557800同2264项/10跳过、977.900秒，/tmp/gaoji-f8-question-model-linux.log；Nix/Secret通过，旧Windows仍失败，不称全CI绿。这些旧全套不覆盖本factory/private选择/退出修补。
+- Task38继续前台ask原ExecutionBinding提交/等待/一次consume；管理API/UI与新固定完整快照另续，真实QQ/模型/embedding仍task9。此工厂不等于F8整体完成，未合并/部署/访问生产/修改Java。
+
+## 开发记录（2026-11-15）· F8受限目标模型组件（账号factory/source ask待接）
+
+- QuestionModel组件317e1e1（Draft PR #111，等价845bbaf）本地接目标物理模型偏好、冻结本端history scope/tail/memory，QuestionToolSource无actor/窗口且不混真人/程序/legacy；通用registry对此来源仅history，本轮另有同qid的ask回答/拒绝候选，拒额外目标/范围/递归/ops/浏览器/VM/文件/agent。问题保持untrusted，普通文本不提交答复；模型/费用排空后仍由worker最终respond授权。
+- 每请求复查原current并共享ModelBudget，真实usage以目标conversation_question/actor=None记账；legacy quota先保守预留，已知usage取消后也排空并只结一次，未知不退款或猜免费。清除继承的request_sink，私有问答不能流入源turn普通请求日志；目标history embedding使用真实question来源/current/账单，不冒充program或human。
+- 11项新PG/实际Gateway工具循环/目标embedding及108项worker/reducer/来源/F9/typed tools/旧F6/架构组合通过209.769秒，Ruff/两导入检查/diff通过。五独立CF分别删冻结scope、普通文本拒绝、request_sink隔离、quota drain、工具末current，各1failure RED；最初并行PG迁移max_locks环境error不算RED，改串行。读取期间stop例改为真实首代claim/账单内直接验Model，五次聚焦通过，不删除外层guard；两旧测试模块命令名已纠正。
+- Task40完成、Task38续：真实OfficialRuntime question工厂/监测/recover/shutdown、前台ask原任务绑定/等待/消费及管理API/UI另接，新固定全套仍待。此前2207/2216旧快照不覆盖本组件，既有Windows ACL仍单列；未QQ/模型真实验收、合并/部署/生产/Java变更，不称F8整体完成。
+
+## 开发记录（2026-11-14）· F8受控目标worker与独立真实用量来源（模型/factory/ask待接）
+
+- 先固定问答提示/执行器契约：QuestionTarget只给目标物理endpoint/冻结history scope/CQ-ID/问题/散列来源标签/current，问题用quote_evidence转义且不是真人权限、无源actor/窗口/owner/VM/文件；提示限定目标可见内容、隐私可拒绝、不能自动QQ，普通文本不是已提交回答。QuestionDecision仅候选，执行器排空后由Questions.respond最终授权再存；真正history/同ask工具白名单及模型路由还待接，不能把测试注入executor当实际模型已运行。
+- QuestionWorker组件复用实际账号question队列、并发2/目标1，模型等待期间持续current；source/target stop-start、已观察角色撤权/预算/期限/lease变化立即取消原等待而非只在模型返回后拒绝。等待task只cancel一次并shield/drain，双取消必须先排空同一socket/账单，再显式question/queue终态，不能让通用defer复活。执行器失败不把问题或地址写进通用队列异常/日志，来源已关闭/未知在途明确关闭，不猜答复。
+- BillingSource独立conversation_question且必须无真人/turn/后台agent/程序归因；真实运行的同账号/目标question与原第一代job核验后仅冻结CQ-ID/job-ID十进制字符串到既有不可变source_metadata_json，无新表/正文复制。账单归目标物理会话/请求时单价，真实usage收尾后预算crossing保留费用但关闭旧答案；F9后台任务维度单列会话问答、不冒充agent/程序/源人。
+- 当前11项真实PG/队列/Gateway+注入executor回归通过12.596秒；最终63项worker/来源/reducer/账单/API/F6旧库/架构组合180.314秒通过，静态检查另独立完成。删current轮询、等待shield、显式queue关闭、问答独立账单来源门槛的4独立负对照分别1/1/1/4failure RED。最初source stop后的重新submit误期待可用，改为原ExecutionFenceLost拒绝，未修复原binding；role分支从for/break漏测改为实际DecodedMessage/auth.observe独立等待撤权例，task39完成。
+- Task38仍in_progress：组件尚未挂实际OfficialRuntime question factory/worker，不开放前台ask；下一目标模型/本端history/同ask回答拒绝、source工具、恢复与shutdown、管理页和新固定全套。旧2207/2216全套不覆盖此worker，Windows既有ACL失败仍单列；未真实QQ/模型验收、合并/部署/生产/Java变更，不称F8整体完成。
+
+## 开发记录（2026-11-14）· F8一次持久问答reducer（实际worker/模型/ask待接）
+
+- Questions只提供私有submit/claim/current/respond/consume/close/recover：原来源capture后按稳定intent HMAC账号事务去重，限定live每账号128/目标16/原任务4；查重/限额后重新capture，不延长原截止。队列仅CQ-ID与固定目标hash lane，max_attempts1/resume0；并发同请求只创建一条。它不挂QQ/VM/history/model或前台工具，不把持久排队当作实际唤醒。
+- 实际目标job的完整kind/lane/payload/id、原owner/lease_generation、有效lease和第一次generation/attempt必须匹配；领取前、模型current及答复前再次查原来源/双端current和最终lease/期限。无权伪造目标worker或用源ExecutionBinding回答；旧任务被defer/requeue后不能取得新的模型调用。queued/running到回答/拒绝或取消/expired/unknown单向，不明在途与restart保留unknown，超时统一expired；终态不变、消费只许原来源binding且一次，超时未消费不改已有回答事实。
+- 关闭及回答/拒绝与durable_jobs终态同事务，队列result只存CQ-ID、不存问答正文；显式关闭阻止worker取消路径defer把原请求复活，监测到已defer的在途任务也关闭unknown。新account恢复有界关闭旧queued/running，已完成事实不改，旧epoch不能消费或重答。原来源与费用收尾/实际HTTP取消仍须未来worker接线，不能把纯状态机当作已验收运行时。
+- 14项新增真实PG/实际queue并发去重、普通caller、原worker/代数/目标lane、延迟到期、最终lease跨界、双端停止/预算恢复、一次回答拒绝/消费、defer/requeue/restart及public表无正文回归；46项reducer/来源/schema/连接真实factory/F6旧库/架构组合通过48.489秒，Ruff/导入/diff通过。删目标worker证明、关闭queue终态、答复末尾lease、消费原binding的四独立负对照分别2/1/1/3failure RED。
+- Task38仍in_progress：实际账号question worker/原来源监测与取消、目标taint上下文/同ask回答拒绝/真实费用、前台ask及管理页另续，然后新固定全套。既有e4a2893 runtime2207和0104 schema2216全套不覆盖来源读口或本reducer；Windows既有ACL失败仍单列。未真实QQ、合并/部署/生产/Java变更，不称F8整体完成。
+
+## 开发记录（2026-11-14）· F8原问答来源与双端current读口（等待状态机/ask待接）
+
+- QuestionAuthority仅接宿主原ExecutionBinding：原executing/chat、完整account/endpoint/actor及epoch/scope/route/revision/deadline/native/canonical与实际执行记录匹配，源当前准入与stop不可绕过；只读同账号本物理源的已授权单向link，复核双边持久同意。普通提问成员无需也不继承建边管理员/owner权限，测试将二者设为不同actor。
+- 0104等待任务的intent HMAC绑定原任务/账号/actor/link/问题且跨重试时间稳定，用于去重，不用新的时间/stop/budget代数重签复活。current先复核实际不可变question行，拒绝调用方“修正”旧stop/budget/期限或终态副本，再核intent HMAC、原执行/准入、双端物理scope/route/权限与stop、目标预算只读require及最终截止；目标input入口自行current，只给问题与散列来源标签，绝不传原actor/owner/历史/窗口。这里是纯来源组件，尚未挂ask/队列worker/目标模型，不能当作问答运行时或taint模型已完成。
+- 12项新真实PG源证明/独立普通caller/伪造handle/unsigned行/调用方修复旧证据/撤权重授/stop-start/预算恢复/已结束原回合/查权限时跨deadline例，43项来源/schema/实际连接factory/管理/F6旧库/架构组合通过50.607秒；Ruff、导入及diff检查通过。删源stop、目标budget、存储原快照、末尾clock、intent HMAC五独立负对照各1failure RED，原实现未放宽断言。首轮stop循环复用已失效原任务、upsert列歧义及generator断言均只修夹具。
+- 另核验连接runtime固定e4a2893c8d7f6a4dfbddd8ad8782a6dd04c5a873本机PG+ffmpeg/ffprobe全套2207项、0失败、10跳过、exit0，1926.397秒，/tmp/gaoji-python-f8-link-runtime-full.{revision,exit,log}一致；PR#106等价958b0cf0d6dab20a377f2c44f8bd38d09cb34f66 Linux run43644690501/job132599723880同2207项通过1138.548秒，代码树相同，原日志/tmp/gaoji-f8-link-runtime-linux.log。Nix/Secret通过，Windows旧ACL仍失败，不能称全CI绿；此2207快照不含0104或本来源读口。另PR#107的0104 schema等价187aa14 Linux run43647024453/job132606992198通过2216项/10跳过、808.907秒，原日志/tmp/gaoji-f8-question-schema-linux.log；Nix/Secret通过，旧Windows失败，亦不覆盖本来源读口。
+- Task38仍in_progress：继续账号持久去重/排队领取/等待/回答拒绝/一次消费/取消重启状态机，再目标taint模型、前台ask、账单与生命周期、管理页及新固定全套；未真实QQ/合并/部署/生产/Java变更，不称F8整体完成。
+
+## 开发记录（2026-11-14）· F8私有问答等待任务schema（工具/模型待接）
+
+- 0104_conversation_questions只建立原执行/单向link绑定的私有问答任务，复用durable_jobs的question账号种类和固定qqq:hash目标物理lane；队列仅存CQ-ID、不复制问题正文。完整account/source endpoint/actor的原execution复合FK、同账号且同方向link复合FK，初始要求executing/chat/原epoch/route/scope/revision/真实committed证据及一次不重启重试的pending job；不从普通成员推导连接管理权限。
+- 原问题/HMAC、link generation、双方scope/route/generation、双方stop代数及目标budget代数全部冻结；原任务截止不可延长，等待最多7200秒且不超过原deadline。问答正文只在独立私有表，不进history/inbox/普通发送/VM events；queued→running→回答/拒绝或取消/过期/unknown，终态与一次consume不恢复，禁止删后重发/无导出降级。这里只约束存储，实时双端准入/可见性/停止/预算与原current仍须由下一reader/reducer实现，未开放ask。
+- 9项新schema/真实0099→0104旧NULL回执迁移/空回退与审计阻退例及21项F8 link/F6旧库/架构组合通过37.809秒，静态通过。删原actor复合FK、两小时限制、元数据不可变、旧NULL回执门槛的4独立负对照分别1/1/6/1failure RED。初轮resume_on_lease_loss整数列误比bool及异常包装断言已修；旧NULL直接改写被既有activation CHECK拒绝后改为真实旧迁移种子，不削弱约束或触发器。
+- Task38仍in_progress：先接原来源reader/双端current/等待状态机，再ask与目标taint模型/回答拒绝/账单/生命周期，管理页另续。固定e4a2893连接runtime全套在/tmp/gaoji-python-f8-link-runtime-full.*运行，显式PG+ffmpeg/ffprobe，只覆盖该固定快照，不含本0104。既有Windows ACL仍单列；未真实QQ、合并/部署/生产/Java变更，不称F8完成。
+
+## 开发记录（2026-11-14）· F8真实账号连接控制运行时（ask/UI待接）
+
+- LinkRuntime在实际OfficialRuntime构造RestClient/sender之后、gateway.run之前挂载原认证LinkIngress/LinkNotices/LinkFeedback；先recover关闭旧RAM码，后sender.recover排空真实旧回执，不能在授权组件缺席时提前消费回执。原TxA→一次码/反馈→双边确认及list/status/cancel/unlink走真实账号工厂；默认owner私聊不手工provision、不改变/bind历史。
+- 每账号最多32个独立控制任务（不借普通模型ConversationTasks），busy/失败/取消关闭未发行挑战；monitor每5秒最多20+1 live检查，异常超量明确报错，授权/期限失效关闭码。退出先drain sender，再取消/drain独立任务、关闭未消费码和清authority；旧码不能随下一epoch重授。已active持久边与真实committed发行事实不被shutdown当成未发生。
+- 6项新增实际账号factory+gateway+TxA+RestClient/loopback FakePlatform覆盖双私聊owner定向确认/列表/撤销且body-free、领取后撤owner、busy/monitor expiry、退出前未prepare、已发行未消费的shutdown/restart拒绝、真实旧captured未applied回执新epoch保留fact不恢复码。115项运行时/F8/F6/预算/旧schema/架构组合通过121.379秒，静态通过。删factory挂载、把sender recovery放在attach之前、删shutdown旧码关闭的3个独立负对照各1failure RED。
+- 核验旧schema快照3912652cd189228c94cea150b4b4fade20210f52：隔离PG+ffmpeg/ffprobe本机全套2182项、0失败、10跳过、exit0、1867.148秒；日志/revision/exit一致(/tmp/gaoji-python-f8-feedback-schema-full.*)。PR#103 Linux同2182项/10跳过772.539秒，Nix/Secret通过；既有Windows ACL仍失败，不称全部CI绿色。此旧全套不含反馈420dfd2、默认入口ebcd917或本运行时。
+- Task37连接控制本地接齐，未真实QQ验收或生产开放/合并/部署/Java修改；F8不是整体完成。下一步独立ask等待任务及目标taint模型/回答拒绝/停止预算与账单、管理台，然后新固定完整快照，真实环境仍task9。
+
+## 开发记录（2026-11-14）· F8默认私聊入口与未核实主动窗口修补
+
+- 实际新C2C入站未手工provision：默认owner的private endpoint为unbound，旧LinkAuthority误当作未准入，原发行断言稳定RED（denied而非sending）。仅允许private/unbound/原物理canonical scope/present读口，owner grant与私聊准入照常核验；不启用历史绑定、不放开unbound群、public peer、revoked或unbound外部历史。
+- 权限修正后仍稳定RED：默认private主动状态unknown，却先主动POST并获proactive_denied，不能以重试/回退补发。一次link控制在主动尚未明确allowed时首选原认证msg_id窗口；普通/程序/预算发送不变，已明确allowed仍按原规则一次尝试。最终原入站/实际RestClient+loopback FakePlatform私聊发行与反馈通过，endpoint保持unbound。
+- 3项新默认入口/群与peer拒绝/revoked与foreign-scope例，既有private反馈改为无手工provision；104项F8/F6/预算/sender/旧schema组合通过161.561秒及静态检查。原权限与默认窗口两RED→GREEN，删除private物理scope匹配的独立负对照1failure RED；未放宽断言/重试或借后来消息。
+- Task37仍须真实账号工厂/dispatch/monitor/recover/close；此处只验实际store默认入口，未挂生产factory或开放产品link。旧3912652的全套仍运行；其PR#103 Linux run43639867618/job132584830795已核验2182项、0失败、10跳过、772.539秒，/tmp/gaoji-f8-feedback-schema-linux.log。Nix/Secret通过，既有Windows仍失败；该快照不含420dfd2反馈或此默认入口修补。未QQ实测、合并/部署/生产/Java变更。
+
+## 开发记录（2026-11-14）· F8实际单次控制反馈组件（账号工厂待接）
+
+- LinkFeedback从0102冻结原控制结果生成安全反馈，不从原输入或当前对端补猜；同原inbox只建一条0103 ephemeral plan，RAM正文/磁盘空body与HMAC，不借bind/ops/普通发送。enqueue/source/current验证原账号、端点、actor、epoch/route、原gateway回执、权限revision及准入；body与冻结结果精确匹配，不能换正文或原native窗口。
+- sender/prepare/HTTP前检查覆盖link_feedback；被动发送只用原msg_id，401/429/主动拒绝均一次，不重试/不plain，底层fail也拦重发。计划队列最多30秒，丢RAM/到期/旧租约/撤权重授不恢复；聊天stop不清除，显式控制反馈可用。已accepted后的撤权/重复取消仍排空真实回执，发送账本保留command空正文，不把排队当实发。32条含大版本的反馈遵守2000字单条限制，显示不下时明确剩余未显示，不静默截断。
+- 16项实际TxA/RestClient+loopback FakePlatform新例及117项F8/F6/预算/程序/sender/旧schema/迁移/架构组合通过165.473秒；Ruff/导入/diff通过。删除原窗口选择、HTTP前current、RAM正文匹配的3个独立负对照各1failure RED。私聊owner例是组件手工provision，不冒充真实默认入口或工厂验收。
+- 真实account factory/on_dispatch/monitor/recover/close仍待接；Task37 in_progress，产品link仍未开放，ask/UI另续。固定3912652的schema全套仍运行，PR#103 Linux已通过但尚未核验完整计数；此前4471365发行2156项通过不覆盖本组件。未真实QQ、合并/部署/生产/Java变更，既有Windows ACL仍失败，不称全部CI绿色。
+
+## 开发记录（2026-11-14）· F8控制反馈单次计划schema（enqueue/sender待接）
+
+- 0103_link_feedback只扩展独立ephemeral反馈种类：每原0102控制结果最多一个plan；复合FK固定原完整账号/端点/requester，不借bind/ops。原scope/route/generation/收到时间及源截止必须匹配，排队最长30秒，不能带canonical消息或turn；计划来源/内容不可更新或删除，禁止删计划后以同原输入重发。
+- 原四个发送约束仅有限扩展link_feedback，保留ordinary/protected/binding/approval/ops/link_otp不变量。无新plan可回退并逐字恢复四个PG约束表达式、保留0102原结果；已有反馈计划需导出，不丢审计。它只是schema，还没实现反馈enqueue、RAM正文、claim/current、sender或实际账号工厂。
+- 5项新PG schema/迁移例及73项F8角色/管理/状态机/发行/原控制结果/F6/迁移/架构组合通过122.013秒；Ruff/导入/diff通过。删原actor复合FK、30秒截止、计划不可变的三独立负对照分别1/1/4failure RED；不以schema假manifest当真实QQ回执。
+- Task37继续单次反馈与真实账号运行时，随后ask/UI；未开放产品link、最新完整快照/真实QQ验收、合并/部署/生产/Java变更。旧4471365的2156项全套不覆盖此0103/0102/管理及新截止。
+
+## 开发记录（2026-11-14）· F8独立原控制回复证据（尚未发送反馈）
+
+- 0102_link_replies保存每原inbox一条不可改/删的安全结果快照，不保存输入/验证码/正文。复合FK绑定原账号/物理端点/actor/回执HMAC；触发器匹配原收到时间/route/generation及原平台起算600秒，旧数据不补猜，已有结果须导出才降级。发行code仍只走0101，不同时生成反馈结果。
+- 可选TxA捕获原epoch/route/权限/结果HMAC；list只有已经授权的散列标签/方向/opaque ID/版本，原控制回复绝不借后来消息窗口。source读口复核原gateway control回执、metadata HMAC、当前原owner/群管证明、末尾截止及账号lease，重启/重授/换路由不能恢复原回复。
+- 无特权证明时只能保存denied/unsupported空引用/空列表的通用拒绝，不得降格保存敏感列表；私聊必须当前入站准入回调。9项PG实际TxA/新旧schema/降级例通过，68项角色/管理/状态机/发行/回复/F6/迁移/架构组合通过68.562秒，Ruff/导入/diff通过。删末尾clock、原gateway、无权限结果限制、不可变trigger的四独立负对照分别1/1/1/4failure RED。首轮6errors只是测试对清洗DatabaseError的断言层错误，已断言实际PG cause，未改存储保护。
+- 这里只是原回复来源/结果存储；一次ephemeral反馈计划/发送及真实账号工厂未接，未开放产品/link。Task37仍in_progress，ask/UI另续。旧4471365发行全套2156通过不含此0102或管理/新截止；未最新全套/真实QQ/合并/部署/生产/Java变更。
+
+## 开发记录（2026-11-14）· F8旧同意查找后的新挑战截止栅栏
+
+- 发现已有边的持久同意查找会跨过新挑战期限：旧实现可能错误返回already_linked；旧同意已失效时还可能以查找前时间激活已到期的新挑战。确定性正常/失效旧边两子例均RED（2failure），未放宽断言。
+- 将旧同意查找放在最终双边current/时间检查之前，用最终受检时间一次领取；到期只关闭新挑战，保留真实发行事实，不能撤旧边或建新边。独立0101隔离分支33项管理/状态机/角色/回执组合通过30.015秒；静态检查通过，未新快照全套或真实QQ验收。
+- 另核验上一发行组件447136574530ab96f9df4a05b41770cc7bf4931e：本机隔离PG+ffmpeg全套2156项、0失败、10跳过、exit0，1758.083秒，/tmp/gaoji-python-f8-issuance-full.log/.revision/.exit一致。等价90a971529f246c410b907ee51bc9f6d3c0713924的PR#99 Linux run43634886791/job132569409318通过2156项、10跳过，1088.303秒；Nix/Secret通过，Windows旧ACL仍失败，不能称全部CI绿色。该结果不覆盖51dd3c0管理、新截止补丁或后续原回复证据。
+- Task37仍in_progress，控制回复原证明/一次计划及真实账号工厂继续；ask/UI另续。未开放产品link、合并/部署/生产访问或Java变更。
+
+## 开发记录（2026-11-14）· F8定向连接管理与持久同意（控制回复/工厂待接）
+
+- LinkManagement在原认证TxA可选支路接list/status/cancel/revoke：每次用当前原owner/群管证明并在查找后复查原600秒截止；仅完整账号及当前物理端点涉及的记录，不从共享历史或普通私聊peer推导授权。任一端撤销单条有向边，generation只推进一次，反向边不受影响；待确认挑战可取消，已成边须明确/unlink。
+- 只有active且真实回执有证据的已消费挑战才形成持久同意：600秒是验证码/命令期限，不是连接寿命。已成边可跨宿主lease epoch保留，但双方冻结的owner grant/revision或已观察角色revision、原scope/route/generation及成员状态仍须匹配；撤权重授、路由/成员/密钥变化或旧NULL回执均不得恢复旧边。这里不是实时QQ角色查询，也不向远端传真人/owner/VM权限。
+- list先按完整账号/物理端点过滤再LIMIT33，最多32条并明确more，只给不含原始openid的散列会话标签/方向/状态/版本。查询发现已失效同意会不可逆撤边；新双边证明面对同路由但原权限已失效的旧active，不再误报already_linked，而是留旧gen+1、建新ID。
+- 10项新PG管理例和1项实际TxA+RestClient/FakePlatform确认后管理例；58项reducer/角色/发码/实际接收/旧F6/迁移/架构组合通过80.274秒，Ruff/导入/diff通过。删物理范围、目标侧证明、查找后的截止保护的3个独立负对照各1failure RED。首轮3个夹具错误（重复active pair、非法membership枚举、非法account environment）已纠正，未改约束；foreign审计用已撤销旧边而不放宽active唯一性。
+- Task37仍in_progress：管理组件仅可选TxA，尚无独立控制回复原证明/一次反馈计划或真实account factory；未开放产品/link。下一步持久原控制回复证明，不借bind/admin渠道，再接真实账号生命周期；ask/管理页另续。固定4471365全套后台仍在运行且不覆盖本补丁，不能替代新快照验证；未真实QQ/合并/部署/生产/Java变更。
+
+## 开发记录（2026-11-14）· F8一次ephemeral码与实际发送账本取证（账号工厂待接）
+
+- LinkNotices接独立link_otp enqueue/claim/发送/实际send_ledger：只接受原认证source_inbox及原actor/物理端点/route/epoch/current，HMAC验证六位码并比对固定正文，不允许普通/ops/程序来源混用。每挑战一个原计划，RAM正文、磁盘空body/manifest及HMAC，实际发送回执写command空正文，验证码不进普通历史/模型/审计明文。
+- Sender在被动模式只读冻结原msg_id，不拿后来的合法管理员消息窗口；claim后、HTTP前再次查原来源。401/429/主动拒绝及格式失败不重试、不转普通文字重发；底层fail也拒retry/plain。队列到期及发送重启关闭原码；captured但未applied的实际回执须完成账本收尾才记committed，迟到事实可覆盖unknown但不恢复授权。重复取消排空真实回执，原QQ作用已接受后取消仍保留command/receipt与发行事实。
+- 13项新例涵盖群、普通私聊拒绝/宿主owner本人原窗口、真实双边快速确认、原窗口/正文修改、401/429/丢响应/丢RAM、到期/重启/撤权、双取消及迟到接受；85项PG/TxA/loopback FakePlatform实际RestClient/原sender/F6/预算/旧迁移/架构组合通过86.289秒（包含native ID与实际applied回执的精确匹配），Ruff/导入/diff通过。删原窗口选择、HTTP前current、取消后真实回执保存的3个独立负对照各1failure RED。两项新增测试的任意wait_reason违反既有白名单、固定随机码碰撞live挑战已修正夹具，未放宽协议或授权。
+- link管理是显式命令，停止聊天时可发行但不清stop；ask/自动动作仍须各自停止门槛。这里只接宿主组件，真实账号工厂/发行服务入口、cancel/revoke/list/status仍待接；Task37仍in_progress，ask/管理页另续。无新完整快照全套、真实QQ/合并/部署/生产/Java变更；85项不替代固定快照或真实验收。
+
+## 开发记录（2026-11-14）· F8原认证TxA与原消息证明（尚未发行）
+
+- OfficialInboxStore.link_ingress默认None，未挂载仍body-free quarantine；显式挂载LinkIngress时，原认证且非self-echo的普通消息也更新无正文角色证据，不只看/link。独立归一化控制分支调用原权限reducer并在同一TxA写body-free actor/receipt/platform时间与原source_inbox_id，gateway checkpoint与挑战/角色一起提交；Acceptance只携repr-hidden transient code。
+- 发码来源读口仅取冻结原source_inbox_id，复核原account/physical endpoint/actor/native/event/received/platform、route/generation和HMAC及实际gateway控制回执，返回前再次复查双边current；后来合法管理员消息也不能替换原回复源。普通role撤权立刻栅栏旧挑战/来源，无需先进canonical历史。原账号工厂尚未挂载/实际sender尚未接，不能称真实QQ发行或完整运行时完成。
+- 6项真实PG/dedicated lease/实际OfficialInboxStore新例覆盖body-free/duplicate/快速确认待发行/普通撤权/原gateway及末检/TxA rollback/伪造前缀/私聊peer/坏时间；合计62项原收件/迁移/reducer/权限/旧F6/架构组合通过56.810秒，Ruff/导入/diff通过。删普通角色观察、真实gateway证明、末current的3个负对照各1failure RED。一次DELETE夹具误用fetchall及重复收集module已纠正，最终数字不含重复。
+- Task37仍in_progress：一次ephemeral码/原消息窗口与真实send_ledger、cancel/revoke/list/status和account runtime剩余；ask/管理页另续。未新完整全套/实际QQ/合并/部署/生产/Java变更。
+
+## 开发记录（2026-11-14）· F8原入站/一次发行计划存储（尚未接发送）
+
+- 0101_link_notices仅准备独立link_otp ephemeral种类及原source_inbox_id/notice_plan_id，不借bind/admin/ops。入站body-free原account/endpoint/actor/receipt/platform时间/native/event/收到时间被冻结；5字段复合FK把挑战绑到同一原认证输入，不能换原消息或actor。单挑战最多一个发行plan，原端点/账号/requester的复合FK及首次来源不可改，终态不能事后绑定新plan。
+- 四个发送约束从0066/0090的精确baseline有限扩展，保留ops/ordinary/protected原不变量；空0101增量可回退且四个PG重建表达式与原版本逐字相等，已有入站/计划审计必须导出。旧数据字段NULL，不猜来源。link_otp目前仍未加入实际enqueue/sender/TxA，不能把schema当作已实发。
+- 42项PG schema/迁移/reducer/原角色/输入/旧bind/F6/架构组合通过44.353秒，静态/导入/diff通过；删原入站不可变2failure RED、删source actor/receipt复合绑定1failure RED。初始计划夹具idempotency格式错误与两处对重复约束执行顺序的预期已修，负例最终验证实际相关constraint，未放宽产品授权。
+- Task37继续接一次ephemeral发行/原源窗口/真实send_ledger与TxA角色观察、控制查询/撤边/runtime；仍未新固定全套、实际QQ、合并/部署/生产/Java变更，ask/管理页另续。
+
+## 开发记录（2026-11-14）· F8纯双边短码状态机（尚未接TxA/发送）
+
+- LinkReducer在宿主账号锁事务中固定原认证LinkAuthority证明、600秒HMAC六位码与双边物理端点；原source/target回执重复不重发码。最多8次随机避碰，独立HMAC持久限流，并限制20个live挑战，避免固定窗口边界突发使21行有界扫描漏候选。确认只能一次固定不同物理目标、不能以裸actor/成员/别名推导授权。
+- 快速确认只进入confirming，真实发行事实才可能激活；查找及最终领取同时复查双边原权限/epoch/route与期限，用同一最终受检时间保存激活，避免再读时钟触发SQL失败并回滚已接受回执。sending的已知回执与issued/取消原子更新以满足数据库约束；unknown/失败、撤权重授、重启及旧epoch皆不复活，迟到真实事实独立保存。旧边路由已失效需新双边证明建新ID，旧generation推进并保留；重复旧回执也不把revoked边报告active。
+- 首轮7例中的3个SQL约束error已定位修复；复测新增确定性截止例后8例通过，另一次StoreRow误当dict的夹具错误已修。最终38项实际PG reducer/回执/迁移/角色/输入/旧bind/F6/架构组合通过40.100秒，静态/导入/diff通过；删双边current、末尾期限、独立live上限的3个负对照分别1failure/1error/1failure RED。
+- 这里只是纯事务状态机，不把测试假native ID当真实QQ发行。原TxA observer/一次ephemeral发码/原端点源窗口/真实send_ledger核验、取消/撤边/查询与runtime仍待接，ask和管理页另续。Task37仍in_progress；未新完整全套、实际QQ、合并/部署/生产/Java变更。
+
+## 开发记录（2026-11-14）· F8发行事实与授权终态分离（尚未接发送）
+
+- 0100_link_receipts为独立挑战增加一次冻结的发行回执HMAC/宿主收到时间；取消/过期/unknown后可补真实committed信息，但终态、码、原权限/路由、确认目标不可恢复/改写。回执唯一且不可替换；激活新连接必须另外有成对回执证据，不仅凭committed字符串。实际取QQ/send_ledger回执与发码仍待后续，DB假值测试不是平台验收。
+- 旧0098 active但无回执的数据保留原审计/NULL，不猜新回执；NOT VALID只保留旧行，新增/更新激活仍强制证据，旧无证据挑战不能新增边，后续运行时也须拒用未证据边。无新回执增量可回退并恢复旧严格trigger；已有回执禁止无导出降级。
+- 29项PG取消/过期/unknown迟到接受、不可改目标/回执/权限、无证据激活拒绝、旧数据/回退/权限/输入/架构组合通过（31.895秒），Ruff/导入/diff通过；恢复旧终态锁死回执3errors RED、删旧无证据创建边门槛1failure RED。未新完整全套或真实QQ发送，Task37的纯状态机/一次投递继续进行；未合并/部署/改Java。
+
+## 开发记录（2026-11-14）· F8独立敏感命令隔离（尚未发行连接码）
+
+- 独立LinkCommand仅识别/link、六位ASCII确认、list/status/cancel与按opaque link_id撤销的/unlink，不借bind/admin命令或显示名；code不入repr。结构自提及才可剥离，伪造/矛盾/嵌入link命令只做敏感隔离，不授予认证身份。
+- TxA对尚未接好的link服务明确body-free quarantine link_control_unavailable；普通router在admission/effect checkpoint前拦link/unlink，不把验证码变成普通命令/账本。旧误分类TxB仍在入canonical历史前清raw payload与turn_text。不会因服务未开而静默落回普通消息。
+- 实际PG认证链/普通router两个边界先RED，修复后72项parser/原认证收件/旧bind/ops回复/可撤销权限组合通过（48.766秒），Ruff/导入/diff通过；独立删嵌入敏感隔离的纯归一化与PG收件负对照2失败RED。没有发码、创建链接或QQ/模型效果。
+- Task37继续在进行：原权限LinkReducer、HMAC短码、一致的双边确认、发行真实回执及运行时尚未接齐，ask/管理页另续；不标F8完成，未新固定全套/合并/部署/生产/Java变更。
+
+## 开发记录（2026-11-14）· F8无正文的可撤销角色证据（尚未接TxA）
+
+- 0099_link_role_evidence与LinkAuthority仅接受宿主原认证DecodedMessage：原顶层角色、原平台时间与HMAC回执，不保存body/code/显示名，不从旧历史/转发/裸role/私聊普通peer补权限。角色或路由变化推进代数；迟到升权忽略，同秒矛盾撤销，删除证据被拒绝以免重建代数复活旧许可。owner沿用当前完整actor的grant/revision；原epoch/route/scope/原时间和HMAC同时复查。
+- lookup过程中跨600秒截止的两个原断言均RED，修复proof与current返回前复查；32项真实PG权限/撤权重授/迟到/旧lease/作用域/HMAC篡改/迁移及旧F6/bind/预算/架构组合通过（44.711秒），Ruff/导入/diff通过。去掉角色代数、末尾期限及按到达顺序重写角色的三个独立负对照各1失败RED。
+- 此缓存仅反映已观察到的原认证角色，不是实时QQ角色查询，不能立即发现未收到证据的上游撤权；挑战仍受原600秒界限，发起与确认各要求自己的原认证角色。迁移不回填当前权限，空增量可回退、已有证据要求导出。
+- 仍未把observer/link reducer/独立码发送接到TxA或开放ask/管理页；F10旧全套不覆盖本段，仅Draft小步，不做真实QQ或部署完成声明。下一步Task37接敏感命令、原确认与一次性发行回执。
+
+## 开发记录（2026-11-14）· F8双边连接存储（认证入口尚未开放）
+
+- 先核对maxx单向边/双方确认/2小时等待设计和现有bind/TxA/owner角色边界；docs/conversation-questions.md记录独立授权，不按成员/别名自动连接，远端不继承owner/VM身份，问答不自动发到QQ。
+- 0098_conversation_links新增独立挑战与有向边：只保存HMAC/原权限及回执承诺，复合FK限制同账号物理端点；双端确认与发行committed缺一不可，最多600秒、明确原route/generation/epoch，来源/终态不可改，撤边推进新代数且旧边不能恢复。旧库不推导连接；有挑战证据阻止未导出回退。
+- 19项真实PG双边/快速确认等待投递/同端与跨账号/不可变hash与路由/过期/撤销/旧设置保存/空回退及旧F6/预算/架构组合通过，33.802秒；Ruff/导入/diff通过。独立移除激活证明门槛及目标复合FK/同端限制的负对照分别1与2失败RED。首次CASE括号语法及测试把StoreCursor清洗异常误当原PG异常已修正，最终检验真实constraint cause。
+- 这只是schema/设计小步，未接短码投递、原认证/link命令、ask模型回合或管理台；不标F8完成，F10的2096项旧全套不覆盖0098。未合并/部署/生产访问/改Java；下一步接独立HMAC码与认证入站。
+
+## 开发记录（2026-11-14）· F10完整快照本地/ Linux收尾
+
+- 固定0505f22938da12363052f57a7d0d6f9f6d29eb21的PostgreSQL+显式ffmpeg/ffprobe全套2096项、0失败、10跳过、exit0，1533.222秒；/tmp/gaoji-python-f10-full.log、.revision、.exit一致。涵盖F10传输、消息/F1说明索引和history混合入口，不代表真实embedding或QQ验收。
+- 等价tree的Draft PR#91（4e675be899acc9d760e768cb8f662e252a3f97c3）Linux run43621650752/job132528450180同为2096项、10跳过，714.163秒；日志/tmp/gaoji-f10-history-linux-ci.log。Nix/Secret通过，79项针对性/静态/前端构建/7脚本亦通过。Windows旧ACL仍1失败/2错误（note12），相关源码未改，不能称总体CI绿色；本记录只改文档。
+- F10本地实现/固定全套完成，未合并或部署。接下来按用户选择推进F8；F7仍等待私密独立测试scope，不开放moderate。真实QQ/VM/模型验收与全部功能综合收尾仍在task9，不改Java或tank。
+
+## 开发记录（2026-11-14）· F10 history混合入口本地接线
+
+- 原history参数/读取形状不变；启用时查询embedding与字面/F1说明候选等权RRF合并去重，最终从当前可见canonical IR投影。默认关闭保留字面；启用但宿主来源/服务失败明确报错，不静默回退。补未来日期空区间，字面搜索也可找到F1说明。
+- 前台沿用原turn/actor/current，后台动态工具沿用原job/actor/current，VM只读沿用原VM凭据current且无真人actor；均只调用固定宿主embedding，不开放通用模型配置/跨会话。宿主实际usage落同一账单，缺价保持未知，发送前来源检查不由查询绕过。
+- 新增9项工具来源/关闭/失败/换说法/日期/头等待撤权/末检/可见性/双取消收尾回归，真实consumer+FakePlatform工具循环、后台worker动态工具及真实VM HTTP各有对应账单回归。删actor匹配、返回前current和最终可见性重取的3个独立负对照均RED；底座PR#90的3个scope/hash/前置过滤负例仍保留。79项协议/索引/查询/真实工厂/账单/旧schema组合回归（67.822秒）、Ruff/导入/diff、UI构建与7个实际检查脚本通过；新固定快照全套待收尾，不借F7/F9旧全套标F10完成或真实模型验收；不合并/部署/改Java。
+
+## 开发记录（2026-11-14）· F10消息候选与合并底座（工具尚未开放语义查询）
+
+- message_recall只从message向量按当前模型/服务identity、canonical IR+说明hash取候选；scope、可见floor、chat方向/类型、发言人及ID区间在向量LIMIT前约束。排除其他会话、表情、无旧来源证据及过时向量；只从messages_with_captions重新投影证据，不返回semantic_documents.content。等权RRF合并字面/语义排行并按消息ID去重。
+- 5项真实PG候选/同账号另一会话/表情/未知元数据/正文改写/隐藏/command/同名模型服务变化/过滤前LIMIT/去重/零向量测试通过；删scope/identity/hash的2个负对照以及把发言人/区间过滤挪到LIMIT后的1个负对照均RED。旧缓存正文仍在库里时也不能返回为当前匹配。
+- 这是纯候选/排序底座，不是已开放history语义功能；原history参数/字面路径未改。接下来必须挂原BillingContext/current、原物理来源与回执，再做工具/后台/VM读取接线、最终可见性投影和真实工厂回归。F10固定全套/真实服务验收仍未完成，不部署/合并/改Java。
+
+## 开发记录（2026-11-14）· F10消息/F1说明worker与宿主账单接齐（history待接）
+
+- QQ真实账号lease运行时在AI_SEMANTIC_ENABLED=true且provider/ModelBilling存在时启动独立worker；默认关闭不建模型通道。只使用当前物理reader来源，不猜真人或VM创建人，semantic_index/embedding记录宿主真实usage，缺价/用量仍未知或下界；无QQ发送或VM效果。
+- 每5秒按endpoint keyset看至多4入口；在内容hash/说明查询前，每入口消息按ID分页至多128条、最多新排32个（默认16），同账号pending/running上限128、执行并发2/每scope1。完整/空页轮转、重启从最新消息开始并由已有任务/向量去重，不能因为缓存已全覆盖而在账号锁下每5秒扫描全部历史；同名服务不同identity仍隔离，非1024或client/backend不一致维数在付费前拒绝。
+- 模型请求、等待头/正文及入库复查原source，复用guarded_wait在等待HTTP时轮询。stop→start头永不返回的确定性负例先Timeout RED，修后不等provider即可取消，排空未知账单。双取消也排空账单且将原job置terminal；移除该收尾的负对照实证genericworker会把原job变pending（1failure RED），不能依赖max_attempts=1阻止defer重放。
+- 84项PG消息/分页/背压/维数/worker/真实QQ工厂+FakePlatform/embedding/语义/账号运行时/旧0091迁移/网关账单/持久队列组合通过，81.337秒；Ruff、两项导入检查、diff检查通过。先前42项组合含导入测试class造成11项重复，已改模块引用，最终计数不重复这11项。错误的DatabaseCalls导入与_started终生初始化标记断言均已按实际接口修正；停机检查state=stopped而不改运行时语义。
+- 任务底座ae89f71/Draft#88，worker另一个小Draft；此处还没有history混合查询或覆盖新代码的固定全套/真实模型验收。F7离线全套2048项不覆盖此新增代码；F7仍待owner指定测试范围，不开放moderate。未合并/部署/生产访问或改Java，随后继续history，再F8。
+
+## 开发记录（2026-11-14）· F10向量任务存储与原子来源栅栏（运行时待接）
+
+- MessageVectorJobs复用durable_jobs/semantic_documents，不加新表。任务只存消息编号、IR+图片/视频说明hash及模型服务identity，不复制正文；同一授权/内容版本只排一次，max_attempts=1、resume_on_lease_loss=false，原job不复跑。新账号/route/stop授权下的新派生回填可重算未获得向量的读取，单独真实账单，不能声称未知读取没有费用。
+- 当前lease、实际endpoint账号/私聊peer入口、canonical路由、stop代数、job租约/原payload、可见floor及内容/模型版本在短事务核验。旧任务在stop→start、撤权、换lease/route、说明变化后拒绝；别名回填归当前物理reader，而非猜原真人。文本/卡片及F1说明是真实内容，纯媒体标记/工具noise不调用模型，command不入索引。
+- PgVectorBackend.upsert可加入调用者StoreCursor；来源检查与向量/metadata写入同一事务，metadata变更即使文本/model同名也更新。原先独立事务路径继续给表情使用；不同服务同名模型的向量空间由identity隔离，后续查询仍须按当前IR/说明hash、scope/filter复查而非返回cache原文。
+- 60项真实PG消息任务/lease/alias/说明/metadata/外层回滚、embedding/语义/队列/runtime/迁移组合通过，Ruff/两项导入通过。三组删栅栏/改回独立提交的临时负对照共3failures RED；原source与原子用例通过。初次9个错误是尚未注册semantic lane，之后测试media sender/source_type缺字段、actor应传key以及LeaseLost类型、一个未用import均已修正，不放宽实现门槛。
+- 本段只有任务存储/原子底座；尚未启动消息worker、挂运行时账单或改history，不标F10完成或全套通过。F7本地2048项不覆盖此新增代码。保持小Draft、未合并/部署/生产访问/改Java。
+
+## 开发记录（2026-11-14）· F10 embedding协议与keyless运行时底座
+
+- 复用EmbeddingClient，批次index必须是完整唯一整数集合，顺序重排但不补猜缺index；向量严格数值/有限/非零且维数与数量一致。拒绝重定向、含凭据/查询/片段或不规范的宿主URL；不信任环境代理，HTTP正文最多4MiB、整次调用受配置超时限制，错误不打印URL/响应体/密钥，不自动重试。
+- 如宿主提供BillingContext，使用独立embedding/openai-embeddings请求快照，宿主usage.prompt_tokens入真实账单，输出为0；缺usage/缓存/未配置单价仍未知或下界，不把服务说成免费。当前回调在请求、连接后发送头、正文和返回前复查，真实已读usage在坏向量/取消后仍收尾，双重取消排空同一回执。后续worker/VM history须另外接来源，未宣称所有旧embedding已挂账。
+- runtime允许显式无密钥embedding_base_url/model，默认AI_SEMANTIC_ENABLED仍false；真实应用工厂+隔离PG+HTTP替身验证keyless启动与1024维入库，未连接真实模型。初次6个测试16 failure/2 error稳定RED，修后47项embedding/语义/runtime/表情/网关账单组合及Ruff/两项导入通过；含早先10项，不能相加。
+- 尚未实现聊天/F1说明后台索引或history混合检索，参数和默认路径未改；F10未完成，新补丁未固定全套。F7完整固定b32ff08及CI另外跟踪，不计本F10覆盖；未合并/部署/生产访问或改Java。
+
+## 前置核对（2026-11-14）· 用户选择F10→F8先行，F7保持待实测
+
+- 用户明确选择先做F10，再F8；F7的独立测试账号/群/普通参与者尚未给定，不开放moderate、不借用线上身份。F7协议/引擎/CLI分三小Draft #84/#85/#86；完整固定b32ff084028482236132fa0d7e20ee152b4ba5d9在/tmp/gaoji-python-f7-probe-full.log运行、PID33141，Linux CI仍待核验，未标通过。
+- F10权威要求见bot/docs/next-features-plan.md：复用向量底座，后台索引有效消息及F1图片说明，history混合检索/去重，参数不变。Python现有semantic_documents(vector1024)、默认关闭AI_SEMANTIC_ENABLED和独立宿主embedding配置；应用worker只接表情索引，history尚无语义路径。
+- EmbeddingClient已允许keyless但runtime仍要求APIkey；响应index重复/缺失和坏向量需严格校验，配置启用后错误应明确，不默降级。真实宿主usage应入现有账单，不将embedding预留/未知费用说成免费。先补传输与运行时前置边界，随后消息索引和带可见性/发言人/日期过滤的混合查询，源/模型/内容变化不能返回旧缓存；不引入新VM模型通道或恢复旧功能。
+- 当前只是核对完成，F10实现/真实模型验收未完成；F9本地2028项全套不覆盖随后F7/F10，未合并/部署/访问生产或改Java。
+
+## 固定快照核验（2026-11-14）· F7探测工具本地收尾，不是群管功能验收
+
+- /tmp/gaoji-python-f7-probe-full.log、.revision、.exit一致：b32ff084028482236132fa0d7e20ee152b4ba5d9本机2048项、0失败、10跳过、exit0，1330.411秒。代码tree相同的383563e/PR#86 Linux run43608038613/job132486803554通过2048项/10跳过（653.380秒），Nix/Secret scan通过；旧Windows ACL依旧失败，整体CIconclusion为failure，不声称全绿。
+- UI构建与实际7个React脚本、Ruff/两项导入通过。三个小Draft #84协议/#85引擎/#86CLI已推送，未合并/部署/访问生产；b32ff08不覆盖其后8daa3e4的F10传输和后续消息索引。
+- F7只有独立探测准备/本机验证完成，没有当前Gaoji账号管理员权限、禁言/解除、普通成员撤回的真实报告，moderate仍不开放。用户选择F10→F8先行，测试账号/私有scope与普通参与者由owner另行指定；不通过本地结果或新文档刷新旧权限。
+
+## 开发记录（2026-11-14）· F7独立探测CLI本地接齐（仍无真实群管验收）
+
+- 独立入口src.qq_official.probe_moderation_cli默认read，mutation须显式选项与一次确认；账号/唯一群/普通成员都从私有scope文件绑定凭据。操作者必须明确independent_test_account/exclusive_moderation=true，终端仅假名/步骤/最大请求数；这不是平台授权证明。不接受任意网络地址，不连接应用运行时、VM或线上tank。
+- 专用Unix intake拒绝非当前用户、group/other权限、链接、超长输入或不私有报告目录；Darwin使用已打开FD和固定/bin/ls -e拒绝扩展/不可核实ACL，Linux私有mode依赖ACL mask，未知/Windows不开放CLI。没有改现有Credentials/Windows旧问题。新报告仍拒绝覆盖，不泄露响应体/原文/密钥。
+- 默认2次业务读取；mute60秒/验证/解除最多8次，独立新消息recall最多2次，unknown/中断不重试不补清理。86项本地CLI/引擎/协议/旧HTTP与文件组合、Ruff/两项导入和--help通过（包含81项）。初次Ruff的未用测试导入已移除并完整重跑。
+- 使用步骤与私有scope结构见docs/qq-official-probe.md。准备工作已接齐，但当前Gaoji账号真实群管权限/普通成员撤回仍无证据，产品moderate不得开放；下一步需owner提供独立测试凭据文件及授权目标。F9固定77c3055的2028项全套不覆盖本探测补丁，未合并/部署/网络实测/改Java。
+
+## 开发记录（2026-11-14）· F7单成员探测引擎（CLI待接）
+
+- probe_moderation.py固定独立测试账号/单群/单普通成员；显式确认前不连接，只有原认证顶层普通成员、同入口、@bot的当次随机文案/新消息ID可作为测试来源。转发/引用/附件、旧时间、错人/错群/owner/admin或机器人不提供来源，读写及token/TLS等待后仍检查原五分钟内批次和两分钟消息期限，不能借新事件续权。
+- 写前核实当前bot角色与身份；仅60秒临时禁言，不改已有规则，GET核实同一期限后才尝试del并核实解除。清理前规则变更则不删除；QQ缺CAS，所以要求独立测试窗口没有并行人工群管，不声称能原子隔离外部管理员。任何不明写入/中断不重试或自动del，原临时禁言自行到期；撤回使用另一个新消息ID。报告只存假名/步骤/HTTP状态/错误码与观察结果，不存原文/身份/响应体或凭据。
+- 81项协议/原HTTP/探测/文件及新引擎组合通过（含此前71项），Ruff/两项导入检查通过。独立CLI及受保护scope读取仍待接；当前账号真实权限/普通成员撤回仍未测，moderate不开放，未网络探测/部署/改Java。
+
+## 开发记录（2026-11-14）· F7固定群管协议准备（无真实探测）
+
+- GroupModerationProtocol只有固定bot_state/禁言规则GET、单成员add/update/del与单消息DELETE；无自定义地址、批量、移除或全群禁言。时长按候选平台上限1–2592000秒、+08:00；产品仍须另按原认证角色限制admin1天/owner30天并复查原回合、stop与物理来源。
+- QQ候选撤回200空正文在独立moderation DELETE中精确允许；读取/禁言/普通发送及未知204等没有放宽，200错误码/认证/限流/不明响应不重试。71项本地HTTP/协议/原探测与文件组合通过（包含早先38项），旧JSON-only解析负对照RED、Ruff/导入检查通过。
+- 尚无独立探测CLI、真实Gaoji账号/群管权限证明或moderate产品入口；F7必须先完成owner指定独立测试账号/群/普通参与者/新消息的受控实测，不能复用maxx文档结果或线上tank。未网络探测、部署或改Java。
+- F9固定77c3055全套仍在/tmp/gaoji-python-budget-final-recheck.log运行（PID31518），通知/最终UI的Linux CI仍待核验，未标通过；此F7补丁不在该快照覆盖内。
+
+## 开发记录（2026-11-14）· F9通知Linux CI修补与最终快照重验
+
+- PR#81旧Linux CI run43601563401/job132467213290共2022项、1error、10skip；唯一错误来自刻意停在0091的F6迁移测试，被无关预算表查询污染。1241311/PR81分支01bb370将授权、拒绝收尾、成功回执的预算表访问限定于bot unsolicited来源；不加缺表捕获、不放宽旧迁移/权限门槛。扩充真实PG旧库回归到拒绝与成功回执，恢复无条件查询的两组负对照均RED；42项相关组合及Ruff/导入通过。
+- #82/#83已变基到修补后的#81，9个小Draft仍未合并。旧93efda5全套运行主动停止、exit143，为superseded/非通过；旧失败CI与旧2005项成功快照不改写为新快照证据。最新完整固定快照待重启/核验，UI构建及7个React脚本已通过；Windows ACL旧问题仍单列，不能称全部CI绿色。
+- F9四维费用/日预算本地链路已接齐，真实QQ/模型/VM验收待owner；未部署、不访问生产、不碰Java。
+- 最终核验：固定77c3055715f60c1d1de306361305ba7e654a5ddc的/tmp/gaoji-python-budget-final-recheck.log、.revision、.exit一致，2028项、0失败、10跳过、exit0，1340.222秒。通知修补PR#81 Linux CI run43604308585/job132475539143通过2022项/10跳过；最终UI PR#83 run43604571311/job132476395283（a970dd5，tree与77c3055一致）通过2028项/10跳过，Nix/Secret scan通过。两个run因已知Windows ACL失败，整体conclusion仍failure，不声称全CI绿色。
+- 本轮Ruff、两项导入检查、UI构建与实际7个tools/test-*.mjs均通过。首次手写循环误列不存在的test-config.mjs而exit1，改为实际文件集合后完整通过；不是UI代码回归。旧93efda5/旧失败CI不改写为通过。F9恢复开发本地收尾完成；随后3e67839的F7协议及尚未提交探测引擎均不计入77c3055全套覆盖，仍保持Draft、不合并/部署。
+
+## 开发记录（2026-11-14）· F9预算管理页本地接齐（最终全套待验证）
+
+- 模型/会话页增加每日美元预算：关闭与0明确区分，精确金额不经JS Number，费用不完整/在途、预算/stop独立状态、通知真实终态均展示。编辑时冻结独立budgets版本；后台刷新不会给旧表单借新版本，缺版本/过期/非法金额禁保存，失败不自动重试。
+- API与实时资源接线、表单/金额/版本/通知语义的React检查完成，UI构建及7个脚本通过；无真实网页/QQ/VM/模型验收。F9剩余四维报告与预算的Python本地链路已接齐，9个分层小Draft（#77/#78/#79/#75/#76/#80/#81/#82及UI）尚未合并，最终固定快照全套待启动/核验，不把旧2005项全套计为新通知/管理页覆盖。
+- 双语README、原生/status与/config技能和宿主配置文档同步。未部署，不触碰已上线tank或Java工作区；后续按原计划F7→F10→F8，真实验收仍需owner提供测试机器人/模型/VM。
+
+## 开发记录（2026-11-14）· F9预算/status与管理设置API（UI待接）
+
+- 原生/status增加北京时间日预算、真实费用/未知下界、超额与通知终态；队列不能冒称已送达，未知/失败不重试，保留stop与旧命令回执。budget_views为原生与API提供同一物理投影，daily_budgets.read_many单条MVCC汇总管理批次，避免逐会话重复查费用，不读历史别名或配额预留。
+- GET/POST /api/conversations/budgets使用独立budgets资源；真实登录/CSRF/If-Match、exact美元字符串或null=off，按原生配置同一账号→资源锁事务提交设置/新超额/版本/审计。默认off也明确写审计，但不乱推进代数；并发同版本只有一个成功，任何故障全部回滚。通知与账单变化更新只读实时投影，不给VM或模型开管理接口，未恢复全局QQ OTP。
+- 31项管理/原生状态/预算/会话/路由组合和42项通知/配置/账单/VM栅栏组合通过（有重叠）；Ruff与导入检查通过。初次测试缺actor夹具及匿名POST漏Origin已修正：账单保留未知actor而不猜身份，发送真实Origin才测试登录401；生产权限未改。管理页仍待本轮接线，最新补丁没有固定全套/真实环境验收，未部署。
+
+## 开发记录（2026-11-14）· F9预算通知运行时、一次发送与真实回执
+
+- BudgetNoticeWorker随实际账号sender启动，最多32条短事务对账；每物理会话/北京时间日只排一个五分钟通知。只用平台确认bot身份和原始0097来源，明确区分pending/队列与committed；不冒充真人或program，不借用被动消息窗口，不经过模型、不扣程序发言额度。私聊持续检查入口访问，检查peer不赋予通知真人/owner权限。
+- sender在领取/HTTP前复查原stop、budget、route、epoch和私聊准入。budget notice连401/429已确认拒绝也不重试；结果不明保持unknown，重启或预算恢复不补发，次日新超额可有新意图。所有真实成功回执在同一账本收尾事务更新notice_state，重复取消仍排空，预算变化不抹掉真实接受回执。
+- 36项真实本地PG/实际HTTP/FakePlatform/真实runtime工厂/来源/迁移/普通发送/主动接话组合通过；私聊允许/撤权、双重取消收尾、次日、在途与原授权变化均有回归。初次runtime测试错误地等待未绑定群processed，已改为确认实际入站发现，再由可信宿主激活；没有放宽已绑定群的处理断言。Ruff和两项导入检查通过。管理台预算设置及/status预算展示仍待，真实QQ/VM/模型验收未进行。
+- 固定5af7115的/tmp/gaoji-python-budget-fences-full.log、.revision、.exit一致：2,005项、0失败、10跳过、exit0，1337.184秒；PR#76 Linux CI run43598882503/job132459161475也通过（13m57s），Nix/Secret scan通过，既有Windows ACL仍失败。这些不覆盖0097/今天的通知代码，不声称全部CI绿色。未部署或访问生产。
+
+## 开发记录（2026-11-14）· F9预算通知的原始来源冻结（尚未接发送）
+
+- 0097_budget_notices为首次超额意图增加固定stop/budget代数及不可改写触发器，通知原始金额、费用、物理入口、路由和宿主epoch不能由后续恢复覆盖；同一天第二次超额仍只保留原通知意图。旧0096未发送意图没有这两项证据，迁移保守取消而不猜新授权，带新证据时禁止无导出降级。
+- budget_notices.py只认可当天、五分钟内、原代数仍有效且仍超额的物理入口，通知正文用固定金额/费用和平台确认的bot身份，不借真人、owner、VM或被动消息窗口；外会话、改正文、引用真人或改截止均拒绝。此提交只建立来源/计划校验，还没有宿主队列/真实sender接线，pending不是通知送达。
+- 42项通知来源/迁移、预算/原生配置、账单和架构组合通过；初次两项报错是测试StoreRow不能用dict union，已显式转dict修正并重跑。Ruff及导入检查随提交核对。无真实QQ/VM/模型验收，未部署；5af7115旧栅栏全套仍单独跟踪，不覆盖0097。
+
+## 检查与交付记录（2026-11-14）· F9分层草稿PR及固定快照
+
+- 已恢复的费用API、UI、预算存储、原生配置及VM/主动接话栅栏按约400行以内拆成五个stacked Draft PR：#77（cost API，base main）→#78（UI）→#79（预算存储）→#75（原生配置/费用收尾）→#76（VM/主动接话栅栏）。只建立草稿，不合并、不部署；最终stack tree与开发5af7115逐文件diff为零。API最早分支已单独携带随机输入排序夹具修复，不等后续预算分支才修复测试。
+- 固定61f2e51的底座全套已结束：/tmp/gaoji-python-budget-base-full.log、.revision、.exit一致；1,989项、0失败、10跳过、exit0，1389.223秒。覆盖费用API/UI及0096底座，不覆盖之后87a35f4配置/费用接线和5af7115唤醒栅栏。
+- 新固定5af7115全套在/tmp/gaoji-python-budget-fences-full-check运行；日志/tmp/gaoji-python-budget-fences-full.log，.revision/.exit/.pid同前缀。显式提供ffmpeg/ffprobe；目前没有结果，不宣称最新全套已通过。此前45项费用/原生配置和34项VM/主动接话组合已通过，组间有重叠，不相加当新增测试数。
+- 程序唤醒预算入口已接；超额独立通知、管理台预算设置和/status预算展示仍待继续，F9预算及F7/F10/F8未完成。未访问生产、未改Java、未部署；真实QQ/VM/模型及既有Windows ACL问题仍待owner验收/另项处理。
+
+## 开发记录（2026-11-14）· F9④VM唤醒与主动接话预算栅栏
+
+- /vm/wake独立使用wake认证，原stop/budget双代数在同一宿主账号事务捕获，再做guest核验和HTTP正文读取。慢guest/慢上传期间预算off→on/恢复不能重新授权旧请求；scope持续检查并取消等待中的旧wake，不取消只读、模型外say/file或独立command scope。
+- 每条持久wake固定budget_generation，排队、合并、模型进行中、答案/发送前均穿过既有ProgramExecution来源检查；新预算代数参与next-hour batch key，旧/新批次不混合，次日只允许新工作，不复活旧action或同request_id。主动接话在入站eligibility、classifier current和plan guard检查预算，预算更改仍推进proactive代数，已有真实发送回执不改写。
+- 34项真实本地PG/VM认证/实际HTTP/FakePlatform/执行/队列/主动接话组合通过，Ruff及两项导入检查通过；新覆盖认证前拒绝（没有guest I/O）、慢正文以服务端scope.requests证明已认证后再切预算、模型在途取消、只读和不经模型say仍可用，以及恢复/次日/合并不补跑。与此前45项组合部分重叠；真实VM/QQ/模型未验收。
+- 独立超额通知及预算管理设置/status展示仍未接齐，F9预算不能标完成；固定61f2e51底座全套仍单独跟踪，不覆盖这些后续补丁。没有部署或访问生产。
+
+## 开发记录（2026-11-14）· F9④预算原生配置与模型入口（局部接线）
+
+- 原生/config加入daily_budget_usd：精确美元字符串、最多6位小数；off/default写NULL关闭，0为明确禁用自动动作。任何人可查，修改仍只接受原认证群主/群管/当前宿主owner或已准入私聊本人。独立budgets资源版本与同事务审计，不把off当只读、不清除/stop。
+- 每次实际模型请求收尾按account→receipt→budget锁序提交费用及首次超额代数；取消后的真实回执也照记。原生配置切换同事务推进预算/主动接话代数，恢复不复活旧输入。模型proactive/program_wake开始时已检查已知费用门槛，@触发请求仍允许，未知费用不冒充硬限额。
+- 45项预算/配置/真实native consumer/账单/gateway/Codex组合通过，Ruff和两项导入检查通过；覆盖/off默认写操作、管理员重复命令仅审计一次、转发owner无权、私聊边界及超额收尾后拒绝自动请求但保留@花费。与前组有重叠。
+- VM wake认证/body等待前预算代数、实际队列/主动接话完整门槛、独立通知、管理页/status仍需接线，不能把F9每日预算标为完成。固定61f2e51的底座全套在/tmp/gaoji-python-budget-base-full.log运行，revision/exit/pid分别同前缀；不覆盖这些后续改动。没有新部署或真实验收。
+
+## 开发记录（2026-11-14）· F9④每日预算持久底座（尚未开放）
+
+- 0096新增物理会话daily_budget_usd（NULL默认关闭）、budget_generation和按北京时间日界的超额/通知标记；只读已保存的宿主逐请求费用，不从旧usage_events预留计费。未知费用/未收尾请求仍显式保留，不能保证供应商硬上限。
+- 同账号锁串行超额与配置，首次超额推进预算/主动接话代数；重启或重复检查不重复推进。当天显式提高预算可允许新工作，再次超额也推进新代数，但只保留一条通知意图；次日只恢复新工作资格，不清除stop或降低代数。通知pending只表示待发送，尚未接发送器，不能当送达。
+- 拒绝门槛只读；超额标记必须由费用收尾或配置事务先提交，不能在将抛拒绝的事务内创建标记后被回滚。迁移默认保留已有设置/停止状态，仅无预算配置、代数或标记时允许降级，不回填历史预留。
+- 31项预算/实际迁移/配置/账单/管理归属/PG架构组合通过，Ruff与两项导入检查通过。首轮断言误迭代Row键已改为字段取值；组合复查暴露共同来源夹具随机排序，改为明确选中TEST_B输入且验证单程序+命令共同费用，没有改生产归属逻辑。
+- 预算配置入口、费用收尾/VM认证与唤醒/主动接话实际门槛、独立通知和管理页/status仍需接线，预算不能标为完成；最新全套与真实验收另行跟踪，没有部署。
+
+## 开发记录（2026-11-14）· F9④四维费用管理页
+
+- “模型用量与费用”页已接四维只读账单，独立于旧Token保守额度统计；按会话、后台任务、常驻程序、发起人以及1/7/30/90/365天读取。合计覆盖整个过滤范围，明确各维度不可相加；共同程序/命令费用与未知用量、费用下界、未收尾数分别显示。
+- 金额与Token原十进制字符串格式化，不转换JS Number或四舍五入到零；来源标签仅作为React文本渲染。查询切换取消旧请求且按完整查询键匹配响应，翻页复用服务端as_of与绑定游标；刷新重新读取窗口，也明确后续收尾/迟到数据会改变新读取。
+- TypeScript/Vite构建及6个React渲染脚本通过（含新费用脚本）；新检查覆盖共同归属、下界、超过JS安全整数的计数/金额、HTML转义、不显示密钥与四维入口。首轮接线漏闭合JSX，修复后所有UI检查完整重跑。后端32项组合先前已通过；没有新HEAD全套、真实浏览器/QQ/模型验收或部署。
+- 用户已确定每日预算默认关闭、按Asia/Shanghai北京时间零点恢复；现有会话不自动设限，预算超额按原计划只响应@、停止主动接话与程序唤醒，@仍会花费，不宣称供应商硬上限。预算接线继续，F7/F10/F8未开始。
+
+## 恢复开发（2026-11-14）· F9④四维费用只读 API
+
+- 用户明确恢复剩余功能，顺序仍为F9剩余→F7→F10→F8；不自动部署，已上线ad5a6e1及Java工作区不动。已从隔离stash恢复费用草稿，并按实际计划的会话/后台任务/常驻程序/发起人四维完成API；不是用模型维度代替任务维度。
+- `/api/model-costs`只对登录管理员开放，按物理scope隔离分组，不借历史别名；价格及人员显示只读请求开始快照。程序、命令完成的共同调用按完整参与者集合记一笔共同费用，不给每个参与者复制整笔；四个维度是同一总额的不同投影，不能再相加。
+- 使用绑定维度/天数/窗口/会话过滤的keyset游标，迟到的较小分组不会造成翻页重复；刷新可看到新/迟到分组。每次响应在一个只读repeatable-read事务查询页、总数与总额；窗口按请求开始时间固定，未收尾请求随后完成时新读取会更新费用，不冒称跨请求冻结数据库快照。
+- 金额、Token及内部人员/任务编号用十进制字符串，避免JS丢精度；缺单价、用量或未收尾都明确保留下界与未知缓存率，旧NULL归属不补猜当前名字/VM创建人。共32项真实本地PG、来源/迁移/账单/登录/路由组合通过，Ruff及两项导入检查通过；首轮3项报错暴露草稿GROUP BY字符串常量错误，已修复并完整重跑。组内部分测试与既有组重叠。
+- 管理页与每日预算继续实现，预算默认值仍需用户决定；没有新HEAD全套或真实QQ/VM/模型验收，不冒充已上线。原stash备份保留，草稿已进入受测开发链路。
+
 ## tank 发布结果（2026-11-13 UTC）· 已完成切换
 
 - 用户授权仅部署tank，未完成新功能目标保持暂停。PR #74已合并为ad5a6e1（树与修复55011b7完全一致）；共享Nix main的部署配置f874a2a9固定该版本。没有混入Java工作区、费用四维API草稿或依赖漏洞修复。

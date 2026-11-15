@@ -103,6 +103,12 @@ class ConversationProactiveRequest(BaseModel):
     enabled: bool
 
 
+class ConversationBudgetRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid',strict=True)
+    endpoint_key: str = Field(min_length=1,max_length=1000)
+    daily_budget_usd: str | None = Field(max_length=32)
+
+
 class BrowserClearRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     endpoint_key: str = Field(min_length=1,max_length=1000)

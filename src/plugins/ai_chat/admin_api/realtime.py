@@ -91,9 +91,16 @@ class AdminEventBroker:
 
 
 _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
-    "qq_official_accounts": ("qq-official",),
-    "qq_official_endpoints": ("qq-official", "conversations", "programs", "commands", "browser"),
-    "conversation_settings": ("conversations", "media", "programs", "commands"),
+    "qq_official_accounts": ("qq-official", "questions"),
+    "qq_official_endpoints": ("qq-official", "conversations", "budgets", "programs", "commands", "browser"),
+    "qq_official_conversation_links": ("questions",),
+    "qq_official_link_challenges": ("questions",),
+    "qq_official_conversation_questions": ("questions",),
+    "qq_official_question_notice_sources": ("questions",),
+    "qq_official_question_notices": ("questions",),
+    "conversation_settings": ("conversations", "budgets", "media", "programs", "commands"),
+    "conversation_budget_days": ("budgets",),
+    "model_usage_calls": ("usage", "budgets"),
     "qq_official_background_commands": ("commands",),
     "qq_official_program_actions": ("programs", "commands"),
     "qq_official_program_wakes": ("programs", "commands"),

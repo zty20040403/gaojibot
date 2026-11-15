@@ -7,10 +7,12 @@ request body, response text, URL, API key or VM-reported count is persisted.
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
+import re
 import secrets
 import time
 
 from .billing_sources import metadata
+from . import daily_budgets
 from .model_pricing import ModelPricing
 from .model_usage import TokenUsage
 from .platform_types import ActorKey,EndpointKey
@@ -24,17 +26,23 @@ class BillingSource:
     turn_id: int | None = None
     background_job_id: int | None = None
     program_wake_id: str | None = None
+    conversation_question_id: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.endpoint,EndpointKey) or self.endpoint.account.platform!='qq-official':
             raise ValueError('billing_requires_physical_endpoint')
-        if self.purpose not in {'turn','proactive','ocr','image_caption','video','background_agent','program_wake','memory','semantic_index'}:
+        if self.purpose not in {'turn','proactive','ocr','image_caption','video','background_agent','program_wake','memory','semantic_index','conversation_question'}:
             raise ValueError('invalid_billing_purpose')
         if self.actor is not None and (not isinstance(self.actor,ActorKey) or self.actor.identity_kind=='bot'
                 or not self.actor.matches_endpoint(self.endpoint)):
             raise ValueError('billing_actor_endpoint_mismatch')
         if self.program_wake_id is not None and (self.actor is not None or self.background_job_id is not None):
             raise ValueError('program_billing_cannot_impersonate_human_job')
+        if self.purpose=='conversation_question' or self.conversation_question_id is not None:
+            if (self.purpose!='conversation_question' or type(self.conversation_question_id) is not str
+                or re.fullmatch('CQ-[0-9a-f]{32}',self.conversation_question_id) is None or self.actor is not None
+                or any(value is not None for value in (self.turn_id,self.background_job_id,self.program_wake_id))):
+                raise ValueError('question_billing_requires_private_host_source')
 
 
 class ModelBilling:
@@ -58,6 +66,8 @@ class ModelBilling:
             with self.transaction() as cursor:return self.begin(source,profile,transaction_cursor=cursor)
         cursor = transaction_cursor
         if not isinstance(source,BillingSource):raise ValueError('billing_requires_host_source')
+        if source.purpose in {'proactive','program_wake','conversation_question'}:
+            daily_budgets.require(cursor,source.endpoint,now=int(self.clock()))
         if source.background_job_id is not None:
             job = cursor.execute('SELECT endpoint_key,actor_key FROM background_jobs WHERE job_id=?',
                 (source.background_job_id,)).fetchone()
@@ -84,12 +94,22 @@ class ModelBilling:
     def finish(self,call_id,usage):
         if not isinstance(usage,TokenUsage):raise ValueError('billing_requires_provider_receipt')
         with self.transaction() as cursor:
+            origin = cursor.execute('SELECT endpoint_key FROM model_usage_calls WHERE call_id=?',(call_id,)).fetchone()
+            if origin is None:return False
+            endpoint = EndpointKey.parse(origin['endpoint_key'])
+            # Account precedes receipt/day locks, matching native config/admission.
+            # Even a previously-disabled budget may be enabled during this receipt.
+            cursor.execute('SELECT account_key FROM qq_official_accounts WHERE account_key=? FOR UPDATE',(endpoint.account.key,))
             row = cursor.execute('SELECT * FROM model_usage_calls WHERE call_id=? FOR UPDATE',(call_id,)).fetchone()
-            if row is None or row['finished_at'] is not None:return False
+            if row['finished_at'] is not None:return False
             pricing = ModelPricing.from_mapping(json.loads(row['pricing_json'])) if row['pricing_json'] else None
             quote = usage.quote(pricing)
             cursor.execute('''UPDATE model_usage_calls SET input_tokens=?,output_tokens=?,cached_tokens=?,cache_write_tokens=?,
                 cost_usd=?,cost_complete=?,finished_at=? WHERE call_id=?''',
                 (usage.input_tokens,usage.output_tokens,usage.cached_tokens,usage.cache_write_tokens,
                  quote.usd,quote.complete,max(int(self.clock()),row['started_at']),call_id))
+            enabled = cursor.execute('SELECT daily_budget_usd FROM conversation_settings WHERE scope_key=?',
+                (endpoint.scope.key,)).fetchone()
+            if enabled is not None and enabled['daily_budget_usd'] is not None:
+                daily_budgets.refresh(cursor,endpoint,now=int(self.clock()))
             return True

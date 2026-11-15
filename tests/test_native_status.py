@@ -80,6 +80,21 @@ class NativeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('2 次费用不完整',text)
         self.assertEqual(tuple(self.f.query('SELECT stopped,stop_generation,command_generation FROM conversation_settings')[0].values()),(True,4,7))
 
+    async def test_daily_budget_is_physical_and_unknowns_and_queued_notice_do_not_claim_delivery(self):
+        from src.plugins.ai_chat.conversation_config import change
+        self.bill(); self.bill(priced=False); self.bill(usage=None)
+        with self.f.tx() as cursor:
+            change(cursor,self.f.endpoint,'daily_budget_usd','0.001',actor='TEST_ADMIN',now=self.f.now)
+            cursor.execute("UPDATE conversation_budget_days SET notice_state='sending' WHERE scope_key=?",(self.f.endpoint.scope.key,))
+        before = self.f.query('SELECT * FROM conversation_settings')
+        _,text = await self.run_status()
+        self.assertIn('今日预算：$0.001',text); self.assertIn('已记录费用 ≥ $0.00132',text)
+        self.assertIn('预算限制中',text); self.assertIn('已排队，尚未确认',text)
+        self.assertIn('2次费用不完整（1次未收尾）',text)
+        self.assertNotIn('已确认送达',text); self.assertIn('不是供应商硬限额',text)
+        self.assertEqual([dict(row) for row in self.f.query('SELECT * FROM conversation_settings')],[dict(row) for row in before])
+        self.assertEqual(len(self.f.query('SELECT * FROM conversation_budget_days')),1)
+
     async def test_foreign_target_argument_has_no_query_or_write(self):
         _,text = await self.run_status(text='/status TEST_FOREIGN')
         self.assertIn('用法',text)
