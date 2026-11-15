@@ -2,9 +2,10 @@
 
 ## 开发记录（2026-11-15）· F8前台ask真实来源挂载（审计UI/新全套待续）
 
-- OfficialRuntime原turn consumer通过QuestionRuntime.frontend建立本回合QuestionAsks，限定真实OfficialTurnPlatform、原token身份、原ExecutionBinding/api、chat/final及原endpoint/actor/scope/route/native；不借模型参数、历史别名、后台/程序/目标问答的元数据。目录只查同账号物理source的active单向边、先范围后LIMIT33并超32拒绝，复核双边同意、当前路由/停止/预算与末尾时钟，只给不透明连接ID和散列会话标签；提交仍重新授权，目录不是权限。
+- Source组件3965080（Draft PR #117，等价c9b86c9）的OfficialRuntime原turn consumer通过QuestionRuntime.frontend建立本回合QuestionAsks，限定真实OfficialTurnPlatform、原token身份、原ExecutionBinding/api、chat/final及原endpoint/actor/scope/route/native；不借模型参数、历史别名、后台/程序/目标问答的元数据。目录只查同账号物理source的active单向边、先范围后LIMIT33并超32拒绝，复核双边同意、当前路由/停止/预算与末尾时钟，只给不透明连接ID和散列会话标签；提交仍重新授权，目录不是权限。
 - ToolContext的question_session只能用于原前台ask；目标ask仍是同qid回答/拒绝候选，其他表面不开放递归ask。源参数target/question无模型配置或身份参数，工具等待7205秒容纳最多7200秒领域上限但不延长原任务，旧结果只由原binding一次领取；排队/consume不等于返回或QQ送达。原Source私有request/loop/trace隔离和目标sink隔离均保留，独立目标账单actor=None不借Source真人。
 - 4项实际双端默认unbound私聊/原TxA/link/Source和Target factory/Gateway/PG回归覆盖回答、拒绝、未连接、真实/stop，校验原任务consume、目标只用自身历史、双边真实账单、无自动QQ私有正文、无普通日志、方向目录及伪造平台/token/原native/route拒绝；不手工provision private active。61项包含两修补的组合在显式ffmpeg/ffprobe环境156.832秒通过，Ruff/两导入/diff通过；5独立CF删mount/真实平台/原inbound/物理目录/等待容纳各1failure无error，最终日志/tmp/gaoji-f8-native-ask-*-final-red.log。
+- 已启动包含原Source等待/日志隔离/guard/媒体夹具及本前台入口的3965080固定PG+ffmpeg/ffprobe全套，脚本与日志/revision/exit位于/tmp/gaoji-python-f8-foreground-ask-full.*，目前未有最终回执，且不覆盖后续审计API/UI。
 - 原51组合最终曾有guard交叠失败，已独立dbaba9d/Draft115修复；媒体夹具独立8cf04d9/Draft116修复，两修补不混入本Source PR。本地前台链路已接，但管理API/UI、新固定完整快照及真实QQ/embedding/模型验收未完成，不称F8整体完成。旧23059ae全套2270项1failure/10skip/exit1保持真实记录，旧Linux通过也不覆盖本组件；无合并/部署/生产/Java变更。
 
 ## 开发记录（2026-11-15）· 媒体批次集成夹具同步（仅测试）

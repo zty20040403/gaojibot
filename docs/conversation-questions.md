@@ -57,7 +57,7 @@
 
 - 共享guarded_wait的current失效可能先进入模型取消清理，外层账号取消随后到达；清理必须shield/drain同一模型task而非直接await，防止二次取消打断真实socket/usage收尾、提前关闭question/queue。真实factory确定性退出回归保持stopping未完成、question仍running、原requests=1及真实usage断言。
 
-- 前台ask按target/question调用原QuestionAsks；只能由原OfficialTurnPlatform/token/ExecutionBinding的chat/final入口建立session，source/endpoints/actor/scope/route/native全部匹配。宿主先范围后LIMIT33读取本物理source当前双边同意的可用方向，给不透明连接ID/散列标签供模型选取；不按群名、历史别名、openid猜目标，反向/停止/预算不可用目标不列出，旧目录不授权新请求。后台/VM/目标question元数据不能借前台session递归ask。目录超过32明确拒绝，tool timeout7205只容纳领域7200上限且仍受原任务deadline。
+- 前台ask组件3965080/Draft117（等价c9b86c9）按target/question调用原QuestionAsks；只能由原OfficialTurnPlatform/token/ExecutionBinding的chat/final入口建立session，source/endpoints/actor/scope/route/native全部匹配。宿主先范围后LIMIT33读取本物理source当前双边同意的可用方向，给不透明连接ID/散列标签供模型选取；不按群名、历史别名、openid猜目标，反向/停止/预算不可用目标不列出，旧目录不授权新请求。后台/VM/目标question元数据不能借前台session递归ask。目录超过32明确拒绝，tool timeout7205只容纳领域7200上限且仍受原任务deadline。
 - 4实际默认unbound双端私聊/Gateway/TxA/link/队列对话测试及61组合通过，五独立CF RED；这不代表真实账号验收或管理UI完成。target自己的ask回答/拒绝候选和Source的ask提问由不同宿主上下文限定，不互借能力。
 
 ## 小步实施及验收
