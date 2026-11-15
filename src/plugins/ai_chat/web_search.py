@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 import logging
 import re
+import time
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
@@ -25,6 +26,8 @@ _STRIP_QUERY_PARAMS = frozenset({"spm", "from", "fbclid", "gclid", "vd_source"})
 _CODE_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)$")
 _INLINE_MARKER = re.compile(r"(?<!`)(`{3,})(?!`)")
 _CITATION_RE = re.compile(r"\[(\d+)\]")
+_DDG_BLOCK_TTL_SECONDS = 3600.0
+_ddg_blocked_until = 0.0
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,7 @@ async def search_web(
     api_key: str = "",
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> list[SearchResult]:
+    global _ddg_blocked_until
     cleaned_query = query.strip()
     if not cleaned_query:
         return []
@@ -159,21 +163,36 @@ async def search_web(
             except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
                 # A paid API that is out of credit should not take search down with it.
                 _logger.warning("%s search failed, falling back to scraping: %s", provider, exc)
-        try:
-            params = {"q": cleaned_query}
-            if freshness in {"d", "w", "m", "y"}:
-                params["df"] = freshness
-            response = await client.get(
-                "https://duckduckgo.com/html/",
-                params=params,
-            )
-            response.raise_for_status()
-            duckduckgo_results = _parse_duckduckgo_results(response.text)
-        except httpx.HTTPError:
-            duckduckgo_results = []
+        now = time.monotonic()
+        duckduckgo_results: list[SearchResult] = []
+        if now >= _ddg_blocked_until:
+            try:
+                params = {"q": cleaned_query}
+                if freshness in {"d", "w", "m", "y"}:
+                    params["df"] = freshness
+                response = await client.get(
+                    "https://duckduckgo.com/html/",
+                    params=params,
+                )
+                duckduckgo_results = _parse_duckduckgo_results(response.text)
+                # Several searches may already be in flight when the first
+                # challenge arrives; only its response starts the cooldown.
+                now = time.monotonic()
+                if (not duckduckgo_results and "anomaly" in response.text.lower()
+                        and now >= _ddg_blocked_until):
+                    _ddg_blocked_until = now + _DDG_BLOCK_TTL_SECONDS
+                    _logger.info(
+                        "DuckDuckGo HTML search returned anomaly challenge; skipping DuckDuckGo for %d seconds.",
+                        int(_DDG_BLOCK_TTL_SECONDS),
+                    )
+                response.raise_for_status()
+            except httpx.HTTPError:
+                duckduckgo_results = []
 
         if duckduckgo_results:
-            return _unique_results(duckduckgo_results, max_results)
+            matches = _unique_results(relevant(cleaned_query, duckduckgo_results), max_results)
+            if matches:
+                return matches
 
         try:
             response = await client.get(
@@ -186,10 +205,12 @@ async def search_web(
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
+            if duckduckgo_results:
+                return []
             raise SearchError("联网搜索失败。") from exc
 
     return _unique_results(
-        _parse_bing_rss_results(response.text),
+        relevant(cleaned_query, _parse_bing_rss_results(response.text)),
         max_results,
     )
 
@@ -222,7 +243,11 @@ async def _search_api(
     }
     response = await client.post("https://api.bochaai.com/v1/web-search", json=body, headers=headers)
     response.raise_for_status()
-    pages = ((response.json().get("data") or {}).get("webPages") or {}).get("value") or []
+    payload = response.json()
+    if payload.get("code") is not None and str(payload["code"]) != "200":
+        # Never log the provider's error body; it may echo the API key.
+        raise ValueError("Bocha search returned an error")
+    pages = ((payload.get("data") or {}).get("webPages") or {}).get("value") or []
     results = []
     for page in pages:
         # The publish date is what tells a reader whether a quoted price is current.
@@ -260,6 +285,18 @@ def _parse_bing_rss_results(xml: str) -> list[SearchResult]:
                 )
             )
     return results
+
+
+def relevant(query: str, results: list[SearchResult]) -> list[SearchResult]:
+    terms = [word.lower() for word in query.split() if len(word) >= 2]
+    if not terms:
+        return list(results)
+    filtered: list[SearchResult] = []
+    for result in results:
+        haystack = f"{result.title}\n{result.snippet}".lower()
+        if any(term in haystack for term in terms):
+            filtered.append(result)
+    return filtered
 
 
 def _unique_results(
