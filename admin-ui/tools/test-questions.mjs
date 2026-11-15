@@ -9,18 +9,31 @@ try {
   const { AdminApiError, RESOURCE_PATHS, EVENT_RESOURCES } = await server.ssrLoadModule('/src/api.ts')
   assert.equal(RESOURCE_PATHS.questions, '/conversation-questions')
   assert.deepEqual(EVENT_RESOURCES.questions, ['questions'])
-  const qid = `CQ-${'a'.repeat(32)}`, otherId = `CQ-${'b'.repeat(32)}`
+  const qid = `CQ-${'a'.repeat(32)}`, otherId = `CQ-${'b'.repeat(32)}`, nid = `QN-${'c'.repeat(32)}`, lateNid = `QN-${'d'.repeat(32)}`
   const source = { kind: 'private', native_id: 'TEST_SOURCE<script>bad()</script>' }, target = { kind: 'group', native_id: 'TEST_TARGET' }
+  const notice = { notice_id: nid, state: 'committed', delivery_state: 'committed', receipt_recorded: true,
+    delivery_received_at: 4, bot_native_id: 'TEST_BOT<script>n()</script>', bot_identity_source: 'ready', created_at: 2, updated_at: 4 }
   const item = { question_id: qid, job_id: '9223372036854775806', link_id: 'TEST_LINK', link_generation: 2,
     state: 'answered', reason_code: '', created_at: 1, deadline_at: 7201, finished_at: 2, consumed_at: 3, source, target,
-    question: 'TEST_PRIVATE_QUESTION<script>bad()</script>', answer: 'TEST_PRIVATE_ANSWER<img onerror=bad()>', request_hmac: 'TEST_SECRET_HMAC' }
+    notice: null, question: 'TEST_PRIVATE_QUESTION<script>bad()</script>', answer: 'TEST_PRIVATE_ANSWER<img onerror=bad()>', request_hmac: 'TEST_SECRET_HMAC' }
   const html = renderToStaticMarkup(createElement(QuestionRecords, { items: [item], detail() {} }))
   assert.match(html, /9223372036854775806/)
   assert.match(html, /私有回答已生成/)
+  assert.match(html, /未触发目标群公开通知/)
   assert.match(html, /原任务已领取/)
   assert.match(html, /已领取 ≠ 已返回或 QQ 已送达/)
   assert.doesNotMatch(html, /TEST_PRIVATE_QUESTION|TEST_PRIVATE_ANSWER|TEST_SECRET_HMAC|<script>/)
   assert.match(html, /&lt;script&gt;bad/)
+  const noticedHtml = renderToStaticMarkup(createElement(QuestionRecords, { items: [{ ...item, notice }], detail() {} }))
+  assert.match(noticedHtml, /公开通知已授权提交/)
+  assert.match(noticedHtml, /平台已接受主动投递（不等于群友已读）/)
+  assert.match(noticedHtml, /&lt;script&gt;n/)
+  assert.doesNotMatch(noticedHtml, /<script>/)
+  const lateHtml = renderToStaticMarkup(createElement(QuestionRecords, { items: [{ ...item, state: 'cancelled', consumed_at: null,
+    notice: { ...notice, notice_id: lateNid, state: 'cancelled', delivery_state: 'committed', receipt_recorded: true } }], detail() {} }))
+  assert.match(lateHtml, /公开通知已取消/)
+  assert.match(lateHtml, /已保存迟到平台接受回执（未恢复原授权，不等于群友已读）/)
+  assert.match(lateHtml, /未记录原任务领取/)
   function* elements(node) {
     if (Array.isArray(node)) { for (const child of node) yield* elements(child); return }
     if (!node?.props) return
@@ -29,11 +42,14 @@ try {
   let requested
   const button = [...elements(QuestionRecords({ items: [item], detail: (id) => { requested = id } }))].find((node) => node.type === 'button')
   button.props.onClick(); assert.equal(requested, qid, 'the actual row handler only requests the opaque CQ-ID')
-  const detail = renderToStaticMarkup(createElement(QuestionDetail, { item }))
+  const detail = renderToStaticMarkup(createElement(QuestionDetail, { item: { ...item, notice } }))
   assert.match(detail, /TEST_PRIVATE_QUESTION/)
   assert.match(detail, /TEST_PRIVATE_ANSWER/)
+  assert.match(detail, /目标群公开通知/)
+  assert.match(detail, /平台已接受主动投递（不等于群友已读）/)
+  assert.match(detail, /未保存公开通知正文，且平台接受不等于群友已读/)
   assert.match(detail, /未追踪结果返回或 QQ 送达/)
-  assert.doesNotMatch(detail, /<script>|<img |TEST_SECRET_HMAC|已确认送达/)
+  assert.doesNotMatch(detail, /<script>|<img |TEST_SECRET_HMAC|已确认送达|(?<!不等于)群友已读/)
   for (const state of ['refused', 'expired', 'cancelled', 'unknown', 'queued', 'running']) {
     const markup = renderToStaticMarkup(createElement(QuestionRecords, { items: [{ ...item, state, consumed_at: null }], detail() {} }))
     assert.match(markup, /未记录原任务领取/)

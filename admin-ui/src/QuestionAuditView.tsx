@@ -15,6 +15,10 @@ const outcomes: Record<string, string> = { queued: '等待目标执行', running
   refused: '目标明确拒绝', cancelled: '原请求已取消，不恢复', expired: '原请求已过期，不恢复', unknown: '处理结果不明，不重放' }
 const reasons: Record<string, string> = { declined: '涉及隐私或目标不愿回答', cancelled: '取消', expired: '原截止已到',
   source_unavailable: '原来源不可用', target_unavailable: '目标停止、预算或授权不可用', model_unknown: '模型结果不明', restart: '旧账号运行期结束' }
+const noticeStates: Record<string, string> = { pending: '公开通知待投递', sending: '公开通知投递中', committed: '公开通知已授权提交',
+  failed: '公开通知投递失败', cancelled: '公开通知已取消', expired: '公开通知已过期', unknown: '公开通知状态不明' }
+const noticeDeliveries: Record<string, string> = { pending: '未确认平台回执', committed: '平台已接受主动投递（不等于群友已读）',
+  failed: '平台拒绝或投递失败', cancelled: '发送计划已取消', unknown: '平台回执不明，不重发' }
 
 // Same scope and lane only; ignored aborts and late successes cannot refill a new selection.
 export class QuestionAuditReader {
@@ -72,11 +76,21 @@ export function QuestionLinks({ items }: { items: JsonObject[] }) {
         {item.revoked_at != null && <small className="cell-sub">撤销 {fmtTime(item.revoked_at)}</small>}</td>
       <td>{item.receipt_recorded && item.issue_state === 'committed' ? '已保存真实发行回执' : '无有效发行回执，不能据此访问'}<small className="cell-sub">不是新的访问授权</small></td></tr>)}</tbody></DataTable>
 }
+function noticeReceiptText(notice: JsonObject) {
+  if (notice.receipt_recorded && notice.delivery_state === 'committed') {
+    const label = notice.state === 'committed' ? '平台已接受主动投递（不等于群友已读）' : '已保存迟到平台接受回执（未恢复原授权，不等于群友已读）'
+    return notice.delivery_received_at != null ? `${label} · ${fmtTime(notice.delivery_received_at)}` : label
+  }
+  return noticeDeliveries[notice.delivery_state] ?? '无有效平台回执'
+}
 export function QuestionRecords({ items, detail }: { items: JsonObject[]; detail: (id: string) => void }) {
-  return <DataTable><thead><tr><th>请求 / 时间</th><th>源 → 目标</th><th>私有处理结果</th><th>原任务领取 / 送达</th><th>正文</th></tr></thead>
+  return <DataTable><thead><tr><th>请求 / 时间</th><th>源 → 目标</th><th>私有处理结果</th><th>目标公开通知</th><th>原任务领取 / 送达</th><th>正文</th></tr></thead>
     <tbody>{items.map((item) => <tr key={item.question_id}><td><code>{item.question_id}</code><small className="cell-sub">job#{item.job_id} · link {item.link_id} / {item.link_generation}</small>
       <small className="cell-sub">创建 {fmtTime(item.created_at)} · 截止 {fmtTime(item.deadline_at)}</small></td><td>{endpoint(item.source)} → {endpoint(item.target)}</td>
       <td>{outcomes[item.state] ?? '未知处理状态'}<small className="cell-sub">{reasons[item.reason_code] ?? ''}</small>{item.finished_at != null && <small className="cell-sub">结束 {fmtTime(item.finished_at)}</small>}</td>
+      <td>{!item.notice ? '未触发目标群公开通知' : <><code>{item.notice.notice_id}</code> · {noticeStates[item.notice.state] ?? '公开通知状态未知'}
+        <small className="cell-sub">{noticeReceiptText(item.notice)}</small>
+        <small className="cell-sub">目标群 Bot {item.notice.bot_native_id} · 与私有回答相互独立</small></>}</td>
       <td>{item.consumed_at == null ? '未记录原任务领取' : `原任务已领取 · ${fmtTime(item.consumed_at)}`}<small className="cell-sub">已领取 ≠ 已返回或 QQ 已送达；送达未追踪</small></td>
       <td><button onClick={() => detail(item.question_id)}>查看私有正文</button></td></tr>)}</tbody></DataTable>
 }
@@ -84,6 +98,10 @@ export function QuestionDetail({ item }: { item: JsonObject }) {
   return <Section title={`私有问答 ${item.question_id}`} description="仅管理员核对；外部资料仅按文本显示，不执行、不复制到公开聊天，不证明原调用已收到。">
     <h3>问题（不可信外部资料）</h3><pre>{item.question}</pre>
     <h3>{outcomes[item.state] ?? '未知处理状态'}</h3>{item.state === 'answered' ? <pre>{item.answer}</pre> : <p>{reasons[item.reason_code] ?? '尚无可用私有答案'}</p>}
+    <h3>目标群公开通知</h3>
+    {!item.notice ? <p>未触发目标群公开通知；私有回答与原任务领取本身不会自动发送到 QQ。</p> : <p>
+      <code>{item.notice.notice_id}</code> · {noticeStates[item.notice.state] ?? '公开通知状态未知'} · {noticeReceiptText(item.notice)} · 目标群 Bot {item.notice.bot_native_id}（{item.notice.bot_identity_source ?? 'unknown'}） · 未保存公开通知正文，且平台接受不等于群友已读；与私有回答是否生成或原任务是否领取相互独立。
+    </p>}
     <p>原任务{item.consumed_at == null ? '未记录领取' : '已记录一次领取'}；未追踪结果返回或 QQ 送达。</p>
   </Section>
 }

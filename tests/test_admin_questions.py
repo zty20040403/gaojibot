@@ -2,14 +2,34 @@
 from types import SimpleNamespace
 import unittest
 
+from unittest.mock import patch
+
 from fastapi import FastAPI
 import httpx
 
+from src.bot_storage import DatabaseCalls
 from src.bot_security.passwords import hash_password
 from src.plugins.ai_chat.admin import AdminServices
 from src.plugins.ai_chat.admin_api.realtime import _changed_database_resources
+from src.plugins.ai_chat.adapters.qq_official import turn_source
+from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
+from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
+from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.link_commands import parse_link_command
+from src.plugins.ai_chat.adapters.qq_official.link_ingress import LinkIngress
+from src.plugins.ai_chat.adapters.qq_official.question_authority import QuestionAuthority
+from src.plugins.ai_chat.adapters.qq_official.question_notices import QuestionNotices
+from src.plugins.ai_chat.adapters.qq_official.questions import Questions
+from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
+from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
+from src.plugins.ai_chat.adapters.qq_official.turn_platform import ExecutionBinding
+from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey
+from src.qq_official.credentials import Credentials
+from src.qq_official.http import RestClient
+from src.qq_official.testing.fake_platform import FakePlatform
+from src.qq_official.token import TokenManager
+from tests import test_qq_official_sender as sender_fixture
 from tests.admin_session_fixture import ApprovedClient, PASSWORD, register_admin
 from tests.conversation_question_fixture import QuestionFixture
 from tests import test_link_authority as authority_fixture
@@ -56,8 +76,8 @@ class AdminQuestionTests(QuestionFixture,unittest.IsolatedAsyncioTestCase):
         listing = await self.get('/records')
         self.assertNotIn(row['question'],repr(listing)); self.assertNotIn('TEST_PRIVATE_AUDIT_ANSWER',repr(listing))
         item = (await self.get('/records/'+row['question_id']))['item']
-        self.assertEqual((item['question'],item['answer'],item['consumed_at'],item['delivery_state']),
-            (row['question'],'TEST_PRIVATE_AUDIT_ANSWER',self.now,'not_tracked'))
+        self.assertEqual((item['question'],item['answer'],item['consumed_at'],item['delivery_state'],item['notice']),
+            (row['question'],'TEST_PRIVATE_AUDIT_ANSWER',self.now,'not_tracked',None))
         self.assertNotIn('request_hmac',repr(item)); self.assertNotIn('source_actor_key',repr(item))
         self.now += 8000
         self.assertEqual((await self.get('/records/'+row['question_id']))['item'],item)
@@ -134,7 +154,66 @@ class AdminQuestionTests(QuestionFixture,unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code,403,response.text)
                 self.assertNotIn(row['question'],response.text)
 
+    async def test_public_notice_fact_stays_metadata_only_and_distinct_from_private_consume(self):
+        calls = DatabaseCalls(); deliveries = DeliveryStore(self.database); self.addCleanup(deliveries.close)
+        outbox = OfficialSendStore(deliveries,admission=self.admission,pepper=b'TEST_AUDIT_NOTICE_PEPPER_123456789',clock=lambda:self.now)
+        binding = ExecutionBinding(turn_source,self.token,self.handle,self.job,self.admission)
+        questions = Questions(QuestionAuthority(LinkIngress(self.auth,admission=self.admission),admission=self.admission),self.jobs)
+        notices = QuestionNotices(questions,outbox); outbox.question_notice_authority = notices
+        with self.tx() as cursor:
+            observe_ready(cursor,self.token,{'d':{'user':{'id':'TEST_AUDIT_BOT','bot':True}}},self.now)
+            cursor.execute("UPDATE qq_official_endpoints SET proactive_state='allowed' WHERE endpoint_key=?",(self.target.key,))
+            committed_q,_ = questions.submit(cursor,self.token,binding,self.edge['link_id'],'TEST_PUBLIC_NOTICE_Q1')
+            late_q,_ = questions.submit(cursor,self.token,binding,self.edge['link_id'],'TEST_PUBLIC_NOTICE_Q2')
+        jobs = self.jobs.claim_due('TEST_AUDIT_WORKER',kinds=(account_job_kind('question',self.account.key),),now=self.now,limit=2)
+        with self.tx() as cursor:
+            for job in jobs:questions.claim(cursor,self.token,job)
+        jobs_by_qid = {job.payload['question_id']:job for job in jobs}
+        with self.tx() as cursor:
+            s1,_,ref1 = notices.prepare(cursor,self.token,jobs_by_qid[committed_q['question_id']],'TEST_PUBLIC_AUDIT_NOTICE_ONE')
+        fake = FakePlatform(clock=lambda:self.now); fake.app_id = self.account.app_id; await fake.start(); self.addAsyncCleanup(fake.close)
+        fake.proactive_allowed[('group',self.target.native_conversation_id)] = True
+        tokens = TokenManager(Credentials(self.account.app_id,fake.app_secret),fake.base_url,allow_test_server=True); self.addAsyncCleanup(tokens.aclose)
+        rest = RestClient(tokens,allow_test_server=True); self.addAsyncCleanup(rest.aclose)
+        async def ensure_current():
+            def check():
+                with self.tx() as cursor:assert_epoch(cursor,self.token)
+            await calls(check)
+        sender = OfficialSender(self.account,self.token,outbox,rest,self.ledger,database_calls=calls,
+            ensure_current=ensure_current,wall_clock=lambda:self.now,poll_seconds=0.01,
+            sleep=sender_fixture.OfficialSenderTests.fast_sleep)
+        self.addAsyncCleanup(sender.stop); self.addAsyncCleanup(calls.close)
+        await sender.send_delivery(ref1.delivery_ids[0])
+        with self.tx() as cursor:
+            s2,_,ref2 = notices.prepare(cursor,self.token,jobs_by_qid[late_q['question_id']],'TEST_PUBLIC_AUDIT_NOTICE_TWO')
+        original_send = rest.send_message
+        async def cancel_after_accept(*args,**kwargs):
+            response = await original_send(*args,**kwargs)
+            with self.tx() as cursor:notices.close(cursor,self.token,s2['notice_id'],reason='cancelled')
+            return response
+        with patch.object(rest,'send_message',side_effect=cancel_after_accept):
+            await sender.send_delivery(ref2.delivery_ids[0])
+        tables = ('qq_official_conversation_questions','qq_official_question_notice_sources','qq_official_question_notices',
+            'delivery_plans','deliveries','messages')
+        before = {table:self.query('SELECT * FROM '+table) for table in tables}
+        listing = await self.get('/records')
+        self.assertNotIn('TEST_PUBLIC_AUDIT_NOTICE',repr(listing))
+        by_qid = {item['question_id']:item for item in listing['items']}
+        first,second = by_qid[committed_q['question_id']],by_qid[late_q['question_id']]
+        self.assertIsNotNone(first['notice']); self.assertIsNotNone(second['notice'])
+        self.assertEqual((first['delivery_state'],first['consumed_at'],first['notice']['notice_id'],first['notice']['state'],
+            first['notice']['delivery_state'],first['notice']['receipt_recorded'],first['notice']['bot_native_id'],first['notice']['bot_identity_source']),
+            ('not_tracked',None,s1['notice_id'],'committed','committed',True,'TEST_AUDIT_BOT','ready'))
+        self.assertEqual((second['delivery_state'],second['notice']['notice_id'],second['notice']['state'],
+            second['notice']['delivery_state'],second['notice']['receipt_recorded']),
+            ('not_tracked',s2['notice_id'],'cancelled','committed',True))
+        for item in (first,second,(await self.get('/records/'+committed_q['question_id']))['item']):
+            for forbidden in ('content_hmac','bot_actor_key','plan_id','receipt_id','delivery_receipt_hash'):
+                self.assertNotIn(forbidden,item['notice'])
+        self.assertEqual({table:self.query('SELECT * FROM '+table) for table in tables},before)
+
     async def test_realtime_maps_private_changes_to_metadata_only_resource(self):
-        for table in ('qq_official_accounts','qq_official_link_challenges','qq_official_conversation_links','qq_official_conversation_questions'):
+        for table in ('qq_official_accounts','qq_official_link_challenges','qq_official_conversation_links',
+                'qq_official_conversation_questions','qq_official_question_notice_sources','qq_official_question_notices'):
             self.assertIn('questions',_changed_database_resources({table:(0,0,0)},{table:(1,0,0)}))
         self.assertEqual((await self.client.post(self.path+'/links',json={})).status_code,405)

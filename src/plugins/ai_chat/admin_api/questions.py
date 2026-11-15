@@ -55,12 +55,37 @@ def _endpoint(key):
     return dict(endpoint_key=key,kind=endpoint.kind,native_id=endpoint.native_conversation_id)
 
 
+def _notice(row):
+    if row['notice_id'] is None:return None
+    return dict(notice_id=row['notice_id'],state=row['notice_state'],delivery_state=row['notice_delivery_state'],
+        receipt_recorded=bool(row['notice_receipt_recorded']),delivery_received_at=row['notice_delivery_received_at'],
+        bot_native_id=row['notice_bot_native_id'],bot_identity_source=row['notice_bot_identity_source'],
+        created_at=row['notice_created_at'],updated_at=row['notice_updated_at'])
+
+
 def _question(row, *, detail=False):
     fields = ('question_id','link_id','link_generation','state','reason_code','created_at','deadline_at',
         'started_at','finished_at','consumed_at')
     return {**{key:row[key] for key in fields},'job_id':str(row['job_id']),
         'source':_endpoint(row['source_endpoint_key']),'target':_endpoint(row['target_endpoint_key']),
-        'delivery_state':'not_tracked',**({'question':row['question'],'answer':row['answer']} if detail else {})}
+        'delivery_state':'not_tracked','notice':_notice(row),
+        **({'question':row['question'],'answer':row['answer']} if detail else {})}
+
+
+_NOTICE_COLUMNS = '''COALESCE(n.notice_id,ns.notice_id) AS notice_id,
+    COALESCE(n.state,CASE WHEN ns.notice_id IS NOT NULL THEN 'pending' END) AS notice_state,
+    COALESCE(n.delivery_state,CASE WHEN ns.notice_id IS NOT NULL THEN 'pending' END) AS notice_delivery_state,
+    (n.delivery_receipt_hash IS NOT NULL AND n.receipt_id IS NOT NULL) AS notice_receipt_recorded,
+    n.delivery_received_at AS notice_delivery_received_at,
+    COALESCE(n.bot_native_id,ns.bot_native_id) AS notice_bot_native_id,
+    ns.bot_identity_source AS notice_bot_identity_source,
+    COALESCE(n.created_at,ns.created_at) AS notice_created_at,
+    COALESCE(n.updated_at,ns.created_at) AS notice_updated_at'''
+_NOTICE_JOINS = '''LEFT JOIN qq_official_question_notice_sources ns
+        ON ns.question_id=q.question_id AND ns.account_key=q.account_key AND ns.target_endpoint_key=q.target_endpoint_key
+    LEFT JOIN qq_official_question_notices n
+        ON n.notice_id=ns.notice_id AND n.question_id=q.question_id
+       AND n.account_key=q.account_key AND n.target_endpoint_key=q.target_endpoint_key'''
 
 
 def create_router(context):
@@ -113,12 +138,15 @@ def create_router(context):
         with read() as cursor:
             _selection(cursor,account_key,endpoint_key)
             position = _decode(after,'records',account_key,endpoint_key)
-            where,params = 'account_key=?',[account_key]
-            if endpoint_key:where+=' AND (source_endpoint_key=? OR target_endpoint_key=?)'; params.extend((endpoint_key,endpoint_key))
-            fence = position[0] if position else cursor.execute('SELECT COALESCE(MAX(job_id),0) AS fence FROM qq_official_conversation_questions WHERE '+where,params).fetchone()['fence']
-            where+=' AND job_id<=?'; params.append(fence)
-            if position:where+=' AND job_id<?'; params.append(position[1])
-            rows = cursor.execute('SELECT question_id,job_id,link_id,link_generation,state,reason_code,created_at,deadline_at,started_at,finished_at,consumed_at,source_endpoint_key,target_endpoint_key FROM qq_official_conversation_questions WHERE '+where+' ORDER BY job_id DESC LIMIT ?',(*params,limit+1)).fetchall()
+            where,params = 'q.account_key=?',[account_key]
+            if endpoint_key:where+=' AND (q.source_endpoint_key=? OR q.target_endpoint_key=?)'; params.extend((endpoint_key,endpoint_key))
+            fence = position[0] if position else cursor.execute('SELECT COALESCE(MAX(q.job_id),0) AS fence FROM qq_official_conversation_questions q WHERE '+where,params).fetchone()['fence']
+            where+=' AND q.job_id<=?'; params.append(fence)
+            if position:where+=' AND q.job_id<?'; params.append(position[1])
+            rows = cursor.execute(f'''SELECT q.question_id,q.job_id,q.link_id,q.link_generation,q.state,q.reason_code,
+                q.created_at,q.deadline_at,q.started_at,q.finished_at,q.consumed_at,q.source_endpoint_key,q.target_endpoint_key,
+                {_NOTICE_COLUMNS} FROM qq_official_conversation_questions q {_NOTICE_JOINS}
+                WHERE {where} ORDER BY q.job_id DESC LIMIT ?''',(*params,limit+1)).fetchall()
         return dict(items=[_question(row) for row in rows[:limit]],snapshot_job_id=str(fence),
             next_cursor=_encode('records',account_key,endpoint_key,[fence,rows[limit-1]['job_id']]) if len(rows)>limit else None,
             pagination='job_id_fence',state_snapshot='live')
@@ -127,8 +155,8 @@ def create_router(context):
     def detail(question_id: str = Path(...,pattern='^CQ-[0-9a-f]{32}$'),account_key: str = Query(...,max_length=1000)):
         with read() as cursor:
             _selection(cursor,account_key,'')
-            row = cursor.execute('SELECT * FROM qq_official_conversation_questions WHERE account_key=? AND question_id=?',
-                (account_key,question_id)).fetchone()
+            row = cursor.execute(f'''SELECT q.*,{_NOTICE_COLUMNS} FROM qq_official_conversation_questions q {_NOTICE_JOINS}
+                WHERE q.account_key=? AND q.question_id=?''',(account_key,question_id)).fetchone()
             if row is None:raise HTTPException(404,'找不到该账号的问答记录')
         return dict(item=_question(row,detail=True))
 

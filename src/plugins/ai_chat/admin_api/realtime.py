@@ -96,6 +96,8 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "qq_official_conversation_links": ("questions",),
     "qq_official_link_challenges": ("questions",),
     "qq_official_conversation_questions": ("questions",),
+    "qq_official_question_notice_sources": ("questions",),
+    "qq_official_question_notices": ("questions",),
     "conversation_settings": ("conversations", "budgets", "media", "programs", "commands"),
     "conversation_budget_days": ("budgets",),
     "model_usage_calls": ("usage", "budgets"),
