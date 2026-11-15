@@ -8,7 +8,8 @@ import unittest
 
 import httpx
 
-from src.plugins.ai_chat.codex_gateway import CodexGateway
+from src.plugins.ai_chat.codex_gateway import MAX_JOB_TOOL_BODY, CodexGateway
+from src.plugins.ai_chat.tool_images import ToolImage
 from tests.test_llm_gateway import profile
 
 
@@ -154,6 +155,258 @@ class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(channel.connected.cancelled())
         writer.close()
         stranger.close()
+
+    async def test_job_tool_rejects_oversized_stream_before_reading_tail(self):
+        from types import SimpleNamespace
+        from starlette.requests import Request
+
+        _, channel = self.gateway.open()
+        channel.session = SimpleNamespace()
+        chunks = [b'x' * (MAX_JOB_TOOL_BODY // 2 + 1),
+                  b'y' * (MAX_JOB_TOOL_BODY // 2 + 1), b'unread tail']
+        seen = []
+
+        async def receive():
+            index = len(seen)
+            seen.append(index)
+            return {'type': 'http.request', 'body': chunks[index], 'more_body': index < len(chunks) - 1}
+
+        request = Request({'type': 'http', 'method': 'POST', 'path': '/job/tool',
+                           'query_string': b'', 'headers': []}, receive)
+        request.state.channel = channel
+        response = await self.gateway._job_tool(request)
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(seen, [0, 1])
+
+    async def test_job_tool_disconnect_drains_cancelled_tool_cleanup(self):
+        from types import SimpleNamespace
+        from starlette.requests import Request
+
+        _, channel = self.gateway.open()
+        self.gateway.tool_heartbeat_seconds = 0.01
+        cleaning = asyncio.Event()
+        released = asyncio.Event()
+        interrupted = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def execute_tool(_name, _arguments):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                try:
+                    await released.wait()
+                except asyncio.CancelledError:
+                    interrupted.set()
+                    raise
+                finished.set()
+
+        channel.session = SimpleNamespace(execute_tool=execute_tool)
+        async def receive():
+            return {'type': 'http.request', 'body': b'{"name":"slow"}', 'more_body': False}
+        request = Request({'type': 'http', 'method': 'POST', 'path': '/job/tool',
+                           'query_string': b'', 'headers': []}, receive)
+        request.state.channel = channel
+        response = await self.gateway._job_tool(request)
+        iterator = response.body_iterator
+        self.assertEqual(await asyncio.wait_for(anext(iterator), 1), b'{"type":"heartbeat"}\n')
+        closing = asyncio.create_task(iterator.aclose())
+        try:
+            await asyncio.wait_for(cleaning.wait(), 1)
+            closing.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(interrupted.is_set())
+            self.assertFalse(closing.done())
+        finally:
+            released.set()
+            await asyncio.wait_for(asyncio.gather(closing, return_exceptions=True), 1)
+        self.assertTrue(finished.is_set())
+
+    async def test_job_tool_catalog_requires_current_job(self):
+        from types import SimpleNamespace
+
+        async def current():
+            raise PermissionError('TEST stale job')
+
+        token, channel = self.gateway.open(current=current)
+        async def execute_tool(_name, _arguments):
+            self.fail('a stale job must not execute tools')
+
+        channel.session = SimpleNamespace(tools=(
+            {'function': {'name': 'history', 'description': 'TEST_PRIVATE_TOOL'}},
+        ), execute_tool=execute_tool)
+        root = f'http://127.0.0.1:{self.gateway.port}'
+        async with httpx.AsyncClient(trust_env=False) as client:
+            for method, path in (('GET', '/job/tools'), ('POST', '/job/tool')):
+                response = await client.request(method, root + path, json={'name': 'history'},
+                                                headers={'Authorization': 'Bearer ' + token})
+                self.assertEqual(response.status_code, 403)
+                self.assertNotIn('TEST_PRIVATE_TOOL', response.text)
+
+    async def test_job_tool_catalog_denies_actual_cancelled_authority(self):
+        from types import SimpleNamespace
+
+        async def current():
+            raise asyncio.CancelledError  # BackgroundAgents.current uses this for stale jobs.
+
+        token, channel = self.gateway.open(current=current)
+        channel.session = SimpleNamespace(tools=({'function': {'name': 'history'}},))
+        async with httpx.AsyncClient(trust_env=False) as client:
+            response = await client.get(f'http://127.0.0.1:{self.gateway.port}/job/tools',
+                                        headers={'Authorization': 'Bearer ' + token})
+        self.assertEqual(response.status_code, 403)
+
+    async def test_job_tool_does_not_return_result_after_job_loses_authority(self):
+        await self._assert_current_required_for_tool_result(fail=False, cancelled=False)
+        await self._assert_current_required_for_tool_result(fail=True, cancelled=False)
+        await self._assert_current_required_for_tool_result(fail=False, cancelled=True)
+        await self._assert_current_required_for_tool_result(fail=True, cancelled=True)
+        await self._assert_current_required_for_tool_result(fail=False, cancelled=True, during_tool=True)
+
+    async def _assert_current_required_for_tool_result(self, *, fail, cancelled, during_tool=False):
+        from types import SimpleNamespace
+
+        valid = True
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def current():
+            if not valid:
+                if cancelled:
+                    raise asyncio.CancelledError
+                raise PermissionError('TEST job no longer current')
+
+        async def execute_tool(_name, _arguments):
+            await current()  # The real BackgroundToolSession checks before executing.
+            entered.set()
+            await release.wait()
+            if during_tool:
+                await current()
+            if fail:
+                raise RuntimeError('TEST_PRIVATE_HISTORY')
+            return 'TEST_PRIVATE_HISTORY'
+
+        token, channel = self.gateway.open(current=current)
+        channel.session = SimpleNamespace(execute_tool=execute_tool)
+        url = f'http://127.0.0.1:{self.gateway.port}/job/tool'
+        async with httpx.AsyncClient(trust_env=False) as client:
+            task = asyncio.create_task(client.post(url, json={'name': 'history'},
+                                                  headers={'Authorization': 'Bearer ' + token}))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                valid = False
+                release.set()
+                try:
+                    response = await asyncio.wait_for(task, 2)
+                except httpx.RemoteProtocolError:
+                    self.fail('a stale job must receive a denied result, not a broken response')
+            finally:
+                release.set()
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+        self.assertNotIn('TEST_PRIVATE_HISTORY', response.text)
+        result = json.loads(response.text.strip().splitlines()[-1])
+        self.assertFalse(result['ok'])
+
+    async def test_job_current_preserves_real_task_cancellation(self):
+        entered = asyncio.Event()
+        async def current():
+            entered.set()
+            await asyncio.Event().wait()
+
+        _, channel = self.gateway.open(current=current)
+        task = asyncio.create_task(self.gateway._job_current(channel))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+    async def test_job_tool_routes_require_job_token_stream_heartbeats_and_handle_errors(self):
+        from types import SimpleNamespace
+
+        class FakeVmAuth:
+            closed = False
+
+            async def authorize(self, token, *, write=False):
+                raise AssertionError('VM token must not authorize /job/tools or /job/tool')
+
+            async def close(self):
+                self.closed = True
+
+        self.gateway.vm_authority = FakeVmAuth()
+        self.gateway.tool_heartbeat_seconds = 0.05
+        token, channel = self.gateway.open()
+        cancelled = asyncio.Event()
+
+        async def execute_tool(name, arguments):
+            if name == 'slow':
+                try:
+                    await asyncio.sleep(0.14)
+                    return {'answer': arguments.get('q', '')}
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+            if name == 'image':
+                return ToolImage('preview', 'data:image/jpeg;base64,QUJD')
+            if name == 'boom':
+                raise ValueError('bad arg')
+            return 'plain text'
+
+        channel.session = SimpleNamespace(
+            tools=(
+                {'function': {'name': 'slow', 'description': 'Slow tool', 'parameters': {'type': 'object'}}},
+                {'function': {'name': 'image', 'description': 'Image tool', 'parameters': {'type': 'object'}}},
+            ),
+            execute_tool=execute_tool,
+        )
+        root_url = f'http://127.0.0.1:{self.gateway.port}'
+        async with httpx.AsyncClient(trust_env=False) as client:
+            for method, path in (('GET', '/job/tools'), ('POST', '/job/tool')):
+                for authorization in ('', 'Bearer TEST_WRONG', 'Bearer gvm_secret'):
+                    response = await client.request(method, root_url + path, json={'name': 'slow'},
+                                                    headers={'Authorization': authorization})
+                    self.assertEqual(response.status_code, 401)
+            tools_res = await client.get(root_url + '/job/tools', headers={'Authorization': 'Bearer ' + token})
+            self.assertEqual(tools_res.status_code, 200)
+            self.assertEqual([item['name'] for item in tools_res.json()['tools']], ['slow', 'image'])
+
+            slow_res = await client.post(root_url + '/job/tool', json={'name': 'slow', 'arguments': {'q': 'hi'}},
+                                         headers={'Authorization': 'Bearer ' + token})
+            self.assertEqual(slow_res.status_code, 200)
+            lines = [json.loads(line) for line in slow_res.text.strip().splitlines()]
+            self.assertGreaterEqual(sum(1 for item in lines if item['type'] == 'heartbeat'), 1)
+            self.assertEqual(lines[-1], {
+                'type': 'result',
+                'ok': True,
+                'content': [{'type': 'text', 'text': '{"answer": "hi"}'}],
+            })
+
+            img_res = await client.post(root_url + '/job/tool', json={'name': 'image', 'arguments': {}},
+                                        headers={'Authorization': 'Bearer ' + token})
+            self.assertEqual(json.loads(img_res.text.strip()), {
+                'type': 'result',
+                'ok': True,
+                'content': [
+                    {'type': 'text', 'text': 'preview'},
+                    {'type': 'image', 'data': 'QUJD', 'mimeType': 'image/jpeg'},
+                ],
+            })
+
+            err_res = await client.post(root_url + '/job/tool', json={'name': 'boom', 'arguments': {}},
+                                        headers={'Authorization': 'Bearer ' + token})
+            self.assertEqual(json.loads(err_res.text.strip()), {
+                'type': 'result',
+                'ok': False,
+                'error': 'ValueError: bad arg',
+            })
+
+            # Revoking token mid-execution cancels the running tool task.
+            task = asyncio.create_task(client.post(root_url + '/job/tool', json={'name': 'slow', 'arguments': {}},
+                                                    headers={'Authorization': 'Bearer ' + token}))
+            await asyncio.sleep(0.06)
+            self.gateway.revoke(token)
+            await asyncio.wait_for(cancelled.wait(), 2)
+            await asyncio.gather(task, return_exceptions=True)
 
 
 if __name__ == '__main__':

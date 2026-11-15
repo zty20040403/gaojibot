@@ -21,8 +21,11 @@ import uvicorn
 
 from .billing_context import drain
 from .responses_usage import ResponsesUsage
+from .tool_images import ToolImage
 
 MAX_BODY = 64 * 1024 * 1024
+MAX_JOB_TOOL_BODY = 1024 * 1024
+TOOL_HEARTBEAT_SECONDS = 25.0
 IDLE_SECONDS = 120
 
 
@@ -52,6 +55,7 @@ class Channel(RequestScope):
         super().__init__(source=source,current=current)
         self.connected = asyncio.get_running_loop().create_future()
         self.reader = self.writer = None
+        self.session = None
 
     async def wait(self, timeout):
         self.reader, self.writer = await asyncio.wait_for(asyncio.shield(self.connected), timeout)
@@ -83,9 +87,9 @@ class _ModelRequest:
     reject the next request. The response's upstream socket closes even if
     cancellation occurs before the streaming generator starts.
     """
-    def __init__(self, gateway, handler=None, *, vm_only=False, write=False):
+    def __init__(self, gateway, handler=None, *, vm_only=False, job_only=False, write=False):
         self.gateway = gateway
-        self.vm_only,self.write = vm_only,write
+        self.vm_only, self.job_only, self.write = vm_only, job_only, write
         self.handler = handler or gateway._responses
         self.model_request = handler is None
 
@@ -93,7 +97,7 @@ class _ModelRequest:
         request = Request(scope,receive)
         header = request.headers.get('authorization','')
         channel = self.gateway.channels.get(header[7:]) if header.startswith('Bearer ') and not self.vm_only else None
-        if (channel is None and not self.model_request and header.startswith('Bearer gvm_')
+        if (channel is None and not self.model_request and not self.job_only and header.startswith('Bearer gvm_')
                 and self.gateway.vm_authority is not None):
             try:
                 channel = await self.gateway.vm_authority.authorize(header[7:],write=self.write)
@@ -159,11 +163,12 @@ class _Server(uvicorn.Server):
 
 
 class CodexGateway:
-    def __init__(self, *, port, upstream, model, logger, client=None, vm_authority=None, vm_handler=None, billing=None):
+    def __init__(self, *, port, upstream, model, logger, client=None, vm_authority=None, vm_handler=None, billing=None, tool_heartbeat_seconds=TOOL_HEARTBEAT_SECONDS):
         # upstream() -> ModelProfile; model() -> (model, effort). One snapshot
         # provides both the actual route/key and its optional price.
         self.port, self.upstream, self.model, self.logger = port, upstream, model, logger
         self.billing = billing
+        self.tool_heartbeat_seconds = tool_heartbeat_seconds
         self.vm_authority,self.vm_handler = vm_authority,vm_handler
         self.channels: dict[str, Channel] = {}
         self.failures: dict[str, str] = {}
@@ -192,7 +197,9 @@ class CodexGateway:
             self.rpc = await asyncio.start_server(self._tunnel, '127.0.0.1', self.port + 1, limit=2**24)
             app = Starlette(routes=[Route('/v1/models', self._models),
                                     Route('/v1/responses', _ModelRequest(self), methods=['POST']),
-                                    Route('/v1/responses/compact', _ModelRequest(self), methods=['POST'])])
+                                    Route('/v1/responses/compact', _ModelRequest(self), methods=['POST']),
+                                    Route('/job/tools', _ModelRequest(self, self._job_tools, job_only=True), methods=['GET']),
+                                    Route('/job/tool', _ModelRequest(self, self._job_tool, job_only=True), methods=['POST'])])
             if self.vm_handler is not None:
                 for path,method,write in (('/vm/say','POST',True),('/vm/wake','POST','wake'),('/vm/send-file','POST',True),('/vm/actions/{action_id}','GET',False),('/vm/actions','GET',False),
                         ('/vm/events','GET',False),('/vm/units','POST',False),('/vm/history','POST',False),('/vm/web-search','POST',False),('/vm/web-fetch','POST',False),
@@ -288,3 +295,114 @@ class CodexGateway:
                 await upstream.aclose()
 
         return StreamingResponse(chunks(), upstream.status_code, media_type=upstream.headers.get('content-type'))
+
+    async def _job_current(self, channel):
+        try:
+            if channel.current is not None:
+                await channel.current()
+            return True
+        except asyncio.CancelledError:
+            # Background job current() uses CancelledError to deny a stale
+            # lease. Do not swallow a real client/token cancellation instead.
+            task = asyncio.current_task()
+            if task is None or task.cancelling():
+                raise
+            self.logger.warning('Background tool authority check denied a stale job')
+            return False
+        except Exception as exc:
+            self.logger.warning('Background tool authority check failed: %s', type(exc).__name__)
+            return False
+
+    async def _job_tools(self, request: Request):
+        channel = request.state.channel
+        session = getattr(channel, 'session', None)
+        if session is None:
+            return JSONResponse({'error': 'job session unavailable'}, 404)
+        if not await self._job_current(channel):
+            return JSONResponse({'error': '后台任务已失权或授权检查不可用'}, 403)
+        tools = [
+            {
+                'name': func['name'],
+                'description': func.get('description', ''),
+                'parameters': func.get('parameters', {}),
+            }
+            for item in session.tools
+            for func in [item['function']]
+        ]
+        return JSONResponse({'tools': tools})
+
+    async def _job_tool(self, request: Request):
+        channel = request.state.channel
+        session = getattr(channel, 'session', None)
+        if session is None:
+            return JSONResponse({'error': 'job session unavailable'}, 404)
+        if not await self._job_current(channel):
+            return JSONResponse({'error': '后台任务已失权或授权检查不可用'}, 403)
+        chunks = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > MAX_JOB_TOOL_BODY:
+                return JSONResponse({'error': 'request too large'}, 413)
+            chunks.append(chunk)
+        try:
+            payload = json.loads(b''.join(chunks))
+        except ValueError:
+            return JSONResponse({'error': 'invalid json body'}, 400)
+        if not isinstance(payload, dict) or not isinstance(payload.get('name'), str):
+            return JSONResponse({'error': 'tool name required'}, 400)
+        arguments = payload.get('arguments')
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return JSONResponse({'error': 'arguments must be an object'}, 400)
+        name = payload['name']
+
+        async def events():
+            task = asyncio.create_task(session.execute_tool(name, arguments))
+            try:
+                while not task.done():
+                    await asyncio.wait({task}, timeout=self.tool_heartbeat_seconds)
+                    if not task.done():
+                        yield b'{"type":"heartbeat"}\n'
+                try:
+                    raw = task.result()
+                    error = None
+                except asyncio.CancelledError:
+                    owner = asyncio.current_task()
+                    if channel.revoked or owner is None or owner.cancelling():
+                        raise
+                    error = RuntimeError('后台工具已取消')
+                except Exception as exc:
+                    error = exc
+                # The original job can lose authority while a slow read or
+                # ask is in flight, before its token is explicitly revoked.
+                if not await self._job_current(channel):
+                    error = PermissionError('后台任务已失权或授权检查不可用')
+                if error is not None:
+                    line = json.dumps(
+                        {'type': 'result', 'ok': False, 'error': f'{type(error).__name__}: {error}'},
+                        ensure_ascii=False,
+                    )
+                else:
+                    if isinstance(raw, str):
+                        content = [{'type': 'text', 'text': raw}]
+                    elif isinstance(raw, ToolImage):
+                        header_part, _, b64_data = raw.data_url.partition(',')
+                        mime = header_part[5:].split(';', 1)[0] if header_part.startswith('data:') else 'image/png'
+                        content = [
+                            {'type': 'text', 'text': raw.text},
+                            {'type': 'image', 'data': b64_data, 'mimeType': mime},
+                        ]
+                    else:
+                        content = [{'type': 'text', 'text': json.dumps(raw, ensure_ascii=False)}]
+                    line = json.dumps({'type': 'result', 'ok': True, 'content': content}, ensure_ascii=False)
+                yield (line + '\n').encode('utf-8')
+            finally:
+                if not task.done():
+                    task.cancel()
+                    # A disconnect and token revocation can overlap; shield the
+                    # same cancelled task until its socket/usage cleanup ends.
+                    await drain(asyncio.gather(task, return_exceptions=True))
+
+        return StreamingResponse(events(), media_type='application/x-ndjson')
