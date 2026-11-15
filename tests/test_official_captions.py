@@ -47,6 +47,10 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
                 fixture.model_calls.append(kwargs)
                 if fixture.provider_action:
                     fixture.provider_action()
+                if getattr(fixture, 'provider_content', None) is not None:
+                    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+                        content=json.dumps(fixture.provider_content)))],
+                        usage=SimpleNamespace(prompt_tokens=12,completion_tokens=8))
                 return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
                     'summary':'TEST 猫坐在窗边', 'description':'TEST 猫坐在窗边', 'text':'TEST screenshot',
                     'observations':[], 'safety':'safe'})))], usage=SimpleNamespace(prompt_tokens=12,completion_tokens=8))
@@ -81,6 +85,54 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
     def enqueue(self):
         result = self.process(self.image())
         return result.canonical_message_id
+
+    def sticker_event(self):
+        inbox = self.image()
+        with self.tx() as cursor:
+            raw = json.loads(cursor.execute('SELECT payload_json FROM qq_official_inbound_events WHERE inbox_id=?', (inbox,)).fetchone()['payload_json'])
+            raw['d']['content'] = '<faceType=6,faceId="0",ext="">'
+            cursor.execute('UPDATE qq_official_inbound_events SET payload_json=? WHERE inbox_id=?', (json.dumps(raw),inbox))
+        return inbox
+
+    async def test_a_qq_sticker_is_tagged_into_the_library_with_captions_off(self):
+        CaptionSettings(self.database).set(self.endpoint.scope.key, enabled=False, daily_limit=200)
+        self.provider_content = {'summary':'戴墨镜的猫面无表情装酷', 'description':'动漫风格的猫戴着墨镜。',
+            'text':'', 'subjects':['猫','墨镜'], 'actions':['凝视'], 'emotion':['酷','拽','装'],
+            'usage':['别人炫耀时回怼'], 'is_sticker':True, 'contains_person':False,
+            'contains_private_info':False, 'safety':'safe'}
+        self.process(self.sticker_event())
+        links = self.query('SELECT * FROM message_media')
+        self.assertEqual([(l['media_kind'], l['fetch_status']) for l in links], [('sticker','pending')])
+        await self.run_job()
+        job = self.query('SELECT status,last_error FROM media_jobs WHERE job_type=?',('official_caption',))[0]
+        self.assertEqual(job['status'],'succeeded',job['last_error'])
+        library = self.query('SELECT * FROM sticker_library')
+        self.assertEqual([(r['enabled'], r['banned']) for r in library], [(1, 0)])
+        analysis = self.query('SELECT * FROM media_analysis')[0]
+        self.assertEqual(json.loads(analysis['emotions_json']), ['酷','拽','装'])
+        self.assertIn('表情包标注', self.model_calls[0]['messages'][0]['content'])
+        # The same sticker sent again is not tagged twice.
+        self.process(self.sticker_event())
+        await self.run_job()
+        self.assertEqual(len(self.model_calls), 1)
+        self.assertEqual(len(self.query('SELECT * FROM sticker_library')), 1)
+
+    async def test_photos_and_unsafe_stickers_stay_out_of_the_library(self):
+        CaptionSettings(self.database).set(self.endpoint.scope.key, enabled=False, daily_limit=200)
+        self.process(self.image())
+        self.assertEqual(self.query('SELECT * FROM media_jobs'), [])
+        self.provider_content = {'summary':'一个人的自拍照片', 'description':'真人自拍。', 'text':'',
+            'subjects':['人'], 'actions':[], 'emotion':[], 'usage':[], 'is_sticker':True,
+            'contains_person':True, 'contains_private_info':False, 'safety':'safe'}
+        self.process(self.sticker_event())
+        await self.run_job()
+        self.assertEqual(self.query('SELECT * FROM sticker_library'), [])
+
+    def test_sticker_collection_can_be_turned_off(self):
+        CaptionSettings(self.database).set(self.endpoint.scope.key, enabled=False, daily_limit=200)
+        with patch.dict('os.environ', {'AI_STICKER_COLLECTION': 'false'}):
+            self.process(self.sticker_event())
+        self.assertEqual(self.query('SELECT * FROM media_jobs'), [])
 
     async def run_job(self):
         jobs = await self.calls(self.library.claim_jobs)
