@@ -213,9 +213,20 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_media_only_batch_renders_canonical_handles_and_reads_previous_image(self):
         from src.plugins.ai_chat.adapters.qq_official.message_batch import MessageBatcher
         complete = self.completion([('view_image', {})])
+        received = asyncio.Event()
+        class CompleteMediaBatch(MessageBatcher):
+            def add(self,key,*args,**kwargs):
+                result = super().add(key,*args,**kwargs)
+                if key in self.pending and len(self.pending[key].messages)==2:received.set()
+                return result
+            async def _wait(self,key,batch):
+                # Verify canonical aggregation, not DB/media normalization speed.
+                # Real idle/max/stop behavior is covered by batcher unit tests.
+                await received.wait()
+                await super()._wait(key,batch)
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=complete), patch(
                 'src.plugins.ai_chat.adapters.qq_official.message_batch.MessageBatcher',
-                side_effect=lambda dispatch: MessageBatcher(dispatch, idle=.3, maximum=2)):
+                side_effect=lambda dispatch: CompleteMediaBatch(dispatch, idle=.3, maximum=2)):
             async with platform() as fake:
                 runtime = await self.start(fake, flags=dict(ocr=True))
                 await self.emit(fake, 'TEST_MEDIA_BATCH', content='', attachments=[
