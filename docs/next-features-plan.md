@@ -479,7 +479,7 @@
 
 **管理审计API（2026-11-15）**：登录管理员按完整账号/物理端点读取单向链接、问答元数据分页及显式正文详情；scope在LIMIT前限定，详情必须同时匹配账号/CQ-ID，不借历史别名或源owner权限。只读事务不调用current/consume/recover/模型/QQ，active不是当前授权，consumed_at不是送达，列表/SSE不携正文或权限HMAC。问答按job-ID严格seek并保留首个上界、状态实时；连接实时seek，最多100条/页且账号可分页。7项新PG/session回归及43项组合216.514秒通过，4独立CF各1failure无error RED，静态/导入通过；UI随后接齐（见下一条），覆盖本补丁的新全套另续，未合并/部署或真实验收。
 
-**管理审计UI（2026-11-15）**：独立“会话问答审计”页按完整账号/物理端点分页连接和最近问答，正文须显式查看，列表/目录/SSE只读元数据；换账号/范围/分页、401/403及卸载清正文，原epoch/lane/AbortController拒绝迟到回填。active不是当前授权，answered/refused、一次领取和真实送达严格分开，只按文本转义显示私有外部资料、无发送/重发/代批按钮。全部8个UI脚本与构建通过，清正文/current/转义三独立CF AssertionError RED；CI新增锁定依赖的Admin UI构建/全部脚本作业。PR#119/f381267等价d8bb7e0的Linux run43676133744/job132696582701已通过2,296项/10skip、1110.191秒，Admin UI/Nix/Secret也通过；Windows既有失败。旧/tmp本机Source全套证据/进程已不在，不能称仍运行或通过；固定d8bb7e0的新本机验证已交后台agent执行，证据改存~/.cache/gaoji-test-runs/f8-admin-audit-d8bb7e0，尚无最终结论。F8目标侧显式say例子差距（note13）和真实验收仍另续，不称F8整体完成，未合并/部署。
+**管理审计UI（2026-11-15）**：独立“会话问答审计”页按完整账号/物理端点分页连接和最近问答，正文须显式查看，列表/目录/SSE只读元数据；换账号/范围/分页、401/403及卸载清正文，原epoch/lane/AbortController拒绝迟到回填。active不是当前授权，answered/refused、一次领取和真实送达严格分开，只按文本转义显示私有外部资料、无发送/重发/代批按钮。全部8个UI脚本与构建通过，清正文/current/转义三独立CF AssertionError RED；CI新增锁定依赖的Admin UI构建/全部脚本作业。PR#119/f381267等价d8bb7e0的Linux run43676133744/job132696582701已通过2,296项/10skip、1110.191秒，Admin UI/Nix/Secret也通过；Windows既有失败。旧/tmp本机Source全套证据/进程已不在，不能称仍运行或通过；固定d8bb7e0本机全套已核验为Ran2296、1failure、10skip、1067.332秒、exit1，原证据保留于~/.cache/gaoji-test-runs/f8-admin-audit-d8bb7e0。唯一收据目录测试失败由保护性umask077把mkdir0755过滤成0700导致；独立夹具只补chmod0755和真实mode断言，不改生产权限检查/umask，26项host_control在022/077分别通过，权限/符号链接两CF各1failure无error RED，静态通过。修复后新固定全套仍待，旧失败不改记绿色。F8目标侧显式say例子差距（note13）和真实验收仍另续，不称F8整体完成，未合并/部署。
 
 ### F9 群内控制和账单
 

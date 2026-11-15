@@ -258,6 +258,8 @@ class HostControlTests(unittest.TestCase):
         self.assertCheck("unsafe_receipt_directory", lambda: hc.receipt_root(self.config))
         root.unlink()
         root.mkdir(mode=0o755)
+        root.chmod(0o755)  # mkdir's mode is filtered by the caller's umask.
+        self.assertEqual(root.stat().st_mode & 0o777, 0o755)
         self.assertCheck("unsafe_receipt_directory", lambda: hc.receipt_root(self.config))
 
     def test_systemd_state_directory_is_used_instead_of_private_tmp(self):
