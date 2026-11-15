@@ -26,6 +26,7 @@ from .admin_api import (
     conversations,
     host_apis,
     programs,
+    questions,
     tasks,
     tools,
 )
@@ -63,6 +64,7 @@ _PAGE_ROUTERS = (
     conversations,
     host_apis,
     programs,
+    questions,
     sandboxes,
     tools,
     media,
