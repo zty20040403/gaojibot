@@ -216,3 +216,57 @@ class QuestionModelTests(QuestionFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(bills),1); bill = bills[0]
         self.assertEqual((bill['actor_key'],bill['scope_key'],bill['purpose'],bill['profile'],bill['input_tokens']),(None,self.target.scope.key,'conversation_question','embedding',6))
         self.assertEqual(json.loads(bill['source_metadata_json'])['question']['id'],row['question_id'])
+
+    async def test_say_tool_gated_by_target_group_proactive_permission_single_use_and_before_ask(self):
+        with self.tx() as cursor:
+            self.target = self.target
+        # Private target never receives the public group say tool.
+        async def private_llm(prompt,history,tools,execute,**options):
+            self.assertEqual({item['function']['name'] for item in tools},{'history','ask'})
+            with self.assertRaisesRegex(ValueError,'question_tool_unavailable'):await execute('say',{'text':'TEST_PRIVATE_NO_SAY'})
+            await execute('ask',{'action':'refuse'}); return 'TEST_PLAIN'
+        self.model.llm = private_llm; row = self.submit(); await self.run_worker()
+        self.assertEqual(self.row(row)['state'],'refused')
+
+        # Group target with proactive_state='allowed' and attached notices/sender gets say once before ask.
+        from src.plugins.ai_chat.adapters.qq_official.question_notices import QuestionNotices
+        from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
+        from src.plugins.ai_chat.delivery import DeliveryStore
+        deliveries = DeliveryStore(self.database); self.addCleanup(deliveries.close)
+        outbox = OfficialSendStore(deliveries,admission=lambda c,e,a:True,pepper=b'0'*32,clock=lambda:self.now)
+        notices = QuestionNotices(self.questions,outbox)
+        say_calls = []
+        async def fake_say(text):
+            say_calls.append(text); return dict(ok=True,status='committed',notice_id='QN-'+'a'*32)
+        self.model.notices = notices; self.runtime.sender = object()
+        with self.tx() as cursor:
+            cursor.execute("UPDATE qq_official_endpoints SET proactive_state='allowed' WHERE endpoint_key=?",(self.target.key,))
+            cursor.execute("UPDATE qq_official_accounts SET bot_native_id='TEST_BOT_SELF',bot_identity_source='ready',bot_identity_verified_at=?,bot_identity_revision=1 WHERE account_key=?",(self.now,self.account.key))
+            self.questions.submit(cursor,self.token,self.binding,self.edge['link_id'],'TEST_GROUP_SAY_Q')[0]
+        job = self.jobs.claim_due(self.worker.worker.worker_id,kinds=self.worker.worker.registered_kinds,now=self.now)[0]
+        running,data = self.worker.claim(job)
+        async def current():await self.calls(self.worker.current,job)
+        group_qt = QuestionTarget(self.target,running['target_scope_key'],running['question_id'],data['question'],data['source_label'],current,say=fake_say)
+        async def group_llm(prompt,history,tools,execute,**options):
+            self.assertEqual({item['function']['name'] for item in tools},{'history','say','ask'})
+            with self.assertRaisesRegex(ValueError,'question_notice_text_invalid'):await execute('say',{'text':'   '})
+            with self.assertRaisesRegex(ValueError,'question_notice_text_invalid'):await execute('say',{'text':'x'*2001})
+            res = json.loads(await execute('say',{'text':'  晚上聚餐改到 7 点  '})); self.assertTrue(res['ok'])
+            with self.assertRaisesRegex(ValueError,'question_notice_already_used'):await execute('say',{'text':'TEST_SECOND_SAY'})
+            await execute('ask',{'action':'answer','answer':'已通知'})
+            return 'TEST_PLAIN'
+        self.model.llm = group_llm
+        with scoped(self.app,self.target,'conversation_question',current=current,conversation_question_id=group_qt.question_id):
+            decision = await self.model(group_qt)
+        self.assertEqual(say_calls,['晚上聚餐改到 7 点']); self.assertEqual(decision.answer,'已通知')
+
+        # Group target with proactive_state='unknown' does not expose say.
+        with self.tx() as cursor:cursor.execute("UPDATE qq_official_endpoints SET proactive_state='unknown' WHERE endpoint_key=?",(self.target.key,))
+        async def unknown_llm(prompt,history,tools,execute,**options):
+            self.assertEqual({item['function']['name'] for item in tools},{'history','ask'})
+            with self.assertRaisesRegex(ValueError,'question_tool_unavailable'):await execute('say',{'text':'TEST_NO_PROACTIVE'})
+            await execute('ask',{'action':'refuse'}); return 'TEST_PLAIN'
+        self.model.llm = unknown_llm
+        with scoped(self.app,self.target,'conversation_question',current=current,conversation_question_id=group_qt.question_id):
+            decision = await self.model(group_qt)
+        self.assertTrue(decision.refuse); self.assertEqual(len(say_calls),1)

@@ -74,9 +74,14 @@
 
 0106新增`qq_official_question_notices`并扩充`delivery_plans(purpose='question_notice')`：每条来源记录最多挂一个`ephemeral_content=TRUE`、`delivery_mode='proactive'`、`fallback_policy='never'`、`reply_window_id IS NULL`且匹配原真实READY/self Bot的发送计划，拒绝真人/他Bot/持久正文及终态补挂；行级/语句级保护阻止DELETE/UPDATE/TRUNCATE，降级先持`ACCESS EXCLUSIVE`锁再查空并在存在通知或计划审计时阻断回退。`committed`严格要求同账号/同端点/同Bot的真实`proactive` `applied_at IS NOT NULL`（`delivery_reply_to=''`）`qq_official_delivery_receipts`，允许在取消/过期/unknown后一次补记迟到accepted回执而不恢复授权。61项真实PG/schema/迁移/问询/审计组合95.036秒通过，Ruff/导入检查通过；bot/proactive/receipt/truncate/downgrade-lock五个独立CF均RED。
 
-`QuestionNotices`授权与Sender接线已接通：只对已确认`proactive_state='allowed'`的目标群发送一次2000字以内ephemeral纯文本（排队最多30秒且不超原question deadline）；`unknown`/`denied`不探测也不借真人被动窗口，401/429/主动拒绝与底层retry/plain均不重放；`enqueue`/`claim`/HTTP前`attempt_denial`复核首代running job、Bot身份、RAM正文`content_hmac`与双端current，取消/重启保留迟到真实accepted回执事实而不恢复授权，outbound记录`system_notice='question_notice'`。8项新PG/RestClient+loopback回归及99项组合（113.124秒）、Ruff/两项导入/diff通过，proactive/http/ram三独立串行CF各1failure RED。目标`say`工具与`QuestionRuntime`接线、审计界面展示及真实验收另续。
+`QuestionNotices`授权与Sender接线已接通（`685438c`）：只对已确认`proactive_state='allowed'`的目标群发送一次2000字以内ephemeral纯文本（排队最多30秒且不超原question deadline）；`unknown`/`denied`不探测也不借真人被动窗口，401/429/主动拒绝与底层retry/plain均不重放；`enqueue`/`claim`/HTTP前`attempt_denial`复核首代running job、Bot身份、RAM正文`content_hmac`与双端current，取消/重启保留迟到真实accepted回执事实而不恢复授权，outbound记录`system_notice='question_notice'`。8项新PG/RestClient+loopback回归及99项组合（113.124秒）、Ruff/两项导入/diff通过，proactive/http/ram三独立串行CF各1failure RED。
 
-权威F8例子“帮我去群里说一声晚上聚餐改到7点”不能由当前只读QuestionModel完成；只完成私有总结并不等于整个F8已验收。目标普通文本/私有ask回答绝不能自动变成QQ消息。
+目标`say`工具与`QuestionRuntime`/`QuestionWorker`/`QuestionModel`已接齐：
+- `QuestionModel`仅在目标群已确认`proactive_state='allowed'`、真实READY/self Bot有效且本qid尚未生成通知来源时暴露单次`say(text<=2000)`；`unknown`/`denied`与私聊不开放且显式拒绝，一次调用后禁止重发且仍须调用`ask`回报。同时修正`QuestionModel.context`对`qq-official`默认群AI开关的判断，与`turns.py`对齐。
+- `QuestionWorker._make_say`发送时对`send_task`使用`asyncio.shield`+`drain`防止取消/超时漏任务或中断回执收尾，只将`state='committed' AND delivery_state='committed' AND delivery_receipt_hash IS NOT NULL`返回给模型为`ok=true`；`QuestionRuntime`在`sender.recover()`前执行`notices.recover`、每轮`maintain()`复查`pending`/`sending`通知并退场释放`question_notice_authority`。
+- 实际双端默认private→`qq-official`目标群`OfficialRuntime`+`FakePlatform`已通过显式`say`送达与`proactive_state='unknown'`隐藏/拒绝回归，确认`delivery_plans`/`deliveries`/outbound`messages`/审计表无明文通知泄漏。33项4模块专项与149项16模块组合、静态检查通过，`say-proactive`/`say-single-use`/`say-recover`三独立串行CF各2/1/1 failure、0 error RED。管理审计界面分别展示公开通知与私有回答/原领取、覆盖全部改动的新固定全套及真实QQ/embedding/模型验收仍待。
+
+权威F8例子“帮我去群里说一声晚上聚餐改到7点”现已在本地链路通过真实双端`OfficialRuntime`+`FakePlatform`回归，目标普通文本/私有ask回答仍不自动变成QQ消息，真实QQ主动权限仍须owner测试群验收。
 
 - 拟只为当前首代question worker开放绑定qid的目标本物理群 `say(text)`，无account/endpoint/actor/owner/program/回复窗口参数，不开放递归提问、VM、browser、ops、file、管理或模型配置。问题仍是taint，目标可拒绝；只有目标明确调用say才产生独立公开效果，私有问题/答案本身仍不进公共聊天。
 - 使用认证READY/self的真实Bot身份，冻结identity revision、同完整account/目标endpoint/route/capability/stop/budget、原qid/job首代lease/原期限及双边许可。每qid最多一次2000字纯文本、单条、排队最多30秒且不超过原问答截止；稳定承诺不能通过新任务、重启或更换正文重新发送。

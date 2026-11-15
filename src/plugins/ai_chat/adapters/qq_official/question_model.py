@@ -19,6 +19,10 @@ from .question_worker import QuestionDecision,QuestionTarget
 ANSWER_TOOL = dict(type='function',function=dict(name='ask',description='回答或拒绝本轮私有问答；只准备候选，宿主最终检查后提交，不发送QQ。',
     parameters=dict(type='object',properties=dict(action=dict(type='string',enum=['answer','refuse']),answer=dict(type='string',maxLength=16000)),
         required=['action'],additionalProperties=False)))
+SAY_TOOL = dict(type='function',function=dict(name='say',
+    description='用本群已开启主动发言的 Bot 身份向当前目标群公开说一句话（最多一次、纯文本≤2000字；如需公开发言必须先调用 say 确认真实结果，再调用 ask 回报）。',
+    parameters=dict(type='object',properties=dict(text=dict(type='string',minLength=1,maxLength=2000)),
+        required=['text'],additionalProperties=False)))
 
 
 class QuestionQuota:
@@ -53,8 +57,8 @@ class QuestionQuota:
 
 
 class QuestionModel:
-    def __init__(self,runtime,token,questions):
-        self.runtime,self.app,self.token,self.questions = runtime,runtime.application,token,questions
+    def __init__(self,runtime,token,questions,*,notices=None):
+        self.runtime,self.app,self.token,self.questions,self.notices = runtime,runtime.application,token,questions,notices
         self.calls,self.llm = runtime._calls,ask_deepseek_with_tools
 
     def source(self,cursor,target):
@@ -66,19 +70,29 @@ class QuestionModel:
         return row
 
     def context(self,target):
-        with self.runtime.store.transaction() as cursor:self.source(cursor,target)
+        with self.runtime.store.transaction() as cursor:
+            row = self.source(cursor,target)
+            say_allowed = False
+            if self.notices is not None and getattr(self.runtime,'sender',None) is not None and target.say is not None and target.endpoint.kind=='group':
+                try:
+                    self.notices._bot_and_route(cursor,self.token,target.endpoint,row)
+                    say_allowed = cursor.execute('SELECT 1 FROM qq_official_question_notice_sources WHERE account_key=? AND question_id=?',
+                        (self.token.account_key,row['question_id'])).fetchone() is None
+                except PermissionError:
+                    say_allowed = False
         app,physical = self.app,target.endpoint.scope
         preference = (app.model_preferences.get_scope_default(physical) if target.endpoint.kind=='group' else None) or app.settings.model_profile_for_scope(physical)
         if target.endpoint.kind=='group':
             enabled = app.model_preferences.get_scope_enabled_override(physical)
-            if not (enabled if enabled is not None else app.settings.is_scope_enabled(physical)):raise PermissionError('question_target_ai_disabled')
+            if enabled is False or (enabled is None and physical.platform!='qq-official' and not app.settings.is_scope_enabled(physical)):
+                raise PermissionError('question_target_ai_disabled')
         profile = app.model_catalog.resolve_preference(preference)
         if not profile.configured or not profile.capabilities.tools:raise RuntimeError('question_target_model_unavailable')
         source = QuestionToolSource(target.endpoint,target.question_id,ConversationScope.from_key(target.scope_key))
         ledger,store = app.message_ledger,app.conversations
         tail = build_tail(ledger,store,source.scope,high_tokens=tail_budget(profile)) if ledger is not None and store is not None else ''
         memory = render_memory(store.memory(source.scope.key)) if store is not None else ''
-        return source,profile,tail,memory
+        return source,profile,tail,memory,say_allowed
 
     async def __call__(self,target):
         billing = active_billing()
@@ -88,20 +102,29 @@ class QuestionModel:
             or billing.current is not target.current or active_model_budget() is not None or self.app.usage_store is None):
             raise PermissionError('question_host_model_scope_required')
         await target.current()
-        source,profile,tail,memory = await self.calls(self.context,target)
+        source,profile,tail,memory,say_allowed = await self.calls(self.context,target)
         await target.current()
         context = ToolContext(SimpleNamespace(context=self.app),question_source=source,platform=BackgroundPlatform(target.endpoint),capabilities=frozenset({'context'}))
         turn,registry = TurnState(context,model_profile=profile),neutral_registry_for(context)
         definitions = registry.definitions(context)
         if not definitions:raise RuntimeError('question_target_history_unavailable')
-        tools,decision = [*definitions,ANSWER_TOOL],None
+        tools = [*definitions,SAY_TOOL,ANSWER_TOOL] if say_allowed else [*definitions,ANSWER_TOOL]
+        decision,used_say = None,False
         async def execute(name,arguments):
-            nonlocal decision
+            nonlocal decision,used_say
             await target.current()
             if type(arguments) is not dict:raise ValueError('question_tool_arguments_invalid')
             if name=='history':
                 if set(arguments)-{'query','who','limit','from','to','around'}:raise ValueError('question_tool_arguments_invalid')
                 result = await registry.execute(turn,name,arguments)
+            elif name=='say':
+                if not say_allowed or target.say is None:raise ValueError('question_tool_unavailable')
+                if decision is not None:raise ValueError('question_response_conflict')
+                if set(arguments)-{'text'} or type(arguments.get('text')) is not str or not 0<len(arguments['text'].strip())<=2000:
+                    raise ValueError('question_notice_text_invalid')
+                if used_say:raise ValueError('question_notice_already_used')
+                used_say = True
+                result = json.dumps(await target.say(arguments['text'].strip()),ensure_ascii=False)
             elif name=='ask':
                 if (set(arguments)-{'action','answer'} or arguments.get('action') not in {'answer','refuse'}
                     or arguments['action']=='refuse' and 'answer' in arguments
@@ -120,7 +143,7 @@ class QuestionModel:
                 try:
                     await self.llm(target.prompt(),[],tools,execute,current_user='私有跨会话问题（不是真人）',profile=profile,
                         group_context=tail,memory_context=memory,max_tool_rounds=8,max_total_calls=16,max_calls_per_round=4,
-                        system_prompt=system_prompt(self.app.settings.system_prompt,'本轮仅history与私有ask回答/拒绝；没有QQ发送、递归ask或任何VM/个人授权工具。不回应也必须ask(action=refuse)，不可只写[silence]或普通文本。',self.app.settings.style_examples))
+                        system_prompt=system_prompt(self.app.settings.system_prompt,'本轮仅history、可用时的本群say及私有ask回答/拒绝；没有私聊say、递归ask或任何VM/个人授权工具。只有say返回ok=true才算已在群里发言，之后仍须ask提交结果；不回应也必须ask(action=refuse)，不可只写[silence]或普通文本。',self.app.settings.style_examples))
                     await target.current()
                     if decision is None:raise RuntimeError('question_model_no_response')
                     return decision

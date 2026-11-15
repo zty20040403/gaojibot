@@ -4,6 +4,7 @@ import asyncio
 from .lease import LeaseLost
 from .question_authority import QuestionAuthority
 from .question_model import QuestionModel
+from .question_notices import QuestionNotices
 from .question_worker import QuestionWorker
 from .questions import Questions
 
@@ -12,6 +13,7 @@ class QuestionRuntime:
     def __init__(self,runtime,token,ingress):
         self.runtime,self.token = runtime,token
         self.questions = Questions(QuestionAuthority(ingress,admission=runtime.store.admitted),runtime.jobs)
+        self.notices = QuestionNotices(self.questions,runtime.outbox) if getattr(runtime,'outbox',None) is not None else None
         self.worker,self.model = None,None
         self.closing,self.next_sweep = False,0.0
 
@@ -19,18 +21,22 @@ class QuestionRuntime:
     def available(self):return not self.closing and self.worker is not None
 
     def _recover(self):
-        with self.runtime.store.transaction() as cursor:return self.questions.recover(cursor,self.token)
+        with self.runtime.store.transaction() as cursor:
+            closed = self.questions.recover(cursor,self.token)
+            if self.notices is not None:self.notices.recover(cursor,self.token)
+            return closed
 
     async def attach(self):
         # Even an account now running without AI must retire its old questions.
         # Recovery precedes workers and inbound frames; no old RAM/epoch resumes.
+        if self.notices is not None:self.runtime.outbox.question_notice_authority = self.notices
         await self.runtime._calls(self._recover)
         app = self.runtime.application
         if app is None:return False
         if (any(getattr(app,name,None) is None for name in ('model_billing','usage_store','model_catalog','model_preferences','message_ledger','conversations'))
             or app.model_billing.database!=self.runtime.database):raise RuntimeError('question_model_or_accounting_unavailable')
-        self.model = QuestionModel(self.runtime,self.token,self.questions)
-        self.worker = QuestionWorker(self.runtime,self.token,self.questions,self.model,
+        self.model = QuestionModel(self.runtime,self.token,self.questions,notices=self.notices)
+        self.worker = QuestionWorker(self.runtime,self.token,self.questions,self.model,notices=self.notices,
             ensure_current=lambda:self.runtime._ensure_current(self.token))
         return True
 
@@ -97,6 +103,14 @@ class QuestionRuntime:
                 (self.token.account_key,)).fetchall()
             if len(rows)>128:raise RuntimeError('question_live_limit_exceeded')
             for row in rows:self.questions.retire(cursor,self.token,dict(row))
+            if self.notices is not None:
+                notices = cursor.execute("SELECT * FROM qq_official_question_notices WHERE account_key=? AND state IN ('pending','sending') LIMIT 129 FOR UPDATE",
+                    (self.token.account_key,)).fetchall()
+                if len(notices)>128:raise RuntimeError('question_notice_live_limit_exceeded')
+                for item in notices:
+                    source,notice = self.notices.get(cursor,self.token,item['notice_id'])
+                    try:self.notices.source_current(cursor,self.token,source,notice)
+                    except PermissionError:self.notices.close(cursor,self.token,item['notice_id'],reason='cancelled')
 
     async def maintain(self):
         if self.closing or asyncio.get_running_loop().time()<self.next_sweep:return
@@ -114,4 +128,6 @@ class QuestionRuntime:
         try:await self.runtime._calls(self._recover)
         except LeaseLost:pass
         finally:
+            if getattr(self.runtime,'outbox',None) is not None and self.runtime.outbox.question_notice_authority is self.notices:
+                self.runtime.outbox.question_notice_authority = None
             if self.runtime.question_service is self:self.runtime.question_service = None

@@ -146,3 +146,96 @@ class NativeQuestionAskTests(unittest.IsolatedAsyncioTestCase):
     async def test_target_explicit_refusal_returns_to_original_source_not_as_public_answer(self):await self.run_case(refused=True)
     async def test_missing_directed_link_is_explicit_and_never_wakes_or_enumerates_target(self):await self.run_case(linked=False)
     async def test_actual_target_stop_refuses_before_question_or_target_model(self):await self.run_case(stopped=True)
+
+    async def run_group_say_case(self,*,proactive_allowed=True):
+        app = self.application(); target_calls,source_calls = [],[]; notice_text = '晚上聚餐改到 7 点'; group_id = 'TEST_DINNER_GROUP'
+        from src.plugins.ai_chat.platform_types import EndpointKey
+        class Provider:
+            async def create_completion(_self,profile,**kwargs):
+                billing = active_billing(); self.assertIsNotNone(billing)
+                if billing.source.purpose=='conversation_question':
+                    target_calls.append(kwargs); self.assertIsNone(billing.source.actor)
+                    names = {tool['function']['name'] for tool in kwargs['tools']}
+                    if proactive_allowed:self.assertEqual(names,{'history','say','ask'})
+                    else:self.assertEqual(names,{'history','ask'})
+                    if len(target_calls)==1:
+                        response = (_tool_response('say',{'text':notice_text},'TEST_GROUP_SAY') if proactive_allowed
+                            else _tool_response('ask',{'action':'refuse'},'TEST_GROUP_REFUSE'))
+                    elif len(target_calls)==2 and proactive_allowed:
+                        response = _tool_response('ask',{'action':'answer','answer':'已在目标群公开发送通知'},'TEST_GROUP_ANSWER')
+                    else:response = _final('TEST_PLAIN_NOT_PUBLIC')
+                    response.usage = completion(20,10,5).usage; return response
+                if billing.source.endpoint.kind=='group':
+                    return FakeStream(stream_chunk('TEST_GROUP_ACK'),stream_chunk(finish='stop'),completion(20,10,5))
+                source_calls.append(kwargs)
+                if len(source_calls)==1:
+                    link_id = self.query("SELECT link_id FROM qq_official_conversation_links WHERE state='active'")[0]['link_id']
+                    chunk = stream_chunk('TEST private ask planning')
+                    chunk.choices[0].delta.tool_calls = [SimpleNamespace(index=0,id='TEST_ASK_GROUP',type='function',
+                        function=SimpleNamespace(name='ask',arguments=json.dumps(dict(target=link_id,question='帮我去群里说一声'+notice_text))))]
+                    return FakeStream(chunk,stream_chunk(finish='tool_calls'),completion(20,10,5))
+                return FakeStream(stream_chunk('TEST_SOURCE_DONE'),stream_chunk(finish='stop'),completion(20,10,5))
+        app.llm_gateway = LLMGateway({'openai-chat':Provider()},catalog=app.model_catalog)
+        with patch('src.plugins.ai_chat.agent_loop._runtime',return_value=(app.model_catalog,app.llm_gateway)):
+            async with verified_ready_platform() as fake:
+                fake.app_id = 'TEST_NATIVE_SAY_'+self._testMethodName
+                if proactive_allowed:fake.proactive_allowed[('group',group_id)] = True
+                loaded = replace(fixture.loaded_config(fake.app_id,base=fake.base_url),owner_openids=('TEST_RUNTIME_OWNER',))
+                runtime = self.runtime(loaded=loaded,application=app,ledger=app.message_ledger,journal=app.turn_journal)
+                await runtime.start(); await asyncio.wait_for(fake.wait_ready(),5)
+                try:
+                    # Bind target group via real /bind so proactive_state comes from real bot_state check.
+                    with patch('src.plugins.ai_chat.adapters.qq_official.binding.secrets.randbelow',return_value=112233):
+                        bind_start = await self.emit(fake,'/bind create')
+                    await self.wait_db("SELECT * FROM deliveries WHERE reply_to_native_message_id=? AND status='committed'",(bind_start,))
+                    group_endpoint = EndpointKey(runtime.loaded.account,'group',group_id)
+                    self.sequence = getattr(self,'sequence',0)+1; bind_group_native = 'TEST_GROUP_BIND_'+str(self.sequence)
+                    fake.add_window('group',group_id,bind_group_native)
+                    await fake.emit('GROUP_AT_MESSAGE_CREATE',dict(id=bind_group_native,group_openid=group_id,
+                        author=dict(member_openid='TEST_GROUP_ADMIN',member_role='admin'),content='/bind 112233',timestamp=datetime.now(timezone.utc).isoformat()))
+                    await self.wait_db("SELECT * FROM qq_official_inbound_events WHERE native_message_id=? AND status='processed'",(bind_group_native,))
+                    await self.wait_db("SELECT * FROM qq_official_endpoints WHERE endpoint_key=? AND binding_state='active' AND proactive_state=?",
+                        (group_endpoint.key,'allowed' if proactive_allowed else 'denied'))
+
+                    # Link private owner -> group (private owner creates code, group admin confirms).
+                    with patch('src.plugins.ai_chat.adapters.qq_official.linking.secrets.randbelow',return_value=654321):
+                        link_issue = await self.emit(fake,'/link')
+                    await self.wait_db("SELECT * FROM deliveries WHERE reply_to_native_message_id=? AND status='committed'",(link_issue,))
+                    self.sequence += 1; link_confirm_native = 'TEST_GROUP_LINK_'+str(self.sequence)
+                    fake.add_window('group',group_id,link_confirm_native)
+                    await fake.emit('GROUP_AT_MESSAGE_CREATE',dict(id=link_confirm_native,group_openid=group_id,
+                        author=dict(member_openid='TEST_GROUP_ADMIN',member_role='admin'),content='/link 654321',timestamp=datetime.now(timezone.utc).isoformat()))
+                    await self.wait_db("SELECT * FROM qq_official_inbound_events WHERE native_message_id=? AND status='processed'",(link_confirm_native,))
+                    await self.wait_db("SELECT * FROM deliveries WHERE reply_to_native_message_id=? AND status='committed'",(link_confirm_native,))
+                    # Even with a fresh inbound passive window in the group, proactive_allowed=False cannot send.
+                    self.sequence += 1; group_msg_native = 'TEST_GROUP_MSG_'+str(self.sequence)
+                    fake.add_window('group',group_id,group_msg_native)
+                    await fake.emit('GROUP_AT_MESSAGE_CREATE',dict(id=group_msg_native,group_openid=group_id,
+                        author=dict(member_openid='TEST_GROUP_ADMIN',member_role='admin'),content='TEST_GROUP_HELLO',timestamp=datetime.now(timezone.utc).isoformat()))
+                    await self.complete(group_msg_native,timeout=15)
+
+                    source = await self.emit(fake,'帮我去群里说一声'+notice_text); finished = (await self.complete(source,timeout=20))[0]
+                    await runtime.stop()
+                    qrow = self.query('SELECT * FROM qq_official_conversation_questions')[0]
+                    notices = self.query('SELECT * FROM qq_official_question_notices')
+                    group_posts = [item for item in fake.received if item['kind']=='group' and item['target']==group_id and item['payload'].get('content')==notice_text]
+                    if proactive_allowed:
+                        self.assertEqual(qrow['state'],'answered'); self.assertEqual(len(notices),1)
+                        self.assertEqual((notices[0]['state'],notices[0]['delivery_state']),('committed','committed'))
+                        self.assertTrue(notices[0]['delivery_receipt_hash'])
+                        self.assertEqual(len(group_posts),1); self.assertIsNone(group_posts[0]['payload'].get('msg_id'))
+                        outbound = self.query("SELECT body_json,message_kind,sender_actor_key FROM messages WHERE direction='outbound' AND source_endpoint_key=? ORDER BY canonical_message_id DESC LIMIT 1",(group_endpoint.key,))[0]
+                        self.assertEqual(json.loads(outbound['body_json'])['nodes'],[])
+                        self.assertEqual(outbound['message_kind'],'command')
+                        self.assertEqual(outbound['sender_actor_key'],notices[0]['bot_actor_key'])
+                        self.assertNotIn(notice_text,repr(self.query('SELECT * FROM delivery_plans')+self.query('SELECT * FROM deliveries')+self.query("SELECT * FROM messages WHERE direction='outbound'")+self.query('SELECT * FROM qq_official_question_notices')))
+                        self.assertIn('已在目标群公开发送通知',repr(source_calls[-1]['messages']))
+                    else:
+                        self.assertEqual(qrow['state'],'refused'); self.assertEqual(notices,[]); self.assertEqual(group_posts,[])
+                        self.assertIn('refused',repr(source_calls[-1]['messages']))
+                    self.assertEqual(self.query('SELECT * FROM turn_requests WHERE turn_id=?',(finished['journal_turn_id'],)),[])
+                finally:
+                    if runtime.state!='stopped':await runtime.stop()
+
+    async def test_foreground_private_ask_explicit_group_say_acceptance(self):await self.run_group_say_case(proactive_allowed=True)
+    async def test_foreground_private_ask_hides_say_when_group_proactive_not_allowed(self):await self.run_group_say_case(proactive_allowed=False)

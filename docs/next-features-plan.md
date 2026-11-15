@@ -408,7 +408,9 @@
 
 ### F8 跨会话提问
 
-**目标公开通知投递组件（2026-11-15）**：`QuestionNotices`承接0105/0106存储并接入`plans.py`/`send_store.py`/`send_ledger.py`/`sender.py`；限定真实READY/self Bot与目标群已确认`proactive_state='allowed'`，每qid一次2000字以内ephemeral纯文本、排队不超30秒且不超原deadline。`unknown`/`denied`直接拒绝不探测也不借真人被动窗口；401/429/主动拒绝与底层retry/plain不重放，RAM正文`content_hmac`与HTTP前`attempt_denial`复查拦截篡改或途停/撤权，重启/取消保留迟到真实accepted回执事实而不恢复授权。8项新PG/RestClient+loopback回归及99项组合（113.124秒）、Ruff/两项导入/diff通过，proactive/http/ram三独立串行CF各1failure无error RED。目标`say`工具与runtime接线、审计页面展示及真实QQ验收仍待；bb4754e固定全套2296项/10跳过通过（不覆盖0105/0106及本组件），未合并/部署。
+**目标侧`say`与`QuestionRuntime`接线（2026-11-15）**：`QuestionModel`/`QuestionWorker`/`QuestionRuntime`已接入单次纯文本`say(text<=2000)`：仅目标群`proactive_state='allowed'`、真实READY/self Bot有效且本qid无先前来源时开放，私聊与`unknown`/`denied`隐藏并拒绝；发送任务以`shield`+`drain`防超时/取消遗失回执，仅真实`committed`+`delivery_receipt_hash`回报`ok=true`且仍须`ask`收尾；`QuestionRuntime`在`sender.recover()`前执行`notices.recover`、每轮`maintain()`复查并退场清`question_notice_authority`，并修正`qq-official`群目标AI默认开启判断与`turns.py`对齐。实际双端私聊→目标群`OfficialRuntime`+`FakePlatform`端到端通过，确认`delivery_plans`/`deliveries`/outbound`messages`/审计表无明文泄漏；149项16模块组合（173.781秒）、Ruff/两导入/diff通过，`say-proactive`/`say-single-use`/`say-recover`三独立串行CF各2/1/1 failure、0 error RED。管理审计界面分别展示公开通知与私有回答/原领取、新固定全套及真实QQ验收仍待，未合并/部署。
+
+**目标公开通知投递组件（2026-11-15，685438c）**：`QuestionNotices`承接0105/0106存储并接入`plans.py`/`send_store.py`/`send_ledger.py`/`sender.py`；限定真实READY/self Bot与目标群已确认`proactive_state='allowed'`，每qid一次2000字以内ephemeral纯文本、排队不超30秒且不超原deadline。`unknown`/`denied`直接拒绝不探测也不借真人被动窗口；401/429/主动拒绝与底层retry/plain不重放，RAM正文`content_hmac`与HTTP前`attempt_denial`复查拦截篡改或途停/撤权，重启/取消保留迟到真实accepted回执事实而不恢复授权。8项新PG/RestClient+loopback回归及99项组合（113.124秒）、Ruff/两项导入/diff通过，proactive/http/ram三独立串行CF各1failure无error RED。bb4754e固定全套2296项/10跳过通过（不覆盖0105/0106及后续组件），未合并/部署。
 
 **存储准备（2026-11-14）**：0098独立HMAC挑战与有向连接、同账号物理端点复合FK、双边确认+真实发行committed、原权限/回执/route/epoch不可变、600秒界限与撤销代数已建立；19项PG/迁移/旧F6/预算/架构组合通过，删激活证明与目标/同端约束共3失败RED。设计见docs/conversation-questions.md。认证/link短码/ask运行时/管理台尚未接，不标完成；F10旧全套不覆盖本段，未合并/部署。
 

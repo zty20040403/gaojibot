@@ -209,3 +209,52 @@ class QuestionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     await runtime._calls(runtime.question_service.submit,self.binding,edge['link_id'],'TEST_UNAVAILABLE')
                 self.assertEqual(self.query('SELECT * FROM qq_official_conversation_questions'),[]); self.assertEqual(len(fake.received),2)
             finally:await runtime.stop()
+
+    async def test_restart_recovers_pending_notice_before_sender_finalizes_late_receipt_without_reopening_authorization(self):
+        app = self.application()
+        async def simulate_process_loss(service):service.closing = True; service.runtime.question_service = None
+        with self.gateway(app,[]),patch.object(QuestionRuntime,'run',new=park_worker):
+            async with verified_ready_platform() as fake:
+                with patch.object(QuestionRuntime,'close',simulate_process_loss):
+                    first = await self.start_account(fake,app)
+                    group = EndpointKey(first.loaded.account,'group','TEST_RESTART_NOTICE_GROUP')
+                    with first.store.transaction() as cursor:
+                        cursor.execute('''INSERT INTO qq_official_endpoints
+                            (endpoint_key,account_key,kind,native_conversation_id,canonical_scope_key,binding_state,membership_state,proactive_state,created_at,updated_at)
+                            VALUES (?,?,?,?,?,'active','present','allowed',?,?)
+                            ON CONFLICT(endpoint_key) DO UPDATE SET binding_state='active',membership_state='present',proactive_state='allowed' ''',
+                            (group.key,first.loaded.account.key,'group',group.native_conversation_id,group.scope.key,int(first.store.clock()),int(first.store.clock())))
+                    with patch('src.plugins.ai_chat.adapters.qq_official.linking.secrets.randbelow',return_value=654321):
+                        source = await self.emit(fake,'/link')
+                    await self.wait_db("SELECT * FROM deliveries WHERE reply_to_native_message_id=? AND status='committed'",(source,))
+                    fake.add_window('group',group.native_conversation_id,'TEST_GROUP_LINK_ACCEPT')
+                    await fake.emit('GROUP_AT_MESSAGE_CREATE',dict(id='TEST_GROUP_LINK_ACCEPT',group_openid=group.native_conversation_id,
+                        author=dict(member_openid='TEST_GROUP_ADMIN',member_role='admin'),content='/link 654321',timestamp=datetime.now(timezone.utc).isoformat()))
+                    await self.wait_db("SELECT * FROM qq_official_inbound_events WHERE native_message_id='TEST_GROUP_LINK_ACCEPT' AND status='processed'")
+                    edge = (await self.wait_db("SELECT * FROM qq_official_conversation_links WHERE target_endpoint_key=? AND state='active'",(group.key,)))[0]
+                    await self.emit(fake,'TEST_SOURCE_PRIVATE_ONLY',native='TEST_SOURCE_HELD'); await asyncio.wait_for(self.entered.wait(),5)
+                    row,_ = await first._calls(first.question_service.submit,self.binding,edge['link_id'],'TEST_RESTART_NOTICE_Q')
+                    job = first.jobs.claim_due('TEST_MANUAL_WORKER',kinds=(first.question_service.worker.worker.registered_kinds[0],),now=int(first.store.clock()))[0]
+                    first.question_service.worker.claim(job)
+                    with first.store.transaction() as cursor:
+                        _src,_notice,ref = first.question_service.notices.prepare(cursor,first._token,job,'TEST_IN_FLIGHT_NOTICE')
+                    delivery_id = ref.delivery_ids[0]
+                    res = first.outbox.prepare(first._token,delivery_id,send_mode='proactive')
+                    first.outbox.capture_receipt(res,dict(id='TEST_LATE_NOTICE_NATIVE',timestamp=datetime.now(timezone.utc).isoformat()))
+                    await first.stop()
+                self.assertEqual(self.query('SELECT state,delivery_state FROM qq_official_question_notices'),[dict(state='sending',delivery_state='pending')])
+                before_sender_recover = []
+                from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
+                original_sender_recover = OfficialSender.recover
+                async def observe_sender_recover(sender_self):
+                    if not before_sender_recover:
+                        before_sender_recover.extend(self.query('SELECT state,delivery_state FROM qq_official_question_notices'))
+                    return await original_sender_recover(sender_self)
+                with patch.object(OfficialSender,'recover',observe_sender_recover):
+                    second = await self.start_account(fake,None)
+                try:
+                    self.assertEqual(before_sender_recover,[dict(state='unknown',delivery_state='unknown')])
+                    self.assertEqual(self.query('SELECT state,delivery_state,delivery_receipt_hash IS NOT NULL AS hashed FROM qq_official_question_notices'),
+                        [dict(state='unknown',delivery_state='committed',hashed=True)])
+                    self.assertEqual(self.query('SELECT state FROM qq_official_conversation_questions'),[dict(state='unknown')])
+                finally:await second.stop()
