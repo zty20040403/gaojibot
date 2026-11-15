@@ -13,9 +13,10 @@
 - 新UI脚本覆盖实际React表格/按钮、元数据不含正文、XSS转义、大job-ID字符串、账号/物理筛选、忽略abort/同lane迟到、分页、权限失效及close；全部8个UI脚本和tsc/Vite构建通过。三独立CF删清私有状态、返回current和文本转义，各触发AssertionError RED；日志/tmp/gaoji-f8-question-ui-{scope,current,escape}-red.log。CI新增Admin UI作业，用锁定npm依赖构建并执行全部tools/test-*.mjs，不再只验证打包。
 - 本地管理API/UI已接齐；旧3965080 Source本机全套已无可核验证据，固定d8bb7e0本机新全套已失败并保存原记录，Linux通过不覆盖本机失败。
 - 目录失败已独立定位为测试夹具：run.sh的umask077把mkdir(mode=0755)过滤成0700，安全目录本来就不该被拒绝。仅测试补显式chmod0755及实际mode断言，不改src/host_control.py、保护性umask或原符号链接/公开目录拒绝断言。旧夹具在022通过、077稳定1 failure RED；修复后的26项host_control分别在022/077通过，权限/符号链接门槛两个独立CF各1 failure、无error RED，Ruff/两项导入通过。证据在 ~/.cache/gaoji-test-runs/host-receipt-directory/；这些局部通过不是修复后全套结论。
-- 收据夹具修复bb4754e/Draft120（等价7a2edd3）已提交推送；新的固定完整bb4754e9d5674cf3706a6c2f862e9471e095ecbb全套已交后台验证，证据目录`~/.cache/gaoji-test-runs/f8-host-receipt-bb4754e/`，结果尚未返回。初次agent请求不可用haiku在启动前失败，0工具/0测试；随后默认模型agent接手，不能将前者当产品失败或测试结果。
-- 目标通知来源0105本地存储已实现：每qid一次正文HMAC，原完整账号/物理group/首代job/真实Bot/epoch-holder/route-capability-stop-budget快照、30秒且不超question，不产生plan或QQ效果，原current接线另续。18新PG/schema/旧0104迁移、75项组合122.572秒通过；Bot/group/worker/FK/once/TRUNCATE/rollback/expiry八CF各1failure无error。审查所见TRUNCATE和降级并发误删已真实复现/修复；拥有型disposable reset原状态原子恢复语句guard，生产触发器不设测试豁免。日志`~/.cache/gaoji-test-runs/f8-question-notice-source/`；首次guard新增触发12个reset错误已保留并修复，期限CF的重复插入连带error已拆测试、最终单failure无error。不把这些中间错误记作有效最终RED。
-- F8“去群里说一声”目标侧显式say/一次计划/真实回执/授权工具/runtime、最新固定全套及真实QQ/embedding/模型验收仍待，不称F8整体完成；没有合并、部署、生产或Java变更。
+- 收据夹具修复bb4754e/Draft120（等价7a2edd3）已提交推送；固定完整bb4754e9d5674cf3706a6c2f862e9471e095ecbb本机全套已核验通过：Ran 2,296项、0失败、10跳过、1265.057秒、exit 0，证据位于`~/.cache/gaoji-test-runs/f8-host-receipt-bb4754e/{run.sh,full.revision,full.log,full.exit}`（不覆盖之后0105/0106）。初次agent请求不可用haiku在启动前失败，0工具/0测试；随后默认模型agent接手。
+- 目标通知来源0105（7f831cc/Draft#121，等价18e34d8）本地存储已实现：每qid一次正文HMAC，原完整账号/物理group/首代job/真实Bot/epoch-holder/route-capability-stop-budget快照、30秒且不超question，不产生plan或QQ效果。
+- 目标通知单次计划与真实回执0106存储已实现：`qq_official_question_notices`与`delivery_plans(purpose='question_notice', ephemeral_content=TRUE, delivery_mode='proactive', fallback_policy='never')`每来源最多一计划，复合FK固定原账号/目标群/Bot身份；禁止真人/他Bot/持久正文/终态补挂计划与DELETE/TRUNCATE。`committed`仅认匹配真实`proactive`且`applied_at IS NOT NULL`（`delivery_reply_to=''`）的`qq_official_delivery_receipts`，允许取消/过期/unknown后补记迟到accepted回执而不恢复授权；降级先加`ACCESS EXCLUSIVE`锁再查空，有审计或计划禁止回退。61项PG/schema/迁移/来源/问询/审计组合95.036秒通过，Ruff/两项导入/diff通过；bot/proactive/receipt/truncate/downgrade-lock五独立CF均RED。当前仍仅存储迁移，纯`QuestionNotices`授权、Sender、目标`say`工具/runtime、审计展示与真实验收另续。
+- F8“去群里说一声”目标侧显式say授权/Sender/工具/runtime、0105/0106新固定全套及真实QQ/embedding/模型验收仍待，不称F8整体完成；没有合并、部署、生产或Java变更。
 
 ## 开发记录（2026-11-15）· F8管理台只读连接与问答审计API
 

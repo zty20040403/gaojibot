@@ -68,12 +68,12 @@ class QuestionNoticeSourceTests(NoticeFixture):
             self.assertEqual(self.query("SELECT tgenabled FROM pg_trigger WHERE tgrelid='qq_official_question_notice_sources'::regclass AND tgname='protect_question_notice_truncate'")[0]['tgenabled'],enabled)
         self.query('ALTER TABLE qq_official_question_notice_sources ENABLE TRIGGER protect_question_notice_truncate')
         with self.pg_error(pattern='immutable_question_notice_source'):
-            self.query('TRUNCATE qq_official_question_notice_sources')
+            self.query('TRUNCATE qq_official_question_notice_sources CASCADE')
 
     def test_truncate_cannot_erase_the_once_only_proposal_and_replay_it(self):
         row = self.notice()
         with self.pg_error(pattern='immutable_question_notice_source'):
-            self.query('TRUNCATE qq_official_question_notice_sources')
+            self.query('TRUNCATE qq_official_question_notice_sources CASCADE')
         self.assertEqual(self.query('SELECT * FROM qq_official_question_notice_sources'),[row])
 
     def test_other_real_first_job_cannot_borrow_the_original_question_id(self):
