@@ -1,11 +1,27 @@
 """Transactional image-caption admission and per-conversation operator controls."""
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
+import os
 from zoneinfo import ZoneInfo
 
 from .message_ir import MediaNode
 from .conversation_scope import ConversationScope
 from .platform_types import EndpointKey
+
+# QQ stickers people send (group or private) are tagged into the global library.
+STICKER_COLLECTION_SCOPE = 'global:stickers'
+
+
+def sticker_collection(environ=None):
+    value = (os.environ if environ is None else environ).get('AI_STICKER_COLLECTION', 'true')
+    return value.strip().lower() not in {'0', 'false', 'no', 'off'}
+
+
+def sticker_daily_limit(environ=None):
+    try:
+        return max(int((os.environ if environ is None else environ).get('AI_STICKER_COLLECTION_DAILY_LIMIT', '200')), 0)
+    except ValueError:
+        return 200
 
 
 def caption_day(now):
@@ -28,15 +44,19 @@ def ingest_captions(cursor, message, now):
             ON CONFLICT(canonical_message_id,segment_index) WHERE canonical_message_id IS NOT NULL DO NOTHING
             RETURNING message_media_id''', (message.scope_key,message.canonical_message_id,message.native_message_id,
                 message.sender_native_user_id,node.segment_index,node.media_kind,now,now)).fetchone()
-        if link is None or not enabled:
+        collect = node.media_kind == 'sticker' and sticker_collection()
+        if link is None or not (enabled or collect):
             continue
         # One atomic row update caps concurrent messages; replay cannot reserve twice.
+        # Stickers outside captioned conversations count against one host-wide cap.
+        counter, limit = ((physical_scope, settings['image_daily_limit']) if enabled
+                          else (STICKER_COLLECTION_SCOPE, sticker_daily_limit()))
         day = caption_day(now)
         cursor.execute('''INSERT INTO image_caption_daily(scope_key,day) VALUES (?,?) ON CONFLICT DO NOTHING''',
-                       (physical_scope,day))
+                       (counter,day))
         admitted = cursor.execute('''UPDATE image_caption_daily SET admitted=admitted+1
             WHERE scope_key=? AND day=? AND admitted<? RETURNING admitted''',
-            (physical_scope,day,settings['image_daily_limit'])).fetchone()
+            (counter,day,limit)).fetchone()
         cursor.execute('UPDATE message_media SET fetch_status=? WHERE message_media_id=?',
                        ('pending' if admitted else 'quota',link['message_media_id']))
         if admitted:
