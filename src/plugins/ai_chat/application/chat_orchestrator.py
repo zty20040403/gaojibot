@@ -155,14 +155,14 @@ class ChatOrchestrator:
 
         try:
             caller_selected_profile = "selected_profile_override" in kwargs
-            explicit_profile = await self.db_call(
-                self.model_preferences.get_explicit, conversation_id
-            )
+            # Personal models were retired: one model per conversation keeps the
+            # provider cache warm. Old personal entries are ignored.
+            explicit_profile = None
             group_default_profile = await self.db_call(
                 self.ports.group_default_profile, inbound
             )
             selected_profile = self.model_catalog.resolve_preference(
-                explicit_profile or group_default_profile
+                group_default_profile
             )
             simple_chat_routing_allowed = (
                 not caller_selected_profile

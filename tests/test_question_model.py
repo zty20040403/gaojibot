@@ -50,7 +50,7 @@ class QuestionModelTests(QuestionFixture,unittest.IsolatedAsyncioTestCase):
         self.questions = Questions(authority,self.jobs); self.binding = ExecutionBinding(turn_source,self.token,self.handle,self.job,self.admission)
         profile = ModelProfile('TEST_TARGET_MODEL','openai-chat','openai-chat','TEST_TARGET_MODEL','https://model.example.invalid',
             api_key='TEST_KEY',max_input_tokens=32768,max_output_tokens=1024)
-        self.preferences = SimpleNamespace(get_scope_default=Mock(return_value=profile.name),get_scope_enabled_override=Mock(return_value=True))
+        self.preferences = SimpleNamespace(get_conversation_default=Mock(return_value=profile.name),get_scope_enabled_override=Mock(return_value=True))
         self.app = SimpleNamespace(settings=replace(settings,semantic_enabled=False),model_billing=ModelBilling(self.database,clock=lambda:self.now),
             db_call=self.calls,message_ledger=self.ledger,conversations=self.store,usage_store=self.usage,
             model_catalog=ModelCatalog({profile.name:profile},default_profile=profile.name),model_preferences=self.preferences)
@@ -95,7 +95,7 @@ class QuestionModelTests(QuestionFixture,unittest.IsolatedAsyncioTestCase):
             text = repr(call.kwargs['messages']); self.assertIn('TEST_TARGET_DINNER',text); self.assertNotIn('TEST_SOURCE_SECRET',text)
             self.assertEqual({tool['function']['name'] for tool in call.kwargs['tools']},{'history','ask'})
             self.assertEqual(call.args[0].model,'TEST_TARGET_MODEL')
-        self.assertTrue(all(call.args[0]==self.target.scope for call in self.preferences.get_scope_default.call_args_list))
+        self.assertTrue(all(call.args[0]==self.target.scope for call in self.preferences.get_conversation_default.call_args_list))
         self.assertEqual(self.query('SELECT COUNT(*) AS n FROM deliveries')[0]['n'],0)
         bills = self.query('SELECT actor_key,scope_key,purpose FROM model_usage_calls')
         self.assertEqual(len(bills),3); self.assertTrue(all(row==dict(actor_key=None,scope_key=self.target.scope.key,purpose='conversation_question') for row in bills))

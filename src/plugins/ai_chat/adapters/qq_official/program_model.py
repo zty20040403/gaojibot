@@ -25,12 +25,11 @@ class ProgramModel:
 
     def context(self, current):
         app,scope = self.app,current.endpoint.scope
-        preference = None
         if scope.kind=='group':
             enabled = app.model_preferences.get_scope_enabled_override(scope)
             if not (enabled if enabled is not None else app.settings.is_scope_enabled(scope)):
                 raise ProgramDenied('program_ai_disabled')
-            preference = app.model_preferences.get_scope_default(scope) or app.settings.model_profile_for_scope(scope)
+        preference = app.model_preferences.get_conversation_default(scope) or app.settings.model_profile_for_scope(scope)
         profile = app.model_catalog.resolve_preference(preference)
         ledger,store = app.message_ledger,app.conversations
         history = build_tail(ledger,store,scope,high_tokens=tail_budget(profile)) if ledger is not None and store is not None else ''

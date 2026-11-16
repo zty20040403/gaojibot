@@ -19,10 +19,9 @@ from .turn_source import load_turn_input
 from .turn_platform import ExecutionBinding, OfficialTurnPlatform
 from .sections import ReplyStream
 from contextvars import ContextVar
-from src.plugins.ai_chat.application.commands import CommandPolicy, CommandServices, parse_command
+from src.plugins.ai_chat.application.commands import CommandPolicy, CommandServices
 from src.plugins.ai_chat.application.platform_conversation import build_platform_chat_orchestrator
 from src.plugins.ai_chat.application.platform_chat import PlatformChatService
-from src.plugins.ai_chat.conversation_keys import conversation_key
 from src.plugins.ai_chat.model_catalog import SUPPORTED_REASONING_EFFORTS
 from src.plugins.ai_chat.platform_types import EndpointKey
 from . import turn_source as execution
@@ -422,21 +421,13 @@ def build_turn_consumer(runtime, token, app):
                     active_cursor.reset(marker)
 
         def policy(cursor, *, group_default=None):
-            # These are already host-configured profiles. Personal preferences
-            # stay within the actual endpoint/actor; only a current local owner
-            # may change that endpoint's group defaults.
+            # These are already host-configured profiles. Only a current local
+            # owner changes models: /model sets the host-wide model, and
+            # /model 群默认 sets one group's own default. Everyone may look.
             profiles = tuple(profile.name for profile in app.model_catalog.profiles if profile.configured)
             owner = runtime.store.authority.owner_for_actor(cursor, inbound.endpoint, inbound.actor)
-            if group_default is None:
-                source = cursor.execute("""SELECT turn_text FROM qq_official_inbound_events
-                    WHERE inbox_id=? AND account_key=?""", (life.handle.inbox_id, token.account_key)).fetchone()
-                parsed = parse_command(source["turn_text"]) if source is not None else None
-                words = parsed.argument.split(None, 1) if parsed is not None else ()
-                group_default = bool(words and words[0].casefold() in {"group", "群默认"})
-            preference = None if group_default else app.model_preferences.get_explicit(conversation_key(inbound))
-            if preference is None and inbound.endpoint.kind == "group":
-                preference = (app.model_preferences.get_scope_default(inbound.endpoint.scope)
-                    or app.settings.model_profile_for_scope(inbound.endpoint.scope))
+            preference = (app.model_preferences.get_conversation_default(inbound.endpoint.scope)
+                or app.settings.model_profile_for_scope(inbound.endpoint.scope))
             profile = app.model_catalog.resolve_preference(preference)
             # The same provider restriction applies in PlatformChatService and
             # the unchanged OneBot command. Unsupported settings must not be
@@ -445,9 +436,9 @@ def build_turn_consumer(runtime, token, app):
             return CommandPolicy(models=profiles, efforts=efforts,
                 default_model=profile.name,
                 default_effort=profile.reasoning_effort or "",
-                allow_model_read=True, allow_model_change=True,
+                allow_model_read=True, allow_model_change=owner is not None,
                 allow_effort_read=True, allow_effort_change=True,
-                allow_group_default=owner is not None)
+                allow_group_default=owner is not None, global_model=True)
 
         async def host_policy(_inbound):
             def read():

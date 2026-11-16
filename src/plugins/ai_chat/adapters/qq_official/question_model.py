@@ -81,7 +81,7 @@ class QuestionModel:
                 except PermissionError:
                     say_allowed = False
         app,physical = self.app,target.endpoint.scope
-        preference = (app.model_preferences.get_scope_default(physical) if target.endpoint.kind=='group' else None) or app.settings.model_profile_for_scope(physical)
+        preference = app.model_preferences.get_conversation_default(physical) or app.settings.model_profile_for_scope(physical)
         if target.endpoint.kind=='group':
             enabled = app.model_preferences.get_scope_enabled_override(physical)
             if enabled is False or (enabled is None and physical.platform!='qq-official' and not app.settings.is_scope_enabled(physical)):

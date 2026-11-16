@@ -88,6 +88,8 @@ class CommandPolicy:
     allow_effort_read: bool = False
     allow_effort_change: bool = False
     allow_group_default: bool = False
+    # /model (without 群默认) reads and sets the one host-wide model, not a personal one.
+    global_model: bool = False
 
 
 PolicyCallback = Callable[[InboundMessage], CommandPolicy | Awaitable[CommandPolicy]]
@@ -281,10 +283,14 @@ async def _setting_command(request: ParsedCommand, inbound: InboundMessage, serv
     key = conversation_key(inbound)
     # Defaults are attached to the real endpoint, never a canonical alias.
     target_scope = inbound.endpoint.scope
+    global_model = model and policy.global_model and not group_default
     if not value:
         if not read_allowed:
             return CommandResult("denied", "宿主未授权查看此模型配置。")
-        if group_default:
+        if global_model:
+            # The policy already resolved what this conversation actually uses.
+            current = default
+        elif group_default:
             current = await _store(services, store.get_scope_default if model else store.get_scope_member_default, target_scope)
         else:
             current = await _store(services, store.get_explicit, key)
@@ -294,13 +300,20 @@ async def _setting_command(request: ParsedCommand, inbound: InboundMessage, serv
         displayed = current if current in options else default if default in options else "宿主默认"
         return CommandResult("ok", f"当前{label}：{displayed}\n可用：" + ("、".join(options) or "无"))
     if not change_allowed:
+        if global_model:
+            return CommandResult("denied", "模型由宿主 owner 统一设置，其他人只能查看。")
         return CommandResult("denied", "宿主未授权更改此模型配置。")
     reset = value.casefold() in _RESETS
     if not model and not reset:
         value = _EFFORT_ALIASES.get(value.casefold(), value.casefold())
     if not reset and value not in options:
         return CommandResult("denied", f"该{label}不在宿主授权范围内。")
-    if group_default:
+    if global_model:
+        if reset:
+            await _store(services, store.clear_global_default)
+        else:
+            await _store(services, store.set_global_default, value)
+    elif group_default:
         if reset:
             clear = store.clear_scope_default if model else store.clear_scope_member_default
             await _store(services, clear, target_scope)
@@ -311,5 +324,5 @@ async def _setting_command(request: ParsedCommand, inbound: InboundMessage, serv
         await _store(services, store.clear, key)
     else:
         await _store(services, store.set, key, value)
-    target = "当前入口的群默认" if group_default else "本人当前会话的"
+    target = "全局" if global_model else "当前入口的群默认" if group_default else "本人当前会话的"
     return CommandResult("ok", f"已恢复{target}{label}。" if reset else f"已设置{target}{label}：{value}。")

@@ -24,7 +24,7 @@ class ProgramModelTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.app = SimpleNamespace(settings=replace(settings,search_enabled=True,search_auto_enabled=True),db_call=calls,
             message_ledger=self.ledger,conversations=self.store,usage_store=self.usage,
             model_catalog=ModelCatalog({'TEST_MODEL':profile},default_profile='TEST_MODEL'),
-            model_preferences=SimpleNamespace(get_scope_enabled_override=lambda _:True,get_scope_default=lambda _:'TEST_MODEL'),
+            model_preferences=SimpleNamespace(get_scope_enabled_override=lambda _:True,get_conversation_default=lambda _:'TEST_MODEL'),
             skill_registry=SimpleNamespace(prompt_index=lambda:''))
         self.guest = SimpleNamespace(_verify=AsyncMock())
         self.model = ProgramModel(self.app,self.execution,self.guest,calls)

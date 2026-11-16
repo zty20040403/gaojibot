@@ -95,12 +95,8 @@ class PlatformChatService:
         selected_profile = selected_profile_override
         if selected_profile is None:
             preference = await self.context.db_call(
-                self.context.model_preferences.get_explicit, ports.conversation_id,
-            )
-            if preference is None and inbound.endpoint.kind == "group":
-                preference = await self.context.db_call(
-                    self.context.model_preferences.get_scope_default, inbound.endpoint.scope,
-                ) or self.context.settings.model_profile_for_scope(inbound.endpoint.scope)
+                self.context.model_preferences.get_conversation_default, inbound.endpoint.scope,
+            ) or self.context.settings.model_profile_for_scope(inbound.endpoint.scope)
             selected_profile = self.context.model_catalog.resolve_preference(preference)
         if selected_model_override:
             selected_profile = (

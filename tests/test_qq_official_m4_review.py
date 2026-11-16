@@ -148,7 +148,7 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                 completion.assert_not_called()
                 self.assertFalse(any(item["payload"].get("msg_id") == "TEST_REVIEW_REVOKED" for item in fake.received))
 
-    async def test_effort_obeys_actual_provider_and_group_default_is_not_owner_personal_model(self):
+    async def test_effort_obeys_actual_provider_and_only_the_owner_sets_the_model(self):
         app = self.application()
         app.model_catalog = ModelCatalog.from_json(json.dumps({"default": "supported", "profiles": {
             "supported": {"provider": "openai", "model": "TEST_GPT", "api_key_required": False},
@@ -167,25 +167,29 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                     await self.complete(native)
                     return fake.received[-1]["payload"]["markdown"]["content"]
 
-                await command("/model unsupported")
+                # The owner's /model sets the one global model; effort follows it.
+                self.assertIn("已设置全局模型：unsupported", await command("/model unsupported"))
+                self.assertEqual(app.model_preferences.get_global_default(), "unsupported")
                 self.assertIn("不在宿主授权范围", await command("/effort high"))
                 self.assertEqual(app.reasoning_preferences.items(), [])
-                # Reset remains a supported cleanup even on a provider without
-                # effort levels, including an old override from another model.
-                personal_key = app.model_preferences.items()[0][0]
-                app.reasoning_preferences.set(personal_key, "high")
-                self.assertIn("已恢复", await command("/effort reset"))
-                self.assertIsNone(app.reasoning_preferences.get_explicit(personal_key))
                 await command("/model supported")
                 self.assertIn("已设置", await command("/effort high"))
-                self.assertEqual(app.reasoning_preferences.get_explicit(personal_key), "high")
+                personal_key = app.reasoning_preferences.items()[0][0]
+                # Reset remains a supported cleanup even on a provider without
+                # effort levels, including an old override from another model.
+                await command("/model unsupported")
+                self.assertIn("已恢复", await command("/effort reset"))
+                self.assertIsNone(app.reasoning_preferences.get_explicit(personal_key))
+                self.assertIn("已恢复全局模型", await command("/model reset"))
+                self.assertIsNone(app.model_preferences.get_global_default())
 
                 endpoint = await self.bound_group(fake, runtime, grant_owner=True)
-                await command("/model unsupported", group=True)
-                # Owner's personal choice cannot disable the supported group
-                # default, nor enable an unsupported group default's setting.
+                # The owner's /model is the global model.
+                self.assertIn("已设置全局模型：supported", await command("/model supported", group=True))
+                self.assertEqual(app.model_preferences.get_global_default(), "supported")
                 self.assertIn("已设置", await command("/effort group high", group=True))
                 self.assertEqual(app.reasoning_preferences.get_scope_member_default(endpoint.scope), "high")
+                # A group's own default wins over the global model.
                 await command("/model group unsupported", group=True)
                 await command("/model supported", group=True)
                 self.assertIn("不在宿主授权范围", await command("/effort group low", group=True))
