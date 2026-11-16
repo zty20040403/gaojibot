@@ -1170,6 +1170,27 @@ class MediaLibrary:
             return None
         return str(row["native_message_id"]), int(row["segment_index"])
 
+    def recent_sticker_sends(self, scope_key: str, since: int) -> dict[int, int]:
+        """Stickers this conversation was sent since a time: media_id -> last send."""
+        if not scope_key:
+            return {}
+        connection = self.database.store_connection()
+        try:
+            rows = connection.execute(
+                """
+                SELECT blob.media_id, max(artifact.created_at) AS sent_at
+                FROM qq_official_file_artifacts AS artifact
+                JOIN media_blobs AS blob ON blob.sha256 = artifact.sha256
+                JOIN sticker_library AS stickers ON stickers.media_id = blob.media_id
+                WHERE artifact.source_scope_key = ? AND artifact.created_at >= ?
+                GROUP BY blob.media_id
+                """,
+                (scope_key, int(since)),
+            ).fetchall()
+        finally:
+            connection.close()
+        return {int(row["media_id"]): int(row["sent_at"]) for row in rows}
+
     def mark_sent(self, media_id: int) -> None:
         now = int(time.time())
         connection = self.database.store_connection()

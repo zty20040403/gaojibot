@@ -15,6 +15,28 @@ class StickerSendTests(unittest.IsolatedAsyncioTestCase):
         context = ToolContext(SimpleNamespace(context=SimpleNamespace(media_library=library)))
         return TurnState(context), library
 
+    def recent_turn(self, recent):
+        records = [SimpleNamespace(handle="media#7", media_id=7, mime_type="image/png"),
+                   SimpleNamespace(handle="media#8", media_id=8, mime_type="image/png")]
+        turn, library = self.turn(records)
+        library.recent_sticker_sends = Mock(return_value=recent)
+        app = turn.context.app
+        turn.context = SimpleNamespace(app=app, scope=SimpleNamespace(key="TEST_SCOPE"))
+        return turn, library
+
+    async def test_stickers_sent_here_lately_go_behind_fresh_ones(self):
+        turn, library = self.recent_turn({7: 100})
+        session = SimpleNamespace(sticker=AsyncMock(return_value={"state": "registered"}))
+        await _send_sticker(session, turn, {"query": "酷"})
+        self.assertEqual(session.sticker.await_args.args[0], {"media_handle": "media#8"})
+        self.assertEqual(library.recent_sticker_sends.call_args.args[0], "TEST_SCOPE")
+
+    async def test_only_recent_stickers_left_are_still_sent_oldest_first(self):
+        turn, _ = self.recent_turn({7: 200, 8: 100})
+        session = SimpleNamespace(sticker=AsyncMock(return_value={"state": "registered"}))
+        await _send_sticker(session, turn, {"query": "酷"})
+        self.assertEqual(session.sticker.await_args.args[0], {"media_handle": "media#8"})
+
     async def test_stickers_shown_by_find_stay_eligible_and_sends_are_counted(self):
         # find_stickers showed media#7; a query must still be allowed to pick it.
         turn, library = self.turn([SimpleNamespace(handle="media#7", mime_type="image/png")])
