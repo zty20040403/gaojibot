@@ -135,6 +135,10 @@ def media_registry(registry, context):
                 elif name=='read_attachment':result=await session.document(arguments)
                 elif name in {'view_forward','send_forward_summary'}:
                     result=await session.forward(arguments,send=name=='send_forward_summary')
+                    if (name=='send_forward_summary' and isinstance(result,dict) and result.get('artifact_id')
+                            and result.get('state') in {'stored','uploading','uploaded','publishing','published',
+                                                       'handed_off','message_accepted'}):
+                        turn.delivered = True
                 else:result=await _send_sticker(session,turn,arguments)
                 if isinstance(result, ToolImage):
                     return result

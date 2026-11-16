@@ -253,6 +253,61 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply.strip(), "待发送的转发摘要")
         media_session.current.assert_awaited()
 
+    async def test_forward_registered_file_allows_silence_but_failed_file_does_not(self) -> None:
+        media = SimpleNamespace(
+            frontend_vision=False,
+            service=SimpleNamespace(image_fetcher=SimpleNamespace(max_bytes=1024),
+                                    config=SimpleNamespace(max_download_bytes=1024), asr=None),
+            enabled=lambda name: name == 'send_forward_summary',
+            input_images=AsyncMock(return_value=((), '')), current=AsyncMock(), finish=lambda answer: answer,
+            forward=AsyncMock(return_value={'state': 'stored', 'artifact_id': 'art-forward'}),
+        )
+        async def llm(_user_text, _history, _tools, execute_tool, **_kwargs):
+            result = json.loads(await execute_tool('send_forward_summary', {}))
+            self.assertTrue(result['ok'])
+            return ''
+        service = self._service(llm=llm, media_session=media,
+            registry_factory=lambda ctx: media_registry(neutral_registry_for(ctx), ctx))
+        for state in ('stored', 'uploading', 'uploaded', 'publishing', 'published', 'handed_off', 'message_accepted'):
+            media.forward.return_value = {'state': state, 'artifact_id': 'art-forward'}
+            try:
+                answer = await service.ask(self.inbound, self._platform(), '转发',
+                                           selected_profile_override=self.profile)
+            except ChatFailure as error:
+                self.fail(f'registered forward {state} must not produce {error.code}')
+            self.assertEqual(answer, '[silence]')
+        for state in ('failed', 'ambiguous', 'prepared_content'):
+            media.forward.return_value = {'state': state, 'artifact_id': 'art-forward'}
+            with self.assertRaises(ChatFailure) as raised:
+                await service.ask(self.inbound, self._platform(), '转发', selected_profile_override=self.profile)
+            self.assertEqual(raised.exception.code, 'empty_response')
+
+    async def test_forward_prepared_text_is_sent_without_other_tool_delivery(self) -> None:
+        pending = []
+        async def forward(_arguments, *, send):
+            self.assertTrue(send)
+            pending.append('已准备的转发摘要')
+            return {'state': 'prepared_content'}
+        media = SimpleNamespace(
+            frontend_vision=False,
+            service=SimpleNamespace(image_fetcher=SimpleNamespace(max_bytes=1024),
+                                    config=SimpleNamespace(max_download_bytes=1024), asr=None),
+            enabled=lambda name: name == 'send_forward_summary',
+            input_images=AsyncMock(return_value=((), '')), current=AsyncMock(), forward=forward,
+            finish=lambda answer: '\n\n'.join([answer, *pending]),
+        )
+        async def llm(_user_text, _history, _tools, execute_tool, **_kwargs):
+            self.assertTrue(json.loads(await execute_tool('send_forward_summary', {}))['ok'])
+            return ''
+        service = self._service(llm=llm, media_session=media,
+            registry_factory=lambda ctx: media_registry(neutral_registry_for(ctx), ctx))
+        try:
+            answer = await service.ask(self.inbound, self._platform(), '转发', selected_profile_override=self.profile)
+        except ChatFailure as error:
+            self.fail(f'prepared forward content must be returned, not {error.code}')
+        self.assertEqual(answer.strip(), '已准备的转发摘要')
+        media.current.assert_awaited_once()
+
     async def test_send_file_from_sandbox_allows_empty_answer(self) -> None:
         class _FakeExecutor(OwnedSandboxExecutor):
             def __init__(self) -> None:

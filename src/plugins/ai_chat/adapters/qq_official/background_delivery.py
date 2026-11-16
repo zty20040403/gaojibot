@@ -92,6 +92,11 @@ async def _present(service, row, *, question=None):
                     tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True, policies={name: replace(
                         policy_for_tool(name), timeout_seconds=310) for name in ('send_file', 'send_file_from_sandbox')}),
                     max_tool_rounds=24, max_total_calls=80, max_calls_per_round=24)
+            if not answer or not answer.strip():
+                if turn.delivered:
+                    answer = '[silence]'
+                else:
+                    raise ValueError('empty_background_answer')
             if question is None:
                 await service.calls(service.store.update, row['job_id'], frontend_answer=answer)
     except Exception as error:
