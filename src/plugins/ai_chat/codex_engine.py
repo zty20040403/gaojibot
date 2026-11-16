@@ -244,7 +244,11 @@ class CodexEngine:
             if run.status == 'failed':
                 # The relay knows why a model call failed; Codex only reports a generic retry error.
                 raise RuntimeError(self.gateway.failure(token) or run.error or 'Codex 运行失败。')
+            trace.model = getattr(channel, 'last_model', None) or trace.model
             text = run.last_text.strip() or f"Codex 没有留下文字报告，会话记录在 /work/.gaoji/jobs/job-{row['job_id']}/codex。"
+            if channel.fallbacks:
+                notes = '；'.join(f'{old} → {new}，原因：{reason}' for old, new, reason in channel.fallbacks)
+                text = f'{text}\n（后台模型降级：{notes}）'
             return f'{DEADLINE_NOTE}\n{text}' if stopped else text
         except asyncio.CancelledError:
             if run.thread and run.turn and not run.done.is_set():

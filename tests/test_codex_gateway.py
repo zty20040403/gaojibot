@@ -408,6 +408,205 @@ class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(cancelled.wait(), 2)
             await asyncio.gather(task, return_exceptions=True)
 
+    async def test_cancelled_receipt_start_is_finished_after_revocation(self):
+        entered, finished = asyncio.Event(), asyncio.Event()
+
+        class Receipt:
+            async def start(self):
+                # Represents a receipt whose DB insert has committed, but whose
+                # start coroutine has not yet returned to the gateway.
+                entered.set()
+                await asyncio.Event().wait()
+            async def finish(self):
+                finished.set()
+        class Billing:
+            def request(self, _profile):
+                return Receipt()
+        self.gateway.billing = lambda _channel: Billing()
+        self.gateway.model = lambda: (['m1', 'm2'], 'high')
+        token, _ = self.gateway.open()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            request = asyncio.create_task(client.post(
+                self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token}))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                self.gateway.revoke(token)
+                try:
+                    await asyncio.wait_for(finished.wait(), 1)
+                except TimeoutError:
+                    self.fail('cancelled model receipt was not finished')
+                self.assertEqual((await request).status_code, 401)
+            finally:
+                request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+
+    async def test_error_body_read_timeout_closes_receipt_and_tries_next_model(self):
+        attempts, receipts = [], []
+        closed = asyncio.Event()
+
+        class Receipt:
+            def __init__(self, model):
+                self.model, self.finished = model, False
+            async def start(self):
+                pass
+            def observe(self, _usage):
+                pass
+            async def finish(self):
+                self.finished = True
+
+        class Billing:
+            def request(self, profile):
+                receipt = Receipt(profile.model)
+                receipts.append(receipt)
+                return receipt
+
+        class ErrorStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                raise httpx.ReadTimeout('error response stalled')
+                yield b''
+            async def aclose(self):
+                closed.set()
+
+        def upstream(request):
+            model = json.loads(request.content)['model']
+            attempts.append(model)
+            if model == 'm1':
+                return httpx.Response(404, stream=ErrorStream())
+            return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
+                                  headers={'content-type': 'text/event-stream'})
+
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        self.gateway.model = lambda: (['m1', 'm2'], 'high')
+        self.gateway.billing = lambda _channel: Billing()
+        token, channel = self.gateway.open()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            response = await client.post(self.base + '/responses', json={'input': []},
+                                         headers={'Authorization': 'Bearer ' + token})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(attempts, ['m1', 'm2'])
+        self.assertTrue(closed.is_set())
+        self.assertEqual(channel.model_index, 1)
+        self.assertEqual([receipt.finished for receipt in receipts], [True, True])
+
+    async def test_model_chain_fallbacks_billing_and_stream_failures(self):
+        attempts = []
+        receipts = []
+
+        class FakeReceipt:
+            def __init__(self, model_name):
+                self.model_name = model_name
+                self.started = False
+                self.finished = False
+                self.usage = None
+
+            async def start(self):
+                self.started = True
+
+            def observe(self, usage):
+                self.usage = usage
+
+            async def finish(self):
+                self.finished = True
+
+        class FakeBilling:
+            def request(self, prof):
+                r = FakeReceipt(prof.model)
+                receipts.append(r)
+                return r
+
+        mode = {'kind': '404_then_ok'}
+
+        class BrokenStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'data: {"type":"response.created"}\n\n'
+                raise httpx.ReadTimeout('stream stalled')
+
+        async def upstream(request):
+            body = json.loads(request.content)
+            model = body['model']
+            attempts.append(model)
+            if mode['kind'] == '404_then_ok':
+                if model == 'm1':
+                    return httpx.Response(404, content=b'model not found')
+                return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
+                                      headers={'content-type': 'text/event-stream'})
+            if mode['kind'] == '400_context':
+                return httpx.Response(400, content=b'maximum context length exceeded')
+            if mode['kind'] == '400_model':
+                if model == 'm1':
+                    return httpx.Response(400, content=b'model does not exist')
+                return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
+                                      headers={'content-type': 'text/event-stream'})
+            if mode['kind'] == 'all_fail':
+                return httpx.Response(503, content=b'busy')
+            if mode['kind'] == 'stream_break':
+                if model == 'm1':
+                    return httpx.Response(200, stream=BrokenStream(), headers={'content-type': 'text/event-stream'})
+                return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
+                                      headers={'content-type': 'text/event-stream'})
+            raise AssertionError(mode['kind'])
+
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        self.gateway.model = lambda: (['m1', 'm2', 'm3'], 'high')
+        self.gateway.billing = lambda _ch: FakeBilling()
+
+        # 1) 404 -> fallback to m2, next request starts from m2, failed receipt finished
+        token, channel = self.gateway.open()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            r1 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token})
+            self.assertEqual(r1.status_code, 200)
+            self.assertEqual(attempts, ['m1', 'm2'])
+            self.assertEqual(len(channel.fallbacks), 1)
+            self.assertEqual(channel.fallbacks[0][:2], ('m1', 'm2'))
+            self.assertEqual(channel.last_model, 'm2')
+            self.assertTrue(receipts[0].finished)
+            self.assertTrue(receipts[1].finished)
+
+            attempts.clear()
+            r2 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token})
+            self.assertEqual(r2.status_code, 200)
+            self.assertEqual(attempts, ['m2'])
+
+            # 2) 400 context length does NOT fallback
+            attempts.clear()
+            mode['kind'] = '400_context'
+            token2, _ = self.gateway.open()
+            r3 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token2})
+            self.assertEqual(r3.status_code, 400)
+            self.assertEqual(attempts, ['m1'])
+
+            # 3) 400 model does not exist DOES fallback
+            attempts.clear()
+            mode['kind'] = '400_model'
+            token3, _ = self.gateway.open()
+            r4 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token3})
+            self.assertEqual(r4.status_code, 200)
+            self.assertEqual(attempts, ['m1', 'm2'])
+
+            # 4) all fail -> 503
+            attempts.clear()
+            mode['kind'] = 'all_fail'
+            token4, _ = self.gateway.open()
+            r5 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token4})
+            self.assertEqual(r5.status_code, 503)
+            self.assertEqual(attempts, ['m1', 'm2', 'm3'])
+
+            # 5) two consecutive stream failures advance model_index to m2
+            attempts.clear()
+            mode['kind'] = 'stream_break'
+            token5, ch5 = self.gateway.open()
+            for _ in range(2):
+                with self.assertRaises(httpx.HTTPError):
+                    await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token5})
+            self.assertEqual(ch5.model_index, 1)
+            attempts.clear()
+            r6 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token5})
+            self.assertEqual(r6.status_code, 200)
+            self.assertEqual(attempts, ['m2'])
+        self.assertTrue(all(r.finished for r in receipts))
+
 
 if __name__ == '__main__':
     unittest.main()

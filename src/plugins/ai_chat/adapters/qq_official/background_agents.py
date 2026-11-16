@@ -66,8 +66,13 @@ class OfficialBackgroundAgents:
 
         def upstream():
             return upstream_profile(app.model_catalog, settings)
-        self.gateway = CodexGateway(port=settings.background_gateway_port, upstream=upstream,
-            model=self.model_settings.get, logger=app.logger, billing=self.billing)
+        self.gateway = CodexGateway(
+            port=settings.background_gateway_port,
+            upstream=upstream,
+            model=lambda: (self.model_settings.chain(), self.model_settings.get()[1]),
+            logger=app.logger,
+            billing=self.billing,
+        )
         self.vm_lifecycle = None
         if getattr(getattr(app,'sandbox_manager',None),'backend',None) in {'vm','container'}:
             from .vm_lifecycle import OfficialVMLifecycle

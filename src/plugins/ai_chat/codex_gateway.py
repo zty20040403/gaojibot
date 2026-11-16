@@ -27,6 +27,17 @@ MAX_BODY = 64 * 1024 * 1024
 MAX_JOB_TOOL_BODY = 1024 * 1024
 TOOL_HEARTBEAT_SECONDS = 25.0
 IDLE_SECONDS = 120
+FALLBACK_STATUSES = frozenset({401, 403, 404, 408, 409, 429, 500, 502, 503, 504, 529})
+MODEL_400_MARKERS = ('not found', 'does not exist', 'unsupported', 'not supported')
+
+
+def _should_fallback_status(status: int, body: bytes) -> bool:
+    if status in FALLBACK_STATUSES:
+        return True
+    if status == 400:
+        text = body.decode(errors='replace').lower()
+        return 'model' in text and any(marker in text for marker in MODEL_400_MARKERS)
+    return False
 
 
 class RequestScope:
@@ -56,6 +67,10 @@ class Channel(RequestScope):
         self.connected = asyncio.get_running_loop().create_future()
         self.reader = self.writer = None
         self.session = None
+        self.model_index = 0
+        self.last_model = None
+        self.stream_failures = 0
+        self.fallbacks: list[tuple[str, str, str]] = []
 
     async def wait(self, timeout):
         self.reader, self.writer = await asyncio.wait_for(asyncio.shield(self.connected), timeout)
@@ -240,10 +255,20 @@ class CodexGateway:
         header = request.headers.get('authorization', '')
         return header.startswith('Bearer ') and header[7:] in self.channels
 
+    def _model_chain(self) -> tuple[list[str], str]:
+        first, effort = self.model()
+        if isinstance(first, str):
+            return [first], effort
+        chain = [str(item) for item in first if str(item)]
+        if not chain:
+            raise RuntimeError('后台模型链为空。')
+        return chain, effort
+
     async def _models(self, request: Request):
         if not self._authorized(request):
             return JSONResponse({'error': 'invalid job token'}, 401)
-        return JSONResponse({'object': 'list', 'data': [{'id': self.model()[0], 'object': 'model'}]})
+        chain, _ = self._model_chain()
+        return JSONResponse({'object': 'list', 'data': [{'id': item, 'object': 'model'} for item in chain]})
 
     async def _responses(self, request: Request):
         if not self._authorized(request):
@@ -252,49 +277,108 @@ class CodexGateway:
         if len(body) > MAX_BODY:
             return JSONResponse({'error': 'request too large'}, 413)
         payload = json.loads(body)
-        model, effort = self.model()
-        payload['model'] = model
-        if effort:
-            payload['reasoning'] = {**(payload.get('reasoning') or {}), 'effort': effort}
+        chain, effort = self._model_chain()
         token = request.headers['authorization'][7:]
         try:
             profile = self.upstream()
-            base_url,key = profile.base_url,profile.api_key
+            base_url, key = profile.base_url, profile.api_key
         except Exception as exc:
             self.logger.exception('No upstream for background model calls')
             self.failures[token] = f'宿主没有可用的模型端点：{exc}'
             return JSONResponse({'error': self.failures[token]}, 503)
         channel = request.state.channel
-        if channel.current is not None:await channel.current()
         context = self.billing(channel) if self.billing is not None else None
-        if context is not None:
-            request.state.model_receipt = context.request(profile.with_model(model))
-            await request.state.model_receipt.start()
-        upstream = await self.client.send(self.client.build_request(
-            'POST', base_url.rstrip('/') + request.url.path.removeprefix('/v1'),
-            json=payload, headers={'Authorization': 'Bearer ' + key, 'Accept': request.headers.get('accept', '*/*')}),
-            stream=True)
-        request.state.model_upstream = upstream
-        if upstream.status_code >= 400:
-            content = await upstream.aread()
-            await upstream.aclose()
-            self.logger.warning('Background model request failed: %s %s', upstream.status_code, content[:300])
-            self.failures[token] = (f'模型端点返回 {upstream.status_code}：'
-                                    + content[:200].decode(errors='replace'))
-            return Response(content, upstream.status_code, media_type=upstream.headers.get('content-type'))
-
-        observer = request.state.model_usage = ResponsesUsage(upstream.headers.get('content-type',''))
-        async def chunks():
-            # Decoded bytes: Content-Encoding is not passed on. A provider silent for
-            # IDLE_SECONDS fails the call, and Codex retries it.
+        start_idx = min(channel.model_index, len(chain) - 1)
+        last_reason = ''
+        for idx in range(start_idx, len(chain)):
+            if channel.current is not None:
+                await channel.current()
+            candidate = chain[idx]
+            attempt_payload = dict(payload, model=candidate)
+            if effort:
+                attempt_payload['reasoning'] = {**(attempt_payload.get('reasoning') or {}), 'effort': effort}
+            receipt = context.request(profile.with_model(candidate)) if context is not None else None
+            # Publish ownership before awaiting start: a cancelled DB insert can
+            # still commit, so the ASGI finally must be able to finish it.
+            request.state.model_receipt = receipt
+            if receipt is not None:
+                await receipt.start()
+            upstream = None
             try:
-                async for chunk in upstream.aiter_bytes():
-                    observer.feed(chunk)
-                    yield chunk
-            finally:
-                await upstream.aclose()
+                upstream = await self.client.send(
+                    self.client.build_request(
+                        'POST',
+                        base_url.rstrip('/') + request.url.path.removeprefix('/v1'),
+                        json=attempt_payload,
+                        headers={'Authorization': 'Bearer ' + key, 'Accept': request.headers.get('accept', '*/*')},
+                    ),
+                    stream=True,
+                )
+                request.state.model_upstream = upstream
+                if upstream.status_code >= 400:
+                    content = await upstream.aread()
+            except (httpx.HTTPError, TimeoutError, OSError) as exc:
+                if upstream is not None:
+                    await upstream.aclose()
+                    request.state.model_upstream = None
+                if receipt is not None:
+                    await receipt.finish()
+                    request.state.model_receipt = None
+                last_reason = f'{type(exc).__name__}: {exc}'
+                self.logger.warning('Background model %s transport error: %s', candidate, last_reason)
+                continue
 
-        return StreamingResponse(chunks(), upstream.status_code, media_type=upstream.headers.get('content-type'))
+            if upstream.status_code >= 400:
+                await upstream.aclose()
+                request.state.model_upstream = None
+                if _should_fallback_status(upstream.status_code, content):
+                    if receipt is not None:
+                        await receipt.finish()
+                        request.state.model_receipt = None
+                    last_reason = f'HTTP {upstream.status_code}: {content[:120].decode(errors="replace")}'
+                    self.logger.warning('Background model %s failed (%s), falling back', candidate, upstream.status_code)
+                    continue
+                self.logger.warning('Background model request failed: %s %s', upstream.status_code, content[:300])
+                self.failures[token] = f'模型端点返回 {upstream.status_code}：' + content[:200].decode(errors='replace')
+                return Response(content, upstream.status_code, media_type=upstream.headers.get('content-type'))
+
+            if idx > start_idx:
+                channel.fallbacks.append((chain[start_idx], candidate, last_reason))
+                channel.model_index = idx
+                channel.stream_failures = 0
+
+            channel.last_model = candidate
+            request.state.model_receipt = receipt
+            request.state.model_upstream = upstream
+            observer = request.state.model_usage = ResponsesUsage(upstream.headers.get('content-type', ''))
+
+            async def chunks():
+                # Decoded bytes: Content-Encoding is not passed on.
+                stream_failed = False
+                try:
+                    async for chunk in upstream.aiter_bytes():
+                        observer.feed(chunk)
+                        yield chunk
+                except (httpx.HTTPError, TimeoutError, OSError):
+                    stream_failed = True
+                    raise
+                finally:
+                    if stream_failed:
+                        if not channel.revoked:
+                            channel.stream_failures += 1
+                            if channel.stream_failures >= 2:
+                                if idx + 1 < len(chain):
+                                    channel.fallbacks.append((candidate, chain[idx + 1], '连续流中断'))
+                                    channel.model_index = idx + 1
+                                channel.stream_failures = 0
+                    else:
+                        channel.stream_failures = 0
+                    await upstream.aclose()
+
+            return StreamingResponse(chunks(), upstream.status_code, media_type=upstream.headers.get('content-type'))
+
+        self.failures[token] = f'后台模型链全部不可用（最后原因：{last_reason}）'
+        return JSONResponse({'error': self.failures[token]}, 503)
 
     async def _job_current(self, channel):
         try:
