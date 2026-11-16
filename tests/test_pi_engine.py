@@ -154,7 +154,9 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_deadline_aborts_and_prefixes_deadline_note(self) -> None:
         server = FakePiRpcServer()
-        report = await self._engine(server, now=7200)(
+        engine = self._engine(server)
+        engine.clock = lambda: 7200 if any(r['type'] == 'prompt' for r in server.requests) else 7199
+        report = await engine(
             {'job_id': 8, 'task': 'TEST', 'deadline_at': 7200},
             self._session(),
             feedback=AsyncMock(return_value=[]),
@@ -203,10 +205,12 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
                 await super().send(message)
 
         server = Stuck()
+        engine = self._engine(server)
+        engine.clock = lambda: 7200 if any(r['type'] == 'prompt' for r in server.requests) else 7199
         with patch('src.plugins.ai_chat.pi_engine.ABORT_TIMEOUT', 0.05, create=True), \
              patch('src.plugins.ai_chat.pi_engine.STOP_GRACE', 0.05, create=True):
             try:
-                report = await asyncio.wait_for(self._engine(server, now=7200)(
+                report = await asyncio.wait_for(engine(
                     {'job_id': 15, 'task': 'TEST', 'deadline_at': 7200}, self._session(),
                     feedback=AsyncMock(return_value=[]), progress=AsyncMock(), trace=AgentTrace()), 1)
             except TimeoutError:

@@ -174,38 +174,77 @@ class PiEngine:
         channel.session = session
         run = PiRun(channel, progress, trace)
         reader = None
-        try:
+        stopping = False
+        stop_task = None
+
+        class DeadlineReached(Exception):
+            pass
+
+        def ensure_running():
+            # A cancelled startup or database call may take time to drain; it
+            # must not start Pi or send a command after the deadline meanwhile.
+            if stopping:
+                raise asyncio.CancelledError
+            if self.clock() >= row['deadline_at']:
+                raise DeadlineReached
+
+        async def drive():
+            nonlocal reader
+            ensure_running()
             vm = await self.start_vm(row)
+            ensure_running()
             await self.guest_exec(
                 vm,
                 launch_script(
-                    row['job_id'],
-                    token,
-                    effort,
-                    self.gateway.port,
-                    session.prompt,
-                    pi_bin=self.pi_bin,
-                    context_window=self.context_window,
+                    row['job_id'], token, effort, self.gateway.port, session.prompt,
+                    pi_bin=self.pi_bin, context_window=self.context_window,
                 ),
             )
+            ensure_running()
             await channel.wait(120)
+            ensure_running()
             reader = asyncio.create_task(run.read())
             data = await run.request({'type': 'prompt', 'message': row['task']})
+            ensure_running()
             if isinstance(data, dict) and data.get('disposition') == 'handled':
                 run.settled.set()
-            stopped = False
             while not run.settled.is_set():
+                ensure_running()
                 for message in await feedback():
+                    ensure_running()
                     await run.steer(message)
-                if self.clock() >= row['deadline_at']:
-                    stopped = True
-                    with contextlib.suppress(TimeoutError):
+                    ensure_running()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(run.settled.wait(), 2)
+            return False
+
+        async def stop_once():
+            nonlocal stop_task
+            if reader is None or run.settled.is_set():
+                return
+            if stop_task is None:
+                async def stop():
+                    with contextlib.suppress(TimeoutError, OSError, EOFError):
                         await asyncio.wait_for(run.abort(), ABORT_TIMEOUT)
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(run.settled.wait(), STOP_GRACE)
-                    break
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(run.settled.wait(), 2)
+                stop_task = asyncio.create_task(stop())
+            await drain(stop_task)
+
+        work = asyncio.create_task(drive())
+        try:
+            # Do not await a cancelled drive before sending abort: an in-flight
+            # DB or VM operation may need to drain its own cleanup first.
+            done, _ = await asyncio.wait({work}, timeout=max(0, row['deadline_at'] - self.clock()))
+            try:
+                stopped = await work if work in done else True
+            except DeadlineReached:
+                stopped = True
+            if stopped:
+                stopping = True
+                if not work.done() and not work.cancelling():
+                    work.cancel()
+                await stop_once()
             if run.error and not stopped and not run.last_text.strip():
                 raise RuntimeError(self.gateway.failure(token) or run.error or 'Pi 运行失败。')
             trace.model = getattr(channel, 'last_model', None) or trace.model
@@ -216,13 +255,15 @@ class PiEngine:
                 text = f'{text}\n（后台模型降级：{notes}）'
             return f'{DEADLINE_NOTE}\n{text}' if stopped else text
         except asyncio.CancelledError:
-            if not run.settled.is_set():
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(run.abort(), ABORT_TIMEOUT)
+            stopping = True
+            if not work.done() and not work.cancelling():
+                work.cancel()
+            await stop_once()
             raise
         finally:
             self.gateway.revoke(token)
-            tasks = [task for task in (reader, *run.handlers) if task is not None]
+            tasks = [task for task in (work, reader, *run.handlers) if task is not None]
             for task in tasks:
-                task.cancel()
+                if not task.done() and not task.cancelling():
+                    task.cancel()
             await drain(asyncio.gather(*tasks, return_exceptions=True))

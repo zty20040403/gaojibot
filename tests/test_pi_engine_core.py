@@ -86,7 +86,8 @@ class PiCoreTests(unittest.IsolatedAsyncioTestCase):
         gateway = SimpleNamespace(start=AsyncMock(), open=lambda **_: ('token', channel), revoke=Mock(),
                                   port=18640, failure=lambda _: '')
         engine = PiEngine(gateway, SimpleNamespace(get=lambda: ('model', 'high')),
-                          start_vm=AsyncMock(return_value='vm'), guest_exec=AsyncMock(), clock=lambda: 10)
+                          start_vm=AsyncMock(return_value='vm'), guest_exec=AsyncMock(),
+                          clock=lambda: 10 if any(r['type'] == 'prompt' for r in channel.requests) else 9)
         report = await engine({'job_id': 1, 'task': 'test', 'deadline_at': 10},
             SimpleNamespace(prompt='p', current=AsyncMock()), feedback=AsyncMock(return_value=[]),
             progress=AsyncMock(), trace=AgentTrace())
@@ -98,16 +99,20 @@ class PiCoreTests(unittest.IsolatedAsyncioTestCase):
         channel = Channel()
         old_send = channel.send
         async def send(message):
-            if message['type'] != 'abort':
+            if message['type'] == 'abort':
+                channel.requests.append(message)
+            else:
                 await old_send(message)
         channel.send = send
         gateway = SimpleNamespace(start=AsyncMock(), open=lambda **_: ('token', channel), revoke=Mock(),
                                   port=18640, failure=lambda _: '')
         engine = PiEngine(gateway, SimpleNamespace(get=lambda: ('model', 'high')),
-                          start_vm=AsyncMock(return_value='vm'), guest_exec=AsyncMock(), clock=lambda: 10)
+                          start_vm=AsyncMock(return_value='vm'), guest_exec=AsyncMock(),
+                          clock=lambda: 10 if any(r['type'] == 'prompt' for r in channel.requests) else 9)
         with patch('src.plugins.ai_chat.pi_engine.ABORT_TIMEOUT', 0.02), patch('src.plugins.ai_chat.pi_engine.STOP_GRACE', 0.02):
             report = await asyncio.wait_for(engine({'job_id': 2, 'task': 'test', 'deadline_at': 10},
                 SimpleNamespace(prompt='p', current=AsyncMock()), feedback=AsyncMock(return_value=[]),
                 progress=AsyncMock(), trace=AgentTrace()), 1)
         self.assertTrue(report.startswith(DEADLINE_NOTE))
+        self.assertIn('abort', [item['type'] for item in channel.requests])
         gateway.revoke.assert_called_once_with('token')
