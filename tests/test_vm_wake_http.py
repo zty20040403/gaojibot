@@ -29,6 +29,7 @@ class VMWakeHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         app.message_ledger,app.db_call = self.ledger,self.calls
         app.model_preferences.get_scope_enabled_override = lambda _:True
         app.model_preferences.get_scope_default = lambda _:None
+        app.model_preferences.get_conversation_default = lambda _:None
         app.skill_registry = SimpleNamespace(prompt_index=lambda:'')
         self.prompts = []
         async def model(prompt,_history,_tools,_execute,**options):

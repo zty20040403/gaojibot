@@ -55,6 +55,24 @@ class ModelPreferenceStore:
     def get_scope_default(self, scope: ConversationScope) -> str | None:
         return self.get_explicit(ScopeSettingAddress(scope, "default").key)
 
+    # One host-wide model, set by the owner's /model, keeps every conversation
+    # on the same model (and so on the same provider cache).
+    GLOBAL_DEFAULT_KEY = "global:default"
+
+    def get_global_default(self) -> str | None:
+        return self.get_explicit(self.GLOBAL_DEFAULT_KEY)
+
+    def set_global_default(self, model: str) -> None:
+        self.set(self.GLOBAL_DEFAULT_KEY, model)
+
+    def clear_global_default(self) -> bool:
+        return self.clear(self.GLOBAL_DEFAULT_KEY)
+
+    def get_conversation_default(self, scope: ConversationScope) -> str | None:
+        """A group's own default first, then the owner's global model."""
+        group = self.get_scope_default(scope) if scope.kind == "group" else None
+        return group or self.get_global_default()
+
     def set_scope_default(self, scope: ConversationScope, model: str) -> None:
         self.set(ScopeSettingAddress(scope, "default").key, model)
 

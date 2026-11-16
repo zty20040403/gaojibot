@@ -140,6 +140,33 @@ class PlatformCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.models.get_explicit(conversation_key(inputs[0])))
         self.assertIsNone(self.efforts.get_explicit(conversation_key(inputs[0])))
 
+    async def test_global_model_only_the_owner_changes_and_everyone_sees(self):
+        member = replace(self.policy, allow_model_change=False, global_model=True, default_model="approved-B")
+        owner = replace(self.policy, global_model=True)
+        result = await self.run_command("/model", services=replace(self.services, host_policy=lambda _: member))
+        self.assertIn("当前模型：approved-B", result.text)
+        result = await self.run_command("/model approved-A", services=replace(self.services, host_policy=lambda _: member))
+        self.assertEqual((result.status, result.text), ("denied", "模型由宿主 owner 统一设置，其他人只能查看。"))
+        self.assertIsNone(self.models.get_global_default())
+        result = await self.run_command("/model approved-B", services=replace(self.services, host_policy=lambda _: owner))
+        self.assertEqual(result.text, "已设置全局模型：approved-B。")
+        self.assertEqual(self.models.get_global_default(), "approved-B")
+        self.assertIsNone(self.models.get_explicit(conversation_key(message())))
+        # Effort stays personal.
+        effort = await self.run_command("/effort high", services=replace(self.services, host_policy=lambda _: member))
+        self.assertEqual(effort.status, "ok")
+        await self.run_command("/model reset", services=replace(self.services, host_policy=lambda _: owner))
+        self.assertIsNone(self.models.get_global_default())
+
+    def test_a_group_default_wins_over_the_global_model(self):
+        group = ConversationScope("onebot-v11", "group", "123")
+        private = ConversationScope("onebot-v11", "private", "456")
+        self.models.set_global_default("approved-A")
+        self.assertEqual(self.models.get_conversation_default(private), "approved-A")
+        self.assertEqual(self.models.get_conversation_default(group), "approved-A")
+        self.models.set_scope_default(group, "approved-B")
+        self.assertEqual(self.models.get_conversation_default(group), "approved-B")
+
     async def test_explicit_group_policy_changes_actual_endpoint_only(self):
         alias = ConversationScope("onebot-v11", "group", "123")
         inbound = replace(message(scope=alias), platform_role="member")

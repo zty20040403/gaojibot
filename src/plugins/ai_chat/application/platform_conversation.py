@@ -16,10 +16,9 @@ def build_platform_chat_orchestrator(app, *, service: PlatformChatService | None
     service = service or PlatformChatService(app)
 
     def group_default(inbound):
-        if inbound.endpoint.kind != "group":
-            return None
+        # Groups and private chats alike: the group's default, then the global model.
         scope = inbound.endpoint.scope
-        return (app.model_preferences.get_scope_default(scope)
+        return (app.model_preferences.get_conversation_default(scope)
                 or app.settings.model_profile_for_scope(scope))
 
     def record(inbound, scope):
