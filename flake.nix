@@ -71,6 +71,7 @@
         (lib.fileset.fileFilter (
             file:
               file.hasExt "py"
+              || file.hasExt "ts"
               || file.hasExt "swift"
               || file.hasExt "png"
               || file.hasExt "svg"
