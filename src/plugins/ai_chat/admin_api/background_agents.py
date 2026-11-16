@@ -41,27 +41,30 @@ def create_router(context):
     @router.get('/api/background-agents')
     async def recent(authorization: str | None = Header(default=None)):
         authorize(authorization)
-        model, effort = model_settings.get()
+        _, effort = model_settings.get()
+        chain_text = ', '.join(model_settings.chain())
         return {'items': store.list(limit=100) if store is not None else [],
-                'settings': {'model': model, 'effort': effort, 'efforts': list(EFFORTS),
+                'settings': {'model': chain_text, 'effort': effort, 'efforts': list(EFFORTS),
                              'models': await available_models()}}
 
     @router.put('/api/background-agents/settings')
     def set_model(selection: BackgroundModelRequest, authorization: str | None = Header(default=None),
                   mutation_info: AdminMutationContext = Depends(mutation_context)):
         authorize(authorization)
-        model, effort = model_settings.get()
+        _, effort = model_settings.get()
+        before_chain = ', '.join(model_settings.chain())
 
         def update(_version):
             model_settings.set(selection.model, selection.effort)
-            return {'model': selection.model.strip(), 'effort': selection.effort}
+            return {'model': ', '.join(model_settings.chain()), 'effort': selection.effort}
         try:
             result = context.mutate(mutation_info, 'backgroundAgents', action='background.model.set',
-                target='background', before={'model': model, 'effort': effort}, operation=update)
+                target='background', before={'model': before_chain, 'effort': effort}, operation=update)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        normalized = ', '.join(model_settings.chain())
         context.event_broker.publish('backgroundAgents', 'settings')
-        return mutation_payload(result, model=selection.model.strip(), effort=selection.effort)
+        return mutation_payload(result, model=normalized, effort=selection.effort)
 
     @router.post('/api/background-agents/{job_id}/cancel')
     def cancel(job_id: int, authorization: str | None = Header(default=None),

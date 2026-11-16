@@ -187,5 +187,38 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('CLIPROXY', script)
 
 
+    def test_background_model_settings_chain_and_validation(self):
+        from src.plugins.ai_chat.codex_engine import BackgroundModelSettings
+        from src.plugins.ai_chat.config import Settings
+        prefs_store = {}
+        prefs = SimpleNamespace(
+            get_explicit=lambda k: prefs_store.get(k),
+            set=lambda k, v: prefs_store.__setitem__(k, v),
+        )
+        cfg = Settings.from_env({
+            'AI_BACKGROUND_MODELS': 'm1, m2 , m3',
+            'AI_BACKGROUND_EFFORT': 'medium',
+        })
+        settings = BackgroundModelSettings(prefs, cfg)
+        self.assertEqual(settings.chain(), ['m1', 'm2', 'm3'])
+        self.assertEqual(Settings.from_env({}).background_models, ('gpt-6.1-sol',))
+        self.assertEqual(Settings.from_env({'AI_BACKGROUND_MODEL': 'legacy'}).background_models, ('legacy',))
+        for bad in (',,,', 'a, ,b', ','.join(f'm{i}' for i in range(9)), 'x' * 101):
+            try:
+                Settings.from_env({'AI_BACKGROUND_MODELS': bad})
+            except ValueError:
+                pass
+            except Exception as exc:
+                self.fail(f'invalid chain raised {type(exc).__name__}, not ValueError')
+            else:
+                self.fail('invalid chain was accepted')
+        self.assertEqual(settings.get(), ('m1', 'medium'))
+        settings.set('alpha, beta', 'high')
+        self.assertEqual(settings.chain(), ['alpha', 'beta'])
+        self.assertEqual(settings.get(), ('alpha', 'high'))
+        for bad in ('', 'a, , b', ','.join(f'm{i}' for i in range(9)), 'x' * 101):
+            with self.assertRaises(ValueError):
+                settings.set(bad, 'high')
+
 if __name__ == '__main__':
     unittest.main()

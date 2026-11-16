@@ -23,22 +23,41 @@ DEADLINE_NOTE = '[到点停了，下面是做到一半的]'
 EFFORTS = ('low', 'medium', 'high', 'xhigh')
 
 
+def parse_model_chain(value: str) -> list[str]:
+    text = value.strip()
+    if not text:
+        raise ValueError('模型名不能为空，最多 8 个，每个不超过 100 字，推理强度只能是 ' + '/'.join(EFFORTS))
+    parts = [item.strip() for item in text.split(',')]
+    if any(not item or len(item) > 100 for item in parts) or len(parts) > 8:
+        raise ValueError('模型名不能为空，最多 8 个，每个不超过 100 字，推理强度只能是 ' + '/'.join(EFFORTS))
+    return parts
+
+
 class BackgroundModelSettings:
-    """The background model and effort, changed from the console."""
+    """The background model chain and effort, changed from the console."""
 
     def __init__(self, preferences, settings):
         self.preferences, self.settings = preferences, settings
 
+    def chain(self) -> list[str]:
+        raw = self.preferences.get_explicit('background:models') or self.preferences.get_explicit('background:model')
+        if raw:
+            return parse_model_chain(raw)
+        models = getattr(self.settings, 'background_models', None)
+        if models:
+            return list(models)
+        return [self.settings.background_model]
+
     def get(self):
-        model = self.preferences.get_explicit('background:model') or self.settings.background_model
         effort = self.preferences.get_explicit('background:effort') or self.settings.background_effort
-        return model, effort
+        return self.chain()[0], effort
 
     def set(self, model, effort):
-        model = model.strip()
-        if not model or len(model) > 100 or effort not in EFFORTS:
-            raise ValueError('模型名不能为空，推理强度只能是 ' + '/'.join(EFFORTS))
-        self.preferences.set('background:model', model)
+        models = parse_model_chain(model)
+        if effort not in EFFORTS:
+            raise ValueError('模型名不能为空，最多 8 个，每个不超过 100 字，推理强度只能是 ' + '/'.join(EFFORTS))
+        self.preferences.set('background:models', ', '.join(models))
+        self.preferences.set('background:model', models[0])
         self.preferences.set('background:effort', effort)
 
 
