@@ -166,10 +166,31 @@ class PiEngine:
         self.start_vm, self.guest_exec, self.clock = start_vm, guest_exec, clock
         self.pi_bin, self.context_window = pi_bin, context_window
 
+    async def _start_gateway(self, deadline):
+        remaining = max(0, deadline - self.clock())
+        if not remaining:
+            return False
+        task = asyncio.create_task(self.gateway.start())
+        try:
+            done, _ = await asyncio.wait({task}, timeout=remaining)
+            if task in done:
+                await task  # An unrelated startup error is not a deadline.
+                return self.clock() < deadline
+            if not task.cancelling():
+                task.cancel()
+            await drain(asyncio.gather(task, return_exceptions=True))
+            return False
+        except asyncio.CancelledError:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+            await drain(asyncio.gather(task, return_exceptions=True))
+            raise
+
     async def __call__(self, row, session, *, feedback, progress, trace):
         model, effort = self.model_settings.get()
         trace.provider, trace.model = 'pi', model
-        await self.gateway.start()
+        if not await self._start_gateway(row['deadline_at']):
+            return f'{DEADLINE_NOTE}\nPi 未启动，未创建会话记录。'
         token, channel = self.gateway.open(source=row, current=session.current)
         channel.session = session
         run = PiRun(channel, progress, trace)
@@ -248,7 +269,7 @@ class PiEngine:
             if run.error and not stopped and not run.last_text.strip():
                 raise RuntimeError(self.gateway.failure(token) or run.error or 'Pi 运行失败。')
             trace.model = getattr(channel, 'last_model', None) or trace.model
-            text = run.last_text.strip() or f"Pi 没有留下文字报告，会话记录在 /work/.gaoji/jobs/job-{row['job_id']}/pi。"
+            text = run.last_text.strip() or f"Pi 没有留下文字报告；如已创建会话，记录位于 /work/.gaoji/jobs/job-{row['job_id']}/pi。"
             fallbacks = getattr(channel, 'fallbacks', ())
             if fallbacks:
                 notes = '；'.join(f'{old} → {new}，原因：{reason}' for old, new, reason in fallbacks)

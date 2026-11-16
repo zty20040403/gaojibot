@@ -207,26 +207,28 @@ class CodexGateway:
 
     async def start(self):
         async with self.started:
-            if self.rpc is not None:
-                return
-            self.rpc = await asyncio.start_server(self._tunnel, '127.0.0.1', self.port + 1, limit=2**24)
-            app = Starlette(routes=[Route('/v1/models', self._models),
-                                    Route('/v1/responses', _ModelRequest(self), methods=['POST']),
-                                    Route('/v1/responses/compact', _ModelRequest(self), methods=['POST']),
-                                    Route('/job/tools', _ModelRequest(self, self._job_tools, job_only=True), methods=['GET']),
-                                    Route('/job/tool', _ModelRequest(self, self._job_tool, job_only=True), methods=['POST'])])
-            if self.vm_handler is not None:
-                for path,method,write in (('/vm/say','POST',True),('/vm/wake','POST','wake'),('/vm/send-file','POST',True),('/vm/actions/{action_id}','GET',False),('/vm/actions','GET',False),
-                        ('/vm/events','GET',False),('/vm/units','POST',False),('/vm/history','POST',False),('/vm/web-search','POST',False),('/vm/web-fetch','POST',False),
-                        ('/vm/commands','POST','command'),('/vm/commands','GET',False),('/vm/commands/{command_id}','GET',False),
-                        ('/vm/commands/{command_id}/stop','POST',False)):
-                    app.router.routes.append(Route(path,_ModelRequest(self,self.vm_handler,vm_only=True,write=write),methods=[method]))
-            self.http = _Server(uvicorn.Config(app, host='127.0.0.1', port=self.port, log_level='warning',
-                                               access_log=False, lifespan='off'))
-            self.http_task = asyncio.create_task(self.http.serve())
+            if self.rpc is None:
+                self.rpc = await asyncio.start_server(self._tunnel, '127.0.0.1', self.port + 1, limit=2**24)
+                app = Starlette(routes=[Route('/v1/models', self._models),
+                                        Route('/v1/responses', _ModelRequest(self), methods=['POST']),
+                                        Route('/v1/responses/compact', _ModelRequest(self), methods=['POST']),
+                                        Route('/job/tools', _ModelRequest(self, self._job_tools, job_only=True), methods=['GET']),
+                                        Route('/job/tool', _ModelRequest(self, self._job_tool, job_only=True), methods=['POST'])])
+                if self.vm_handler is not None:
+                    for path,method,write in (('/vm/say','POST',True),('/vm/wake','POST','wake'),('/vm/send-file','POST',True),('/vm/actions/{action_id}','GET',False),('/vm/actions','GET',False),
+                            ('/vm/events','GET',False),('/vm/units','POST',False),('/vm/history','POST',False),('/vm/web-search','POST',False),('/vm/web-fetch','POST',False),
+                            ('/vm/commands','POST','command'),('/vm/commands','GET',False),('/vm/commands/{command_id}','GET',False),
+                            ('/vm/commands/{command_id}/stop','POST',False)):
+                        app.router.routes.append(Route(path,_ModelRequest(self,self.vm_handler,vm_only=True,write=write),methods=[method]))
+                self.http = _Server(uvicorn.Config(app, host='127.0.0.1', port=self.port, log_level='warning',
+                                                   access_log=False, lifespan='off'))
+                self.http_task = asyncio.create_task(self.http.serve())
+            # A previous start waiter can be cancelled after binding the RPC
+            # socket but before HTTP is ready; later callers must still wait.
             while not self.http.started:
                 if self.http_task.done():
                     self.http_task.result()
+                    raise RuntimeError('Background gateway HTTP server exited before startup')
                 await asyncio.sleep(0.05)
 
     async def close(self):

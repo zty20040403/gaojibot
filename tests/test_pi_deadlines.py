@@ -171,7 +171,8 @@ class PiDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report.startswith(DEADLINE_NOTE))
         engine.start_vm.assert_not_awaited()
         fixture.exec.assert_not_awaited()
-        fixture.gateway.revoke.assert_called_once_with('TEST_TOKEN')
+        fixture.gateway.start.assert_not_awaited()
+        fixture.gateway.revoke.assert_not_called()
 
     async def test_cancel_suppressing_feedback_cannot_send_late_steer(self):
         server = AbortServer()

@@ -40,14 +40,13 @@ PROMPT = '''你是 gaoji 的后台 agent，在本会话的持久 Linux VM 里工
 def background_prompt(settings):
     prompt = PROMPT
     if (getattr(settings, 'background_engine', 'codex') == 'pi'
-            and getattr(settings, 'sandbox_backend', '') == 'vm'
-            and getattr(settings, 'sandbox_vm_guest', 'debian') == 'nixos'):
+            and getattr(settings, 'sandbox_backend', '') == 'container'):
         prompt = prompt.replace(
             '在本会话的持久 Linux VM 里工作：命令以 root 运行，/work 会一直保留，可以装软件。',
-            '在本会话的 NixOS VM 里工作：命令以 root 运行，只有 /work 会一直保留，其他位置的改动关机即丢失。',
+            '在本会话的 NixOS 容器里工作：命令以 root 运行，只有 /work 会一直保留，其他位置的改动重启即丢失。',
         )
-        prompt += ('\n- 缺软件时用 `nix shell nixpkgs#包名 -c 命令`；'
-                   'Python 包用 `uv pip install` 装进 /work 下的虚拟环境，不要用 apt。'
+        prompt += ('\n- 没有 apt 和 nix shell；常用工具已预装。'
+                   'Python 包用 `uv pip install` 装进 /work 下的虚拟环境，Node 包用 npm 装到 /work。'
                    '\n- 技能文件在 /etc/gaoji/skills/。')
     return prompt
 
@@ -56,9 +55,8 @@ def make_engine(settings, gateway, model_settings, *, start_vm, guest_exec, cloc
     kind = getattr(settings, 'background_engine', 'codex')
     options = dict(start_vm=start_vm, guest_exec=guest_exec, clock=clock)
     if kind == 'pi':
-        if (getattr(settings, 'sandbox_backend', '') != 'vm'
-                or getattr(settings, 'sandbox_vm_guest', 'debian') != 'nixos'):
-            raise RuntimeError('Pi 后台引擎需要 NixOS VM guest。')
+        if getattr(settings, 'sandbox_backend', '') != 'container':
+            raise RuntimeError('Pi 后台引擎需要 NixOS 容器沙盒（AI_SANDBOX_BACKEND=container）。')
         from ...pi_engine import PiEngine
         return PiEngine(gateway, model_settings, **options,
                         context_window=getattr(settings, 'background_context_window', 200000))
