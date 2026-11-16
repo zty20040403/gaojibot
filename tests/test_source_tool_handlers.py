@@ -100,6 +100,21 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(refused["ok"])
             self.assertEqual(refused["error"], "只能读取公网网页。")
 
+    async def test_search_and_fetched_results_strip_tracking_only_after_fetch(self) -> None:
+        raw = 'https://www.bilibili.com./video/TEST?buvid=TEST&p=2'
+        clean = 'https://www.bilibili.com./video/TEST?p=2'
+        with patch('src.plugins.ai_chat.tools.sources.search_web', new_callable=AsyncMock,
+                   return_value=[SearchResult('TEST', raw, 'snippet'), SearchResult('TEST_DUP', clean, '')]), \
+             patch('src.plugins.ai_chat.tools.sources.fetch_page', new_callable=AsyncMock,
+                   return_value=FetchedPage(raw, 'TEST', 'text')) as fetch:
+            search = await self.execute('web_search', query='TEST')
+            self.assertEqual([item['url'] for item in search['results']], [clean, clean])
+            self.assertEqual([item.url for item in self.turn.search_results], [clean])
+            page = await self.execute('web_fetch', url=raw)
+            fetch.assert_awaited_once_with(raw, timeout_seconds=15)
+            self.assertEqual(page['url'], clean)
+            self.assertEqual([item.url for item in self.turn.search_results], [clean])
+
     async def test_search_failure_is_reported_without_leaking_provider_error(
         self,
     ) -> None:

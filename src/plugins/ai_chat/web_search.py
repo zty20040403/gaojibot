@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html.parser import HTMLParser
 import logging
-from urllib.parse import parse_qs, unquote, urlsplit
+import re
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
 import httpx
@@ -11,6 +12,18 @@ import httpx
 _logger = logging.getLogger(__name__)
 SEARCH_PROVIDERS = frozenset({"scrape", "tavily", "bocha"})
 _BOCHA_FRESHNESS = {"d": "oneDay", "w": "oneWeek", "m": "oneMonth", "y": "oneYear"}
+_STRICT_QUERY_DOMAINS = (
+    "bilibili.com",
+    "b23.tv",
+    "douyin.com",
+    "iesdouyin.com",
+    "xiaohongshu.com",
+    "weibo.com",
+    "tiktok.com",
+)
+_STRIP_QUERY_PARAMS = frozenset({"spm", "from", "fbclid", "gclid", "vd_source"})
+_CODE_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)$")
+_INLINE_MARKER = re.compile(r"(?<!`)(`{3,})(?!`)")
 
 
 @dataclass(frozen=True)
@@ -277,6 +290,65 @@ def render_search_context(results: list[SearchResult]) -> str:
             f"摘要: {result.snippet or '无摘要'}"
         )
     return "\n\n".join(lines)
+
+
+def clean_source_url(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+        host = unquote(parsed.hostname or "").encode("idna").decode("ascii").lower().rstrip(".")
+    except (ValueError, UnicodeError):
+        return url
+    if parsed.scheme not in {"http", "https"} or not host:
+        return url
+    if not parsed.query:
+        return url
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(host == domain or host.endswith("." + domain) for domain in _STRICT_QUERY_DOMAINS):
+        kept = [(key, value) for key, value in pairs if key in {"p", "t"}]
+    else:
+        kept = [
+            (key, value)
+            for key, value in pairs
+            if not key.lower().startswith(("utm_", "share_"))
+            and key.lower() not in _STRIP_QUERY_PARAMS
+        ]
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(kept), parsed.fragment))
+
+
+def _code_fences(text: str):
+    """Yield complete or unterminated code spans without changing their text."""
+    start = offset = 0
+    opening = None
+    block = False
+    for line in text.splitlines(keepends=True):
+        match = _CODE_FENCE_LINE.fullmatch(line.rstrip("\r\n"))
+        if block:
+            if match:
+                marker, suffix = match.groups()
+                if marker[0] == opening[0] and len(marker) >= len(opening) and not suffix.strip():
+                    yield start, offset + len(line)
+                    opening, block = None, False
+        elif opening is None and match and (match.group(1)[0] != "`" or "`" not in match.group(2)):
+            start, opening, block = offset, match.group(1), True
+        else:
+            for marker in _INLINE_MARKER.finditer(line):
+                if opening is None:
+                    start, opening = offset + marker.start(), marker.group(1)
+                elif marker.group(1) == opening:
+                    yield start, offset + marker.end()
+                    opening = None
+        offset += len(line)
+    if opening is not None:
+        yield start, len(text)
+
+
+def _citation_index(digits: str, maximum: int) -> int:
+    index = 0
+    for digit in digits:
+        index = index * 10 + int(digit)
+        if index > maximum:
+            return 0
+    return index
 
 
 def render_search_sources(results: list[SearchResult], max_sources: int = 3) -> str:

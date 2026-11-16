@@ -8,7 +8,7 @@ import httpx
 
 from ..ai_tools import INSPECT_SOURCE_TOOL, USE_SKILL_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL
 from ..web_fetch import FetchError, fetch_page
-from ..web_search import SearchError, SearchResult, search_web
+from ..web_search import SearchError, SearchResult, clean_source_url, search_web
 from .registry import FunctionTool
 from .state import ToolContext, TurnState
 
@@ -126,10 +126,12 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
             ensure_ascii=False,
         )
 
+    results = [SearchResult(result.title, clean_source_url(result.url), result.snippet) for result in results]
     known_urls = {result.url for result in turn.search_results}
-    turn.search_results.extend(
-        result for result in results if result.url not in known_urls
-    )
+    for result in results:
+        if result.url not in known_urls:
+            turn.search_results.append(result)
+            known_urls.add(result.url)
     return json.dumps(
         {
             "ok": True,
@@ -162,15 +164,16 @@ async def web_fetch(turn: TurnState, arguments: dict[str, object]) -> str:
             ensure_ascii=False,
         )
     # A page that was actually read is a better citation than any search hit.
+    cleaned_url = clean_source_url(page.url)
     turn.search_results[:] = [
-        SearchResult(page.title or page.url, page.url, ""),
-        *(result for result in turn.search_results if result.url != page.url),
+        SearchResult(page.title or cleaned_url, cleaned_url, ""),
+        *(result for result in turn.search_results if result.url != cleaned_url),
     ]
     end = offset + PAGE_CHARS
     return json.dumps(
         {
             "ok": True,
-            "url": page.url,
+            "url": cleaned_url,
             "title": page.title,
             "total_chars": len(page.text),
             "next_offset": end if end < len(page.text) else None,
