@@ -317,6 +317,9 @@ class CodexGateway:
                 request.state.model_upstream = upstream
                 if upstream.status_code >= 400:
                     content = await upstream.aread()
+                    should_fallback = _should_fallback_status(upstream.status_code, content)
+                    if key:
+                        content = content.replace(key.encode(), b'[REDACTED]')
             except (httpx.HTTPError, TimeoutError, OSError) as exc:
                 if upstream is not None:
                     await upstream.aclose()
@@ -325,13 +328,15 @@ class CodexGateway:
                     await receipt.finish()
                     request.state.model_receipt = None
                 last_reason = f'{type(exc).__name__}: {exc}'
+                if key:
+                    last_reason = last_reason.replace(key, '[REDACTED]')
                 self.logger.warning('Background model %s transport error: %s', candidate, last_reason)
                 continue
 
             if upstream.status_code >= 400:
                 await upstream.aclose()
                 request.state.model_upstream = None
-                if _should_fallback_status(upstream.status_code, content):
+                if should_fallback:
                     if receipt is not None:
                         await receipt.finish()
                         request.state.model_receipt = None

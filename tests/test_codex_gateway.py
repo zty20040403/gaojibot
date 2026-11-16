@@ -489,6 +489,80 @@ class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(channel.model_index, 1)
         self.assertEqual([receipt.finished for receipt in receipts], [True, True])
 
+    async def test_upstream_error_does_not_echo_host_key_to_guest(self):
+        def upstream(request):
+            self.assertEqual(request.headers['authorization'], 'Bearer TEST_REAL_KEY')
+            return httpx.Response(400, content=b'context error: TEST_REAL_KEY')
+
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        token, _ = self.gateway.open()
+        with self.assertLogs(self.gateway.logger, level='WARNING') as logged:
+            async with httpx.AsyncClient(trust_env=False) as client:
+                response = await client.post(self.base + '/responses', json={'input': []},
+                                             headers={'Authorization': 'Bearer ' + token})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('context error', response.text)
+        self.assertNotIn('TEST_REAL_KEY', response.text)
+        self.assertNotIn('TEST_REAL_KEY', self.gateway.failure(token))
+        self.assertNotIn('TEST_REAL_KEY', '\n'.join(logged.output))
+
+    async def test_fallback_reason_does_not_echo_host_key(self):
+        def upstream(request):
+            if json.loads(request.content)['model'] == 'm1':
+                return httpx.Response(503, content=b'busy: TEST_REAL_KEY')
+            return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
+                                  headers={'content-type': 'text/event-stream'})
+
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        self.gateway.model = lambda: (['m1', 'm2'], 'high')
+        token, channel = self.gateway.open()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            response = await client.post(self.base + '/responses', json={'input': []},
+                                         headers={'Authorization': 'Bearer ' + token})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(channel.fallbacks[0][:2], ('m1', 'm2'))
+        self.assertNotIn('TEST_REAL_KEY', channel.fallbacks[0][2])
+
+    async def test_redacting_key_does_not_change_fallback_classification(self):
+        self.gateway.upstream = lambda: profile('relay', base_url='http://upstream.test/v1', api_key='TEST_MODEL')
+        def upstream(request):
+            if json.loads(request.content)['model'] == 'm1':
+                return httpx.Response(400, content=b'unsupported TEST_MODEL')
+            return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
+                                  headers={'content-type': 'text/event-stream'})
+
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        self.gateway.model = lambda: (['m1', 'm2'], 'high')
+        token, channel = self.gateway.open()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            response = await client.post(self.base + '/responses', json={'input': []},
+                                         headers={'Authorization': 'Bearer ' + token})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(channel.fallbacks[0][:2], ('m1', 'm2'))
+        self.assertNotIn('TEST_MODEL', channel.fallbacks[0][2])
+
+    async def test_transport_failure_reason_does_not_echo_host_key(self):
+        def upstream(request):
+            if json.loads(request.content)['model'] == 'm1':
+                raise httpx.ConnectError('TEST_REAL_KEY connection failed', request=request)
+            return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
+                                  headers={'content-type': 'text/event-stream'})
+
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        self.gateway.model = lambda: (['m1', 'm2'], 'high')
+        token, channel = self.gateway.open()
+        with self.assertLogs(self.gateway.logger, level='WARNING') as logged:
+            async with httpx.AsyncClient(trust_env=False) as client:
+                response = await client.post(self.base + '/responses', json={'input': []},
+                                             headers={'Authorization': 'Bearer ' + token})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('TEST_REAL_KEY', channel.fallbacks[0][2])
+        self.assertNotIn('TEST_REAL_KEY', '\n'.join(logged.output))
+
     async def test_model_chain_fallbacks_billing_and_stream_failures(self):
         attempts = []
         receipts = []
