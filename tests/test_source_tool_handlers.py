@@ -54,6 +54,7 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
             search.return_value = [result]
             response = await self.execute("web_search", freshness="month")
             search.assert_awaited_once_with(self.turn.user_text, freshness="m", **options)
+            self.assertEqual(response["results"][0]["id"], 1)
             self.assertEqual(response["results"][0]["url"], result.url)
             self.assertEqual(self.turn.search_results, [result])
             response = await self.execute(
@@ -79,26 +80,48 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response["freshness"], "all")
             self.assertEqual(response["results"][0]["url"], result.url)
 
-    async def test_fetch_pages_text_and_cites_the_page_first(self) -> None:
+    async def test_fetch_pages_text_and_keeps_citation_ids_stable(self) -> None:
         self.turn.search_results.append(SearchResult("hit", "https://example.test/hit", ""))
-        page = FetchedPage("https://shop.example/item", "RTX 5070", "价" * 9000)
+        page = FetchedPage("https://shop.example/item?utm_source=ad", "RTX 5070", "价" * 9000)
         with patch(
             "src.plugins.ai_chat.tools.sources.fetch_page", new_callable=AsyncMock
         ) as fetch:
             fetch.return_value = page
-            first = await self.execute("web_fetch", url="https://shop.example/item")
+            first = await self.execute("web_fetch", url="https://shop.example/item?utm_source=ad")
+            self.assertEqual(first["id"], 2)
+            self.assertEqual(first["url"], "https://shop.example/item")
             self.assertEqual(first["total_chars"], 9000)
             self.assertEqual(len(first["text"]), 8000)
             self.assertEqual(first["next_offset"], 8000)
             rest = await self.execute("web_fetch", url="https://shop.example/item", offset=8000)
+            self.assertEqual(rest["id"], 2)
             self.assertEqual(len(rest["text"]), 1000)
             self.assertIsNone(rest["next_offset"])
             self.assertEqual([item.url for item in self.turn.search_results],
-                             ["https://shop.example/item", "https://example.test/hit"])
+                             ["https://example.test/hit", "https://shop.example/item"])
             fetch.side_effect = FetchError("只能读取公网网页。")
             refused = await self.execute("web_fetch", url="http://10.0.0.1/")
             self.assertFalse(refused["ok"])
             self.assertEqual(refused["error"], "只能读取公网网页。")
+
+    async def test_search_then_fetch_preserves_stable_ids_and_cleans_urls(self) -> None:
+        raw = [
+            SearchResult("A", "https://www.bilibili.com/video/BV1TEST?vd_source=x&p=3", "s1"),
+            SearchResult("B", "https://shop.example/p?id=1&utm_source=feed", "s2"),
+        ]
+        with patch("src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock, return_value=raw), \
+                patch("src.plugins.ai_chat.tools.sources.fetch_page", new_callable=AsyncMock,
+                      return_value=FetchedPage("https://other.example/c", "C", "body")):
+            search_resp = await self.execute("web_search", query="TEST")
+            self.assertEqual([r["id"] for r in search_resp["results"]], [1, 2])
+            self.assertEqual(search_resp["results"][0]["url"], "https://www.bilibili.com/video/BV1TEST?p=3")
+            self.assertEqual(search_resp["results"][1]["url"], "https://shop.example/p?id=1")
+            fetch_resp = await self.execute("web_fetch", url="https://other.example/c")
+            self.assertEqual(fetch_resp["id"], 3)
+            self.assertEqual(
+                [item.url for item in self.turn.search_results],
+                ["https://www.bilibili.com/video/BV1TEST?p=3", "https://shop.example/p?id=1", "https://other.example/c"],
+            )
 
     async def test_search_and_fetched_results_strip_tracking_only_after_fetch(self) -> None:
         raw = 'https://www.bilibili.com./video/TEST?buvid=TEST&p=2'

@@ -24,6 +24,7 @@ _STRICT_QUERY_DOMAINS = (
 _STRIP_QUERY_PARAMS = frozenset({"spm", "from", "fbclid", "gclid", "vd_source"})
 _CODE_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)$")
 _INLINE_MARKER = re.compile(r"(?<!`)(`{3,})(?!`)")
+_CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
 @dataclass(frozen=True)
@@ -351,14 +352,58 @@ def _citation_index(digits: str, maximum: int) -> int:
     return index
 
 
-def render_search_sources(results: list[SearchResult], max_sources: int = 3) -> str:
-    if not results:
-        return ""
+def render_search_sources(
+    results: list[SearchResult], answer: str = "", max_sources: int = 5
+) -> tuple[str, str]:
+    if not results or not answer:
+        return answer, ""
+
+    ordered: list[int] = []
+    mapping: dict[int, int] = {}
+
+    def _collect(segment: str) -> None:
+        for match in _CITATION_RE.finditer(segment):
+            old_index = _citation_index(match.group(1), len(results))
+            if 1 <= old_index <= len(results) and old_index not in mapping:
+                if len(ordered) >= max_sources:
+                    continue
+                ordered.append(old_index)
+                mapping[old_index] = len(ordered)
+
+    fences = list(_code_fences(answer))
+    pos = 0
+    for start, end in fences:
+        _collect(answer[pos:start])
+        pos = end
+    _collect(answer[pos:])
+
+    if not ordered:
+        return answer, ""
+
+    def _replace_segment(segment: str) -> str:
+        def replace(match: re.Match) -> str:
+            index = _citation_index(match.group(1), len(results))
+            if index in mapping:
+                return f"[{mapping[index]}]"
+            # An omitted valid citation must not accidentally name another
+            # source after renumbering; preserve genuinely invalid markers.
+            return "" if 1 <= index <= len(results) else match.group(0)
+
+        return _CITATION_RE.sub(replace, segment)
+
+    parts: list[str] = []
+    pos = 0
+    for start, end in fences:
+        parts.append(_replace_segment(answer[pos:start]))
+        parts.append(answer[start:end])
+        pos = end
+    parts.append(_replace_segment(answer[pos:]))
 
     lines = ["来源："]
-    for index, result in enumerate(results[:max_sources], start=1):
-        lines.append(f"{index}. {result.title}\n{result.url}")
-    return "\n".join(lines)
+    for new_index, old_index in enumerate(ordered, start=1):
+        result = results[old_index - 1]
+        lines.append(f"{new_index}. {result.title}\n{result.url}")
+    return "".join(parts), "\n".join(lines)
 
 
 def render_direct_search_results(
