@@ -124,7 +124,6 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - run: nix flake check --no-build --print-build-logs
       - run: nix build .#packages.x86_64-linux.default --no-link --print-build-logs
-      - run: nix build .#packages.x86_64-linux.host-control --no-link --print-build-logs
 
   secrets:
     name: Secret scan

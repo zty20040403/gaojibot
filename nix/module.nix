@@ -330,19 +330,6 @@ in {
       description = "Host loopback TCP ports a VM may reach at 10.0.2.2: the background-agent model relay and app-server tunnel. Every other host, LAN, tailnet and link-local address is rejected for VM traffic.";
     };
 
-    opsRead = {
-      baseUrl = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        description = "Cluster-control URL for owner-private background read tools.";
-      };
-      tokenFile = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        description = "Host-only cluster-control API token file. Never passed to a VM.";
-      };
-    };
-
     voiceAsr = {
       enable = lib.mkEnableOption "host-local voice transcription when Tencent provides no text";
       package = lib.mkOption {
@@ -363,10 +350,6 @@ in {
       {
         assertion = !cfg.runBot || cfg.qqOfficial.enable;
         message = "A running Gaoji application requires QQ official to be enabled";
-      }
-      {
-        assertion = cfg.opsRead.baseUrl == "" || officialCredentialPath cfg.opsRead.tokenFile;
-        message = "opsRead requires a private absolute tokenFile outside /nix/store";
       }
       {
         assertion = !cfg.sandbox.enable || cfg.sandbox.memoryMiB >= 512;
@@ -446,8 +429,6 @@ in {
         {
           HOME = statePath;
           AI_STATE_DIR = "${statePath}/state";
-          AI_OPS_READ_BASE_URL = cfg.opsRead.baseUrl;
-          AI_OPS_READ_TOKEN_FILE = if cfg.opsRead.baseUrl == "" then "" else "/run/credentials/${serviceName}.service/ops-read-token";
           AI_CACHE_DIR = cachePath;
           AI_SANDBOX_ENABLED = boolString cfg.sandbox.enable;
           AI_SANDBOX_ALLOWED_USERS = lib.concatMapStringsSep "," toString cfg.sandbox.allowedUsers;
@@ -518,8 +499,7 @@ in {
           RestartSec = 5;
           UMask = "0077";
           LoadCredential =
-            lib.optional (cfg.opsRead.baseUrl != "") "ops-read-token:${cfg.opsRead.tokenFile}"
-            ++ lib.optional (cfg.admin.secretFile != null) "admin-authorization-key:${cfg.admin.secretFile}"
+            lib.optional (cfg.admin.secretFile != null) "admin-authorization-key:${cfg.admin.secretFile}"
             ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.appIdFile != null) "qq-official-app-id:${cfg.qqOfficial.appIdFile}"
             ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.appSecretFile != null) "qq-official-app-secret:${cfg.qqOfficial.appSecretFile}"
             ++ lib.optional (cfg.qqOfficial.enable && cfg.qqOfficial.bindPepperFile != null) "qq-official-bind-pepper:${cfg.qqOfficial.bindPepperFile}"

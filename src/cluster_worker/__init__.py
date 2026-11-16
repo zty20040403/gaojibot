@@ -1,1 +1,0 @@
-"""Isolated gaoji compute worker."""

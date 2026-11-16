@@ -23,16 +23,11 @@
   };
   native = evaluate {qqOfficial = official // {hostConfigFile = "/run/secrets/TEST-host.json";};};
   noPlatform = evaluate {};
-  ops = evaluate {qqOfficial = official; opsRead = {
-    baseUrl = "http://127.0.0.1:8091"; tokenFile = "/run/secrets/TEST-ops";
-  };};
   badHost = value: evaluate {qqOfficial = official // {hostConfigFile = value;};};
   tests = {
     nativeAssertionsPass = failures native == [];
     nativeLoadsProtectedHostPath = (environment native).AI_QQ_OFFICIAL_HOST_CONFIG_FILE == "/run/credentials/gaoji.service/qq-official-host-config";
     nativeHasExactlyFourOfficialCredentials = builtins.length (builtins.filter (value: lib.hasPrefix "qq-official-" value) (credentials native)) == 4;
-    opsLoadsHostCredential = builtins.elem "ops-read-token:/run/secrets/TEST-ops" (credentials ops)
-      && (environment ops).AI_OPS_READ_TOKEN_FILE == "/run/credentials/gaoji.service/ops-read-token";
     noPlatformRejected = failures noPlatform != [];
     storeHostPathRejected = failures (badHost "/nix/store/TEST-host.json") != [];
     relativeHostPathRejected = failures (badHost "TEST-host.json") != [];

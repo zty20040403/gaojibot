@@ -145,21 +145,6 @@
             --chdir "$out/share/gaoji" \
             --set PYTHONDONTWRITEBYTECODE 1 \
             --set PYTHONUNBUFFERED 1
-          makeWrapper ${virtualenv}/bin/python "$out/bin/gaoji-cluster-control" \
-            --add-flags "-m src.cluster_control" \
-            --chdir "$out/share/gaoji" \
-            --set PYTHONDONTWRITEBYTECODE 1 \
-            --set PYTHONUNBUFFERED 1
-          makeWrapper ${virtualenv}/bin/python "$out/bin/gaoji-cluster-worker" \
-            --add-flags "-m src.cluster_worker" \
-            --chdir "$out/share/gaoji" \
-            --set PYTHONDONTWRITEBYTECODE 1 \
-            --set PYTHONUNBUFFERED 1
-          makeWrapper ${virtualenv}/bin/python "$out/bin/gaoji-cluster-deployer" \
-            --add-flags "-m src.cluster_deployer" \
-            --chdir "$out/share/gaoji" \
-            --set PYTHONDONTWRITEBYTECODE 1 \
-            --set PYTHONUNBUFFERED 1
 
           runHook postInstall
         '';
@@ -180,26 +165,12 @@
       {
         default = mkPackage system;
         gaoji = mkPackage system;
-        cluster-worker = import ./nix/cluster-worker-package.nix {inherit pkgs lib;};
-        host-control = import ./nix/host-control-package.nix {inherit pkgs lib;};
       });
 
     apps = forAllSystems (system: {
       default = {
         type = "app";
         program = lib.getExe self.packages.${system}.default;
-      };
-      cluster-control = {
-        type = "app";
-        program = "${self.packages.${system}.default}/bin/gaoji-cluster-control";
-      };
-      cluster-worker = {
-        type = "app";
-        program = "${self.packages.${system}.cluster-worker}/bin/gaoji-cluster-worker";
-      };
-      cluster-deployer = {
-        type = "app";
-        program = "${self.packages.${system}.default}/bin/gaoji-cluster-deployer";
       };
     });
 
@@ -252,10 +223,6 @@
       default = import ./nix/module.nix {inherit self;};
       gaoji = self.nixosModules.default;
       qwen-control = import ./nix/qwen-control.nix;
-      cluster-control = import ./nix/cluster-control.nix {inherit self;};
-      host-control = import ./nix/host-control.nix {inherit self;};
-      cluster-worker = import ./nix/cluster-worker.nix {inherit self;};
-      cluster-deployer = import ./nix/cluster-deployer.nix {inherit self;};
     };
   };
 }
