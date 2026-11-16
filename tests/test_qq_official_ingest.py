@@ -269,17 +269,31 @@ class QQOfficialIngestTests(unittest.TestCase):
             (self.endpoint.key, self.account.key, other.canonical_message_id, NOW, NOW))
         self.assertFalse(self.process(self.seed(reference="TEST_INDEX")).reply_requested)
 
-    def test_outbound_receipt_and_bot_origin_never_make_human_ledger_or_turn(self):
+    def test_outbound_receipt_never_makes_human_ledger_or_turn(self):
         self.query("""INSERT INTO qq_official_messages
             (message_id,account_key,endpoint_key,native_message_id,direction,created_at)
             VALUES ('TEST_OUTBOUND',?,?,'TEST_SENT','outbound',?)""", (self.account.key, self.endpoint.key, NOW))
-        result = self.process(self.seed(native="TEST_SENT", mention=True))
+        result = self.process(self.seed(native="TEST_SENT", mention=True, bot=True))
         self.assertEqual(result.echo_state, "confirmed_self")
-        result = self.process(self.seed(bot=True, mention=True))
-        self.assertEqual(result.echo_state, "possible_self")
         self.assertEqual(self.count("messages"), 0)
         self.assertEqual(self.count("durable_jobs"), 0)
         self.assertEqual(self.count("qq_official_reply_windows"), 0)
+
+    def test_other_bot_is_recorded_as_marked_speaker_and_can_be_answered(self):
+        result = self.process(self.seed(bot=True, mention=True, author="TEST_PEER_BOT"))
+        self.assertTrue(result.reply_requested)
+        message = self.ledger.get_in_scope(self.endpoint.scope, result.canonical_message_id)
+        self.assertEqual(message.sender_display, "TEST display（机器人）")
+        row = self.query("SELECT raw_event_json FROM messages WHERE canonical_message_id=?",
+                         (result.canonical_message_id,))[0]
+        self.assertTrue(json.loads(row["raw_event_json"])["sender_is_bot"])
+
+    def test_bot_to_bot_run_stops_after_limit_until_a_human_speaks(self):
+        replies = [self.process(self.seed(bot=True, mention=True, author="TEST_PEER_BOT")).reply_requested
+                   for _ in range(5)]
+        self.assertEqual(replies, [True, True, True, False, False])
+        self.assertTrue(self.process(self.seed(mention=True)).reply_requested)
+        self.assertTrue(self.process(self.seed(bot=True, mention=True, author="TEST_PEER_BOT")).reply_requested)
 
 
     def test_outbound_ref_index_can_resolve_without_inventing_a_bot_ledger_author(self):

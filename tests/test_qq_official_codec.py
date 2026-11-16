@@ -255,14 +255,16 @@ class QQOfficialCodecTests(unittest.TestCase):
         self.assertIsInstance(result.body.nodes[-1], UnsupportedNode)
         self.assertEqual(result.evidence.unknown_field_names, ("future_field",))
 
-    def test_bot_author_is_suppressed_without_constructing_bot_actor(self):
-        result = decode(event(author={"member_openid": "TEST_BOT_SUPPLIED", "bot": True}))
-        self.assertIsInstance(result, codec.RejectedMessage)
-        self.assertEqual(result.disposition, "bot_origin")
-        self.assertEqual(result.author_native_id, "TEST_BOT_SUPPLIED")
-        self.assertFalse(hasattr(result, "actor"))
+    def test_other_bot_author_decodes_as_ordinary_marked_member(self):
+        result = decode(event(author={"member_openid": "TEST_PEER_BOT", "bot": True}))
+        self.assertIsInstance(result, codec.DecodedMessage)
+        self.assertTrue(result.sender_is_bot)
+        self.assertEqual(result.actor.identity_kind, "group_member")
+        self.assertEqual(result.actor.native_user_id, "TEST_PEER_BOT")
         for bot in (False, 1, "true", None):
-            self.assertIsInstance(decode(event(author={"member_openid": "TEST_HUMAN", "bot": bot})), codec.DecodedMessage)
+            human = decode(event(author={"member_openid": "TEST_HUMAN", "bot": bot}))
+            self.assertIsInstance(human, codec.DecodedMessage)
+            self.assertFalse(human.sender_is_bot)
 
     def test_platform_owner_does_not_add_local_authority(self):
         result = decode(event(author={"member_openid": "TEST_MEMBER", "member_role": "owner"}))

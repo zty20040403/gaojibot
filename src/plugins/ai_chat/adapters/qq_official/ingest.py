@@ -22,6 +22,7 @@ from src.plugins.ai_chat.message_ir import MessageBody, MentionNode, TextNode, f
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 
+from . import peer_bots
 from .codec import DecodedMessage, RejectedMessage, decode_message
 from ...conversation_scope import ConversationScope
 from .lease import LeaseToken
@@ -254,12 +255,13 @@ def process_inbox(
     reply_target = _reply_target(cursor, decoded)
     recorded = ledger.record_message(
         ConversationScope.from_key(endpoint_row["canonical_scope_key"]), native_message_id=decoded.native_message_id,
-        sender_native_user_id=decoded.actor.native_user_id, sender_display=decoded.sender_display,
+        sender_native_user_id=decoded.actor.native_user_id, sender_display=peer_bots.display(decoded),
         body=_ledger_body(decoded), occurred_at=decoded.occurred_at,
         reply_to_native_message_id=reply_target, actor=decoded.actor, source_endpoint=endpoint,
         raw_event={"source": "qq-official", "message_type": decoded.evidence.message_type,
                    "reference_conflict": decoded.reference.conflicting,
-                   "codec_warnings": list(decoded.evidence.warnings), "truncated": decoded.evidence.truncated},
+                   "codec_warnings": list(decoded.evidence.warnings), "truncated": decoded.evidence.truncated,
+                   "sender_is_bot": decoded.sender_is_bot},
         transaction_cursor=cursor,
     )
     from ...image_captions import ingest_captions
@@ -280,5 +282,7 @@ def process_inbox(
         now=timestamp,authority=owner_authority)
     command = prepared_input.input_text.lstrip().startswith(('/', '!'))
     reply = bool(receipt) or bool(reply and (not current['stopped'] or command))
+    if reply and decoded.sender_is_bot and peer_bots.exchange_exhausted(cursor, endpoint.key, timestamp):
+        reply = False
     cursor.execute('UPDATE qq_official_inbound_events SET trigger_requested=? WHERE inbox_id=?', (reply, inbox_id))
     return IngestResult(result.status, result.reason_code, canonical, echo_state=result.echo_state, reply_requested=reply)
