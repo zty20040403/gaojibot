@@ -128,6 +128,29 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
         await self.run_job()
         self.assertEqual(self.query('SELECT * FROM sticker_library'), [])
 
+    async def test_only_screenshots_and_photos_stay_out(self):
+        CaptionSettings(self.database).set(self.endpoint.scope.key, enabled=False, daily_limit=200)
+        # A crude meme the model calls "review" and "not a sticker" is still the owner's sticker.
+        self.provider_content = {'summary':'琪露诺玩偶顶着井盖骂人', 'description':'玩偶配粗话。', 'text':'',
+            'subjects':['琪露诺'], 'actions':['骂人'], 'emotion':['暴躁'], 'usage':['斗图'], 'kind':'sticker',
+            'is_sticker':False, 'contains_person':False, 'contains_private_info':False, 'safety':'review'}
+        self.process(self.sticker_event())
+        await self.run_job()
+        self.assertEqual([r['enabled'] for r in self.query('SELECT * FROM sticker_library')], [1])
+        found = await self.library.search_stickers('骂人')
+        self.assertEqual([item.summary for item in found], ['琪露诺玩偶顶着井盖骂人'])
+        raw = json.loads(self.query('SELECT raw_response_json FROM media_analysis')[0]['raw_response_json'])
+        self.assertEqual((raw['model_is_sticker'], raw['is_sticker']), (False, True))
+
+    def test_admission_rule(self):
+        admits = MediaLibrary.admits_sticker
+        self.assertTrue(admits({'kind': 'sticker', 'safety': 'blocked', 'contains_person': True}))
+        self.assertFalse(admits({'kind': 'screenshot', 'is_sticker': True}))
+        self.assertFalse(admits({'kind': 'photo', 'is_sticker': True}))
+        # Replies from before the kind field keep the old verdict.
+        self.assertTrue(admits({'is_sticker': True}))
+        self.assertFalse(admits({'is_sticker': True, 'contains_private_info': True}))
+
     def test_sticker_collection_can_be_turned_off(self):
         CaptionSettings(self.database).set(self.endpoint.scope.key, enabled=False, daily_limit=200)
         with patch.dict('os.environ', {'AI_STICKER_COLLECTION': 'false'}):
