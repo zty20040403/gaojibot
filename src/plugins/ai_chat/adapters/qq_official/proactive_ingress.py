@@ -19,6 +19,7 @@ from src.plugins.ai_chat.platform_types import EndpointKey,ActorKey
 from src.plugins.ai_chat.proactive import is_candidate_message
 from src.plugins.ai_chat.conversation_config import proactive_state
 from src.plugins.ai_chat import daily_budgets
+from src.plugins.ai_chat.adapters.qq_official import peer_bots
 from src.plugins.ai_chat.adapters.qq_official.proactive_delivery import ProactiveLifetime,score_and_deliver
 
 DEBOUNCE_SECONDS = 3
@@ -74,6 +75,7 @@ class ProactiveIngress:
                 or physical['membership_state']!='present' or physical['binding_state']!='active'
                 or physical['generation']!=inbox['endpoint_generation'] or physical['route_epoch']!=inbox['route_epoch']
                 or self.admission(c,ep,actor) is not True
+                or (peer_bots.is_bot_message(message) and peer_bots.exchange_exhausted(c,ep.key,inbox['received_at']))
                 or not c.execute('SELECT 1 FROM qq_official_gateway_receipts WHERE inbox_id=? AND account_key=?',(inbox_id,self.token.account_key)).fetchone()):
             raise MigrationDenied('proactive_source_unavailable')
         return inbox,ep,actor,message,physical

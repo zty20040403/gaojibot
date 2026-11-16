@@ -106,6 +106,9 @@ class DecodedMessage:
     timestamp_source: Literal["platform", "received_missing", "received_future"]
     reference: ReferenceEvidence = field(repr=False)
     evidence: ConversionEvidence = field(repr=False)
+    # Another bot in the group. Its messages are ordinary chat, labelled so the
+    # model knows who it is talking to; peer_bots.py bounds bot-to-bot exchanges.
+    sender_is_bot: bool = False
 
 
 @dataclass(frozen=True)
@@ -392,8 +395,6 @@ def decode_message(dispatch: Dispatch, account: AccountKey, received_at: int) ->
         return RejectedMessage("invalid_event_id")
     if endpoint is not None and len(endpoint.key.encode()) > MAX_ENDPOINT_KEY_BYTES:
         return RejectedMessage("identity_key_limit")
-    if message.author.is_bot:
-        return RejectedMessage("bot_authored", "bot_origin", endpoint, message_id, event_id, actor_id)
     if endpoint is None or actor_id is None:
         return RejectedMessage("missing_or_invalid_identity")
     if message_id is None:
@@ -441,4 +442,5 @@ def decode_message(dispatch: Dispatch, account: AccountKey, received_at: int) ->
         reference,
         ConversionEvidence(mentions, elements, unknown_fields, tuple(sorted(budget.warnings)), budget.truncated,
                            message.message_type),
+        message.author.is_bot,
     )
