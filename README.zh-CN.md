@@ -121,7 +121,7 @@ uv run python bot.py
 <a id="deployment"></a>
 ## 04 · 用 NixOS 管理运行环境
 
-Flake 提供默认包、`sandbox-image`、`nixosModules.default`，以及独立的 cluster-control / worker 模块。
+Flake 提供默认包、`nixosModules.default`，以及独立的 cluster-control / worker 模块。
 
 ```nix
 services.gaoji = {

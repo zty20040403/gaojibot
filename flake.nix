@@ -173,12 +173,6 @@
           platforms = supportedSystems;
         };
       };
-    mkSandboxImage = system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-    in
-      import ./nix/sandbox-image.nix {
-        inherit pkgs lib;
-      };
   in {
     packages = forAllSystems (system: let
       pkgs = nixpkgs.legacyPackages.${system};
@@ -188,9 +182,6 @@
         gaoji = mkPackage system;
         cluster-worker = import ./nix/cluster-worker-package.nix {inherit pkgs lib;};
         host-control = import ./nix/host-control-package.nix {inherit pkgs lib;};
-      }
-      // lib.optionalAttrs pkgs.stdenv.isLinux {
-        sandbox-image = mkSandboxImage system;
       });
 
     apps = forAllSystems (system: {

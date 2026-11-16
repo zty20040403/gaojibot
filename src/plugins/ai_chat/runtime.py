@@ -32,7 +32,6 @@ from .model_preferences import ModelPreferenceStore
 from .mobile_authorization import build_mobile_authorization
 from src.bot_security.service import MobileAuthorization
 from .quota import UsageStore
-from .sandbox import DockerSandboxManager
 from src.sandbox_runtime.factory import manager_from_settings
 from .vm_sandbox import VmSandboxManager
 from .self_source import SelfSource
@@ -81,7 +80,7 @@ class AppContext:
     llm_gateway: LLMGateway = field(repr=False)
     self_source: SelfSource
     skill_registry: SkillRegistry
-    sandbox_manager: DockerSandboxManager | VmSandboxManager
+    sandbox_manager: VmSandboxManager
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None
     conversations: ConversationStore | None = None

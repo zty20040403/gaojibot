@@ -121,7 +121,7 @@ uv run python bot.py
 <a id="deployment"></a>
 ## 04 · Deploy with NixOS
 
-The flake provides the default package, `sandbox-image`, `nixosModules.default`, and separate cluster-control and worker modules.
+The flake provides the default package, `nixosModules.default`, and separate cluster-control and worker modules.
 
 ```nix
 services.gaoji = {
