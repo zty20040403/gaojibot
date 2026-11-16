@@ -324,7 +324,7 @@ class MediaSession:
             try:
                 row = connection.execute('''SELECT b.sha256,b.byte_size,b.mime_type FROM media_blobs b
                     JOIN media_analysis a USING(media_id) JOIN sticker_library s USING(media_id)
-                    WHERE media_id=? AND a.safety='safe' AND a.is_sticker=1 AND s.enabled=1 AND s.banned=0''',
+                    WHERE media_id=? AND a.is_sticker=1 AND s.enabled=1 AND s.banned=0''',
                     (int(handle[6:]),)).fetchone()
             finally:
                 connection.close()
