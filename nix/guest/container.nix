@@ -19,6 +19,10 @@ in {
   # the operations namespace instead and have no host0.
   networking.useDHCP = false;
   networking.useNetworkd = true;
+  systemd.network.config.networkConfig = {
+    ManageForeignRoutes = false;
+    ManageForeignRoutingPolicyRules = false;
+  };
   systemd.network.networks."10-host0" = {
     matchConfig.Name = "host0";
     networkConfig.DHCP = "ipv4";
