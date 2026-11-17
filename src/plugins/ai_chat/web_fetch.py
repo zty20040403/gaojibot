@@ -22,6 +22,19 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
+# Sent once more after a 403/412/429: what a current desktop browser sends
+# for a top-level navigation. Some sites reject the short header set above.
+BROWSER_HEADERS = {
+    **_HEADERS,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control": "no-cache",
+}
+BLOCKED_STATUSES = frozenset({403, 412, 429})
 _SKIP_TAGS = {"script", "style", "noscript", "svg", "template", "iframe", "canvas"}
 _BLOCK_TAGS = {
     "p", "div", "br", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
@@ -33,6 +46,10 @@ _META_CHARSET = re.compile(rb"""charset=["']?([A-Za-z0-9_-]+)""", re.IGNORECASE)
 
 class FetchError(RuntimeError):
     """A failure whose message is safe to show the model."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -125,13 +142,14 @@ async def fetch_page(
     timeout_seconds: float = 15,
     resolver=public_address,
     transport: httpx.AsyncBaseTransport | None = None,
+    headers: dict[str, str] | None = None,
 ) -> FetchedPage:
     try:
         current = httpx.URL(url.strip())
     except httpx.InvalidURL as exc:
         raise FetchError("网址格式不对。") from exc
     async with httpx.AsyncClient(
-        timeout=timeout_seconds, follow_redirects=False, trust_env=False, headers=_HEADERS,
+        timeout=timeout_seconds, follow_redirects=False, trust_env=False, headers=headers or _HEADERS,
         transport=transport,
     ) as client:
         for _ in range(MAX_REDIRECTS + 1):
@@ -154,7 +172,7 @@ async def fetch_page(
                     current = current.join(location)
                     continue
                 if response.status_code >= 400:
-                    raise FetchError(f"网页返回 HTTP {response.status_code}。")
+                    raise FetchError(f"网页返回 HTTP {response.status_code}。", status=response.status_code)
                 content_type = response.headers.get("content-type", "").lower()
                 kind = content_type.split(";", 1)[0].strip()
                 if kind and not (kind.startswith("text/") or kind in {
