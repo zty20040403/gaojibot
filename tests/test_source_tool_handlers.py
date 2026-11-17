@@ -196,3 +196,41 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         self.assertFalse((await self.execute("inspect_source", action="execute"))["ok"])
+
+
+class WebFetchFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """403/412/429: retry once with browser headers, then fall back to the search snippet."""
+
+    async def asyncSetUp(self):
+        from types import SimpleNamespace
+        from src.plugins.ai_chat.tools.state import TurnState
+        self.turn = SimpleNamespace(
+            search_results=[SearchResult("TEST title", "https://blocked.example/p", "TEST snippet")],
+            context=SimpleNamespace(app=SimpleNamespace(settings=SimpleNamespace(search_timeout_seconds=1),
+                                                        logger=SimpleNamespace(warning=lambda *_: None))))
+        self.assertTrue(TurnState)
+
+    async def call(self, side_effect):
+        from src.plugins.ai_chat.tools.sources import web_fetch
+        with patch("src.plugins.ai_chat.tools.sources.fetch_page", new_callable=AsyncMock,
+                   side_effect=side_effect) as fetch:
+            result = json.loads(await web_fetch(self.turn, {"url": "https://blocked.example/p"}))
+        return result, fetch
+
+    async def test_browser_headers_retry_succeeds(self):
+        from src.plugins.ai_chat.web_fetch import BROWSER_HEADERS, FetchError
+        result, fetch = await self.call([FetchError("HTTP 403", status=403),
+                                         FetchedPage("https://blocked.example/p", "TEST", "body")])
+        self.assertTrue(result["ok"]); self.assertNotIn("partial", result)
+        self.assertEqual(fetch.await_args_list[1].kwargs["headers"], BROWSER_HEADERS)
+
+    async def test_still_blocked_returns_marked_snippet(self):
+        from src.plugins.ai_chat.web_fetch import FetchError
+        result, fetch = await self.call([FetchError("HTTP 412", status=412), FetchError("HTTP 403", status=403)])
+        self.assertEqual((result["ok"], result["partial"], result["id"], result["text"]), (True, True, 1, "TEST snippet"))
+        self.assertIn("搜索摘要", result["note"])
+
+    async def test_other_failures_are_not_retried(self):
+        from src.plugins.ai_chat.web_fetch import FetchError
+        result, fetch = await self.call([FetchError("HTTP 500", status=500)])
+        self.assertFalse(result["ok"]); self.assertEqual(fetch.await_count, 1)

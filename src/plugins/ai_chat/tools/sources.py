@@ -7,7 +7,7 @@ import json
 import httpx
 
 from ..ai_tools import INSPECT_SOURCE_TOOL, USE_SKILL_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL
-from ..web_fetch import FetchError, fetch_page
+from ..web_fetch import BLOCKED_STATUSES, BROWSER_HEADERS, FetchError, fetch_page
 from ..web_search import SearchError, SearchResult, clean_source_url, search_web
 from .registry import FunctionTool
 from .state import ToolContext, TurnState
@@ -159,8 +159,24 @@ async def web_fetch(turn: TurnState, arguments: dict[str, object]) -> str:
     url = str(arguments.get("url") or "").strip()
     try:
         offset = max(int(arguments.get("offset") or 0), 0)
-        page = await fetch_page(url, timeout_seconds=max(turn.context.app.settings.search_timeout_seconds, 15))
+        timeout = max(turn.context.app.settings.search_timeout_seconds, 15)
+        try:
+            page = await fetch_page(url, timeout_seconds=timeout)
+        except FetchError as exc:
+            if exc.status not in BLOCKED_STATUSES:
+                raise
+            # Some sites only reject the short header set: try once as a browser would.
+            page = await fetch_page(url, timeout_seconds=timeout, headers=BROWSER_HEADERS)
     except (FetchError, ValueError) as exc:
+        if isinstance(exc, FetchError) and exc.status in BLOCKED_STATUSES:
+            cleaned_url = clean_source_url(url)
+            for index, result in enumerate(turn.search_results, start=1):
+                if result.url == cleaned_url and result.snippet:
+                    return json.dumps({
+                        "ok": True, "partial": True, "id": index, "url": cleaned_url,
+                        "title": result.title, "text": result.snippet,
+                        "note": "网页拒绝访问，这里只有搜索摘要。",
+                    }, ensure_ascii=False)
         return json.dumps({"ok": False, "url": url, "error": str(exc)}, ensure_ascii=False)
     except httpx.HTTPError as exc:
         turn.context.app.logger.warning(f"Web fetch failed for {url}: {exc!r}")
