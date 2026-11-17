@@ -9,7 +9,6 @@ import unittest
 from unittest.mock import AsyncMock
 
 from src.plugins.ai_chat import sandbox_browser as browser
-from src.plugins.ai_chat import sandbox_tools_setup as setup
 
 
 class BrowserLoginTests(unittest.IsolatedAsyncioTestCase):
@@ -43,17 +42,13 @@ class BrowserLoginTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await browser.wait_for_login(AsyncMock(),interval=interval)
 
-    def test_prepared_vm_imports_new_browser_payload_without_reinstalling_packages(self):
-        files = {item['path']:item for item in setup.files()}
-        wrapper = files['/usr/local/bin/gaoji-python']
-        self.assertEqual(wrapper['permissions'],'0755')
-        self.assertEqual(wrapper['content'],setup.PYTHON_RUN)
-        self.assertIn('PYTHONPATH="/usr/local/share/gaoji',wrapper['content'])
-        self.assertIn(setup.PYTHON_RUN,setup.INSTALL)
-        payload = files['/usr/local/share/gaoji/gaoji_browser.py']['content']
-        self.assertEqual(payload,Path(browser.__file__).read_text())
+    def test_container_tools_nix_packages_browser_payload_first_in_pythonpath(self):
+        tools_nix = (Path(__file__).parents[1]/'nix/guest/tools.nix').read_text()
+        self.assertIn('"sandbox_browser.py"',tools_nix)
+        self.assertIn('then "gaoji_browser.py"',tools_nix)
+        self.assertIn('export PYTHONPATH="${share}/share/gaoji',tools_nix)
+        payload = Path(browser.__file__).read_text()
         self.assertIn('async def wait_for_login',payload)
-        self.assertNotIn('shutil.copy',setup.INSTALL)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fresh,stale = root/'fresh',root/'stale'
@@ -61,8 +56,7 @@ class BrowserLoginTests(unittest.IsolatedAsyncioTestCase):
             (fresh/'gaoji_browser.py').write_text(payload)
             (stale/'gaoji_browser.py').write_text("raise RuntimeError('TEST stale image module')")
             script = root/'gaoji-python'
-            script.write_text(setup.PYTHON_RUN.replace('/usr/local/share/gaoji',str(fresh))
-                .replace('/opt/gaoji-tools/bin/python',shlex.quote(sys.executable)))
+            script.write_text(f'#!/bin/sh\nexport PYTHONPATH="{fresh}${{PYTHONPATH:+:$PYTHONPATH}}"\nexec {shlex.quote(sys.executable)} "$@"\n')
             result = subprocess.run(['/bin/sh',str(script),'-c','import gaoji_browser; print(callable(gaoji_browser.wait_for_login))'],
                 env={'PYTHONPATH':str(stale)},check=True,capture_output=True,text=True,timeout=10)
             self.assertEqual(result.stdout.strip(),'True')

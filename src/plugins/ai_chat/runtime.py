@@ -33,7 +33,7 @@ from .mobile_authorization import build_mobile_authorization
 from src.bot_security.service import MobileAuthorization
 from .quota import UsageStore
 from src.sandbox_runtime.factory import manager_from_settings
-from .vm_sandbox import VmSandboxManager
+from .container_sandbox import ContainerSandboxManager
 from .self_source import SelfSource
 from .semantic_recall import (
     EmbeddingClient,
@@ -80,7 +80,7 @@ class AppContext:
     llm_gateway: LLMGateway = field(repr=False)
     self_source: SelfSource
     skill_registry: SkillRegistry
-    sandbox_manager: VmSandboxManager
+    sandbox_manager: ContainerSandboxManager
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None
     conversations: ConversationStore | None = None

@@ -84,7 +84,7 @@ sys.exit(subprocess.run(sys.argv[sys.argv.index('--')+1:]).returncode)
         (self.state / "s111111").mkdir()
         with self.assertRaisesRegex(SandboxError, "container_running"):
             await self.manager._broker({"op": "remove", "sid": "s111111"})
-        await self.manager._virsh("destroy", "gaoji-vm-s111111")
+        await self.manager._stop("s111111")
         self.assertFalse(await self.manager._running("s111111"))
         await self.manager._broker({"op": "remove", "sid": "s111111"})
         self.assertFalse((self.state / "s111111").exists())
@@ -106,14 +106,15 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
             return {"code": 0, "active": True}, b"", b""
         self.manager._broker = fake
 
-    async def test_packages_are_refused_and_virsh_verbs_map(self):
+    async def test_packages_are_refused_and_lifecycle_maps_to_broker(self):
         with self.assertRaisesRegex(SandboxError, "预装"):
             await self.manager.exec("TEST_OWNER", "s123456", "true", packages=["curl"])
-        await self.manager._virsh("define", "/x/s123456/domain.xml")
-        await self.manager._virsh("start", "gaoji-vm-s123456")
+        await self.manager._start("s123456")
         self.assertEqual(self.requests[-1][0], {"op": "start", "sid": "s123456", "ops": False})
-        with self.assertRaises(SandboxError):
-            await self.manager._virsh("qemu-agent-command", "gaoji-vm-s123456")
+        await self.manager._stop("s123456")
+        self.assertEqual(self.requests[-1][0], {"op": "stop", "sid": "s123456"})
+        await self.manager._remove("s123456")
+        self.assertEqual(self.requests[-1][0], {"op": "remove", "sid": "s123456"})
 
     async def test_unreachable_broker_is_an_error(self):
         manager = ContainerSandboxManager(root=self.manager.root, broker=os.devnull + ".sock")

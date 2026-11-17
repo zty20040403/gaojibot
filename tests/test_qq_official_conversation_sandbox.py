@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock
 
 from tests.test_owned_sandbox import Binding, Delivery, FakeManager
 from src.plugins.ai_chat.application.owned_sandbox import OwnedSandboxExecutor
-from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
+from src.plugins.ai_chat.container_sandbox import ContainerSandboxManager
 
 
 class ConversationSandboxTests(unittest.IsolatedAsyncioTestCase):
-    async def test_background_workspace_reuses_existing_task_vm(self):
+    async def test_background_workspace_reuses_existing_task_container(self):
         with tempfile.TemporaryDirectory() as root:
-            manager = VmSandboxManager(image='/base.qcow2', root=root)
+            manager = ContainerSandboxManager(root=root, broker='/nonexistent')
             manager.list = AsyncMock(return_value=[{'sandbox_id': 's123456',
                 'runtime': 'debian', 'purpose': 'task', 'status': 'Exited'}])
             manager.start_owned, manager.create = AsyncMock(), AsyncMock()
@@ -42,7 +42,7 @@ class ConversationSandboxTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_idle_stops_then_aged_workspace_is_removed(self):
         with tempfile.TemporaryDirectory() as root:
-            manager = VmSandboxManager(image='/base.qcow2', root=root)
+            manager = ContainerSandboxManager(root=root, broker='/nonexistent')
             item = {'id': 's123456', 'owner_ref': 'qqo:conversation:test', 'last_used': 100, 'created_at': 0}
             manager._all_metadata = AsyncMock(return_value=[item])
             manager._metadata = AsyncMock(return_value=item)
@@ -59,21 +59,13 @@ class ConversationSandboxTests(unittest.IsolatedAsyncioTestCase):
         from src.plugins.ai_chat.sandbox import SandboxError
 
         with tempfile.TemporaryDirectory() as root:
-            manager = VmSandboxManager(image='/base.qcow2', root=root)
+            manager = ContainerSandboxManager(root=root, broker='/nonexistent')
             item = {'id': 's123456', 'owner_ref': 'qqo:conversation:test', 'last_used': 100, 'created_at': 0}
             manager._all_metadata = AsyncMock(return_value=[item])
             manager._metadata = AsyncMock(return_value=item)
-            manager.stop_owned = AsyncMock(side_effect=SandboxError('VM 文件同步失败：agent timeout'))
-            with self.assertLogs('src.plugins.ai_chat.vm_sandbox', level='WARNING') as logs:
+            manager.stop_owned = AsyncMock(side_effect=SandboxError('容器停止失败：broker timeout'))
+            with self.assertLogs('src.plugins.ai_chat.container_sandbox', level='WARNING') as logs:
                 await manager.maintain_conversations(now=7400)
             self.assertTrue(
-                any('sandbox=s123456' in line and 'VM 文件同步失败：agent timeout' in line for line in logs.output)
+                any('sandbox=s123456' in line and '容器停止失败：broker timeout' in line for line in logs.output)
             )
-
-    def test_prepared_conversation_image_does_not_reinstall_packages(self):
-        raw = json.loads(VmSandboxManager._cloud_config(conversation=True).split('\n', 1)[1])
-        prepared = json.loads(VmSandboxManager._cloud_config(conversation=True, prepared=True).split('\n', 1)[1])
-        self.assertIn('python3-pip', raw['packages'])
-        self.assertNotIn('packages', prepared)
-        self.assertFalse(prepared['package_update'])
-        self.assertIn(['ln', '-sfn', '/workspace', '/work'], prepared['runcmd'])

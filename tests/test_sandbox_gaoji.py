@@ -11,7 +11,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from src.plugins.ai_chat import sandbox_gaoji as cli, sandbox_tools_setup
+from src.plugins.ai_chat import sandbox_gaoji as cli
 
 TOKEN = 'gvm_'+('TEST_'*9)[:43]
 
@@ -106,10 +106,10 @@ class SandboxGaojiTests(unittest.TestCase):
             self.assertEqual(result,1); self.assertNotIn(TOKEN,out+error)
         self.assertEqual(len(self.server.seen),1)
 
-    def test_cloud_init_and_upgrade_ship_the_same_dependency_free_cli(self):
-        entry = next(item for item in sandbox_tools_setup.files() if item['path'].endswith('/sandbox_gaoji.py'))
-        self.assertEqual(entry['content'],Path(cli.__file__).read_text())
-        self.assertIn('exec /usr/bin/python3 /usr/local/share/gaoji/sandbox_gaoji.py',sandbox_tools_setup.INSTALL)
+    def test_container_ships_dependency_free_cli(self):
+        tools_nix = (Path(__file__).parents[1]/'nix/guest/tools.nix').read_text()
+        self.assertIn('"sandbox_gaoji.py"',tools_nix)
+        self.assertIn('(wrapper "gaoji" "${share}/share/gaoji/sandbox_gaoji.py")',tools_nix)
         standalone = subprocess.run([sys.executable,'-I',cli.__file__,'--help'],capture_output=True,timeout=5)
         self.assertEqual(standalone.returncode,0,standalone.stderr)
         self.assertIn(b'send-file',standalone.stdout)

@@ -12,7 +12,6 @@ import unittest
 from unittest.mock import AsyncMock,patch
 
 from src.plugins.ai_chat import sandbox_browser_state as browser
-from src.plugins.ai_chat.sandbox_tools_setup import files
 
 
 class BrowserDomainTests(unittest.TestCase):
@@ -70,8 +69,8 @@ class BrowserDomainTests(unittest.TestCase):
         for bad in ('https://test.example','test.example/a','a.test; DROP TABLE cookies','x..example','*.example','com',False,'test@example'):
             with self.assertRaises(ValueError):
                 browser.domain_name(bad)
-        payload = next(item for item in files() if item['path'].endswith('/sandbox_browser_state.py'))
-        self.assertEqual(payload['content'],Path(browser.__file__).read_text())
+        tools_nix = (Path(__file__).parents[1]/'nix/guest/tools.nix').read_text()
+        self.assertIn('"sandbox_browser_state.py"',tools_nix)
 
     def test_cli_failures_never_emit_browser_exception_values(self):
         output = io.StringIO()

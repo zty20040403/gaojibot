@@ -137,9 +137,9 @@ services.gaoji = {
 };
 ```
 
-持久工作区还需 `sandbox.enable = true`、`sandbox.backend = "vm"`、固定版本 Debian cloud image 和 `sandbox.vmRoot`。上述最小示例不包含完整 VM 配置。
+持久工作区以 NixOS 容器（`systemd-nspawn`）运行，还需开启 `sandbox.enable = true`、`sandbox.vmRoot`、`systemd.network.enable = true` 与 `networking.nftables.enable = true`。
 
-后台模型及推理强度可在管理台「任务与投递」修改。`voiceAsr.enable` 可启用短语音本地转写回退。已有 VM 需要显式升级，群文件继续保留。
+后台模型及推理强度可在管理台「任务与投递」修改。`voiceAsr.enable` 可启用短语音本地转写回退。容器系统目录重启即按最新 NixOS 配置重建，`/work` 下的群文件持久保留。
 
 **上线前先读 → [部署与数据调整](docs/deploy-rework.md) · [沙箱安全](docs/sandbox-security.md)**
 

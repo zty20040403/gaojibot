@@ -9,39 +9,26 @@
   statePath = "/var/lib/${cfg.stateDirectory}";
   cachePath = "/var/cache/${cfg.cacheDirectory}";
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  sandboxVm = cfg.runBot && cfg.sandbox.enable && cfg.sandbox.backend == "vm";
-  # NixOS containers (systemd-nspawn) in place of KVM guests; see the
-  # container block at the end of this file.
   sandboxCt = cfg.runBot && cfg.sandbox.enable && cfg.sandbox.backend == "container";
   ctBroker = "/run/gaoji-ct/broker.sock";
   ctBridge = "vz-gaoji";
   ctResolver = pkgs.writeText "gaoji-ct-resolv.conf" (lib.concatMapStrings (server: "nameserver ${server}\n") cfg.sandbox.containerDns);
-  vmServiceName = "${serviceName}-vm";
-  # The operations network: some conversations' VMs run under a second
-  # libvirt daemon inside a network namespace with a Tailscale node of its
-  # own, so `ssh <host>` in them reaches the fleet as gaoji (Tailscale SSH,
-  # no key in the VM). Other VMs keep the filtered public-only egress.
+  # The operations network: some conversations' containers join a network
+  # namespace with a Tailscale node of its own, so `ssh <host>` in them reaches
+  # the fleet as gaoji (Tailscale SSH, no key in the container). Other
+  # containers stay on the filtered public-only bridge.
   ops = cfg.sandbox.operations;
-  sandboxOps = (sandboxVm || sandboxCt) && ops.enable;
-  opsVm = sandboxVm && ops.enable;
+  sandboxOps = sandboxCt && ops.enable;
   opsName = "${serviceName}-ops";
   opsNetns = opsName;
   opsUplink = "${serviceName}-uplink";
   opsHost = "${ops.uplink}.1";
   opsPeer = "${ops.uplink}.2";
-  opsRuntime = "${statePath}/vm-ops-runtime";
   opsSocket = "/run/${opsName}-tailscale/tailscaled.sock";
   opsTailscale = "${pkgs.tailscale}/bin/tailscale --socket=${opsSocket}";
   opsResolver = pkgs.writeText "${opsName}-resolv.conf" (lib.concatMapStrings (server: "nameserver ${server}\n") ops.dns);
-  # The VMs' DNS (slirp's 10.0.2.3) goes to the node's MagicDNS, which knows the fleet's names.
-  opsVmResolver = pkgs.writeText "${opsName}-vm-resolv.conf" "nameserver 100.100.100.100\n";
-  vmNetworkSetup = pkgs.writeShellScript "gaoji-vm-network" ''
-    exec ${pkgs.python3}/bin/python ${../src/sandbox_runtime/vm_network.py} \
-      --nft ${pkgs.nftables}/bin/nft \
-      --systemctl ${config.systemd.package}/bin/systemctl \
-      --unit ${vmServiceName}.service \
-      ${lib.concatMapStringsSep " " (port: "--host-port ${toString port}") cfg.sandbox.vmHostPorts} "$@"
-  '';
+  # Containers on the operations network resolve names via MagicDNS, which knows the fleet's names.
+  opsGuestResolver = pkgs.writeText "${opsName}-guest-resolv.conf" "nameserver 100.100.100.100\n";
   defaultWhisperModel = pkgs.fetchurl {
     url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
     hash = "sha256-YO1bw90U7qhWST0zQ0m0BXgt3K8AKNS130CINF+6Lv4=";
@@ -321,25 +308,25 @@ in {
     sandbox.cpus = lib.mkOption {
       type = lib.types.ints.between 1 16;
       default = 2;
-      description = "CPU limit for each sandbox and package helper (VMs use at most 4 vCPUs).";
+      description = "CPU limit for each conversation container.";
     };
 
     sandbox.pidsLimit = lib.mkOption {
       type = lib.types.ints.between 32 4096;
       default = 256;
-      description = "Process limit for each VM sandbox user.";
+      description = "Process limit for each sandbox user.";
     };
 
     sandbox.memoryMiB = lib.mkOption {
       type = lib.types.ints.between 256 8192;
       default = 8192;
-      description = "Memory cap in MiB per sandbox; VMs require at least 512 MiB.";
+      description = "Memory cap in MiB per conversation container.";
     };
 
     sandbox.backend = lib.mkOption {
-      type = lib.types.enum ["vm" "container"];
-      default = "vm";
-      description = "Conversation workspaces as KVM guests (Debian, libvirt) or NixOS containers (systemd-nspawn).";
+      type = lib.types.enum ["container"];
+      default = "container";
+      description = "Conversation workspaces run as NixOS containers (systemd-nspawn).";
     };
 
     sandbox.containerSystem = lib.mkOption {
@@ -355,16 +342,10 @@ in {
       description = "Public resolvers for ordinary conversation containers.";
     };
 
-    sandbox.vmImage = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = "Pinned Debian genericcloud QCOW2 image used as the KVM sandbox backing disk.";
-    };
-
     sandbox.vmRoot = lib.mkOption {
       type = lib.types.str;
       default = "${statePath}/vms";
-      description = "Persistent root for per-task VM disks and metadata.";
+      description = "Persistent root for per-conversation sandbox metadata and host locks.";
     };
 
     sandbox.operations = {
@@ -432,16 +413,11 @@ in {
         message = "A running Gaoji application requires QQ official to be enabled";
       }
       {
-        assertion = !cfg.sandbox.enable || cfg.sandbox.memoryMiB >= 512;
-        message = "KVM sandboxes require at least 512 MiB";
-      }
-      {
         assertion = !cfg.sandbox.enable || (
-          cfg.sandbox.vmImage != null
-          && lib.hasPrefix "/" cfg.sandbox.vmRoot
+          lib.hasPrefix "/" cfg.sandbox.vmRoot
           && !(lib.hasPrefix "/nix/store/" cfg.sandbox.vmRoot)
         );
-        message = "KVM sandboxes require a pinned vmImage and a persistent absolute vmRoot outside the Nix store";
+        message = "Sandboxes require a persistent absolute vmRoot outside the Nix store";
       }
       {
         assertion = builtins.match "^[A-Za-z0-9_.-]+$" cfg.stateDirectory != null;
@@ -487,27 +463,17 @@ in {
 
     networking.firewall.allowedTCPPorts = lib.optionals cfg.openFirewall [cfg.port];
 
-    virtualisation.libvirtd.enable = lib.mkDefault (cfg.sandbox.enable && cfg.sandbox.backend == "vm");
-
     systemd.services.${serviceName} = lib.mkIf cfg.runBot {
       description = "gaoji multi-model bot";
       wantedBy = ["multi-user.target"];
       unitConfig.RequiresMountsFor = lib.optionals cfg.sandbox.enable [cfg.sandbox.vmRoot];
-      wants =
-        ["network-online.target"];
-      # Without the filtered daemon the bot must not run: a stray session
-      # daemon would otherwise serve virsh with unfiltered qemu.
-      requires = lib.optionals sandboxVm ["${vmServiceName}.service"]
-        ++ lib.optionals opsVm ["${opsName}-vm.service"]
-        ++ lib.optionals sandboxCt ["gaoji-ct-broker.socket"];
+      wants = ["network-online.target"];
+      requires = lib.optionals sandboxCt ["gaoji-ct-broker.socket"];
       after =
         ["network-online.target"]
-        ++ lib.optionals sandboxVm ["${vmServiceName}.service"]
-        ++ lib.optionals opsVm ["${opsName}-vm.service"]
         ++ lib.optionals sandboxCt ["gaoji-ct-broker.socket"];
       path =
         (cfg.runtimePackages ++ [pkgs.ffmpeg-headless])
-        ++ lib.optionals sandboxVm [pkgs.libvirt pkgs.qemu pkgs.cloud-utils]
         ++ lib.optionals cfg.voiceAsr.enable [cfg.voiceAsr.package];
       environment =
         {
@@ -528,19 +494,12 @@ in {
           AI_SANDBOX_BACKEND = cfg.sandbox.backend;
           AI_SANDBOX_VM_ROOT = cfg.sandbox.vmRoot;
         }
-        // lib.optionalAttrs sandboxVm {
-          XDG_RUNTIME_DIR = "${statePath}/vm-runtime";
-          AI_SANDBOX_VM_IMAGE = toString cfg.sandbox.vmImage;
-        }
         // lib.optionalAttrs sandboxCt {
           AI_SANDBOX_CONTAINER_BROKER = ctBroker;
         }
         // lib.optionalAttrs sandboxOps {
           AI_SANDBOX_OPERATIONS_OWNERS = lib.concatStringsSep "," ops.owners;
           AI_SANDBOX_OPERATIONS_DOMAIN = ops.domain;
-        }
-        // lib.optionalAttrs opsVm {
-          AI_SANDBOX_OPERATIONS_SOCKET = "${opsRuntime}/libvirt/virtqemud-sock";
         }
         // lib.optionalAttrs (cfg.admin.secretFile != null) {
           AI_ADMIN_SECRET_FILE = "/run/credentials/${serviceName}.service/admin-authorization-key";
@@ -582,7 +541,6 @@ in {
           Type = "simple";
           User = cfg.user;
           Group = cfg.group;
-          SupplementaryGroups = lib.optional cfg.sandbox.enable "kvm";
           StateDirectory = cfg.stateDirectory;
           CacheDirectory = cfg.cacheDirectory;
           WorkingDirectory = "${cfg.package}/share/gaoji";
@@ -617,49 +575,13 @@ in {
         };
     };
 
-    # libvirt session daemon for KVM workspaces. Its qemu children inherit this
-    # unit's cgroup, which the gaoji_vm nftables table filters; the bot never
-    # autospawns its own daemon (LIBVIRT_AUTOSTART=0 in vm_sandbox.py).
-    systemd.services.${vmServiceName} = lib.mkIf sandboxVm {
-      description = "gaoji KVM workspaces with filtered egress";
-      wantedBy = ["multi-user.target"];
-      unitConfig.RequiresMountsFor = [cfg.sandbox.vmRoot];
-      path = [pkgs.libvirt pkgs.qemu];
-      environment = {
-        HOME = statePath;
-        XDG_RUNTIME_DIR = "${statePath}/vm-runtime";
-      };
-      serviceConfig = {
-        Type = "notify";
-        User = cfg.user;
-        Group = cfg.group;
-        SupplementaryGroups = ["kvm"];
-        StateDirectory = cfg.stateDirectory;
-        # Runs inside this unit's fresh cgroup, before any qemu; failure blocks the start.
-        ExecStartPre = "+${vmNetworkSetup}";
-        ExecStart = "${pkgs.libvirt}/sbin/virtqemud";
-        Restart = "on-failure";
-        RestartSec = 5;
-        UMask = "0077";
-        NoNewPrivileges = true;
-        PrivateTmp = true;
-        ProtectControlGroups = true;
-        ProtectHome = "read-only";
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        ProtectSystem = "strict";
-        ReadWritePaths = [cfg.sandbox.vmRoot];
-        RestrictSUIDSGID = true;
-      };
-    };
-
     # The operations namespace, its uplink, and what it may reach: the
     # internet as itself (NAT on the host), the fleet by its own tailnet node.
     systemd.services."${opsName}-network" = lib.mkIf sandboxOps {
       description = "gaoji operations network namespace";
       wantedBy = ["multi-user.target"];
       after = ["nftables.service"];
-      before = ["${opsName}-tailscaled.service" "${opsName}-vm.service"];
+      before = ["${opsName}-tailscaled.service"];
       path = [pkgs.iproute2 pkgs.nftables pkgs.procps];
       serviceConfig = {
         Type = "oneshot";
@@ -773,58 +695,10 @@ in {
       '';
     };
 
-    # The second libvirt daemon: its qemu (QEMU user networking) opens sockets
-    # in the namespace, so its VMs see the tailnet. The bot picks it per VM.
-    systemd.services."${opsName}-vm" = lib.mkIf opsVm {
-      description = "gaoji KVM workspaces on the operations network";
-      wantedBy = ["multi-user.target"];
-      requires = ["${opsName}-network.service"];
-      after = ["${opsName}-network.service" "${opsName}-tailscaled.service"];
-      unitConfig.RequiresMountsFor = [cfg.sandbox.vmRoot];
-      path = [pkgs.libvirt pkgs.qemu];
-      environment = {
-        HOME = statePath;
-        XDG_RUNTIME_DIR = opsRuntime;
-      };
-      serviceConfig = {
-        Type = "notify";
-        User = cfg.user;
-        Group = cfg.group;
-        SupplementaryGroups = ["kvm"];
-        StateDirectory = cfg.stateDirectory;
-        ExecStart = "${pkgs.libvirt}/sbin/virtqemud";
-        NetworkNamespacePath = "/run/netns/${opsNetns}";
-        BindReadOnlyPaths = ["${opsVmResolver}:/etc/resolv.conf"];
-        Restart = "on-failure";
-        RestartSec = 5;
-        UMask = "0077";
-        NoNewPrivileges = true;
-        PrivateTmp = true;
-        ProtectControlGroups = true;
-        ProtectHome = "read-only";
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        ProtectSystem = "strict";
-        ReadWritePaths = [cfg.sandbox.vmRoot];
-        RestrictSUIDSGID = true;
-      };
-    };
-
-    # nftables.service flushes the whole ruleset on start and reload; put the
-    # VM table back in the same job. On failure the hook stops the VM unit.
-    systemd.services.nftables.serviceConfig = lib.mkIf (sandboxVm && config.networking.nftables.enable) {
-      ExecStartPost = lib.mkAfter ["${vmNetworkSetup} --if-running"];
-      ExecReload = lib.mkAfter ["${vmNetworkSetup} --if-running"];
-    };
-
     systemd.tmpfiles.rules =
       lib.optionals cfg.sandbox.enable [
         "d ${statePath} 0700 ${cfg.user} ${cfg.group} -"
-        "d ${statePath}/vm-runtime 0700 ${cfg.user} ${cfg.group} -"
         "d ${cfg.sandbox.vmRoot} 0700 ${cfg.user} ${cfg.group} -"
-      ]
-      ++ lib.optionals opsVm [
-        "d ${opsRuntime} 0700 ${cfg.user} ${cfg.group} -"
       ];
   }
   (lib.mkIf sandboxOps {
@@ -870,7 +744,7 @@ in {
       install -d -m 0755 "$base/root" "$base/root/etc" "$base/root/usr" "$base/root/var/lib"
       touch "$base/root/etc/os-release"
       if [ "$mode" = ops ]; then
-        net=(); resolv=${opsVmResolver}
+        net=(); resolv=${opsGuestResolver}
       else
         net=(--network-bridge=${ctBridge}); resolv=${ctResolver}
       fi

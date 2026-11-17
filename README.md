@@ -137,9 +137,9 @@ services.gaoji = {
 };
 ```
 
-Persistent workspaces also need `sandbox.enable = true`, `sandbox.backend = "vm"`, a pinned Debian cloud image and `sandbox.vmRoot`. The minimal example above does not include the full VM configuration.
+Persistent workspaces run as NixOS containers (`systemd-nspawn`) and need `sandbox.enable = true`, `sandbox.vmRoot`, `systemd.network.enable = true`, and `networking.nftables.enable = true`.
 
-The background model and its reasoning effort can be changed on the console's jobs and delivery page. `voiceAsr.enable` turns on a local transcription fallback for short voice messages. Existing VMs must be upgraded explicitly; group files are kept.
+The background model and its reasoning effort can be changed on the console's jobs and delivery page. `voiceAsr.enable` turns on a local transcription fallback for short voice messages. Container root filesystems are rebuilt from the NixOS module on restart while `/work` persists.
 
 **Read before going live → [Deployment and data changes](docs/deploy-rework.md) · [Sandbox security](docs/sandbox-security.md)**
 
