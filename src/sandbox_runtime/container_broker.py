@@ -137,6 +137,8 @@ class Broker:
         code, out, err = await self._run(
             self.systemd_run, "--machine=" + machine(sandbox_id), "--quiet", "--pipe", "--wait",
             "--collect", "--service-type=exec", f"--property=RuntimeMaxSec={request['timeout']}",
+            # Transient units start with an empty PATH; give root's commands NixOS's.
+            "--setenv=PATH=/run/wrappers/bin:/run/current-system/sw/bin",
             "--", *request["argv"], stdin=stdin, timeout=request["timeout"] + 30)
         return {"code": code}, out, err
 

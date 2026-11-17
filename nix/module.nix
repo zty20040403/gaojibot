@@ -867,7 +867,7 @@ in {
       install -d -m 0700 /var/lib/gaoji-ct "$base"
       [ -d "$base/work" ] || install -d -m 0700 -o 1000 -g 1000 "$base/work"
       rm -rf "$base/root"
-      install -d -m 0755 "$base/root" "$base/root/etc" "$base/root/var/lib"
+      install -d -m 0755 "$base/root" "$base/root/etc" "$base/root/usr" "$base/root/var/lib"
       touch "$base/root/etc/os-release"
       if [ "$mode" = ops ]; then
         net=(--network-namespace-path=/run/netns/${opsNetns}); resolv=${opsVmResolver}
