@@ -14,7 +14,7 @@ from src.plugins.ai_chat.adapters.qq_official.vm_sessions import VMSessions
 from src.plugins.ai_chat.background_tools import workspace_owner
 from src.plugins.ai_chat.platform_types import EndpointKey
 from src.plugins.ai_chat.sandbox_identity import run
-from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
+from src.plugins.ai_chat.container_sandbox import ContainerSandboxManager
 from tests.qq_official_outbox_fixture import OutboxFixture
 
 BOOT = '00000000-0000-4000-8000-000000000001'
@@ -33,7 +33,7 @@ class VMCredentialTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         async def io_lock(sandbox_id):
             async with lock:
                 yield
-        host = VmSandboxManager(image='/TEST_IMAGE',root=str(self.root/'host'))
+        host = ContainerSandboxManager(root=str(self.root/'host'),broker='/nonexistent')
         host._directory('s123456').mkdir(parents=True)
         host._save_metadata('s123456',dict(id='s123456',owner_ref=workspace_owner(self.endpoint),
             owner_hash=host._owner_hash(workspace_owner(self.endpoint)),created_at=self.now,last_used=self.now))

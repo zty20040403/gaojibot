@@ -219,7 +219,6 @@ class Settings:
     otel_service_name: str
     otel_exporter_otlp_endpoint: str
     sandbox_enabled: bool
-    sandbox_vm_image: str
     sandbox_vm_root: str
     sandbox_allowed_users: set[int]
     sandbox_max_per_user: int
@@ -233,10 +232,9 @@ class Settings:
     sandbox_cpus: int = 2
     sandbox_pids_limit: int = 256
     sandbox_memory_mib: int = 8192
-    sandbox_backend: str = "vm"
+    sandbox_backend: str = "container"
     sandbox_container_broker: str = ""
     sandbox_operations_owners: frozenset[str] = frozenset()
-    sandbox_operations_socket: str = ""
     sandbox_operations_domain: str = ""
     search_provider: str = "scrape"
     search_api_key: str = field(default="", repr=False)
@@ -565,11 +563,9 @@ class Settings:
             sandbox_operations_owners=frozenset(
                 item.strip() for item in environment.get("AI_SANDBOX_OPERATIONS_OWNERS", "").split(",") if item.strip()
             ),
-            sandbox_backend=environment.get("AI_SANDBOX_BACKEND", "vm").strip().lower() or "vm",
+            sandbox_backend=environment.get("AI_SANDBOX_BACKEND", "container").strip().lower() or "container",
             sandbox_container_broker=environment.get("AI_SANDBOX_CONTAINER_BROKER", "").strip(),
-            sandbox_operations_socket=environment.get("AI_SANDBOX_OPERATIONS_SOCKET", "").strip(),
             sandbox_operations_domain=environment.get("AI_SANDBOX_OPERATIONS_DOMAIN", "").strip(),
-            sandbox_vm_image=environment.get("AI_SANDBOX_VM_IMAGE", "").strip(),
             sandbox_vm_root=environment.get("AI_SANDBOX_VM_ROOT", "").strip(),
             sandbox_allowed_users=group_ids(
                 "AI_SANDBOX_ALLOWED_USERS"

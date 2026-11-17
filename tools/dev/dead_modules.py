@@ -2,7 +2,7 @@
 
 Usage: OUT=dead.txt python tools/dev/dead_modules.py src.plugins.ai_chat.platform_entrypoint [more roots...]
 Writes the dead list to $OUT and the live list to $OUT.live. Before deleting, also grep for
-files read by path (vm_sandbox.py injects sandbox_pdf.py) and for tests that import a module.
+files read by path (nix/guest/tools.nix packages sandbox_*.py) and for tests that import a module.
 """
 import ast, sys, os
 from pathlib import Path

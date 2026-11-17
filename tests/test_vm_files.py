@@ -9,7 +9,7 @@ from tests.qq_official_outbox_fixture import OutboxFixture
 from tests.qq_official_file_http_fixture import FileMediaFake
 from src.plugins.ai_chat.adapters.qq_official.file_services import FileServices,FileServiceConfig
 from src.sandbox_runtime.artifact_export import EXPORT_FILE_SCRIPT, STAGE_FILE_SCRIPT, bounded_regular_file, stage_regular_file
-from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
+from src.plugins.ai_chat.container_sandbox import ContainerSandboxManager
 
 
 class VMFileHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
@@ -172,10 +172,11 @@ class VMFileHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
 
 
 class VMLargeExportTests(unittest.IsolatedAsyncioTestCase):
-    async def test_30mib_export_uses_1mib_chunks_and_cleans_staged_file(self):
-        import base64
+    async def test_30mib_export_stages_and_cleans_staged_file(self):
         import hashlib
         import json
+        import subprocess
+        import sys
         import tempfile
         from pathlib import Path
         from src.plugins.ai_chat.sandbox import SANDBOX_ID_PATTERN
@@ -191,7 +192,7 @@ class VMLargeExportTests(unittest.IsolatedAsyncioTestCase):
             (work / 'big.mp4').write_bytes(payload)
             vms_root = root_path / 'vms'
             vms_root.mkdir(mode=0o700)
-            manager = VmSandboxManager(image='/TEST_base.qcow2', root=str(vms_root), max_file_bytes=64 * 1024 * 1024)
+            manager = ContainerSandboxManager(root=str(vms_root), broker='/nonexistent', max_file_bytes=64 * 1024 * 1024)
             vm_dir = manager._directory('s123456')
             vm_dir.mkdir(parents=True)
             (vm_dir / 'metadata.json').write_text(json.dumps({
@@ -203,9 +204,6 @@ class VMLargeExportTests(unittest.IsolatedAsyncioTestCase):
             }), encoding='utf-8')
             manager._running = AsyncMock(return_value=True)
             manager._wait_guest = AsyncMock()
-            handles = {}
-            next_handle = 1
-            max_response_bytes = 0
 
             def map_staged(guest_path: str) -> Path:
                 if guest_path.startswith('/root/'):
@@ -220,37 +218,16 @@ class VMLargeExportTests(unittest.IsolatedAsyncioTestCase):
                 if path == '/usr/bin/stat' and args[:1] == ['-c']:
                     target = map_staged(args[2])
                     return 0, f'regular file:{target.stat().st_size}\n'.encode(), b''
+                if path == '/usr/bin/python3' and args[:1] == ['-c']:
+                    target = map_staged(args[2])
+                    proc = subprocess.run([sys.executable, '-c', args[1], str(target)], capture_output=True, check=False)
+                    return proc.returncode, proc.stdout, proc.stderr
                 if path == '/bin/rm' and args[:1] == ['-f']:
                     map_staged(args[1]).unlink(missing_ok=True)
                     return 0, b'', b''
                 raise AssertionError(f'unexpected guest exec: {path} {args}')
 
-            async def fake_virsh(*args, timeout=30):
-                nonlocal next_handle, max_response_bytes
-                assert args[0] == 'qemu-agent-command'
-                req = json.loads(args[2])
-                op = req['execute']
-                arguments = req.get('arguments', {})
-                if op == 'guest-file-open':
-                    target = map_staged(arguments['path'])
-                    f = open(target, 'rb')
-                    hid = next_handle; next_handle += 1
-                    handles[hid] = f
-                    resp = {'return': hid}
-                elif op == 'guest-file-read':
-                    data = handles[arguments['handle']].read(arguments['count'])
-                    resp = {'return': {'count': len(data), 'buf-b64': base64.b64encode(data).decode('ascii'), 'eof': not data}}
-                elif op == 'guest-file-close':
-                    handles.pop(arguments['handle']).close()
-                    resp = {'return': {}}
-                else:
-                    raise AssertionError(f'unexpected QGA op: {op}')
-                encoded = json.dumps(resp)
-                max_response_bytes = max(max_response_bytes, len(encoded.encode('utf-8')))
-                return encoded
-
             manager._guest_exec_raw = AsyncMock(side_effect=fake_guest_exec_raw)
-            manager._virsh = AsyncMock(side_effect=fake_virsh)
 
             exported, is_dir = await manager.export_artifact(
                 'qqo:conversation:TEST', 's123456', 'big.mp4',
@@ -258,7 +235,6 @@ class VMLargeExportTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertFalse(is_dir)
             self.assertEqual(hashlib.sha256(exported).hexdigest(), expected_sha)
-            self.assertLess(max_response_bytes, 2 * 1024 * 1024)
             self.assertEqual(list(guest_root.iterdir()), [])
 
     def test_staging_rejects_the_same_unsafe_sources_and_preserves_existing_output(self):
