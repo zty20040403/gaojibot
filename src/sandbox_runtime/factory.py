@@ -18,4 +18,7 @@ def manager_from_settings(settings) -> VmSandboxManager:
         memory_mib=settings.sandbox_memory_mib,
         vcpus=settings.sandbox_cpus,
         pids_limit=settings.sandbox_pids_limit,
+        operations_owners=settings.sandbox_operations_owners,
+        operations_socket=settings.sandbox_operations_socket,
+        operations_domain=settings.sandbox_operations_domain,
     )

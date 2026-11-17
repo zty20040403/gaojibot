@@ -232,6 +232,9 @@ class Settings:
     sandbox_cpus: int = 2
     sandbox_pids_limit: int = 256
     sandbox_memory_mib: int = 8192
+    sandbox_operations_owners: frozenset[str] = frozenset()
+    sandbox_operations_socket: str = ""
+    sandbox_operations_domain: str = ""
     program_vm_limit: int = 4
     search_provider: str = "scrape"
     search_api_key: str = field(default="", repr=False)
@@ -541,6 +544,11 @@ class Settings:
             sandbox_cpus=resource_limit("AI_SANDBOX_CPUS", 2, 1, 16),
             sandbox_pids_limit=resource_limit("AI_SANDBOX_PIDS_LIMIT", 256, 32, 4096),
             sandbox_memory_mib=resource_limit("AI_SANDBOX_MEMORY_MIB", 8192, 256, 8192),
+            sandbox_operations_owners=frozenset(
+                item.strip() for item in environment.get("AI_SANDBOX_OPERATIONS_OWNERS", "").split(",") if item.strip()
+            ),
+            sandbox_operations_socket=environment.get("AI_SANDBOX_OPERATIONS_SOCKET", "").strip(),
+            sandbox_operations_domain=environment.get("AI_SANDBOX_OPERATIONS_DOMAIN", "").strip(),
             sandbox_vm_image=environment.get("AI_SANDBOX_VM_IMAGE", "").strip(),
             sandbox_vm_root=environment.get("AI_SANDBOX_VM_ROOT", "").strip(),
             sandbox_allowed_users=group_ids(

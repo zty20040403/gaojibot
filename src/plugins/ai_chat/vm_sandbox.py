@@ -159,6 +159,9 @@ class VmSandboxManager:
         pids_limit: int = 256,
         disk_gib: int = 20,
         resident_limit: int = 4,
+        operations_owners: frozenset[str] = frozenset(),
+        operations_socket: str = "",
+        operations_domain: str = "",
     ) -> None:
         self.image = Path(image)
         self.root = Path(root)
@@ -184,6 +187,11 @@ class VmSandboxManager:
         self._conversation_locks = {}
         self._conversation_guests = set()
         self.conversation_lifecycle = None
+        # Conversations whose VMs run under the operations daemon, inside a
+        # network namespace with its own tailnet node: `ssh <host>` works there.
+        self._operations_hashes = frozenset(self._owner_hash(owner) for owner in operations_owners)
+        self.operations_socket = operations_socket
+        self.operations_domain = operations_domain
         from .vm_program_state import VMProgramState
         self.program_state = VMProgramState(self,limit=resident_limit)
 
@@ -280,9 +288,35 @@ class VmSandboxManager:
                 continue
         finishing.result()
 
+    def _operations_sandbox(self, sandbox_id: str) -> bool:
+        if not self._operations_hashes or not SANDBOX_ID_PATTERN.fullmatch(sandbox_id):
+            return False
+        try:
+            data = json.loads((self.root / sandbox_id / "metadata.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return data.get("owner_hash") in self._operations_hashes
+
+    def _daemon_args(self, args: tuple[str, ...]) -> tuple[str, ...]:
+        """Send virsh for an operations conversation's VM to the operations daemon."""
+        if not self.operations_socket or args[:3] != ("virsh", "-c", "qemu:///session"):
+            return args
+        for arg in args[3:]:
+            if arg.startswith(VM_PREFIX):
+                sandbox_id = arg[len(VM_PREFIX):]
+            elif arg.endswith("/domain.xml"):
+                sandbox_id = Path(arg).parent.name
+            else:
+                continue
+            if self._operations_sandbox(sandbox_id):
+                return ("virsh", "-c", f"qemu:///session?socket={self.operations_socket}", *args[3:])
+            break
+        return args
+
     async def _run(self, *args: str, timeout: int = 60) -> tuple[int, bytes, bytes]:
         from src.sandbox_runtime.source_fence import assert_sandbox_source
         await assert_sandbox_source()
+        args = self._daemon_args(args)
         starting = asyncio.create_task(asyncio.create_subprocess_exec(
             *args, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -847,7 +881,20 @@ class VmSandboxManager:
     async def search_nix_packages(self, query: str) -> list[dict[str, str]]:
         raise SandboxError("VM 使用 Debian 软件包；请用 sandbox_exec 的 packages 参数安装具体包名。")
 
+    async def _configure_operations(self, owner, sandbox_id):
+        """On the operations network `ssh <host>` reaches the fleet as gaoji, no key needed."""
+        if not self.operations_domain or self._owner_hash(owner) not in self._operations_hashes:
+            return
+        config = ("Host * !*.*\n  HostName %h." + self.operations_domain + "\n"
+                  "Host *\n  User gaoji\n  BatchMode yes\n  ConnectTimeout 15\n  StrictHostKeyChecking accept-new\n")
+        script = "mkdir -p /etc/ssh/ssh_config.d && printf %s " + shlex.quote(config) + " > /etc/ssh/ssh_config.d/gaoji-operations.conf"
+        code, _, err = await self._guest_exec(sandbox_id, '/bin/sh', ['-c', script], timeout=30)
+        if code:
+            raise SandboxError("VM 的运维 SSH 配置失败：" + err.decode(errors='replace')[-200:])
+
     async def _conversation_event(self, event, owner, sandbox_id, **kwargs):
+        if event == 'ready':
+            await self._configure_operations(owner, sandbox_id)
         if owner.startswith('qqo:conversation:') and self.conversation_lifecycle is not None:
             return await getattr(self.conversation_lifecycle,event)(owner,sandbox_id,**kwargs)
 
