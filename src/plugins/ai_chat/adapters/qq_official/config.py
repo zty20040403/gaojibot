@@ -13,7 +13,7 @@ from src.qq_official.credentials import (
     Credentials, CredentialError, DEFAULT_API_BASE, SANDBOX_API_BASE,
     _read_secret, validate_api_base,
 )
-from .delivery_configuration import DeliveryConfiguration
+from .turn_platform import PlatformBoundaryError, TurnDeliveryPolicy
 
 
 class OfficialConfigurationError(ValueError):
@@ -26,6 +26,27 @@ def _boolean(value: str, name: str) -> bool:
     if value.strip().lower() in {"", "false", "0", "no", "off"}:
         return False
     raise OfficialConfigurationError(f"Invalid official {name} switch")
+
+
+def _positive_int(env: Mapping[str, str], name: str, default: int | None, *, optional: bool = False) -> int | None:
+    raw = env.get(f"AI_QQ_OFFICIAL_{name}", "").strip()
+    if not raw:
+        return None if optional else default
+    if not re.fullmatch(r"[0-9]{1,9}", raw):
+        raise OfficialConfigurationError("Invalid official delivery configuration")
+    return int(raw)
+
+
+def _delivery_policy(env: Mapping[str, str]) -> TurnDeliveryPolicy:
+    try:
+        return TurnDeliveryPolicy(
+            markdown=_boolean(env.get("AI_QQ_OFFICIAL_MARKDOWN", "true"), "markdown"),
+            max_chars=_positive_int(env, "MAX_TEXT_CHARS", 2000),
+            max_parts=_positive_int(env, "MAX_TEXT_PARTS", 4),
+            max_bytes=_positive_int(env, "MAX_TEXT_BYTES", None, optional=True),
+        )
+    except PlatformBoundaryError:
+        raise OfficialConfigurationError("Invalid official delivery configuration") from None
 
 
 def _identifiers(value: str) -> tuple[str, ...]:
@@ -58,7 +79,7 @@ class LoadedOfficialConfig:
     binding_pepper: bytes = field(repr=False)
     payload_retention_hours: int = 24
     allow_test_server: bool = False
-    delivery: DeliveryConfiguration = DeliveryConfiguration()
+    delivery: TurnDeliveryPolicy = TurnDeliveryPolicy()
 
     @property
     def owner_actors(self) -> tuple[ActorKey, ...]:
@@ -78,7 +99,7 @@ class OfficialConfig:
     private_allowed_openids: tuple[str, ...] = field(default=(), repr=False)
     binding_pepper_file: str = field(default="", repr=False)
     payload_retention_hours: int = 24
-    delivery: DeliveryConfiguration = DeliveryConfiguration()
+    delivery: TurnDeliveryPolicy = TurnDeliveryPolicy()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> OfficialConfig:
@@ -100,10 +121,7 @@ class OfficialConfig:
         owners = _identifiers(env.get("AI_QQ_OFFICIAL_OWNER_OPENIDS", ""))
         if len(owners) > 32:
             raise OfficialConfigurationError("Official owner configuration exceeds account limit")
-        try:
-            delivery = DeliveryConfiguration.from_env(env)
-        except ValueError:
-            raise OfficialConfigurationError('Invalid official delivery configuration') from None
+        delivery = _delivery_policy(env)
         return cls(
             enabled=True,
             app_id_file=env.get("AI_QQ_OFFICIAL_APP_ID_FILE", "").strip(),

@@ -199,9 +199,7 @@ class OfficialRuntime:
                 payload_retention_hours=self.loaded.payload_retention_hours)
             await self._calls(self.store.ensure_account, self.loaded.account)
             self.outbox = OfficialSendStore(self.deliveries, admission=self.store.admitted,
-                pepper=self.loaded.binding_pepper, certification=self.loaded.delivery.certification,
-                max_wait_seconds=self.loaded.delivery.max_wait_seconds,
-                allow_newer_windows=self.loaded.delivery.allow_newer_windows)
+                pepper=self.loaded.binding_pepper, max_wait_seconds=self.loaded.delivery.max_wait_seconds)
         except Exception:
             await self._close_stores()
             self.state, self.reason = "failed", "configuration_or_storage_unavailable"
@@ -561,14 +559,12 @@ class OfficialRuntime:
                 service = await self._optional_feature('files', self.file_services_factory, self, token, rest)
                 if service is not None:
                     self.file_service = service
-                    self.outbox.protected_payloads = service.payloads
 
                     async def close_files():
                         try:
                             await service.close()
                         finally:
                             self.file_service = None
-                            self.outbox.protected_payloads = None
 
                     resources.push_async_callback(close_files)
                     file_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,

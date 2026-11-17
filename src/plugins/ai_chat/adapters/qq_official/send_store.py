@@ -1,81 +1,215 @@
-"""Delivery records used by the per-conversation sender.
-
-Plans remain an interface to existing turn/file producers until S3/S6. Sending
-uses no reply-window reservations, quota tables or proof/permit objects.
-"""
+"""Delivery records and receipt settlement used by the per-conversation sender."""
 from __future__ import annotations
 
 from contextlib import nullcontext
 import json
+import secrets
 import time
 
+from src.plugins.ai_chat.conversation_scope import ConversationScope
+from src.plugins.ai_chat.message_ir import MediaNode, MessageBody, TextNode, body_from_json, body_to_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
-from src.plugins.ai_chat.message_ir import MediaNode, MessageBody, TextNode, body_to_json
-from .binding import control_for_delivery, control_authorized
-from .protected_payload import envelope_for_wire, validate_content
-from .protected_plans import ProtectedBinding, protected_rendered, load_protected_ref, binding_for
+
+from .binding import control_authorized, control_for_delivery
 from .identity_store import snapshot
 from .lease import assert_epoch
-from .send_types import OfficialAttemptContext, OutboxInvariantError, SendOutcome, SendReservation, digest, stable_json
 from .plans import DEFAULT_MAX_WAIT_SECONDS, enqueue_plan, keyed_digest
 from .renderer import content_payload, render_plan, restore_plan
+from .send_types import OfficialAttemptContext, OutboxInvariantError, SendOutcome, SendReservation, digest, stable_json
 
 
 def quote_needed(cursor, row):
-    """Quote the asker like a person would: once, and only when others spoke since.
-
-    Only the first message of a reply may quote, and only if someone else has
-    posted in the conversation after the message being answered; otherwise the
-    reply is plainly about the latest message and a quote is just noise.
-    """
-    if not row['reply_to_native_message_id'] or row['source_canonical_message_id'] is None:
+    """Quote only on the first message of a reply when another inbound arrived later."""
+    if not row["reply_to_native_message_id"] or row["source_canonical_message_id"] is None:
         return False
-    if row['turn_id'] is not None and cursor.execute(
-            'SELECT 1 FROM deliveries WHERE turn_id=? AND delivery_id<? LIMIT 1',
-            (row['turn_id'], row['delivery_id'])).fetchone() is not None:
+    if row["turn_id"] is not None and cursor.execute(
+            "SELECT 1 FROM deliveries WHERE turn_id=? AND delivery_id<? LIMIT 1",
+            (row["turn_id"], row["delivery_id"])).fetchone() is not None:
         return False
-    return cursor.execute('''SELECT 1 FROM messages origin JOIN messages later
+    return cursor.execute("""SELECT 1 FROM messages origin JOIN messages later
         ON later.conversation_id=origin.conversation_id AND later.canonical_message_id>origin.canonical_message_id
-        WHERE origin.canonical_message_id=? AND later.direction='inbound' LIMIT 1''',
-        (row['source_canonical_message_id'],)).fetchone() is not None
+        WHERE origin.canonical_message_id=? AND later.direction='inbound' LIMIT 1""",
+        (row["source_canonical_message_id"],)).fetchone() is not None
 
 
 def begin_official_attempt(cursor, delivery_id, context, now):
     assert_epoch(cursor, context.token)
     row = cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? AND account_key=? FOR UPDATE",
         (delivery_id, context.token.account_key)).fetchone()
-    if row is None or row['status'] != 'pending' or row['attempts'] != context.expected_attempts:
+    if row is None or row["status"] != "pending" or row["attempts"] != context.expected_attempts:
         return None
-    fields = dict(delivery_id=delivery_id, attempt=row['attempts'] + 1,
-        state='dispatched', detail='', started_at=now, dispatched_at=now,
-        acceptance='unknown', **dict(context.fields))
+    fields = dict(delivery_id=delivery_id, attempt=row["attempts"] + 1,
+        state="dispatched", detail="", started_at=now, dispatched_at=now,
+        acceptance="unknown", **dict(context.fields))
     attempt = cursor.execute("INSERT INTO delivery_attempts (" + ",".join(fields)
         + ") VALUES (" + ",".join("?" for _ in fields) + ") RETURNING attempt_id", tuple(fields.values())).fetchone()
     cursor.execute("""UPDATE deliveries SET status='sending',attempts=?,lease_until=?,claim_epoch=?,
         current_attempt_id=?,wait_reason=NULL,last_error='',updated_at=? WHERE delivery_id=?""",
-        (fields['attempt'], fields['send_by_at'], context.token.epoch, attempt['attempt_id'], now, delivery_id))
-    return cursor.execute('SELECT * FROM deliveries WHERE delivery_id=?', (delivery_id,)).fetchone()
+        (fields["attempt"], fields["send_by_at"], context.token.epoch, attempt["attempt_id"], now, delivery_id))
+    return cursor.execute("SELECT * FROM deliveries WHERE delivery_id=?", (delivery_id,)).fetchone()
+
+
+def _native_id(value):
+    if not isinstance(value, str) or not value:
+        raise OutboxInvariantError("invalid_receipt_identifier")
+    return value
+
+
+def _record_receipt(cursor, reservation, body, now):
+    native = _native_id(body["id"])
+    ref = (body.get("ext_info") or {}).get("ref_idx")
+    receipt_id = secrets.token_hex(16)
+    endpoint = reservation.endpoint
+    cursor.execute("""INSERT INTO delivery_receipts
+        (receipt_id,attempt_id,account_key,endpoint_key,kind,native_message_id,ref_idx,receipt_digest,observed_at)
+        VALUES (?,?,?,?,'response',?,?,?,?) ON CONFLICT(attempt_id,kind,native_message_id) DO NOTHING""",
+        (receipt_id, reservation.attempt_id, endpoint.account.key, endpoint.key, native, ref,
+         digest(stable_json([reservation.attempt_id, native, ref])), now))
+    return cursor.execute("SELECT receipt_id FROM delivery_receipts WHERE attempt_id=? AND kind='response' AND native_message_id=?",
+        (reservation.attempt_id, native)).fetchone()["receipt_id"]
+
+
+def _context_projection(cursor, delivery):
+    if delivery["payload_mode"] == "ephemeral":
+        if delivery["purpose"] not in {"binding_otp", "approval_otp"} or delivery["body_json"] != '{"v":1,"nodes":[]}':
+            raise OutboxInvariantError("invalid_ephemeral_body")
+        return MessageBody(), {}
+    try:
+        encoded = json.loads(delivery["body_json"])
+        body = body_from_json(delivery["body_json"])
+        if json.loads(body_to_json(body)) != encoded:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise OutboxInvariantError("invalid_delivery_body") from None
+    plan = cursor.execute("SELECT manifest_json,manifest_digest FROM delivery_plans WHERE plan_id=?",
+                          (delivery["plan_id"],)).fetchone()
+    if plan is None:
+        raise OutboxInvariantError("receipt_plan_missing")
+    try:
+        manifest = json.loads(plan["manifest_json"])
+        control = manifest.get("control")
+    except (TypeError, ValueError, AttributeError):
+        raise OutboxInvariantError("receipt_plan_invalid") from None
+    if not isinstance(control, dict) or control.get("kind") != "authenticated_control":
+        return body, {}
+    if (digest(plan["manifest_json"]) != plan["manifest_digest"]
+            or set(control) != {"kind", "control_id"} or not isinstance(control["control_id"], str)):
+        raise OutboxInvariantError("control_projection_integrity_conflict")
+    decision = cursor.execute("""SELECT control_action FROM qq_official_inbound_events
+        WHERE inbox_id=? AND account_key=? AND endpoint_key=? AND control_actor_key=?""",
+        (control["control_id"], delivery["account_key"], delivery["endpoint_key"], delivery["requester_actor_key"])).fetchone()
+    if decision is None or decision["control_action"] != "whoami":
+        return body, {}
+    return MessageBody((TextNode(0, "[身份查询已回复：具体平台身份标识已从会话上下文隐去，仅保留于受保护发送审计。]"),)), {
+        "content_redacted": True, "redaction_reason": "qq_official_whoami_identity", "control_kind": "whoami",
+    }
+
+
+def _quote_target(cursor, attempt, delivery, endpoint):
+    if attempt["payload_mode"] == "ephemeral":
+        return None, None
+    try:
+        wire = json.loads(attempt["wire_payload_json"])
+        reference = wire.get("message_reference")
+        if reference is None:
+            return None, None
+        if not isinstance(reference, dict):
+            raise ValueError
+        index = _native_id(reference.get("message_id"))
+    except (TypeError, ValueError, AttributeError, OutboxInvariantError):
+        raise OutboxInvariantError("invalid_attempt_reference") from None
+    rows = cursor.execute("""SELECT native_message_id,ambiguous FROM qq_official_message_indexes
+        WHERE account_key=? AND endpoint_key=? AND index_value=? AND index_kind IN ('msg_idx','ref_idx')""",
+        (endpoint.account.key, endpoint.key, index)).fetchall()
+    if (not rows or any(row["ambiguous"] for row in rows)
+            or {row["native_message_id"] for row in rows} != {delivery["reply_to_native_message_id"]}):
+        return None, index
+    return delivery["reply_to_native_message_id"], index
+
+
+def _record_reference(cursor, endpoint, native, canonical, ref_idx, now):
+    if ref_idx is None:
+        return False
+    old = cursor.execute("""SELECT native_message_id,canonical_message_id,ambiguous FROM qq_official_message_indexes
+        WHERE account_key=? AND endpoint_key=? AND index_value=?""",
+        (endpoint.account.key, endpoint.key, ref_idx)).fetchall()
+    conflict = any(row["ambiguous"] or row["native_message_id"] != native
+                   or row["canonical_message_id"] != canonical for row in old)
+    if conflict:
+        cursor.execute("""UPDATE qq_official_message_indexes SET ambiguous=TRUE,updated_at=?
+            WHERE account_key=? AND endpoint_key=? AND index_value=?""",
+            (now, endpoint.account.key, endpoint.key, ref_idx))
+    cursor.execute("""INSERT INTO qq_official_message_indexes
+        (endpoint_key,account_key,index_kind,index_value,native_message_id,canonical_message_id,ambiguous,created_at,updated_at)
+        VALUES (?,?,'ref_idx',?,?,?,?,?,?) ON CONFLICT(endpoint_key,index_kind,index_value) DO UPDATE SET
+            ambiguous=qq_official_message_indexes.ambiguous OR EXCLUDED.ambiguous
+                OR qq_official_message_indexes.native_message_id<>EXCLUDED.native_message_id
+                OR qq_official_message_indexes.canonical_message_id IS DISTINCT FROM EXCLUDED.canonical_message_id,
+            updated_at=EXCLUDED.updated_at""",
+        (endpoint.key, endpoint.account.key, ref_idx, native, canonical, conflict, now, now))
+    return conflict
+
+
+def _finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
+    assert_epoch(cursor, token)
+    receipt = cursor.execute("SELECT * FROM delivery_receipts WHERE receipt_id=? AND account_key=? FOR UPDATE",
+        (receipt_id, token.account_key)).fetchone()
+    attempt = cursor.execute("SELECT * FROM delivery_attempts WHERE attempt_id=?", (receipt["attempt_id"],)).fetchone()
+    delivery = cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? FOR UPDATE", (attempt["delivery_id"],)).fetchone()
+    if receipt["applied_at"] is not None:
+        return SendOutcome("committed", "", delivery["delivery_id"])
+    endpoint = EndpointKey.parse(delivery["endpoint_key"])
+    actor = ActorKey.parse(attempt["bot_actor_key"])
+    body, metadata = _context_projection(cursor, delivery)
+    reply_target, quoted_index = _quote_target(cursor, attempt, delivery, endpoint)
+    native = receipt["native_message_id"]
+    scope_key = cursor.execute("SELECT source_scope_key FROM delivery_plans WHERE plan_id=?",
+        (delivery["plan_id"],)).fetchone()["source_scope_key"]
+    stored = ledger.record_message(ConversationScope.from_key(scope_key), native_message_id=native,
+        sender_native_user_id=actor.native_user_id, sender_display="Bot", body=body,
+        occurred_at=receipt["observed_at"], direction="outbound",
+        message_kind="command" if delivery["payload_mode"] == "ephemeral" or metadata else "chat",
+        reply_to_native_message_id=reply_target, actor=actor, source_endpoint=endpoint,
+        raw_event={"source": "qq-official", "delivery_id": delivery["delivery_id"], "attempt_id": attempt["attempt_id"],
+                   "receipt_id": receipt_id, "time_source": "receipt_observed", **metadata}, transaction_cursor=cursor)
+    canonical = stored.canonical_message_id
+    cursor.execute("""INSERT INTO qq_official_messages
+        (message_id,account_key,endpoint_key,native_message_id,canonical_message_id,direction,ref_msg_idx,created_at)
+        VALUES (?,?,?,?,?,'outbound',?,?) ON CONFLICT(endpoint_key,native_message_id) DO NOTHING""",
+        (secrets.token_hex(16), token.account_key, endpoint.key, native, canonical, quoted_index, now))
+    _record_reference(cursor, endpoint, native, canonical, receipt["ref_idx"], now)
+    if delivery["turn_id"] is not None:
+        journal.link_send(delivery["turn_id"], canonical, node_id=f"outbox:{delivery['delivery_id']}",
+            chunk_index=delivery["part_index"], transaction_cursor=cursor, strict_association=True)
+    if attempt["send_mode"] == "proactive" and endpoint.kind == "group":
+        cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='allowed',updated_at=?
+            WHERE endpoint_key=? AND account_key=? AND proactive_state='unknown'""",
+            (now, endpoint.key, token.account_key))
+    cursor.execute("UPDATE delivery_attempts SET state='committed',acceptance='confirmed_yes',finished_at=? WHERE attempt_id=?",
+        (now, attempt["attempt_id"]))
+    cursor.execute("""UPDATE deliveries SET status='committed',native_message_id=?,lease_until=NULL,
+        wait_reason=NULL,last_error='',updated_at=? WHERE delivery_id=?""", (native, now, delivery["delivery_id"]))
+    cursor.execute("UPDATE delivery_receipts SET applied_at=? WHERE receipt_id=?", (now, receipt_id))
+    from .file_projection import apply_file_receipt
+    apply_file_receipt(cursor, delivery=delivery, attempt=attempt, now=now)
+    return SendOutcome("committed", "", delivery["delivery_id"])
 
 
 class OfficialSendStore:
     def __init__(self, deliveries, *, admission, pepper, clock=time.time,
-                 certification='unknown', allow_newer_windows=True, allow_proactive_probe=False,
-                 verified_boundary=None, mention_authority=None, max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS,
-                 protected_payloads=None, approval_authority=None, source_guard=None):
+                 mention_authority=None, max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS,
+                 approval_authority=None, source_guard=None):
         self.deliveries, self.admission, self.pepper, self.clock = deliveries, admission, pepper, clock
-        self.certification = certification
-        self.allow_newer_windows, self.allow_proactive_probe = allow_newer_windows, allow_proactive_probe
-        self.verified_boundary = verified_boundary
         self.mention_authority = mention_authority or (lambda cursor, endpoint: frozenset())
         self.max_wait_seconds = max_wait_seconds
-        self.protected_payloads, self.approval_authority, self.source_guard = protected_payloads, approval_authority, source_guard
-        self.ops_authority = None
+        self.approval_authority, self.source_guard = approval_authority, source_guard
         self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
-                transaction_cursor=None, binding_preview=None, control_reply_id=None, approval_source_id=None, source_proof=None, ops_action_id=None):
+                transaction_cursor=None, binding_preview=None, control_reply_id=None,
+                approval_source_id=None, source_proof=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -83,78 +217,46 @@ class OfficialSendStore:
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
                 admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if any(value is not None for value in (challenge_id,approval_source_id,ops_action_id)) else None,
+                pepper=self.pepper if (challenge_id is not None or approval_source_id is not None) else None,
                 binding_preview=binding_preview, control_reply_id=control_reply_id,
                 max_wait_seconds=self.max_wait_seconds, approval_source_id=approval_source_id,
-                approval_authority=self.approval_authority, source_guard=None if purpose=='progress' else self.source_guard, source_proof=source_proof,
-                ops_action_id=ops_action_id,ops_authority=self.ops_authority)
-        if purpose in {"binding_otp", "approval_otp", "ops_approval"} and ref.created:
+                approval_authority=self.approval_authority,
+                source_guard=None if purpose == "progress" else self.source_guard,
+                source_proof=source_proof)
+        if purpose in {"binding_otp", "approval_otp"} and ref.created:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
 
-    def enqueue_artifact(self, token, *, content_ref, source_grant, endpoint, requester,
-                         logical_key, source_scope_key, expires_at, source_native_message_id="",
-                         source_canonical_message_id=None, turn_id=None, transaction_cursor=None, source_proof=None):
-        if self.protected_payloads is None:
-            raise OutboxInvariantError("protected_payload_port_unavailable")
-        now = int(self.clock())
-        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
-            assert_epoch(cursor, token)
-            route = cursor.execute("SELECT * FROM qq_official_endpoints WHERE account_key=? AND endpoint_key=? FOR UPDATE",
-                (token.account_key, endpoint.key)).fetchone()
-            if route is None or endpoint.account.key != token.account_key:
-                raise OutboxInvariantError("delivery_endpoint_unavailable")
-            binding = ProtectedBinding(endpoint, requester, source_scope_key, source_canonical_message_id,
-                source_native_message_id, turn_id, route["generation"], route["route_epoch"], expires_at)
-            self.protected_payloads.authorize_enqueue(cursor, token=token, source_grant=source_grant,
-                content_ref=content_ref, binding=binding, now=now)
-            return enqueue_plan(cursor, token=token, rendered=protected_rendered(endpoint), requester=requester,
-                logical_key=logical_key, source_scope_key=source_scope_key, expires_at=expires_at, now=now,
-                purpose="requested_artifact", source_native_message_id=source_native_message_id,
-                source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
-                admission=self.admission, max_wait_seconds=self.max_wait_seconds, protected_ref=content_ref,
-                source_guard=self.source_guard, source_proof=source_proof)
-
     def enqueue_file(self, token, *, artifact, uploaded, transaction_cursor):
         cursor = transaction_cursor
-        endpoint = EndpointKey.parse(artifact['endpoint_key'])
+        endpoint = EndpointKey.parse(artifact["endpoint_key"])
         now = int(self.clock())
-        turn = cursor.execute('SELECT journal_turn_id FROM qq_official_turn_executions WHERE execution_id=?',
-                              (artifact['source_execution_id'],)).fetchone()
+        turn = cursor.execute("SELECT journal_turn_id FROM qq_official_turn_executions WHERE execution_id=?",
+                              (artifact["source_execution_id"],)).fetchone()
         ref = enqueue_plan(cursor, token=token,
-            rendered=render_plan(MessageBody((TextNode(0, '文件：' + artifact['filename']),)), endpoint),
-            requester=ActorKey.parse(artifact['requester_actor_key']),
-            logical_key='file:'+artifact['artifact_id'], source_scope_key=artifact['source_scope_key'],
-            source_native_message_id=artifact['source_native_message_id'] or '',
-            source_canonical_message_id=artifact['source_canonical_message_id'],
-            turn_id=turn['journal_turn_id'] if turn else None,
-            expires_at=min(artifact['pending_deadline_at'], uploaded.expires_at), now=now,
-            purpose='requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds,
-            source_generation=artifact['conversation_generation'])
+            rendered=render_plan(MessageBody((TextNode(0, "文件：" + artifact["filename"]),)), endpoint),
+            requester=ActorKey.parse(artifact["requester_actor_key"]),
+            logical_key="file:" + artifact["artifact_id"], source_scope_key=artifact["source_scope_key"],
+            source_native_message_id=artifact["source_native_message_id"] or "",
+            source_canonical_message_id=artifact["source_canonical_message_id"],
+            turn_id=turn["journal_turn_id"] if turn else None,
+            expires_at=min(artifact["pending_deadline_at"], uploaded.expires_at), now=now,
+            purpose="requested_artifact", admission=self.admission, max_wait_seconds=self.max_wait_seconds,
+            source_generation=artifact["conversation_generation"])
         if ref.created:
-            manifest = stable_json({'v': 1, 'media': {'file_info': uploaded.file_info},
-                'artifact_id': artifact['artifact_id'], 'source_native_message_id': artifact['source_native_message_id'] or ''})
-            kind = 'audio' if artifact['mime'] == 'audio/silk' else 'file'
-            body = body_to_json(MessageBody((MediaNode(0, kind, name=artifact['filename'], mime=artifact['mime'],
-                source_type='qq_official_file', raw_data={'artifact_id': artifact['artifact_id'],
-                    'sha256': artifact['sha256'], 'size': artifact['byte_size']}),)))
-            cursor.execute('UPDATE delivery_plans SET manifest_json=?,manifest_digest=? WHERE plan_id=?',
+            manifest = stable_json({"v": 1, "media": {"file_info": uploaded.file_info},
+                "artifact_id": artifact["artifact_id"], "source_native_message_id": artifact["source_native_message_id"] or ""})
+            kind = "audio" if artifact["mime"] == "audio/silk" else "file"
+            body = body_to_json(MessageBody((MediaNode(0, kind, name=artifact["filename"], mime=artifact["mime"],
+                source_type="qq_official_file", raw_data={"artifact_id": artifact["artifact_id"],
+                    "sha256": artifact["sha256"], "size": artifact["byte_size"]}),)))
+            cursor.execute("UPDATE delivery_plans SET manifest_json=?,manifest_digest=? WHERE plan_id=?",
                            (manifest, digest(manifest), ref.plan_id))
-            cursor.execute('UPDATE deliveries SET body_json=? WHERE plan_id=?', (body, ref.plan_id))
+            cursor.execute("UPDATE deliveries SET body_json=? WHERE plan_id=?", (body, ref.plan_id))
         return ref
 
     def _content(self, cursor, row, endpoint, *, token=None, now=None):
-        if row["payload_mode"] == "protected":
-            if self.protected_payloads is None or token is None or now is None:
-                raise OutboxInvariantError("protected_payload_port_unavailable")
-            ref = load_protected_ref(cursor, row)
-            if now >= ref.expires_at:
-                raise OutboxInvariantError("protected_payload_expired")
-            payload = self.protected_payloads.resolve(cursor, token=token, content_ref=ref,
-                binding=binding_for(row), now=now)
-            validate_content(ref, payload)
-            return json.loads(stable_json(payload))
         if row["payload_mode"] == "ephemeral":
             rendered = self._ephemeral.get(row["delivery_id"])
             if rendered is None:
@@ -166,14 +268,14 @@ class OfficialSendStore:
             manifest = json.loads(plan["manifest_json"])
             if manifest.get("v") != 1 or manifest.get("source_native_message_id") != row["reply_to_native_message_id"]:
                 raise OutboxInvariantError("delivery_manifest_conflict")
-            if 'media' in manifest:
-                if 'artifact_id' in manifest:
+            if "media" in manifest:
+                if "artifact_id" in manifest:
                     from .file_authority import assert_file_current
-                    assert_file_current(cursor, token=token, artifact_id=manifest['artifact_id'],
-                        admission=self.admission, now=now, plan_id=row['plan_id'])
-                return {'msg_type': 7, 'media': manifest['media']}
+                    assert_file_current(cursor, token=token, artifact_id=manifest["artifact_id"],
+                        admission=self.admission, now=now, plan_id=row["plan_id"])
+                return {"msg_type": 7, "media": manifest["media"]}
             rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
-                allowed_mentions=self.mention_authority(cursor, endpoint) | frozenset({ActorKey.parse(row['requester_actor_key'])}),
+                allowed_mentions=self.mention_authority(cursor, endpoint) | frozenset({ActorKey.parse(row["requester_actor_key"])}),
                 max_chars=20000, max_parts=16)
         return content_payload(rendered, row["part_index"], plain_fallback=row["variant"] == "plain_fallback")
 
@@ -190,11 +292,11 @@ class OfficialSendStore:
                 FROM deliveries d WHERE c.delivery_id=d.delivery_id AND c.account_key=d.account_key
                 AND c.account_key=? AND c.state<>'terminal'
                 AND d.status IN ('committed','failed','cancelled','ambiguous')""", (now, token.account_key))
-        return tuple(row['delivery_id'] for row in rows)
+        return tuple(row["delivery_id"] for row in rows)
 
     def get(self, token, delivery_id):
         with self.deliveries.transaction() as cursor:
-            return cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?',
+            return cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?",
                 (delivery_id, token.account_key)).fetchone()
 
     def latest_inbound(self, endpoint):
@@ -206,7 +308,6 @@ class OfficialSendStore:
                 ORDER BY accepted_order DESC LIMIT 1""", (endpoint.key,)).fetchone()
 
     def passive_history(self, endpoint, msg_id):
-        # Seed RAM counters after restart from actual attempts; no quota table.
         with self.deliveries.transaction() as cursor:
             return cursor.execute("""SELECT COALESCE(MAX(a.msg_seq),0) AS seq,
                 COUNT(*) FILTER (WHERE a.acceptance<>'confirmed_no') AS used
@@ -214,11 +315,11 @@ class OfficialSendStore:
                 WHERE a.endpoint_key=? AND a.send_mode='passive'
                 AND COALESCE(a.wire_payload_json::jsonb->>'msg_id',
                     a.wire_payload_json::jsonb#>>'{routing,msg_id}',d.reply_to_native_message_id)=?""",
-                (endpoint.key,msg_id)).fetchone()
+                (endpoint.key, msg_id)).fetchone()
 
     def route(self, endpoint):
         with self.deliveries.transaction() as cursor:
-            return cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
+            return cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,)).fetchone()
 
     def allow_proactive(self, token, endpoint):
         with self.deliveries.transaction() as cursor:
@@ -235,140 +336,131 @@ class OfficialSendStore:
 
     def _conversation_permitted(self, cursor, row):
         from .conversation_control import permitted
-        if row['purpose'] in {'binding_otp','approval_otp'} or control_for_delivery(cursor,row):
+        if row["purpose"] in {"binding_otp", "approval_otp"} or control_for_delivery(cursor, row):
             return True
-        plan = cursor.execute('SELECT conversation_generation FROM delivery_plans WHERE plan_id=?',(row['plan_id'],)).fetchone()
+        plan = cursor.execute("SELECT conversation_generation FROM delivery_plans WHERE plan_id=?", (row["plan_id"],)).fetchone()
         command = cursor.execute("SELECT 1 FROM qq_official_turn_executions WHERE plan_id=? AND execution_kind='command'",
-            (row['plan_id'],)).fetchone() is not None
-        return plan is not None and permitted(cursor,EndpointKey.parse(row['endpoint_key']),
-            canonical=row['source_canonical_message_id'],generation=plan['conversation_generation'],commands=command)
+            (row["plan_id"],)).fetchone() is not None
+        return plan is not None and permitted(cursor, EndpointKey.parse(row["endpoint_key"]),
+            canonical=row["source_canonical_message_id"], generation=plan["conversation_generation"], commands=command)
 
-    def _program_authorized(self, cursor, token, row):
-        if ActorKey.parse(row['requester_actor_key']).identity_kind=='bot':
+    def _vm_authorized(self, cursor, token, row):
+        if ActorKey.parse(row["requester_actor_key"]).identity_kind == "bot":
             from .vm_http import vm_delivery_denial
-            reason = vm_delivery_denial(cursor,token=token,delivery=row,admission=self.admission)
-            return reason is None,reason
-        return None,None  # Ordinary human/control sources keep their existing rules.
+            reason = vm_delivery_denial(cursor, token=token, delivery=row, admission=self.admission)
+            return reason is None, reason
+        return None, None
 
     def attempt_current(self, token, reservation):
-        return self.attempt_denial(token,reservation) is None
+        return self.attempt_denial(token, reservation) is None
 
     def attempt_denial(self, token, reservation):
         with self.deliveries.transaction() as cursor:
-            assert_epoch(cursor,token)
-            row = cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?',
-                (reservation.delivery_id,token.account_key)).fetchone()
-            if row is None or row['current_attempt_id']!=reservation.attempt_id or row['status']!='sending':
-                return 'delivery_attempt_replaced'
-            if not self._conversation_permitted(cursor,row):
-                return 'conversation_stopped_or_replaced'
-            if row['purpose']=='ops_approval' and (self.ops_authority is None or not self.ops_authority.delivery_current(cursor,token,row)):
-                return 'ops_notice_source_unavailable'
-            return self._program_authorized(cursor,token,row)[1]
+            assert_epoch(cursor, token)
+            row = cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?",
+                (reservation.delivery_id, token.account_key)).fetchone()
+            if row is None or row["current_attempt_id"] != reservation.attempt_id or row["status"] != "sending":
+                return "delivery_attempt_replaced"
+            if not self._conversation_permitted(cursor, row):
+                return "conversation_stopped_or_replaced"
+            return self._vm_authorized(cursor, token, row)[1]
 
     def prepare(self, token, delivery_id, *, send_mode, msg_id=None, msg_seq=None):
         now = int(self.clock())
         with self.deliveries.transaction() as cursor:
             assert_epoch(cursor, token)
-            row = cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=? FOR UPDATE',
+            row = cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? AND account_key=? FOR UPDATE",
                 (delivery_id, token.account_key)).fetchone()
             if row is None:
-                return SendOutcome('failed', 'delivery_not_found', delivery_id)
-            if row['status'] != 'pending':
-                return SendOutcome(row['status'], row['wait_reason'] or '', delivery_id)
-            endpoint = EndpointKey.parse(row['endpoint_key'])
-            actor = ActorKey.parse(row['requester_actor_key'])
-            route = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
-            if not self._conversation_permitted(cursor,row):
-                return self._finish(cursor,token,row,'cancelled','conversation_stopped_or_replaced',now)
+                return SendOutcome("failed", "delivery_not_found", delivery_id)
+            if row["status"] != "pending":
+                return SendOutcome(row["status"], row["wait_reason"] or "", delivery_id)
+            endpoint = EndpointKey.parse(row["endpoint_key"])
+            actor = ActorKey.parse(row["requester_actor_key"])
+            route = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,)).fetchone()
+            if not self._conversation_permitted(cursor, row):
+                return self._finish(cursor, token, row, "cancelled", "conversation_stopped_or_replaced", now)
             control = control_for_delivery(cursor, row)
-            program_authorized,program_error = self._program_authorized(cursor,token,row)
-            authorized = program_authorized if program_authorized is not None else (
+            vm_ok, vm_error = self._vm_authorized(cursor, token, row)
+            authorized = vm_ok if vm_ok is not None else (
                 control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor))
-            if row['purpose'] == 'approval_otp':
+            if row["purpose"] == "approval_otp":
                 authorized = authorized and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now)
-            if row['purpose']=='ops_approval':
-                authorized = authorized and self.ops_authority is not None and self.ops_authority.delivery_current(cursor,token,row)
-            if not authorized or route['membership_state'] != 'present' or route['binding_state'] == 'revoked':
-                return self._finish(cursor, token, row, 'failed', program_error or 'delivery_not_authorized', now)
-            if now >= row['expires_at']:
-                return self._finish(cursor, token, row, 'failed', 'delivery_expired', now)
-            if row['payload_mode'] == 'ephemeral' and delivery_id not in self._ephemeral:
-                return self._finish(cursor, token, row, 'failed', 'ephemeral_payload_lost', now)
+            if not authorized or route["membership_state"] != "present" or route["binding_state"] == "revoked":
+                return self._finish(cursor, token, row, "failed", vm_error or "delivery_not_authorized", now)
+            if now >= row["expires_at"]:
+                return self._finish(cursor, token, row, "failed", "delivery_expired", now)
+            if row["payload_mode"] == "ephemeral" and delivery_id not in self._ephemeral:
+                return self._finish(cursor, token, row, "failed", "ephemeral_payload_lost", now)
             payload = self._content(cursor, row, endpoint, token=token, now=now)
-            if send_mode == 'passive':
+            if send_mode == "passive":
                 payload.update(msg_id=msg_id, msg_seq=msg_seq)
             indexes = cursor.execute("""SELECT index_value,ambiguous FROM qq_official_message_indexes
                 WHERE endpoint_key=? AND native_message_id=? AND index_kind IN ('msg_idx','ref_idx')""",
-                (endpoint.key, row['reply_to_native_message_id'])).fetchall() if quote_needed(cursor, row) else []
-            if indexes and not any(r['ambiguous'] for r in indexes) and len({r['index_value'] for r in indexes}) == 1:
-                payload['message_reference'] = {'message_id': indexes[0]['index_value']}
+                (endpoint.key, row["reply_to_native_message_id"])).fetchall() if quote_needed(cursor, row) else []
+            if indexes and not any(r["ambiguous"] for r in indexes) and len({r["index_value"] for r in indexes}) == 1:
+                payload["message_reference"] = {"message_id": indexes[0]["index_value"]}
             wire = stable_json(payload)
-            ephemeral = row['payload_mode'] == 'ephemeral'
-            wire_digest = keyed_digest(self.pepper, 'wire', [delivery_id, row['attempts'] + 1, wire]) if ephemeral else digest(wire)
-            stored_wire, storage_digest = (None if ephemeral else wire), None
-            if row['payload_mode'] == 'protected':
-                stored_wire, storage_digest, _ = envelope_for_wire(load_protected_ref(cursor, row), wire)
+            ephemeral = row["payload_mode"] == "ephemeral"
+            wire_digest = keyed_digest(self.pepper, "wire", [delivery_id, row["attempts"] + 1, wire]) if ephemeral else digest(wire)
             author = snapshot(cursor, endpoint.account)
             fields = dict(account_key=token.account_key, endpoint_key=endpoint.key, fencing_epoch=token.epoch,
-                endpoint_generation=row['endpoint_generation'], route_epoch=row['route_epoch'],
-                capability_revision=route['capability_revision'], bot_actor_key=author.bot_actor.key,
+                endpoint_generation=row["endpoint_generation"], route_epoch=row["route_epoch"],
+                capability_revision=route["capability_revision"], bot_actor_key=author.bot_actor.key,
                 bot_identity_source=author.source, bot_identity_revision=author.revision, send_mode=send_mode,
-                window_id=None, msg_seq=msg_seq, window_charge_state='none', payload_mode=row['payload_mode'],
-                payload_digest=wire_digest, digest_scheme=row['digest_scheme'], digest_key_id=row['digest_key_id'],
-                wire_payload_json=stored_wire, wire_storage_digest=storage_digest, send_by_at=now + 30)
+                window_id=None, msg_seq=msg_seq, window_charge_state="none", payload_mode=row["payload_mode"],
+                payload_digest=wire_digest, digest_scheme=row["digest_scheme"], digest_key_id=row["digest_key_id"],
+                wire_payload_json=None if ephemeral else wire, wire_storage_digest=None, send_by_at=now + 30)
             claimed = self.deliveries.begin_direct_attempt(delivery_id, now=now, transaction_cursor=cursor,
-                official_context=OfficialAttemptContext(token, row['attempts'], tuple(fields.items())))
+                official_context=OfficialAttemptContext(token, row["attempts"], tuple(fields.items())))
             if claimed is None:
-                return SendOutcome('sending', '', delivery_id)
-            if row['purpose'] == 'approval_otp' and row['attempts'] == 0:
+                return SendOutcome("sending", "", delivery_id)
+            if row["purpose"] == "approval_otp" and row["attempts"] == 0:
                 self.approval_authority.bind_attempt(cursor, token=token, delivery=row,
                     attempt_id=claimed.current_attempt_id, now=now)
             return SendReservation(delivery_id, claimed.current_attempt_id, claimed.attempts, token.epoch,
-                endpoint, wire, wire_digest, now + 30, row['payload_mode'])
+                endpoint, wire, wire_digest, now + 30, row["payload_mode"])
 
     def _finish(self, cursor, token, row, status, reason, now):
-        cursor.execute('UPDATE deliveries SET status=?,wait_reason=?,last_error=?,lease_until=NULL,updated_at=? WHERE delivery_id=?',
-            (status, reason or None, '' if row['payload_mode']=='ephemeral' else reason, now, row['delivery_id']))
-        return SendOutcome(status, reason, row['delivery_id'])
+        cursor.execute("UPDATE deliveries SET status=?,wait_reason=?,last_error=?,lease_until=NULL,updated_at=? WHERE delivery_id=?",
+            (status, reason or None, "" if row["payload_mode"] == "ephemeral" else reason, now, row["delivery_id"]))
+        return SendOutcome(status, reason, row["delivery_id"])
 
     def fail(self, token, delivery_id, reason, *, reservation=None, error=None, retry=False, plain=False):
         now = int(self.clock())
         unknown = error is not None and error.accepted is not False
         with self.deliveries.transaction() as cursor:
             assert_epoch(cursor, token)
-            row = cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=? FOR UPDATE',
+            row = cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? AND account_key=? FOR UPDATE",
                 (delivery_id, token.account_key)).fetchone()
             if reservation is not None:
                 cursor.execute("""UPDATE delivery_attempts SET state=?,acceptance=?,finished_at=?,failure_category=?,
                     failure_stage=?,http_status=?,platform_code=? WHERE attempt_id=?""",
-                    ('ambiguous' if unknown else 'confirmed_unaccepted', 'unknown' if unknown else 'confirmed_no',
+                    ("ambiguous" if unknown else "confirmed_unaccepted", "unknown" if unknown else "confirmed_no",
                      now, reason, error.stage if error else None, error.status if error else None,
                      error.code if error else None, reservation.attempt_id))
             if plain:
                 cursor.execute("UPDATE deliveries SET variant='plain_fallback',format_fallback_used=TRUE WHERE delivery_id=?", (delivery_id,))
-            return self._finish(cursor, token, row, 'ambiguous' if unknown else 'pending' if retry else 'failed', reason, now)
+            return self._finish(cursor, token, row, "ambiguous" if unknown else "pending" if retry else "failed", reason, now)
 
     def capture_receipt(self, reservation, body):
-        from .send_ledger import record_receipt
         with self.deliveries.transaction() as cursor:
-            return record_receipt(cursor, reservation, body, int(self.clock()))
+            return _record_receipt(cursor, reservation, body, int(self.clock()))
 
     def finalize(self, token, receipt_id, *, ledger, journal=None):
-        from .send_ledger import finalize_receipt
         with self.deliveries.transaction() as cursor:
-            return finalize_receipt(cursor, token=token, receipt_id=receipt_id, ledger=ledger, journal=journal,
+            return _finalize_receipt(cursor, token=token, receipt_id=receipt_id, ledger=ledger, journal=journal,
                 now=int(self.clock()))
 
     def recover(self, token):
-        # A crash cannot tell us whether an in-flight POST arrived. Never resend it.
         with self.deliveries.transaction() as cursor:
             assert_epoch(cursor, token)
             cursor.execute("""UPDATE delivery_attempts SET state='ambiguous',acceptance='unknown',finished_at=?
                 WHERE account_key=? AND state IN ('reserved','dispatched')""", (int(self.clock()), token.account_key))
             cursor.execute("""UPDATE deliveries SET status='ambiguous',wait_reason='restart_during_send',lease_until=NULL
                 WHERE account_key=? AND status='sending'""", (token.account_key,))
-            return tuple(r['receipt_id'] for r in cursor.execute('SELECT receipt_id FROM delivery_receipts WHERE account_key=? AND applied_at IS NULL', (token.account_key,)).fetchall())
+            return tuple(r["receipt_id"] for r in cursor.execute(
+                "SELECT receipt_id FROM delivery_receipts WHERE account_key=? AND applied_at IS NULL", (token.account_key,)).fetchall())
 
     def forget_ephemeral(self, delivery_id):
         self._ephemeral.pop(delivery_id, None)

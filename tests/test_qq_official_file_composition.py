@@ -190,10 +190,8 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('TEST_FILE_INFO', json.dumps(self.query('SELECT body_json FROM messages')))
             if group:
                 self.assertEqual(self.query('SELECT DISTINCT scope_key FROM conversations'), [{'scope_key': scope.key}])
-            outbox = runtime.outbox
             await runtime.stop()
             self.assertIsNone(runtime.file_service)
-            self.assertIsNone(outbox.protected_payloads)
 
     async def test_generation_does_not_require_native_route_proof(self):
         self.verified = False

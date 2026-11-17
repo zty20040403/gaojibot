@@ -38,23 +38,26 @@ class TurnReadiness:
 class TurnDeliveryPolicy:
     """Trusted runtime settings; never decoded from SendRequest or model output."""
 
-    allow_newer_windows: bool = False
-    allow_proactive_probe: bool = False
     markdown: bool = True
     max_chars: int = 2000
     max_parts: int = 4
     max_bytes: int | None = None
+    max_wait_seconds: int = 86400
+    file_link_ttl_seconds: int = 3600
 
     def __post_init__(self):
-        if any(type(value) is not bool for value in (
-            self.allow_newer_windows, self.allow_proactive_probe, self.markdown,
-        )):
+        if type(self.markdown) is not bool:
             raise PlatformBoundaryError("invalid_delivery_policy")
         if (type(self.max_chars) is not int or not 1 <= self.max_chars <= 20000
                 or type(self.max_parts) is not int or not 1 <= self.max_parts <= 16
                 or (self.max_bytes is not None and (type(self.max_bytes) is not int
-                    or not 1 <= self.max_bytes <= 1024 * 1024))):
+                    or not 1 <= self.max_bytes <= 1024 * 1024))
+                or type(self.max_wait_seconds) is not int or not 1 <= self.max_wait_seconds <= 7 * 86400
+                or type(self.file_link_ttl_seconds) is not int or not 60 <= self.file_link_ttl_seconds <= 3600):
             raise PlatformBoundaryError("invalid_delivery_policy")
+
+    def turn_policy(self) -> TurnDeliveryPolicy:
+        return self
 
 
 @dataclass(frozen=True)
