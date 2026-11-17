@@ -870,7 +870,7 @@ in {
       install -d -m 0755 "$base/root" "$base/root/etc" "$base/root/usr" "$base/root/var/lib"
       touch "$base/root/etc/os-release"
       if [ "$mode" = ops ]; then
-        net=(--network-namespace-path=/run/netns/${opsNetns}); resolv=${opsVmResolver}
+        net=(); resolv=${opsVmResolver}
       else
         net=(--network-bridge=${ctBridge}); resolv=${ctResolver}
       fi
@@ -886,22 +886,26 @@ in {
       description = "gaoji conversation container %i (${mode})";
       requires = lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
       after = ["network.target"] ++ lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
-      serviceConfig = {
-        Type = "notify";
-        NotifyAccess = "all";
-        ExecStart = "${start} %i ${mode}";
-        KillMode = "mixed";
-        Delegate = true;
-        Slice = "machine.slice";
-        DevicePolicy = "closed";
-        DeviceAllow = ["char-pts rwm" "/dev/net/tun rwm"];
-        TimeoutStartSec = 180;
-        TimeoutStopSec = 60;
-        SuccessExitStatus = 133;
-        MemoryMax = "${toString cfg.sandbox.memoryMiB}M";
-        CPUQuota = "${toString (cfg.sandbox.cpus * 100)}%";
-        TasksMax = cfg.sandbox.pidsLimit * 8;
-      };
+      serviceConfig =
+        {
+          Type = "notify";
+          NotifyAccess = "all";
+          ExecStart = "${start} %i ${mode}";
+          KillMode = "mixed";
+          Delegate = true;
+          Slice = "machine.slice";
+          DevicePolicy = "closed";
+          DeviceAllow = ["char-pts rwm" "/dev/net/tun rwm"];
+          TimeoutStartSec = 180;
+          TimeoutStopSec = 60;
+          SuccessExitStatus = 133;
+          MemoryMax = "${toString cfg.sandbox.memoryMiB}M";
+          CPUQuota = "${toString (cfg.sandbox.cpus * 100)}%";
+          TasksMax = cfg.sandbox.pidsLimit * 8;
+        }
+        // lib.optionalAttrs (mode == "ops") {
+          NetworkNamespacePath = "/run/netns/${opsNetns}";
+        };
     };
   in lib.mkMerge [{
     assertions = [

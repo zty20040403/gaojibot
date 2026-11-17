@@ -100,6 +100,7 @@
     containerOpsSharesNamespaceWithoutSecondDaemon = ctOps.systemd.services ? gaoji-ops-tailscaled
       && !(ctOps.systemd.services ? gaoji-ops-vm)
       && builtins.elem "gaoji-ops-network.service" ctOps.systemd.services."gaoji-ct-ops@".requires
+      && ctOps.systemd.services."gaoji-ct-ops@".serviceConfig.NetworkNamespacePath == "/run/netns/gaoji-ops"
       && !(ctOps.systemd.services.gaoji.environment ? AI_SANDBOX_OPERATIONS_SOCKET);
     noSandboxHasNoVmUnit = !(noSandbox.systemd.services ? gaoji-vm);
   };
