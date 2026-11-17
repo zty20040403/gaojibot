@@ -1,0 +1,278 @@
+---
+interface Props {
+  currentPath?: string;
+}
+
+const { currentPath = '/' } = Astro.props;
+
+const navItems = [
+  { label: '使用指南', href: '/guide/basics/' },
+  { label: '命令速查', href: '/guide/commands/' },
+  { label: '功能说明', href: '/guide/features/' },
+  { label: '隐私与安全', href: '/privacy/' },
+  { label: '关于', href: '/about/' },
+];
+---
+
+<header class="global-nav">
+  <div class="nav-content">
+    <a href="/" class="brand" aria-label="gaoji 首页">
+      <img src="/favicon.svg" alt="" width="20" height="20" />
+      <span>gaoji</span>
+    </a>
+
+    <nav class="desktop-links" aria-label="主导航">
+      {
+        navItems.map((item) => (
+          <a
+            href={item.href}
+            class:list={['nav-item', { active: currentPath.startsWith(item.href) }]}
+          >
+            {item.label}
+          </a>
+        ))
+      }
+      <a
+        href="https://github.com/zty20040403/gaojibot"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="nav-item"
+      >
+        GitHub
+      </a>
+    </nav>
+
+    <div class="nav-right">
+      <button
+        type="button"
+        class="nav-icon-btn"
+        id="theme-toggle"
+        aria-label="切换浅色或深色外观"
+        title="切换外观"
+      >
+        <svg class="icon-sun" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"></circle>
+          <path d="M12 2v2"></path><path d="M12 20v2"></path>
+          <path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path>
+          <path d="M2 12h2"></path><path d="M20 12h2"></path>
+          <path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+        </svg>
+      </button>
+
+      <button
+        type="button"
+        class="nav-icon-btn mobile-btn"
+        id="mobile-menu-btn"
+        aria-label="打开导航菜单"
+        aria-expanded="false"
+        aria-controls="mobile-drawer"
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <path d="M4 8h16"></path><path d="M4 16h16"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <nav class="mobile-drawer" id="mobile-drawer" aria-label="移动端主导航" hidden>
+    {
+      navItems.map((item) => (
+        <a href={item.href} class="mobile-link">
+          {item.label}
+        </a>
+      ))
+    }
+    <a
+      href="https://github.com/zty20040403/gaojibot"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="mobile-link"
+    >
+      GitHub ↗
+    </a>
+  </nav>
+</header>
+
+<script is:inline>
+  (() => {
+    const toggle = document.getElementById('theme-toggle');
+    const menuBtn = document.getElementById('mobile-menu-btn');
+    const drawer = document.getElementById('mobile-drawer');
+
+    const getEffectiveTheme = () => {
+      const explicit = document.documentElement.getAttribute('data-theme');
+      if (explicit === 'dark' || explicit === 'light') return explicit;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    };
+
+    toggle?.addEventListener('click', () => {
+      const next = getEffectiveTheme() === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try {
+        localStorage.setItem('starlight-theme', next);
+      } catch {}
+    });
+
+    menuBtn?.addEventListener('click', () => {
+      if (!drawer) return;
+      const isOpen = !drawer.hasAttribute('hidden');
+      if (isOpen) {
+        drawer.setAttribute('hidden', '');
+        menuBtn.setAttribute('aria-expanded', 'false');
+      } else {
+        drawer.removeAttribute('hidden');
+        menuBtn.setAttribute('aria-expanded', 'true');
+      }
+    });
+  })();
+</script>
+
+<style>
+  /* Apple 44px frosted glass global nav */
+  .global-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--gj-nav-bg);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--gj-border);
+  }
+
+  .nav-content {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0 1.25rem;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    text-decoration: none;
+    color: var(--gj-text);
+    font-size: 0.92rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .desktop-links {
+    display: flex;
+    align-items: center;
+    gap: 1.8rem;
+  }
+
+  .nav-item {
+    text-decoration: none;
+    color: var(--gj-text-secondary);
+    font-size: 0.78rem;
+    font-weight: 400;
+    letter-spacing: -0.005em;
+    transition: color 0.15s ease;
+  }
+
+  .nav-item:hover,
+  .nav-item.active {
+    color: var(--gj-text);
+  }
+
+  .nav-right {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .nav-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    border: none;
+    background: transparent;
+    color: var(--gj-text-secondary);
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease;
+  }
+
+  .nav-icon-btn:hover {
+    color: var(--gj-text);
+    background: var(--gj-border);
+  }
+
+  .nav-icon-btn:focus-visible,
+  .brand:focus-visible,
+  .nav-item:focus-visible {
+    outline: 2px solid var(--gj-blue);
+    outline-offset: 2px;
+  }
+
+  .icon-moon {
+    display: none;
+  }
+
+  :global(:root[data-theme='dark']) .icon-sun {
+    display: none;
+  }
+
+  :global(:root[data-theme='dark']) .icon-moon {
+    display: block;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme='light'])) .icon-sun {
+      display: none;
+    }
+    :global(:root:not([data-theme='light'])) .icon-moon {
+      display: block;
+    }
+  }
+
+  .mobile-btn {
+    display: none;
+  }
+
+  .mobile-drawer {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0.5rem 1.25rem 1rem;
+    border-top: 1px solid var(--gj-border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .mobile-drawer[hidden] {
+    display: none;
+  }
+
+  .mobile-link {
+    text-decoration: none;
+    color: var(--gj-text);
+    font-size: 0.9rem;
+    padding: 0.55rem 0.25rem;
+    border-bottom: 1px solid var(--gj-border);
+  }
+
+  .mobile-link:last-child {
+    border-bottom: none;
+  }
+
+  @media (max-width: 720px) {
+    .desktop-links {
+      display: none;
+    }
+
+    .mobile-btn {
+      display: inline-flex;
+    }
+  }
+</style>

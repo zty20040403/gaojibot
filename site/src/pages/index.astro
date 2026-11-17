@@ -1,0 +1,499 @@
+---
+import '../styles/theme.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import ChatShowcase from '../components/ChatShowcase.astro';
+import FeatureGrid from '../components/FeatureGrid.astro';
+import TrustStrip from '../components/TrustStrip.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+
+const pageTitle = 'gaoji — 住在你 QQ 群里的 AI 群友';
+const pageDesc =
+  '住在你 QQ 群里的 AI 群友：能聊天、会查资料、帮你做文件。平时安静旁听不刷屏，@ 它才开口；复杂研究与文件生成交给独立沙盒后台完成。';
+const ogImageUrl = new URL('/og-image.png', Astro.site).toString();
+---
+
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={pageDesc} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="canonical" href={new URL('/', Astro.site).toString()} />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="gaoji" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={pageDesc} />
+    <meta property="og:image" content={ogImageUrl} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={pageDesc} />
+    <meta name="twitter:image" content={ogImageUrl} />
+
+    <script is:inline>
+      (() => {
+        try {
+          const saved = localStorage.getItem('starlight-theme');
+          if (saved === 'dark' || saved === 'light') {
+            document.documentElement.setAttribute('data-theme', saved);
+          }
+        } catch {}
+      })();
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳转到主要内容</a>
+
+    <!-- Restrained pearlescent edge whisper (invisible at rest, gentle breath on click) -->
+    <div class="ai-viewport-whisper" id="ai-viewport-aura" aria-hidden="true"></div>
+
+    <SiteHeader currentPath="/" />
+
+    <main id="main-content">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-container">
+          <p class="hero-eyebrow">官方 QQ 机器人 · 多模型开源 Agent</p>
+
+          <h1 id="hero-title">gaoji</h1>
+
+          <p class="hero-headline">
+            住在你 QQ 群里的 AI 群友：<br class="br-desktop" />能聊天、会查资料、帮你做文件。
+          </p>
+
+          <p class="hero-subcopy">
+            平时安静旁听，@ 或引用回复才开口。闲聊自然简短，提问联网查证，耗时研究与文档生成交给独立沙盒后台完成。
+          </p>
+
+          <div class="hero-links">
+            <a href="/guide/basics/" class="cta-pill" data-ai-trigger="nav">
+              <span class="cta-pill-rim" aria-hidden="true"></span>
+              <span class="cta-pill-label">使用指南</span>
+            </a>
+            <a href="#showcase" class="cta-text" data-ai-trigger="stay">
+              看看它能做什么 <span aria-hidden="true">›</span>
+            </a>
+          </div>
+
+          <!-- Space Black Pro Stage (pure dark border at rest, restrained 1px sheen on click) -->
+          <div class="pro-stage-wrap" id="pro-stage">
+            <div class="pro-stage-glow" aria-hidden="true"></div>
+            <div class="pro-stage" aria-label="gaoji 三种工作状态速览">
+              <div class="stage-grid">
+                <div class="stage-item">
+                  <span class="stage-label">平时闲聊</span>
+                  <strong>安静旁听，不刷屏</strong>
+                  <p>群友聊自己的事时保持沉默，只在被 @、被回复或恰当接梗时开口。</p>
+                </div>
+                <div class="stage-item">
+                  <span class="stage-label">日常问答</span>
+                  <strong>联网核对，直接识图</strong>
+                  <p>查新梗与行情附上来源编号；发截图或报错画面直接读取作答。</p>
+                </div>
+                <div class="stage-item">
+                  <span class="stage-label">复杂任务</span>
+                  <strong>独立沙盒，异步交活</strong>
+                  <p>写脚本、处理数据、生成中文 PDF 交给后台执行，不卡住前台对话。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <ChatShowcase />
+
+      <FeatureGrid />
+
+      <TrustStrip />
+    </main>
+
+    <SiteFooter />
+
+    <script is:inline>
+      (() => {
+        const aura = document.getElementById('ai-viewport-aura');
+        const stage = document.getElementById('pro-stage');
+        const triggers = document.querySelectorAll('[data-ai-trigger]');
+        let hideTimer = null;
+
+        const pulseSheen = (durationMs = 2200) => {
+          if (!aura) return;
+          aura.classList.remove('is-active');
+          stage?.classList.remove('is-active');
+          void aura.offsetWidth;
+          aura.classList.add('is-active');
+          stage?.classList.add('is-active');
+
+          if (hideTimer) clearTimeout(hideTimer);
+          hideTimer = setTimeout(() => {
+            aura.classList.remove('is-active');
+            stage?.classList.remove('is-active');
+          }, durationMs);
+        };
+
+        triggers.forEach((el) => {
+          el.addEventListener('click', (e) => {
+            const mode = el.getAttribute('data-ai-trigger');
+            if (mode === 'nav') {
+              const href = el.getAttribute('href');
+              if (
+                href &&
+                !e.metaKey &&
+                !e.ctrlKey &&
+                !e.shiftKey &&
+                !e.altKey
+              ) {
+                e.preventDefault();
+                pulseSheen(1000);
+                setTimeout(() => {
+                  window.location.href = href;
+                }, 220);
+                return;
+              }
+            }
+            pulseSheen(2200);
+          });
+        });
+      })();
+    </script>
+  </body>
+</html>
+
+<style>
+  @property --ai-angle {
+    syntax: '<angle>';
+    initial-value: 0deg;
+    inherits: false;
+  }
+
+  @keyframes ai-spin {
+    to {
+      --ai-angle: 360deg;
+    }
+  }
+
+  :root {
+    --ai-spectrum: conic-gradient(
+      from var(--ai-angle),
+      #64d2ff 0deg,
+      #5e9eff 75deg,
+      #a984ff 150deg,
+      #e87e9e 225deg,
+      #f2a374 300deg,
+      #64d2ff 360deg
+    );
+  }
+
+  :global(*, *::before, *::after) {
+    box-sizing: border-box;
+  }
+
+  :global(html) {
+    scroll-behavior: smooth;
+    font-family: var(--gj-font-sans);
+    background: var(--gj-bg);
+    color: var(--gj-text);
+  }
+
+  :global(body) {
+    margin: 0;
+    background: var(--gj-bg);
+    color: var(--gj-text);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  /* Restrained 1.5px viewport-edge breath — 0% visible at rest */
+  .ai-viewport-whisper {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    pointer-events: none;
+    opacity: 0;
+    padding: 1.5px;
+    background: var(--ai-spectrum);
+    animation: ai-spin 5s linear infinite;
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    transition: opacity 0.6s ease;
+  }
+
+  .ai-viewport-whisper.is-active {
+    opacity: 0.34;
+  }
+
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0.75rem;
+    z-index: 100;
+    padding: 0.45rem 0.9rem;
+    border-radius: 980px;
+    background: var(--gj-blue);
+    color: #ffffff;
+    font-size: 0.84rem;
+    font-weight: 500;
+    text-decoration: none;
+  }
+
+  .skip-link:focus {
+    left: 1rem;
+  }
+
+  .hero {
+    background: var(--gj-bg);
+    padding: 4.5rem 1.25rem 4.8rem;
+  }
+
+  .hero-container {
+    max-width: 980px;
+    margin: 0 auto;
+    text-align: center;
+  }
+
+  .hero-eyebrow {
+    margin: 0 0 0.55rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--gj-text-muted);
+  }
+
+  #hero-title {
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.08em;
+    font-size: clamp(3.4rem, 7.5vw, 5rem);
+    font-weight: 700;
+    letter-spacing: -0.048em;
+    line-height: 1.14;
+    background: var(--gj-title-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .hero-headline {
+    margin: 0 auto 0.95rem;
+    font-size: clamp(1.38rem, 3vw, 1.95rem);
+    font-weight: 600;
+    letter-spacing: -0.022em;
+    line-height: 1.32;
+    color: var(--gj-text);
+    max-width: 720px;
+  }
+
+  .hero-subcopy {
+    margin: 0 auto 1.9rem;
+    font-size: 1rem;
+    line-height: 1.65;
+    color: var(--gj-text-secondary);
+    max-width: 600px;
+  }
+
+  /* Pure Apple CTA pair — no button glow rings */
+  .hero-links {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 3.2rem;
+  }
+
+  .cta-pill {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5px;
+    border-radius: 980px;
+    text-decoration: none;
+    isolation: isolate;
+  }
+
+  .cta-pill-rim {
+    position: absolute;
+    inset: 0;
+    border-radius: 980px;
+    background: var(--ai-spectrum);
+    opacity: 0;
+    pointer-events: none;
+    animation: ai-spin 4s linear infinite;
+    transition: opacity 0.25s ease;
+    z-index: 0;
+  }
+
+  .cta-pill:hover .cta-pill-rim,
+  .cta-pill:active .cta-pill-rim {
+    opacity: 0.85;
+  }
+
+  .cta-pill-label {
+    position: relative;
+    z-index: 1;
+    pointer-events: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 40px;
+    padding: 0 1.42rem;
+    border-radius: 980px;
+    background: var(--gj-blue);
+    color: #ffffff;
+    font-size: 0.95rem;
+    font-weight: 500;
+    transition: background-color 0.15s ease;
+  }
+
+  .cta-pill:hover .cta-pill-label {
+    background: var(--gj-blue-hover);
+  }
+
+  .cta-pill:focus-visible,
+  .cta-text:focus-visible {
+    outline: 2px solid var(--gj-blue);
+    outline-offset: 3px;
+  }
+
+  .cta-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.98rem;
+    font-weight: 500;
+    color: var(--gj-link);
+    text-decoration: none;
+  }
+
+  .cta-text:hover {
+    text-decoration: underline;
+  }
+
+  /* Space-Black Pro Stage — pure Space-Black border at rest, restrained 1px sheen on click */
+  .pro-stage-wrap {
+    position: relative;
+    border-radius: 25px;
+    padding: 1px;
+    background: var(--gj-pro-border);
+    isolation: isolate;
+  }
+
+  .pro-stage-glow {
+    position: absolute;
+    inset: 0;
+    border-radius: 25px;
+    background: var(--ai-spectrum);
+    opacity: 0;
+    pointer-events: none;
+    animation: ai-spin 4.5s linear infinite;
+    transition: opacity 0.5s ease;
+    z-index: 0;
+  }
+
+  .pro-stage-glow::after {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: 27px;
+    background: var(--ai-spectrum);
+    filter: blur(12px);
+    opacity: 0;
+    animation: ai-spin 4.5s linear infinite;
+    transition: opacity 0.5s ease;
+    z-index: -1;
+  }
+
+  .pro-stage-wrap.is-active .pro-stage-glow {
+    opacity: 0.65;
+  }
+
+  .pro-stage-wrap.is-active .pro-stage-glow::after {
+    opacity: 0.16;
+  }
+
+  .pro-stage {
+    position: relative;
+    z-index: 1;
+    text-align: left;
+    background: var(--gj-pro-bg);
+    border-radius: 24px;
+    padding: 1.75rem 2rem;
+    color: var(--gj-pro-text);
+    box-shadow: 0 20px 44px rgba(0, 0, 0, 0.1);
+  }
+
+  .stage-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.75rem;
+  }
+
+  .stage-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .stage-label {
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: #2997ff;
+    letter-spacing: 0.02em;
+  }
+
+  .stage-item strong {
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: #f5f5f7;
+  }
+
+  .stage-item p {
+    margin: 0;
+    font-size: 0.84rem;
+    line-height: 1.58;
+    color: var(--gj-pro-muted);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ai-viewport-whisper,
+    .pro-stage-glow,
+    .pro-stage-glow::after {
+      animation: none;
+    }
+  }
+
+  @media (max-width: 780px) {
+    .hero {
+      padding: 3.2rem 1.15rem 3.4rem;
+    }
+
+    .br-desktop {
+      display: none;
+    }
+
+    .pro-stage {
+      padding: 1.4rem;
+      border-radius: 20px;
+    }
+
+    .pro-stage-wrap,
+    .pro-stage-glow {
+      border-radius: 21px;
+    }
+
+    .stage-grid {
+      grid-template-columns: 1fr;
+      gap: 1.25rem;
+    }
+  }
+</style>

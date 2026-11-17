@@ -1,0 +1,252 @@
+---
+const features = [
+  {
+    title: '联网搜索',
+    desc: '自动检索并打开网页核对原文，引用处标上来源编号，不靠印象瞎编。',
+    icon: 'search',
+  },
+  {
+    title: '看图识图',
+    desc: '直接读取当前或引用的图片与报错画面；长视频可交后台抽帧与转写。',
+    icon: 'image',
+  },
+  {
+    title: '表情包',
+    desc: '共享经安全筛选的表情包库，闲聊接梗顺手带图，正经问答克制不刷屏。',
+    icon: 'smile',
+  },
+  {
+    title: '做文件与 PDF',
+    desc: '在独立 Linux 沙盒运行脚本、处理表格、生成嵌字体的中文 PDF 并发回群聊。',
+    icon: 'file',
+  },
+  {
+    title: '后台长任务',
+    desc: '多步研究、写代码、读附件异步执行，不卡日常聊天；支持查进度、追问与取消。',
+    icon: 'cpu',
+  },
+  {
+    title: '定时提醒',
+    desc: '支持单次提醒与周期例行任务，统一按北京时间准点唤醒并投递。',
+    icon: 'clock',
+  },
+];
+---
+
+<section class="features-band" id="features" aria-labelledby="features-heading">
+  <div class="container">
+    <div class="section-intro">
+      <p class="eyebrow">核心能力</p>
+      <h2 id="features-heading">前台利落聊天，后台踏实干活。</h2>
+    </div>
+
+    <div class="bento-grid">
+      {
+        features.map((item) => (
+          <article class="tile">
+            <div class="tile-icon" aria-hidden="true">
+              {item.icon === 'search' && (
+                <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                  <circle cx="11" cy="11" r="7" /><path d="m20 20-3.8-3.8" />
+                </svg>
+              )}
+              {item.icon === 'image' && (
+                <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <rect width="18" height="18" x="3" y="3" rx="3.5" />
+                  <circle cx="9" cy="9" r="1.8" />
+                  <path d="m21 15-3.2-3.2a1.8 1.8 0 0 0-2.5 0L6 21" />
+                </svg>
+              )}
+              {item.icon === 'smile' && (
+                <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M8.5 14s1.3 1.8 3.5 1.8 3.5-1.8 3.5-1.8" />
+                  <line x1="9" x2="9.01" y1="9.5" y2="9.5" />
+                  <line x1="15" x2="15.01" y1="9.5" y2="9.5" />
+                </svg>
+              )}
+              {item.icon === 'file' && (
+                <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                  <polyline points="14 2 14 8 20 8" />
+                </svg>
+              )}
+              {item.icon === 'cpu' && (
+                <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <rect width="14" height="14" x="5" y="5" rx="2.5" />
+                  <rect width="4" height="4" x="10" y="10" />
+                  <path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" />
+                </svg>
+              )}
+              {item.icon === 'clock' && (
+                <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="9" />
+                  <polyline points="12 7 12 12 15.5 14" />
+                </svg>
+              )}
+            </div>
+            <h3>{item.title}</h3>
+            <p>{item.desc}</p>
+          </article>
+        ))
+      }
+    </div>
+
+    <!-- Space-Black Pro Command Bar -->
+    <div class="pro-cmd-bar">
+      <div class="cmd-chips">
+        <span class="cmd-title">快捷命令</span>
+        <code>/help</code>
+        <code>/model</code>
+        <code>/status</code>
+        <code>/task</code>
+        <code>/cancel</code>
+        <code>/config</code>
+        <code>/stop</code>
+      </div>
+      <div class="cmd-links">
+        <a href="/guide/features/">功能说明 ›</a>
+        <a href="/guide/commands/">完整命令表 ›</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .features-band {
+    background: var(--gj-bg);
+    padding: 5rem 1.25rem;
+  }
+
+  .container {
+    max-width: 980px;
+    margin: 0 auto;
+  }
+
+  .section-intro {
+    text-align: center;
+    margin-bottom: 2.8rem;
+  }
+
+  .eyebrow {
+    margin: 0 0 0.45rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--gj-link);
+  }
+
+  .section-intro h2 {
+    margin: 0;
+    font-size: clamp(1.75rem, 3.6vw, 2.4rem);
+    font-weight: 600;
+    letter-spacing: -0.028em;
+    line-height: 1.18;
+    color: var(--gj-text);
+  }
+
+  .bento-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.1rem;
+  }
+
+  .tile {
+    background: var(--gj-surface);
+    border: 1px solid var(--gj-border);
+    border-radius: 20px;
+    padding: 1.6rem;
+  }
+
+  .tile-icon {
+    color: var(--gj-link);
+    margin-bottom: 0.9rem;
+    display: inline-flex;
+  }
+
+  .tile h3 {
+    margin: 0 0 0.42rem;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--gj-text);
+  }
+
+  .tile p {
+    margin: 0;
+    font-size: 0.88rem;
+    line-height: 1.62;
+    color: var(--gj-text-secondary);
+  }
+
+  /* Space Black Pro Bar */
+  .pro-cmd-bar {
+    margin-top: 1.2rem;
+    padding: 1.1rem 1.5rem;
+    border-radius: 20px;
+    background: var(--gj-pro-bg);
+    border: 1px solid var(--gj-pro-border);
+    color: var(--gj-pro-text);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .cmd-chips {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+  }
+
+  .cmd-title {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: var(--gj-pro-muted);
+    margin-right: 0.25rem;
+  }
+
+  .cmd-chips code {
+    font-family: var(--gj-font-mono);
+    font-size: 0.78rem;
+    padding: 0.18rem 0.5rem;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #f5f5f7;
+  }
+
+  .cmd-links {
+    display: flex;
+    align-items: center;
+    gap: 1.15rem;
+  }
+
+  .cmd-links a {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #2997ff;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .cmd-links a:hover {
+    text-decoration: underline;
+  }
+
+  @media (max-width: 820px) {
+    .features-band {
+      padding: 3.6rem 1.15rem;
+    }
+
+    .bento-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 540px) {
+    .bento-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
