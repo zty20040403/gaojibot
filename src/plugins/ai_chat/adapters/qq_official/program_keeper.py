@@ -1,5 +1,8 @@
 """Recover retained conversation VMs without holding QQ startup or DB locks."""
 import asyncio
+import time
+
+_monotonic = time.monotonic
 
 
 class ProgramKeeper:
@@ -8,6 +11,7 @@ class ProgramKeeper:
         self.lock = asyncio.Lock()
         self.task,self.loop = None,None
         self.changed = asyncio.Event()
+        self._error_logged_at: dict[str, float] = {}
 
     def enabled(self, endpoint):
         with self.lifecycle.transaction() as cursor:
@@ -43,8 +47,16 @@ class ProgramKeeper:
                         # not count as crashes, but release the pending slot.
                         await self.manager.program_state.failed(owner,sid)
                         raise
+            self._error_logged_at.pop(sid, None)
         except Exception as error:
-            self.lifecycle.logger.warning('Resident VM recovery failed vm=%s error=%s',sid,type(error).__name__)
+            now = _monotonic()
+            last = self._error_logged_at.get(sid)
+            if last is None or now - last >= 600:
+                self._error_logged_at[sid] = now
+                self.lifecycle.logger.warning(
+                    'Resident VM recovery failed vm=%s error=%s detail=%s',
+                    sid, type(error).__name__, str(error)[:200],
+                )
 
     async def scan(self):
         async with self.lock:
