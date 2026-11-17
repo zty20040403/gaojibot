@@ -7,6 +7,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
+
 from src.bot_storage import DatabaseCalls
 
 
@@ -14,7 +16,7 @@ from src.plugins.ai_chat import tool_policy
 from src.plugins.ai_chat.tools import _base_registry
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.web_fetch import FetchError, FetchedPage
-from src.plugins.ai_chat.web_search import SearchError, SearchResult
+from src.plugins.ai_chat.web_search import SearchError, SearchResult, search_web
 
 
 class SourceToolTests(unittest.IsolatedAsyncioTestCase):
@@ -137,6 +139,24 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
             fetch.assert_awaited_once_with(raw, timeout_seconds=15)
             self.assertEqual(page['url'], clean)
             self.assertEqual([item.url for item in self.turn.search_results], [clean])
+
+    async def test_scrape_filters_unrelated_results_and_adds_note_when_empty(self) -> None:
+        self.app.settings.search_provider = "scrape"
+        self.app.settings.search_api_key = ""
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, text=(
+            '<a class="result__a" href="https://afdian.com/a">爱发电创作者</a>'
+            '<div class="result__snippet">赞助支持</div>'
+        )))
+
+        async def search_with_transport(query, **options):
+            return await search_web(query, transport=transport, **options)
+
+        with (patch("src.plugins.ai_chat.web_search._ddg_blocked_until", 0.0),
+              patch("src.plugins.ai_chat.tools.sources.search_web", side_effect=search_with_transport)):
+            response = await self.execute("web_search", query="吴家村 是哪里")
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["results"], [])
+        self.assertIn("换一个说法再搜", response["note"])
 
     async def test_search_failure_is_reported_without_leaking_provider_error(
         self,

@@ -126,6 +126,18 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
             ensure_ascii=False,
         )
 
+    if not results:
+        return json.dumps(
+            {
+                "ok": True,
+                "query": query,
+                "freshness": freshness or "all",
+                "results": [],
+                "note": "搜索引擎没有返回和这个词相关的结果，换一个说法再搜。",
+            },
+            ensure_ascii=False,
+        )
+
     id_by_url = {result.url: index for index, result in enumerate(turn.search_results, start=1)}
     payload_results: list[dict[str, object]] = []
     for result in results:
