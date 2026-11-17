@@ -525,6 +525,36 @@ class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(channel.fallbacks[0][:2], ('m1', 'm2'))
         self.assertNotIn('TEST_REAL_KEY', channel.fallbacks[0][2])
 
+    async def test_cliproxy_model_not_found_400_code_triggers_fallback(self):
+        attempts = []
+        def upstream(request):
+            model = json.loads(request.content)['model']
+            attempts.append(model)
+            if model == 'm1':
+                return httpx.Response(
+                    400,
+                    content=b'{"error":{"code":"model_not_found","message":"unknown provider for model m1","param":"model","type":"invalid_request_error"}}',
+                )
+            return httpx.Response(
+                200,
+                content=b'data: {"type":"response.completed"}\n\n',
+                headers={'content-type': 'text/event-stream'},
+            )
+
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        self.gateway.model = lambda: (['m1', 'm2'], 'high')
+        token, channel = self.gateway.open()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            response = await client.post(
+                self.base + '/responses',
+                json={'input': []},
+                headers={'Authorization': 'Bearer ' + token},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(attempts, ['m1', 'm2'])
+        self.assertEqual(channel.fallbacks[0][:2], ('m1', 'm2'))
+
     async def test_redacting_key_does_not_change_fallback_classification(self):
         self.gateway.upstream = lambda: profile('relay', base_url='http://upstream.test/v1', api_key='TEST_MODEL')
         def upstream(request):
