@@ -182,15 +182,17 @@ class OfficialSender:
         return 'passive', msg_id, current['seq']
 
     async def _send(self, delivery_id):
-        auth_retry = plain_retry = False
+        auth_retry = plain_retry = conn_retry = False
         while True:
             await self._fence()
             row = await self._calls(self.outbox.get, self.token, delivery_id)
+            if row is None or row['status'] != 'pending':
+                return SendOutcome(row['status'] if row else 'failed',
+                    (row['wait_reason'] or '') if row else 'delivery_not_found', delivery_id)
             endpoint = EndpointKey.parse(row['endpoint_key'])
             await self.rate_gate.acquire(endpoint)
             await self._fence()
             route = await self._calls(self.outbox.route, endpoint)
-            # Token refresh occurs before claiming a physical attempt.
             try:
                 prepared = await self.rest.prepare_send(endpoint.kind, endpoint.native_conversation_id)
             except QQAPIError:
@@ -207,14 +209,12 @@ class OfficialSender:
                 if mode == 'passive':
                     self._passive[endpoint.key]['used'] -= 1
                 return reservation
-            # A stop may commit while the database executor returns the claim.
-            # Once HTTP begins it cannot be retracted; its receipt remains true.
-            denied = await self._calls(self.outbox.attempt_denial,self.token,reservation)
+            denied = await self._calls(self.outbox.attempt_denial, self.token, reservation)
             if denied:
                 if mode == 'passive':
                     self._passive[endpoint.key]['used'] -= 1
-                return await self._calls(self.outbox.fail,self.token,delivery_id,
-                    denied,reservation=reservation)
+                return await self._calls(self.outbox.fail, self.token, delivery_id,
+                    denied, reservation=reservation)
             started = self.clock()
             payload = reservation.payload()
             error = None
@@ -225,7 +225,7 @@ class OfficialSender:
             except QQAPIError as caught:
                 error = caught
             except (TimeoutError, asyncio.CancelledError) as caught:
-                log.info('QQ send mode=%s seconds=%.2f result=unknown code=timeout', mode, self.clock()-started)
+                log.info('QQ send mode=%s seconds=%.2f result=unknown code=timeout', mode, self.clock() - started)
                 error = QQAPIError('transport_ambiguous', stage='send')
                 await asyncio.shield(self._calls(self.outbox.fail, self.token, delivery_id,
                     'possibly_not_sent', reservation=reservation, error=error))
@@ -242,8 +242,6 @@ class OfficialSender:
                 try:
                     return await asyncio.shield(task)
                 except asyncio.CancelledError:
-                    # A second shutdown cancellation must not propagate into
-                    # the accepted receipt between capture and finalization.
                     while not task.done():
                         try:
                             await asyncio.shield(task)
@@ -264,15 +262,20 @@ class OfficialSender:
                 retry, reason = not bot_origin, 'proactive_denied'
             elif error.code == 40034128:
                 if mode == 'passive':
-                    self._passive[endpoint.key]['used'] = 5
+                    self._passive[endpoint.key]['used'] = 5 if endpoint.kind == 'group' else 4
                 reason = PASSIVE_UNAVAILABLE
-            elif error.status == 401:
+            elif error.status == 401 or error.category == 'authentication':
+                token_manager = getattr(self.rest, 'token_manager', None)
+                if token_manager is not None:
+                    token_manager.invalidate()
                 retry, reason = not auth_retry, 'authentication'
                 auth_retry = True
             elif error.status == 429 or error.category == 'rate_limited':
                 retry, delay, reason = True, max(1, error.retry_after or 3), 'rate_limited'
             elif payload.get('msg_type') == 2 and not plain_retry and row['variant'] != 'plain_fallback':
                 plain_retry, retry, plain, reason = True, True, True, 'markdown_rejected'
+            elif error.category == 'connection_failed' and not conn_retry:
+                conn_retry, retry, reason = True, True, 'connection_failed'
             else:
                 reason = error.category
             result = await self._calls(self.outbox.fail, self.token, delivery_id, reason,

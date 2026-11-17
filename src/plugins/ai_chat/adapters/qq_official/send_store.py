@@ -21,9 +21,6 @@ from .plans import DEFAULT_MAX_WAIT_SECONDS, enqueue_plan, keyed_digest
 from .renderer import content_payload, render_plan, restore_plan
 
 
-GROUP_PROACTIVE_DAILY_LIMIT = 1000
-
-
 def quote_needed(cursor, row):
     """Quote the asker like a person would: once, and only when others spoke since.
 
@@ -223,6 +220,13 @@ class OfficialSendStore:
         with self.deliveries.transaction() as cursor:
             return cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
 
+    def allow_proactive(self, token, endpoint):
+        with self.deliveries.transaction() as cursor:
+            assert_epoch(cursor, token)
+            cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='allowed',updated_at=?
+                WHERE endpoint_key=? AND account_key=? AND proactive_state='unknown'""",
+                (int(self.clock()), endpoint.key, token.account_key))
+
     def deny_proactive(self, token, endpoint):
         with self.deliveries.transaction() as cursor:
             assert_epoch(cursor, token)
@@ -291,13 +295,6 @@ class OfficialSendStore:
                 return self._finish(cursor, token, row, 'failed', 'delivery_expired', now)
             if row['payload_mode'] == 'ephemeral' and delivery_id not in self._ephemeral:
                 return self._finish(cursor, token, row, 'failed', 'ephemeral_payload_lost', now)
-            if send_mode == 'proactive' and endpoint.kind == 'group':
-                day_start = ((now + 8 * 3600) // 86400) * 86400 - 8 * 3600
-                used = cursor.execute("""SELECT count(*) AS n FROM delivery_attempts
-                    WHERE endpoint_key=? AND send_mode='proactive' AND started_at>=?
-                    AND acceptance<>'confirmed_no'""", (endpoint.key, day_start)).fetchone()['n']
-                if used >= GROUP_PROACTIVE_DAILY_LIMIT:
-                    return self._finish(cursor, token, row, 'failed', 'group_proactive_daily_limit', now)
             payload = self._content(cursor, row, endpoint, token=token, now=now)
             if send_mode == 'passive':
                 payload.update(msg_id=msg_id, msg_seq=msg_seq)
