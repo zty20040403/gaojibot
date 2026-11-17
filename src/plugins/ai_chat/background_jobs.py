@@ -10,6 +10,22 @@ from .agent_loop import AgentTrace
 ACTIVE = ('queued', 'running')
 
 
+def outcome_of(report: str) -> str:
+    for raw in (report or '').splitlines():
+        line = raw.strip().strip('*#').strip()
+        if not line:
+            continue
+        normalized = line.replace(':', '：', 1)
+        if normalized == '结果：成功':
+            return 'success'
+        if normalized == '结果：部分完成':
+            return 'partial'
+        if normalized == '结果：失败':
+            return 'failed'
+        return 'unknown'
+    return 'unknown'
+
+
 class BackgroundJobs:
     def __init__(self, jobs, *, clock=time.time):
         self.jobs, self.clock = jobs, clock
@@ -176,11 +192,18 @@ class BackgroundRunner:
 
         session = None
         state, error, report = 'completed', '', ''
+        report_failed = False
         try:
             session = await self.session_factory(row, durable_job, question)
             # The engine stops itself at the deadline; this only bounds a stuck one.
             async with asyncio.timeout(max(0, row['deadline_at'] - self.clock()) + 180):
                 report = await self.engine(row, session, feedback=feedback, progress=progress, trace=trace)
+            if outcome_of(report) == 'failed':
+                report_failed = True
+                lines = [line.strip() for line in (report or '').splitlines() if line.strip()]
+                reason = lines[1][:200] if len(lines) > 1 else ''
+                state = 'failed'
+                error = '后台报告任务失败：' + reason
         except asyncio.CancelledError:
             current = await self.calls(self.store.get, row['job_id'])
             state = 'cancelled' if current['state'] == 'cancelled' else 'failed'
@@ -192,7 +215,8 @@ class BackgroundRunner:
             state, error = 'failed', f'后台任务失败：{type(exc).__name__}: {exc}'
             self.logger.exception('Background job %s failed', row['job_id'])
         finally:
-            report = '\n\n'.join(part for part in (report, error, '\n'.join(notes)) if part)
+            parts = (report, '\n'.join(notes)) if report_failed else (report, error, '\n'.join(notes))
+            report = '\n\n'.join(part for part in parts if part)
             state = await self.calls(self.store.finish, row['job_id'], state=state, error=error, report=report)
             try:
                 if state != 'cancelled':  # Do not restart a VM just to save a cancelled task's report.

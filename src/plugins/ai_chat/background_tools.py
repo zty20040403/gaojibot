@@ -42,7 +42,7 @@ class BackgroundToolSession:
         self.turn = TurnState(context)
         self.registry = neutral_registry_for(context)
         self.tools = tuple(item for item in self.registry.definitions(context)
-            if item['function']['name'] in {'history', 'web_search', 'web_fetch'}) + (ASK_MAIN,)
+            if item['function']['name'] in {'history', 'web_search', 'web_fetch', 'use_skill'}) + (ASK_MAIN,)
 
     async def execute_tool(self, name, arguments):
         await self.current()
