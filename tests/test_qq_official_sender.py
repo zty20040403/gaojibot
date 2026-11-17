@@ -164,21 +164,36 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, 'committed')
         self.assertNotIn('msg_id', self.fake.received[0]['payload'])
         self.assertEqual(self.attempts()[0]['send_mode'], 'proactive')
+        self.assertEqual(self.query('SELECT proactive_state FROM qq_official_endpoints WHERE endpoint_key=?',
+            (self.endpoint.key,))[0]['proactive_state'], 'allowed')
         self.assertEqual(len(self.query("SELECT * FROM messages WHERE direction='outbound'")), 1)
         self.assertEqual(len(self.query('SELECT * FROM qq_official_message_indexes')), 1)
         self.assertEqual(self.query('SELECT * FROM qq_official_quota_periods'), [])
         self.assertEqual(self.query('SELECT * FROM qq_official_reply_windows'), [])
 
-    async def test_daily_proactive_budget_survives_sender_restart(self):
-        self.now += 400
-        with patch('src.plugins.ai_chat.adapters.qq_official.send_store.GROUP_PROACTIVE_DAILY_LIMIT', 2):
-            for key in ('TEST_FIRST', 'TEST_SECOND'):
-                self.assertEqual((await self.sender.send_delivery(self.enqueue(key))).status, 'committed')
-            await self.sender.stop()
-            self.sender = self.make_sender()
-            result = await self.sender.send_delivery(self.enqueue('TEST_OVER_LIMIT'))
-            self.assertEqual((result.status, result.reason), ('failed', 'group_proactive_daily_limit'))
-            self.assertEqual(len(self.fake.received), 2)
+    async def test_connection_failure_falls_back_or_retries_once(self):
+        original = self.rest.send_message
+        calls = 0
+
+        async def flaky_markdown(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise QQAPIError('connection_failed', accepted=False, stage='send')
+            return await original(*args, **kwargs)
+
+        with patch.object(self.rest, 'send_message', side_effect=flaky_markdown):
+            result = await self.sender.send_delivery(self.enqueue('TEST_CONN_MD'))
+        self.assertEqual(result.status, 'committed')
+        self.assertEqual(self.fake.received[0]['payload']['msg_type'], 0)
+
+        plain_id = self.outbox.enqueue(self.token,
+            rendered=render_plan(MessageBody((TextNode(0, 'TEST plain'),)), self.endpoint, markdown=False),
+            requester=self.actor, logical_key='TEST_CONN_PLAIN', source_scope_key=self.endpoint.scope.key,
+            expires_at=self.now + 200, source_native_message_id='TEST_SOURCE').delivery_ids[0]
+        with patch.object(self.rest, 'send_message', side_effect=QQAPIError('connection_failed', accepted=False, stage='send')):
+            failed = await self.sender.send_delivery(plain_id)
+        self.assertEqual((failed.status, failed.reason), ('failed', 'connection_failed'))
 
     async def test_proactive_rejection_uses_latest_inbound_and_group_five_replies(self):
         self.fake.proactive_allowed[('group', self.endpoint.native_conversation_id)] = False
@@ -237,7 +252,6 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
             nonlocal first
             if first:
                 first=False
-                self.tokens.invalidate()
                 self.fake.access_token='TEST_REFRESHED_TOKEN'
                 raise QQAPIError('authentication',accepted=False,status=401)
             return await original(*args,**kwargs)

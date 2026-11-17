@@ -162,6 +162,10 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     if delivery['turn_id'] is not None:
         journal.link_send(delivery['turn_id'], canonical, node_id=f"outbox:{delivery['delivery_id']}",
             chunk_index=delivery['part_index'], transaction_cursor=cursor, strict_association=True)
+    if attempt['send_mode'] == 'proactive' and endpoint.kind == 'group':
+        cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='allowed',updated_at=?
+            WHERE endpoint_key=? AND account_key=? AND proactive_state='unknown'""",
+            (now, endpoint.key, token.account_key))
     cursor.execute("UPDATE delivery_attempts SET state='committed',acceptance='confirmed_yes',finished_at=? WHERE attempt_id=?",
         (now, attempt['attempt_id']))
     cursor.execute("""UPDATE deliveries SET status='committed',native_message_id=?,lease_until=NULL,
