@@ -105,3 +105,41 @@ class StickerSendTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StickerMarkerTests(unittest.IsolatedAsyncioTestCase):
+    """[表情：…] at the end of a reply queues one sticker without an extra model round."""
+
+    def test_markers_are_removed_and_the_last_query_is_used(self):
+        from src.plugins.ai_chat.adapters.qq_official.media_tools import strip_sticker_markers
+        self.assertEqual(strip_sticker_markers("笑死我了\n[表情：笑死 拍桌]"), ("笑死我了", "笑死 拍桌"))
+        self.assertEqual(strip_sticker_markers("好的[表情:无语]"), ("好的", "无语"))
+        self.assertEqual(strip_sticker_markers("普通回复"), ("普通回复", None))
+        self.assertEqual(strip_sticker_markers("[表情：a]\n中间\n[表情：b]")[1], "b")
+
+    def session(self):
+        return SimpleNamespace(enabled=lambda name: name == "send_sticker",
+                               sticker=AsyncMock(return_value={"state": "queued", "artifact_id": "pending:media#7"}))
+
+    def marker_turn(self, recent):
+        library = SimpleNamespace(search_stickers=AsyncMock(return_value=[SimpleNamespace(
+            handle="media#7", media_id=7, mime_type="image/png")]), mark_sent=Mock(),
+            recent_sticker_sends=Mock(return_value=recent))
+        turn = TurnState(ToolContext(SimpleNamespace(context=SimpleNamespace(media_library=library))))
+        turn.context = SimpleNamespace(app=turn.context.app, scope=SimpleNamespace(key="TEST_SCOPE"))
+        return turn
+
+    async def test_marker_queues_a_sticker_when_none_was_sent_lately(self):
+        import time
+        from src.plugins.ai_chat.adapters.qq_official.media_tools import take_sticker_marker
+        session, turn = self.session(), self.marker_turn({8: int(time.time()) - 600})
+        self.assertEqual(await take_sticker_marker(session, turn, "哈哈\n[表情：笑死]"), "哈哈")
+        session.sticker.assert_awaited_once()
+        self.assertTrue(turn.sticker_sent and turn.delivered)
+
+    async def test_marker_is_dropped_within_three_minutes_of_the_last_sticker(self):
+        import time
+        from src.plugins.ai_chat.adapters.qq_official.media_tools import take_sticker_marker
+        session, turn = self.session(), self.marker_turn({8: int(time.time()) - 30})
+        self.assertEqual(await take_sticker_marker(session, turn, "哈哈\n[表情：笑死]"), "哈哈")
+        session.sticker.assert_not_awaited()

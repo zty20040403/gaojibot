@@ -1190,22 +1190,39 @@ class MediaLibrary:
         """Stickers this conversation was sent since a time: media_id -> last send."""
         if not scope_key:
             return {}
+        # Image deliveries record the file's sha256 in their body (send_store.enqueue_media).
         connection = self.database.store_connection()
         try:
             rows = connection.execute(
                 """
-                SELECT blob.media_id, max(artifact.created_at) AS sent_at
-                FROM qq_official_file_artifacts AS artifact
-                JOIN media_blobs AS blob ON blob.sha256 = artifact.sha256
-                JOIN sticker_library AS stickers ON stickers.media_id = blob.media_id
-                WHERE artifact.source_scope_key = ? AND artifact.created_at >= ?
-                GROUP BY blob.media_id
+                SELECT body_json, created_at FROM deliveries
+                WHERE source_scope_key = ? AND created_at >= ? AND purpose = 'requested_artifact'
+                  AND body_json LIKE ?
                 """,
-                (scope_key, int(since)),
+                (scope_key, int(since), '%"sha256"%'),
+            ).fetchall()
+            sent: dict[str, int] = {}
+            for row in rows:
+                try:
+                    nodes = json.loads(row["body_json"]).get("nodes", [])
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                for node in nodes:
+                    sha = (node.get("raw") or {}).get("sha256") if isinstance(node, dict) else None
+                    if isinstance(sha, str):
+                        sent[sha] = max(sent.get(sha, 0), int(row["created_at"]))
+            if not sent:
+                return {}
+            marks = ",".join("?" for _ in sent)
+            found = connection.execute(
+                f"""SELECT blob.media_id, blob.sha256 FROM media_blobs AS blob
+                JOIN sticker_library AS stickers ON stickers.media_id = blob.media_id
+                WHERE blob.sha256 IN ({marks})""",
+                tuple(sent),
             ).fetchall()
         finally:
             connection.close()
-        return {int(row["media_id"]): int(row["sent_at"]) for row in rows}
+        return {int(row["media_id"]): sent[row["sha256"]] for row in found}
 
     def mark_sent(self, media_id: int) -> None:
         now = int(time.time())

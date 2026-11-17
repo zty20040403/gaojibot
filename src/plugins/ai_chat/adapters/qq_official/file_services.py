@@ -252,7 +252,8 @@ class FileServices:
                          filename: str, logical_key: str, source_scope_key: str, expires_at: int,
                          source_native_message_id: str = "", source_canonical_message_id: int | None = None,
                          turn_id: int | None = None, source_generation: int | None = None,
-                         current=None):
+                         current=None, defer: bool = False):
+        """Upload and send; with defer=True, upload and return a function that queues it."""
         filename = safe_filename(filename)
         size = len(content)
         cap = min(MAX_FILE_BYTES, self.config.max_file_bytes)
@@ -278,30 +279,37 @@ class FileServices:
         )
         sha256 = hashlib.sha256(content).hexdigest()
 
-        def enqueue():
-            with self.transaction() as cursor:
-                self._account(cursor)
-                ref = self.runtime.outbox.enqueue_media(
-                    self.token,
-                    endpoint=endpoint,
-                    requester=requester,
-                    filename=filename,
-                    sha256=sha256,
-                    byte_size=size,
-                    mime=mime,
-                    uploaded=uploaded,
-                    logical_key=logical_key,
-                    source_scope_key=source_scope_key,
-                    expires_at=min(expires_at, uploaded.expires_at),
-                    source_native_message_id=source_native_message_id,
-                    source_canonical_message_id=source_canonical_message_id,
-                    turn_id=turn_id,
-                    source_generation=source_generation,
-                    transaction_cursor=cursor,
-                )
-                return ref.delivery_ids[0]
+        def enqueue(cursor):
+            self._account(cursor)
+            ref = self.runtime.outbox.enqueue_media(
+                self.token,
+                endpoint=endpoint,
+                requester=requester,
+                filename=filename,
+                sha256=sha256,
+                byte_size=size,
+                mime=mime,
+                uploaded=uploaded,
+                logical_key=logical_key,
+                source_scope_key=source_scope_key,
+                expires_at=min(expires_at, uploaded.expires_at),
+                source_native_message_id=source_native_message_id,
+                source_canonical_message_id=source_canonical_message_id,
+                turn_id=turn_id,
+                source_generation=source_generation,
+                transaction_cursor=cursor,
+            )
+            return ref.delivery_ids[0]
 
-        delivery_id = await self.calls(enqueue)
+        if defer:
+            # The caller queues it in its own transaction, e.g. right after the reply text.
+            return enqueue
+
+        def enqueue_now():
+            with self.transaction() as cursor:
+                return enqueue(cursor)
+
+        delivery_id = await self.calls(enqueue_now)
         outcome = await self.runtime.sender.send_delivery(delivery_id)
         if outcome.status == "failed":
             reason = "这个群没开主动发言，请群主打开" if outcome.reason == "proactive_disabled_no_reply_window" else outcome.reason
