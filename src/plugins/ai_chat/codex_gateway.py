@@ -28,7 +28,15 @@ MAX_JOB_TOOL_BODY = 1024 * 1024
 TOOL_HEARTBEAT_SECONDS = 25.0
 IDLE_SECONDS = 120
 FALLBACK_STATUSES = frozenset({401, 403, 404, 408, 409, 429, 500, 502, 503, 504, 529})
-MODEL_400_MARKERS = ('not found', 'does not exist', 'unsupported', 'not supported')
+MODEL_400_MARKERS = (
+    'not found',
+    'not_found',
+    'does not exist',
+    'unknown provider',
+    'unknown model',
+    'unsupported',
+    'not supported',
+)
 
 
 def _should_fallback_status(status: int, body: bytes) -> bool:
