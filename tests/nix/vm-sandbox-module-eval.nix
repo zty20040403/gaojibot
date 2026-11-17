@@ -47,7 +47,8 @@
       && !(ct.systemd.sockets ? gaoji-ops-relay-18640);
     opsRelaysEveryHostPort = builtins.all (port: ctOps.systemd.sockets ? "gaoji-ops-relay-${toString port}"
       && ctOps.systemd.services ? "gaoji-ops-relay-${toString port}") [18640 18641];
-    opsTailscaledRunsInNamespace = ctOps.systemd.services.gaoji-ops-tailscaled.serviceConfig.NetworkNamespacePath == "/run/netns/gaoji-ops";
+    opsTailscaledRunsInNamespace = ctOps.systemd.services.gaoji-ops-tailscaled.serviceConfig.NetworkNamespacePath == "/run/netns/gaoji-ops"
+      && ctOps.systemd.services.gaoji-ops-network.unitConfig.DefaultDependencies == false;
     containerBotUsesBrokerNotLibvirt = ctBot.environment.AI_SANDBOX_BACKEND == "container"
       && ctBot.environment.AI_SANDBOX_CONTAINER_BROKER == "/run/gaoji-ct/broker.sock"
       && builtins.elem "gaoji-ct-broker.socket" ctBot.requires

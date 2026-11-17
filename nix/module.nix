@@ -580,8 +580,12 @@ in {
     systemd.services."${opsName}-network" = lib.mkIf sandboxOps {
       description = "gaoji operations network namespace";
       wantedBy = ["multi-user.target"];
-      after = ["nftables.service"];
-      before = ["${opsName}-tailscaled.service"];
+      # Relay sockets in sockets.target (before basic.target) depend on this
+      # namespace; omit implicit After=basic.target to avoid an ordering cycle.
+      unitConfig.DefaultDependencies = false;
+      conflicts = ["shutdown.target"];
+      after = ["sysinit.target" "nftables.service"];
+      before = ["shutdown.target" "${opsName}-tailscaled.service"];
       path = [pkgs.iproute2 pkgs.nftables pkgs.procps];
       serviceConfig = {
         Type = "oneshot";
