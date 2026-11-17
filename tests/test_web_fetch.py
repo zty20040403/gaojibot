@@ -6,7 +6,7 @@ import unittest
 import httpx
 
 from src.plugins.ai_chat.web_fetch import FetchError, fetch_page, public_address
-from src.plugins.ai_chat.web_search import search_freshness, search_web
+from src.plugins.ai_chat.web_search import SearchResult, clean_source_url, render_search_sources, search_freshness, search_web
 
 
 ADDRESSES = {"shop.example": "93.184.216.34", "internal.example": "100.100.10.10"}
@@ -101,6 +101,39 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(search_freshness("目前显卡价格"))
         self.assertEqual(search_freshness("今天天气"), "d")
         self.assertEqual(search_freshness("最近新闻"), "w")
+
+    def test_clean_source_url_strips_tracking_parameters(self) -> None:
+        self.assertEqual(
+            clean_source_url("https://www.bilibili.com/video/BV1TEST?vd_source=abc&p=2&share_source=copy&t=42"),
+            "https://www.bilibili.com/video/BV1TEST?p=2&t=42",
+        )
+        self.assertEqual(
+            clean_source_url("https://b23.tv/TEST123?share_medium=android&buvid=xyz"),
+            "https://b23.tv/TEST123",
+        )
+        self.assertEqual(
+            clean_source_url("https://shop.example/item?id=9&utm_source=x&share_id=1&spm=2&fbclid=3"),
+            "https://shop.example/item?id=9",
+        )
+        self.assertEqual(clean_source_url("http://[::1"), "http://[::1")
+
+    def test_render_search_sources_only_lists_cited_and_renumbers_outside_code(self) -> None:
+        results = [
+            SearchResult("One", "https://example.test/1", "s1"),
+            SearchResult("Two", "https://example.test/2", "s2"),
+            SearchResult("Three", "https://example.test/3", "s3"),
+        ]
+        self.assertEqual(render_search_sources(results, "不确定。"), ("不确定。", ""))
+        answer = "先看[3]，再看[1]，忽略[0]和[9]。\n```python\narr = items[0] + items[2]\n```"
+        rendered_answer, sources = render_search_sources(results, answer)
+        self.assertEqual(
+            rendered_answer,
+            "先看[1]，再看[2]，忽略[0]和[9]。\n```python\narr = items[0] + items[2]\n```",
+        )
+        self.assertEqual(
+            sources,
+            "来源：\n1. Three\nhttps://example.test/3\n2. One\nhttps://example.test/1",
+        )
 
 
 if __name__ == "__main__":

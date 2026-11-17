@@ -8,7 +8,7 @@ import httpx
 
 from ..ai_tools import INSPECT_SOURCE_TOOL, USE_SKILL_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL
 from ..web_fetch import FetchError, fetch_page
-from ..web_search import SearchError, SearchResult, search_web
+from ..web_search import SearchError, SearchResult, clean_source_url, search_web
 from .registry import FunctionTool
 from .state import ToolContext, TurnState
 
@@ -126,23 +126,30 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
             ensure_ascii=False,
         )
 
-    known_urls = {result.url for result in turn.search_results}
-    turn.search_results.extend(
-        result for result in results if result.url not in known_urls
-    )
+    id_by_url = {result.url: index for index, result in enumerate(turn.search_results, start=1)}
+    payload_results: list[dict[str, object]] = []
+    for result in results:
+        cleaned_url = clean_source_url(result.url)
+        cleaned = SearchResult(result.title, cleaned_url, result.snippet)
+        source_id = id_by_url.get(cleaned_url)
+        if source_id is None:
+            turn.search_results.append(cleaned)
+            source_id = len(turn.search_results)
+            id_by_url[cleaned_url] = source_id
+        payload_results.append(
+            {
+                "id": source_id,
+                "title": cleaned.title,
+                "url": cleaned.url,
+                "snippet": cleaned.snippet,
+            }
+        )
     return json.dumps(
         {
             "ok": True,
             "query": query,
             "freshness": freshness or "all",
-            "results": [
-                {
-                    "title": result.title,
-                    "url": result.url,
-                    "snippet": result.snippet,
-                }
-                for result in results
-            ],
+            "results": payload_results,
         },
         ensure_ascii=False,
     )
@@ -161,16 +168,21 @@ async def web_fetch(turn: TurnState, arguments: dict[str, object]) -> str:
             {"ok": False, "url": url, "error": "网页读取失败：连接超时或被拒绝。"},
             ensure_ascii=False,
         )
-    # A page that was actually read is a better citation than any search hit.
-    turn.search_results[:] = [
-        SearchResult(page.title or page.url, page.url, ""),
-        *(result for result in turn.search_results if result.url != page.url),
-    ]
+    # Keep existing citation IDs stable across searches and page fetches.
+    cleaned_url = clean_source_url(page.url)
+    source_id = next(
+        (index for index, result in enumerate(turn.search_results, start=1) if result.url == cleaned_url),
+        None,
+    )
+    if source_id is None:
+        turn.search_results.append(SearchResult(page.title or cleaned_url, cleaned_url, ""))
+        source_id = len(turn.search_results)
     end = offset + PAGE_CHARS
     return json.dumps(
         {
             "ok": True,
-            "url": page.url,
+            "id": source_id,
+            "url": cleaned_url,
             "title": page.title,
             "total_chars": len(page.text),
             "next_offset": end if end < len(page.text) else None,

@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from contextlib import nullcontext
 import json
+import re
 from types import SimpleNamespace
 
 from src.bot_storage import DatabaseError
@@ -11,7 +12,7 @@ from . import ChatFailure
 from .turn_context import record_loop_event, speaker, turn_window
 from .private_questions import PrivateQuestionAudit
 from ..execution_control import assert_job_owned
-from ..agent_loop import AgentTrace, DeepSeekConfigError, ask_deepseek_with_tools, request_sink
+from ..agent_loop import AgentTrace, DeepSeekConfigError, ask_deepseek_with_tools, ready_stream_prefix, request_sink
 from ..ai_tools import WEB_SEARCH_TOOL_NAME, force_tool
 from ..conversation_keys import conversation_key
 from ..model_budget import ModelBudgetExceeded
@@ -26,6 +27,21 @@ from ..tools.background import task_context as background_task_context, program_
 from ..tools.state import ToolContext, TurnState
 from ..web_search import render_search_sources
 from ..workers.durable_jobs import JobDeferred
+
+
+def _citation_safe_stream(sink, turn):
+    """Keep citations private until their IDs and sources are known."""
+    class Stream:
+        @staticmethod
+        def ready_prefix(text):
+            if turn.search_results or re.search(r"\[\d+\]", text):
+                return "", text
+            return getattr(type(sink), "ready_prefix", ready_stream_prefix)(text)
+
+        async def __call__(self, text):
+            return await sink(text)
+
+    return Stream()
 
 
 class PlatformChatService:
@@ -204,7 +220,9 @@ class PlatformChatService:
                     trace=turn_trace, feedback_provider=feedback_provider,
                     tool_batch_sink=private_audit.batch,
                     event_sink=loop_event,
-                    final_text_sink=final_stream_sink, final_stream_state=final_stream_state,
+                    final_text_sink=(_citation_safe_stream(final_stream_sink, turn)
+                                     if final_stream_sink is not None else None),
+                    final_stream_state=final_stream_state,
                     approval_checker=lambda _policy, name, arguments: approval_from_user_text(user_text, name, arguments),
                 )
             except (ModelBudgetExceeded, JobDeferred, ChatFailure):
@@ -223,14 +241,15 @@ class PlatformChatService:
             if media_session is not None:
                 await media_session.current()
                 answer = media_session.finish(answer)
-            if answer.strip() == "[silence]":
-                return answer.strip()
+            stripped = answer.strip()
+            if stripped == "[silence]" or stripped.startswith("[silence:"):
+                return stripped
             visible = answer
             if final_stream_state is not None and final_stream_state.sent_prefix:
                 prefix = final_stream_state.sent_prefix.rstrip()
                 if visible.startswith(prefix):
                     visible = visible[len(prefix):].lstrip("\r\n")
-            sources = render_search_sources(turn.search_results)
+            visible, sources = render_search_sources(turn.search_results, visible)
             return f"{visible}\n\n{sources}" if sources else visible
 
         finally:
