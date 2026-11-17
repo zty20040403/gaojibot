@@ -12,7 +12,6 @@ import time
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.message_ir import MediaNode, MessageBody, TextNode, body_to_json
 from .binding import control_for_delivery, control_authorized
-from .budget_notices import is_bot_notice_candidate
 from .protected_payload import envelope_for_wire, validate_content
 from .protected_plans import ProtectedBinding, protected_rendered, load_protected_ref, binding_for
 from .identity_store import snapshot
@@ -198,9 +197,8 @@ class OfficialSendStore:
 
     def get(self, token, delivery_id):
         with self.deliveries.transaction() as cursor:
-            return cursor.execute('''SELECT d.*,b.day_start AS budget_notice_day FROM deliveries d
-                LEFT JOIN conversation_budget_days b ON b.notice_plan_id=d.plan_id
-                WHERE d.delivery_id=? AND d.account_key=?''',(delivery_id, token.account_key)).fetchone()
+            return cursor.execute('SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?',
+                (delivery_id, token.account_key)).fetchone()
 
     def latest_inbound(self, endpoint):
         with self.deliveries.transaction() as cursor:
@@ -242,10 +240,6 @@ class OfficialSendStore:
             canonical=row['source_canonical_message_id'],generation=plan['conversation_generation'],commands=command)
 
     def _program_authorized(self, cursor, token, row):
-        if is_bot_notice_candidate(row) and cursor.execute('SELECT 1 FROM conversation_budget_days WHERE notice_plan_id=?',(row['plan_id'],)).fetchone():
-            from .budget_notices import denial
-            reason = denial(cursor,token=token,delivery=row,now=int(self.clock()),admission=self.admission)
-            return reason is None,reason
         if ActorKey.parse(row['requester_actor_key']).identity_kind=='bot':
             from .vm_http import vm_delivery_denial
             reason = vm_delivery_denial(cursor,token=token,delivery=row,admission=self.admission)
@@ -339,10 +333,6 @@ class OfficialSendStore:
     def _finish(self, cursor, token, row, status, reason, now):
         cursor.execute('UPDATE deliveries SET status=?,wait_reason=?,last_error=?,lease_until=NULL,updated_at=? WHERE delivery_id=?',
             (status, reason or None, '' if row['payload_mode']=='ephemeral' else reason, now, row['delivery_id']))
-        notice_status = {'committed':'committed','failed':'failed','cancelled':'cancelled','ambiguous':'unknown'}.get(status)
-        if notice_status is not None and is_bot_notice_candidate(row):
-            cursor.execute('UPDATE conversation_budget_days SET notice_state=? WHERE notice_plan_id=?',
-                (notice_status,row['plan_id']))
         return SendOutcome(status, reason, row['delivery_id'])
 
     def fail(self, token, delivery_id, reason, *, reservation=None, error=None, retry=False, plain=False):

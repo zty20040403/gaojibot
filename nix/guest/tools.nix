@@ -47,8 +47,6 @@
     "sandbox_video.py"
     "sandbox_pdf.py"
     "sandbox_gaoji.py"
-    "sandbox_commands.py"
-    "sandbox_command_process.py"
     "sandbox_identity.py"
   ];
   share = pkgs.runCommand "gaoji-sandbox-tools" {} ''
