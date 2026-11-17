@@ -3,11 +3,12 @@ import asyncio
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock,patch
 
 from tests import test_vm_program_http as fixture
 from tests.qq_official_outbox_fixture import OutboxFixture
 from src.plugins.ai_chat.adapters.qq_official.live_conversations import ConversationTasks
+from src.plugins.ai_chat.adapters.qq_official.program_actions import ProgramDenied
 from src.plugins.ai_chat.conversation_window import ConversationStore
 from src.plugins.ai_chat.model_budget import active_model_budget
 from src.plugins.ai_chat.quota import UsageStore
@@ -151,16 +152,79 @@ class VMWakeHTTPTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
             async with asyncio.timeout(3):
                 while not any(scope.requests for identity,scope in self.lifecycle.api.scopes.items() if identity.operation=='wake'):
                     await asyncio.sleep(0.01)
+            # This case exercises the post-body generation fence.  Drain the
+            # monitor first so it cannot capture the intermediate blocked state;
+            # retain its task reference so authorize cannot start a new monitor.
+            monitor = self.lifecycle.api.monitor
+            self.assertIsNotNone(monitor)
+            monitor.cancel()
+            await asyncio.gather(monitor,return_exceptions=True)
             self.budget('0'); self.budget('off'); release.set()
             response = await asyncio.wait_for(posting,5)
             self.assertEqual(response.status_code,403,response.text)
             self.assertEqual(response.json()['error'],'conversation_daily_budget_replaced')
             self.assertEqual(self.query('SELECT * FROM qq_official_program_actions'),[])
+            self.assertEqual(self.query('SELECT * FROM qq_official_program_wakes'),[])
             self.assertEqual(self.prompts,[])
+            self.assertEqual(self.fake.received,[])
         finally:
             release.set()
             if not posting.done():posting.cancel()
             await asyncio.gather(posting,return_exceptions=True)
+
+    async def test_monitor_rejects_inflight_body_even_if_budget_is_restored(self):
+        entered,release = asyncio.Event(),asyncio.Event()
+        observed,finish_check = threading.Event(),threading.Event()
+        admission = self.lifecycle.api.wakes
+        require = admission.require_generation
+        def checked(current,generation):
+            try:
+                return require(current,generation)
+            except ProgramDenied as error:
+                if str(error)=='conversation_daily_budget_exceeded':
+                    observed.set()
+                    if not finish_check.wait(10):
+                        raise TimeoutError('test monitor release timed out')
+                raise
+        async def body():
+            yield b'{"text":"TEST_BODY",'
+            entered.set()
+            await release.wait()
+            yield b'"program":"TEST_PROGRAM","request_id":"TEST_MONITOR_BODY"}'
+        with patch.object(admission,'require_generation',side_effect=checked):
+            posting = asyncio.create_task(self.client.post(self.base+'/vm/wake',content=body()))
+            try:
+                await asyncio.wait_for(entered.wait(),3)
+                async with asyncio.timeout(3):
+                    while True:
+                        scopes = [scope for identity,scope in self.lifecycle.api.scopes.items()
+                                  if identity.operation=='wake' and scope.requests]
+                        if scopes:break
+                        await asyncio.sleep(0.01)
+                scope = scopes[0]
+                self.budget('0')
+                async with asyncio.timeout(5):
+                    while not observed.is_set():await asyncio.sleep(0.01)
+                # The real DB transaction has already returned the blocked
+                # error, but the monitor has not consumed it yet.
+                self.budget('off')
+                with self.assertRaisesRegex(ProgramDenied,'conversation_daily_budget_replaced'):
+                    await self.calls(require,scope.identity,scope.generation)
+                finish_check.set()
+                async with asyncio.timeout(5):
+                    while not scope.revoked:await asyncio.sleep(0.01)
+                release.set()
+                response = await asyncio.wait_for(posting,5)
+                self.assertEqual((response.status_code,response.json()['error']),
+                                 (403,'conversation_daily_budget_exceeded'))
+                self.assertEqual(self.query('SELECT * FROM qq_official_program_actions'),[])
+                self.assertEqual(self.query('SELECT * FROM qq_official_program_wakes'),[])
+                self.assertEqual(self.prompts,[])
+                self.assertEqual(self.fake.received,[])
+            finally:
+                finish_check.set(); release.set()
+                if not posting.done():posting.cancel()
+                await asyncio.gather(posting,return_exceptions=True)
 
     async def test_budget_interrupts_inflight_model_and_restore_does_not_replay_it(self):
         entered,cancelled = asyncio.Event(),asyncio.Event()
