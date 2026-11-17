@@ -5,7 +5,6 @@ import struct
 import unittest
 import zlib
 
-from src.plugins.ai_chat.adapters.qq_official.file_artifacts import detect_content
 from src.plugins.ai_chat.adapters.qq_official.image_formats import (
     ImageFormatError, artifact_filename, detect_image, file_type_for_mime,
 )
@@ -36,7 +35,6 @@ def gif(width=1, height=1, frames=1):
 class ImageTests(unittest.TestCase):
     def test_png_structure_size_and_existing_artifact_detection(self):
         self.assertEqual(detect_image(png(), '实际.PNG'), 'image/png')
-        self.assertEqual(detect_content(png(), 'actual.png', 1024), 'image/png')
         self.assertEqual(file_type_for_mime('image/png'), 1)
         self.assertEqual(file_type_for_mime('application/pdf'), 4)
 

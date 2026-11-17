@@ -378,8 +378,6 @@ class ForwardTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
             self.assertEqual(archive.namelist(), ['forward.txt'])
             self.assertLessEqual(len(archive.read('forward.txt')), 32768)
-        from src.plugins.ai_chat.adapters.qq_official.file_artifacts import detect_content
-        self.assertEqual(detect_content(result.content, result.filename, 65536), 'application/zip')
         self.assertEqual(len(result.plan.parts), 1)
         self.assertEqual(result.state, 'prepared_content')
 

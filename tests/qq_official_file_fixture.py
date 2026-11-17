@@ -1,25 +1,17 @@
-"""Fixture helpers only: real leases/storage and the declared schema head.
-
-No test methods are inherited from execution/artifact test cases. No ad-hoc DDL,
-external imports, deployment credentials, or platform I/O are used here.
-"""
-from pathlib import Path
+"""Execution fixture helper over real leases/storage and the declared schema head."""
 import hashlib
-import tempfile
 
 from tests.qq_official_outbox_fixture import OutboxFixture
 from src.plugins.ai_chat.adapters.qq_official.ingest import turn_dispatch_key, turn_dispatch_lane
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.adapters.qq_official.turn_source import begin_execution, capture_result, claim_execution
-from src.plugins.ai_chat.adapters.qq_official.file_artifacts import ArtifactStore, foreground_source
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.plugins.ai_chat.turn_journal import TurnJournal
-from src.plugins.ai_chat.blob_store import ProjectBlobStore
 
-PDF = b'%PDF-1.4\n% TEST controlled fixture\n%%EOF\n'
-KEY = hashlib.sha256(b'TEST_TOOL_CALL').hexdigest()
+PDF = b"%PDF-1.4\n% TEST controlled fixture\n%%EOF\n"
+KEY = hashlib.sha256(b"TEST_TOOL_CALL").hexdigest()
 
 
 class ExecutionFixture(OutboxFixture):
@@ -77,28 +69,3 @@ class ExecutionFixture(OutboxFixture):
     def reclaim_job(self):
         self.now += 301
         self.job = self.jobs.claim_due("TEST_NEW_WORKER", kinds=(self.kind,), now=self.now)[0]
-
-
-class FileFixture(ExecutionFixture):
-    def setUp(self):
-        super().setUp()
-        for table in ('qq_official_file_artifacts', 'qq_official_file_deliveries',
-                      'qq_official_file_publications', 'qq_official_generation_capacity'):
-            row = self.query('SELECT to_regclass(?) AS name', (self.database.schema + '.' + table,))[0]
-            if row['name'] is None:
-                raise RuntimeError('official_file_schema_not_migrated')
-        temp = tempfile.TemporaryDirectory(prefix='qq-file-test-')
-        self.addCleanup(temp.cleanup)
-        self.blobs = ProjectBlobStore(Path(temp.name) / 'private-artifacts')
-        self.files = ArtifactStore(transaction=self.tx, jobs=self.jobs, blobs=self.blobs, clock=lambda:self.now)
-        self.handle = self.claim().handle
-        self.begin(self.handle)
-        self.source = self.issue()
-
-    def issue(self):
-        with self.tx() as cursor:
-            return foreground_source(cursor, token=self.token, handle=self.handle,
-                job=self.job, admission=self.admission, now=self.now, pending_deadline_at=self.now + 86400)
-
-    def put(self, **kwargs):
-        return self.files.register(self.source, content=PDF, filename='report.pdf', logical_request_key=KEY, **kwargs)

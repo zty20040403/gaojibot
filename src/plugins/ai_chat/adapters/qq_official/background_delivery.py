@@ -13,7 +13,6 @@ from ...tool_policy import ToolCatalog, policy_for_tool
 from ...tools import neutral_registry_for
 from ...tools.background import DEFINITIONS
 from ...tools.state import ToolContext, TurnState
-from .file_artifacts import SourceBinding, _issue
 from .renderer import render_plan
 
 
@@ -52,13 +51,18 @@ async def _present(service, row, *, question=None):
         if not answer:
             context = ToolContext(SimpleNamespace(context=app), inbound=inbound,
                 platform=BackgroundPlatform(inbound.endpoint), capabilities=frozenset({'self', 'context', 'memory'}))
+            def current():
+                with runtime.store.transaction() as cursor:
+                    ResultSource(service, row).current_source(cursor, None, int(service.clock()))
+
             if question is None and row['state'] != 'cancelled' and runtime.file_service is not None:
-                job = await service.calls(runtime.jobs.get, row['job_id'])
-                deadline = int(service.clock()) + min(runtime.outbox.max_wait_seconds, 86400)
-                source = _issue(SourceBinding(service.token, job, runtime.store.admitted, None, None, deadline,
-                    inbound.endpoint, inbound.actor, row['source_execution_id'], f"background:{row['job_id']}",
-                    deadline, row['native_message_id'], extension=ResultSource(service, row)))
-                files = await runtime.file_service.generation.bound_session(source)
+                generation = runtime.file_service.generation
+                if hasattr(generation, 'background'):
+                    files = await generation.background(
+                        inbound, row, current=lambda: service.calls(current)
+                    )
+                else:
+                    files = await generation.bound_session(inbound)
                 if files is not None:
                     context = files.context(context)
             turn = TurnState(context, model_profile=profile)
@@ -82,9 +86,6 @@ async def _present(service, row, *, question=None):
                 '这是用户先前要求的后台任务结果，请用你的语气向用户交付。文件在当前会话工作区，用 send_file_from_sandbox 传报告中的路径即可发送，PNG、JPG、GIF 在群里直接显示成图片；报告不完整时用 sandbox_read_file 读全文。'
                 '任务取消时不要继续执行。失败须说明具体原因，不能声称已经成功。')
             from .billing import scoped
-            def current():
-                with runtime.store.transaction() as cursor:
-                    ResultSource(service,row).current_source(cursor,None,int(service.clock()))
             with scoped(app,inbound.endpoint,'background_agent',inbound.actor,background_job_id=row['job_id'],
                     current=lambda:service.calls(current)):
                 answer = await ask_deepseek_with_tools(report, [], tools, execute, profile=profile, trace=trace,

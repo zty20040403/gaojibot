@@ -11,7 +11,6 @@ import stat
 from src.plugins.ai_chat.message_ir import CardNode, ForwardNode, MediaNode, TextNode
 from src.plugins.ai_chat.model_budget import ModelCallBudget, active_model_budget, model_budget_scope
 from .content_reader import PinnedContentReader, read_text_document
-from .file_artifacts import foreground_source, current_source
 from .forward_render import forward_text, render_forward
 from .image_formats import detect_image, IMAGE_MIMES, ImageFormatError, MAX_IMAGE_BYTES
 from .local_asr import LocalASR, LocalASRConfig
@@ -139,12 +138,8 @@ class MediaSession:
         if files is None:
             return False
         with files.transaction() as cursor:
-            row = self.platform.execution.current(cursor,int(files.clock()))
-            probe = {'endpoint_key':self.inbound.endpoint.key,'requester_actor_key':self.inbound.actor.key,
-                'mime':mime,'byte_size':1,'draft':False,'endpoint_generation':row['endpoint_generation'],
-                'route_epoch':row['route_epoch']}
-            return files._route(cursor,probe,'native') is True or (
-                mime=='application/zip' and files._route(cursor,probe,'link') is True)
+            self.platform.execution.current(cursor, int(files.clock()))
+            return files._route(cursor, self.inbound.endpoint, self.inbound.actor, 1) is True
 
     async def source(self, arguments, kind):
         row = await self.current()
@@ -246,11 +241,10 @@ class MediaSession:
         from ...voice_reply import synthesize
         await self.current()
         content = await synthesize(arguments['text'])
-        record = await self.register_bytes(content, 'reply.silk', 'voice-reply')
         self.voice_sent = True
-        outcome = await self.service.runtime.file_service.dispatcher.send_artifact(record.artifact_id)
+        outcome = await self._send_bytes(content, 'reply.silk', 'voice-reply')
         return {'state': outcome.status, 'message_accepted': outcome.status == 'committed',
-                'artifact_id': record.artifact_id}
+                'artifact_id': f'delivery:{outcome.delivery_id}'}
 
     async def document(self, arguments):
         source = await self.source(arguments, {'file','card','link'})
@@ -286,30 +280,45 @@ class MediaSession:
         files = self.service.runtime.file_service
         result = render_forward(source.node, self.inbound.endpoint, file_available=files is not None and self.file_available)
         if result.content is not None:
-            record = await self.register_bytes(result.content, result.filename,
+            outcome = await self._send_bytes(result.content, result.filename,
                 'forward:' + str(source.ref.canonical_id) + ':' + str(source.ref.segment_index))
-            return {'state':record.delivery_state,'artifact_id':record.artifact_id,'message':'转发文件已登记，尚未确认平台接收。'}
+            return {'state': outcome.status, 'artifact_id': f'delivery:{outcome.delivery_id}',
+                    'message': '转发文件已发送。'}
         self.pending_text.append(result.plan.parts[0].canonical_text)
         return {'state':'prepared_content','message':'有限转发摘要将在本轮最终回复发送。'}
 
-    def _file_source(self):
+    def _turn_file_meta(self):
         self._current()
         runtime, platform = self.service.runtime, self.platform
-        files = runtime.file_service
-        if files is None:
+        if runtime.file_service is None:
             raise MediaDenied('file_runtime_unavailable')
         with runtime.deliveries.transaction() as cursor:
             now = int(runtime.store.clock())
             row = platform.execution.current(cursor, now)
-            return foreground_source(cursor, token=self.service.token, handle=platform.execution.handle,
-                job=platform.execution.job, admission=platform.execution.admission, now=now,
-                pending_deadline_at=row['deadline_at'])
+            if row['state'] != 'executing' or row['execution_kind'] != 'chat' or now >= row['deadline_at']:
+                raise MediaDenied('artifact_source_unavailable')
+            from .conversation_control import state
+            return (platform.execution.handle.execution_id, row['deadline_at'],
+                    row['journal_turn_id'], state(cursor, self.inbound.endpoint)['stop_generation'])
 
-    async def register_bytes(self, content, filename, logical):
-        source = await self.service.runtime._calls(self._file_source)
-        key = hashlib.sha256(('official-media:' + source.source_key + ':' + logical).encode()).hexdigest()
-        return await self.service.runtime._calls(self.service.runtime.file_service.artifacts.register,
-            source, content=content, filename=filename, logical_request_key=key)
+    async def _send_bytes(self, content, filename, logical):
+        execution_id, deadline_at, turn_id, generation = await self.service.runtime._calls(self._turn_file_meta)
+        handle = self.platform.execution.handle
+        key = 'official-media:turn:' + execution_id + ':' + hashlib.sha256(logical.encode()).hexdigest()
+        return await self.service.runtime.file_service.send_bytes(
+            endpoint=self.inbound.endpoint,
+            requester=self.inbound.actor,
+            content=content,
+            filename=filename,
+            logical_key=key,
+            source_scope_key=handle.scope_key,
+            expires_at=deadline_at,
+            source_native_message_id=self.inbound.native_message_id,
+            source_canonical_message_id=handle.canonical_message_id,
+            turn_id=turn_id,
+            source_generation=generation,
+            current=self.current,
+        )
 
     async def sticker(self, arguments, observed_handles):
         handle = arguments.get('media_handle')
@@ -317,7 +326,7 @@ class MediaSession:
                 or handle not in observed_handles):
             raise MediaDenied('sticker_reference_unavailable')
         await self.current()
-        source = await self.service.runtime._calls(self._file_source)
+        await self.service.runtime._calls(self._turn_file_meta)
         def read():
             library = self.service.app.media_library
             connection = library.database.store_connection()
@@ -333,11 +342,8 @@ class MediaSession:
                 raise MediaDenied('sticker_content_unavailable')
             files = self.service.runtime.file_service
             with files.transaction() as cursor:
-                actual = current_source(cursor,source,int(files.clock()))
-                probe = {**actual,'account_key':source.endpoint.account.key,'endpoint_key':source.endpoint.key,
-                    'requester_actor_key':source.actor.key,'mime':row['mime_type'],
-                    'byte_size':row['byte_size'],'draft':False}
-                if files._route(cursor,probe,'native') is not True:
+                files._account(cursor)
+                if files._route(cursor, self.inbound.endpoint, self.inbound.actor, row['byte_size']) is not True:
                     raise MediaDenied('native_image_route_unavailable')
             record = library.get_sticker(int(handle[6:]))
             if record is None or record.handle != handle or record.mime_type != row['mime_type']:
@@ -354,11 +360,11 @@ class MediaSession:
             return content,filename,record
         content,filename,sticker = await self.service.runtime._calls(read)
         await self.current()
-        record = await self.register_bytes(content,filename,'sticker:'+handle)
-        # The model must know what it sent, or it will invent a description later.
-        return {'state':record.delivery_state,'artifact_id':record.artifact_id,
+        outcome = await self._send_bytes(content, filename, 'sticker:' + handle)
+        return {'state': 'message_accepted' if outcome.status == 'committed' else outcome.status,
+                'artifact_id': f'delivery:{outcome.delivery_id}',
                 'media_handle':handle,'summary':sticker.summary,'emotion':list(sticker.emotions),
-                'message':'贴纸已进入受控图片投递，尚未确认平台接收。被问起时按 summary 描述这张图。'}
+                'message':'贴纸已发送。被问起时按 summary 描述这张图。'}
 
     def finish(self, answer):
         # These are bounded original texts; final M3 rendering escapes all native
