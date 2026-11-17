@@ -28,6 +28,19 @@
   vm = evaluate vmSandbox;
   vmNftables = evaluate {imports = [vmSandbox]; networking.nftables.enable = true;};
   noSandbox = evaluate {};
+  owner = "qqo:conversation:" + lib.fixedWidthString 64 "0" "1";
+  ops = evaluate {
+    imports = [vmSandbox];
+    networking.nftables.enable = true;
+    services.gaoji.sandbox.operations = {
+      enable = true;
+      owners = [owner];
+      loginServer = "https://TEST.invalid";
+      domain = "TEST.invalid";
+      authKeyFile = "/run/secrets/TEST-authkey";
+    };
+  };
+  opsBot = ops.systemd.services.gaoji;
   unit = config: config.systemd.services.gaoji-vm;
   hook = value: lib.isList value && lib.hasInfix "gaoji-vm-network" (lib.last value)
     && lib.hasSuffix "--if-running" (lib.last value);
@@ -43,6 +56,14 @@
     # Runs last in the same job, after nftables has loaded (or flushed) the ruleset.
     nftablesReloadReinstalls = hook nftables.ExecReload && hook nftables.ExecStartPost;
     relayPortsDefault = vm.services.gaoji.sandbox.vmHostPorts == [18640 18641];
+    opsBotUsesSecondDaemon = opsBot.environment.AI_SANDBOX_OPERATIONS_OWNERS == owner
+      && opsBot.environment.AI_SANDBOX_OPERATIONS_SOCKET == ops.systemd.services.gaoji-ops-vm.environment.XDG_RUNTIME_DIR + "/libvirt/virtqemud-sock"
+      && builtins.elem "gaoji-ops-vm.service" opsBot.requires;
+    opsDaemonRunsInNamespace = ops.systemd.services.gaoji-ops-vm.serviceConfig.NetworkNamespacePath == "/run/netns/gaoji-ops"
+      && ops.systemd.services.gaoji-ops-tailscaled.serviceConfig.NetworkNamespacePath == "/run/netns/gaoji-ops";
+    opsRelaysEveryHostPort = builtins.all (port: ops.systemd.sockets ? "gaoji-ops-relay-${toString port}"
+      && ops.systemd.services ? "gaoji-ops-relay-${toString port}") [18640 18641];
+    opsOffByDefault = !(vm.systemd.services ? gaoji-ops-vm) && !(vm.systemd.sockets ? gaoji-ops-relay-18640);
     noSandboxHasNoVmUnit = !(noSandbox.systemd.services ? gaoji-vm);
   };
 in {

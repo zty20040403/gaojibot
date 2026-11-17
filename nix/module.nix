@@ -11,6 +11,23 @@
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
   sandboxVm = cfg.runBot && cfg.sandbox.enable;
   vmServiceName = "${serviceName}-vm";
+  # The operations network: some conversations' VMs run under a second
+  # libvirt daemon inside a network namespace with a Tailscale node of its
+  # own, so `ssh <host>` in them reaches the fleet as gaoji (Tailscale SSH,
+  # no key in the VM). Other VMs keep the filtered public-only egress.
+  ops = cfg.sandbox.operations;
+  sandboxOps = sandboxVm && ops.enable;
+  opsName = "${serviceName}-ops";
+  opsNetns = opsName;
+  opsUplink = "${serviceName}-uplink";
+  opsHost = "${ops.uplink}.1";
+  opsPeer = "${ops.uplink}.2";
+  opsRuntime = "${statePath}/vm-ops-runtime";
+  opsSocket = "/run/${opsName}-tailscale/tailscaled.sock";
+  opsTailscale = "${pkgs.tailscale}/bin/tailscale --socket=${opsSocket}";
+  opsResolver = pkgs.writeText "${opsName}-resolv.conf" (lib.concatMapStrings (server: "nameserver ${server}\n") ops.dns);
+  # The VMs' DNS (slirp's 10.0.2.3) goes to the node's MagicDNS, which knows the fleet's names.
+  opsVmResolver = pkgs.writeText "${opsName}-vm-resolv.conf" "nameserver 100.100.100.100\n";
   vmNetworkSetup = pkgs.writeShellScript "gaoji-vm-network" ''
     exec ${pkgs.python3}/bin/python ${../src/sandbox_runtime/vm_network.py} \
       --nft ${pkgs.nftables}/bin/nft \
@@ -324,6 +341,43 @@ in {
       description = "Persistent root for per-task VM disks and metadata.";
     };
 
+    sandbox.operations = {
+      enable = lib.mkEnableOption "an operations network for some conversations' VMs";
+      owners = lib.mkOption {
+        type = lib.types.listOf (lib.types.strMatching "qqo:conversation:[0-9a-f]{64}");
+        default = [];
+        description = "VM owners (qqo:conversation:<sha256 of the endpoint key>) whose VMs run on the operations network.";
+      };
+      loginServer = lib.mkOption {
+        type = lib.types.str;
+        description = "The tailnet's control server.";
+      };
+      domain = lib.mkOption {
+        type = lib.types.str;
+        description = "The tailnet's DNS domain; `ssh h610` means h610.<domain>.";
+      };
+      hostname = lib.mkOption {
+        type = lib.types.str;
+        default = "gaojiops";
+        description = "The operations node's name in the tailnet.";
+      };
+      authKeyFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Pre-auth key for the node's first login, outside the Nix store; later starts reuse its state.";
+      };
+      uplink = lib.mkOption {
+        type = lib.types.strMatching "[0-9]+\\.[0-9]+\\.[0-9]+";
+        default = "10.237.0";
+        description = "The /30 between the host (.1) and the namespace (.2), without its last octet.";
+      };
+      dns = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = ["1.1.1.1" "223.5.5.5"];
+        description = "Public resolvers the node uses for names outside the tailnet.";
+      };
+    };
+
     sandbox.vmHostPorts = lib.mkOption {
       type = lib.types.nonEmptyListOf lib.types.port;
       default = [18640 18641];
@@ -345,7 +399,7 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf cfg.enable (lib.mkMerge [{
     assertions = [
       {
         assertion = !cfg.runBot || cfg.qqOfficial.enable;
@@ -417,10 +471,12 @@ in {
         ["network-online.target"];
       # Without the filtered daemon the bot must not run: a stray session
       # daemon would otherwise serve virsh with unfiltered qemu.
-      requires = lib.optionals sandboxVm ["${vmServiceName}.service"];
+      requires = lib.optionals sandboxVm ["${vmServiceName}.service"]
+        ++ lib.optionals sandboxOps ["${opsName}-vm.service"];
       after =
         ["network-online.target"]
-        ++ lib.optionals sandboxVm ["${vmServiceName}.service"];
+        ++ lib.optionals sandboxVm ["${vmServiceName}.service"]
+        ++ lib.optionals sandboxOps ["${opsName}-vm.service"];
       path =
         (cfg.runtimePackages ++ [pkgs.ffmpeg-headless])
         ++ lib.optionals cfg.sandbox.enable [pkgs.libvirt pkgs.qemu pkgs.cloud-utils]
@@ -444,6 +500,11 @@ in {
           XDG_RUNTIME_DIR = "${statePath}/vm-runtime";
           AI_SANDBOX_VM_IMAGE = toString cfg.sandbox.vmImage;
           AI_SANDBOX_VM_ROOT = cfg.sandbox.vmRoot;
+        }
+        // lib.optionalAttrs sandboxOps {
+          AI_SANDBOX_OPERATIONS_OWNERS = lib.concatStringsSep "," ops.owners;
+          AI_SANDBOX_OPERATIONS_SOCKET = "${opsRuntime}/libvirt/virtqemud-sock";
+          AI_SANDBOX_OPERATIONS_DOMAIN = ops.domain;
         }
         // lib.optionalAttrs (cfg.admin.secretFile != null) {
           AI_ADMIN_SECRET_FILE = "/run/credentials/${serviceName}.service/admin-authorization-key";
@@ -556,6 +617,160 @@ in {
       };
     };
 
+    # The operations namespace, its uplink, and what it may reach: the
+    # internet as itself (NAT on the host), the fleet by its own tailnet node.
+    systemd.services."${opsName}-network" = lib.mkIf sandboxOps {
+      description = "gaoji operations network namespace";
+      wantedBy = ["multi-user.target"];
+      after = ["nftables.service"];
+      before = ["${opsName}-tailscaled.service" "${opsName}-vm.service"];
+      path = [pkgs.iproute2 pkgs.nftables pkgs.procps];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        if [ ! -e /run/netns/${opsNetns} ]; then
+          ip netns add ${opsNetns}
+        fi
+        if ! ip link show dev ${opsUplink} >/dev/null 2>&1; then
+          ip link add ${opsUplink} type veth peer name uplink netns ${opsNetns}
+        fi
+        ip address replace ${opsHost}/30 dev ${opsUplink}
+        ip link set dev ${opsUplink} up
+        ip -n ${opsNetns} link set lo up
+        ip -n ${opsNetns} address replace ${opsPeer}/30 dev uplink
+        ip -n ${opsNetns} link set uplink up
+        ip -n ${opsNetns} route replace default via ${opsHost}
+        # Nothing in the namespace takes a connection from the uplink.
+        ip netns exec ${opsNetns} nft -f - <<EOF
+        table inet ${opsNetns}
+        delete table inet ${opsNetns}
+        table inet ${opsNetns} {
+          chain input {
+            type filter hook input priority filter; policy accept;
+            iifname "uplink" ct state { established, related } accept
+            iifname "uplink" drop
+          }
+          chain output {
+            type filter hook output priority mangle; policy accept;
+            oifname "tailscale0" tcp flags syn tcp option maxseg size set rt mtu
+          }
+        }
+        EOF
+      '';
+      preStop = ''
+        ip link del ${opsUplink} 2>/dev/null || true
+        ip netns del ${opsNetns} 2>/dev/null || true
+      '';
+    };
+
+    # The namespace reaches the internet and nothing private on the host's side.
+    networking.firewall.extraForwardRules = lib.mkIf sandboxOps ''
+      iifname "${opsUplink}" accept
+    '';
+    networking.nftables.tables.${opsName} = lib.mkIf sandboxOps {
+      family = "inet";
+      content = ''
+        set non_public_v4 {
+          type ipv4_addr
+          flags interval
+          elements = {
+            0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8,
+            169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24,
+            192.0.2.0/24, 192.168.0.0/16, 198.18.0.0/15,
+            198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4
+          }
+        }
+        chain input {
+          type filter hook input priority -10; policy accept;
+          iifname "${opsUplink}" ct state { established, related } accept
+          iifname "${opsUplink}" counter reject with icmpx type admin-prohibited
+        }
+        chain forward {
+          type filter hook forward priority -10; policy accept;
+          iifname "${opsUplink}" ct state { established, related } accept
+          iifname "${opsUplink}" meta nfproto ipv6 counter drop
+          iifname "${opsUplink}" ip saddr != ${opsPeer} counter drop
+          iifname "${opsUplink}" ip daddr @non_public_v4 counter reject with icmpx type admin-prohibited
+          oifname "${opsUplink}" ct state != { established, related } counter drop
+        }
+        chain postrouting {
+          type nat hook postrouting priority srcnat; policy accept;
+          ip saddr ${opsPeer} oifname != "${opsUplink}" masquerade
+        }
+      '';
+    };
+
+    # The fleet's side: a tailnet node of its own in the namespace, no SSH
+    # server, the tailnet's DNS answered at 100.100.100.100.
+    systemd.services."${opsName}-tailscaled" = lib.mkIf sandboxOps {
+      description = "gaoji operations network Tailscale client";
+      wantedBy = ["multi-user.target"];
+      requires = ["${opsName}-network.service"];
+      after = ["${opsName}-network.service" "network-online.target"];
+      wants = ["network-online.target"];
+      path = [pkgs.procps pkgs.getent pkgs.kmod];
+      serviceConfig =
+        {
+          Type = "notify";
+          ExecStart = "${pkgs.tailscale}/bin/tailscaled --state=/var/lib/${opsName}-tailscale/tailscaled.state --socket=${opsSocket} --tun=tailscale0 --port=41642";
+          NetworkNamespacePath = "/run/netns/${opsNetns}";
+          StateDirectory = "${opsName}-tailscale";
+          StateDirectoryMode = "0700";
+          RuntimeDirectory = "${opsName}-tailscale";
+          RuntimeDirectoryMode = "0700";
+          BindReadOnlyPaths = ["${opsResolver}:/etc/resolv.conf"];
+          Restart = "on-failure";
+          RestartSec = 5;
+        }
+        // lib.optionalAttrs (ops.authKeyFile != null) {
+          LoadCredential = ["auth-key:${ops.authKeyFile}"];
+        };
+      postStart = ''
+        ${opsTailscale} up --login-server=${lib.escapeShellArg ops.loginServer} \
+          ${lib.optionalString (ops.authKeyFile != null) ''--auth-key="file:$CREDENTIALS_DIRECTORY/auth-key"''} \
+          --hostname=${lib.escapeShellArg ops.hostname} --accept-routes=true --accept-dns=false --ssh=false --timeout=30s
+      '';
+    };
+
+    # The second libvirt daemon: its qemu (QEMU user networking) opens sockets
+    # in the namespace, so its VMs see the tailnet. The bot picks it per VM.
+    systemd.services."${opsName}-vm" = lib.mkIf sandboxOps {
+      description = "gaoji KVM workspaces on the operations network";
+      wantedBy = ["multi-user.target"];
+      requires = ["${opsName}-network.service"];
+      after = ["${opsName}-network.service" "${opsName}-tailscaled.service"];
+      unitConfig.RequiresMountsFor = [cfg.sandbox.vmRoot];
+      path = [pkgs.libvirt pkgs.qemu];
+      environment = {
+        HOME = statePath;
+        XDG_RUNTIME_DIR = opsRuntime;
+      };
+      serviceConfig = {
+        Type = "notify";
+        User = cfg.user;
+        Group = cfg.group;
+        SupplementaryGroups = ["kvm"];
+        StateDirectory = cfg.stateDirectory;
+        ExecStart = "${pkgs.libvirt}/sbin/virtqemud";
+        NetworkNamespacePath = "/run/netns/${opsNetns}";
+        BindReadOnlyPaths = ["${opsVmResolver}:/etc/resolv.conf"];
+        Restart = "on-failure";
+        RestartSec = 5;
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectControlGroups = true;
+        ProtectHome = "read-only";
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectSystem = "strict";
+        ReadWritePaths = [cfg.sandbox.vmRoot];
+        RestrictSUIDSGID = true;
+      };
+    };
+
     # nftables.service flushes the whole ruleset on start and reload; put the
     # VM table back in the same job. On failure the hook stops the VM unit.
     systemd.services.nftables.serviceConfig = lib.mkIf (sandboxVm && config.networking.nftables.enable) {
@@ -568,6 +783,36 @@ in {
         "d ${statePath} 0700 ${cfg.user} ${cfg.group} -"
         "d ${statePath}/vm-runtime 0700 ${cfg.user} ${cfg.group} -"
         "d ${cfg.sandbox.vmRoot} 0700 ${cfg.user} ${cfg.group} -"
+      ]
+      ++ lib.optionals sandboxOps [
+        "d ${opsRuntime} 0700 ${cfg.user} ${cfg.group} -"
       ];
-  };
+  }
+  (lib.mkIf sandboxOps {
+      # The VMs' relay ports (10.0.2.2 → 127.0.0.1) are the host's: listen on
+      # the namespace's loopback and forward to the host's.
+      systemd.sockets = (lib.listToAttrs (map (port:
+        lib.nameValuePair "${opsName}-relay-${toString port}" {
+          description = "gaoji operations network relay port ${toString port}";
+          wantedBy = ["sockets.target"];
+          requires = ["${opsName}-network.service"];
+          after = ["${opsName}-network.service"];
+          socketConfig = {
+            ListenStream = "127.0.0.1:${toString port}";
+            NetworkNamespacePath = "/run/netns/${opsNetns}";
+          };
+        })
+      cfg.sandbox.vmHostPorts));
+      systemd.services = (lib.listToAttrs (map (port:
+        lib.nameValuePair "${opsName}-relay-${toString port}" {
+          description = "gaoji operations network relay port ${toString port}";
+          requires = ["${opsName}-relay-${toString port}.socket"];
+          serviceConfig = {
+            ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString port}";
+            DynamicUser = true;
+            PrivateTmp = true;
+          };
+        })
+      cfg.sandbox.vmHostPorts));
+  })]);
 }
