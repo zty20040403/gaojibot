@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from src.plugins.ai_chat.admin import AdminServices
 from src.plugins.ai_chat.admin_api import conversations
 from tests.admin_session_fixture import ApprovedClient,register_admin
-from tests import test_qq_official_ingest as ingress
+from tests import qq_official_inbox_fixture as ingress
 
 
 class AdminConversationTests(unittest.IsolatedAsyncioTestCase):

@@ -6,9 +6,8 @@ from types import SimpleNamespace
 import unittest
 
 from src.bot_storage import DatabaseCalls
-from src.plugins.ai_chat.adapters.qq_official import turn_source
 from src.plugins.ai_chat.adapters.qq_official.background_agents import OfficialBackgroundAgents
-from src.plugins.ai_chat.adapters.qq_official.turn_platform import ExecutionBinding
+from src.plugins.ai_chat.adapters.qq_official.turn_platform import ExecutionBinding, ExecutionFenceLost
 from src.plugins.ai_chat.application.platform_chat import PlatformChatService
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
@@ -45,7 +44,7 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
             endpoint_generation=1, route_epoch=1)
         self.inbound = self.service.restore(source)
         self.platform = SimpleNamespace(account=f.account,
-            execution=ExecutionBinding(turn_source, f.token, handle, f.job, f.admission))
+            execution=ExecutionBinding(f.token, handle, f.admission))
         self.turn = TurnState(ToolContext(SimpleNamespace(context=app), inbound=self.inbound,
             platform=self.platform), model_profile=self.profile)
         self.prompts = []
@@ -145,7 +144,7 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.service.store.update(row['job_id'], task='x' * 10000, report='y' * 10000, title='z' * 10000)
         self.assertLess(len(await task_context(self.turn)), 2500)
         self.f.admitted = False
-        with self.assertRaises(turn_source.ExecutionFenceLost):
+        with self.assertRaises(ExecutionFenceLost):
             await task_context(self.turn)
 
     async def test_disabled_background_service_does_not_add_context(self):

@@ -10,9 +10,8 @@ from unittest.mock import patch
 
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingReducer
-from src.plugins.ai_chat.adapters.qq_official.inbox import IngressError, OfficialInboxStore
+from src.plugins.ai_chat.adapters.qq_official.inbox import IngressError, OfficialInboxStore, record_pending_inbox
 from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease, assert_epoch
-from src.plugins.ai_chat.adapters.qq_official.ingest import process_inbox
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
@@ -359,7 +358,7 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertEqual(conflict.disposition, 'inbox')
         self.assertEqual(self.count('durable_jobs'), 0)
 
-    def test_lifecycle_removal_atomically_revokes_window_owner_link_and_other_candidate(self):
+    def test_lifecycle_removal_atomically_revokes_owner_link_and_other_candidate(self):
         other_owner = 'SECOND_OWNER'
         self.store.apply_configuration(self.token, (self.owner, other_owner))
         self.submit(self.issue())
@@ -368,19 +367,7 @@ class OfficialInboxTests(unittest.TestCase):
         member = ActorKey(self.account, 'group_member', self.group.native_conversation_id, 'TEST_MEMBER')
         with self.tx() as cursor:
             self.assertIsNotNone(self.authority.owner_for_actor(cursor, self.group, member))
-            cursor.execute('''INSERT INTO qq_official_reply_windows
-                (window_id,account_key,endpoint_key,endpoint_generation,route_epoch,credential_kind,credential_value,
-                 issued_at,received_at,expires_at,max_replies,state,created_at,updated_at)
-                VALUES ('TEST_WINDOW',?,?,?,?, 'msg_id','TEST_WINDOW_MESSAGE',?,?,?,5,'active',?,?)''',
-                (self.account.key, self.group.key, endpoint['generation'], endpoint['route_epoch'],
-                 self.now, self.now, self.now + 300, self.now, self.now))
         jobs_before = self.count('durable_jobs')
-        private_windows = self.query('''SELECT * FROM qq_official_reply_windows
-            WHERE endpoint_key IN (?,?) ORDER BY window_id''',
-            (EndpointKey(self.account, 'private', self.owner).key,
-             EndpointKey(self.account, 'private', other_owner).key))
-        self.assertTrue(private_windows)
-        self.assertTrue(all(row['state'] == 'active' for row in private_windows))
         removed = self.accept({'op': 0, 's': self.seq + 1, 't': 'GROUP_DEL_ROBOT', 'id': 'DELETE_EVENT',
                                'd': {'group_openid': self.group.native_conversation_id}})
         self.assertEqual(removed.disposition, 'control')
@@ -388,13 +375,6 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertEqual((endpoint_after['membership_state'], endpoint_after['binding_state']), ('absent', 'revoked'))
         self.assertEqual(endpoint_after['generation'], endpoint['generation'] + 1)
         self.assertEqual(endpoint_after['route_epoch'], endpoint['route_epoch'] + 1)
-        group_windows = self.query('SELECT state FROM qq_official_reply_windows WHERE endpoint_key=?', (self.group.key,))
-        self.assertTrue(group_windows)
-        self.assertTrue(all(row['state'] == 'revoked' for row in group_windows))
-        self.assertEqual(self.query('''SELECT * FROM qq_official_reply_windows
-            WHERE endpoint_key IN (?,?) ORDER BY window_id''',
-            (EndpointKey(self.account, 'private', self.owner).key,
-             EndpointKey(self.account, 'private', other_owner).key)), private_windows)
         self.assertEqual(self.query('SELECT state FROM qq_official_owner_actor_links')[0]['state'], 'revoked')
         with self.tx() as cursor:
             self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, member))
@@ -470,19 +450,34 @@ class OfficialInboxTests(unittest.TestCase):
         ledger = MessageLedger(self.database)
         try:
             with self.store.transaction() as cursor:
-                return process_inbox(cursor, inbox_id=inbox_id, lease_token=self.token,
-                    ledger=ledger, jobs=self.jobs, epoch_guard=assert_epoch,
+                return record_pending_inbox(cursor, inbox_id=inbox_id, lease_token=self.token,
+                    ledger=ledger, epoch_guard=assert_epoch,
                     admission=self.store.admitted, now=self.now)
         finally:
             ledger.close()
+
+    def test_single_pass_accept_with_ledger_records_canonical_message_immediately(self):
+        self.activate_group()
+        ledger = MessageLedger(self.database)
+        self.addCleanup(ledger.close)
+        frame = self.frame(native='TEST_SINGLE_PASS', content='hello direct ledger', event_type='GROUP_AT_MESSAGE_CREATE',
+                           mentions=[{'id': 'TEST_BOT', 'is_you': True}])
+        accepted = self.store.accept(frame, token=self.token, session_id=self.session, ledger=ledger)
+        self.seq = max(self.seq, frame['s'])
+        self.assertEqual(accepted.disposition, 'inbox')
+        self.assertIsNotNone(accepted.ingested)
+        self.assertEqual(accepted.ingested.status, 'processed')
+        self.assertTrue(accepted.ingested.reply_requested)
+        self.assertEqual(self.count('messages'), 1)
+        self.assertEqual(self.count('qq_official_messages'), 1)
+        self.assertEqual(self.count('durable_jobs'), 0)
 
     def test_late_at_adds_one_intent_without_rewriting_body_or_window(self):
         self.activate_group()
         accepted = self.accept(native='TEST_LATE_AT_MESSAGE', content='first accepted body')
         result = self.ingest(accepted.inbox_id)
-        self.assertIsNone(result.dispatch_job_id)
+        self.assertEqual(result.status, 'processed')
         before_messages = self.query('SELECT * FROM messages')
-        before_windows = self.query('SELECT * FROM qq_official_reply_windows')
         for _ in range(2):
             replay = self.accept(native='TEST_LATE_AT_MESSAGE', content='different duplicate body',
                                  event_type='GROUP_AT_MESSAGE_CREATE')
@@ -492,7 +487,6 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertIsNone(row['dispatch_job_id'])
         self.assertEqual(self.count('durable_jobs'), 0)
         self.assertEqual(self.query('SELECT * FROM messages'), before_messages)
-        self.assertEqual(self.query('SELECT * FROM qq_official_reply_windows'), before_windows)
 
     def test_expired_late_at_does_not_dispatch_and_purge_waits_for_queue_settlement(self):
         self.activate_group()

@@ -27,7 +27,7 @@ from src.qq_official.credentials import Credentials
 from src.qq_official.errors import QQAPIError
 from src.qq_official.http import RestClient
 from src.qq_official.token import TokenManager
-from tests.qq_official_file_fixture import ExecutionFixture
+from tests.qq_official_turn_fixture import ExecutionFixture
 from tests.qq_official_file_http_fixture import FileMediaFake
 
 ENDPOINT = EndpointKey(AccountKey("qq-official", "TEST_FILES", "test"), "group", "TEST_GROUP")

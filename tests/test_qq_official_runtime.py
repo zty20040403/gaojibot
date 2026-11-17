@@ -14,6 +14,7 @@ import psycopg
 
 from src.plugins.ai_chat.adapters.qq_official.config import LoadedOfficialConfig, OfficialConfig
 from src.bot_storage import DatabaseError
+from src.plugins.ai_chat.adapters.qq_official.inbox import OfficialInboxStore
 from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease, LeaseLost, advisory_key_for
 from src.plugins.ai_chat.adapters.qq_official import runtime as runtime_module
 from src.plugins.ai_chat.adapters.qq_official.runtime import OfficialRuntime
@@ -252,7 +253,7 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
                                       ("TEST_FULL_STACK_MESSAGE",))
             self.assertIsNotNone(rows[0]["canonical_message_id"])
             self.assertIsNone(rows[0]["dispatch_job_id"])
-            for table in ("messages", "qq_official_messages", "qq_official_message_indexes", "qq_official_reply_windows"):
+            for table in ("messages", "qq_official_messages", "qq_official_message_indexes"):
                 count = await asyncio.to_thread(self.query, f"SELECT count(*) AS n FROM {table}")
                 self.assertEqual(count[0]["n"], 1, table)
             turns = await asyncio.to_thread(self.query, "SELECT status FROM durable_jobs WHERE job_id=?", (rows[0]["dispatch_job_id"],))
@@ -540,7 +541,7 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_drains_old_worker_and_does_not_steal_other_holder(self):
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
-        original = DurableJobStore.claim_due
+        original = OfficialInboxStore.accept
 
         def blocked(store, *args, **kwargs):
             entered.set()
@@ -550,9 +551,10 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         protocol = ControlledProtocol()
         runtime = self.runtime(protocol=protocol)
-        with patch.object(DurableJobStore, "claim_due", new=blocked):
-            await runtime.start()
-            gateway = await protocol.next_ready()
+        await runtime.start()
+        gateway = await protocol.next_ready()
+        with patch.object(OfficialInboxStore, "accept", new=blocked):
+            inflight = asyncio.create_task(gateway.emit(native_id="TEST_RECOVERY_INFLIGHT"))
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
             await asyncio.to_thread(self.query, "SELECT pg_terminate_backend(?)", (runtime._token.backend_pid,))
             await asyncio.wait_for(gateway.stopped.wait(), 3)
@@ -564,6 +566,7 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
             other = await asyncio.to_thread(contender.acquire)
             self.assertIsNotNone(other)
             release.set()
+            await asyncio.gather(inflight, return_exceptions=True)
             await asyncio.wait_for(runtime._idle.wait(), 3)
             await asyncio.sleep(0.1)
             self.assertEqual(len(protocol.gateways), 1)
@@ -609,7 +612,7 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stop_drains_inflight_queue_claim_before_closing_stores(self):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-        original = DurableJobStore.claim_due
+        original = OfficialInboxStore.purge_terminal_payloads
 
         def blocked(store, *args, **kwargs):
             entered.set()
@@ -623,7 +626,7 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(release.set)
         protocol = ControlledProtocol()
         runtime = self.runtime(protocol=protocol)
-        with patch.object(DurableJobStore, "claim_due", new=blocked):
+        with patch.object(OfficialInboxStore, "purge_terminal_payloads", new=blocked):
             await runtime.start()
             gateway = await protocol.next_ready()
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
@@ -643,7 +646,7 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_gateway_stop_failure_still_drains_claim_releases_lease_and_closes_stores(self):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-        original = DurableJobStore.claim_due
+        original = OfficialInboxStore.purge_terminal_payloads
 
         def blocked(store, *args, **kwargs):
             entered.set()
@@ -663,7 +666,7 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
             close_attempted.set()
             raise RuntimeError("TEST_SECRET_GATEWAY_CLOSE_ERROR")
 
-        with patch.object(DurableJobStore, "claim_due", new=blocked):
+        with patch.object(OfficialInboxStore, "purge_terminal_payloads", new=blocked):
             await runtime.start()
             gateway = await protocol.next_ready()
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))

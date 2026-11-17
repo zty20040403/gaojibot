@@ -10,7 +10,7 @@ from src.plugins.ai_chat.model_billing import BillingSource,ModelBilling
 from src.plugins.ai_chat.model_pricing import ModelPricing
 from src.plugins.ai_chat.model_usage import TokenUsage
 from src.plugins.ai_chat.platform_types import EndpointKey
-from tests import test_qq_official_turn_consumer as base
+from tests import qq_official_turn_fixture as base
 from tests.test_llm_gateway import profile
 
 

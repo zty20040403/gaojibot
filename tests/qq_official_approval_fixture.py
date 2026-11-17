@@ -10,7 +10,7 @@ from src.plugins.ai_chat.adapters.qq_official.approval import (
  ApprovalContext, ApprovalOtpSender, FrozenSource, HostAction, TaskPolicy, Recipient, OfficialApprovalTransport)
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
-from src.plugins.ai_chat.adapters.qq_official.turn_source import assert_execution_current
+from src.plugins.ai_chat.adapters.qq_official.turn_platform import assert_execution_current
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
@@ -22,7 +22,7 @@ from src.qq_official.credentials import Credentials
 from src.qq_official.http import RestClient
 from src.qq_official.token import TokenManager
 from src.qq_official.testing.fake_platform import FakePlatform
-from tests.qq_official_file_fixture import ExecutionFixture
+from tests.qq_official_turn_fixture import ExecutionFixture
 
 SECRET=b'TEST_APPROVAL_ONLY_01234567890123456789'
 class SourcePort:
@@ -31,7 +31,7 @@ class SourcePort:
   c=self.case
   if not c.source_live or source!=c.source or policy!=c.policy or operation not in {'approve','execute'}:
    raise SecurityError('source_not_current')
-  assert_execution_current(cursor,token=c.token,handle=c.handle,job=c.job,now=now,admission=c.admission)
+  assert_execution_current(cursor,token=c.token,handle=c.handle,now=now,admission=c.admission)
   # Root logical RouteService is deliberately a named test port. The real
   # account/endpoint/job/execution fences above are not mocked.
   if not c.route_live: raise SecurityError('route_not_current')

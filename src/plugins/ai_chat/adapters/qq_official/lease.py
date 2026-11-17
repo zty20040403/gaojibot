@@ -1,10 +1,4 @@
-"""Dedicated PostgreSQL session lock plus transactional account fence.
-
-No runtime registration or credential discovery. These synchronous
-methods are short blocking database operations; async callers use an executor.
-Lease tokens are internal fencing objects, never human authorization grants.
-"""
-
+"""Single-instance PostgreSQL advisory lock and transactional account epoch fence."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -31,8 +25,11 @@ class LeaseRetryable(LeaseUnavailable):
     """Transient storage failure; retry only with a fresh lease instance."""
 
 
+class LeaseLost(LeaseUnavailable):
+    """The caller must stop gateway intake/dispatch; this token cannot recover."""
+
+
 def transient_database_error(error: BaseException) -> bool:
-    """Classify driver codes, never exception text (which can contain secrets)."""
     while isinstance(error, DatabaseError) and error.__cause__ is not None:
         error = error.__cause__
     if not isinstance(error, psycopg.Error):
@@ -42,10 +39,6 @@ def transient_database_error(error: BaseException) -> bool:
             or code is not None and (code.startswith("08") or code in {
                 "25006", "40001", "40P01", "53300", "55P03", "57014", "57P01", "57P02", "57P03",
             }))
-
-
-class LeaseLost(LeaseUnavailable):
-    """The caller must stop gateway intake/dispatch; this token cannot recover."""
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True, eq=False)
@@ -65,9 +58,6 @@ def advisory_key_for(account: AccountKey) -> int:
     if (not isinstance(account, AccountKey) or account.platform != "qq-official"
             or not 1 <= len(account.key.encode("utf-8")) <= 512):
         raise LeaseUnavailable("Invalid official lease account")
-    # The full canonical key contributes; truncating a hash is not truncating an
-    # identity. A 64-bit lock collision only denies concurrency, never aliases DB
-    # rows. The schema is intentionally omitted: lock scope is the database.
     digest = hashlib.sha256(b"gaoji:qq-official:account-lease:v1\0" + account.key.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
@@ -81,19 +71,10 @@ def _locally_current(token: LeaseToken) -> bool:
     if not isinstance(token, LeaseToken):
         return False
     with _issued_lock:
-        # Identity, not dataclass equality: JSON reconstruction, replace(), or a
-        # copied token does not become a locally issued live fencing object.
         return _issued.get(token.holder_id) is token
 
 
 def assert_epoch(cursor: StoreCursor, token: LeaseToken) -> None:
-    """Fence a caller-owned short transaction; success keeps its account lock.
-
-    Caller provides a StoreCursor in the configured schema. No commit or new
-    transaction is performed here. A live session lock is checked as well as the
-    row epoch, so a killed backend is rejected before another holder takes over.
-    The lock check and epoch are not a user grant or a network delivery guarantee.
-    """
     if not _locally_current(token):
         raise LeaseLost("Official account lease is no longer valid")
     high, low = _lock_parts(token.advisory_key)
@@ -109,39 +90,22 @@ def assert_epoch(cursor: StoreCursor, token: LeaseToken) -> None:
             FOR UPDATE OF a""",
             (token.account_key, token.epoch, token.holder_id, token.backend_pid, high, low)).fetchone()
     except Exception:
-        # The transaction owner rolls back; do not expose SQL parameters or DSN.
         raise LeaseLost("Official account fence could not be checked") from None
     if row is None or not _locally_current(token):
         raise LeaseLost("Official account lease is no longer valid")
 
 
 class DedicatedAccountLease:
-    """One raw connection for one account session lock; never a pool checkout.
-
-    Construct only after default-off configuration admission. The account row is
-    provisioned by trusted local control-plane code, not by this transport lease.
-    A busy acquire may be retried; connection loss permanently retires an instance.
-    """
-
-    def __init__(
-        self,
-        dsn: str,
-        account: AccountKey,
-        *,
-        schema: str = "qq_bot",
-        clock: Callable[[], float] = time.time,
-        connect: Callable[..., psycopg.Connection] = psycopg.connect,
-    ) -> None:
+    def __init__(self, dsn: str, account: AccountKey, *, schema: str = "qq_bot",
+                 clock: Callable[[], float] = time.time,
+                 connect: Callable[..., psycopg.Connection] = psycopg.connect) -> None:
         if not isinstance(dsn, str) or not dsn.strip():
             raise LeaseUnavailable("Official lease database is not configured")
         if not isinstance(schema, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
             raise LeaseUnavailable("Invalid official lease schema")
         self._key = advisory_key_for(account)
-        self._dsn = dsn
-        self._account = account
-        self._schema = schema
-        self._clock = clock
-        self._connect = connect
+        self._dsn, self._account, self._schema = dsn, account, schema
+        self._clock, self._connect = clock, connect
         self._connection: psycopg.Connection | None = None
         self._token: LeaseToken | None = None
         self._closed = False
@@ -162,7 +126,6 @@ class DedicatedAccountLease:
         return sql.SQL("{}.qq_official_accounts").format(sql.Identifier(self._schema))
 
     def acquire(self) -> LeaseToken | None:
-        """Return None when another session holds the account lock; do not wait."""
         with self._mutex:
             if self._closed or self._lost:
                 raise LeaseLost("Official account lease instance has ended")
@@ -201,8 +164,7 @@ class DedicatedAccountLease:
                     if changed is None:
                         raise LeaseUnavailable("Official account fence could not be acquired")
                 token = LeaseToken(self._account.key, int(changed[0]), holder_id, backend_pid, self._key)
-                self._connection = connection
-                self._token = token
+                self._connection, self._token = connection, token
                 with _issued_lock:
                     _issued[holder_id] = token
                 return token
@@ -212,19 +174,15 @@ class DedicatedAccountLease:
                         connection.close()
                     except Exception:
                         pass
-                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                    raise
-                if isinstance(exc, LeaseUnavailable):
+                if isinstance(exc, (KeyboardInterrupt, SystemExit, LeaseUnavailable)):
                     raise
                 if transient_database_error(exc):
                     raise LeaseRetryable("Official account lease database is temporarily unavailable") from None
                 raise LeaseUnavailable("Official account lease acquisition failed") from None
 
     def probe(self) -> bool:
-        """Verify the original session and fence; do not reconnect or retake lock."""
         with self._mutex:
-            token = self._token
-            connection = self._connection
+            token, connection = self._token, self._connection
             if self._closed or self._lost or token is None or connection is None:
                 return False
             high, low = _lock_parts(token.advisory_key)
@@ -254,8 +212,7 @@ class DedicatedAccountLease:
     def _invalidate(self) -> None:
         self._lost = True
         token, connection = self._token, self._connection
-        self._token = None
-        self._connection = None
+        self._token = self._connection = None
         if token is not None:
             with _issued_lock:
                 _issued.pop(token.holder_id, None)
@@ -266,14 +223,12 @@ class DedicatedAccountLease:
                 pass
 
     def close(self) -> None:
-        """Invalidate this token, clear only its own holder, close raw connection."""
         with self._mutex:
             if self._closed:
                 return
             self._closed = True
             token, connection = self._token, self._connection
-            self._token = None
-            self._connection = None
+            self._token = self._connection = None
             if token is not None:
                 with _issued_lock:
                     _issued.pop(token.holder_id, None)
@@ -289,8 +244,6 @@ class DedicatedAccountLease:
                               AND lock_backend_pid=%s""").format(self._table()),
                             (int(self._clock()), token.account_key, token.epoch, token.holder_id, token.backend_pid))
             except Exception:
-                # Closing the session releases locks even if clearing its stale
-                # diagnostic row fails. Future acquisition advances the epoch.
                 self._lost = True
             finally:
                 try:

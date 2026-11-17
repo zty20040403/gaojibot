@@ -1,8 +1,4 @@
-"""Atomic official reception, privacy admission and gateway checkpointing.
-
-The gateway acknowledges only after this transaction commits. This is input
-evidence, not a second task queue: the existing durable job store owns workers.
-"""
+"""Official QQ gateway reception, deduplication, admission, and single-pass ledger write."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -15,18 +11,24 @@ import threading
 import time
 import unicodedata
 
-from src.bot_storage import open_store_connection
+from src.bot_storage import StoreCursor, open_store_connection
+from src.plugins.ai_chat.conversation_scope import ConversationScope
+from src.plugins.ai_chat.image_captions import ingest_captions
+from src.plugins.ai_chat.ledger import MessageLedger
+from src.plugins.ai_chat.message_ir import MentionNode, MessageBody, TextNode, fallback_text
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from src.qq_official.events import EventParseError, LIFECYCLE_EVENTS, MESSAGE_EVENTS, parse_dispatch
 from src.qq_official.gateway import GatewayCheckpoint
 
+from . import peer_bots
+from .admin_identity import command_commitment, prepare_identity_input
+from .approval import ControlResult, apply_control, control_commitment, prepare_approval_input
 from .authority import OwnerAuthority
 from .binding import BindingContext, BindingDecision, BindingReducer
+from .codec import DecodedMessage, RejectedMessage, decode_message
+from .conversation_control import ingest as ingest_control
 from .input_normalization import normalize_input
-from .approval import (ControlResult, prepare_approval_input, control_commitment, apply_control)
-from .codec import DecodedMessage, decode_message
-from .lease import assert_epoch
-from .admin_identity import prepare_identity_input, command_commitment
+from .lease import LeaseToken, assert_epoch
 
 
 class IngressError(RuntimeError):
@@ -48,6 +50,22 @@ def valid_identifier(value, limit: int = 256) -> bool:
 
 
 @dataclass(frozen=True)
+class IngestResult:
+    status: str
+    reason_code: str = ""
+    canonical_message_id: int | None = None
+    echo_state: str = "unknown"
+    reply_requested: bool = False
+    endpoint_key: str = ""
+    sender_actor_key: str = ""
+    route_epoch: int = 0
+    turn_text: str = ""
+    conversation_control: dict | None = None
+    conversation_generation: int = 0
+    conversation_stopped: bool = False
+
+
+@dataclass(frozen=True)
 class Acceptance:
     disposition: str
     inbox_id: str | None = None
@@ -57,28 +75,204 @@ class Acceptance:
     _approval_input: object = field(default=None, repr=False)
     _native_admission: object = field(default=None, repr=False)
     _identity_input: object = field(default=None, repr=False)
-    ingested: object = field(default=None, repr=False)
+    _prepared: object = field(default=None, repr=False)
+    ingested: IngestResult | None = field(default=None, repr=False)
+
+
+def _ledger_body(decoded: DecodedMessage) -> MessageBody:
+    return MessageBody(tuple(
+        TextNode(node.segment_index, fallback_text(node))
+        if isinstance(node, MentionNode) and (node.raw_data.get("is_you") is True or node.raw_data.get("bot") is True)
+        else node for node in decoded.body.nodes
+    ))
+
+
+def _reply_target(cursor: StoreCursor, decoded: DecodedMessage, scope_key: str) -> str | None:
+    reference = decoded.reference
+    if reference.conflicting or reference.referenced_index is None:
+        return None
+    rows = cursor.execute("""SELECT i.native_message_id,i.canonical_message_id,i.ambiguous,
+            m.canonical_message_id AS mapped_canonical,
+            c.native_message_id AS ledger_native,c.source_endpoint_key,v.scope_key
+        FROM qq_official_message_indexes i JOIN qq_official_messages m
+          ON m.endpoint_key=i.endpoint_key AND m.native_message_id=i.native_message_id
+            AND m.account_key=i.account_key
+        LEFT JOIN messages c ON c.canonical_message_id=i.canonical_message_id
+        LEFT JOIN conversations v ON v.conversation_id=c.conversation_id
+        WHERE i.account_key=? AND i.endpoint_key=? AND i.index_value=?
+          AND i.index_kind IN ('msg_idx','ref_idx')""",
+        (decoded.endpoint.account.key, decoded.endpoint.key, reference.referenced_index)).fetchall()
+    targets = set()
+    for row in rows:
+        if row["ambiguous"] or row["canonical_message_id"] != row["mapped_canonical"]:
+            return None
+        if row["canonical_message_id"] is not None and (
+            row["source_endpoint_key"] != decoded.endpoint.key
+            or row["scope_key"] != scope_key
+            or row["ledger_native"] != row["native_message_id"]
+        ):
+            return None
+        targets.add((str(row["native_message_id"]), row["canonical_message_id"]))
+    return next(iter(targets))[0] if len(targets) == 1 else None
+
+
+def _record_index(cursor: StoreCursor, decoded: DecodedMessage, canonical: int, now: int) -> None:
+    native_index = decoded.reference.message_index
+    if decoded.reference.conflicting or native_index is None:
+        return
+    cursor.execute("""INSERT INTO qq_official_message_indexes
+        (endpoint_key,account_key,index_kind,index_value,native_message_id,
+         canonical_message_id,ambiguous,created_at,updated_at)
+        VALUES (?,?,'msg_idx',?,?,?,FALSE,?,?)
+        ON CONFLICT(endpoint_key,index_kind,index_value) DO UPDATE SET
+            ambiguous=qq_official_message_indexes.ambiguous
+                OR qq_official_message_indexes.native_message_id<>EXCLUDED.native_message_id
+                OR (qq_official_message_indexes.canonical_message_id IS NOT NULL
+                    AND qq_official_message_indexes.canonical_message_id<>EXCLUDED.canonical_message_id),
+            updated_at=EXCLUDED.updated_at""",
+        (decoded.endpoint.key, decoded.endpoint.account.key, native_index, decoded.native_message_id,
+         canonical, now, now))
+
+
+def _write_to_ledger(
+    cursor: StoreCursor, *, inbox_id: str, account: AccountKey, endpoint: EndpointKey,
+    endpoint_row, decoded: DecodedMessage, input_text: str, input_version: int,
+    trigger_requested: bool, ledger: MessageLedger, now: int, owner_authority=None,
+) -> IngestResult:
+    scope_key = str(endpoint_row["canonical_scope_key"])
+    reply_target = _reply_target(cursor, decoded, scope_key)
+    recorded = ledger.record_message(
+        ConversationScope.from_key(scope_key), native_message_id=decoded.native_message_id,
+        sender_native_user_id=decoded.actor.native_user_id, sender_display=peer_bots.display(decoded),
+        body=_ledger_body(decoded), occurred_at=decoded.occurred_at,
+        reply_to_native_message_id=reply_target, actor=decoded.actor, source_endpoint=endpoint,
+        raw_event={"source": "qq-official", "message_type": decoded.evidence.message_type,
+                   "reference_conflict": decoded.reference.conflicting,
+                   "codec_warnings": list(decoded.evidence.warnings), "truncated": decoded.evidence.truncated,
+                   "sender_is_bot": decoded.sender_is_bot},
+        transaction_cursor=cursor,
+    )
+    ingest_captions(cursor, recorded, now)
+    canonical = recorded.canonical_message_id
+    cursor.execute("""INSERT INTO qq_official_messages
+        (message_id,account_key,endpoint_key,native_message_id,canonical_message_id,
+         direction,msg_idx,ref_msg_idx,inbox_id,created_at)
+        VALUES (?,?,?,?,?,'inbound',?,?,?,?)""",
+        (secrets.token_hex(16), account.key, endpoint.key, decoded.native_message_id, canonical,
+         decoded.reference.message_index, decoded.reference.referenced_index, inbox_id, now))
+    _record_index(cursor, decoded, canonical, now)
+    cursor.execute("""UPDATE qq_official_inbound_events SET status='processed',reason_code=NULL,
+        canonical_message_id=?,echo_state='not_echo',turn_text=?,turn_text_version=?,
+        processed_at=?,updated_at=? WHERE inbox_id=? AND account_key=?""",
+        (canonical, input_text, input_version, now, now, inbox_id, account.key))
+    receipt, current = ingest_control(
+        cursor, inbox_id=inbox_id, decoded=decoded, text=input_text, now=now, authority=owner_authority,
+    )
+    command = input_text.lstrip().startswith(("/", "!"))
+    reply = endpoint.kind == "private" or trigger_requested or decoded.mentions_bot or reply_target is not None
+    reply = bool(receipt) or bool(reply and (not current["stopped"] or command))
+    if reply and decoded.sender_is_bot and peer_bots.exchange_exhausted(cursor, endpoint.key, now):
+        reply = False
+    cursor.execute("UPDATE qq_official_inbound_events SET trigger_requested=? WHERE inbox_id=? AND account_key=?",
+                   (reply, inbox_id, account.key))
+    return IngestResult(
+        "processed", "", canonical, echo_state="not_echo", reply_requested=reply,
+        endpoint_key=endpoint.key, sender_actor_key=decoded.actor.key,
+        route_epoch=int(endpoint_row["route_epoch"]), turn_text=input_text,
+        conversation_control=receipt, conversation_generation=int(current["stop_generation"]),
+        conversation_stopped=bool(current["stopped"]),
+    )
+
+
+def record_pending_inbox(
+    cursor: StoreCursor, *, inbox_id: str, lease_token: LeaseToken, ledger: MessageLedger,
+    epoch_guard=assert_epoch, admission=None, now: int | None = None, owner_authority=None,
+) -> IngestResult:
+    """Record a pending inbox event into the ledger inside the caller's transaction."""
+    timestamp = int(time.time()) if now is None else now
+    epoch_guard(cursor, lease_token)
+    account = AccountKey.parse(lease_token.account_key)
+    row = cursor.execute("SELECT * FROM qq_official_inbound_events WHERE inbox_id=? AND account_key=?",
+                         (inbox_id, account.key)).fetchone()
+    if row is None:
+        return IngestResult("missing", "inbox_not_found")
+    if row["status"] != "pending":
+        return IngestResult(str(row["status"]), str(row["reason_code"] or ""),
+                            row["canonical_message_id"], str(row["echo_state"]), bool(row["trigger_requested"]))
+    endpoint_row = cursor.execute("""SELECT * FROM qq_official_endpoints
+        WHERE endpoint_key=? AND account_key=? FOR UPDATE""", (row["endpoint_key"], account.key)).fetchone()
+    row = cursor.execute("""SELECT * FROM qq_official_inbound_events
+        WHERE inbox_id=? AND account_key=? FOR UPDATE""", (inbox_id, account.key)).fetchone()
+    if row["status"] != "pending":
+        return IngestResult(str(row["status"]), str(row["reason_code"] or ""),
+                            row["canonical_message_id"], str(row["echo_state"]), bool(row["trigger_requested"]))
+
+    def finish(status="processed", reason="", canonical=None, echo="not_echo"):
+        cursor.execute("""UPDATE qq_official_inbound_events SET status=?,reason_code=?,
+            canonical_message_id=?,echo_state=?,processed_at=?,updated_at=? WHERE inbox_id=? AND account_key=?""",
+            (status, reason or None, canonical, echo, timestamp, timestamp, inbox_id, account.key))
+        return IngestResult(status, reason, canonical, echo)
+
+    if endpoint_row is None:
+        return finish("quarantined", "missing_endpoint")
+    endpoint = EndpointKey.parse(str(row["endpoint_key"]))
+    if (row["endpoint_generation"] != endpoint_row["generation"]
+            or row["route_epoch"] != endpoint_row["route_epoch"]
+            or endpoint_row["binding_state"] == "revoked" or endpoint_row["membership_state"] == "absent"
+            or (endpoint.kind == "group" and (endpoint_row["binding_state"] != "active"
+                                              or endpoint_row["membership_state"] != "present"))):
+        return finish("revoked", "endpoint_no_longer_admitted")
+    if row["payload_expires_at"] is not None and row["payload_expires_at"] <= timestamp:
+        return finish("skipped", "payload_expired")
+    try:
+        dispatch = parse_dispatch(row["payload_json"])
+        decoded = decode_message(dispatch, account, row["received_at"])
+    except (EventParseError, ValueError, TypeError):
+        return finish("quarantined", "invalid_payload")
+    if isinstance(decoded, RejectedMessage):
+        return finish("processed" if decoded.disposition == "bot_origin" else "quarantined",
+                      "bot_origin" if decoded.disposition == "bot_origin" else decoded.reason,
+                      echo="possible_self" if decoded.disposition == "bot_origin" else "not_echo")
+    existing = cursor.execute("""SELECT * FROM qq_official_messages
+        WHERE account_key=? AND endpoint_key=? AND native_message_id=?""",
+        (account.key, endpoint.key, decoded.native_message_id)).fetchone()
+    if existing is not None and existing["direction"] == "outbound":
+        return finish(reason="outbound_echo", echo="confirmed_self")
+    if admission is None or admission(cursor, endpoint, decoded.actor) is not True:
+        return finish("revoked", "policy_denied")
+    if existing is not None:
+        return finish(reason="duplicate_message", canonical=existing["canonical_message_id"])
+    prepared_input = normalize_input(dispatch)
+    if prepared_input.kind != "message" or prepare_approval_input(dispatch, endpoint).kind != "none":
+        cursor.execute("UPDATE qq_official_inbound_events SET payload_json=NULL WHERE inbox_id=?", (inbox_id,))
+        return finish("quarantined", "input_sensitive_control")
+    return _write_to_ledger(
+        cursor, inbox_id=inbox_id, account=account, endpoint=endpoint, endpoint_row=endpoint_row,
+        decoded=decoded, input_text=prepared_input.input_text, input_version=prepared_input.version,
+        trigger_requested=bool(row["trigger_requested"]), ledger=ledger, now=timestamp,
+        owner_authority=owner_authority,
+    )
 
 
 class OfficialInboxStore:
-    def __init__(self, database, *, jobs, binding: BindingReducer,
+    def __init__(self, database, *, binding: BindingReducer, jobs=None,
                  authority: OwnerAuthority | None = None, private_policy: str = "owner_only",
                  private_allowed_openids: tuple[str, ...] = (), payload_retention_hours: int = 24,
-                 clock=time.time, epoch_guard=assert_epoch):
+                 ledger: MessageLedger | None = None, clock=time.time, epoch_guard=assert_epoch):
         if private_policy not in {"owner_only", "allowlist", "public"}:
             raise ValueError("Invalid official private admission policy")
         if not 1 <= payload_retention_hours <= 168:
             raise ValueError("Invalid official inbox retention")
         self.database = database
         self.path, self._connection = open_store_connection(database)
-        self.jobs, self.binding = jobs, binding
+        self.binding = binding
         self.authority = authority or binding.authority
         self.private_policy = private_policy
         self.private_allowed_openids = frozenset(private_allowed_openids)
         self.payload_retention_seconds = payload_retention_hours * 3600
+        self.ledger = ledger
         self.clock, self.epoch_guard = clock, epoch_guard
         self._lock = threading.RLock()
-        # Set only by the current authenticated runtime epoch; no factory = deny.
         self.approval_store = None
         self.source_authority = None
         self.admin_identity_service = None
@@ -103,11 +297,6 @@ class OfficialInboxStore:
                 cursor.close()
 
     def ensure_account(self, account: AccountKey):
-        """Trusted local factory only; never called by an inbound event.
-
-        Existing disabled/paused accounts are not silently reactivated. Explicit
-        control-plane action is required after an operator has stopped one.
-        """
         if account.platform != "qq-official" or len(account.key.encode()) > 512:
             raise ValueError("Invalid official account configuration")
         now = int(self.clock())
@@ -150,10 +339,10 @@ class OfficialInboxStore:
         with self.transaction() as cursor:
             self.epoch_guard(cursor, token)
             if checkpoint is None:
-                previous = cursor.execute("SELECT session_id FROM qq_official_accounts WHERE account_key=?", (token.account_key,)).fetchone()
+                previous = cursor.execute("SELECT session_id FROM qq_official_accounts WHERE account_key=?",
+                                          (token.account_key,)).fetchone()
                 if previous["session_id"] is None:
                     return
-                # Reconnecting is not a membership or owner revocation.
                 cursor.execute("""UPDATE qq_official_accounts SET session_id=NULL,durable_seq=NULL,
                     gateway_state='connecting',updated_at=? WHERE account_key=?""",
                     (int(self.clock()), token.account_key))
@@ -162,10 +351,8 @@ class OfficialInboxStore:
                                  (token.account_key,)).fetchone()
             if row["session_id"] != checkpoint.session_id:
                 raise IngressError("Official checkpoint session changed")
-            # Message dispatches already advance this in accept(); RESUMED is
-            # acknowledged by the gateway directly, without an inbox record.
-            cursor.execute('''UPDATE qq_official_accounts SET durable_seq=GREATEST(durable_seq,?),updated_at=?
-                WHERE account_key=?''', (checkpoint.seq, int(self.clock()), token.account_key))
+            cursor.execute("""UPDATE qq_official_accounts SET durable_seq=GREATEST(durable_seq,?),updated_at=?
+                WHERE account_key=?""", (checkpoint.seq, int(self.clock()), token.account_key))
 
     def pause(self, token, reason: str):
         if not re.fullmatch(r"[a-z0-9_]{1,80}", reason):
@@ -175,8 +362,10 @@ class OfficialInboxStore:
             cursor.execute("""UPDATE qq_official_accounts SET gateway_state='paused',pause_reason=?,updated_at=?
                 WHERE account_key=?""", (reason, int(self.clock()), token.account_key))
 
-    def accept(self, frame: dict, *, token, session_id: str, received_at: int | None = None, ledger=None) -> Acceptance:
+    def accept(self, frame: dict, *, token, session_id: str, received_at: int | None = None,
+               ledger: MessageLedger | None = None) -> Acceptance:
         account = AccountKey.parse(token.account_key)
+        active_ledger = ledger if ledger is not None else self.ledger
         now = int(self.clock()) if received_at is None else received_at
         if (not isinstance(frame, dict) or frame.get("op") != 0 or type(frame.get("s")) is not int
                 or not 0 <= frame["s"] < 2**63 or not valid_identifier(session_id, 512)
@@ -225,17 +414,48 @@ class OfficialInboxStore:
                     inbox_id=result.inbox_id, session_id=session_id, seq=seq)
                 result = replace(result, _native_admission=None)
             if result._identity_input is not None and self.admin_identity_service is not None:
-                self.admin_identity_service.observe(cursor,inbox_id=result.inbox_id,command=result._identity_input)
-                result=replace(result,_identity_input=None)
+                self.admin_identity_service.observe(cursor, inbox_id=result.inbox_id, command=result._identity_input)
+                result = replace(result, _identity_input=None)
             if result._approval_input is not None:
                 control = apply_control(cursor, store=self.approval_store, inbox_id=result.inbox_id,
                     session_id=session_id, seq=seq, command=result._approval_input, now=now)
                 result = replace(result, approval=control, _approval_input=None)
-            if ledger is not None and result.disposition == 'inbox':
-                from .ingest import process_inbox
-                ingested = process_inbox(cursor, inbox_id=result.inbox_id, lease_token=token,
-                    ledger=ledger, jobs=self.jobs, epoch_guard=self.epoch_guard, admission=self.admitted, now=now,
-                    owner_authority=self.authority)
+            prepared = result._prepared
+            if result._prepared is not None:
+                result = replace(result, _prepared=None)
+            if active_ledger is not None and result.disposition == "inbox":
+                if prepared is not None:
+                    decoded, endpoint, endpoint_row, prepared_input = prepared
+                    ingested = _write_to_ledger(
+                        cursor, inbox_id=result.inbox_id, account=account, endpoint=endpoint,
+                        endpoint_row=endpoint_row, decoded=decoded, input_text=prepared_input.input_text,
+                        input_version=prepared_input.version, trigger_requested=decoded.mentions_bot,
+                        ledger=active_ledger, now=now, owner_authority=self.authority,
+                    )
+                else:
+                    row = cursor.execute("""SELECT i.*,m.sender_actor_key FROM qq_official_inbound_events i
+                        LEFT JOIN messages m USING(canonical_message_id) WHERE i.inbox_id=?""",
+                        (result.inbox_id,)).fetchone()
+                    if row is not None and row["status"] == "pending":
+                        ingested = record_pending_inbox(
+                            cursor, inbox_id=result.inbox_id, lease_token=token, ledger=active_ledger,
+                            epoch_guard=self.epoch_guard, admission=self.admitted, now=now,
+                            owner_authority=self.authority,
+                        )
+                    elif row is not None:
+                        ingested = IngestResult(
+                            str(row["status"]), str(row["reason_code"] or ""), row["canonical_message_id"],
+                            echo_state=str(row["echo_state"]), reply_requested=bool(row["trigger_requested"]),
+                            endpoint_key=str(row["endpoint_key"] or ""),
+                            sender_actor_key=str(row["sender_actor_key"] or ""),
+                            route_epoch=int(row["route_epoch"] or 0),
+                            turn_text=str(row["turn_text"] or ""),
+                            conversation_control=row["conversation_control"],
+                            conversation_generation=int(row["conversation_generation"] or 0),
+                            conversation_stopped=bool(row["conversation_stopped"]),
+                        )
+                    else:
+                        ingested = IngestResult("missing", "inbox_not_found")
                 result = replace(result, ingested=ingested)
             cursor.execute("""UPDATE qq_official_accounts SET session_id=?,durable_seq=?,gateway_state='active',updated_at=?
                 WHERE account_key=?""", (session_id, seq, now, account.key))
@@ -251,12 +471,15 @@ class OfficialInboxStore:
             raise IngressError("Official endpoint identity conflict")
         return row
 
-    def _aliases(self, account, endpoint, event_id, native_id):
+    @staticmethod
+    def _aliases(account, endpoint, event_id, native_id):
         aliases = []
         if valid_identifier(event_id):
-            aliases.append((durable_key("event", account.key, endpoint.key if endpoint else "", event_id), "event", endpoint.key if endpoint else None, event_id))
+            aliases.append((durable_key("event", account.key, endpoint.key if endpoint else "", event_id),
+                            "event", endpoint.key if endpoint else None, event_id))
         if endpoint is not None and valid_identifier(native_id):
-            aliases.append((durable_key("message", account.key, endpoint.key, native_id), "message", endpoint.key, native_id))
+            aliases.append((durable_key("message", account.key, endpoint.key, native_id),
+                            "message", endpoint.key, native_id))
         return aliases
 
     def _duplicate(self, cursor, account, aliases, now, *, event_type, endpoint, native_id=None,
@@ -277,31 +500,34 @@ class OfficialInboxStore:
         current_endpoint = endpoint.key if endpoint else None
         same_family = (original["event_type"] == event_type
                        or original["event_type"] in MESSAGE_EVENTS and event_type in MESSAGE_EVENTS)
-        if (not same_family or original["endpoint_key"] != current_endpoint
-                or original["native_message_id"] != native_id):
+        if not same_family or original["endpoint_key"] != current_endpoint or original["native_message_id"] != native_id:
             return self._terminal(cursor, account, event_type, now, "conflicting_message_aliases")
         if actor is not None and original["payload_json"] is not None:
             first = decode_message(parse_dispatch(original["payload_json"]), account, original["received_at"])
             if not isinstance(first, DecodedMessage) or first.actor != actor:
                 return self._terminal(cursor, account, event_type, now, "conflicting_message_aliases")
         self._save_aliases(cursor, account, aliases, inbox_id, now)
-        if (trigger_requested and not original["trigger_requested"] and actor is not None and original["echo_state"] == "not_echo"
-                and original["payload_json"] is not None
+        if (trigger_requested and not original["trigger_requested"] and actor is not None
+                and original["echo_state"] == "not_echo" and original["payload_json"] is not None
                 and original["payload_expires_at"] is not None and original["payload_expires_at"] > now
                 and original["status"] in {"pending", "processed"}
                 and (original["status"] == "pending" or original["canonical_message_id"] is not None)):
-            target = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=? FOR UPDATE", (endpoint.key,)).fetchone()
-            if (target["generation"] == original["endpoint_generation"] and target["route_epoch"] == original["route_epoch"]
-                    and target["canonical_scope_key"] == endpoint.scope.key and self.admitted(cursor, endpoint, actor)):
+            target = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=? FOR UPDATE",
+                                    (endpoint.key,)).fetchone()
+            if (target["generation"] == original["endpoint_generation"]
+                    and target["route_epoch"] == original["route_epoch"]
+                    and target["canonical_scope_key"] == endpoint.scope.key
+                    and self.admitted(cursor, endpoint, actor)):
                 if self.source_authority is not None:
                     from .migration_types import MigrationDenied
                     try:
                         self.source_authority.require_inbox(cursor, inbox_id, endpoint=endpoint,
-                            actor=actor, operation='ingest')
+                                                            actor=actor, operation="ingest")
                     except MigrationDenied:
-                        return Acceptance('duplicate', inbox_id, 'migration_route_unavailable')
-                cursor.execute("UPDATE qq_official_inbound_events SET trigger_requested=TRUE,updated_at=? WHERE inbox_id=?", (now, inbox_id))
-                return Acceptance('inbox', inbox_id, 'new_at_event')
+                        return Acceptance("duplicate", inbox_id, "migration_route_unavailable")
+                cursor.execute("UPDATE qq_official_inbound_events SET trigger_requested=TRUE,updated_at=? WHERE inbox_id=?",
+                               (now, inbox_id))
+                return Acceptance("inbox", inbox_id, "new_at_event")
         return Acceptance("duplicate", inbox_id, "duplicate_message")
 
     @staticmethod
@@ -336,10 +562,11 @@ class OfficialInboxStore:
         endpoint_row = self._endpoint(cursor, endpoint, now) if endpoint is not None else None
         native_id, event_id = decoded.native_message_id, decoded.event_id
         aliases = self._aliases(account, endpoint, event_id, native_id)
-        duplicate = self._duplicate(cursor, account, aliases, now,
-            event_type=dispatch.event_type, endpoint=endpoint, native_id=native_id,
+        duplicate = self._duplicate(
+            cursor, account, aliases, now, event_type=dispatch.event_type, endpoint=endpoint, native_id=native_id,
             actor=decoded.actor if isinstance(decoded, DecodedMessage) else None,
-            trigger_requested=decoded.mentions_bot if isinstance(decoded, DecodedMessage) else False)
+            trigger_requested=decoded.mentions_bot if isinstance(decoded, DecodedMessage) else False,
+        )
         if duplicate is not None:
             return duplicate
         if isinstance(decoded, DecodedMessage) and endpoint_row["membership_state"] != "present":
@@ -348,20 +575,17 @@ class OfficialInboxStore:
                     capability_revision=capability_revision+1,proactive_state='unknown',updated_at=? WHERE endpoint_key=?""",
                     (now, endpoint.key))
                 self._retire_evidence(cursor, account.key, now, endpoint_key=endpoint.key)
-            # Current authenticated transport proves the bot can receive here.
-            # A prior DEL's revoked binding is deliberately not reactivated.
-            cursor.execute("UPDATE qq_official_endpoints SET membership_state='present',updated_at=? WHERE endpoint_key=?", (now, endpoint.key))
-            endpoint_row = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,)).fetchone()
+            cursor.execute("UPDATE qq_official_endpoints SET membership_state='present',updated_at=? WHERE endpoint_key=?",
+                           (now, endpoint.key))
+            endpoint_row = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?",
+                                          (endpoint.key,)).fetchone()
         native_admission = None
         if isinstance(decoded, DecodedMessage) and self.source_authority is not None:
             from .migration_types import MigrationDenied
             try:
-                native_admission = self.source_authority.admit(cursor, token=token,
-                    decoded=decoded, received_at=now)
+                native_admission = self.source_authority.admit(cursor, token=token, decoded=decoded, received_at=now)
             except MigrationDenied:
-                # A paused route is terminal metadata, not a retried event or
-                # permission to run a binding/approval reducer before the fence.
-                result = self._terminal(cursor, account, dispatch.event_type, now, 'migration_route_unavailable')
+                result = self._terminal(cursor, account, dispatch.event_type, now, "migration_route_unavailable")
                 self._save_aliases(cursor, account, aliases, result.inbox_id, now)
                 return result
         decision = None
@@ -369,6 +593,7 @@ class OfficialInboxStore:
         identity_input = None
         approval = None
         payload = None
+        prepared = None
         status, reason, echo = "skipped", "not_admitted", "not_echo"
         if not isinstance(decoded, DecodedMessage):
             if decoded.disposition == "bot_origin":
@@ -385,61 +610,55 @@ class OfficialInboxStore:
             identity_command = prepare_identity_input(dispatch)
             if sent is not None:
                 reason, echo = "self_echo", "confirmed_self"
-            elif identity_command.kind != 'ordinary':
-                # Never retain the raw challenge, even without a configured service.
-                if (identity_command.kind=='control' and endpoint.kind=='private'
-                    and decoded.platform_occurred_at is not None):
-                    status,reason,identity_input='processed','admin_identity_control',identity_command
+            elif identity_command.kind != "ordinary":
+                if (identity_command.kind == "control" and endpoint.kind == "private"
+                        and decoded.platform_occurred_at is not None):
+                    status, reason, identity_input = "processed", "admin_identity_control", identity_command
                 else:
-                    status,reason='quarantined','input_sensitive_identity'
+                    status, reason = "quarantined", "input_sensitive_identity"
             elif prepared_input.kind == "quarantine":
                 status, reason = "quarantined", prepared_input.reason
             elif command is not None:
-                decision = self.binding.apply(cursor,
+                decision = self.binding.apply(
+                    cursor,
                     context=BindingContext(endpoint, decoded.actor,
                         durable_key("binding-receipt", account.key, str(dispatch.seq), event_id or "", native_id), now),
-                    command=command, lease_token=token)
+                    command=command, lease_token=token,
+                )
                 status, reason = "processed", "binding_control"
-                # A reducer can change this source route. Freeze the actual
-                # post-decision route and observe ONLY the original event time.
-                endpoint_row = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,)).fetchone()
-                if decision.status != "limited":
-                    from .ingest import observe_reply_window
-                    observe_reply_window(cursor, decoded, endpoint_row, now)
-            elif admin_input.kind == 'quarantine':
-                status, reason = 'quarantined', 'input_sensitive_approval'
-            elif admin_input.kind == 'control':
-                status, reason = 'processed', 'admin_control_unavailable'
-                approval = ControlResult('denied')
+                endpoint_row = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?",
+                                              (endpoint.key,)).fetchone()
+            elif admin_input.kind == "quarantine":
+                status, reason = "quarantined", "input_sensitive_approval"
+            elif admin_input.kind == "control":
+                status, reason = "processed", "admin_control_unavailable"
+                approval = ControlResult("denied")
                 store = self.approval_store
                 if store is not None:
-                    from src.bot_security.store import SecurityError
-                    from .approval import Recipient
                     if store.transport is None or store.transport.token != token:
-                        raise IngressError('Official approval epoch mismatch')
-                    status, reason, approval_input = 'processed', 'admin_control', admin_input
-                    # Only a current real admin may obtain a reply window, and
-                    # only this authenticated event's ORIGINAL timestamp is used.
-                    try:
-                        store.transport.account_for_recipient(cursor, Recipient(endpoint, decoded.actor))
-                    except (SecurityError, PermissionError):
-                        pass
-                    else:
-                        from .ingest import observe_reply_window
-                        observe_reply_window(cursor, decoded, endpoint_row, now)
+                        raise IngressError("Official approval epoch mismatch")
+                    status, reason, approval_input = "processed", "admin_control", admin_input
             elif self.admitted(cursor, endpoint, decoded.actor):
                 payload = json.dumps({"op": 0, "t": dispatch.event_type, "s": dispatch.seq,
-                                      "id": dispatch.event_id, "d": dispatch.data}, ensure_ascii=False, separators=(",", ":"))
+                                      "id": dispatch.event_id, "d": dispatch.data},
+                                     ensure_ascii=False, separators=(",", ":"))
                 if len(payload.encode()) > 262144:
                     status, reason, payload = "quarantined", "payload_storage_limit", None
                 else:
                     status, reason = "pending", None
-        inbox_id = self._insert(cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=endpoint_row,
+                    prepared = (decoded, endpoint, endpoint_row, prepared_input)
+        inbox_id = self._insert(
+            cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=endpoint_row,
             native_id=native_id, event_id=event_id, status=status, reason=reason, payload=payload, echo=echo,
-            trigger=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending")
+            trigger=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending",
+        )
         if identity_input is not None:
-            cursor.execute("""UPDATE qq_official_inbound_events SET identity_control_actor_key=?,identity_control_occurred_at=?,identity_control_commitment=? WHERE inbox_id=?""",
-                (decoded.actor.key,decoded.platform_occurred_at,command_commitment(self.binding._pepper,inbox_id=inbox_id,endpoint=endpoint,actor=decoded.actor,native_id=native_id,command=identity_input),inbox_id))
+            cursor.execute("""UPDATE qq_official_inbound_events
+                SET identity_control_actor_key=?,identity_control_occurred_at=?,identity_control_commitment=?
+                WHERE inbox_id=?""",
+                (decoded.actor.key, decoded.platform_occurred_at,
+                 command_commitment(self.binding._pepper, inbox_id=inbox_id, endpoint=endpoint,
+                                    actor=decoded.actor, native_id=native_id, command=identity_input), inbox_id))
         if approval_input is not None:
             commitment = control_commitment(self.approval_store.transport.secret,
                 inbox_id=inbox_id, endpoint=endpoint, actor=decoded.actor, command=approval_input)
@@ -451,8 +670,10 @@ class OfficialInboxStore:
                 SET control_actor_key=?,control_action=?,control_decision_code=? WHERE inbox_id=?""",
                 (decoded.actor.key, command.action, decision.status, inbox_id))
         self._save_aliases(cursor, account, aliases, inbox_id, now)
-        disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision or approval or identity_input else "skipped"
-        return Acceptance(disposition, inbox_id, reason or "", decision, approval, approval_input, native_admission, identity_input)
+        disposition = ("inbox" if status == "pending" else "quarantined" if status == "quarantined"
+                       else "control" if decision or approval or identity_input else "skipped")
+        return Acceptance(disposition, inbox_id, reason or "", decision, approval,
+                          approval_input, native_admission, identity_input, prepared)
 
     def _lifecycle(self, cursor, account, dispatch, now):
         body = dispatch.data
@@ -471,32 +692,22 @@ class OfficialInboxStore:
         if duplicate is not None:
             return duplicate
         if dispatch.event_type in {"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT"}:
-            # A fresh lifecycle event creates a new membership generation.
-            # Rejoining alone cannot revive a prior binding or owner link.
             removed = dispatch.event_type == "GROUP_DEL_ROBOT"
             desired_membership = "absent" if removed else "present"
             if row["membership_state"] == desired_membership:
                 inbox_id = self._insert(cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=row,
-                    event_id=dispatch.event_id, status="processed", reason="lifecycle_no_change")
+                                        event_id=dispatch.event_id, status="processed", reason="lifecycle_no_change")
                 self._save_aliases(cursor, account, aliases, inbox_id, now)
                 return Acceptance("control", inbox_id, "lifecycle_no_change")
             binding_state = "revoked" if removed or row["binding_state"] != "unbound" else "unbound"
             cursor.execute("""UPDATE qq_official_endpoints SET generation=generation+1,route_epoch=route_epoch+1,
                 capability_revision=capability_revision+1,binding_state=?,membership_state=?,proactive_state='unknown',updated_at=?
                 WHERE endpoint_key=?""", (binding_state, "absent" if removed else "present", now, endpoint.key))
-            cursor.execute("UPDATE qq_official_reply_windows SET state='revoked',updated_at=? WHERE endpoint_key=?", (now, endpoint.key))
-            cursor.execute("UPDATE qq_official_owner_actor_links SET state='revoked',revision=revision+1,updated_at=? WHERE endpoint_key=? AND state='active'", (now, endpoint.key))
-            cursor.execute("""UPDATE qq_official_binding_challenges SET state='cancelled',code_hmac='',updated_at=?,consumed_at=?
-                WHERE challenge_id IN (SELECT challenge_id FROM qq_official_binding_candidates WHERE endpoint_key=? AND state='pending')""",
-                (now, now, endpoint.key))
-            cursor.execute("""UPDATE qq_official_binding_candidates SET state='cancelled',updated_at=?,consumed_at=?
-                WHERE endpoint_key=? AND state='pending'""", (now, now, endpoint.key))
+            self._retire_evidence(cursor, account.key, now, endpoint_key=endpoint.key)
         elif dispatch.event_type.endswith("_MSG_REJECT"):
             cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='denied',proactive_probe_attempt_id=NULL,proactive_probe_at=NULL,
                 updated_at=? WHERE endpoint_key=?""", (now, endpoint.key))
         elif dispatch.event_type.endswith("_MSG_RECEIVE"):
-            # The owner turned proactive messages on; a later 40034105 still
-            # marks the group denied.
             cursor.execute("""UPDATE qq_official_endpoints SET proactive_state='allowed',proactive_probe_attempt_id=NULL,proactive_probe_at=NULL,
                 updated_at=? WHERE endpoint_key=?""", (now, endpoint.key))
         inbox_id = self._insert(cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=row,
@@ -509,18 +720,15 @@ class OfficialInboxStore:
         timestamp = int(self.clock()) if now is None else now
         with self.transaction() as cursor:
             self.epoch_guard(cursor, token)
-            cursor.execute("""UPDATE qq_official_inbound_events i SET payload_json=NULL,updated_at=?
-                WHERE i.account_key=? AND i.payload_json IS NOT NULL AND i.payload_expires_at<=?
-                  AND i.status<>'pending'
-                  AND NOT EXISTS (SELECT 1 FROM durable_jobs j WHERE j.job_id IN (i.ingest_job_id,i.dispatch_job_id)
-                      AND j.status IN ('pending','running'))""", (timestamp, token.account_key, timestamp))
+            cursor.execute("""UPDATE qq_official_inbound_events SET payload_json=NULL,updated_at=?
+                WHERE account_key=? AND payload_json IS NOT NULL AND payload_expires_at<=?
+                  AND status<>'pending'""", (timestamp, token.account_key, timestamp))
             return max(cursor.rowcount, 0)
 
     @staticmethod
     def _retire_evidence(cursor, account_key, now, *, endpoint_key=None):
         clause = "account_key=?" + (" AND endpoint_key=?" if endpoint_key is not None else "")
         params = (account_key, endpoint_key) if endpoint_key is not None else (account_key,)
-        cursor.execute(f"UPDATE qq_official_reply_windows SET state='revoked',updated_at=? WHERE {clause}", (now, *params))
         cursor.execute(f"""UPDATE qq_official_owner_actor_links SET state='revoked',revision=revision+1,updated_at=?
             WHERE {clause} AND state='active'""", (now, *params))
         cursor.execute(f"""UPDATE qq_official_binding_challenges SET state='cancelled',code_hmac='',updated_at=?,consumed_at=?

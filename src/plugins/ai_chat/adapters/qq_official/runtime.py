@@ -194,9 +194,9 @@ class OfficialRuntime:
                 self.journal = await self._calls(TurnJournal, self.database)
             from .lease import assert_epoch
             binding = BindingReducer(self.loaded.binding_pepper, epoch_guard=assert_epoch)
-            self.store = await self._calls(OfficialInboxStore, self.database, jobs=self.jobs, binding=binding,
+            self.store = await self._calls(OfficialInboxStore, self.database, binding=binding,
                 private_policy=self.loaded.private_policy, private_allowed_openids=self.loaded.private_allowed_openids,
-                payload_retention_hours=self.loaded.payload_retention_hours)
+                payload_retention_hours=self.loaded.payload_retention_hours, ledger=self.ledger)
             await self._calls(self.store.ensure_account, self.loaded.account)
             self.outbox = OfficialSendStore(self.deliveries, admission=self.store.admitted,
                 pepper=self.loaded.binding_pepper, max_wait_seconds=self.loaded.delivery.max_wait_seconds)
@@ -389,25 +389,22 @@ class OfficialRuntime:
             observe(self.observer, 'ingest', result.status)
             if result.status != 'processed' or result.echo_state != 'not_echo':
                 return
-            def input_row():
-                with self.store.transaction() as cursor:
-                    return dict(cursor.execute('''SELECT i.endpoint_key,i.route_epoch,i.turn_text,
-                        i.conversation_control,i.conversation_generation,i.conversation_stopped,
-                        i.canonical_message_id,m.sender_actor_key FROM qq_official_inbound_events i
-                        JOIN messages m USING(canonical_message_id) WHERE inbox_id=?''', (inbox_id,)).fetchone())
-            row = await self._calls(input_row)
-            if row['conversation_control']:
-                on_control(row['endpoint_key'],row['conversation_control'])
-            if row['conversation_stopped'] and not result.reply_requested:
+            if result.conversation_control:
+                on_control(result.endpoint_key, result.conversation_control)
+            if result.conversation_stopped and not result.reply_requested:
                 return
             if result.reply_requested and self.background_service is not None:
-                self.background_service.direct_message(row['endpoint_key'])
-            source = SimpleNamespace(job_id=None, payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
-                lease_generation=1, attempts=1, kind=account_job_kind('turn', token.account_key), endpoint=row['endpoint_key'],
-                conversation_generation=row['conversation_generation'],command=row['turn_text'].lstrip().startswith(('/', '!')))
-            key = row['endpoint_key'], row['sender_actor_key'], row['route_epoch'], row['conversation_generation']
-            if batcher.add(key, source, row['turn_text'], requested=result.reply_requested,
-                           canonical_id=row['canonical_message_id']):
+                self.background_service.direct_message(result.endpoint_key)
+            source = SimpleNamespace(
+                inbox_id=inbox_id, batch_message_ids=(), job_id=None,
+                payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
+                lease_generation=1, attempts=1, endpoint=result.endpoint_key,
+                conversation_generation=result.conversation_generation,
+                command=result.turn_text.lstrip().startswith(('/', '!')),
+            )
+            key = result.endpoint_key, result.sender_actor_key, result.route_epoch, result.conversation_generation
+            if batcher.add(key, source, result.turn_text, requested=result.reply_requested,
+                           canonical_id=result.canonical_message_id):
                 return
             await dispatch_turn(source, result.reply_requested)
 
@@ -495,8 +492,6 @@ class OfficialRuntime:
                     next_file_scan = loop.time() + 30
                 await asyncio.sleep(self.probe_seconds)
 
-        worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
-                                  concurrency=2, per_scope_limit=1, database_calls=self._calls)
         async with self.protocol_factory(self.loaded, checkpoint=checkpoint, on_checkpoint=on_checkpoint,
                                          ensure_current=lambda: self._ensure_current(token)) as gateway, AsyncExitStack() as resources:
             self._gateway = gateway
@@ -609,8 +604,7 @@ class OfficialRuntime:
             vector_worker = await self._optional_feature('semantic',build_vector_worker,self,token)
             self.state, self.reason = "running", "receiving_events"
             await self._calls(self._recover_interrupted_turns, token)
-            tasks = [asyncio.create_task(gateway.run(on_dispatch)), asyncio.create_task(worker.run_forever()),
-                     asyncio.create_task(monitor())]
+            tasks = [asyncio.create_task(gateway.run(on_dispatch)), asyncio.create_task(monitor())]
             if self.sender is not None:
                 tasks.append(asyncio.create_task(self.sender.run()))
             if self.approval_service is not None:
@@ -650,7 +644,7 @@ class OfficialRuntime:
                     self.agent_service = None
 
     def _recover_interrupted_turns(self, token):
-        from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json
+        from src.plugins.ai_chat.message_ir import MessageBody, TextNode
         from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
         from .renderer import render_plan
         from .conversation_control import permitted
@@ -659,37 +653,24 @@ class OfficialRuntime:
         notice = '刚才重启了，这条没处理完，麻烦再说一次'
         with self.store.transaction() as cursor:
             self.store.epoch_guard(cursor, token)
-            cursor.execute("UPDATE durable_jobs SET status='cancelled',lease_owner='',lease_until=NULL,finished_at=?,updated_at=? WHERE kind IN (?,?) AND status IN ('pending','running')",
-                (now, now, account_job_kind('ingest', token.account_key), account_job_kind('turn', token.account_key)))
             cursor.execute("UPDATE qq_official_inbound_events SET status='skipped',reason_code='restart_interrupted',processed_at=?,updated_at=? WHERE account_key=? AND status='pending'",
                 (now, now, token.account_key))
             rows = cursor.execute('''SELECT x.* FROM qq_official_turn_executions x
                 LEFT JOIN agent_turns t ON t.turn_id=x.journal_turn_id
                 WHERE x.account_key=? AND x.account_fencing_epoch<?
-                AND (t.status='running' OR x.state='executing'
-                     OR x.state IN ('prepared','needs_attention','result_ready'))
+                AND (t.status='running' OR x.state IN ('prepared','executing','needs_attention','result_ready'))
                 ORDER BY x.created_at DESC FOR UPDATE OF x''', (token.account_key, token.epoch)).fetchall()
             notified = set()
             for row in rows:
                 endpoint = EndpointKey.parse(row['endpoint_key'])
                 actor = ActorKey.parse(row['requester_actor_key'])
-                if not permitted(cursor,endpoint,canonical=row['canonical_message_id'],commands=row['execution_kind']=='command'):
+                if not permitted(cursor, endpoint, canonical=row['canonical_message_id'], commands=row['execution_kind'] == 'command'):
                     if row['journal_turn_id'] is not None:
-                        self.journal.finish_turn(row['journal_turn_id'],status='aborted',finished_at=now,
-                            trace_payload={'failure':{'code':'conversation_stopped_or_replaced'},'usage_incomplete':True},
+                        self.journal.finish_turn(row['journal_turn_id'], status='aborted', finished_at=now,
+                            trace_payload={'failure': {'code': 'conversation_stopped_or_replaced'}, 'usage_incomplete': True},
                             transaction_cursor=cursor)
                     cursor.execute('''UPDATE qq_official_turn_executions SET state='cancelled',
-                        reason_code='conversation_stopped_or_replaced',updated_at=? WHERE execution_id=?''',(now,row['execution_id']))
-                    continue
-                if row['state'] == 'result_ready' and row['result_body_json'] and row['plan_id'] is None:
-                    plan = self.outbox.enqueue(token,
-                        rendered=render_plan(body_from_json(row['result_body_json']), endpoint), requester=actor,
-                        logical_key='qq-turn-result:' + row['execution_id'], source_scope_key=row['scope_key'],
-                        expires_at=max(now + 300, row['deadline_at']),
-                        source_native_message_id=row['source_native_message_id'],
-                        source_canonical_message_id=row['canonical_message_id'], transaction_cursor=cursor)
-                    cursor.execute("UPDATE qq_official_turn_executions SET state='handed_off',plan_id=?,handed_off_at=?,updated_at=? WHERE execution_id=?",
-                        (plan.plan_id, now, now, row['execution_id']))
+                        reason_code='conversation_stopped_or_replaced',updated_at=? WHERE execution_id=?''', (now, row['execution_id']))
                     continue
                 if endpoint.key not in notified and self.store.admitted(cursor, endpoint, actor):
                     self.outbox.enqueue(token, rendered=render_plan(MessageBody((TextNode(0, notice),)), endpoint),

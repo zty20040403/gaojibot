@@ -5,7 +5,7 @@ import unittest
 from src.plugins.ai_chat.adapters.qq_official import conversation_control as controls
 from src.plugins.ai_chat.background_jobs import BackgroundJobs
 from src.plugins.ai_chat.platform_types import ActorKey,EndpointKey
-from tests import test_qq_official_ingest as base
+from tests import qq_official_inbox_fixture as base
 
 
 class ConversationControlTests(unittest.TestCase):

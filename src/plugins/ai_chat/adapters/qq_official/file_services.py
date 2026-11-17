@@ -18,7 +18,6 @@ from src.plugins.ai_chat.application.owned_sandbox import (
 from src.plugins.ai_chat.execution_control import LeaseLost
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, BackgroundToolSource, EndpointKey
 
-from . import turn_source as execution
 from .conversation_control import permitted, state
 from .file_upload import FileUploadError, FileUploader, MAX_FILE_BYTES
 from .image_formats import artifact_filename as canonical_artifact_filename
@@ -161,8 +160,7 @@ class OfficialFileRuntime:
             with service.transaction() as cursor:
                 service._account(cursor)
                 now = int(service.clock())
-                row = execution.assert_execution_current(cursor, token=service.token, handle=life.handle,
-                    job=life.job, admission=service.admission, now=now)
+                row = life.current(cursor, now)
                 if row["state"] != "executing" or row["execution_kind"] != "chat":
                     raise LeaseLost("artifact_source_unavailable")
                 return row["deadline_at"], row["journal_turn_id"], state(cursor, inbound.endpoint)["stop_generation"]
