@@ -41,6 +41,26 @@
     };
   };
   opsBot = ops.systemd.services.gaoji;
+  container = extra: evaluate {
+    imports = [extra];
+    networking.nftables.enable = true;
+    systemd.network.enable = true;
+    services.gaoji.sandbox = {
+      enable = true;
+      backend = "container";
+      vmRoot = "/var/lib/TEST/vms";
+    };
+  };
+  ct = container {};
+  ctOps = container {
+    services.gaoji.sandbox.operations = {
+      enable = true;
+      owners = [owner];
+      loginServer = "https://TEST.invalid";
+      domain = "TEST.invalid";
+    };
+  };
+  ctBot = ct.systemd.services.gaoji;
   unit = config: config.systemd.services.gaoji-vm;
   hook = value: lib.isList value && lib.hasInfix "gaoji-vm-network" (lib.last value)
     && lib.hasSuffix "--if-running" (lib.last value);
@@ -64,6 +84,23 @@
     opsRelaysEveryHostPort = builtins.all (port: ops.systemd.sockets ? "gaoji-ops-relay-${toString port}"
       && ops.systemd.services ? "gaoji-ops-relay-${toString port}") [18640 18641];
     opsOffByDefault = !(vm.systemd.services ? gaoji-ops-vm) && !(vm.systemd.sockets ? gaoji-ops-relay-18640);
+    containerBotUsesBrokerNotLibvirt = ctBot.environment.AI_SANDBOX_BACKEND == "container"
+      && ctBot.environment.AI_SANDBOX_CONTAINER_BROKER == "/run/gaoji-ct/broker.sock"
+      && builtins.elem "gaoji-ct-broker.socket" ctBot.requires
+      && !(ct.systemd.services ? gaoji-vm) && !(ctBot.environment ? AI_SANDBOX_VM_IMAGE)
+      && !ct.virtualisation.libvirtd.enable;
+    containerBrokerSocketIsBotOnly = ct.systemd.sockets.gaoji-ct-broker.socketConfig.SocketMode == "0600"
+      && ct.systemd.sockets.gaoji-ct-broker.socketConfig.SocketUser == ct.services.gaoji.user;
+    containerUnitsBootTheContainerSystem = lib.hasInfix "gaoji-ct-start" ct.systemd.services."gaoji-ct@".serviceConfig.ExecStart
+      && lib.hasSuffix " plain" ct.systemd.services."gaoji-ct@".serviceConfig.ExecStart
+      && lib.hasSuffix " ops" ct.systemd.services."gaoji-ct-ops@".serviceConfig.ExecStart;
+    containerBridgeIsHostAtGuestAddress = ct.systemd.network.networks."60-vz-gaoji".address == ["10.0.2.2/24"]
+      && ct.systemd.network.networks."61-gaoji-ct-ports".bridgeConfig.Isolated
+      && builtins.all (port: ct.systemd.sockets ? "gaoji-ct-relay-${toString port}") [18640 18641];
+    containerOpsSharesNamespaceWithoutSecondDaemon = ctOps.systemd.services ? gaoji-ops-tailscaled
+      && !(ctOps.systemd.services ? gaoji-ops-vm)
+      && builtins.elem "gaoji-ops-network.service" ctOps.systemd.services."gaoji-ct-ops@".requires
+      && !(ctOps.systemd.services.gaoji.environment ? AI_SANDBOX_OPERATIONS_SOCKET);
     noSandboxHasNoVmUnit = !(noSandbox.systemd.services ? gaoji-vm);
   };
 in {

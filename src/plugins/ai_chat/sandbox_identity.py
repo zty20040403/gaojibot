@@ -53,7 +53,13 @@ def _url(value):
     return value
 
 
-def run(payload, *, directory=Path('/run/gaoji'), boot_file=Path('/proc/sys/kernel/random/boot_id')):
+CONTAINER_BOOT = Path('/run/gaoji-boot-id')
+
+
+def run(payload, *, directory=Path('/run/gaoji'), boot_file=None):
+    # A container shares the host kernel's boot id, so its init writes one per boot.
+    if boot_file is None:
+        boot_file = CONTAINER_BOOT if CONTAINER_BOOT.is_file() else Path('/proc/sys/kernel/random/boot_id')
     boot = boot_file.read_text().strip()
     if str(UUID(boot))!=boot:
         raise ValueError('invalid_boot_id')
