@@ -50,11 +50,6 @@ class BackgroundToolSession:
             raise ValueError('后台工具不可用')
         if name in {'analyze_video','record_video_summary'}:
             return json.dumps(await self.video.execute(name,arguments),ensure_ascii=False)
-        if name == 'ops_act':
-            return json.dumps(await self.ops_act(arguments),ensure_ascii=False)
-        if name == 'ops_read':
-            from .ops_read import read
-            return await read(self.app, self.inbound, arguments, current=self.current)
         if name == 'ask_main':
             return json.dumps({'answer': await self.question(str(arguments['question']))}, ensure_ascii=False)
         from .billing_context import active_billing,billing_scope

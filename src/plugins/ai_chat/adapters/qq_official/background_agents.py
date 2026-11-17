@@ -63,18 +63,8 @@ class OfficialBackgroundAgents:
 
         def upstream():
             return upstream_profile(app.model_catalog, settings)
-        host = getattr(app,'official_host',None)
-        self.ops = None
-        if host is not None and host.config.account.key==token.account_key and host.config.operations is not None:
-            from .ops_runtime import OfficialOps
-            self.ops = OfficialOps(runtime,token,app)
-        self.host_apis = host.config.apis if host is not None and host.config.account.key==token.account_key else {}
-        from ...host_api_calls import HostAPICalls
-        from ...host_api_proxy import HostAPIProxy
-        self.api_proxy = HostAPIProxy(self.host_apis,HostAPICalls(app.database,clock=self.clock),calls=self.calls) if self.host_apis else None
         self.gateway = CodexGateway(port=settings.background_gateway_port, upstream=upstream,
-            model=self.model_settings.get, logger=app.logger,api_handler=self.api_proxy.handle if self.api_proxy else None,
-            billing=self.billing)
+            model=self.model_settings.get, logger=app.logger, billing=self.billing)
         self.vm_lifecycle = None
         if getattr(getattr(app,'sandbox_manager',None),'backend',None)=='vm':
             from .vm_lifecycle import OfficialVMLifecycle
@@ -98,11 +88,6 @@ class OfficialBackgroundAgents:
         return BillingContext(store,source,self.calls,current=channel.current)
 
     async def start(self):
-        if self.ops is not None:
-            await self.ops.start()
-        else:
-            from .ops_actions import retire_runtime
-            await self.calls(retire_runtime,self.runtime.store.transaction,self.token,int(self.clock()),'ops_runtime_disabled')
         if self.vm_lifecycle is not None:
             await self.vm_lifecycle.start()
 
@@ -191,23 +176,14 @@ class OfficialBackgroundAgents:
                 return inbound.platform_role in {'owner','admin'} or (authority is not None
                     and authority.owner_for_actor(cursor,inbound.endpoint,inbound.actor) is not None)
         from ...browser_policy import instructions as browser_instructions
-        from ...host_api_proxy import api_instructions
         browser = browser_instructions(inbound.endpoint,
             shared_allowed=await self.calls(shared_login) if inbound.endpoint.kind=='group' else False)
         session = BackgroundToolSession(self.app, inbound, question=question, current=current,
-            prompt=PROMPT+browser+api_instructions(self.host_apis,self.app.settings.background_gateway_port))
+            prompt=PROMPT+browser)
         session.billing_context = self.billing(SimpleNamespace(source=row,current=current))
         from ...background_video import VideoSession
         session.video = VideoSession(self.app,inbound,current=current,check=check_transaction,job_id=job.job_id)
         session.tools += session.video.tools
-        from ...ops_read import TOOL, owner_allowed
-        if await self.calls(owner_allowed, self.app, inbound):
-            session.tools += (TOOL,)
-        if self.ops is not None and (catalog := await self.calls(self.ops.catalog,job)):
-            from functools import partial
-            from .ops_runtime import tool
-            session.tools += (tool(catalog),)
-            session.ops_act = partial(self.ops.act,job,current=current)
         return session
 
     async def start_vm(self, row):
@@ -265,8 +241,6 @@ class OfficialBackgroundAgents:
                 self.results[row['job_id']] = asyncio.create_task(present(self, row))
 
     async def close(self):
-        if self.ops is not None:
-            await self.ops.close()
         if self.vm_lifecycle is not None:
             await self.vm_lifecycle.close()
         for task in self.results.values():

@@ -159,12 +159,12 @@ class _Server(uvicorn.Server):
 
 
 class CodexGateway:
-    def __init__(self, *, port, upstream, model, logger, client=None, api_handler=None, vm_authority=None, vm_handler=None, billing=None):
+    def __init__(self, *, port, upstream, model, logger, client=None, vm_authority=None, vm_handler=None, billing=None):
         # upstream() -> ModelProfile; model() -> (model, effort). One snapshot
         # provides both the actual route/key and its optional price.
         self.port, self.upstream, self.model, self.logger = port, upstream, model, logger
         self.billing = billing
-        self.api_handler,self.vm_authority,self.vm_handler = api_handler,vm_authority,vm_handler
+        self.vm_authority,self.vm_handler = vm_authority,vm_handler
         self.channels: dict[str, Channel] = {}
         self.failures: dict[str, str] = {}
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(30, read=IDLE_SECONDS), trust_env=False)
@@ -193,10 +193,6 @@ class CodexGateway:
             app = Starlette(routes=[Route('/v1/models', self._models),
                                     Route('/v1/responses', _ModelRequest(self), methods=['POST']),
                                     Route('/v1/responses/compact', _ModelRequest(self), methods=['POST'])])
-            if self.api_handler is not None:
-                from .host_apis import METHODS
-                for path in ('/api/{name}','/api/{name}/{path:path}'):
-                    app.router.routes.append(Route(path,_ModelRequest(self,self.api_handler),methods=sorted(METHODS)))
             if self.vm_handler is not None:
                 for path,method,write in (('/vm/say','POST',True),('/vm/wake','POST','wake'),('/vm/send-file','POST',True),('/vm/actions/{action_id}','GET',False),('/vm/actions','GET',False),
                         ('/vm/events','GET',False),('/vm/units','POST',False),('/vm/history','POST',False),('/vm/web-search','POST',False),('/vm/web-fetch','POST',False),

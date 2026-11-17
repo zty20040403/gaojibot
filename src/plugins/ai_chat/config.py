@@ -149,8 +149,6 @@ class Settings:
     tool_max_result_chars: int
     tool_max_context_chars: int
     search_enabled: bool
-    ops_read_base_url: str
-    ops_read_token_file: str
     background_model: str
     background_effort: str
     background_upstream_profile: str
@@ -347,8 +345,6 @@ class Settings:
                 500000,
             ),
             search_enabled=boolean("AI_SEARCH_ENABLED", True),
-            ops_read_base_url=environment.get('AI_OPS_READ_BASE_URL', '').strip(),
-            ops_read_token_file=environment.get('AI_OPS_READ_TOKEN_FILE', '').strip(),
             background_model=environment.get('AI_BACKGROUND_MODEL', 'gpt-6.1-sol').strip(),
             background_effort=environment.get('AI_BACKGROUND_EFFORT', 'high').strip(),
             background_upstream_profile=environment.get('AI_BACKGROUND_UPSTREAM_PROFILE', '').strip(),

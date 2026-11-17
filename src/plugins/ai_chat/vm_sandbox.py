@@ -183,7 +183,6 @@ class VmSandboxManager:
         self._last_execs: dict[str, SandboxExecutionActivity] = {}
         self._conversation_locks = {}
         self._conversation_guests = set()
-        self.github_identity = None  # Public login/id from protected host configuration, never a token.
         self.conversation_lifecycle = None
         from .vm_program_state import VMProgramState
         self.program_state = VMProgramState(self,limit=resident_limit)
@@ -522,7 +521,6 @@ class VmSandboxManager:
                 )
                 if code:
                     raise SandboxError(f"VM 初始化失败：{err.decode(errors='replace')[-500:]}")
-                await self._configure_github(owner,sandbox_id)
                 await self._conversation_event('ready',owner,sandbox_id)
                 metadata["state"] = "ready"
                 metadata["last_used"] = int(time.time())
@@ -853,13 +851,6 @@ class VmSandboxManager:
         if owner.startswith('qqo:conversation:') and self.conversation_lifecycle is not None:
             return await getattr(self.conversation_lifecycle,event)(owner,sandbox_id,**kwargs)
 
-    async def _configure_github(self, owner, sandbox_id):
-        if self.github_identity is None or not owner.startswith('qqo:conversation:'):
-            return
-        code,_,_ = await self._guest_exec(sandbox_id,'/bin/sh',['-c',self.github_identity.script],timeout=30)
-        if code:
-            raise SandboxError('VM 的 Git 提交身份配置失败。')
-
     async def start_owned(self, owner: str, sandbox_id: str, *, automatic=False) -> None:
         try:
             await self._start_owned(owner,sandbox_id,automatic=automatic)
@@ -882,7 +873,6 @@ class VmSandboxManager:
             if await self._running(sandbox_id):
                 if owner.startswith('qqo:conversation:'):
                     await self._wait_guest(sandbox_id, timeout=60)
-                    await self._configure_github(owner,sandbox_id)
                     await self._conversation_event('ready',owner,sandbox_id,**event_args)
                 return
             existing = await self._all_metadata()
@@ -897,7 +887,6 @@ class VmSandboxManager:
                 await self._conversation_event('starting',owner,sandbox_id,**event_args)
                 await self._virsh("start", self._name(sandbox_id))
             await self._wait_guest(sandbox_id)
-            await self._configure_github(owner,sandbox_id)
             await self._conversation_event('ready',owner,sandbox_id,**event_args)
             metadata["last_started"] = int(time.time())
             self._save_metadata(sandbox_id, metadata)

@@ -121,7 +121,7 @@ uv run python bot.py
 <a id="deployment"></a>
 ## 04 · 用 NixOS 管理运行环境
 
-Flake 提供默认包、`nixosModules.default`，以及独立的 cluster-control / worker 模块。
+Flake 提供默认包和 `nixosModules.default`。
 
 ```nix
 services.gaoji = {
@@ -139,7 +139,7 @@ services.gaoji = {
 
 持久工作区还需 `sandbox.enable = true`、`sandbox.backend = "vm"`、固定版本 Debian cloud image 和 `sandbox.vmRoot`。上述最小示例不包含完整 VM 配置。
 
-后台模型及推理强度可在管理台「任务与投递」修改。`opsRead.baseUrl/tokenFile` 仅供宿主读取；`voiceAsr.enable` 可启用短语音本地转写回退。已有 VM 需要显式升级，群文件继续保留。
+后台模型及推理强度可在管理台「任务与投递」修改。`voiceAsr.enable` 可启用短语音本地转写回退。已有 VM 需要显式升级，群文件继续保留。
 
 **上线前先读 → [部署与数据调整](docs/deploy-rework.md) · [沙箱安全](docs/sandbox-security.md)**
 
