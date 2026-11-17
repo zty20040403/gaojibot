@@ -246,19 +246,6 @@ class PlatformChatService:
             stripped = answer.strip()
             if stripped == "[silence]" or stripped.startswith("[silence:"):
                 return stripped
-                answer = media_session.finish(answer or "")
-            if not answer or not answer.strip():
-                if turn.delivered:
-                    return "[silence]"
-                raise ChatFailure("模型没有返回内容。", code="empty_response")
-                answer = media_session.finish(answer or "")
-            if not answer or not answer.strip():
-                if turn.delivered:
-                    return "[silence]"
-                raise ChatFailure("模型没有返回内容。", code="empty_response")
-            stripped = answer.strip()
-            if stripped == "[silence]" or stripped.startswith("[silence:"):
-                return stripped
             visible = answer
             if final_stream_state is not None and final_stream_state.sent_prefix:
                 prefix = final_stream_state.sent_prefix.rstrip()
