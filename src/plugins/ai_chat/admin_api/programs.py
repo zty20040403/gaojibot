@@ -56,7 +56,7 @@ def create_router(context):
         finally:
             cursor.close(); connection.close()
 
-    manager = services.sandbox_manager if getattr(services.sandbox_manager,'backend',None)=='vm' else None
+    manager = services.sandbox_manager if getattr(services.sandbox_manager,'backend',None) in {'vm','container'} else None
     reader = ProgramStatus(transaction=transaction,manager=manager,calls=asyncio.to_thread,clock=time.time,route=existing)
 
     @router.get('/api/programs')

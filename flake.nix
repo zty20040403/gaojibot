@@ -219,6 +219,13 @@
       };
     });
 
+    # The NixOS system each conversation container boots (x86_64 hosts).
+    nixosConfigurations.gaoji-container = lib.nixosSystem {
+      system = "x86_64-linux";
+      specialArgs.source = self;
+      modules = [./nix/guest/container.nix];
+    };
+
     nixosModules = {
       default = import ./nix/module.nix {inherit self;};
       gaoji = self.nixosModules.default;

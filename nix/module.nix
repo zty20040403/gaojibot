@@ -9,14 +9,21 @@
   statePath = "/var/lib/${cfg.stateDirectory}";
   cachePath = "/var/cache/${cfg.cacheDirectory}";
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  sandboxVm = cfg.runBot && cfg.sandbox.enable;
+  sandboxVm = cfg.runBot && cfg.sandbox.enable && cfg.sandbox.backend == "vm";
+  # NixOS containers (systemd-nspawn) in place of KVM guests; see the
+  # container block at the end of this file.
+  sandboxCt = cfg.runBot && cfg.sandbox.enable && cfg.sandbox.backend == "container";
+  ctBroker = "/run/gaoji-ct/broker.sock";
+  ctBridge = "vz-gaoji";
+  ctResolver = pkgs.writeText "gaoji-ct-resolv.conf" (lib.concatMapStrings (server: "nameserver ${server}\n") cfg.sandbox.containerDns);
   vmServiceName = "${serviceName}-vm";
   # The operations network: some conversations' VMs run under a second
   # libvirt daemon inside a network namespace with a Tailscale node of its
   # own, so `ssh <host>` in them reaches the fleet as gaoji (Tailscale SSH,
   # no key in the VM). Other VMs keep the filtered public-only egress.
   ops = cfg.sandbox.operations;
-  sandboxOps = sandboxVm && ops.enable;
+  sandboxOps = (sandboxVm || sandboxCt) && ops.enable;
+  opsVm = sandboxVm && ops.enable;
   opsName = "${serviceName}-ops";
   opsNetns = opsName;
   opsUplink = "${serviceName}-uplink";
@@ -329,6 +336,25 @@ in {
       description = "Memory cap in MiB per sandbox; VMs require at least 512 MiB.";
     };
 
+    sandbox.backend = lib.mkOption {
+      type = lib.types.enum ["vm" "container"];
+      default = "vm";
+      description = "Conversation workspaces as KVM guests (Debian, libvirt) or NixOS containers (systemd-nspawn).";
+    };
+
+    sandbox.containerSystem = lib.mkOption {
+      type = lib.types.package;
+      default = self.nixosConfigurations.gaoji-container.config.system.build.toplevel;
+      defaultText = lib.literalExpression "inputs.qq-bot.nixosConfigurations.gaoji-container.config.system.build.toplevel";
+      description = "The NixOS system every conversation container boots.";
+    };
+
+    sandbox.containerDns = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = ["1.1.1.1" "223.5.5.5"];
+      description = "Public resolvers for ordinary conversation containers.";
+    };
+
     sandbox.vmImage = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
       default = null;
@@ -461,7 +487,7 @@ in {
 
     networking.firewall.allowedTCPPorts = lib.optionals cfg.openFirewall [cfg.port];
 
-    virtualisation.libvirtd.enable = lib.mkDefault cfg.sandbox.enable;
+    virtualisation.libvirtd.enable = lib.mkDefault (cfg.sandbox.enable && cfg.sandbox.backend == "vm");
 
     systemd.services.${serviceName} = lib.mkIf cfg.runBot {
       description = "gaoji multi-model bot";
@@ -472,14 +498,16 @@ in {
       # Without the filtered daemon the bot must not run: a stray session
       # daemon would otherwise serve virsh with unfiltered qemu.
       requires = lib.optionals sandboxVm ["${vmServiceName}.service"]
-        ++ lib.optionals sandboxOps ["${opsName}-vm.service"];
+        ++ lib.optionals opsVm ["${opsName}-vm.service"]
+        ++ lib.optionals sandboxCt ["gaoji-ct-broker.socket"];
       after =
         ["network-online.target"]
         ++ lib.optionals sandboxVm ["${vmServiceName}.service"]
-        ++ lib.optionals sandboxOps ["${opsName}-vm.service"];
+        ++ lib.optionals opsVm ["${opsName}-vm.service"]
+        ++ lib.optionals sandboxCt ["gaoji-ct-broker.socket"];
       path =
         (cfg.runtimePackages ++ [pkgs.ffmpeg-headless])
-        ++ lib.optionals cfg.sandbox.enable [pkgs.libvirt pkgs.qemu pkgs.cloud-utils]
+        ++ lib.optionals sandboxVm [pkgs.libvirt pkgs.qemu pkgs.cloud-utils]
         ++ lib.optionals cfg.voiceAsr.enable [cfg.voiceAsr.package];
       environment =
         {
@@ -497,14 +525,22 @@ in {
           PYTHONUNBUFFERED = "1";
         }
         // lib.optionalAttrs cfg.sandbox.enable {
+          AI_SANDBOX_BACKEND = cfg.sandbox.backend;
+          AI_SANDBOX_VM_ROOT = cfg.sandbox.vmRoot;
+        }
+        // lib.optionalAttrs sandboxVm {
           XDG_RUNTIME_DIR = "${statePath}/vm-runtime";
           AI_SANDBOX_VM_IMAGE = toString cfg.sandbox.vmImage;
-          AI_SANDBOX_VM_ROOT = cfg.sandbox.vmRoot;
+        }
+        // lib.optionalAttrs sandboxCt {
+          AI_SANDBOX_CONTAINER_BROKER = ctBroker;
         }
         // lib.optionalAttrs sandboxOps {
           AI_SANDBOX_OPERATIONS_OWNERS = lib.concatStringsSep "," ops.owners;
-          AI_SANDBOX_OPERATIONS_SOCKET = "${opsRuntime}/libvirt/virtqemud-sock";
           AI_SANDBOX_OPERATIONS_DOMAIN = ops.domain;
+        }
+        // lib.optionalAttrs opsVm {
+          AI_SANDBOX_OPERATIONS_SOCKET = "${opsRuntime}/libvirt/virtqemud-sock";
         }
         // lib.optionalAttrs (cfg.admin.secretFile != null) {
           AI_ADMIN_SECRET_FILE = "/run/credentials/${serviceName}.service/admin-authorization-key";
@@ -642,6 +678,9 @@ in {
         ip -n ${opsNetns} address replace ${opsPeer}/30 dev uplink
         ip -n ${opsNetns} link set uplink up
         ip -n ${opsNetns} route replace default via ${opsHost}
+        # Containers on this network share the namespace and reach the
+        # host's relay at 10.0.2.2, as every guest does.
+        ip -n ${opsNetns} address replace 10.0.2.2/32 dev lo
         # Nothing in the namespace takes a connection from the uplink.
         ip netns exec ${opsNetns} nft -f - <<EOF
         table inet ${opsNetns}
@@ -736,7 +775,7 @@ in {
 
     # The second libvirt daemon: its qemu (QEMU user networking) opens sockets
     # in the namespace, so its VMs see the tailnet. The bot picks it per VM.
-    systemd.services."${opsName}-vm" = lib.mkIf sandboxOps {
+    systemd.services."${opsName}-vm" = lib.mkIf opsVm {
       description = "gaoji KVM workspaces on the operations network";
       wantedBy = ["multi-user.target"];
       requires = ["${opsName}-network.service"];
@@ -784,7 +823,7 @@ in {
         "d ${statePath}/vm-runtime 0700 ${cfg.user} ${cfg.group} -"
         "d ${cfg.sandbox.vmRoot} 0700 ${cfg.user} ${cfg.group} -"
       ]
-      ++ lib.optionals sandboxOps [
+      ++ lib.optionals opsVm [
         "d ${opsRuntime} 0700 ${cfg.user} ${cfg.group} -"
       ];
   }
@@ -798,7 +837,8 @@ in {
           requires = ["${opsName}-network.service"];
           after = ["${opsName}-network.service"];
           socketConfig = {
-            ListenStream = "127.0.0.1:${toString port}";
+            ListenStream = ["127.0.0.1:${toString port}" "10.0.2.2:${toString port}"];
+            FreeBind = true;
             NetworkNamespacePath = "/run/netns/${opsNetns}";
           };
         })
@@ -814,5 +854,182 @@ in {
           };
         })
       cfg.sandbox.vmHostPorts));
-  })]);
+  })
+  (lib.mkIf sandboxCt (let
+    # One root script starts every conversation container. The root is
+    # recreated each start (stateless system); /workspace persists and is
+    # idmapped so the container's sandbox user (1000) owns it.
+    start = pkgs.writeShellScript "gaoji-ct-start" ''
+      set -euo pipefail
+      id=$1 mode=$2
+      [[ $id =~ ^s[0-9a-f]{6}$ ]] || { echo "invalid sandbox id" >&2; exit 2; }
+      base=/var/lib/gaoji-ct/$id
+      install -d -m 0700 /var/lib/gaoji-ct "$base"
+      [ -d "$base/work" ] || install -d -m 0700 -o 1000 -g 1000 "$base/work"
+      rm -rf "$base/root"
+      install -d -m 0755 "$base/root" "$base/root/etc" "$base/root/usr" "$base/root/var/lib"
+      touch "$base/root/etc/os-release"
+      if [ "$mode" = ops ]; then
+        net=(--network-namespace-path=/run/netns/${opsNetns}); resolv=${opsVmResolver}
+      else
+        net=(--network-bridge=${ctBridge}); resolv=${ctResolver}
+      fi
+      exec ${config.systemd.package}/bin/systemd-nspawn --quiet --keep-unit --register=yes \
+        --machine="gct-$id" --notify-ready=yes --kill-signal=SIGRTMIN+3 \
+        --directory="$base/root" --private-users=pick --private-users-ownership=auto \
+        --link-journal=no --resolv-conf=off --timezone=off --bind-ro=/nix/store \
+        --bind="$base/work:/workspace:idmap" --bind="$base/work:/work:idmap" \
+        --bind-ro="$resolv:/etc/resolv.conf" "''${net[@]}" \
+        ${cfg.sandbox.containerSystem}/init
+    '';
+    unit = mode: {
+      description = "gaoji conversation container %i (${mode})";
+      requires = lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
+      after = ["network.target"] ++ lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
+      serviceConfig = {
+        Type = "notify";
+        NotifyAccess = "all";
+        ExecStart = "${start} %i ${mode}";
+        KillMode = "mixed";
+        Delegate = true;
+        Slice = "machine.slice";
+        DevicePolicy = "closed";
+        DeviceAllow = ["char-pts rwm" "/dev/net/tun rwm"];
+        TimeoutStartSec = 180;
+        TimeoutStopSec = 60;
+        SuccessExitStatus = 133;
+        MemoryMax = "${toString cfg.sandbox.memoryMiB}M";
+        CPUQuota = "${toString (cfg.sandbox.cpus * 100)}%";
+        TasksMax = cfg.sandbox.pidsLimit * 8;
+      };
+    };
+  in lib.mkMerge [{
+    assertions = [
+      {
+        assertion = config.systemd.network.enable;
+        message = "gaoji's container sandbox uses systemd-networkd for its bridge and DHCP";
+      }
+      {
+        assertion = config.networking.nftables.enable;
+        message = "gaoji's container sandbox needs nftables";
+      }
+    ];
+
+    # The only privileged path for the unprivileged bot: start, stop, status,
+    # exec and remove, validated per request (src/sandbox_runtime/container_broker.py).
+    systemd.sockets.gaoji-ct-broker = {
+      description = "gaoji container broker socket";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenStream = ctBroker;
+        SocketUser = cfg.user;
+        SocketGroup = cfg.group;
+        SocketMode = "0600";
+      };
+    };
+    systemd.services.gaoji-ct-broker = {
+      description = "gaoji container broker";
+      requires = ["gaoji-ct-broker.socket"];
+      path = [config.systemd.package];
+      serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 ${../src/sandbox_runtime/container_broker.py}";
+    };
+    systemd.services."gaoji-ct@" = unit "plain";
+    systemd.services."gaoji-ct-ops@" = unit "ops";
+    systemd.tmpfiles.rules = ["d /var/lib/gaoji-ct 0700 root root -"];
+
+    # An isolated bridge: the host is 10.0.2.2, as for QEMU guests, so the
+    # relay address and every guest tool stay the same. Ports cannot reach
+    # each other; the host lets a container reach the internet, DHCP and the
+    # relay ports, and nothing private.
+    systemd.network.netdevs."60-${ctBridge}".netdevConfig = {
+      Kind = "bridge";
+      Name = ctBridge;
+    };
+    systemd.network.networks."60-${ctBridge}" = {
+      matchConfig.Name = ctBridge;
+      address = ["10.0.2.2/24"];
+      networkConfig = {
+        DHCPServer = true;
+        ConfigureWithoutCarrier = true;
+      };
+      dhcpServerConfig = {
+        PoolOffset = 16;
+        PoolSize = 200;
+        EmitDNS = false;
+      };
+      linkConfig.RequiredForOnline = "no";
+    };
+    systemd.network.networks."61-gaoji-ct-ports" = {
+      matchConfig.Name = "vb-gct-*";
+      networkConfig.Bridge = ctBridge;
+      bridgeConfig.Isolated = true;
+      linkConfig.RequiredForOnline = "no";
+    };
+    networking.firewall.interfaces.${ctBridge} = {
+      allowedTCPPorts = cfg.sandbox.vmHostPorts;
+      allowedUDPPorts = [67];
+    };
+    networking.firewall.extraForwardRules = ''
+      iifname "${ctBridge}" accept
+      oifname "${ctBridge}" ct state { established, related } accept
+    '';
+    networking.nftables.tables.gaoji-ct = {
+      family = "inet";
+      content = ''
+        set non_public_v4 {
+          type ipv4_addr
+          flags interval
+          elements = {
+            0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8,
+            169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24,
+            192.0.2.0/24, 192.168.0.0/16, 198.18.0.0/15,
+            198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4
+          }
+        }
+        chain input {
+          type filter hook input priority -10; policy accept;
+          iifname "${ctBridge}" ct state { established, related } accept
+          iifname "${ctBridge}" udp dport 67 accept
+          iifname "${ctBridge}" ip daddr 10.0.2.2 tcp dport { ${lib.concatMapStringsSep ", " toString cfg.sandbox.vmHostPorts} } accept
+          iifname "${ctBridge}" counter reject with icmpx type admin-prohibited
+        }
+        chain forward {
+          type filter hook forward priority -10; policy accept;
+          iifname "${ctBridge}" meta nfproto ipv6 counter drop
+          iifname "${ctBridge}" ip daddr @non_public_v4 counter reject with icmpx type admin-prohibited
+          oifname "${ctBridge}" ct state != { established, related } counter drop
+        }
+        chain postrouting {
+          type nat hook postrouting priority srcnat; policy accept;
+          ip saddr 10.0.2.0/24 oifname != "${ctBridge}" masquerade
+        }
+      '';
+    };
+
+  }
+  {
+    # The relay ports are the host's loopback; forward them from 10.0.2.2.
+    systemd.sockets = lib.listToAttrs (map (port:
+      lib.nameValuePair "gaoji-ct-relay-${toString port}" {
+        description = "gaoji container relay port ${toString port}";
+        wantedBy = ["sockets.target"];
+        socketConfig = {
+          ListenStream = "10.0.2.2:${toString port}";
+          FreeBind = true;
+        };
+      })
+    cfg.sandbox.vmHostPorts);
+    systemd.services = lib.listToAttrs (map (port:
+      lib.nameValuePair "gaoji-ct-relay-${toString port}" {
+        description = "gaoji container relay port ${toString port}";
+        requires = ["gaoji-ct-relay-${toString port}.socket"];
+        serviceConfig = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString port}";
+          DynamicUser = true;
+          PrivateTmp = true;
+        };
+      })
+    cfg.sandbox.vmHostPorts);
+  }]))
+]);
 }

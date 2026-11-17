@@ -69,7 +69,7 @@ class OfficialBackgroundAgents:
         self.gateway = CodexGateway(port=settings.background_gateway_port, upstream=upstream,
             model=self.model_settings.get, logger=app.logger, billing=self.billing)
         self.vm_lifecycle = None
-        if getattr(getattr(app,'sandbox_manager',None),'backend',None)=='vm':
+        if getattr(getattr(app,'sandbox_manager',None),'backend',None) in {'vm','container'}:
             from .vm_lifecycle import OfficialVMLifecycle
             self.vm_lifecycle = OfficialVMLifecycle(transaction=runtime.store.transaction,lease=token,
                 private_admission=runtime.store.admitted,manager=app.sandbox_manager,calls=self.calls,

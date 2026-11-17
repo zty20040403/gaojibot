@@ -232,6 +232,8 @@ class Settings:
     sandbox_cpus: int = 2
     sandbox_pids_limit: int = 256
     sandbox_memory_mib: int = 8192
+    sandbox_backend: str = "vm"
+    sandbox_container_broker: str = ""
     sandbox_operations_owners: frozenset[str] = frozenset()
     sandbox_operations_socket: str = ""
     sandbox_operations_domain: str = ""
@@ -547,6 +549,8 @@ class Settings:
             sandbox_operations_owners=frozenset(
                 item.strip() for item in environment.get("AI_SANDBOX_OPERATIONS_OWNERS", "").split(",") if item.strip()
             ),
+            sandbox_backend=environment.get("AI_SANDBOX_BACKEND", "vm").strip().lower() or "vm",
+            sandbox_container_broker=environment.get("AI_SANDBOX_CONTAINER_BROKER", "").strip(),
             sandbox_operations_socket=environment.get("AI_SANDBOX_OPERATIONS_SOCKET", "").strip(),
             sandbox_operations_domain=environment.get("AI_SANDBOX_OPERATIONS_DOMAIN", "").strip(),
             sandbox_vm_image=environment.get("AI_SANDBOX_VM_IMAGE", "").strip(),
