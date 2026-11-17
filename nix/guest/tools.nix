@@ -158,8 +158,12 @@
     ++ [python share] ++ commands ++ lib.optional (pi != null) pi;
 in {
   inherit python packages commands share variables fontConfig;
-  # No host directory is exported: C3 will populate a new immutable derivation.
-  piFiles = pkgs.runCommand "gaoji-pi-files" {} ''mkdir -p "$out"'';
+  # The guest receives exactly these immutable files, never a host directory.
+  piFiles = pkgs.runCommand "gaoji-pi-files" {} ''
+    mkdir -p "$out"
+    cp ${source}/src/plugins/ai_chat/sandbox_pi_tools.ts "$out/sandbox_pi_tools.ts"
+    cp ${source}/src/plugins/ai_chat/sandbox_agent_bridge.py "$out/sandbox_agent_bridge.py"
+  '';
   compatPaths = [
     "/bin/sh"
     "/bin/rm"

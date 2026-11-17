@@ -15,6 +15,8 @@ class FakeAppServer:
         self.finish, self.outbox = finish, asyncio.Queue()
         self.steer_error, self.complete_on_rejection = steer_error, complete_on_rejection
         self.requests, self.tool_replies = [], []
+        self.model_index = 0
+        self.fallbacks = []
 
     async def wait(self, timeout):
         pass
@@ -67,7 +69,7 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         self.gateway = SimpleNamespace(start=AsyncMock(), open=lambda **kwargs: ('TEST_TOKEN', server), revoke=Mock(), port=18640,
                                        failure=lambda token: '')
         self.exec = AsyncMock()
-        settings = SimpleNamespace(get=lambda: ('TEST_MODEL', 'high'))
+        settings = SimpleNamespace(get=lambda: ('TEST_MODEL', 'high'), chain=lambda: ['TEST_MODEL'])
         return CodexEngine(self.gateway, settings, start_vm=AsyncMock(return_value='s123abc'),
                            guest_exec=self.exec, clock=lambda: now)
 
@@ -185,6 +187,68 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('sha256sum -c', script)
         self.assertIn('10.0.2.2 18641', script)
         self.assertNotIn('CLIPROXY', script)
+
+    def test_background_model_settings_chain_and_validation(self):
+        from src.plugins.ai_chat.codex_engine import BackgroundModelSettings
+        from src.plugins.ai_chat.config import Settings
+        prefs_store = {}
+        prefs = SimpleNamespace(
+            get_explicit=lambda k: prefs_store.get(k),
+            set=lambda k, v: prefs_store.__setitem__(k, v),
+        )
+        cfg = Settings.from_env({
+            'AI_BACKGROUND_MODELS': 'm1, m2 , m3',
+            'AI_BACKGROUND_EFFORT': 'medium',
+        })
+        settings = BackgroundModelSettings(prefs, cfg)
+        self.assertEqual(settings.chain(), ['m1', 'm2', 'm3'])
+        self.assertEqual(Settings.from_env({}).background_models, ('gpt-6.1-sol',))
+        self.assertEqual(Settings.from_env({'AI_BACKGROUND_MODEL': 'legacy'}).background_models, ('legacy',))
+        for bad in (',,,', 'a, ,b', ','.join(f'm{i}' for i in range(9)), 'x' * 101):
+            try:
+                Settings.from_env({'AI_BACKGROUND_MODELS': bad})
+            except ValueError:
+                pass
+            except Exception as exc:
+                self.fail(f'invalid chain raised {type(exc).__name__}, not ValueError')
+            else:
+                self.fail('invalid chain was accepted')
+        self.assertEqual(settings.get(), ('m1', 'medium'))
+        settings.set('alpha, beta', 'high')
+        self.assertEqual(settings.chain(), ['alpha', 'beta'])
+        self.assertEqual(settings.get(), ('alpha', 'high'))
+        for bad in ('', 'a, , b', ','.join(f'm{i}' for i in range(9)), 'x' * 101):
+            with self.assertRaises(ValueError):
+                settings.set(bad, 'high')
+
+    async def test_engine_appends_fallback_note_and_updates_trace_model(self):
+        server = FakeAppServer()
+        gateway = SimpleNamespace(
+            start=AsyncMock(),
+            open=lambda **kwargs: ('TEST_TOKEN', server),
+            revoke=Mock(),
+            port=18640,
+            failure=lambda token: '',
+        )
+        server.model_index = 1
+        server.last_model = 'm2'
+        server.fallbacks = [('m1', 'm2', 'HTTP 404: missing')]
+        settings = SimpleNamespace(
+            get=lambda: ('m1', 'high'),
+            # The owner can change settings while this job is running.
+            chain=lambda: ['new1', 'new2'],
+        )
+        engine = CodexEngine(gateway, settings, start_vm=AsyncMock(return_value='s123'), guest_exec=AsyncMock(), clock=lambda: 0)
+        trace = AgentTrace()
+        report = await engine(
+            {'job_id': 12, 'task': 'TEST', 'deadline_at': 7200},
+            self.session(),
+            feedback=AsyncMock(side_effect=[['more'], [], []]),
+            progress=AsyncMock(),
+            trace=trace,
+        )
+        self.assertEqual(trace.model, 'm2')
+        self.assertIn('后台模型降级：m1 → m2，原因：HTTP 404: missing', report)
 
 
 if __name__ == '__main__':

@@ -235,6 +235,7 @@ function BackgroundModelPicker({ plane }: { plane: Plane }) {
         {(settings.efforts as string[]).map((name) => <option key={name} value={name}>{name}</option>)}
       </select>
       {' '}<button disabled={!changed || !model.trim()} onClick={() => void plane.mutate('backgroundAgents', '/background-agents/settings', 'PUT', { model: model.trim(), effort }, ['backgroundAgents'])}>保存</button>
+      {' '}<small className="cell-sub">按顺序尝试，前一个不可用时自动换下一个（可用逗号分隔多个模型）。</small>
     </p>
   )
 }

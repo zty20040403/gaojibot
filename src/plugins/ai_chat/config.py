@@ -150,6 +150,7 @@ class Settings:
     tool_max_context_chars: int
     search_enabled: bool
     background_model: str
+    background_models: tuple[str, ...]
     background_effort: str
     background_upstream_profile: str
     background_gateway_port: int
@@ -240,6 +241,8 @@ class Settings:
     program_vm_limit: int = 4
     search_provider: str = "scrape"
     search_api_key: str = field(default="", repr=False)
+    background_engine: str = "codex"
+    background_context_window: int = 200000
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -257,6 +260,18 @@ class Settings:
         search_provider = environment.get("AI_SEARCH_PROVIDER", "").strip().lower() or "scrape"
         if search_provider not in {"scrape", "tavily", "bocha"}:
             raise ValueError("AI_SEARCH_PROVIDER must be scrape, tavily or bocha")
+        raw_background_models = environment.get('AI_BACKGROUND_MODELS', '').strip()
+        background_models = (
+            tuple(item.strip() for item in raw_background_models.split(','))
+            if raw_background_models else (environment.get('AI_BACKGROUND_MODEL', 'gpt-6.1-sol').strip(),)
+        )
+        if raw_background_models and (
+            len(background_models) > 8 or any(not item or len(item) > 100 for item in background_models)
+        ):
+            raise ValueError('AI_BACKGROUND_MODELS must contain 1–8 nonempty model names of at most 100 characters')
+        background_engine = environment.get('AI_BACKGROUND_ENGINE', 'codex').strip().lower() or 'codex'
+        if background_engine not in {'codex', 'pi'}:
+            raise ValueError('AI_BACKGROUND_ENGINE must be codex or pi')
         return cls(
             deepseek_api_key=environment.get("DEEPSEEK_API_KEY", "").strip(),
             deepseek_base_url=environment.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip(),
@@ -350,10 +365,13 @@ class Settings:
                 500000,
             ),
             search_enabled=boolean("AI_SEARCH_ENABLED", True),
-            background_model=environment.get('AI_BACKGROUND_MODEL', 'gpt-6.1-sol').strip(),
+            background_model=background_models[0],
+            background_models=background_models,
             background_effort=environment.get('AI_BACKGROUND_EFFORT', 'high').strip(),
             background_upstream_profile=environment.get('AI_BACKGROUND_UPSTREAM_PROFILE', '').strip(),
             background_gateway_port=integer('AI_BACKGROUND_GATEWAY_PORT', 18640),
+            background_engine=background_engine,
+            background_context_window=resource_limit('AI_BACKGROUND_CONTEXT_WINDOW', 200000, 32000, 10000000),
             program_vm_limit=resource_limit('AI_PROGRAM_VM_LIMIT',4,0,32),
             search_auto_enabled=boolean("AI_SEARCH_AUTO_ENABLED", True),
             search_max_results=integer("AI_SEARCH_MAX_RESULTS", 5),

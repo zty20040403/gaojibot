@@ -6,9 +6,10 @@
   lib,
   pkgs,
   source,
+  pi,
   ...
 }: let
-  tools = import ./tools.nix {inherit pkgs source;};
+  tools = import ./tools.nix {inherit pkgs pi source;};
 in {
   boot.isContainer = true;
   system.stateVersion = "26.05";
@@ -54,6 +55,7 @@ in {
     tools.compatPaths;
   environment.systemPackages = tools.packages;
   environment.etc."gaoji/skills".source = source + "/skills";
+  environment.etc."gaoji/pi".source = tools.piFiles;
   environment.variables = tools.variables // {HOME = "/workspace";};
   programs.nix-ld.enable = true;
   programs.nix-ld.libraries = tools.ldLibraries;
