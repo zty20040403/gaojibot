@@ -29,3 +29,4 @@ src/plugins/ai_chat/assets/browser_profiles/
 src/plugins/ai_chat/assets/*.sqlite3
 src/plugins/ai_chat/assets/*.sqlite3-wal
 src/plugins/ai_chat/assets/*.sqlite3-shm
+.venv
