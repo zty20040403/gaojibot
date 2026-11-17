@@ -6,7 +6,6 @@ from src.plugins.ai_chat.message_ir import MessageBody, TextNode, body_from_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from .protected_plans import load_protected_ref, verify_protected_attempt
-from .budget_notices import is_bot_notice_candidate
 from .lease import assert_epoch
 from .send_types import OutboxInvariantError, SendOutcome, digest, stable_json
 
@@ -143,10 +142,6 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     endpoint = EndpointKey.parse(delivery['endpoint_key'])
     actor = ActorKey.parse(attempt['bot_actor_key'])
     body, metadata = _context_projection(cursor, delivery, attempt)
-    provenance = {}
-    budget = cursor.execute('SELECT day_start FROM conversation_budget_days WHERE notice_plan_id=?',
-        (delivery['plan_id'],)).fetchone() if is_bot_notice_candidate(delivery) else None
-    if budget:provenance.update(system_notice='daily_budget',budget_day_start=budget['day_start'])
     display = 'Bot'
     reply_target, quoted_index = _quote(cursor, attempt, delivery, endpoint)
     native = receipt['native_message_id']
@@ -157,7 +152,7 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
         message_kind='command' if delivery['payload_mode']=='ephemeral' or metadata else 'chat',
         reply_to_native_message_id=reply_target, actor=actor, source_endpoint=endpoint,
         raw_event={'source':'qq-official', 'delivery_id':delivery['delivery_id'], 'attempt_id':attempt['attempt_id'],
-                   'receipt_id':receipt_id, 'time_source':'receipt_observed', **metadata, **provenance}, transaction_cursor=cursor)
+                   'receipt_id':receipt_id, 'time_source':'receipt_observed', **metadata}, transaction_cursor=cursor)
     canonical = stored.canonical_message_id
     cursor.execute("""INSERT INTO qq_official_messages
         (message_id,account_key,endpoint_key,native_message_id,canonical_message_id,direction,ref_msg_idx,created_at)
@@ -172,8 +167,6 @@ def finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     cursor.execute("""UPDATE deliveries SET status='committed',native_message_id=?,lease_until=NULL,
         wait_reason=NULL,last_error='',updated_at=? WHERE delivery_id=?""", (native, now, delivery['delivery_id']))
     cursor.execute('UPDATE delivery_receipts SET applied_at=? WHERE receipt_id=?', (now, receipt_id))
-    if budget:
-        cursor.execute("UPDATE conversation_budget_days SET notice_state='committed' WHERE notice_plan_id=?",(delivery['plan_id'],))
     from .file_projection import apply_file_receipt
     apply_file_receipt(cursor, delivery=delivery, attempt=attempt, now=now)
     return SendOutcome('committed', '', delivery['delivery_id'])

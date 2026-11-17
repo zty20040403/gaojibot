@@ -167,7 +167,7 @@ class VMSessions:
         return current
 
     def revoke_vm(self, sandbox_id, *, idle_owner=None):
-        """Check active owner jobs / VM commands and revoke in one account transaction."""
+        """Check active owner jobs and revoke in one account transaction."""
         with self.transaction() as cursor:
             assert_epoch(cursor,self.lease)
             if idle_owner is not None:
@@ -175,11 +175,6 @@ class VMSessions:
                     (self.lease.account_key,)).fetchall()
                 if any(workspace_owner(EndpointKey.parse(row['endpoint_key']))==idle_owner for row in agents):
                     return False
-            if idle_owner is not None and cursor.execute('''SELECT 1 FROM qq_official_background_commands c
-                    JOIN qq_official_endpoints e USING(endpoint_key)
-                    WHERE e.account_key=? AND c.sandbox_id=? AND c.finished_at IS NULL LIMIT 1''',
-                    (self.lease.account_key,sandbox_id)).fetchone():
-                return False
             cursor.execute('''UPDATE qq_official_vm_sessions SET revoked_at=?,updated_at=? WHERE sandbox_id=?
                 AND endpoint_key IN (SELECT endpoint_key FROM qq_official_endpoints WHERE account_key=?)''',
                 (int(self.clock()),int(self.clock()),sandbox_id,self.lease.account_key))

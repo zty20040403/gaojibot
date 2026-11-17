@@ -46,7 +46,7 @@ class VMLifecycleTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.token_value = (self.guest/'token').read_text()
         self.client = httpx.AsyncClient(trust_env=False,headers={'Authorization':'Bearer '+self.token_value})
         self.addAsyncCleanup(self.client.aclose)
-        self.url = f'http://127.0.0.1:{self.service.gateway.port}/vm/commands'
+        self.url = f'http://127.0.0.1:{self.service.gateway.port}/vm/actions?request_id=TEST_STATUS'
 
     async def test_restart_restores_running_vm_and_api_works_without_any_job(self):
         self.assertIs(self.manager.conversation_lifecycle,self.lifecycle)
@@ -64,16 +64,23 @@ class VMLifecycleTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         # An unregistered/removed VM must still be stoppable.
         await self.lifecycle.stopping('qqo:conversation:TEST_RETIRED','s654321')
 
-    async def test_idle_stop_keeps_scopes_and_programs_until_commands_are_finished(self):
-        from src.plugins.ai_chat.adapters.qq_official.background_commands import BackgroundCommands
-        await self.lifecycle.commands.close()  # This case tests the atomic idle gate, not guest execution.
-        commands = BackgroundCommands(self.lifecycle.store)
-        current = self.lifecycle.store.authenticate(self.token_value)
-        row,_ = commands.reserve(current,generation=(0,0),program='TEST_PROGRAM',request_id='TEST_COMMAND',argv=['true'])
+    async def test_idle_stop_keeps_scopes_until_background_jobs_are_finished(self):
+        from src.plugins.ai_chat.background_jobs import BackgroundJobs
+        from src.plugins.ai_chat.ledger import MessageLedger
+        from src.plugins.ai_chat.message_ir import MessageBody, TextNode
+        ledger = MessageLedger(self.database); self.addCleanup(ledger.close)
+        message = ledger.record_message(self.endpoint.scope,native_message_id='TEST_SOURCE',sender_native_user_id=self.actor.native_user_id,
+            sender_display='TEST_OWNER',body=MessageBody((TextNode(0,'TEST'),)),occurred_at=self.now,actor=self.actor,source_endpoint=self.endpoint)
+        jobs = BackgroundJobs(self.service.runtime.jobs,clock=lambda:self.now)
+        source = dict(account_key=self.account.key,endpoint_key=self.endpoint.key,actor_key=self.actor.key,
+            scope_key=self.endpoint.scope.key,source_execution_id=None,canonical_message_id=message.canonical_message_id,
+            native_message_id='TEST_SOURCE',endpoint_generation=1,route_epoch=1)
+        with self.tx() as cursor:
+            row = jobs.submit(cursor,kind='TEST_AGENT',key='TEST_JOB',source=source,task='TEST',title='TEST',profile='TEST_MODEL')
         scope = await self.lifecycle.api.authorize(self.token_value)
         self.assertFalse(await self.lifecycle.stopping(self.owner,'s123456',automatic=True))
         self.assertFalse(scope.revoked)
-        commands.cancel(current,row['command_id'])
+        self.query("UPDATE background_jobs SET state='cancelled',finished_at=? WHERE job_id=?",(self.now,row['job_id']))
         self.assertTrue(await self.lifecycle.stopping(self.owner,'s123456',automatic=True))
         self.assertTrue(scope.revoked)
 

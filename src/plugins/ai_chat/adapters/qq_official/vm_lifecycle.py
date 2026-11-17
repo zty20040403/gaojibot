@@ -4,8 +4,6 @@ import asyncio
 from ...background_tools import workspace_owner
 from ...platform_types import EndpointKey
 from .browser_runtime import BrowserRuntime
-from .command_http import CommandHTTP
-from .command_runner import CommandRunner
 from .lease import assert_epoch
 from .vm_api import VMAPIAuthority, VMWriteAdmission
 from .vm_credentials import VMCredentials
@@ -20,10 +18,8 @@ class OfficialVMLifecycle:
         self.store = VMSessions(transaction, lease, private_admission=private_admission, clock=clock)
         self.credentials = VMCredentials(self.store, manager, calls, port=gateway.port)
         self.api = VMAPIAuthority(self.credentials, actions=VMWriteAdmission(self.store))
-        self.commands = CommandRunner(self)
-        self.api.commands = self.commands.commands
         self.browser = BrowserRuntime(self)
-        self.http = VMHTTP(self, runtime, app, logger, commands=CommandHTTP(self.commands))
+        self.http = VMHTTP(self, runtime, app, logger)
         self.closed, self.restoring = False, None
 
     def route(self, owner):
@@ -73,7 +69,6 @@ class OfficialVMLifecycle:
         self.manager.conversation_lifecycle = self
         self.gateway.vm_authority = self.api
         self.gateway.vm_handler = self.http.handle
-        self.commands.start()
         await self.gateway.start()
         self.restoring = asyncio.create_task(self.restore())
 
@@ -98,5 +93,4 @@ class OfficialVMLifecycle:
         if self.restoring is not None:
             self.restoring.cancel()
             await asyncio.gather(self.restoring, return_exceptions=True)
-        await self.commands.close()
         await self.api.close()

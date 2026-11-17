@@ -116,15 +116,6 @@ class BrowserClearRequest(BaseModel):
     confirmation: Literal['clear']
 
 
-class BackgroundCommandCancelRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    endpoint_key: str = Field(min_length=1,max_length=1000)
-
-
-class AgentTimeLimitRequest(BackgroundCommandCancelRequest):
-    hours: int = Field(ge=1,le=6,strict=True)
-
-
 class ImageCaptionSettingsRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     scope_key: str = Field(min_length=1, max_length=1000)

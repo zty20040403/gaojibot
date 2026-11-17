@@ -194,11 +194,10 @@ class VMReads:
 
 
 class VMHTTP:
-    def __init__(self, lifecycle, runtime, app, logger, *, commands=None):
+    def __init__(self, lifecycle, runtime, app, logger):
         self.lifecycle, self.sessions, self.manager = lifecycle, lifecycle.store, lifecycle.manager
         self.runtime, self.calls, self.logger = runtime, lifecycle.calls, logger
         self.reads = VMReads(app)
-        self.commands = commands
         self.active_exports: dict[str, int] = {}
         self.inflight: set[tuple[str, str]] = set()
 
@@ -405,8 +404,6 @@ class VMHTTP:
         return await self.calls(self.get_action, current, plan_id)
 
     async def handle(self, request):
-        if request.url.path == "/vm/commands" or request.url.path.startswith("/vm/commands/"):
-            return await self.commands.handle(request) if self.commands is not None else JSONResponse({"error": "command_runner_unavailable"}, 503)
         if request.url.path in ROUTES:
             return await self.reads.handle(request)
         if request.url.path not in {"/vm/say", "/vm/send-file", "/vm/actions"} and not request.url.path.startswith("/vm/actions/"):
