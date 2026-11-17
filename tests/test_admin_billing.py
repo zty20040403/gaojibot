@@ -16,20 +16,19 @@ from src.plugins.ai_chat.model_billing import BillingSource,ModelBilling
 from src.plugins.ai_chat.model_pricing import ModelPricing
 from src.plugins.ai_chat.model_usage import TokenUsage
 from src.plugins.ai_chat.platform_types import AccountKey,ActorKey,EndpointKey
-from tests.admin_session_fixture import ApprovedClient,register_admin
-from tests.ops_action_fixture import OpsFixture
+from src.bot_security.passwords import hash_password
+from tests.admin_session_fixture import ApprovedClient,PASSWORD,register_admin
+from tests.background_job_fixture import BackgroundJobFixture
 from tests.postgres_fixture import isolated_postgres_for_test
 from tests.test_llm_gateway import profile
-from tests import test_admin_host_apis as auth_fixture
 from tests import test_billing_sources as source_fixture
 
 
-class AdminBillingTests(OpsFixture,unittest.IsolatedAsyncioTestCase):
-    test_anonymous_and_member_cannot_read_any_scope = auth_fixture.AdminHostAPITests.test_anonymous_and_member_cannot_read_any_scope
+class AdminBillingTests(BackgroundJobFixture,unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         with patch('tests.qq_official_outbox_fixture.postgres_for_test',side_effect=isolated_postgres_for_test):
-            OpsFixture.setUp(self)
+            BackgroundJobFixture.setUp(self)
         self.store = ModelBilling(self.database,clock=lambda:self.now)
         self.profile = replace(profile('test',api_key='TEST_PRIVATE_KEY'),pricing=ModelPricing('2','0.2','8'))
         self.source = BillingSource(self.endpoint,'background_agent',self.actor,background_job_id=self.job.job_id)
@@ -43,6 +42,17 @@ class AdminBillingTests(OpsFixture,unittest.IsolatedAsyncioTestCase):
         self.client = ApprovedClient(transport=httpx.ASGITransport(app=self.app),base_url='https://test')
         self.addAsyncCleanup(self.client.aclose)
         self.path = '/bot-admin/api/v1/model-costs'
+
+    async def test_anonymous_and_member_cannot_read_any_scope(self):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://test') as client:
+            self.assertEqual((await client.get(self.path)).status_code,401)
+            store = self.app.state.mobile.store
+            store.apply_account_change(store.account_for_qq('123456789'),{'action':'create','username':'test_member',
+                'password_hash':hash_password(PASSWORD),'role':'member','qq_id':None})
+            response = await client.post('/bot-admin/api/v1/auth/login',headers={'Origin':'https://test'},
+                json={'username':'test_member','password':PASSWORD})
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual((await client.get(self.path)).status_code,403)
 
     def call(self,*,source=None,usage=TokenUsage(1000,50,600,0),model=None):
         call = self.store.begin(source or self.source,model or self.profile)
