@@ -4,7 +4,7 @@ import asyncio
 from ...background_tools import workspace_owner
 from ...platform_types import EndpointKey
 from .lease import assert_epoch
-from .vm_api import VMAPIAuthority
+from .vm_api import VMAPIAuthority, VMWriteAdmission
 from .vm_credentials import VMCredentials
 from .vm_sessions import VMSessions
 
@@ -16,9 +16,10 @@ class OfficialVMLifecycle:
         self.store = VMSessions(transaction,lease,private_admission=private_admission,clock=clock)
         self.credentials = VMCredentials(self.store,manager,calls,port=gateway.port)
         from .program_actions import ProgramActions
+        from .program_budgets import WakeAdmission
         from .program_http import ProgramHTTP
         self.actions = ProgramActions(self.store)
-        self.api = VMAPIAuthority(self.credentials,actions=self.actions)
+        self.api = VMAPIAuthority(self.credentials, actions=VMWriteAdmission(self.store), wakes=WakeAdmission(self.actions))
         from .program_runner import ProgramRunner
         self.programs = ProgramRunner(self,runtime,app)
         from .command_runner import CommandRunner

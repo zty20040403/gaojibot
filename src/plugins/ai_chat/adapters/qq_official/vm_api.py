@@ -4,8 +4,39 @@ from dataclasses import dataclass
 from starlette.exceptions import HTTPException
 
 from ...codex_gateway import RequestScope
-from .program_actions import ProgramDenied
+from .conversation_control import permitted, state
 from .vm_sessions import VMSource
+
+
+class VMDenied(PermissionError):
+    def __init__(self, code, status=403):
+        super().__init__(code)
+        self.status = status
+
+
+class VMWriteAdmission:
+    """Simple conversation stop/route permission check for VM say and send-file."""
+
+    def __init__(self, sessions):
+        self.sessions = sessions
+        self.transaction = sessions.transaction
+
+    def _capture(self, cursor, current):
+        generation = state(cursor, current.endpoint)['stop_generation']
+        if not permitted(cursor, current.endpoint, generation=generation):
+            raise VMDenied('conversation_stopped_or_replaced')
+        return generation
+
+    def authenticate(self, token):
+        with self.transaction() as cursor:
+            current = self.sessions.authenticate_cursor(cursor, token)
+            return current, self._capture(cursor, current)
+
+    def require_generation(self, current, generation):
+        with self.transaction() as cursor:
+            self.sessions.check(cursor, current)
+            if not permitted(cursor, current.endpoint, generation=generation):
+                raise VMDenied('conversation_stopped_or_replaced')
 
 
 @dataclass(frozen=True)
@@ -16,10 +47,10 @@ class VMRequestIdentity:
 
 
 class VMAPIAuthority:
-    def __init__(self, credentials, *, actions=None, commands=None):
-        self.credentials,self.actions,self.commands = credentials,actions,commands
-        from .program_budgets import WakeAdmission
-        self.wakes = WakeAdmission(actions) if actions is not None else None
+    def __init__(self, credentials, *, actions=None, wakes=None, commands=None):
+        if actions is True:
+            actions = VMWriteAdmission(credentials.store)
+        self.credentials, self.actions, self.wakes, self.commands = credentials, actions, wakes, commands
         self.scopes = {}
         self.authenticating = set()
         self.retired = set()
@@ -59,7 +90,7 @@ class VMAPIAuthority:
             if self.monitor is None:
                 self.monitor = asyncio.create_task(self._monitor())
             return scope
-        except ProgramDenied as error:
+        except VMDenied as error:
             raise HTTPException(error.status,str(error)) from None
         finally:
             self.authenticating.discard(task)
@@ -89,7 +120,7 @@ class VMAPIAuthority:
                     continue
                 try:
                     await scope.current()
-                except ProgramDenied as error:
+                except VMDenied as error:
                     scope.close(status=error.status,reason=str(error))
                 except Exception:
                     scope.close()
