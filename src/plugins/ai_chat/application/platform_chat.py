@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from src.bot_storage import DatabaseError
 from . import ChatFailure
 from .turn_context import record_loop_event, speaker, turn_window
-from .private_questions import PrivateQuestionAudit
 from ..execution_control import assert_job_owned
 from ..agent_loop import AgentTrace, DeepSeekConfigError, ask_deepseek_with_tools, ready_stream_prefix, request_sink
 from ..ai_tools import WEB_SEARCH_TOOL_NAME, force_tool
@@ -48,7 +47,7 @@ class PlatformChatService:
     def __init__(
         self, app, *, scope_enabled=None,
         registry_factory=neutral_registry_for, llm=ask_deepseek_with_tools,
-        generation_factory=None, media_factory=None, billing_factory=None, question_factory=None,
+        generation_factory=None, media_factory=None, billing_factory=None,
     ) -> None:
         self.context = app
         # Neutral handlers need only the explicit app port. Missing legacy
@@ -59,7 +58,6 @@ class PlatformChatService:
         self.llm = llm
         self.generation_factory = generation_factory
         self.media_factory = media_factory
-        self.question_factory = question_factory
         self.billing_factory = billing_factory
 
     async def _call_model(self,inbound,platform,turn_id,*args,**kwargs):
@@ -149,20 +147,18 @@ class PlatformChatService:
             capabilities.add("context")
         if self.context.settings.search_enabled and (force_search or self.context.settings.search_auto_enabled):
             capabilities.add("web")
-        question_session = (await self.question_factory(inbound,platform) if self.question_factory is not None else None)
         context = ToolContext(
             self.services, event=None, capabilities=frozenset(capabilities),
-            journal_turn_id=journal_turn_id, inbound=inbound, platform=platform,question_session=question_session,
+            journal_turn_id=journal_turn_id, inbound=inbound, platform=platform,
         )
         file_session = (await self.generation_factory(inbound, platform)
                         if self.generation_factory is not None else None)
         sent: list[dict] = []
-        private_audit = PrivateQuestionAudit(sent,turn_trace)
-        async def loop_event(event):
-            safe = private_audit.event(event)
-            if journal_turn_id is not None:await record_loop_event(self.context,journal_turn_id,safe)
 
-        sink_token = request_sink.set(private_audit.request)
+        def keep_last(request: dict) -> None:
+            sent[:] = [request]
+
+        sink_token = request_sink.set(keep_last)
         try:
             if file_session is not None:
                 context = file_session.context(context)
@@ -218,8 +214,9 @@ class PlatformChatService:
                     ),
                     tool_context="\n\n".join(context_parts), system_prompt=system,
                     trace=turn_trace, feedback_provider=feedback_provider,
-                    tool_batch_sink=private_audit.batch,
-                    event_sink=loop_event,
+                    event_sink=(
+                        lambda event: record_loop_event(self.context, journal_turn_id, event)
+                    ) if journal_turn_id is not None else None,
                     final_text_sink=(_citation_safe_stream(final_stream_sink, turn)
                                      if final_stream_sink is not None else None),
                     final_stream_state=final_stream_state,
@@ -256,7 +253,6 @@ class PlatformChatService:
 
         finally:
             request_sink.reset(sink_token)
-            private_audit.finish()
             if sent and getattr(self.context, "conversations", None) is not None:
                 try:
                     await self.context.db_call(self.context.conversations.record_request, turn_id=journal_turn_id,

@@ -24,7 +24,6 @@ from .admin_api import (
     background_commands,
     conversations,
     programs,
-    questions,
     tasks,
     tools,
 )
@@ -60,7 +59,6 @@ _PAGE_ROUTERS = (
     background_commands,
     conversations,
     programs,
-    questions,
     sandboxes,
     tools,
     media,
