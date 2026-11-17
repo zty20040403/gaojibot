@@ -131,11 +131,6 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "media_cleanup_runs": ("media",),
     "content_sources": ("sources",),
     "message_sources": ("sources",),
-    "alert_events": ("alerts",),
-    "alert_notifications": ("alerts",),
-    "diagnostic_runs": ("fleet",),
-    "diagnostic_evidence": ("fleet",),
-    "fleet_backend_states": ("overview",),
 }
 
 

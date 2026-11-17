@@ -109,13 +109,6 @@ _IDENTITY_COLUMNS = {
     "message_sources": "message_source_id",
     "durable_jobs": "job_id",
     "message_topic_edges": "edge_id",
-    "alert_events": "event_id",
-    "alert_notifications": "notification_id",
-    "fleet_observations": "observation_id",
-    "diagnostic_runs": "run_id",
-    "diagnostic_evidence": "evidence_id",
-    "fleet_operation_events": "event_id",
-    "fleet_job_events": "event_id",
 }
 
 

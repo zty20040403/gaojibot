@@ -587,31 +587,3 @@ class SecurityStore(ApprovalQuorum):
         channel, channel_args = self._store_where()
         with self.transaction() as db:
             db.execute("UPDATE admin_approvals SET notice_sent=1 WHERE approval_id=? AND " + channel, (approval_id, *channel_args))
-
-    def watch_fleet(self, path: str, account: dict[str, Any], bot_id: str, actor: str, origin: str) -> None:
-        if self.transport is not None:
-            raise SecurityError('official_fleet_watch_source_not_connected')
-        with self.transaction() as db:
-            db.execute("INSERT INTO admin_fleet_watches (path, account_json, bot_id, actor, origin, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (path) DO NOTHING",
-                (path, canonical(account), bot_id, actor, origin, int(self.clock())))
-
-    def fleet_watches(self) -> list[dict[str, Any]]:
-        if self.transport is not None:
-            return []
-        with self.transaction() as db:
-            now = int(self.clock())
-            rows = db.execute("SELECT * FROM admin_fleet_watches WHERE status='watching' AND lease_until<=? ORDER BY updated_at LIMIT 20", (now,)).fetchall()
-            result = []
-            for row in rows:
-                account = json.loads(row["account_json"])
-                binding = {**account, "account_version": account["version"], "session_hash": account.get("session_hash", "")}
-                if not self._current(db, binding):
-                    db.execute("UPDATE admin_fleet_watches SET status='cancelled' WHERE path=?", (row["path"],))
-                    continue
-                db.execute("UPDATE admin_fleet_watches SET lease_until=?, updated_at=? WHERE path=?", (now + 60, now, row["path"]))
-                result.append({**dict(row), "account": account})
-            return result
-
-    def finish_fleet_watch(self, path: str, *, done: bool = False) -> None:
-        with self.transaction() as db:
-            db.execute("UPDATE admin_fleet_watches SET status=?, lease_until=? WHERE path=?", ("done" if done else "watching", int(self.clock()) + 10, path))
