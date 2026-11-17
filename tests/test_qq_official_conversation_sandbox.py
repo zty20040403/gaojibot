@@ -55,6 +55,21 @@ class ConversationSandboxTests(unittest.IsolatedAsyncioTestCase):
             await manager.maintain_conversations(now=31*86400)
             manager.destroy.assert_awaited_once()
 
+    async def test_maintenance_logs_sandbox_id_and_error_detail(self):
+        from src.plugins.ai_chat.sandbox import SandboxError
+
+        with tempfile.TemporaryDirectory() as root:
+            manager = VmSandboxManager(image='/base.qcow2', root=root)
+            item = {'id': 's123456', 'owner_ref': 'qqo:conversation:test', 'last_used': 100, 'created_at': 0}
+            manager._all_metadata = AsyncMock(return_value=[item])
+            manager._metadata = AsyncMock(return_value=item)
+            manager.stop_owned = AsyncMock(side_effect=SandboxError('VM 文件同步失败：agent timeout'))
+            with self.assertLogs('src.plugins.ai_chat.vm_sandbox', level='WARNING') as logs:
+                await manager.maintain_conversations(now=7400)
+            self.assertTrue(
+                any('sandbox=s123456' in line and 'VM 文件同步失败：agent timeout' in line for line in logs.output)
+            )
+
     async def test_resident_skips_idle_and_disabled_registry_keeps_disk(self):
         with tempfile.TemporaryDirectory() as root:
             manager = VmSandboxManager(image='/TEST_BASE',root=root)
