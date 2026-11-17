@@ -5,7 +5,13 @@
   source ? ../..,
 }: let
   inherit (pkgs) lib;
-  python = pkgs.python3.withPackages (ps:
+  # courlan's own test suite fails in the build sandbox on this nixpkgs pin.
+  python3 = pkgs.python3.override {
+    packageOverrides = _: super: {
+      courlan = super.courlan.overridePythonAttrs (_: {doCheck = false;});
+    };
+  };
+  python = python3.withPackages (ps:
     with ps; [
       aiohttp
       av
