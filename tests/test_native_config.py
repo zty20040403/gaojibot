@@ -39,7 +39,7 @@ class NativeConfigTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_member_can_read_fixed_settings_without_mutation(self):
         text,audits = await self.exercise('/config')
-        self.assertIn('agent_timeout_hours',text); self.assertIn('program_wake_limit',text)
+        self.assertIn('agent_timeout_hours',text); self.assertIn('proactive_enabled',text)
         self.assertEqual(audits,[])
         self.assertEqual(self.f.query('SELECT * FROM conversation_settings'),[])
 
@@ -56,12 +56,12 @@ class NativeConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.f.actor.native_user_id,audits[0]['actor'])
 
     async def test_change_while_stopped_never_clears_stop_or_command_generations(self):
-        self.f.query('''INSERT INTO conversation_settings(scope_key,stopped,stop_generation,command_generation,program_say_limit)
+        self.f.query('''INSERT INTO conversation_settings(scope_key,stopped,stop_generation,command_generation,image_daily_limit)
             VALUES (?,TRUE,4,9,2)''',(self.f.endpoint.scope.key,))
-        text,audits = await self.exercise('/config program_say_limit default',role='admin')
+        text,audits = await self.exercise('/config image_daily_limit default',role='admin')
         self.assertIn('已保存',text); self.assertEqual(len(audits),1)
-        row = self.f.query('SELECT stopped,stop_generation,command_generation,program_say_limit FROM conversation_settings')[0]
-        self.assertEqual(tuple(row.values()),(True,4,9,60))
+        row = self.f.query('SELECT stopped,stop_generation,command_generation,image_daily_limit FROM conversation_settings')[0]
+        self.assertEqual(tuple(row.values()),(True,4,9,200))
 
     async def test_budget_admin_write_is_exact_once_and_default_off_is_a_mutation(self):
         text,audits = await self.exercise('/config daily_budget_usd 0.001000',role='admin')
@@ -83,7 +83,7 @@ class NativeConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.query('SELECT * FROM conversation_settings'),[])
 
     async def test_explicit_foreign_target_is_rejected_without_writing_any_scope(self):
-        text,audits = await self.exercise('/config program_wake_limit 0 TEST_FOREIGN',role='admin')
+        text,audits = await self.exercise('/config image_daily_limit 0 TEST_FOREIGN',role='admin')
         self.assertIn('用法',text); self.assertEqual(audits,[])
         self.assertEqual(self.f.query('SELECT * FROM conversation_settings'),[])
 
@@ -92,9 +92,9 @@ class NativeConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('普通成员',text); self.assertEqual(audits,[])
 
     async def test_current_host_owner_may_change_even_without_platform_admin_role(self):
-        text,audits = await self.exercise('/config program_say_limit 0',owner=True)
+        text,audits = await self.exercise('/config image_daily_limit 0',owner=True)
         self.assertIn('已保存',text); self.assertEqual(len(audits),1)
-        self.assertEqual(self.f.query('SELECT program_say_limit FROM conversation_settings')[0]['program_say_limit'],0)
+        self.assertEqual(self.f.query('SELECT image_daily_limit FROM conversation_settings')[0]['image_daily_limit'],0)
 
     async def test_invalid_input_never_reaches_the_store(self):
         text,audits = await self.exercise('/config agent_timeout_hours 7',role='admin')
@@ -131,7 +131,7 @@ class PrivateConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['scope_key'],self.f.endpoint.scope.key); self.assertIsNone(row['daily_budget_usd'])
 
     async def test_admitted_private_peer_changes_only_own_physical_conversation(self):
-        text,audits = await self.exercise('/config program_wake_limit 0')
+        text,audits = await self.exercise('/config image_daily_limit 0')
         self.assertIn('已保存',text); self.assertEqual(len(audits),1)
-        row = self.f.query('SELECT scope_key,program_wake_limit FROM conversation_settings')[0]
-        self.assertEqual((row['scope_key'],row['program_wake_limit']),(self.f.endpoint.scope.key,0))
+        row = self.f.query('SELECT scope_key,image_daily_limit FROM conversation_settings')[0]
+        self.assertEqual((row['scope_key'],row['image_daily_limit']),(self.f.endpoint.scope.key,0))

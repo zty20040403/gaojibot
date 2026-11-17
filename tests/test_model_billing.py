@@ -94,21 +94,11 @@ class ModelBillingTests(unittest.TestCase):
             cursor.execute('UPDATE model_usage_calls SET cost_usd=1 WHERE call_id=?',(call,))
         self.assertIn('immutable_model_usage_call',str(caught.exception.__cause__))
 
-    def test_job_turn_and_program_sources_cannot_be_forged_or_cross_scope(self):
+    def test_job_and_turn_sources_cannot_be_forged_or_cross_scope(self):
         with self.assertRaisesRegex(ValueError,'actor_endpoint'):
             replace(self.source,endpoint=self.other)
         for field in ('background_job_id','turn_id'):
             with self.assertRaisesRegex(ValueError,'source_mismatch'):
                 self.store.begin(replace(self.source,**{field:99999}),self.profile)
-        wake_id = 'f'*32
         with self.store.transaction() as cursor:
-            cursor.execute('''INSERT INTO qq_official_program_wakes(wake_id,account_key,endpoint_key,due_at,funded,created_at)
-                VALUES (?,?,?,?,FALSE,?)''',(wake_id,self.endpoint.account.key,self.other.key,self.now,self.now))
-        with self.assertRaisesRegex(ValueError,'impersonate'):
-            replace(self.source,program_wake_id=wake_id)
-        with self.assertRaisesRegex(ValueError,'wake_source_mismatch'):
-            self.store.begin(BillingSource(self.endpoint,'program_wake',program_wake_id=wake_id),self.profile)
-        call = self.store.begin(BillingSource(self.other,'program_wake',program_wake_id=wake_id),self.profile)
-        self.assertIsNone(self.row(call)['actor_key'])
-        with self.store.transaction() as cursor:
-            self.assertEqual(cursor.execute('SELECT count(*) AS n FROM model_usage_calls').fetchone()['n'],1)
+            self.assertEqual(cursor.execute('SELECT count(*) AS n FROM model_usage_calls').fetchone()['n'],0)

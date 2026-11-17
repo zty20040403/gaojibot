@@ -1,11 +1,15 @@
 """Persistent one-shot VM commands; neither a human identity nor a model job."""
 import hashlib
 import json
+import re
 import secrets
 
 from .conversation_control import permitted, state
-from .program_actions import NAME, REQUEST, ProgramDenied, settings
+from .vm_api import VMDenied as ProgramDenied
+from .vm_http import REQUEST
 from .vm_sessions import source
+
+NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.@-]{0,79}')
 
 
 def command_generation(cursor, endpoint):
@@ -71,7 +75,6 @@ class BackgroundCommands:
                 or live['scope_key']!=current.scope_key or live['cancel_requested'] or
                 self._capture(cursor,current)!=(live['conversation_generation'],live['command_generation'])):
             raise ProgramDenied('background_command_cancelled_or_replaced')
-        settings(cursor,current.scope_key,row['program_name'])
         return current
 
     def reserve(self, current, *, generation, program, request_id, argv):
@@ -92,7 +95,6 @@ class BackgroundCommands:
             self.sessions.check(cursor,current)
             if self._capture(cursor,current)!=generation:
                 raise ProgramDenied('background_command_generation_changed')
-            settings(cursor,current.scope_key,program)
             row = cursor.execute('SELECT * FROM qq_official_background_commands WHERE endpoint_key=? AND request_id=?',
                 (current.endpoint.key,request_id)).fetchone()
             if row is not None:

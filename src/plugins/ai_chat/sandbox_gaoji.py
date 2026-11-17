@@ -72,51 +72,12 @@ class Client:
                 raise ClientError('invalid JSON response; use status for writes') from None
             return response.status,value
 
-    def events(self, after=None):
-        if after is not None and not 0<=after<2**63:
-            raise ClientError('after must be a nonnegative message ID')
-        route = '/vm/events'+('?' + urlencode({'after':after}) if after is not None else '')
-        cursor = after
-        try:
-            with self.open('GET',route) as response:
-                if response.status!=200:
-                    raise ClientError('event subscription failed: HTTP '+str(response.status))
-                try:
-                    head = int(response.getheader('X-Gaoji-Head'))
-                    if not 0<=head<2**63:
-                        raise ValueError()
-                except (ValueError,TypeError):
-                    raise ClientError('event stream has no valid starting cursor') from None
-                if cursor is None:
-                    cursor = head
-                while True:
-                    line = response.readline(MAX_RESPONSE+1)
-                    if not line or len(line)>MAX_RESPONSE or not line.endswith(b'\n'):
-                        raise ClientError('event stream ended or frame is incomplete/oversized')
-                    try:
-                        text = line.decode('utf-8')
-                        if text.strip():
-                            message = json.loads(text)
-                            identity = message['id']
-                            if type(identity) is not int or not cursor<identity<2**63:
-                                raise ValueError()
-                        else:
-                            identity = cursor
-                    except (ValueError,KeyError,TypeError):
-                        raise ClientError('invalid event frame') from None
-                    yield text
-                    cursor = identity # Advance only after the complete line was consumed.
-        except ClientError as error:
-            raise ClientError(str(error)+(f'; resume with --after {cursor}' if cursor is not None else '')) from None
-
-
 def parser():
     result = argparse.ArgumentParser(prog='gaoji',description='Conversation-scoped VM client; no human/owner authority.')
     commands = result.add_subparsers(dest='command',required=True)
-    for name in ('say','wake','send-file'):
+    for name in ('say','send-file'):
         command = commands.add_parser(name)
         command.add_argument('path' if name=='send-file' else 'text',help='workspace file' if name=='send-file' else 'text, or - for stdin')
-        command.add_argument('--program',default=os.environ.get('GAOJI_PROGRAM','manual'))
         command.add_argument('--request-id',help='reuse for retries of this exact action')
         if name=='send-file':
             command.add_argument('--filename')
@@ -127,8 +88,6 @@ def parser():
     command = commands.add_parser('command-status').add_mutually_exclusive_group(required=True)
     command.add_argument('--request-id'); command.add_argument('--command-id')
     commands.add_parser('stop-bg').add_argument('command_id')
-    commands.add_parser('events').add_argument('--after',type=int)
-    commands.add_parser('units',help='sync registered units through the host, not a guest sudo shell')
     command = commands.add_parser('history')
     for name in ('query','who','from','to','around'):
         command.add_argument('--'+name)
@@ -146,10 +105,6 @@ def main(argv=None, *, client=None):
     command = args.pop('command')
     client = client or Client()
     try:
-        if command=='events':
-            for line in client.events(args['after']):
-                print(line,end='',flush=True)
-            return 0
         if command in {'status','command-status'}:
             identifier = args.get('action_id') if command=='status' else args.get('command_id')
             base = '/vm/actions' if command=='status' else '/vm/commands'
@@ -159,12 +114,12 @@ def main(argv=None, *, client=None):
             status,value = client.request('POST','/vm/commands/'+quote(args['command_id'],safe='')+'/stop',{})
         else:
             data = {key:value for key,value in args.items() if value is not None}
-            if command in {'say','wake','send-file','run-bg'}:
+            if command in {'say','send-file','run-bg'}:
                 data.setdefault('request_id',secrets.token_hex(16))
                 print('request_id='+data['request_id'],file=sys.stderr,flush=True)
                 if data.get('text')=='-':
-                    data['text'] = sys.stdin.read(4001)
-                if 'text' in data and len(data['text'])>(1800 if command=='say' else 4000):
+                    data['text'] = sys.stdin.read(1801)
+                if 'text' in data and len(data['text'])>1800:
                     raise ClientError('text exceeds action limit')
             if command=='run-bg':
                 if data['argv'][:1]==['--']:

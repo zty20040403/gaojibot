@@ -24,18 +24,15 @@ class BillingSource:
     actor: ActorKey | None = None
     turn_id: int | None = None
     background_job_id: int | None = None
-    program_wake_id: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.endpoint,EndpointKey) or self.endpoint.account.platform!='qq-official':
             raise ValueError('billing_requires_physical_endpoint')
-        if self.purpose not in {'turn','proactive','ocr','image_caption','video','background_agent','program_wake','memory','semantic_index'}:
+        if self.purpose not in {'turn','proactive','ocr','image_caption','video','background_agent','memory','semantic_index'}:
             raise ValueError('invalid_billing_purpose')
         if self.actor is not None and (not isinstance(self.actor,ActorKey) or self.actor.identity_kind=='bot'
                 or not self.actor.matches_endpoint(self.endpoint)):
             raise ValueError('billing_actor_endpoint_mismatch')
-        if self.program_wake_id is not None and (self.actor is not None or self.background_job_id is not None):
-            raise ValueError('program_billing_cannot_impersonate_human_job')
 
 
 class ModelBilling:
@@ -59,17 +56,13 @@ class ModelBilling:
             with self.transaction() as cursor:return self.begin(source,profile,transaction_cursor=cursor)
         cursor = transaction_cursor
         if not isinstance(source,BillingSource):raise ValueError('billing_requires_host_source')
-        if source.purpose in {'proactive','program_wake'}:
+        if source.purpose=='proactive':
             daily_budgets.require(cursor,source.endpoint,now=int(self.clock()))
         if source.background_job_id is not None:
             job = cursor.execute('SELECT endpoint_key,actor_key FROM background_jobs WHERE job_id=?',
                 (source.background_job_id,)).fetchone()
             if job is None or (job['endpoint_key'],job['actor_key'])!=(source.endpoint.key,source.actor.key if source.actor else None):
                 raise ValueError('billing_job_source_mismatch')
-        if source.program_wake_id is not None:
-            wake = cursor.execute('SELECT endpoint_key FROM qq_official_program_wakes WHERE wake_id=?',
-                (source.program_wake_id,)).fetchone()
-            if wake is None or wake['endpoint_key']!=source.endpoint.key:raise ValueError('billing_wake_source_mismatch')
         if source.turn_id is not None:
             turn = cursor.execute('SELECT endpoint_key,requester_actor_key FROM qq_official_turn_executions WHERE journal_turn_id=?',
                 (source.turn_id,)).fetchone()
@@ -78,9 +71,9 @@ class ModelBilling:
         call_id = secrets.token_hex(16)
         cursor.execute('''INSERT INTO model_usage_calls(call_id,endpoint_key,scope_key,actor_key,purpose,turn_id,
             background_job_id,program_wake_id,provider,model,profile,pricing_json,started_at,source_metadata_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,?,?)''',
             (call_id,source.endpoint.key,source.endpoint.scope.key,source.actor.key if source.actor else None,source.purpose,
-             source.turn_id,source.background_job_id,source.program_wake_id,profile.provider,profile.model,profile.name,
+             source.turn_id,source.background_job_id,profile.provider,profile.model,profile.name,
              json.dumps(profile.pricing.to_mapping(),sort_keys=True) if profile.pricing else None,int(self.clock()),metadata(cursor,source)))
         return call_id
 

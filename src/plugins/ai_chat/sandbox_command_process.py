@@ -10,12 +10,28 @@ import secrets
 import subprocess
 import time
 
-if __package__:
-    from .sandbox_units import directory
-else:
-    from sandbox_units import directory
-
 STATE = Path('/run/gaoji/commands')
+
+
+def directory(path, *, create=False):
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts:
+        raise RuntimeError('invalid_directory')
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in path.parts[1:]:
+            if create:
+                try:
+                    os.mkdir(part, 0o755, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 OUTPUT = Path('/workspace/.gaoji/out')
 MAX_OUTPUT = 64*1024*1024
 

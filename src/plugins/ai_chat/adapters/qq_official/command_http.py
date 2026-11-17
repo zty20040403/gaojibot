@@ -5,7 +5,8 @@ import re
 
 from starlette.responses import JSONResponse
 
-from .program_actions import ProgramDenied, REQUEST
+from .vm_api import VMDenied as ProgramDenied
+from .vm_http import REQUEST
 
 
 class CommandHTTP:
@@ -13,10 +14,7 @@ class CommandHTTP:
         self.runner,self.calls = runner,runner.calls
 
     async def status(self, current, identifier, *, by_request=False):
-        row = await self.calls(self.runner.commands.get,current,identifier,by_request=by_request)
-        if row['notification_action_id'] is not None:
-            row['notification'] = await self.calls(self.runner.lifecycle.actions.get,current,row['notification_action_id'])
-        return row
+        return await self.calls(self.runner.commands.get,current,identifier,by_request=by_request)
 
     async def handle(self, request):
         scope = request.state.channel

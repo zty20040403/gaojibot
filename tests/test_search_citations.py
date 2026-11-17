@@ -123,7 +123,6 @@ class CitationStreamingTests(unittest.IsolatedAsyncioTestCase):
                 patch("src.plugins.ai_chat.application.platform_chat.speaker", return_value="TEST"), \
                 patch("src.plugins.ai_chat.application.platform_chat.turn_window", return_value=("", "", "")), \
                 patch("src.plugins.ai_chat.application.platform_chat.background_task_context", AsyncMock(return_value="")), \
-                patch("src.plugins.ai_chat.application.platform_chat.program_context", AsyncMock(return_value="")), \
                 patch("src.plugins.ai_chat.application.platform_chat.assert_job_owned"), \
                 patch("src.storage_admission.require_tool_capacity"):
             result = await service.ask(inbound, platform, "TEST", selected_profile_override=profile,

@@ -9,7 +9,6 @@ import httpx
 from fastapi import FastAPI
 
 from src.plugins.ai_chat.admin import AdminServices
-from src.plugins.ai_chat.billing_audit import snapshot
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode
 from src.plugins.ai_chat.model_billing import BillingSource,ModelBilling
@@ -21,7 +20,6 @@ from tests.admin_session_fixture import ApprovedClient,PASSWORD,register_admin
 from tests.background_job_fixture import BackgroundJobFixture
 from tests.postgres_fixture import isolated_postgres_for_test
 from tests.test_llm_gateway import profile
-from tests import test_billing_sources as source_fixture
 
 
 class AdminBillingTests(BackgroundJobFixture,unittest.IsolatedAsyncioTestCase):
@@ -161,44 +159,3 @@ class AdminBillingTests(BackgroundJobFixture,unittest.IsolatedAsyncioTestCase):
         rows = (await self.view(dimension='actor'))['items']
         self.assertEqual({row['label'] for row in rows},{'TEST_OWNER','未记录发起人'})
         self.assertEqual(sum(row['calls'] for row in rows),2)
-
-
-class SharedBillingTests(source_fixture.ProgramBillingSourcesTests):
-
-    def test_program_and_command_completion_share_one_joint_origin(self):
-        import json
-        from src.plugins.ai_chat.adapters.qq_official.background_commands import BackgroundCommands
-        run = self.batch()
-        command,_ = BackgroundCommands(self.sessions).reserve(self.current,generation=(0,0),program='TEST_B',
-            request_id='TEST_COMMAND',argv=['printf','TEST'])
-        inputs = json.loads(run['input_ids_json'])
-        attached = next(row['action_id'] for row in self.query('SELECT action_id,program_name FROM qq_official_program_actions WHERE wake_id=?',
-            (run['wake_id'],)) if row['action_id'] in inputs and row['program_name']=='TEST_B')
-        self.query('UPDATE qq_official_program_actions SET source_command_id=? WHERE action_id=?',(command['command_id'],attached))
-        store = ModelBilling(self.database,clock=lambda:self.now)
-        call = store.begin(BillingSource(self.endpoint,'program_wake',program_wake_id=run['wake_id']),
-            replace(profile('test'),pricing=ModelPricing('2','0.2','8')))
-        store.finish(call,TokenUsage(1000,50,600,0))
-        for dimension in ('job','program'):
-            view = snapshot(self.database,dimension=dimension,days=1,as_of=self.now+1,scope_key=self.endpoint.scope.key)
-            self.assertEqual(len(view['items']),1)
-            item = view['items'][0]
-            self.assertEqual(item['commands'],[command['command_id']]); self.assertEqual(item['programs'],['TEST_A'])
-            self.assertTrue(item['shared']); self.assertEqual(item['cost_usd'],'0.00132')
-
-    def test_coalesced_programs_are_one_joint_cost_and_not_a_fake_person_or_agent(self):
-        run = self.batch()
-        store = ModelBilling(self.database,clock=lambda:self.now)
-        model = replace(profile('test'),pricing=ModelPricing('2','0.2','8'))
-        call = store.begin(BillingSource(self.endpoint,'program_wake',program_wake_id=run['wake_id']),model)
-        store.finish(call,TokenUsage(1000,50,600,0))
-        for dimension in ('program','actor','job'):
-            view = snapshot(self.database,dimension=dimension,days=1,as_of=self.now+1,scope_key=self.endpoint.scope.key)
-            self.assertEqual(view['totals']['cost_usd'],'0.00132')
-            self.assertEqual(len(view['items']),1)
-            item = view['items'][0]
-            self.assertEqual(item['cost_usd'],'0.00132')
-            self.assertIsNone(item['person']); self.assertIsNone(item['job'])
-            if dimension=='program':
-                self.assertEqual(item['programs'],['TEST_A','TEST_B']); self.assertTrue(item['shared'])
-            if dimension=='actor':self.assertEqual(item['label'],'程序或系统（不归属真人）')

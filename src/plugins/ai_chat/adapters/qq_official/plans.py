@@ -67,7 +67,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
                  digest_key_id: str = "v1", binding_preview=None, control_reply_id=None, epoch_guard=assert_epoch,
                  max_wait_seconds: int = DEFAULT_MAX_WAIT_SECONDS, protected_ref=None,
                  approval_source_id=None, approval_authority=None, source_guard=None, source_proof=None,
-                 source_generation=None, program_action_id=None, ops_action_id=None, ops_authority=None, budget_day=None) -> PlanRef:
+                 source_generation=None, vm_request=None, ops_action_id=None, ops_authority=None, budget_day=None) -> PlanRef:
     """The adapter must pass current admission, not a model-supplied grant.
 
     The rendered object is sealed by the pure renderer. A duplicate identity
@@ -81,9 +81,6 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             bind(cursor,rendered.endpoint,budget_day,cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?',(plan_id,)).fetchone())
         if ops_action_id is not None:
             ops_authority.bind_plan(cursor,ops_action_id,plan_id)
-        if program_action_id is not None:
-            from .program_delivery import bind
-            bind(cursor,program_action_id,cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?',(plan_id,)).fetchone())
         if source_guard is None:
             return
         plan = cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?', (plan_id,)).fetchone()
@@ -91,8 +88,9 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
                 logical_key=logical_key, source_proof=source_proof, now=now) is not True:
             raise OutboxInvariantError('delivery_source_unavailable')
     validate_wait_limit(max_wait_seconds)
+    vm_action = vm_request is not None
     if (not isinstance(rendered, RenderedPlan) or rendered.status != "ready" or not rendered.parts
-            or not isinstance(requester, ActorKey) or requester.identity_kind == "bot" and program_action_id is None and budget_day is None
+            or not isinstance(requester, ActorKey) or requester.identity_kind == "bot" and not vm_action and budget_day is None
             or not requester.matches_endpoint(rendered.endpoint)
             or token.account_key != rendered.endpoint.account.key
             or purpose not in PURPOSE_PRIORITIES or not callable(admission)
@@ -117,7 +115,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     if endpoint_row is None or EndpointKey.parse(endpoint_row["endpoint_key"]) != endpoint:
         raise OutboxInvariantError("delivery_endpoint_unavailable")
     if budget_day is not None:
-        if any(value is not None for value in (program_action_id,ops_action_id,challenge_id,approval_source_id,
+        if any(value is not None for value in (vm_request,ops_action_id,challenge_id,approval_source_id,
                 protected_ref,control_reply_id,binding_preview)):
             raise OutboxInvariantError('budget_notice_plan_mismatch')
         from .budget_notices import validate
@@ -125,12 +123,17 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             source_scope_key=source_scope_key,source_native_message_id=source_native_message_id,
             source_canonical_message_id=source_canonical_message_id,turn_id=turn_id,purpose=purpose,
             expires_at=expires_at,source_generation=source_generation,now=now,admission=admission)
-    if program_action_id is not None:
-        from .program_delivery import validate
-        validate(cursor,token=token,action_id=program_action_id,rendered=rendered,requester=requester,
-            logical_key=logical_key,source_scope_key=source_scope_key,source_native_message_id=source_native_message_id,
-            source_canonical_message_id=source_canonical_message_id,turn_id=turn_id,purpose=purpose,
-            expires_at=expires_at,source_generation=source_generation,admission=admission,now=now)
+    if vm_action:
+        from .identity_store import snapshot
+        author = snapshot(cursor, endpoint.account)
+        if (author is None or requester != author.bot_actor or purpose != "unsolicited"
+                or source_native_message_id or source_canonical_message_id is not None or turn_id is not None
+                or endpoint_row["binding_state"] == "revoked" or endpoint_row["membership_state"] != "present"):
+            raise OutboxInvariantError("vm_source_mismatch")
+        if endpoint.kind == "private":
+            peer = ActorKey(endpoint.account, "c2c_user", "", endpoint.native_conversation_id)
+            if not admission(cursor, endpoint, peer):
+                raise OutboxInvariantError("delivery_not_authorized")
     control_view = control_reply_id is not None and control_authorized(cursor, control_reply_id, endpoint, requester)
     if control_reply_id is not None and not control_view:
         raise OutboxInvariantError('control_source_unavailable')
@@ -146,13 +149,13 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             or (purpose == 'approval_otp') != (approval_source_id is not None)
             or (purpose == 'ops_approval') != (ops_action_id is not None)
             or (ephemeral and pepper is None) or (not ephemeral and pepper is not None)
-            or (not control_view and program_action_id is None and budget_day is None and not admission(cursor, endpoint, requester))):
+            or (not control_view and not vm_action and budget_day is None and not admission(cursor, endpoint, requester))):
         raise OutboxInvariantError("delivery_not_authorized")
     challenge_expires = None
     approval_expires = None
     ephemeral_ref = challenge_id or approval_source_id or ops_action_id
     if purpose == 'ops_approval':
-        if ops_authority is None or control_reply_id is not None or binding_preview is not None or program_action_id is not None:
+        if ops_authority is None or control_reply_id is not None or binding_preview is not None or vm_action:
             raise OutboxInvariantError('ops_notice_source_unavailable')
         ops_authority.validate_plan(cursor,token=token,action_id=ops_action_id,rendered=rendered,requester=requester,
             logical_key=logical_key,source_scope_key=source_scope_key,source_native_message_id=source_native_message_id,
@@ -186,8 +189,11 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         if ephemeral or purpose != "final" or boundary is None or expires_at > min(boundary, now + 30):
             raise OutboxInvariantError("binding_preview_unavailable")
         control = {"kind": "binding_preview", "candidate_id": binding_preview[0], "version": binding_preview[1]}
-    manifest = stable_json({"v": 1, "rendered": rendered.to_json(), "control": control,
-                            "source_native_message_id": source_native_message_id}) if not ephemeral else EPHEMERAL_MANIFEST
+    manifest_payload = {"v": 1, "rendered": rendered.to_json(), "control": control,
+                        "source_native_message_id": source_native_message_id}
+    if vm_action:
+        manifest_payload["vm_request"] = vm_request
+    manifest = stable_json(manifest_payload) if not ephemeral else EPHEMERAL_MANIFEST
     if protected:
         manifest = protected_manifest(protected_ref, source_native_message_id)
     identity = ["qq-plan-v1", token.account_key, endpoint.key, logical_key]

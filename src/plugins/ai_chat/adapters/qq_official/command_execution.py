@@ -2,7 +2,7 @@
 import re
 
 from .lease import assert_epoch
-from .program_actions import ProgramDenied
+from .vm_api import VMDenied as ProgramDenied
 
 TERMINAL = {'completed','failed','cancelled'}
 
@@ -35,7 +35,7 @@ def observed(value):
 
 
 class CommandExecution:
-    def __init__(self, commands, wakes):
+    def __init__(self, commands, wakes=None):
         self.commands,self.wakes = commands,wakes
         self.sessions,self.transaction,self.clock = commands.sessions,commands.transaction,commands.clock
 
@@ -129,6 +129,9 @@ class CommandExecution:
                 current = self.commands.check(cursor,row)
             except PermissionError:
                 cursor.execute("UPDATE qq_official_background_commands SET notification_error='command_notification_source_unavailable' WHERE command_id=?",(command_id,))
+                return False
+            if self.wakes is None:
+                cursor.execute("UPDATE qq_official_background_commands SET notification_error='command_notification_unavailable' WHERE command_id=?",(command_id,))
                 return False
             text = (f"[后台命令 {command_id} {row['state']}]\n退出码：{row['exit_code']}；用时：{row['elapsed_seconds']} 秒；"
                 f"错误：{row['error_code'] or '无'}\n完整输出：/work/.gaoji/out/{command_id}.txt\n"

@@ -15,7 +15,6 @@ class CommandRunnerTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await fixture.VMLifecycleTests.asyncSetUp(self)
         await self.lifecycle.commands.close()
-        await self.lifecycle.programs.close()  # Inspect the saved wake, without executing a model.
         self.runner = self.lifecycle.commands = CommandRunner(self.lifecycle)
         self.current = self.lifecycle.store.authenticate(self.token_value)
         self.requests,self.guest_reports = [],{}
@@ -57,7 +56,6 @@ class CommandRunnerTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.guest_reports[key] = report(state='completed',stopped=True,exit_code=0,elapsed_seconds=11)
         await self.runner.visit(key); await self.runner.visit(key)
         self.assertEqual(self.stored(key)['elapsed_seconds'],11)
-        self.assertEqual(len(self.query('SELECT * FROM qq_official_program_actions')),1)
         self.assertEqual([row['op'] for row in self.requests],['start','status'])
         self.assertNotIn(self.token_value,json.dumps(self.requests))
 

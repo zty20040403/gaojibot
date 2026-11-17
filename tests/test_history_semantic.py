@@ -11,8 +11,9 @@ from src.plugins.ai_chat.billing_context import billing_scope
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode
 from src.plugins.ai_chat.model_billing import ModelBilling
+from src.plugins.ai_chat.background_tools import BackgroundPlatform
 from src.plugins.ai_chat.message_vectors import MessageVectorJobs
-from src.plugins.ai_chat.platform_types import InboundMessage,ProgramToolSource
+from src.plugins.ai_chat.platform_types import InboundMessage
 from src.plugins.ai_chat.semantic_recall import EmbeddingClient,PgVectorBackend,SemanticRecallService
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.plugins.ai_chat.tools.history import history
@@ -50,7 +51,7 @@ class HistorySemanticTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
     def turn(self,*,program=False):
         context = ToolContext(SimpleNamespace(context=self.app),capabilities=frozenset({'context'}),
             inbound=None if program else self.inbound,
-            program_source=ProgramToolSource(self.endpoint,'manual','TEST_MANUAL_READ') if program else None)
+            platform=BackgroundPlatform(self.endpoint) if program else None)
         return TurnState(context)
 
     async def call(self,*,program=False,**arguments):

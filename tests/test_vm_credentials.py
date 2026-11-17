@@ -37,14 +37,11 @@ class VMCredentialTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         host._directory('s123456').mkdir(parents=True)
         host._save_metadata('s123456',dict(id='s123456',owner_ref=workspace_owner(self.endpoint),
             owner_hash=host._owner_hash(workspace_owner(self.endpoint)),created_at=self.now,last_used=self.now))
-        host.program_state.clock = lambda:self.now
         async def metadata(owner,sandbox_id):
             if owner!=workspace_owner(self.endpoint) or sandbox_id!='s123456':
                 raise PermissionError('vm_owner_mismatch')
             return await host._metadata(owner,sandbox_id)
         async def guest(sandbox_id,path,args,*,input_bytes,timeout):
-            if path=='/usr/bin/timeout':
-                return 0,b'{"ok":true,"units":[],"errors":{}}',b''
             self.assertEqual(path,'/usr/bin/python3')
             self.assertIn("if __name__=='__main__'",args[1])
             payload = json.loads(input_bytes)
@@ -56,7 +53,7 @@ class VMCredentialTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
             return 0,json.dumps(result).encode(),b''
         self.manager = SimpleNamespace(_metadata=AsyncMock(side_effect=metadata),_running=AsyncMock(return_value=True),
             _guest_exec=AsyncMock(side_effect=guest),io_lock=io_lock,
-            _all_metadata=host._all_metadata,_directory=host._directory,program_state=host.program_state)
+            _all_metadata=host._all_metadata,_directory=host._directory)
         async def calls(function,*args,**kwargs):
             return await asyncio.to_thread(function,*args,**kwargs)
         self.calls = calls

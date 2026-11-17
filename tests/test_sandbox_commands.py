@@ -107,7 +107,7 @@ class SandboxCommandTests(unittest.TestCase):
     def test_prepared_vm_tool_bundle_contains_controller_and_process_payload(self):
         from src.plugins.ai_chat import sandbox_tools_setup
         entries = {item['path']:item for item in sandbox_tools_setup.files()}
-        for name in ('sandbox_commands.py','sandbox_command_process.py','sandbox_units.py'):
+        for name in ('sandbox_commands.py','sandbox_command_process.py'):
             self.assertIn('/usr/local/share/gaoji/'+name,entries)
         self.assertEqual(entries[commands.SCRIPT]['permissions'],'0644')
 

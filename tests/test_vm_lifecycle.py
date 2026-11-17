@@ -73,8 +73,6 @@ class VMLifecycleTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         scope = await self.lifecycle.api.authorize(self.token_value)
         self.assertFalse(await self.lifecycle.stopping(self.owner,'s123456',automatic=True))
         self.assertFalse(scope.revoked)
-        state = (await self.manager._metadata(self.owner,'s123456'))['programs']
-        self.assertFalse(state.get('planned_stop'))
         commands.cancel(current,row['command_id'])
         self.assertTrue(await self.lifecycle.stopping(self.owner,'s123456',automatic=True))
         self.assertTrue(scope.revoked)
@@ -135,14 +133,6 @@ class VMManagerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.destroy(self.owner,'s123456',if_unused=True)
         self.assertEqual(self.hook.stopping.await_count,2)
         self.manager._guest_exec.assert_not_awaited(); self.manager._virsh.assert_not_awaited()
-
-    async def test_cleanup_rechecks_resident_before_revoking_or_touching_guest(self):
-        original = self.manager._metadata.return_value
-        self.manager._metadata.return_value = dict(original,programs=dict(retained=True,wanted=True))
-        await self.manager.stop_owned(self.owner,'s123456',if_idle=True)
-        await self.manager.destroy(self.owner,'s123456',if_unused=True)
-        self.hook.stopping.assert_not_awaited()
-        self.manager._virsh.assert_not_awaited()
 
     async def test_create_failure_revokes_before_destroying_failed_vm(self):
         self.manager.image = self.manager.root/'TEST_base.qcow2'

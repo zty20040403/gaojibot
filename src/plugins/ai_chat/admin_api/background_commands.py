@@ -7,11 +7,10 @@ from fastapi import Depends, HTTPException, Query
 from ..admin_control import AdminVersionConflict
 from ..background_jobs import BackgroundJobs
 from ..adapters.qq_official.background_commands import cancel_commands
-from ..adapters.qq_official.program_actions import read_action
 from ..platform_types import EndpointKey
+from .browser import existing, parse_endpoint
 from .context import authorize, mutation_context, mutation_payload
 from .contracts import AdminMutationContext, AgentTimeLimitRequest, BackgroundCommandCancelRequest
-from .programs import existing, parse_endpoint
 
 FIELDS = '''command_id,endpoint_key,program_name,state,cancel_requested,created_at,started_at,
     deadline_at,finished_at,exit_code,elapsed_seconds,output_bytes,output_head,output_tail,
@@ -58,12 +57,7 @@ def create_router(context):
             rows = cursor.execute('SELECT '+FIELDS+''' FROM qq_official_background_commands
                 WHERE (?='' OR endpoint_key=?) AND (NOT ? OR finished_at IS NULL)
                 ORDER BY created_at DESC,command_id DESC LIMIT 101''',(endpoint_key,endpoint_key,active)).fetchall()
-            items = []
-            for row in rows[:100]:
-                value = dict(row,output_path='/work/.gaoji/out/'+row['command_id']+'.txt')
-                if row['notification_action_id']:
-                    value['notification'] = read_action(cursor,row['endpoint_key'],row['notification_action_id'])
-                items.append(value)
+            items = [dict(row,output_path='/work/.gaoji/out/'+row['command_id']+'.txt') for row in rows[:100]]
             version = cursor.execute("SELECT version FROM admin_resource_versions WHERE resource_key='commands'").fetchone()
             return dict(available=True,items=items,endpoints=endpoints[:500],endpoints_truncated=len(endpoints)>500,
                 truncated=len(rows)>100,api_version='v1',resource='commands',resource_version=version['version'] if version else 0)

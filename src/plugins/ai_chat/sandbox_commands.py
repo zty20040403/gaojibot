@@ -3,17 +3,69 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
+import subprocess
 import sys
+import tempfile
 import time
 
 if __package__:
-    from .sandbox_command_process import STATE, OUTPUT, locked, validate, write_result
-    from .sandbox_units import MARKER, directory, install, run
+    from .sandbox_command_process import STATE, OUTPUT, directory, locked, validate, write_result
 else:
     sys.path.insert(0,'/usr/local/share/gaoji')
-    from sandbox_command_process import STATE, OUTPUT, locked, validate, write_result
-    from sandbox_units import MARKER, directory, install, run
+    from sandbox_command_process import STATE, OUTPUT, directory, locked, validate, write_result
+
+MARKER = b'# gaoji managed program v1\n'
+
+
+def _read_at(fd, name):
+    file = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    try:
+        size = os.fstat(file)
+        if not stat.S_ISREG(size.st_mode) or not 0 < size.st_size <= 65536:
+            raise RuntimeError('invalid_unit_file')
+        with os.fdopen(os.dup(file), 'rb') as stream:
+            data = stream.read(65537)
+        if len(data) != size.st_size or b'\x00' in data:
+            raise RuntimeError('invalid_unit_file')
+        data.decode('utf-8')
+        return data
+    finally:
+        os.close(file)
+
+
+def install(path, content):
+    fd = directory(path.parent, create=True)
+    temporary = '.gaoji-' + secrets.token_hex(12)
+    try:
+        try:
+            previous = _read_at(fd, path.name)
+        except FileNotFoundError:
+            previous = None
+        if previous is not None and not previous.startswith(MARKER):
+            raise RuntimeError('unmanaged_file_conflict')
+        if previous == content:
+            return False
+        out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=fd)
+        with os.fdopen(out, 'wb') as stream:
+            stream.write(content)
+        os.replace(temporary, path.name, src_dir_fd=fd, dst_dir_fd=fd)
+        return True
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=fd)
+        except FileNotFoundError:
+            pass
+        os.close(fd)
+
+
+def run(args):
+    with tempfile.TemporaryFile() as output:
+        result = subprocess.run(args, stdout=output, stderr=subprocess.STDOUT, timeout=10)
+        output.seek(0)
+        text = output.read(16000).decode(errors='replace')
+    return result.returncode, re.sub(r'gvm_[A-Za-z0-9_-]{43}', '[VM_TOKEN]', text)
 
 SCRIPT = '/usr/local/share/gaoji/sandbox_command_process.py'
 

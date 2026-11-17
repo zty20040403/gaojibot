@@ -124,19 +124,18 @@ class OfficialSendStore:
         cursor = transaction_cursor
         endpoint = EndpointKey.parse(artifact['endpoint_key'])
         now = int(self.clock())
-        program = artifact.get('source_program_action_id')
         turn = cursor.execute('SELECT journal_turn_id FROM qq_official_turn_executions WHERE execution_id=?',
                               (artifact['source_execution_id'],)).fetchone()
         ref = enqueue_plan(cursor, token=token,
             rendered=render_plan(MessageBody((TextNode(0, '文件：' + artifact['filename']),)), endpoint),
             requester=ActorKey.parse(artifact['requester_actor_key']),
-            logical_key='program:'+program if program else 'file:'+artifact['artifact_id'], source_scope_key=artifact['source_scope_key'],
+            logical_key='file:'+artifact['artifact_id'], source_scope_key=artifact['source_scope_key'],
             source_native_message_id=artifact['source_native_message_id'] or '',
             source_canonical_message_id=artifact['source_canonical_message_id'],
             turn_id=turn['journal_turn_id'] if turn else None,
             expires_at=min(artifact['pending_deadline_at'], uploaded.expires_at), now=now,
-            purpose='unsolicited' if program else 'requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds,
-            source_generation=artifact['conversation_generation'],program_action_id=program)
+            purpose='requested_artifact', admission=self.admission, max_wait_seconds=self.max_wait_seconds,
+            source_generation=artifact['conversation_generation'])
         if ref.created:
             manifest = stable_json({'v': 1, 'media': {'file_info': uploaded.file_info},
                 'artifact_id': artifact['artifact_id'], 'source_native_message_id': artifact['source_native_message_id'] or ''})
@@ -172,9 +171,10 @@ class OfficialSendStore:
             if manifest.get("v") != 1 or manifest.get("source_native_message_id") != row["reply_to_native_message_id"]:
                 raise OutboxInvariantError("delivery_manifest_conflict")
             if 'media' in manifest:
-                from .file_authority import assert_file_current
-                assert_file_current(cursor, token=token, artifact_id=manifest['artifact_id'],
-                    admission=self.admission, now=now, plan_id=row['plan_id'])
+                if 'artifact_id' in manifest:
+                    from .file_authority import assert_file_current
+                    assert_file_current(cursor, token=token, artifact_id=manifest['artifact_id'],
+                        admission=self.admission, now=now, plan_id=row['plan_id'])
                 return {'msg_type': 7, 'media': manifest['media']}
             rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
                 allowed_mentions=self.mention_authority(cursor, endpoint) | frozenset({ActorKey.parse(row['requester_actor_key'])}),
@@ -198,8 +198,7 @@ class OfficialSendStore:
 
     def get(self, token, delivery_id):
         with self.deliveries.transaction() as cursor:
-            return cursor.execute('''SELECT d.*,p.action_id AS program_action_id,b.day_start AS budget_notice_day FROM deliveries d
-                LEFT JOIN qq_official_program_actions p ON p.plan_id=d.plan_id
+            return cursor.execute('''SELECT d.*,b.day_start AS budget_notice_day FROM deliveries d
                 LEFT JOIN conversation_budget_days b ON b.notice_plan_id=d.plan_id
                 WHERE d.delivery_id=? AND d.account_key=?''',(delivery_id, token.account_key)).fetchone()
 
@@ -247,10 +246,9 @@ class OfficialSendStore:
             from .budget_notices import denial
             reason = denial(cursor,token=token,delivery=row,now=int(self.clock()),admission=self.admission)
             return reason is None,reason
-        from .program_delivery import denial
-        program = cursor.execute('SELECT 1 FROM qq_official_program_actions WHERE plan_id=?',(row['plan_id'],)).fetchone()
-        if program or ActorKey.parse(row['requester_actor_key']).identity_kind=='bot':
-            reason = denial(cursor,token=token,delivery=row,admission=self.admission,now=int(self.clock()))
+        if ActorKey.parse(row['requester_actor_key']).identity_kind=='bot':
+            from .vm_http import vm_delivery_denial
+            reason = vm_delivery_denial(cursor,token=token,delivery=row,admission=self.admission)
             return reason is None,reason
         return None,None  # Ordinary human/control sources keep their existing rules.
 
