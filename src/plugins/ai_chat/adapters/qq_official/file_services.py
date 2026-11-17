@@ -47,7 +47,6 @@ class FileServices:
         self.closed = False
         self._maintenance_lock = asyncio.Lock()
         self._orphan_cursor = None
-        self.payloads = None
         self.directory = config.private_directory / hashlib.sha256(token.account_key.encode()).hexdigest()
         (self.directory / 'objects').mkdir(parents=True, exist_ok=True, mode=0o700)
         self.artifacts = ArtifactStore(transaction=self.transaction, jobs=self.jobs,

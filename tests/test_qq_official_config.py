@@ -87,9 +87,25 @@ class OfficialConfigTests(unittest.TestCase):
             {"AI_QQ_OFFICIAL_ENABLED": "perhaps"},
             {"AI_QQ_OFFICIAL_OWNER_OPENIDS": '["TEST_\\u0000"]'},
             {"AI_QQ_OFFICIAL_INBOX_PAYLOAD_TTL_HOURS": "0"},
+            {"AI_QQ_OFFICIAL_MARKDOWN": "maybe"},
+            {"AI_QQ_OFFICIAL_MAX_TEXT_CHARS": "0"},
+            {"AI_QQ_OFFICIAL_MAX_TEXT_PARTS": "17"},
         ):
             with self.subTest(override=next(iter(override))), self.assertRaises(config.OfficialConfigurationError):
                 config.OfficialConfig.from_env({**self.env, **override})
+
+    def test_delivery_policy_reads_markdown_and_section_caps(self):
+        parsed = config.OfficialConfig.from_env({
+            **self.env,
+            "AI_QQ_OFFICIAL_MARKDOWN": "false",
+            "AI_QQ_OFFICIAL_MAX_TEXT_CHARS": "500",
+            "AI_QQ_OFFICIAL_MAX_TEXT_PARTS": "2",
+            "AI_QQ_OFFICIAL_MAX_TEXT_BYTES": "1000",
+        })
+        self.assertEqual(
+            (parsed.delivery.markdown, parsed.delivery.max_chars, parsed.delivery.max_parts, parsed.delivery.max_bytes),
+            (False, 500, 2, 1000),
+        )
 
 
 if __name__ == "__main__":
