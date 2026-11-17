@@ -7,7 +7,6 @@ request body, response text, URL, API key or VM-reported count is persisted.
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
-import re
 import secrets
 import time
 
@@ -26,23 +25,17 @@ class BillingSource:
     turn_id: int | None = None
     background_job_id: int | None = None
     program_wake_id: str | None = None
-    conversation_question_id: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.endpoint,EndpointKey) or self.endpoint.account.platform!='qq-official':
             raise ValueError('billing_requires_physical_endpoint')
-        if self.purpose not in {'turn','proactive','ocr','image_caption','video','background_agent','program_wake','memory','semantic_index','conversation_question'}:
+        if self.purpose not in {'turn','proactive','ocr','image_caption','video','background_agent','program_wake','memory','semantic_index'}:
             raise ValueError('invalid_billing_purpose')
         if self.actor is not None and (not isinstance(self.actor,ActorKey) or self.actor.identity_kind=='bot'
                 or not self.actor.matches_endpoint(self.endpoint)):
             raise ValueError('billing_actor_endpoint_mismatch')
         if self.program_wake_id is not None and (self.actor is not None or self.background_job_id is not None):
             raise ValueError('program_billing_cannot_impersonate_human_job')
-        if self.purpose=='conversation_question' or self.conversation_question_id is not None:
-            if (self.purpose!='conversation_question' or type(self.conversation_question_id) is not str
-                or re.fullmatch('CQ-[0-9a-f]{32}',self.conversation_question_id) is None or self.actor is not None
-                or any(value is not None for value in (self.turn_id,self.background_job_id,self.program_wake_id))):
-                raise ValueError('question_billing_requires_private_host_source')
 
 
 class ModelBilling:
@@ -66,7 +59,7 @@ class ModelBilling:
             with self.transaction() as cursor:return self.begin(source,profile,transaction_cursor=cursor)
         cursor = transaction_cursor
         if not isinstance(source,BillingSource):raise ValueError('billing_requires_host_source')
-        if source.purpose in {'proactive','program_wake','conversation_question'}:
+        if source.purpose in {'proactive','program_wake'}:
             daily_budgets.require(cursor,source.endpoint,now=int(self.clock()))
         if source.background_job_id is not None:
             job = cursor.execute('SELECT endpoint_key,actor_key FROM background_jobs WHERE job_id=?',

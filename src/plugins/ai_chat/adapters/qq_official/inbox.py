@@ -58,7 +58,6 @@ class Acceptance:
     _native_admission: object = field(default=None, repr=False)
     _identity_input: object = field(default=None, repr=False)
     ingested: object = field(default=None, repr=False)
-    _link_input: object = field(default=None, repr=False)
 
 
 class OfficialInboxStore:
@@ -83,7 +82,6 @@ class OfficialInboxStore:
         self.approval_store = None
         self.source_authority = None
         self.admin_identity_service = None
-        self.link_ingress = None
 
     def close(self):
         with self._lock:
@@ -367,7 +365,6 @@ class OfficialInboxStore:
                 self._save_aliases(cursor, account, aliases, result.inbox_id, now)
                 return result
         decision = None
-        link_decision = None
         approval_input = None
         identity_input = None
         approval = None
@@ -386,8 +383,6 @@ class OfficialInboxStore:
             command = prepared_input.command
             admin_input = prepare_approval_input(dispatch, endpoint)
             identity_command = prepare_identity_input(dispatch)
-            if sent is None and self.link_ingress is not None:
-                self.link_ingress.authority.observe(cursor,token,decoded)
             if sent is not None:
                 reason, echo = "self_echo", "confirmed_self"
             elif identity_command.kind != 'ordinary':
@@ -399,12 +394,6 @@ class OfficialInboxStore:
                     status,reason='quarantined','input_sensitive_identity'
             elif prepared_input.kind == "quarantine":
                 status, reason = "quarantined", prepared_input.reason
-            elif prepared_input.kind=='link_control':
-                if self.link_ingress is None:
-                    status,reason = 'quarantined','link_control_unavailable'
-                else:
-                    status,reason = 'processed','link_control'
-                    link_decision = self.link_ingress.apply(cursor,token,decoded,prepared_input.link_command)
             elif command is not None:
                 decision = self.binding.apply(cursor,
                     context=BindingContext(endpoint, decoded.actor,
@@ -448,8 +437,6 @@ class OfficialInboxStore:
         inbox_id = self._insert(cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=endpoint_row,
             native_id=native_id, event_id=event_id, status=status, reason=reason, payload=payload, echo=echo,
             trigger=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending")
-        if link_decision is not None:
-            self.link_ingress.capture(cursor,token,decoded,inbox_id,link_decision)
         if identity_input is not None:
             cursor.execute("""UPDATE qq_official_inbound_events SET identity_control_actor_key=?,identity_control_occurred_at=?,identity_control_commitment=? WHERE inbox_id=?""",
                 (decoded.actor.key,decoded.platform_occurred_at,command_commitment(self.binding._pepper,inbox_id=inbox_id,endpoint=endpoint,actor=decoded.actor,native_id=native_id,command=identity_input),inbox_id))
@@ -464,9 +451,8 @@ class OfficialInboxStore:
                 SET control_actor_key=?,control_action=?,control_decision_code=? WHERE inbox_id=?""",
                 (decoded.actor.key, command.action, decision.status, inbox_id))
         self._save_aliases(cursor, account, aliases, inbox_id, now)
-        disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision or approval or identity_input or link_decision else "skipped"
-        return Acceptance(disposition, inbox_id, reason or "", decision, approval, approval_input, native_admission, identity_input,
-            _link_input=link_decision)
+        disposition = "inbox" if status == "pending" else "quarantined" if status == "quarantined" else "control" if decision or approval or identity_input else "skipped"
+        return Acceptance(disposition, inbox_id, reason or "", decision, approval, approval_input, native_admission, identity_input)
 
     def _lifecycle(self, cursor, account, dispatch, now):
         body = dispatch.data
