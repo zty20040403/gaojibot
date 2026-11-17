@@ -1,8 +1,8 @@
-"""Host side of a background Codex run: the model relay and the app-server tunnel.
+"""Host side of a background agent run: the model relay, tool router and RPC tunnel.
 
-The VM reaches both on the host's loopback (10.0.2.2 under QEMU user networking).
+The container reaches both on the host's bridge address (10.0.2.2).
 Each job gets a token that only works while the job runs; the provider key, the
-model and the reasoning effort are the host's, never the VM's.
+model and the reasoning effort are the host's, never the container's.
 """
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ class RequestScope:
 
 
 class Channel(RequestScope):
-    """Only job scopes have an app-server TCP tunnel; VM scopes never do."""
+    """Only job scopes have an agent RPC TCP tunnel; VM scopes never do."""
 
     def __init__(self, *, source=None, current=None):
         super().__init__(source=source,current=current)
@@ -90,7 +90,7 @@ class Channel(RequestScope):
     async def receive(self):
         line = await self.reader.readline()
         if not line:
-            raise EOFError('Codex 进程已退出。')
+            raise EOFError('后台 agent 进程已退出。')
         return json.loads(line)
 
     def close(self):
@@ -185,7 +185,7 @@ class _Server(uvicorn.Server):
         return contextlib.nullcontext()
 
 
-class CodexGateway:
+class JobGateway:
     def __init__(self, *, port, upstream, model, logger, client=None, vm_authority=None, vm_handler=None, billing=None, tool_heartbeat_seconds=TOOL_HEARTBEAT_SECONDS):
         # upstream() -> ModelProfile; model() -> (model, effort). One snapshot
         # provides both the actual route/key and its optional price.

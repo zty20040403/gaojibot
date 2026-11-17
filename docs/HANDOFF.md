@@ -1242,7 +1242,7 @@
 | `timeline.py` | 一行一条的渲染格式、噪声过滤、`estimate_tokens` |
 | `tools/history.py`、`tools/memory.py`、`tools/sources.py` | 查历史、记忆、搜索和网页 |
 | `adapters/qq_official/media_tools.py` | 表情包、识图、语音转写、转发 |
-| `tools/owned_sandbox.py`、`vm_sandbox.py` | 每个群的持久 VM 沙盒，文件在 `/work` |
+| `tools/owned_sandbox.py`、`container_sandbox.py` | 每个群的 NixOS 容器沙盒，文件在 `/work` |
 | `subagents.py`、`agent/`、`adapters/qq_official/subagent_*.py` | 旧的 Sub-Agent，约 9,800 行，**要被替换** |
 | `ledger.py` | 所有消息的账本，`history()` 是给 `history` 工具用的查询 |
 | `migrations/versions/0073_*` | 新增的三张表 |

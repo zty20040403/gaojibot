@@ -15,10 +15,16 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 
 from src.plugins.ai_chat.agent_loop import AgentTrace
-from src.plugins.ai_chat.codex_engine import DEADLINE_NOTE
-from src.plugins.ai_chat.codex_gateway import CodexGateway
-from src.plugins.ai_chat.pi_engine import PiEngine, launch_script, pi_models_json
-from tests.test_codex_gateway import free_port
+from src.plugins.ai_chat.job_gateway import JobGateway
+from src.plugins.ai_chat.pi_engine import (
+    DEADLINE_NOTE,
+    BackgroundModelSettings,
+    PiEngine,
+    launch_script,
+    pi_models_json,
+    upstream_profile,
+)
+from tests.test_job_gateway import free_port
 from tests.test_llm_gateway import profile
 
 
@@ -308,7 +314,7 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report, 'useful partial result')
 
     async def test_real_bridge_subprocess_roundtrip_over_gateway_tunnel(self) -> None:
-        gateway = CodexGateway(
+        gateway = JobGateway(
             port=free_port(),
             upstream=lambda: profile('relay', base_url='http://upstream.test/v1', api_key='KEY'),
             model=lambda: ('TEST_MODEL', 'high'),
@@ -370,6 +376,48 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(trace.total_tokens, 7)
             for proc in procs:
                 await asyncio.wait_for(proc.wait(), 5)
+
+    def test_upstream_profile_reads_the_real_catalog(self) -> None:
+        from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
+
+        def make_profile(name, provider):
+            return ModelProfile(name=name, provider=provider, protocol='openai-chat', model=name,
+                                base_url='http://127.0.0.1/v1', api_key_required=False)
+
+        catalog = ModelCatalog({'TEST_DS': make_profile('TEST_DS', 'deepseek'),
+                                'TEST_CP': make_profile('TEST_CP', 'cliproxy')},
+                               default_profile='TEST_DS')
+        self.assertEqual(upstream_profile(catalog, SimpleNamespace(background_upstream_profile='')).name, 'test_cp')
+        self.assertEqual(upstream_profile(catalog, SimpleNamespace(background_upstream_profile='TEST_DS')).name, 'test_ds')
+        with self.assertRaises(RuntimeError):
+            upstream_profile(catalog, SimpleNamespace(background_upstream_profile='TEST_NONE'))
+
+    def test_background_model_settings_chain_and_validation(self) -> None:
+        from src.plugins.ai_chat.config import Settings
+
+        prefs_store = {}
+        prefs = SimpleNamespace(
+            get_explicit=lambda k: prefs_store.get(k),
+            set=lambda k, v: prefs_store.__setitem__(k, v),
+        )
+        cfg = Settings.from_env({
+            'AI_BACKGROUND_MODELS': 'm1, m2 , m3',
+            'AI_BACKGROUND_EFFORT': 'medium',
+        })
+        settings = BackgroundModelSettings(prefs, cfg)
+        self.assertEqual(settings.chain(), ['m1', 'm2', 'm3'])
+        self.assertEqual(Settings.from_env({}).background_models, ('gpt-6.1-sol',))
+        self.assertEqual(Settings.from_env({'AI_BACKGROUND_MODEL': 'legacy'}).background_models, ('legacy',))
+        for bad in (',,,', 'a, ,b', ','.join(f'm{i}' for i in range(9)), 'x' * 101):
+            with self.assertRaises(ValueError):
+                Settings.from_env({'AI_BACKGROUND_MODELS': bad})
+        self.assertEqual(settings.get(), ('m1', 'medium'))
+        settings.set('alpha, beta', 'high')
+        self.assertEqual(settings.chain(), ['alpha', 'beta'])
+        self.assertEqual(settings.get(), ('alpha', 'high'))
+        for bad in ('', 'a, , b', ','.join(f'm{i}' for i in range(9)), 'x' * 101):
+            with self.assertRaises(ValueError):
+                settings.set(bad, 'high')
 
 
 if __name__ == '__main__':

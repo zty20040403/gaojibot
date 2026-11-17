@@ -42,7 +42,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
     wait_db = runtime_fixture.OfficialRuntimeTests.wait_db
 
     def application(self):
-        from tests.test_codex_gateway import free_port
+        from tests.test_job_gateway import free_port
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         ledger, journal = MessageLedger(self.database), TurnJournal(self.database)

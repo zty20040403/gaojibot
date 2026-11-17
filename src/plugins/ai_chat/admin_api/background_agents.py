@@ -5,7 +5,7 @@ from fastapi import Depends, Header, HTTPException
 import httpx
 from pydantic import BaseModel
 
-from ..codex_engine import EFFORTS, BackgroundModelSettings, upstream_profile
+from ..pi_engine import EFFORTS, BackgroundModelSettings, upstream_profile
 from .context import authorize, mutation_context, mutation_payload
 from .contracts import AdminMutationContext
 

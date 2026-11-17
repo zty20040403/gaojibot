@@ -8,13 +8,13 @@ import httpx
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.billing_context import BillingContext
-from src.plugins.ai_chat.codex_gateway import CodexGateway
+from src.plugins.ai_chat.job_gateway import JobGateway
 from tests import test_model_billing as fixture
-from tests.test_codex_gateway import free_port
+from tests.test_job_gateway import free_port
 from tests.test_responses_usage import USAGE,event
 
 
-class CodexBillingTests(unittest.IsolatedAsyncioTestCase):
+class JobGatewayBillingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         fixture.ModelBillingTests.setUp(self)
         self.calls = DatabaseCalls(); self.addAsyncCleanup(self.calls.close)
@@ -22,7 +22,7 @@ class CodexBillingTests(unittest.IsolatedAsyncioTestCase):
         self.profile = replace(self.profile,model='TEST_HOST_MODEL',base_url='http://upstream.test/v1')
 
     async def start(self,handler):
-        self.gateway = CodexGateway(port=free_port(),upstream=lambda:self.profile,model=lambda:('TEST_HOST_MODEL','high'),
+        self.gateway = JobGateway(port=free_port(),upstream=lambda:self.profile,model=lambda:('TEST_HOST_MODEL','high'),
             logger=logging.getLogger(__name__),client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
             billing=lambda channel:self.context)
         await self.gateway.start(); self.addAsyncCleanup(self.gateway.close)

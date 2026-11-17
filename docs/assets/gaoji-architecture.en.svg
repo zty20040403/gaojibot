@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
   <title id="title">Gaoji conversation and execution architecture</title>
-  <desc id="desc">The foreground agent chats and calls tools through a multi-model API and delivers through the outbox. Complex tasks are stored as jobs and run by Codex in an isolated VM, driven by the host; the VM's requests go through a host relay and the report returns to the foreground. PostgreSQL holds durable state, and credentials never enter the VM.</desc>
+  <desc id="desc">The foreground agent chats and calls tools through a multi-model API and delivers through the outbox. Complex tasks are stored as jobs and run by Pi in an isolated container, driven by the host; the container's requests go through a host relay and the report returns to the foreground. PostgreSQL holds durable state, and credentials never enter the container.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0b1222"/><stop offset="1" stop-color="#111a2e"/></linearGradient>
     <linearGradient id="line" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#67e8f9"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
@@ -30,7 +30,7 @@
       <text x="1070" y="157">Outbox</text>
       <text x="64" y="359" font-size="19">PostgreSQL</text>
       <text x="329" y="359">Background jobs</text>
-      <text x="675" y="346" fill="#ddd6fe">Codex · isolated VM</text>
+      <text x="675" y="346" fill="#ddd6fe">Pi · isolated container</text>
       <text x="1070" y="359" font-size="20">Host relay</text>
     </g>
     <g font-size="14" fill="#98abc9">

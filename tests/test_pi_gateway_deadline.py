@@ -5,10 +5,10 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from src.plugins.ai_chat.agent_loop import AgentTrace
-from src.plugins.ai_chat.codex_engine import DEADLINE_NOTE
-from src.plugins.ai_chat.codex_gateway import CodexGateway
+from src.plugins.ai_chat.pi_engine import DEADLINE_NOTE
+from src.plugins.ai_chat.job_gateway import JobGateway
 from src.plugins.ai_chat.pi_engine import PiEngine
-from tests.test_codex_gateway import free_port
+from tests.test_job_gateway import free_port
 import tests.test_pi_engine as pi_fixture
 
 
@@ -94,9 +94,9 @@ class PiGatewayDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 self.started = self.should_exit = False
             async def serve(self):
                 return
-        gateway = CodexGateway(port=free_port(), upstream=lambda: None,
+        gateway = JobGateway(port=free_port(), upstream=lambda: None,
             model=lambda: ('TEST_MODEL', 'high'), logger=SimpleNamespace())
-        with patch('src.plugins.ai_chat.codex_gateway._Server', EarlyServer):
+        with patch('src.plugins.ai_chat.job_gateway._Server', EarlyServer):
             try:
                 with self.assertRaisesRegex(RuntimeError, 'before startup'):
                     try:
@@ -117,12 +117,12 @@ class PiGatewayDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 self.started = True
                 while not self.should_exit:
                     await asyncio.sleep(0.01)
-        gateway = CodexGateway(port=free_port(), upstream=lambda: None,
+        gateway = JobGateway(port=free_port(), upstream=lambda: None,
             model=lambda: ('TEST_MODEL', 'high'), logger=SimpleNamespace())
         fixture = pi_fixture.PiEngineTests()
         engine = PiEngine(gateway, SimpleNamespace(get=lambda: ('TEST_MODEL', 'high')),
             start_vm=AsyncMock(), guest_exec=AsyncMock(), clock=asyncio.get_running_loop().time)
-        with patch('src.plugins.ai_chat.codex_gateway._Server', DelayedServer):
+        with patch('src.plugins.ai_chat.job_gateway._Server', DelayedServer):
             try:
                 row = {'job_id': 84, 'task': 'TEST', 'deadline_at': engine.clock() + 0.5}
                 report = await asyncio.wait_for(engine(row, fixture._session(), feedback=AsyncMock(),
@@ -151,9 +151,9 @@ class PiGatewayDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 self.started = True
                 while not self.should_exit:
                     await asyncio.sleep(0.01)
-        gateway = CodexGateway(port=free_port(), upstream=lambda: None,
+        gateway = JobGateway(port=free_port(), upstream=lambda: None,
             model=lambda: ('TEST_MODEL', 'high'), logger=SimpleNamespace())
-        with patch('src.plugins.ai_chat.codex_gateway._Server', DelayedServer):
+        with patch('src.plugins.ai_chat.job_gateway._Server', DelayedServer):
             first = asyncio.create_task(gateway.start())
             try:
                 await asyncio.wait_for(started.wait(), 2)

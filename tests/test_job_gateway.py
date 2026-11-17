@@ -8,7 +8,7 @@ import unittest
 
 import httpx
 
-from src.plugins.ai_chat.codex_gateway import MAX_JOB_TOOL_BODY, CodexGateway
+from src.plugins.ai_chat.job_gateway import MAX_JOB_TOOL_BODY, JobGateway
 from src.plugins.ai_chat.tool_images import ToolImage
 from tests.test_llm_gateway import profile
 
@@ -29,7 +29,7 @@ def free_port():
     raise RuntimeError('TEST relay port pair unavailable')
 
 
-class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
+class JobGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.seen = []
 
@@ -38,7 +38,7 @@ class CodexGatewayTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
                                   headers={'content-type': 'text/event-stream'})
 
-        self.gateway = CodexGateway(port=free_port(), upstream=lambda: profile('relay',base_url='http://upstream.test/v1',api_key='TEST_REAL_KEY'),
+        self.gateway = JobGateway(port=free_port(), upstream=lambda: profile('relay',base_url='http://upstream.test/v1',api_key='TEST_REAL_KEY'),
             model=lambda: ('TEST_HOST_MODEL', 'high'), logger=logging.getLogger(__name__),
             client=httpx.AsyncClient(transport=httpx.MockTransport(upstream)))
         await self.gateway.start()

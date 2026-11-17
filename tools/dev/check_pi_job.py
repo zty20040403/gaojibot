@@ -22,12 +22,12 @@ import httpx
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from src.plugins.ai_chat.agent_loop import AgentTrace  # noqa: E402
-from src.plugins.ai_chat.codex_gateway import CodexGateway  # noqa: E402
+from src.plugins.ai_chat.job_gateway import JobGateway  # noqa: E402
 from src.plugins.ai_chat.model_catalog import ModelProfile  # noqa: E402
 from src.plugins.ai_chat.pi_engine import PiEngine, pi_arguments, pi_models_json  # noqa: E402
 
 
-class RecordingGateway(CodexGateway):
+class RecordingGateway(JobGateway):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.calls = []

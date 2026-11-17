@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/gaoji-banner.en.svg" alt="gaoji — chats like a friend in the group, gets to work like an agent. Official QQ, multi-model conversation, persistent memory and Codex background jobs." width="100%" />
+  <img src="docs/assets/gaoji-banner.en.svg" alt="gaoji — chats like a friend in the group, gets to work like an agent. Official QQ, multi-model conversation, persistent memory and Pi background jobs." width="100%" />
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 
 <p align="center">
   A multi-model AI group member for the official QQ bot platform.<br />
-  The foreground agent chats; research, code, file and video tasks go to Codex in an isolated VM.<br />
+  The foreground agent chats; research, code, file and video tasks go to Pi in an isolated NixOS container.<br />
   From one sentence to a result you can actually use.
 </p>
 
@@ -37,7 +37,7 @@
 
 | **CONVERSATION** | **MEMORY** | **EXECUTION** |
 | :--- | :--- | :--- |
-| Group and private chats, switchable models, replies sent paragraph by paragraph.<br />When it has nothing to add it outputs `[silence]` and sends nothing. | A stable timeline, a `history` tool that reads the original messages, and a separate memory per conversation. Optional host-configured semantic search merges literal and meaning-based matches, rechecks current history visibility, and records actual embedding usage.<br />Notes are tidied every night, so the prompt does not carry the whole history. | Codex runs research, code, file and video tasks in a VM that belongs to the group.<br />You can ask for status, add requirements, answer its questions, or cancel. |
+| Group and private chats, switchable models, replies sent paragraph by paragraph.<br />When it has nothing to add it outputs `[silence]` and sends nothing. | A stable timeline, a `history` tool that reads the original messages, and a separate memory per conversation. Optional host-configured semantic search merges literal and meaning-based matches, rechecks current history visibility, and records actual embedding usage.<br />Notes are tidied every night, so the prompt does not carry the whole history. | Pi runs research, code, file and video tasks in a NixOS container that belongs to the group.<br />You can ask for status, add requirements, answer its questions, or cancel. |
 | **MULTIMODAL** | **AUTOMATION** | **CONTROL** |
 | Vision models receive up to four current/quoted images; `view_image` finds recent images, with descriptions for text-only models. Optional image captions (switches and daily limits isolated per physical conversation) and background video conclusions are searchable in history. Video uses frames/transcription or an explicitly configured host-side video model.<br />Animated stickers and voice replies in Chinese.<br />Attachment import, a browser, PDFs, video transcription and file delivery. | One-off reminders and recurring tasks, all in Asia/Shanghai time.<br />Recurring tasks run in the background, and the foreground agent delivers the result. | `/stop`, `/start` and `/kill` control this conversation, with persistent state and role checks; `/cancel` stays personal. `/config` reads fixed conversation settings; verified group admins or the private peer can change task limits, proactive replies, program quotas and image captions. The admin console offers the same controls alongside chats, usage and jobs.<br />Owner-private jobs can inspect servers and, when explicitly configured, request fixed host operations with ten-minute private approval codes. The console has a read-only operations audit. |
 
@@ -58,11 +58,11 @@
 ## 02 · The foreground chats, the background works, and the boundary is clear
 
 <p align="center">
-  <img src="docs/assets/gaoji-architecture.en.svg" alt="Architecture: QQ messages enter the foreground agent through the inbound adapter. Complex tasks are stored as jobs and run by Codex in a VM. Model requests go through a host relay. Reports return to the foreground agent and are delivered through the outbox." width="100%" />
+  <img src="docs/assets/gaoji-architecture.en.svg" alt="Architecture: QQ messages enter the foreground agent through the inbound adapter. Complex tasks are stored as jobs and run by Pi in a NixOS container. Model requests go through a host relay. Reports return to the foreground agent and are delivered through the outbox." width="100%" />
 </p>
 
 - **Conversation layer**: official inbound events, binding and permissions → timeline and memory → multi-model agent → one delivery path.
-- **Execution layer**: durable jobs → the host drives Codex → `/work` in the conversation's VM → the report wakes the foreground agent.
+- **Execution layer**: durable jobs → the host drives Pi → `/work` in the conversation's container → the report wakes the foreground agent.
 - **State layer**: PostgreSQL stores chats, memory, jobs, grants, model requests and delivery receipts.
 
 <details>

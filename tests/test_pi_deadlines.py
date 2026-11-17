@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import AsyncMock
 
 from src.plugins.ai_chat.agent_loop import AgentTrace
-from src.plugins.ai_chat.codex_engine import DEADLINE_NOTE
+from src.plugins.ai_chat.pi_engine import DEADLINE_NOTE
 import tests.test_pi_engine as pi_fixture
 
 
