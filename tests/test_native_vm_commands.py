@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from src.plugins.ai_chat.adapters.qq_official import turns
 from src.plugins.ai_chat.application.commands import CommandResult
-from tests import test_qq_official_turn_consumer as base
+from tests import qq_official_turn_fixture as base
 
 
 class NativeVMCommandTests(unittest.IsolatedAsyncioTestCase):

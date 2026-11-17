@@ -114,7 +114,7 @@ class IngressNormalizationTests(OfficialInboxTests):
     # Reuse fixture methods without duplicating its broad test suite.
     def setUp(self):
         super().setUp()
-        self.ingest = official_module('ingest')
+        self.inbox_module = official_module('inbox')
         self.ledger = MessageLedger(self.database)
         self.addCleanup(self.ledger.close)
 
@@ -159,8 +159,8 @@ class IngressNormalizationTests(OfficialInboxTests):
         result = self.accept(content='<@!TEST_BOT> /help', event_type='GROUP_AT_MESSAGE_CREATE',
             mentions=[{'id': 'TEST_BOT', 'is_you': True}])
         with self.tx() as cursor:
-            ingested = self.ingest.process_inbox(cursor, inbox_id=result.inbox_id, lease_token=self.token,
-                ledger=self.ledger, jobs=self.jobs, epoch_guard=assert_epoch, admission=self.store.admitted, now=self.now)
+            ingested = self.inbox_module.record_pending_inbox(cursor, inbox_id=result.inbox_id, lease_token=self.token,
+                ledger=self.ledger, epoch_guard=assert_epoch, admission=self.store.admitted, now=self.now)
         self.assertEqual(ingested.status, 'processed')
         row = self.query('SELECT * FROM qq_official_inbound_events WHERE inbox_id=?', (result.inbox_id,))[0]
         self.assertEqual((row['turn_text'], row['turn_text_version']), ('/help', 1))
@@ -191,8 +191,8 @@ class IngressNormalizationTests(OfficialInboxTests):
         with self.tx() as cursor:
             cursor.execute('UPDATE qq_official_inbound_events SET payload_json=? WHERE inbox_id=?',
                 (json.dumps(frame), result.inbox_id))
-            outcome = self.ingest.process_inbox(cursor, inbox_id=result.inbox_id, lease_token=self.token,
-                ledger=self.ledger, jobs=self.jobs, epoch_guard=assert_epoch, admission=self.store.admitted, now=self.now)
+            outcome = self.inbox_module.record_pending_inbox(cursor, inbox_id=result.inbox_id, lease_token=self.token,
+                ledger=self.ledger, epoch_guard=assert_epoch, admission=self.store.admitted, now=self.now)
         self.assertEqual(outcome.status, 'quarantined')
         after = self.query('SELECT * FROM qq_official_inbound_events WHERE inbox_id=?', (result.inbox_id,))[0]
         self.assertIsNone(after['payload_json'])
@@ -206,8 +206,8 @@ class IngressNormalizationTests(OfficialInboxTests):
             mentions=[{'id': 'TEST_BOT', 'is_you': True}])
         with self.assertRaisesRegex(RuntimeError, 'TEST_ROLLBACK'):
             with self.tx() as cursor:
-                self.ingest.process_inbox(cursor, inbox_id=result.inbox_id, lease_token=self.token,
-                    ledger=self.ledger, jobs=self.jobs, epoch_guard=assert_epoch, admission=self.store.admitted, now=self.now)
+                self.inbox_module.record_pending_inbox(cursor, inbox_id=result.inbox_id, lease_token=self.token,
+                    ledger=self.ledger, epoch_guard=assert_epoch, admission=self.store.admitted, now=self.now)
                 raise RuntimeError('TEST_ROLLBACK')
         row = self.query('SELECT * FROM qq_official_inbound_events WHERE inbox_id=?', (result.inbox_id,))[0]
         self.assertIsNone(row['turn_text'])

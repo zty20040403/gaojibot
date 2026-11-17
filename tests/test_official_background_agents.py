@@ -8,7 +8,6 @@ import unittest
 import httpx
 
 from src.bot_storage import DatabaseCalls
-from src.plugins.ai_chat.adapters.qq_official import turn_source
 from src.plugins.ai_chat.adapters.qq_official.background_agents import OfficialBackgroundAgents
 from src.plugins.ai_chat.adapters.qq_official.background_delivery import present
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
@@ -89,7 +88,7 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             endpoint_generation=1, route_epoch=1)
         inbound = service.restore(source)
         from src.plugins.ai_chat.adapters.qq_official.turn_platform import ExecutionBinding
-        life = ExecutionBinding(turn_source, f.token, handle, f.job, f.admission)
+        life = ExecutionBinding(f.token, handle, f.admission)
         turn = TurnState(ToolContext(SimpleNamespace(context=app), inbound=inbound,
             platform=SimpleNamespace(account=f.account, execution=life)), model_profile=profile)
         f.query('INSERT INTO conversation_settings(scope_key,agent_timeout_hours) VALUES (?,1)',(f.endpoint.scope.key,))

@@ -6,7 +6,7 @@ from src.plugins.ai_chat.browser_policy import instructions
 from src.plugins.ai_chat.background_tools import workspace_owner
 from src.plugins.ai_chat.platform_types import ActorKey,EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.message_roles import source_role
-from tests import test_qq_official_ingest as fixture
+from tests import qq_official_inbox_fixture as fixture
 from tests import test_conversation_control as controls
 
 

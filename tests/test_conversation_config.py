@@ -3,7 +3,7 @@ import unittest
 
 from src.plugins.ai_chat import conversation_config as config
 from src.plugins.ai_chat.platform_types import EndpointKey
-from tests import test_qq_official_ingest as fixture,test_qq_official_outbox_migration as migration
+from tests import qq_official_inbox_fixture as fixture,test_qq_official_outbox_migration as migration
 
 
 class ConfigParsingTests(unittest.TestCase):

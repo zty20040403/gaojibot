@@ -12,9 +12,9 @@ def build_business_services(runtime, app):
     token, job, or platform.
     """
     def factory(life,inbound,platform,services):
-        if (platform.execution.handle is not life.handle or platform.execution.job is not life.job
+        if (platform.execution.handle is not life.handle
                 or platform.execution.token is not life.token or platform.execution.admission is not life.admission
-                or inbound.endpoint!=life.handle.endpoint or inbound.actor!=life.handle.actor):
+                or inbound.endpoint != life.handle.endpoint or inbound.actor != life.handle.actor):
             raise CommandEffectDenied('business_command_source_mismatch')
         async def control(current,parsed):
             def read():

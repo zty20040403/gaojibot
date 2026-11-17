@@ -2,7 +2,8 @@
 import unittest
 from unittest.mock import patch
 
-from src.plugins.ai_chat.adapters.qq_official import conversation_control as controls, turn_source
+from src.plugins.ai_chat.adapters.qq_official import conversation_control as controls
+from src.plugins.ai_chat.adapters.qq_official.turn_platform import ExecutionFenceLost, assert_execution_current
 from src.plugins.ai_chat.background_jobs import BackgroundJobs
 from tests import test_qq_official_sender as sender_base
 from tests.qq_official_outbox_fixture import OutboxFixture
@@ -25,8 +26,8 @@ class SourceFenceTests(unittest.TestCase):
         handle = f.claim().handle
         f.begin(handle)
         change(f,'stop'); change(f,'start')
-        with f.tx() as cursor, self.assertRaises(turn_source.ExecutionFenceLost):
-            turn_source.assert_execution_current(cursor,**f.args(handle))
+        with f.tx() as cursor, self.assertRaises(ExecutionFenceLost):
+            assert_execution_current(cursor, **f.args(handle))
         self.assertEqual(f.claim().state,'cancelled')
 
     def test_commands_still_run_while_stopped(self):

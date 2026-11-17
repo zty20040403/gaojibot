@@ -20,7 +20,7 @@ from src.plugins.ai_chat.official_caption_worker import OfficialCaptionWorker
 from src.plugins.ai_chat.quota import UsageStore
 from src.plugins.ai_chat.vision_worker import VisionWorker
 from tests import test_image_captions as admission
-from tests import test_qq_official_ingest as ingress
+from tests import qq_official_inbox_fixture as ingress
 from tests.test_qq_official_image_formats import png
 
 

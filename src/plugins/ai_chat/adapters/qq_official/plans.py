@@ -163,7 +163,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     mode, scheme, key_id = ("ephemeral", "hmac_sha256_v1", digest_key_id) if ephemeral else ("persistent", "sha256", None)
     from .conversation_control import permitted, state
     command = cursor.execute("""SELECT 1 FROM qq_official_turn_executions WHERE endpoint_key=? AND requester_actor_key=?
-        AND canonical_message_id=? AND execution_kind='command' AND state='result_ready' """,
+        AND canonical_message_id=? AND execution_kind='command' AND state IN ('prepared','executing','result_ready','handed_off')""",
         (endpoint.key, requester.key, source_canonical_message_id)).fetchone() is not None
     if not (control_view or ephemeral or binding_preview) and not permitted(cursor, endpoint,
             canonical=source_canonical_message_id if purpose != "background_result" else None,

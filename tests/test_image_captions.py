@@ -4,7 +4,7 @@ import json
 import unittest
 
 from src.plugins.ai_chat.image_captions import CaptionSettings, caption_day
-from tests import test_qq_official_ingest as ingress
+from tests import qq_official_inbox_fixture as ingress
 
 
 class CaptionAdmissionTests(unittest.TestCase):
