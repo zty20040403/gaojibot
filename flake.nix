@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    llm-agents.url = "github:numtide/llm-agents.nix/2add2fd83bf01a23357d401ba24155e35d9d93d2";
 
     pyproject-nix = {
       url = "github:pyproject-nix/pyproject.nix";
@@ -223,7 +224,10 @@
     # The NixOS system each conversation container boots (x86_64 hosts).
     nixosConfigurations.gaoji-container = lib.nixosSystem {
       system = "x86_64-linux";
-      specialArgs.source = self;
+      specialArgs = {
+        source = self;
+        pi = inputs.llm-agents.packages.x86_64-linux.pi;
+      };
       modules = [./nix/guest/container.nix];
     };
 
