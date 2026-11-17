@@ -45,7 +45,12 @@ in {
   security.sudo.enable = false;
   services.openssh.enable = false;
   # On the operations network the host writes the fleet's ssh_config here.
+  # Copy ssh_config as container uid 0 and disable systemd-ssh-proxy's /nix/store
+  # include: under --private-users=pick, /nix/store files map to nobody (65534),
+  # which OpenSSH rejects on Include targets.
+  programs.ssh.systemd-ssh-proxy.enable = false;
   programs.ssh.extraConfig = "Include /etc/ssh/ssh_config.d/*.conf";
+  environment.etc."ssh/ssh_config".mode = "0644";
 
   # The kernel's boot id is the host's; VM credentials need one per boot.
   systemd.services.gaoji-boot-id = {
