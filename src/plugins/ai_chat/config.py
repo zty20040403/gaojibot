@@ -220,11 +220,8 @@ class Settings:
     otel_service_name: str
     otel_exporter_otlp_endpoint: str
     sandbox_enabled: bool
-    sandbox_backend: str
-    sandbox_image: str
     sandbox_vm_image: str
     sandbox_vm_root: str
-    sandbox_nix_cache_volume: str
     sandbox_allowed_users: set[int]
     sandbox_max_per_user: int
     sandbox_max_total: int
@@ -237,7 +234,6 @@ class Settings:
     sandbox_cpus: int = 2
     sandbox_pids_limit: int = 256
     sandbox_memory_mib: int = 8192
-    sandbox_network: str = "isolated"
     program_vm_limit: int = 4
     search_provider: str = "scrape"
     search_api_key: str = field(default="", repr=False)
@@ -549,15 +545,8 @@ class Settings:
             sandbox_cpus=resource_limit("AI_SANDBOX_CPUS", 2, 1, 16),
             sandbox_pids_limit=resource_limit("AI_SANDBOX_PIDS_LIMIT", 256, 32, 4096),
             sandbox_memory_mib=resource_limit("AI_SANDBOX_MEMORY_MIB", 8192, 256, 8192),
-            sandbox_network=environment.get("AI_SANDBOX_NETWORK", "isolated").strip().lower(),
-            sandbox_backend=environment.get("AI_SANDBOX_BACKEND", "oci").strip().lower(),
-            sandbox_image=environment.get("AI_SANDBOX_IMAGE", "").strip(),
             sandbox_vm_image=environment.get("AI_SANDBOX_VM_IMAGE", "").strip(),
             sandbox_vm_root=environment.get("AI_SANDBOX_VM_ROOT", "").strip(),
-            sandbox_nix_cache_volume=(
-                environment.get("AI_SANDBOX_NIX_CACHE_VOLUME", "gaoji-nix-v2").strip()
-                or "gaoji-nix-v2"
-            ),
             sandbox_allowed_users=group_ids(
                 "AI_SANDBOX_ALLOWED_USERS"
             ),

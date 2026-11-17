@@ -21,14 +21,13 @@
   vmSandbox = {pkgs, ...}: {
     services.gaoji.sandbox = {
       enable = true;
-      backend = "vm";
       vmImage = pkgs.hello;
       vmRoot = "/var/lib/TEST/vms";
     };
   };
   vm = evaluate vmSandbox;
   vmNftables = evaluate {imports = [vmSandbox]; networking.nftables.enable = true;};
-  docker = evaluate {services.gaoji.sandbox.enable = true;};
+  noSandbox = evaluate {};
   unit = config: config.systemd.services.gaoji-vm;
   hook = value: lib.isList value && lib.hasInfix "gaoji-vm-network" (lib.last value)
     && lib.hasSuffix "--if-running" (lib.last value);
@@ -44,7 +43,7 @@
     # Runs last in the same job, after nftables has loaded (or flushed) the ruleset.
     nftablesReloadReinstalls = hook nftables.ExecReload && hook nftables.ExecStartPost;
     relayPortsDefault = vm.services.gaoji.sandbox.vmHostPorts == [18640 18641];
-    dockerHasNoVmUnit = !(docker.systemd.services ? gaoji-vm);
+    noSandboxHasNoVmUnit = !(noSandbox.systemd.services ? gaoji-vm);
   };
 in {
   inherit tests;

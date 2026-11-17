@@ -1,44 +1,21 @@
-"""Choose the sandbox backend explicitly."""
+"""Build the VM sandbox manager from settings."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from .docker import DockerSandboxManager
-
-if TYPE_CHECKING:
-    from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
+from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
 
 
-def manager_from_settings(settings) -> DockerSandboxManager | VmSandboxManager:
-    backend = getattr(settings, "sandbox_backend", "oci")
-    if backend not in {"oci", "vm"}:
-        raise RuntimeError(f"Unsupported sandbox backend: {backend}")
-    if backend == "vm":
-        if not settings.sandbox_vm_image or not settings.sandbox_vm_root:
-            raise RuntimeError("VM sandbox requires AI_SANDBOX_VM_IMAGE and AI_SANDBOX_VM_ROOT")
-        from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
-
-        return VmSandboxManager(
-            image=settings.sandbox_vm_image,
-            root=settings.sandbox_vm_root,
-            max_per_owner=settings.sandbox_max_per_user,
-            max_total=settings.sandbox_max_total,
-            resident_limit=settings.program_vm_limit,
-            default_timeout_seconds=settings.sandbox_timeout_seconds,
-            max_file_bytes=settings.sandbox_max_file_bytes,
-            memory_mib=settings.sandbox_memory_mib,
-            vcpus=settings.sandbox_cpus,
-            pids_limit=settings.sandbox_pids_limit,
-        )
-    return DockerSandboxManager(
-        image=settings.sandbox_image,
+def manager_from_settings(settings) -> VmSandboxManager:
+    if settings.sandbox_enabled and (not settings.sandbox_vm_image or not settings.sandbox_vm_root):
+        raise RuntimeError("VM sandbox requires AI_SANDBOX_VM_IMAGE and AI_SANDBOX_VM_ROOT")
+    return VmSandboxManager(
+        image=settings.sandbox_vm_image,
+        root=settings.sandbox_vm_root,
         max_per_owner=settings.sandbox_max_per_user,
         max_total=settings.sandbox_max_total,
+        resident_limit=settings.program_vm_limit,
         default_timeout_seconds=settings.sandbox_timeout_seconds,
         max_file_bytes=settings.sandbox_max_file_bytes,
-        nix_cache_volume=settings.sandbox_nix_cache_volume,
         memory_mib=settings.sandbox_memory_mib,
-        cpus=settings.sandbox_cpus,
+        vcpus=settings.sandbox_cpus,
         pids_limit=settings.sandbox_pids_limit,
-        network=settings.sandbox_network,
     )

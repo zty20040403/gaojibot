@@ -9,12 +9,7 @@
   statePath = "/var/lib/${cfg.stateDirectory}";
   cachePath = "/var/cache/${cfg.cacheDirectory}";
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  defaultSandboxImage = self.packages.${pkgs.stdenv.hostPlatform.system}.sandbox-image;
-  sandboxUsesDocker = cfg.sandbox.backend == "docker";
-  sandboxUsesPodman = cfg.sandbox.backend == "podman";
-  sandboxUsesVm = cfg.sandbox.backend == "vm";
-  sandboxIsolated = cfg.sandbox.enable && sandboxUsesDocker && cfg.sandbox.network == "isolated";
-  sandboxVm = cfg.runBot && cfg.sandbox.enable && sandboxUsesVm;
+  sandboxVm = cfg.runBot && cfg.sandbox.enable;
   vmServiceName = "${serviceName}-vm";
   vmNetworkSetup = pkgs.writeShellScript "gaoji-vm-network" ''
     exec ${pkgs.python3}/bin/python ${../src/sandbox_runtime/vm_network.py} \
@@ -23,18 +18,6 @@
       --unit ${vmServiceName}.service \
       ${lib.concatMapStringsSep " " (port: "--host-port ${toString port}") cfg.sandbox.vmHostPorts} "$@"
   '';
-  sandboxNetworkSetup = pkgs.writeShellScript "gaoji-sandbox-network" ''
-    exec ${pkgs.python3}/bin/python ${../src/sandbox_runtime/network.py} \
-      --docker ${pkgs.docker}/bin/docker \
-      --iptables ${pkgs.iptables}/bin/iptables \
-      --ip6tables ${pkgs.iptables}/bin/ip6tables
-  '';
-  sandboxCli =
-    if sandboxUsesDocker
-    then pkgs.docker
-    else pkgs.writeShellScriptBin "docker" ''
-      exec ${pkgs.podman}/bin/podman "$@"
-    '';
   defaultWhisperModel = pkgs.fetchurl {
     url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
     hash = "sha256-YO1bw90U7qhWST0zQ0m0BXgt3K8AKNS130CINF+6Lv4=";
@@ -299,22 +282,10 @@ in {
       description = "Allow persistent conversation execution workspaces.";
     };
 
-    sandbox.backend = lib.mkOption {
-      type = lib.types.enum ["docker" "podman" "vm"];
-      default = "docker";
-      description = "Sandbox runtime: Docker, rootless Podman, or KVM virtual machines.";
-    };
-
     sandbox.allowedUsers = lib.mkOption {
       type = lib.types.listOf lib.types.ints.unsigned;
       default = [];
       description = "QQ users allowed to use sandboxes. An empty list denies access.";
-    };
-
-    sandbox.network = lib.mkOption {
-      type = lib.types.enum ["isolated" "none" "bridge"];
-      default = "isolated";
-      description = "OCI networking: isolated public egress, none, or explicitly unrestricted bridge.";
     };
 
     sandbox.allowAll = lib.mkOption {
@@ -332,7 +303,7 @@ in {
     sandbox.pidsLimit = lib.mkOption {
       type = lib.types.ints.between 32 4096;
       default = 256;
-      description = "Process limit for each OCI sandbox or VM sandbox user.";
+      description = "Process limit for each VM sandbox user.";
     };
 
     sandbox.memoryMiB = lib.mkOption {
@@ -357,31 +328,6 @@ in {
       type = lib.types.nonEmptyListOf lib.types.port;
       default = [18640 18641];
       description = "Host loopback TCP ports a VM may reach at 10.0.2.2: the background-agent model relay and app-server tunnel. Every other host, LAN, tailnet and link-local address is rejected for VM traffic.";
-    };
-
-    sandbox.imageArchive = lib.mkOption {
-      type = lib.types.package;
-      default = defaultSandboxImage;
-      defaultText = lib.literalExpression "inputs.qq-bot.packages.${pkgs.stdenv.hostPlatform.system}.sandbox-image";
-      description = "Reproducible OCI archive loaded for advanced bot sandboxes.";
-    };
-
-    sandbox.imageName = lib.mkOption {
-      type = lib.types.str;
-      default = "gaoji-sandbox:latest";
-      description = "Docker image name used when creating advanced sandboxes.";
-    };
-
-    sandbox.nixCacheVolume = lib.mkOption {
-      type = lib.types.str;
-      default = "gaoji-nix-v2";
-      description = "Docker volume shared by trusted Nix package helpers and mounted read-only in task sandboxes.";
-    };
-
-    sandbox.nixCacheRetentionDays = lib.mkOption {
-      type = lib.types.ints.between 1 90;
-      default = 14;
-      description = "Days to retain unused on-demand package roots before the dedicated sandbox cache GC removes them.";
     };
 
     opsRead = {
@@ -423,15 +369,11 @@ in {
         message = "opsRead requires a private absolute tokenFile outside /nix/store";
       }
       {
-        assertion = !(cfg.sandbox.enable && sandboxUsesPodman && cfg.sandbox.network == "isolated");
-        message = "Isolated egress requires rootful Docker; select none for rootless Podman or explicitly opt into bridge";
-      }
-      {
-        assertion = !(cfg.sandbox.enable && sandboxUsesVm) || cfg.sandbox.memoryMiB >= 512;
+        assertion = !cfg.sandbox.enable || cfg.sandbox.memoryMiB >= 512;
         message = "KVM sandboxes require at least 512 MiB";
       }
       {
-        assertion = !(cfg.sandbox.enable && sandboxUsesVm) || (
+        assertion = !cfg.sandbox.enable || (
           cfg.sandbox.vmImage != null
           && lib.hasPrefix "/" cfg.sandbox.vmRoot
           && !(lib.hasPrefix "/nix/store/" cfg.sandbox.vmRoot)
@@ -482,32 +424,23 @@ in {
 
     networking.firewall.allowedTCPPorts = lib.optionals cfg.openFirewall [cfg.port];
 
-    virtualisation.docker.enable = lib.mkDefault (cfg.sandbox.enable && sandboxUsesDocker);
-    virtualisation.podman.enable = lib.mkDefault (cfg.sandbox.enable && sandboxUsesPodman);
-    virtualisation.libvirtd.enable = lib.mkDefault (cfg.sandbox.enable && sandboxUsesVm);
+    virtualisation.libvirtd.enable = lib.mkDefault cfg.sandbox.enable;
 
     systemd.services.${serviceName} = lib.mkIf cfg.runBot {
       description = "gaoji multi-model bot";
       wantedBy = ["multi-user.target"];
-      unitConfig.RequiresMountsFor = lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [cfg.sandbox.vmRoot];
+      unitConfig.RequiresMountsFor = lib.optionals cfg.sandbox.enable [cfg.sandbox.vmRoot];
       wants =
         ["network-online.target"];
       # Without the filtered daemon the bot must not run: a stray session
       # daemon would otherwise serve virsh with unfiltered qemu.
-      requires = lib.optionals sandboxVm ["${vmServiceName}.service"]
-        ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
-        "${serviceName}-sandbox-image.service"
-      ] ++ lib.optionals sandboxIsolated ["gaoji-sandbox-network.service"];
+      requires = lib.optionals sandboxVm ["${vmServiceName}.service"];
       after =
         ["network-online.target"]
-        ++ lib.optionals sandboxVm ["${vmServiceName}.service"]
-        ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [
-          "${serviceName}-sandbox-image.service"
-        ] ++ lib.optionals sandboxIsolated ["gaoji-sandbox-network.service"];
+        ++ lib.optionals sandboxVm ["${vmServiceName}.service"];
       path =
         (cfg.runtimePackages ++ [pkgs.ffmpeg-headless])
-        ++ lib.optionals (cfg.sandbox.enable && !sandboxUsesVm) [sandboxCli]
-        ++ lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [pkgs.libvirt pkgs.qemu pkgs.cloud-utils]
+        ++ lib.optionals cfg.sandbox.enable [pkgs.libvirt pkgs.qemu pkgs.cloud-utils]
         ++ lib.optionals cfg.voiceAsr.enable [cfg.voiceAsr.package];
       environment =
         {
@@ -522,18 +455,11 @@ in {
           AI_SANDBOX_CPUS = toString cfg.sandbox.cpus;
           AI_SANDBOX_PIDS_LIMIT = toString cfg.sandbox.pidsLimit;
           AI_SANDBOX_MEMORY_MIB = toString cfg.sandbox.memoryMiB;
-          AI_SANDBOX_NETWORK = cfg.sandbox.network;
-          AI_SANDBOX_BACKEND = if sandboxUsesVm then "vm" else "oci";
-          AI_SANDBOX_IMAGE = cfg.sandbox.imageName;
-          AI_SANDBOX_NIX_CACHE_VOLUME = cfg.sandbox.nixCacheVolume;
           HOST = cfg.host;
           PORT = toString cfg.port;
           PYTHONUNBUFFERED = "1";
         }
-        // lib.optionalAttrs (cfg.sandbox.enable && sandboxUsesPodman) {
-          XDG_RUNTIME_DIR = "${statePath}/podman-runtime";
-        }
-        // lib.optionalAttrs (cfg.sandbox.enable && sandboxUsesVm) {
+        // lib.optionalAttrs cfg.sandbox.enable {
           XDG_RUNTIME_DIR = "${statePath}/vm-runtime";
           AI_SANDBOX_VM_IMAGE = toString cfg.sandbox.vmImage;
           AI_SANDBOX_VM_ROOT = cfg.sandbox.vmRoot;
@@ -578,8 +504,7 @@ in {
           Type = "simple";
           User = cfg.user;
           Group = cfg.group;
-          SupplementaryGroups = lib.optional (cfg.sandbox.enable && sandboxUsesDocker) "docker"
-            ++ lib.optional (cfg.sandbox.enable && sandboxUsesVm) "kvm";
+          SupplementaryGroups = lib.optional cfg.sandbox.enable "kvm";
           StateDirectory = cfg.stateDirectory;
           CacheDirectory = cfg.cacheDirectory;
           WorkingDirectory = "${cfg.package}/share/gaoji";
@@ -607,7 +532,7 @@ in {
           ProtectKernelModules = true;
           ProtectKernelTunables = true;
           ProtectSystem = "strict";
-          ReadWritePaths = lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [cfg.sandbox.vmRoot];
+          ReadWritePaths = lib.optionals cfg.sandbox.enable [cfg.sandbox.vmRoot];
           RestrictSUIDSGID = true;
         }
         // lib.optionalAttrs (cfg.environmentFile != null) {
@@ -658,149 +583,8 @@ in {
       ExecReload = lib.mkAfter ["${vmNetworkSetup} --if-running"];
     };
 
-    systemd.services.gaoji-sandbox-network = lib.mkIf sandboxIsolated {
-      description = "Install fail-closed sandbox egress rules";
-      after = ["docker.service"];
-      requires = ["docker.service"];
-      partOf = ["docker.service"];
-      wantedBy = ["docker.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = sandboxNetworkSetup;
-      };
-    };
-
-    networking.firewall.extraCommands = lib.mkIf sandboxIsolated ''
-      if ${pkgs.systemd}/bin/systemctl is-active --quiet docker.service; then
-        ${sandboxNetworkSetup}
-      fi
-    '';
-
-    systemd.services."${serviceName}-sandbox-image" = lib.mkIf (cfg.runBot && cfg.sandbox.enable && !sandboxUsesVm) {
-      description = "Load the gaoji advanced sandbox image";
-      wantedBy = ["multi-user.target"];
-      requires = lib.optional sandboxUsesDocker "docker.service";
-      after = lib.optional sandboxUsesDocker "docker.service";
-      path = [sandboxCli];
-      environment = lib.optionalAttrs (!sandboxUsesDocker) {
-        HOME = statePath;
-        XDG_RUNTIME_DIR = "${statePath}/podman-runtime";
-      };
-      script = ''
-        set -euo pipefail
-        ${sandboxCli}/bin/docker load --input ${cfg.sandbox.imageArchive}
-        image=${lib.escapeShellArg cfg.sandbox.imageName}
-        image_id=$(${sandboxCli}/bin/docker image inspect --format '{{.Id}}' "$image")
-
-        volume=${lib.escapeShellArg cfg.sandbox.nixCacheVolume}
-        ${sandboxCli}/bin/docker volume create \
-          --label io.gaoji.nix-cache=true "$volume" >/dev/null
-        ${sandboxCli}/bin/docker run --rm \
-          --pull=never \
-          --network none \
-          --user 0:0 \
-          --label io.gaoji.cache-initializer=true \
-          --cap-drop ALL \
-          --security-opt no-new-privileges \
-          --memory 2g \
-          --memory-swap 2g \
-          --read-only \
-          --tmpfs /tmp:rw,nosuid,nodev,size=256m,mode=1777 \
-          --tmpfs /root:rw,nosuid,nodev,size=64m,mode=700 \
-          --mount type=volume,source="$volume",target=/cache/nix \
-          "$image_id" \
-          gaoji-cache-seed
-
-        # Loading an image must never collect images; verify the task path last.
-        ${sandboxCli}/bin/docker run --rm -i \
-          --pull=never \
-          --network none \
-          --user 1000:1000 \
-          --cap-drop ALL \
-          --security-opt no-new-privileges \
-          --memory 512m \
-          --memory-swap 512m \
-          --read-only \
-          --env HOME=/home/sandbox \
-          --workdir /workspace \
-          --tmpfs /tmp:rw,nosuid,nodev,size=128m,mode=1777 \
-          --tmpfs /home/sandbox:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=700 \
-          --tmpfs /workspace:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=700 \
-          --mount type=volume,source="$volume",target=/nix,readonly \
-          "$image" python - < ${./sandbox-smoke.py}
-        test "$(${sandboxCli}/bin/docker image inspect --format '{{.Id}}' "$image")" = "$image_id"
-      '';
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "15min";
-      } // lib.optionalAttrs (!sandboxUsesDocker) {
-        User = cfg.user;
-        Group = cfg.group;
-        StateDirectory = cfg.stateDirectory;
-      };
-    };
-
-    systemd.services."${serviceName}-sandbox-nix-gc" = lib.mkIf (cfg.runBot && cfg.sandbox.enable && !sandboxUsesVm) {
-      description = "Collect expired gaoji on-demand Nix packages";
-      requires = lib.optional sandboxUsesDocker "docker.service" ++ ["${serviceName}-sandbox-image.service"];
-      after = lib.optional sandboxUsesDocker "docker.service" ++ ["${serviceName}-sandbox-image.service"];
-      path = [sandboxCli];
-      environment = lib.optionalAttrs (!sandboxUsesDocker) {
-        HOME = statePath;
-        XDG_RUNTIME_DIR = "${statePath}/podman-runtime";
-      };
-      script = ''
-        ${sandboxCli}/bin/docker run --rm \
-          --pull=never \
-          --network none \
-          --user 0:0 \
-          --cap-drop ALL \
-          --security-opt no-new-privileges \
-          --memory 2g \
-          --memory-swap 2g \
-          --read-only \
-          --tmpfs /tmp:rw,nosuid,nodev,size=256m,mode=1777 \
-          --tmpfs /root:rw,nosuid,nodev,size=64m,mode=700 \
-          --mount type=volume,source=${lib.escapeShellArg cfg.sandbox.nixCacheVolume},target=/nix \
-          ${lib.escapeShellArg cfg.sandbox.imageName} \
-          sh -lc ${lib.escapeShellArg ''
-            set -eu
-            for roots in /nix/var/nix/gcroots/gaoji-packages /nix/var/nix/gcroots/kennethbot-packages; do
-              if [ -d "$roots" ]; then
-                find "$roots" -mindepth 1 -maxdepth 1 -type d \
-                  -mtime +${toString cfg.sandbox.nixCacheRetentionDays} -exec rm -rf -- {} +
-              fi
-            done
-            nix-store --gc
-          ''}
-      '';
-      serviceConfig = {
-        Type = "oneshot";
-      } // lib.optionalAttrs (!sandboxUsesDocker) {
-        User = cfg.user;
-        Group = cfg.group;
-        StateDirectory = cfg.stateDirectory;
-      };
-    };
-
-    systemd.timers."${serviceName}-sandbox-nix-gc" = lib.mkIf (cfg.runBot && cfg.sandbox.enable && !sandboxUsesVm) {
-      description = "Schedule gaoji sandbox Nix cache collection";
-      wantedBy = ["timers.target"];
-      timerConfig = {
-        OnCalendar = "weekly";
-        Persistent = true;
-        RandomizedDelaySec = "2h";
-      };
-    };
-
     systemd.tmpfiles.rules =
-      lib.optionals (cfg.sandbox.enable && sandboxUsesPodman) [
-        "d ${statePath} 0700 ${cfg.user} ${cfg.group} -"
-        "d ${statePath}/podman-runtime 0700 ${cfg.user} ${cfg.group} -"
-      ]
-      ++ lib.optionals (cfg.sandbox.enable && sandboxUsesVm) [
+      lib.optionals cfg.sandbox.enable [
         "d ${statePath} 0700 ${cfg.user} ${cfg.group} -"
         "d ${statePath}/vm-runtime 0700 ${cfg.user} ${cfg.group} -"
         "d ${cfg.sandbox.vmRoot} 0700 ${cfg.user} ${cfg.group} -"
