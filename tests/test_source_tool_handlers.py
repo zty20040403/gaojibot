@@ -254,3 +254,16 @@ class WebFetchFallbackTests(unittest.IsolatedAsyncioTestCase):
         from src.plugins.ai_chat.web_fetch import FetchError
         result, fetch = await self.call([FetchError("HTTP 500", status=500)])
         self.assertFalse(result["ok"]); self.assertEqual(fetch.await_count, 1)
+
+
+class SearchLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_reply_stops_searching_after_the_limit(self):
+        from src.plugins.ai_chat.tools import sources
+        turn = SimpleNamespace(web_searches=0, user_text="TEST", search_results=[],
+            context=SimpleNamespace(app=SimpleNamespace(settings=SimpleNamespace(
+                max_input_chars=500, search_provider="scrape", search_api_key="", search_timeout_seconds=1,
+                search_max_results=5), logger=Mock())))
+        with patch("src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock, return_value=[]) as search:
+            results = [json.loads(await sources.web_search(turn, {"query": "TEST"})) for _ in range(6)]
+        self.assertEqual(search.await_count, sources.MAX_SEARCHES_PER_REPLY)
+        self.assertEqual([r.get("code") for r in results[-2:]], ["search_limit", "search_limit"])

@@ -72,6 +72,7 @@ class TurnState:
     # Shown by find_stickers; the model may send one of these by handle.
     sticker_handles_seen: set[str] = field(default_factory=set)
     sticker_sent: bool = False
+    web_searches: int = 0
     delivered: bool = False
     model_profile: Any = None
 

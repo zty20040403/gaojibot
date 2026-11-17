@@ -96,7 +96,20 @@ async def inspect_source(turn: TurnState, arguments: dict[str, object]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+# One reply may search this many times. On 11-18 a reply identifying a toy
+# from a photo searched 12 times in a row (about a minute) for a name that
+# had no page online yet; stop and answer with what is known instead.
+MAX_SEARCHES_PER_REPLY = 4
+
+
 async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
+    if turn.web_searches >= MAX_SEARCHES_PER_REPLY:
+        return json.dumps({
+            "ok": False, "code": "search_limit",
+            "error": f"这条回复已经搜了 {MAX_SEARCHES_PER_REPLY} 次。用已有结果回答；"
+                     "查不到确切答案就说出最可能的情况，并说明不确定。",
+        }, ensure_ascii=False)
+    turn.web_searches += 1
     settings = turn.context.app.settings
     query = str(arguments.get("query", "")).strip() or turn.user_text
     query = query[: settings.max_input_chars]
