@@ -5,7 +5,7 @@ from src.plugins.ai_chat.vm_sandbox import VmSandboxManager
 
 
 def manager_from_settings(settings) -> VmSandboxManager:
-    if not settings.sandbox_vm_image or not settings.sandbox_vm_root:
+    if settings.sandbox_enabled and (not settings.sandbox_vm_image or not settings.sandbox_vm_root):
         raise RuntimeError("VM sandbox requires AI_SANDBOX_VM_IMAGE and AI_SANDBOX_VM_ROOT")
     return VmSandboxManager(
         image=settings.sandbox_vm_image,
