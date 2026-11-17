@@ -1061,7 +1061,10 @@ class VmSandboxManager:
                     elif age >= idle_seconds:
                         await self.stop_owned(owner, sid,if_idle=True)
                 except Exception as error:
-                    logger.warning('sandbox maintenance error=%s', type(error).__name__)
+                    logger.warning(
+                        'sandbox maintenance sandbox=%s error=%s: %s',
+                        sid, type(error).__name__, str(error)[:200],
+                    )
 
     async def reclaim_stopped(
         self, owner: str, sandbox_id: str, *, eligible: Callable[[], bool],
