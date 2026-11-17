@@ -554,7 +554,6 @@ class OfficialRuntime:
                     resources.push_async_callback(cleanup_approval)
                     await self._calls(service.attach, self, token)
                     self.approval_service = service
-            file_worker = None
             if self.file_services_factory is not None and isinstance(rest, RestClient):
                 service = await self._optional_feature('files', self.file_services_factory, self, token, rest)
                 if service is not None:
@@ -567,12 +566,6 @@ class OfficialRuntime:
                             self.file_service = None
 
                     resources.push_async_callback(close_files)
-                    file_worker = DurableJobWorker(self.jobs, logger=self.logger, poll_seconds=0.1,
-                        concurrency=1, per_scope_limit=1, database_calls=self._calls)
-                    file_worker.register(account_job_kind('file', self.loaded.account.key), service.dispatcher)
-                    imports=self.migration_service.domains.get('file') if self.migration_service is not None else None
-                    if imports is not None:
-                        file_worker.register(account_job_kind('file_import',token.account_key), imports.execute)
             if self.media_factory is not None:
                 media = await self._optional_feature('media', self.media_factory, self, token)
                 self.media_service = media
@@ -626,8 +619,6 @@ class OfficialRuntime:
                 tasks.append(asyncio.create_task(agent_worker.run_forever()))
             if vector_worker is not None:
                 tasks.append(asyncio.create_task(vector_worker.run()))
-            if file_worker is not None:
-                tasks.append(asyncio.create_task(file_worker.run_forever()))
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for finished in done:

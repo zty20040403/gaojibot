@@ -190,8 +190,6 @@ def _finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
     cursor.execute("""UPDATE deliveries SET status='committed',native_message_id=?,lease_until=NULL,
         wait_reason=NULL,last_error='',updated_at=? WHERE delivery_id=?""", (native, now, delivery["delivery_id"]))
     cursor.execute("UPDATE delivery_receipts SET applied_at=? WHERE receipt_id=?", (now, receipt_id))
-    from .file_projection import apply_file_receipt
-    apply_file_receipt(cursor, delivery=delivery, attempt=attempt, now=now)
     return SendOutcome("committed", "", delivery["delivery_id"])
 
 
@@ -228,33 +226,30 @@ class OfficialSendStore:
                 self._ephemeral[delivery_id] = rendered
         return ref
 
-    def enqueue_file(self, token, *, artifact, uploaded, transaction_cursor):
-        cursor = transaction_cursor
-        endpoint = EndpointKey.parse(artifact["endpoint_key"])
+    def enqueue_media(self, token, *, endpoint, requester, filename, sha256, byte_size, mime,
+                      uploaded, logical_key, source_scope_key, expires_at, source_native_message_id="",
+                      source_canonical_message_id=None, turn_id=None, source_generation=None,
+                      transaction_cursor=None):
         now = int(self.clock())
-        turn = cursor.execute("SELECT journal_turn_id FROM qq_official_turn_executions WHERE execution_id=?",
-                              (artifact["source_execution_id"],)).fetchone()
-        ref = enqueue_plan(cursor, token=token,
-            rendered=render_plan(MessageBody((TextNode(0, "文件：" + artifact["filename"]),)), endpoint),
-            requester=ActorKey.parse(artifact["requester_actor_key"]),
-            logical_key="file:" + artifact["artifact_id"], source_scope_key=artifact["source_scope_key"],
-            source_native_message_id=artifact["source_native_message_id"] or "",
-            source_canonical_message_id=artifact["source_canonical_message_id"],
-            turn_id=turn["journal_turn_id"] if turn else None,
-            expires_at=min(artifact["pending_deadline_at"], uploaded.expires_at), now=now,
-            purpose="requested_artifact", admission=self.admission, max_wait_seconds=self.max_wait_seconds,
-            source_generation=artifact["conversation_generation"])
-        if ref.created:
-            manifest = stable_json({"v": 1, "media": {"file_info": uploaded.file_info},
-                "artifact_id": artifact["artifact_id"], "source_native_message_id": artifact["source_native_message_id"] or ""})
-            kind = "audio" if artifact["mime"] == "audio/silk" else "file"
-            body = body_to_json(MessageBody((MediaNode(0, kind, name=artifact["filename"], mime=artifact["mime"],
-                source_type="qq_official_file", raw_data={"artifact_id": artifact["artifact_id"],
-                    "sha256": artifact["sha256"], "size": artifact["byte_size"]}),)))
-            cursor.execute("UPDATE delivery_plans SET manifest_json=?,manifest_digest=? WHERE plan_id=?",
-                           (manifest, digest(manifest), ref.plan_id))
-            cursor.execute("UPDATE deliveries SET body_json=? WHERE plan_id=?", (body, ref.plan_id))
-        return ref
+        with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
+            ref = enqueue_plan(cursor, token=token,
+                rendered=render_plan(MessageBody((TextNode(0, "文件：" + filename),)), endpoint),
+                requester=requester, logical_key=logical_key, source_scope_key=source_scope_key,
+                source_native_message_id=source_native_message_id or "",
+                source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
+                expires_at=expires_at, now=now, purpose="requested_artifact",
+                admission=self.admission, max_wait_seconds=self.max_wait_seconds,
+                source_generation=source_generation)
+            if ref.created:
+                manifest = stable_json({"v": 1, "media": {"file_info": uploaded.file_info},
+                    "source_native_message_id": source_native_message_id or ""})
+                kind = "audio" if mime == "audio/silk" else "image" if mime.startswith("image/") else "file"
+                body = body_to_json(MessageBody((MediaNode(0, kind, name=filename, mime=mime,
+                    source_type="qq_official_file", raw_data={"sha256": sha256, "size": byte_size}),)))
+                cursor.execute("UPDATE delivery_plans SET manifest_json=?,manifest_digest=? WHERE plan_id=?",
+                               (manifest, digest(manifest), ref.plan_id))
+                cursor.execute("UPDATE deliveries SET body_json=? WHERE plan_id=?", (body, ref.plan_id))
+            return ref
 
     def _content(self, cursor, row, endpoint, *, token=None, now=None):
         if row["payload_mode"] == "ephemeral":
@@ -269,10 +264,6 @@ class OfficialSendStore:
             if manifest.get("v") != 1 or manifest.get("source_native_message_id") != row["reply_to_native_message_id"]:
                 raise OutboxInvariantError("delivery_manifest_conflict")
             if "media" in manifest:
-                if "artifact_id" in manifest:
-                    from .file_authority import assert_file_current
-                    assert_file_current(cursor, token=token, artifact_id=manifest["artifact_id"],
-                        admission=self.admission, now=now, plan_id=row["plan_id"])
                 return {"msg_type": 7, "media": manifest["media"]}
             rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
                 allowed_mentions=self.mention_authority(cursor, endpoint) | frozenset({ActorKey.parse(row["requester_actor_key"])}),

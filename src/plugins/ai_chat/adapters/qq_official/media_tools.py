@@ -95,7 +95,7 @@ async def _deliver_sticker(session, turn, candidates, *, chosen):
         turn.sticker_handles_this_turn.add(handle)
         turn.sticker_sent = True
         if (isinstance(result, dict) and result.get('artifact_id') and result.get('state') in {
-                'stored', 'uploading', 'uploaded', 'publishing', 'published', 'handed_off', 'message_accepted'}):
+                'stored', 'uploading', 'uploaded', 'publishing', 'published', 'handed_off', 'message_accepted', 'committed'}):
             turn.delivered = True
         await _record_sent(turn, handle)
         return result

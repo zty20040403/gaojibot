@@ -1,4 +1,6 @@
-"""QQ native file upload: small base64 bodies or sequential presigned parts."""
+"""QQ native file upload: <=5 MiB base64 single-shot or >5 MiB multipart."""
+from __future__ import annotations
+
 import asyncio
 import base64
 from dataclasses import dataclass, field
@@ -19,13 +21,22 @@ DAILY_BYTES = 2 * 1024 * 1024 * 1024
 HASH_PREFIX_BYTES = 10_002_432
 logger = logging.getLogger(__name__)
 
+_UPLOAD_REASONS = {
+    40093003: "群文件超过上限，请清理群文件空间。",
+    40093001: "分片上传会话无效或已过期，请重试。",
+    40093002: "分片上传校验失败，请重试。",
+    850012: "腾讯拒绝了文件上传参数（大小或摘要不合法）。",
+    40034006: "文件内容未通过腾讯安全审核。",
+    40034105: "这个群没开主动发言，请群主打开。",
+}
+
 
 class FileUploadError(GenerationError):
     pass
 
 
-def file_type(filename):
-    if filename.lower().endswith('.silk'):
+def file_type(filename: str) -> int:
+    if filename.lower().endswith(".silk"):
         return 3
     mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return 1 if mime.startswith("image/") else 4
@@ -42,9 +53,10 @@ class FileUploader:
         self.rest, self.clock = rest, clock
         self.client = client or httpx.AsyncClient(timeout=120, trust_env=False)
         self._owns_client = client is None
-        self.cache = {}
+        self.cache: dict[tuple[str, str, str], UploadedFile] = {}
         self._lock = asyncio.Lock()
-        self._day, self._bytes = None, 0
+        self._day: int | None = None
+        self._bytes = 0
 
     async def close(self):
         if self._owns_client:
@@ -66,37 +78,46 @@ class FileUploader:
     async def _multipart(self, path, content, metadata, current=None):
         prepared = await self._request(path + "/upload_prepare", metadata, current)
         upload_id, block_size = prepared["upload_id"], int(prepared["block_size"])
-        for part in sorted(prepared["parts"], key=lambda part: part["index"]):
+        for part in sorted(prepared["parts"], key=lambda item: item["index"]):
             index = int(part["index"])
             block = content[index * block_size:(index + 1) * block_size]
-            # Presigned storage requests never receive the QQ Authorization header.
             if current is not None:
                 await current()
             response = await self.client.put(part["presigned_url"], content=block)
             response.raise_for_status()
             await self._request(path + "/upload_part_finish", {
-                "upload_id": upload_id, "part_index": index,
-                "block_size": str(len(block)), "md5": hashlib.md5(block).hexdigest(),
+                "upload_id": upload_id,
+                "part_index": index,
+                "block_size": str(len(block)),
+                "md5": hashlib.md5(block).hexdigest(),
             }, current)
         return await self._request(path + "/files", {
-            "upload_id": upload_id, "file_type": metadata["file_type"],
-            "file_name": metadata["file_name"], "srv_send_msg": False,
+            "upload_id": upload_id,
+            "file_type": metadata["file_type"],
+            "file_name": metadata["file_name"],
+            "srv_send_msg": False,
         }, current)
 
-    async def upload(self, endpoint, content, filename, *, current=None):
+    async def upload(self, endpoint, content: bytes, filename: str, *, current=None) -> UploadedFile:
         if not filename:
             raise FileUploadError("发送文件需要文件名。")
         size = len(content)
+        if size <= 0:
+            raise FileUploadError("文件为空，无法上传。")
         if size > MAX_FILE_BYTES:
             raise FileUploadError("文件超过 100 MB，无法上传。")
         sha = hashlib.sha256(content).hexdigest()
         key = (endpoint.key, sha, filename)
         collection = "groups" if endpoint.kind == "group" else "users"
         path = f"/v2/{collection}/{quote(endpoint.native_conversation_id, safe='')}"
-        metadata = dict(file_type=file_type(filename), file_name=filename,
-            file_size=str(size), md5=hashlib.md5(content).hexdigest(),
+        metadata = dict(
+            file_type=file_type(filename),
+            file_name=filename,
+            file_size=str(size),
+            md5=hashlib.md5(content).hexdigest(),
             sha1=hashlib.sha1(content).hexdigest(),
-            md5_10m=hashlib.md5(content[:HASH_PREFIX_BYTES]).hexdigest())
+            md5_10m=hashlib.md5(content[:HASH_PREFIX_BYTES]).hexdigest(),
+        )
         async with self._lock:
             if current is not None:
                 await current()
@@ -112,8 +133,10 @@ class FileUploader:
             try:
                 if size <= SMALL_FILE_BYTES:
                     response = await self._request(path + "/files", {
-                        "file_type": metadata["file_type"], "file_name": filename,
-                        "file_data": base64.b64encode(content).decode("ascii"), "srv_send_msg": False,
+                        "file_type": metadata["file_type"],
+                        "file_name": filename,
+                        "file_data": base64.b64encode(content).decode("ascii"),
+                        "srv_send_msg": False,
                     }, current)
                 else:
                     response = await self._multipart(path, content, metadata, current)
@@ -125,9 +148,7 @@ class FileUploader:
                         error = diagnostic
                 logger.warning("QQ upload bytes=%d elapsed=%.2f result=rejected code=%s",
                                size, time.monotonic() - started, error.code)
-                detail = {40093003: "群文件超过上限，请清理群文件空间。",
-                          850012: "腾讯拒绝了文件上传参数。",
-                          40034006: "文件内容未通过腾讯审核。"}.get(error.code, "腾讯未接受文件上传。")
+                detail = _UPLOAD_REASONS.get(error.code, f"腾讯未接受文件上传（{error.category}）。")
                 raise FileUploadError(f"{detail}（错误码：{error.code or error.status}）") from None
             except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
                 logger.warning("QQ upload bytes=%d elapsed=%.2f result=failed error=%s",
