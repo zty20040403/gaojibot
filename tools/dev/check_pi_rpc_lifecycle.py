@@ -14,7 +14,7 @@ from aiohttp import web
 
 from check_pi_job import FakeModel, FakeSession, RecordingGateway, available_port_pair, check
 from src.plugins.ai_chat.agent_loop import AgentTrace
-from src.plugins.ai_chat.codex_engine import DEADLINE_NOTE
+from src.plugins.ai_chat.pi_engine import DEADLINE_NOTE
 from src.plugins.ai_chat.model_catalog import ModelProfile
 from src.plugins.ai_chat.pi_engine import PiEngine, PiRun, pi_arguments, pi_models_json
 

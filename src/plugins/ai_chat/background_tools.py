@@ -28,7 +28,7 @@ ASK_MAIN = definition('ask_main', '向前台提问，让它根据聊天记录回
 
 
 class BackgroundToolSession:
-    """The host's tools for one job; Codex runs commands and edits files in the VM itself."""
+    """The host's tools for one job; the background agent runs commands and edits files in the container itself."""
 
     def __init__(self, app, inbound, *, prompt, question, current):
         self.app, self.inbound, self.prompt = app, inbound, prompt

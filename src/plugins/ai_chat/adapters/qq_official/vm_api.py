@@ -1,9 +1,9 @@
-"""Revocable VM API scopes; no model relay, Codex tunnel or human authority."""
+"""Revocable VM API scopes; no model relay, agent tunnel or human authority."""
 import asyncio
 from dataclasses import dataclass
 from starlette.exceptions import HTTPException
 
-from ...codex_gateway import RequestScope
+from ...job_gateway import RequestScope
 from .conversation_control import permitted, state
 from .vm_sessions import VMSource
 

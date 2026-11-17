@@ -20,7 +20,7 @@ from unittest.mock import Mock
 from src.plugins.ai_chat.container_sandbox import ContainerSandboxManager
 from tests import test_vm_credentials as credential_fixture
 from tests.qq_official_outbox_fixture import OutboxFixture
-from tests.test_codex_gateway import free_port
+from tests.test_job_gateway import free_port
 
 
 class VMLifecycleTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):

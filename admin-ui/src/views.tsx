@@ -249,7 +249,7 @@ export function TasksView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail:
   return (
     <>
       <PageHeader title="任务与投递" description="前台 Agent、持久任务和消息投递的统一操作面" action={<RefreshButton onClick={() => void plane.refreshMany(['tasks', 'backgroundAgents', 'commands', 'jobs', 'deliveries'])} />} />
-      <Section title="后台任务" description="每个任务由群 VM 里的 Codex 执行，可插话、停止，完成后由前台交付">
+      <Section title="后台任务" description="每个任务由群容器里的后台 agent 执行，可插话、停止，完成后由前台交付">
         <BackgroundModelPicker plane={plane} />
         {agents.map((job) => <details key={job.job_id}><summary><code>job#{job.job_id}</code> {job.title} <StatusBadge value={job.state} /> · {job.last_tool || '尚未调用工具'}</summary><p>{job.error}</p><pre>{job.report}</pre>{['queued', 'running'].includes(job.state) && <button onClick={() => void plane.mutate('backgroundAgents', `/background-agents/${job.job_id}/cancel`, 'POST', {}, ['backgroundAgents'])}>停止任务</button>}</details>)}
         {!agents.length && <EmptyState>还没有后台任务</EmptyState>}

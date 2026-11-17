@@ -1,4 +1,4 @@
-"""Background jobs run by Pi in the conversation VM over its RPC protocol."""
+"""Background jobs run by Pi in the conversation container over its RPC protocol."""
 from __future__ import annotations
 
 import asyncio
@@ -8,10 +8,59 @@ import json
 import shlex
 
 from .billing_context import drain
-from .codex_engine import DEADLINE_NOTE, HOST
 
+HOST = '10.0.2.2'
+DEADLINE_NOTE = '[到点停了，下面是做到一半的]'
+EFFORTS = ('low', 'medium', 'high', 'xhigh')
 ABORT_TIMEOUT = 5
 STOP_GRACE = 10
+
+
+def parse_model_chain(value: str) -> list[str]:
+    text = value.strip()
+    if not text:
+        raise ValueError('模型名不能为空，最多 8 个，每个不超过 100 字，推理强度只能是 ' + '/'.join(EFFORTS))
+    parts = [item.strip() for item in text.split(',')]
+    if any(not item or len(item) > 100 for item in parts) or len(parts) > 8:
+        raise ValueError('模型名不能为空，最多 8 个，每个不超过 100 字，推理强度只能是 ' + '/'.join(EFFORTS))
+    return parts
+
+
+class BackgroundModelSettings:
+    """The background model chain and effort, changed from the console."""
+
+    def __init__(self, preferences, settings):
+        self.preferences, self.settings = preferences, settings
+
+    def chain(self) -> list[str]:
+        raw = self.preferences.get_explicit('background:models') or self.preferences.get_explicit('background:model')
+        if raw:
+            return parse_model_chain(raw)
+        models = getattr(self.settings, 'background_models', None)
+        if models:
+            return list(models)
+        return [self.settings.background_model]
+
+    def get(self):
+        effort = self.preferences.get_explicit('background:effort') or self.settings.background_effort
+        return self.chain()[0], effort
+
+    def set(self, model, effort):
+        models = parse_model_chain(model)
+        if effort not in EFFORTS:
+            raise ValueError('模型名不能为空，最多 8 个，每个不超过 100 字，推理强度只能是 ' + '/'.join(EFFORTS))
+        self.preferences.set('background:models', ', '.join(models))
+        self.preferences.set('background:model', models[0])
+        self.preferences.set('background:effort', effort)
+
+
+def upstream_profile(catalog, settings):
+    """The profile whose endpoint and key relay background calls (cliproxy by default)."""
+    wanted = settings.background_upstream_profile.strip().lower()  # the catalog lower-cases names
+    for profile in catalog.profiles:
+        if (profile.name == wanted) if wanted else profile.provider == 'cliproxy':
+            return profile
+    raise RuntimeError('没有可用于后台任务的模型端点，请设置 AI_BACKGROUND_UPSTREAM_PROFILE。')
 
 
 def pi_models_json(port: int, *, context_window: int = 200000) -> dict:

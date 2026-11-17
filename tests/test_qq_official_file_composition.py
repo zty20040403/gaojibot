@@ -131,7 +131,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
 
         async def background(engine, row, session, *, feedback, progress, trace):
-            # Codex in the VM, reduced to the file it leaves behind.
+            # Pi in the container, reduced to the file it leaves behind.
             from src.plugins.ai_chat.background_tools import workspace_owner
             from src.plugins.ai_chat.platform_types import EndpointKey
             phases['background'] += 1
@@ -143,7 +143,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             return 'TEST finished; file is /work/result.pdf'
 
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=completion), \
-                patch('src.plugins.ai_chat.codex_engine.CodexEngine.__call__', new=background):
+                patch('src.plugins.ai_chat.pi_engine.PiEngine.__call__', new=background):
             runtime = await self.open(app)
             group = self._testMethodName == 'test_bound_group_file_reply_keeps_original_timeline'
             if group:

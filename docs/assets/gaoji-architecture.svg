@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
   <title id="title">Gaoji 的对话与执行架构</title>
-  <desc id="desc">前台通过多模型 API 聊天和调用工具，经 Outbox 交付。复杂任务落库，由宿主驱动隔离 VM 中的 Codex；VM 请求经宿主中转，报告回前台。PostgreSQL 保存持久状态，凭据不进入 VM。</desc>
+  <desc id="desc">前台通过多模型 API 聊天和调用工具，经 Outbox 交付。复杂任务落库，由宿主驱动隔离容器中的 Pi；容器请求经宿主中转，报告回前台。PostgreSQL 保存持久状态，凭据不进入容器。</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0b1222"/><stop offset="1" stop-color="#111a2e"/></linearGradient>
     <linearGradient id="line" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#67e8f9"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
@@ -30,7 +30,7 @@
       <text x="1070" y="157">Outbox</text>
       <text x="64" y="359" font-size="19">PostgreSQL</text>
       <text x="329" y="359">后台 Job / Worker</text>
-      <text x="675" y="346" fill="#ddd6fe">Codex · 隔离 VM</text>
+      <text x="675" y="346" fill="#ddd6fe">Pi · 隔离容器</text>
       <text x="1070" y="359" font-size="20">宿主中转</text>
     </g>
     <g font-size="14" fill="#98abc9">
