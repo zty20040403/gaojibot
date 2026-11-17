@@ -33,11 +33,6 @@ cat > /usr/local/bin/gaoji <<'EOF'
 exec /usr/bin/python3 /usr/local/share/gaoji/sandbox_gaoji.py "$@"
 EOF
 chmod 755 /usr/local/bin/gaoji
-cat > /usr/local/bin/gaoji-units <<'EOF'
-#!/bin/sh
-exec /usr/bin/python3 /usr/local/share/gaoji/sandbox_gaoji.py units "$@"
-EOF
-chmod 755 /usr/local/bin/gaoji-units
 '''
 
 
@@ -46,13 +41,12 @@ def files():
     return [{'path': '/usr/local/share/gaoji/' + ('gaoji_browser.py' if name=='sandbox_browser.py' else name),
         'permissions': '0644', 'owner': 'root:root',
         'content': (directory / name).read_text()} for name in (
-            'sandbox_browser.py', 'sandbox_browser_state.py', 'sandbox_browser_actions.py', 'sandbox_webread.py', 'sandbox_transcribe.py', 'sandbox_video.py', 'sandbox_gaoji.py', 'sandbox_units.py',
+            'sandbox_browser.py', 'sandbox_browser_state.py', 'sandbox_browser_actions.py', 'sandbox_webread.py', 'sandbox_transcribe.py', 'sandbox_video.py', 'sandbox_gaoji.py',
             'sandbox_commands.py', 'sandbox_command_process.py')] + [
                 {'path':'/usr/local/bin/gaoji-python','permissions':'0755','owner':'root:root','content':PYTHON_RUN},
             ] + [
-                {'path':'/usr/local/bin/'+name,'permissions':'0755','owner':'root:root',
-                 'content':'#!/bin/sh\nexec /usr/bin/python3 /usr/local/share/gaoji/'+script+' "$@"\n'}
-                for name,script in (('gaoji','sandbox_gaoji.py'),('gaoji-units','sandbox_gaoji.py units'))] + [{
+                {'path':'/usr/local/bin/gaoji','permissions':'0755','owner':'root:root',
+                 'content':'#!/bin/sh\nexec /usr/bin/python3 /usr/local/share/gaoji/sandbox_gaoji.py "$@"\n'}] + [{
                 'path': '/etc/apt/apt.conf.d/80-gaoji-transport',
                 'permissions': '0644', 'owner': 'root:root',
                 'content': 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\n',

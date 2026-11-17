@@ -81,9 +81,6 @@ class NativeVMCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await consumer(self.f.job))['status'],'handed_off')
         self.assertEqual(invoked,[text[1:].split()[0]])
 
-    async def test_units_uses_real_command_lifecycle_authority(self):
-        await self.exercise('/units')
-
     async def test_logins_uses_real_command_lifecycle_authority(self):
         await self.exercise('/logins')
 

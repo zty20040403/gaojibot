@@ -42,7 +42,6 @@ class VMReadTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         response = await self.post('history',query='TEST_NEEDLE')
         self.assertEqual(response.status_code,200,response.text)
         self.assertIn('own',response.text); self.assertNotIn('hidden',response.text)
-        self.assertEqual(self.query('SELECT * FROM program_quota'),[])
         self.assertEqual(self.query('SELECT * FROM usage_events'),[])
         self.assertEqual((await self.post('history',query='TEST',scope_key=other.scope.key)).status_code,400)
         self.assertEqual((await self.post('history',limit=True)).status_code,400)
@@ -133,7 +132,7 @@ class VMReadTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
                     finally:
                         cancelled.set()
                 with patch('src.plugins.ai_chat.tools.sources.fetch_page',slow),patch(
-                        'src.plugins.ai_chat.adapters.qq_official.program_reads.READ_TIMEOUT',0.1 if reason=='timeout' else 60):
+                        'src.plugins.ai_chat.adapters.qq_official.vm_http.READ_TIMEOUT',0.1 if reason=='timeout' else 60):
                     pending = asyncio.create_task(self.post('web-fetch',url='https://example.test'))
                     try:
                         await asyncio.wait_for(entered.wait(),3)

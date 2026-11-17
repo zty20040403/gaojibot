@@ -162,7 +162,6 @@ class VmSandboxManager:
         vcpus: int = 1,
         pids_limit: int = 256,
         disk_gib: int = 20,
-        resident_limit: int = 4,
         operations_owners: frozenset[str] = frozenset(),
         operations_socket: str = "",
         operations_domain: str = "",
@@ -196,8 +195,6 @@ class VmSandboxManager:
         self._operations_hashes = frozenset(self._owner_hash(owner) for owner in operations_owners)
         self.operations_socket = operations_socket
         self.operations_domain = operations_domain
-        from .vm_program_state import VMProgramState
-        self.program_state = VMProgramState(self,limit=resident_limit)
 
     @asynccontextmanager
     async def allocation_lock(self):
@@ -475,8 +472,6 @@ class VmSandboxManager:
             raise SandboxError("沙盒不存在或元数据不可读。") from exc
         if data.get("id") != sandbox_id or data.get("owner_hash") != self._owner_hash(owner):
             raise SandboxError("沙盒不属于当前会话。")
-        from .vm_program_state import VMProgramState
-        data['programs'] = VMProgramState.read(directory)
         return data
 
     async def _all_metadata(self) -> list[dict[str, object]]:
@@ -491,8 +486,6 @@ class VmSandboxManager:
             except (OSError, ValueError):
                 continue
             if data.get("id") == directory.name:
-                from .vm_program_state import VMProgramState
-                data['programs'] = VMProgramState.read(directory)
                 found.append(data)
         return found
 
@@ -970,9 +963,7 @@ class VmSandboxManager:
 
     async def stop_owned(self, owner: str, sandbox_id: str, *, if_idle=False) -> None:
         async with self.io_lock(sandbox_id):
-            metadata = await self._metadata(owner, sandbox_id)
-            if if_idle and self.program_state.keeps_awake(metadata):
-                return
+            await self._metadata(owner, sandbox_id)
             if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
                 raise SandboxError("VM 正在执行命令，不能停止。")
             if await self._conversation_event('stopping',owner,sandbox_id,**({'automatic':True} if if_idle else {})) is False:
@@ -1003,8 +994,6 @@ class VmSandboxManager:
         if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
             raise SandboxError("VM 正在执行命令，不能销毁。")
         async with self.io_lock(sandbox_id):
-            if if_unused and self.program_state.keeps_disk(await self._metadata(owner,sandbox_id)):
-                return
             if await self._conversation_event('stopping',owner,sandbox_id,**({'automatic':True} if if_unused else {})) is False:
                 return
             if await self._running(sandbox_id):
@@ -1052,11 +1041,9 @@ class VmSandboxManager:
                 continue
             async with lock:
                 item = await self._metadata(owner, sid)
-                if self.program_state.keeps_awake(item):
-                    continue
                 age = now - int(item.get('last_used', item.get('last_started', item['created_at'])))
                 try:
-                    if age >= retention_seconds and not self.program_state.keeps_disk(item):
+                    if age >= retention_seconds:
                         await self.destroy(owner, sid,if_unused=True)
                     elif age >= idle_seconds:
                         await self.stop_owned(owner, sid,if_idle=True)

@@ -124,14 +124,12 @@ class AdminCommandTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         await self.login(); key = self.reserve(); await self.runner.visit(key)
         self.guest_reports[key] = report(state='completed',stopped=True,exit_code=0,elapsed_seconds=2)
         await self.runner.visit(key)
-        self.query("UPDATE qq_official_program_actions SET state='failed',error_code='TEST_DELIVERY_DENIED'")
         await self.lifecycle.close()
         self.manager._guest_exec.reset_mock()
         self.assertEqual((await self.admin.get(self.path)).json()['items'],[])
         response = await self.admin.get(self.path,params={'active':'false'})
         item = response.json()['items'][0]
-        self.assertEqual((item['state'],item['notification']['state']),('completed','failed'))
-        self.assertEqual(item['notification']['error_code'],'TEST_DELIVERY_DENIED')
+        self.assertEqual(item['state'],'completed')
         for hidden in ('argv_json','token_hash','boot_id','intent_digest'):
             self.assertNotIn(hidden,item)
         self.manager._guest_exec.assert_not_awaited()

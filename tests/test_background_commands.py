@@ -5,7 +5,7 @@ import json
 
 from src.plugins.ai_chat.adapters.qq_official.background_commands import BackgroundCommands
 from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
-from src.plugins.ai_chat.adapters.qq_official.program_actions import ProgramDenied
+from src.plugins.ai_chat.adapters.qq_official.vm_api import VMDenied as ProgramDenied
 from src.plugins.ai_chat.platform_types import EndpointKey
 from src.plugins.ai_chat.background_tools import workspace_owner
 from src.plugins.ai_chat.adapters.qq_official.vm_sessions import VMSessions
@@ -148,7 +148,3 @@ class BackgroundCommandTests(OutboxFixture):
                 raise RuntimeError('TEST_ROLLBACK')
         self.assertEqual(self.commands.capture(self.current),(0,0))
         self.assertFalse(self.commands.get(self.current,row['command_id'])['cancel_requested'])
-        self.query('INSERT INTO program_controls(scope_key,program_name,enabled,updated_at) VALUES (?,?,FALSE,?)',
-            (self.current.scope_key,'TEST_PROGRAM',self.now))
-        with self.tx() as cursor,self.assertRaisesRegex(ProgramDenied,'program_disabled'):
-            self.commands.check(cursor,row)

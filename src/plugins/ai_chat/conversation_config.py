@@ -38,8 +38,6 @@ class Setting:
 SETTINGS = {
     'agent_timeout_hours':Setting(6,'commands','1–6小时；只影响新任务',6,1),
     'proactive_enabled':Setting(True,'conversations','仅群聊主动接话；仍需宿主启用分类器'),
-    'program_say_limit':Setting(60,'programs','每整点小时发言/文件共用额度；0禁用',10000),
-    'program_wake_limit':Setting(6,'programs','每整点小时唤醒额度；0禁用，超额合并',10000),
     'image_captions':Setting(False,'captions','新入站图片说明；仍需宿主视觉服务'),
     'image_daily_limit':Setting(200,'captions','北京时间每天图片数；0禁用',10000),
     'daily_budget_usd':Setting('off','budgets','美元/天，最多1000000、6位小数；0禁自动动作，off关闭；北京时间零点恢复，@仍计费'),

@@ -67,15 +67,15 @@ class SandboxGaojiTests(unittest.TestCase):
         return result,stdout.getvalue(),stderr.getvalue()
 
     def test_commands_are_thin_requests_and_credentials_are_reread_not_printed(self):
-        result,out,error = self.run_cli('say','TEST_TEXT','--request-id','TEST_REQUEST','--program','TEST_UNIT')
+        result,out,error = self.run_cli('say','TEST_TEXT','--request-id','TEST_REQUEST')
         self.assertEqual(result,0); self.assertEqual(json.loads(out),{'state':'queued'})
         self.assertIn('request_id=TEST_REQUEST',error); self.assertNotIn(TOKEN,out+error)
         self.assertEqual(self.server.seen[-1],('POST','/vm/say','Bearer '+TOKEN,
-            {'text':'TEST_TEXT','request_id':'TEST_REQUEST','program':'TEST_UNIT'}))
+            {'text':'TEST_TEXT','request_id':'TEST_REQUEST'}))
         replacement = 'gvm_'+('TEST_B_'*7)[:43]
         (self.root/'token').write_text(replacement)
-        for command,args in (('wake',('TEST_WAKE',)),('send-file',('/work/report.txt','--filename','report.txt')),
-                ('history',()),('units',()),('web-search',('TEST_QUERY',)),('web-fetch',('https://example.test',))):
+        for command,args in (('send-file',('/work/report.txt','--filename','report.txt')),
+                ('history',()),('web-search',('TEST_QUERY',)),('web-fetch',('https://example.test',))):
             self.assertEqual(self.run_cli(command,*args)[0],0)
             self.assertEqual(self.server.seen[-1][1],'/vm/'+command)
             self.assertEqual(self.server.seen[-1][2],'Bearer '+replacement)
@@ -100,7 +100,7 @@ class SandboxGaojiTests(unittest.TestCase):
 
     def test_http_denials_are_nonzero_and_writes_are_never_retried(self):
         self.server.status,self.server.value = 429,{'error':'program_rate_limited'}
-        result,out,_ = self.run_cli('wake','TEST','--request-id','TEST_REQUEST')
+        result,out,_ = self.run_cli('say','TEST','--request-id','TEST_REQUEST')
         self.assertEqual(result,1); self.assertEqual(json.loads(out),self.server.value)
         self.server.drop = True
         result,out,error = self.run_cli('say','TEST','--request-id','TEST_UNKNOWN')
@@ -119,19 +119,6 @@ class SandboxGaojiTests(unittest.TestCase):
             result,out,error = self.run_cli('history')
             self.assertEqual(result,1); self.assertNotIn(TOKEN,out+error)
         self.assertEqual(len(self.server.seen),1)
-
-    def test_events_preserve_heartbeats_and_complete_frames_but_eof_is_not_success(self):
-        self.server.status = 200
-        result,out,error = self.run_cli('events','--after','3')
-        self.assertEqual(result,1); self.assertEqual(out,self.server.events.decode())
-        self.assertIn('--after 5',error)
-        self.assertEqual(self.server.seen[-1][1],'/vm/events?after=3')
-        self.server.events = b'{"id":4}\n{"id":5'
-        result,out,error = self.run_cli('events')
-        self.assertEqual((result,out),(1,'{"id":4}\n'))
-        self.assertIn('--after 4',error)
-        self.server.events = b'{"id":2}\n'
-        self.assertEqual(self.run_cli('events')[0],1)
 
     def test_cloud_init_and_upgrade_ship_the_same_dependency_free_cli(self):
         entry = next(item for item in sandbox_tools_setup.files() if item['path'].endswith('/sandbox_gaoji.py'))

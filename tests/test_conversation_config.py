@@ -14,9 +14,9 @@ class ConfigParsingTests(unittest.TestCase):
             self.assertEqual(config.parse(name+' default'),(name,item.default))
         self.assertEqual(config.parse('proactive_enabled off'),('proactive_enabled',False))
         self.assertEqual(config.parse('image_captions on'),('image_captions',True))
-        self.assertEqual(config.parse('program_say_limit 0'),('program_say_limit',0))
+        self.assertEqual(config.parse('image_daily_limit 0'),('image_daily_limit',0))
         for text in ('scope_key TEST_OTHER','image_captions yes','proactive_enabled 1','agent_timeout_hours 0',
-                     'agent_timeout_hours 7','program_wake_limit 10001','program_say_limit -1',
+                     'agent_timeout_hours 7','image_daily_limit 10001','image_daily_limit -1',
                      'agent_timeout_hours １','agent_timeout_hours 1.0','agent_timeout_hours 1;DELETE','agent_timeout_hours 1 extra'):
             with self.subTest(text=text),self.assertRaises(ValueError):config.parse(text)
         for value in (True,1.0,'1',None):
@@ -54,16 +54,16 @@ class ConversationConfigTests(unittest.TestCase):
         self.change('proactive_enabled',False)
         self.change('proactive_enabled',False)
         self.change('proactive_enabled',True)
-        for name,value in (('program_say_limit',0),('program_wake_limit',10000),('agent_timeout_hours',1),('image_captions',True)):
+        for name,value in (('agent_timeout_hours',1),('image_captions',True)):
             self.assertEqual(self.change(name,value)[name],value)
         with self.tx() as cursor:
             self.assertEqual(config.proactive_state(cursor,self.endpoint),(True,2))
             self.assertEqual(config.snapshot(cursor,other),{name:item.default for name,item in config.SETTINGS.items()})
         row = self.query('SELECT stopped,stop_generation FROM conversation_settings')[0]
         self.assertEqual((row['stopped'],row['stop_generation']),(True,7))
-        self.assertEqual(len(self.query('SELECT * FROM admin_audit_log')),8)
+        self.assertEqual(len(self.query('SELECT * FROM admin_audit_log')),6)
         self.assertEqual({row['resource_key']:row['version'] for row in self.query('SELECT * FROM admin_resource_versions')},
-            {'conversations':4,'programs':2,'commands':1,'captions':1})
+            {'conversations':4,'commands':1,'captions':1})
 
     def test_budget_change_uses_exact_audit_and_generations_without_clearing_stop(self):
         self.query('INSERT INTO conversation_settings(scope_key,stopped,stop_generation) VALUES (?,TRUE,7)',(self.endpoint.scope.key,))
@@ -79,7 +79,7 @@ class ConversationConfigTests(unittest.TestCase):
         self.assertIn('"0.001"',audit[0]['after_json']); self.assertIn('"off"',audit[-1]['after_json'])
 
     def test_invalid_write_and_transaction_rollback_leave_no_settings_or_audit(self):
-        for name,value in (('program_say_limit',True),('image_captions',1),('unknown',2)):
+        for name,value in (('image_daily_limit',True),('image_captions',1),('unknown',2)):
             with self.assertRaises(ValueError):self.change(name,value)
         with self.assertRaisesRegex(RuntimeError,'TEST rollback'):
             with self.tx() as cursor:

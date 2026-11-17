@@ -99,9 +99,8 @@ class DailyBudgetTests(unittest.TestCase):
         self.assertEqual(self.state().generation,0)
         self.store.finish(call,TokenUsage(1000,50,600,0))
         self.assertEqual(self.state().generation,1)
-        for purpose in ('proactive','program_wake'):
-            with self.assertRaisesRegex(PermissionError,'daily_budget_exceeded'):
-                self.store.begin(BillingSource(self.endpoint,purpose),self.profile)
+        with self.assertRaisesRegex(PermissionError,'daily_budget_exceeded'):
+            self.store.begin(BillingSource(self.endpoint,'proactive'),self.profile)
         self.receipt()  # Explicitly addressed work is not a hard spending cap.
         self.assertEqual(self.state().spent,Decimal('0.00264'))
         self.assertEqual(self.state().generation,1)

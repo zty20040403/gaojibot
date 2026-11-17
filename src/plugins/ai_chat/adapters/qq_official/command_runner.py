@@ -14,7 +14,7 @@ class CommandRunner:
     def __init__(self, lifecycle):
         self.lifecycle,self.manager,self.calls,self.logger = lifecycle,lifecycle.manager,lifecycle.calls,lifecycle.logger
         self.commands = BackgroundCommands(lifecycle.store)
-        self.execution = CommandExecution(self.commands,lifecycle.programs.wakes)
+        self.execution = CommandExecution(self.commands)
         self.script = Path(sandbox_commands.__file__).read_text()
         self.active = {}
         self.changed = asyncio.Event()
@@ -24,8 +24,7 @@ class CommandRunner:
         try:
             operation,row = await self.calls(self.execution.next,command_id)
             if operation=='notify':
-                if await self.calls(self.execution.notify,command_id):
-                    self.lifecycle.programs.changed.set()
+                await self.calls(self.execution.notify,command_id)
                 return
             async with asyncio.timeout(45):
                 endpoint = EndpointKey.parse(row['endpoint_key'])

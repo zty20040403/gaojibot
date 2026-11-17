@@ -47,7 +47,6 @@
     "sandbox_video.py"
     "sandbox_pdf.py"
     "sandbox_gaoji.py"
-    "sandbox_units.py"
     "sandbox_commands.py"
     "sandbox_command_process.py"
     "sandbox_identity.py"
@@ -84,7 +83,6 @@
     '';
   commands = [
     (wrapper "gaoji" "${share}/share/gaoji/sandbox_gaoji.py")
-    (wrapper "gaoji-units" "${share}/share/gaoji/sandbox_gaoji.py units")
     (wrapper "gaoji-python" "")
     (wrapper "gaoji-video" "${share}/share/gaoji/sandbox_video.py")
     (wrapper "gaoji-transcribe" "${share}/share/gaoji/sandbox_transcribe.py")

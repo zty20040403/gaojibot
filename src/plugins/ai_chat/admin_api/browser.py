@@ -13,9 +13,25 @@ from ..admin_security import SESSION_COOKIE,require_admin
 from ..admin_control import AdminVersionConflict
 from ..adapters.qq_official.browser_mutations import mutate,BrowserActionUnknown
 from ..adapters.qq_official.browser_runtime import BrowserUnavailable
+from ..platform_types import EndpointKey
 from .context import mutation_context,mutation_payload
 from .contracts import AdminMutationContext,BrowserClearRequest
-from .programs import parse_endpoint,existing
+
+
+def parse_endpoint(value):
+    try:
+        endpoint = EndpointKey.parse(value)
+        if endpoint.account.platform != 'qq-official':
+            raise ValueError
+        return endpoint
+    except (TypeError, ValueError):
+        raise HTTPException(404, '找不到该 QQ 会话') from None
+
+
+def existing(cursor, endpoint):
+    row = cursor.execute('SELECT endpoint_key FROM qq_official_endpoints WHERE endpoint_key=?', (endpoint.key,)).fetchone()
+    if row is None:
+        raise HTTPException(404, '找不到该 QQ 会话')
 
 
 def target(endpoint):

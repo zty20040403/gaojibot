@@ -214,9 +214,7 @@ class ContainerSandboxManager(VmSandboxManager):
 
     async def stop_owned(self, owner, sandbox_id, *, if_idle=False):
         async with self.io_lock(sandbox_id):
-            metadata = await self._metadata(owner, sandbox_id)
-            if if_idle and self.program_state.keeps_awake(metadata):
-                return
+            await self._metadata(owner, sandbox_id)
             if any(item.sandbox_id == sandbox_id for item in self._active_execs.values()):
                 raise SandboxError("沙盒正在执行命令，不能停止。")
             if await self._conversation_event(

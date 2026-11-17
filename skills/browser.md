@@ -15,7 +15,7 @@ Summary: 需要执行脚本、点击或扫码登录的网页，交给后台 agen
    不索取、猜测或使用密码、短信验证码。用户主动发来也不使用、不复述、不写入脚本，提醒撤回。
 5. 扫码流程（只在上述授权成立后执行）：
    - 打开该网站登录页，定位真实二维码，只截必要区域到 `/work/login-qr.png`；不要截密码、cookie 或浏览器存储值。
-   - 用 `gaoji send-file /work/login-qr.png --program browser-login --request-id <本次随机ID>` 发回本会话。
+   - 用 `gaoji send-file /work/login-qr.png --request-id <本次随机ID>` 发回本会话。
      保留原 request_id，用 `gaoji status --request-id <原ID>` 核对投递；已登记不等于已发送。
      失败/结果不明要说明，不换 ID 盲重试；二维码变更属于新操作，不能静默重复发码。
    - 在同一个页面上每几秒检查一次**真实登录标志**（例如已登录用户菜单），最多三分钟；

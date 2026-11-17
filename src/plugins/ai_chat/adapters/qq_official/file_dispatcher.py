@@ -24,12 +24,8 @@ class OfficialFileDispatcher:
                 raise FileUploadError('文件不存在。')
             delivery = cursor.execute('SELECT * FROM qq_official_file_deliveries WHERE artifact_id=?',
                                       (artifact_id,)).fetchone()
-            if artifact.get('source_program_action_id') is not None:
-                if delivery['state']!='message_accepted':
-                    from .program_file_source import assert_artifact
-                    assert_artifact(cursor,token=service.token,artifact=artifact,admission=service.admission,now=int(service.clock()))
-            elif not service.admission(cursor, EndpointKey.parse(artifact['endpoint_key']),
-                                      ActorKey.parse(artifact['requester_actor_key'])):
+            if not service.admission(cursor, EndpointKey.parse(artifact['endpoint_key']),
+                                     ActorKey.parse(artifact['requester_actor_key'])):
                 raise FileUploadError('当前会话没有文件发送权限。')
             return dict(artifact), dict(delivery)
 
@@ -59,12 +55,8 @@ class OfficialFileDispatcher:
             else:
                 content = await service.calls(service.artifacts.read_verified, artifact_id,
                     sha256=artifact['sha256'], byte_size=artifact['byte_size'])
-                if artifact.get('source_program_action_id') is not None:
-                    from .program_file_delivery import uploading
-                    uploaded = await uploading(service,artifact,content)
-                else:
-                    uploaded = await service.uploader.upload(EndpointKey.parse(artifact['endpoint_key']),
-                                                             content, artifact['filename'])
+                uploaded = await service.uploader.upload(EndpointKey.parse(artifact['endpoint_key']),
+                                                         content, artifact['filename'])
                 delivery_id = await service.calls(self._queue, artifact, uploaded)
             outcome = await service.runtime.sender.send_delivery(delivery_id)
             if outcome.status == 'failed':
@@ -92,9 +84,6 @@ class OfficialFileDispatcher:
         from src.plugins.ai_chat.platform_types import ActorKey
         from .renderer import render_plan
         service = self.service
-        from .program_file_delivery import failed
-        if await service.calls(failed,service,artifact_id):
-            return
         def queue():
             artifact, _ = self._load(artifact_id)
             with service.transaction() as cursor:

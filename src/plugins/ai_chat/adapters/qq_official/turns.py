@@ -447,10 +447,6 @@ def build_turn_consumer(runtime, token, app):
         if agents is not None:
             from .background_agents import AgentCommands
             tasks = AgentCommands(tasks, agents)
-        async def units(current, request):
-            def authorize(cursor):
-                return life.command_source(cursor,current)
-            return await agents.vm_lifecycle.status.command(current,request,authorize=authorize)
         async def browser(current, request):
             def authorize(cursor):
                 source = life.command_source(cursor,current)
@@ -466,7 +462,6 @@ def build_turn_consumer(runtime, token, app):
         services = CommandServices(running_tasks=tasks,config=config_command(runtime,life,app),status=status_command(runtime,life,app),
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
             host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls),
-            units=units if agents is not None and agents.vm_lifecycle is not None else None,
             browser=browser if agents is not None and agents.vm_lifecycle is not None else None)
         return guarded_services(services, inbound, effect_scope=effect_scope,
             database_call=runtime._calls)

@@ -238,7 +238,6 @@ class Settings:
     sandbox_operations_owners: frozenset[str] = frozenset()
     sandbox_operations_socket: str = ""
     sandbox_operations_domain: str = ""
-    program_vm_limit: int = 4
     search_provider: str = "scrape"
     search_api_key: str = field(default="", repr=False)
     background_engine: str = "codex"
@@ -372,7 +371,6 @@ class Settings:
             background_gateway_port=integer('AI_BACKGROUND_GATEWAY_PORT', 18640),
             background_engine=background_engine,
             background_context_window=resource_limit('AI_BACKGROUND_CONTEXT_WINDOW', 200000, 32000, 10000000),
-            program_vm_limit=resource_limit('AI_PROGRAM_VM_LIMIT',4,0,32),
             search_auto_enabled=boolean("AI_SEARCH_AUTO_ENABLED", True),
             search_max_results=integer("AI_SEARCH_MAX_RESULTS", 5),
             search_timeout_seconds=integer("AI_SEARCH_TIMEOUT_SECONDS", 10),

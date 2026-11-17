@@ -40,6 +40,10 @@ def _boundary(ledger, scope, value: str, *, end: bool) -> int | None:
 async def history(turn: TurnState, arguments: dict[str, object]) -> str:
     app = turn.context.app
     source = structured_tool_source(turn.context)
+    endpoint = getattr(turn.context.platform, "endpoint", None)
+    if source is None and endpoint is not None:
+        from types import SimpleNamespace
+        source = SimpleNamespace(endpoint=endpoint, scope=endpoint.scope, actor=None)
     if source is None:
         return _error("当前没有可查询的会话。")
     scope, ledger = source.scope, app.message_ledger
