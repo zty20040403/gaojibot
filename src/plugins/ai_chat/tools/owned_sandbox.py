@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from functools import partial
+import json
 
 from src.plugins.ai_chat.ai_tools import SANDBOX_TOOLS
 from src.plugins.ai_chat.tools.registry import FunctionTool
@@ -22,7 +23,16 @@ async def execute(turn, arguments, *, name):
     executor = turn.context.agent_executor
     if not enabled(turn.context):
         return '{"ok":false,"code":"generation_unavailable","message_accepted":false}'
-    return await executor.execute(name, arguments)
+    result = await executor.execute(name, arguments)
+    if name in {'send_file', 'send_file_from_sandbox'} and isinstance(result, str):
+        try:
+            payload = json.loads(result)
+        except ValueError:
+            payload = None
+        if (isinstance(payload, dict) and payload.get('ok') is True
+                and payload.get('delivery_state') in {'stored', 'waiting', 'committed'}):
+            turn.delivered = True
+    return result
 
 
 def project(definition, context):

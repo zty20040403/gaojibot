@@ -235,12 +235,27 @@ class PlatformChatService:
                 raise ChatFailure(f"{selected_profile.provider} 暂时没回上来，等会儿再试。", code="model_request") from exc
             except Exception as exc:
                 raise ChatFailure("我这边处理消息时出错了。", code="internal") from exc
-            if not answer:
-                raise ChatFailure("模型没有返回内容。", code="empty_response")
             assert_job_owned()
             if media_session is not None:
                 await media_session.current()
-                answer = media_session.finish(answer)
+                answer = media_session.finish(answer or "")
+            if not answer or not answer.strip():
+                if turn.delivered:
+                    return "[silence]"
+                raise ChatFailure("模型没有返回内容。", code="empty_response")
+            stripped = answer.strip()
+            if stripped == "[silence]" or stripped.startswith("[silence:"):
+                return stripped
+                answer = media_session.finish(answer or "")
+            if not answer or not answer.strip():
+                if turn.delivered:
+                    return "[silence]"
+                raise ChatFailure("模型没有返回内容。", code="empty_response")
+                answer = media_session.finish(answer or "")
+            if not answer or not answer.strip():
+                if turn.delivered:
+                    return "[silence]"
+                raise ChatFailure("模型没有返回内容。", code="empty_response")
             stripped = answer.strip()
             if stripped == "[silence]" or stripped.startswith("[silence:"):
                 return stripped

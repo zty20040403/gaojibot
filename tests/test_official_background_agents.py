@@ -37,7 +37,13 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
     async def test_dynamic_history_query_keeps_original_job_actor_and_real_receipt(self):
         await self.exercise_background(semantic=True)
 
-    async def exercise_background(self, *, steer_error=None,semantic=False):
+    async def test_file_only_background_result_is_not_sent_as_empty_text(self):
+        await self.exercise_background(delivery_state='stored')
+
+    async def test_failed_background_file_is_not_mistaken_for_delivery(self):
+        await self.exercise_background(delivery_state='failed')
+
+    async def exercise_background(self, *, steer_error=None,semantic=False,delivery_state=None):
         f = ExecutionFixture('runTest')
         f.setUp()
         self.addCleanup(f.doCleanups)
@@ -151,15 +157,43 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(script.endswith(f'base64 -d > /work/.gaoji/jobs/job-{number}.md'))
         manager.write_file.assert_not_awaited()
         answer = 'TEST foreground result' if steer_error is None else 'TEST 追加要求未送达，请重新发起任务。'
+        if delivery_state is not None:
+            from src.plugins.ai_chat.application.owned_sandbox import OwnedSandboxExecutor
+            class Executor(OwnedSandboxExecutor):
+                generation_enabled = True
+                def matches(self, source):
+                    return True
+                async def execute(self, name, arguments):
+                    return json.dumps({'ok': True, 'delivery_state': delivery_state, 'artifact_id': 'TEST_FILE'})
+            executor = Executor.__new__(Executor)
+            session = SimpleNamespace(
+                context=lambda context: replace(context, capabilities=context.capabilities | {'sandbox'},
+                                                agent_executor=executor),
+                close=AsyncMock(),
+            )
+            runtime.file_service = SimpleNamespace(generation=SimpleNamespace(bound_session=AsyncMock(return_value=session)))
+            answer = '[silence]' if delivery_state == 'stored' else None
+
         async def render(*args,**kwargs):
             from src.plugins.ai_chat.llm_gateway import LLMGateway
             gateway = LLMGateway({'openai-chat':SimpleNamespace(create_completion=AsyncMock(return_value=SimpleNamespace(
                 usage={'input_tokens':2,'output_tokens':1,'input_tokens_details':{'cached_tokens':0}})))})
             await gateway.create_completion(kwargs['profile'],messages=[])
+            if delivery_state is not None:
+                result = json.loads(await args[3]('send_file_from_sandbox', {'path': 'result.txt'}))
+                self.assertTrue(result['ok'])
+                return ''
             return answer
         with patch('src.plugins.ai_chat.adapters.qq_official.background_delivery.ask_deepseek_with_tools',
                    new=AsyncMock(side_effect=render)) as foreground:
-            await present(service, row)
+            try:
+                if delivery_state == 'failed':
+                    with self.assertLogs(app.logger, level='ERROR'):
+                        await present(service, row)
+                else:
+                    await present(service, row)
+            except Exception as error:
+                self.fail(f'background result must complete without an empty rendered message: {error!r}')
         if steer_error is not None:
             prompt = foreground.await_args.args[0]
             self.assertIn(f'[job#{number} failed]', prompt)
@@ -167,8 +201,14 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('失败须说明具体原因，不能声称已经成功', prompt)
         billed = f.query('SELECT background_job_id FROM model_usage_calls WHERE purpose=? AND input_tokens=2',('background_agent',))
         self.assertEqual(billed,[dict(background_job_id=number)])
-        self.assertEqual(service.store.get(number)['frontend_answer'], answer)
+        if delivery_state == 'failed':
+            self.assertEqual(service.store.get(number)['frontend_answer'], '')
+        else:
+            self.assertEqual(service.store.get(number)['frontend_answer'], answer)
         self.assertIsNotNone(service.store.get(number)['delivered_at'])
-        self.assertEqual(f.query("SELECT purpose FROM delivery_plans WHERE account_key=?", (f.account.key,))[0]['purpose'], 'background_result')
+        plans = f.query("SELECT purpose FROM delivery_plans WHERE account_key=?", (f.account.key,))
+        self.assertEqual(plans, [] if delivery_state == 'stored' else [{'purpose': 'background_result'}])
+        if delivery_state is not None:
+            session.close.assert_awaited_once()
         self.assertEqual(f.query("SELECT background_job_id FROM usage_events WHERE source='background_agent'"),
             [{'background_job_id':number},{'background_job_id':number}])

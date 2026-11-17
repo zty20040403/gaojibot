@@ -17,7 +17,10 @@ def enabled(context):
 async def execute(turn, arguments):
     if not enabled(turn.context):
         return json.dumps({"ok": False, "status": "suppressed", "reason": "progress_unavailable"})
-    return json.dumps(await turn.context.platform.progress.say(arguments.get("text")), ensure_ascii=False)
+    result = await turn.context.platform.progress.say(arguments.get("text"))
+    if isinstance(result, dict) and result.get("ok") is True:
+        turn.delivered = True
+    return json.dumps(result, ensure_ascii=False)
 
 
 HANDLERS = (FunctionTool(SAY_TOOL, enabled, execute, platform_neutral=True),)
