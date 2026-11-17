@@ -7,8 +7,7 @@ from starlette.exceptions import HTTPException
 
 from tests import test_vm_credentials as fixture
 from tests.qq_official_outbox_fixture import OutboxFixture
-from src.plugins.ai_chat.adapters.qq_official.program_actions import ProgramActions
-from src.plugins.ai_chat.adapters.qq_official.vm_api import VMAPIAuthority
+from src.plugins.ai_chat.adapters.qq_official.vm_api import VMAPIAuthority, VMWriteAdmission
 
 
 class VMActionAuthTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
@@ -19,8 +18,8 @@ class VMActionAuthTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         await fixture.VMCredentialTests.asyncSetUp(self)
         self.current = await self.prepare()
         self.value = self.token_file()
-        self.actions = ProgramActions(self.store)
-        self.authority = VMAPIAuthority(self.broker,actions=self.actions)
+        self.actions = VMWriteAdmission(self.store)
+        self.authority = VMAPIAuthority(self.broker, actions=self.actions)
         self.addAsyncCleanup(self.authority.close)
 
     async def test_stop_start_during_guest_authentication_rejects_old_request(self):

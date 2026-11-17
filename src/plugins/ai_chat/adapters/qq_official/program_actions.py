@@ -6,6 +6,7 @@ import re
 import secrets
 
 from .conversation_control import permitted,state
+from .vm_api import VMDenied
 from .vm_sessions import source
 from ... import daily_budgets
 
@@ -13,10 +14,8 @@ NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.@-]{0,79}')
 REQUEST = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}')
 
 
-class ProgramDenied(PermissionError):
-    def __init__(self, code, status=403):
-        super().__init__(code)
-        self.status = status
+class ProgramDenied(VMDenied):
+    pass
 
 
 def settings(cursor, scope_key, program):

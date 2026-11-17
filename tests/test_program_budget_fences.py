@@ -7,7 +7,8 @@ from starlette.exceptions import HTTPException
 
 from src.plugins.ai_chat import daily_budgets
 from src.plugins.ai_chat.conversation_config import change
-from src.plugins.ai_chat.adapters.qq_official.program_actions import ProgramDenied
+from src.plugins.ai_chat.adapters.qq_official.program_actions import ProgramActions, ProgramDenied
+from src.plugins.ai_chat.adapters.qq_official.program_budgets import WakeAdmission
 from src.plugins.ai_chat.adapters.qq_official.program_execution import ProgramExecution
 from src.plugins.ai_chat.adapters.qq_official.program_wakes import ProgramWakes
 from tests import test_vm_action_auth as fixture
@@ -17,7 +18,11 @@ from tests.qq_official_outbox_fixture import OutboxFixture
 class ProgramBudgetFenceTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
     prepare = fixture.VMActionAuthTests.prepare
     token_file = fixture.VMActionAuthTests.token_file
-    asyncSetUp = fixture.VMActionAuthTests.asyncSetUp
+
+    async def asyncSetUp(self):
+        await fixture.VMActionAuthTests.asyncSetUp(self)
+        self.actions = ProgramActions(self.store)
+        self.authority.wakes = WakeAdmission(self.actions)
 
     def configure(self,value):
         with self.tx() as cursor:
