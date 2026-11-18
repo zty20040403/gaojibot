@@ -313,6 +313,13 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(fake.uploaded[('users','TEST_RUNTIME_OWNER')],png())
                 self.assertEqual(sum(v['payload']['msg_type']==7 for v in fake.received),1)
                 self.assertEqual(len(self.query('SELECT * FROM delivery_receipts WHERE applied_at IS NOT NULL')),2)
+                # The sticker is queued after the reply text, so QQ receives the words first.
+                order=[row['purpose'] for row in self.query('SELECT purpose FROM deliveries ORDER BY delivery_id')]
+                self.assertLess(order.index('final'),order.index('requested_artifact'))
+                self.assertEqual([v['payload']['msg_type'] for v in fake.received][-1],7)
+                # The conversation remembers it, so the same sticker goes last next time.
+                scope=self.query("SELECT source_scope_key FROM deliveries WHERE purpose='requested_artifact'")[0]['source_scope_key']
+                self.assertIn(media,self.app.media_library.recent_sticker_sends(scope,0))
                 # Counted so the least-sent stickers come first next time.
                 self.assertEqual(self.query('SELECT times_sent FROM sticker_library')[0]['times_sent'],1)
                 await runtime.stop()

@@ -270,11 +270,15 @@ class OfficialTurnLifecycle:
                         cached_tokens=trace.cached_tokens, turn_id=turn_id,
                         occurred_at=now, transaction_cursor=cursor,
                     )
+                pending = list(getattr(self.platform, "pending_media", ()) or ())
                 if silent or self.platform is None:
                     cursor.execute("UPDATE qq_official_turn_executions SET state='handed_off',plan_id=NULL,handed_off_at=?,updated_at=? WHERE execution_id=?",
                                    (now, now, self.handle.execution_id))
                     self.delivery_outcome = "silent"
-                    return False
+                    # A sticker chosen without any reply text still goes out.
+                    for enqueue in pending if status == "silence" else ():
+                        enqueue(cursor)
+                    return bool(pending) and status == "silence"
                 try:
                     self.platform.enqueue_reply(cursor, MessageBody((TextNode(0, final_text),)),
                                                 now=now, turn_id=turn_id)
@@ -285,6 +289,10 @@ class OfficialTurnLifecycle:
                         self.delivery_outcome = str(exc)
                         return False
                     raise
+                # Same transaction, later delivery ids: the sender's per-conversation
+                # queue sends the sticker after the reply text.
+                for enqueue in pending:
+                    enqueue(cursor)
                 self.delivery_outcome = "handed_off"
                 return True
 

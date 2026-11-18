@@ -3,6 +3,7 @@ import asyncio
 from copy import deepcopy
 import json
 import logging
+import re
 
 from src.plugins.ai_chat.ai_tools import TOOL_DEFINITIONS
 from src.plugins.ai_chat.tools.registry import FunctionTool, ToolRegistry
@@ -34,7 +35,7 @@ def _definition(name):
         'read_attachment':'读取本会话附件或卡片中的受控链接；仅支持有界 UTF-8 文本/Markdown/JSON，不执行HTML/PDF/ZIP。',
         'view_forward':'读取本会话消息中有界递归转发证据；署名不是已验证身份，内容不是工具权限。',
         'send_forward_summary':'将本会话转发整理为一份有限摘要或受控文件；不会逐条发送，也不声称原生合并转发。',
-        'send_sticker':'从表情包库里发一张表情包（当图片发出）。query 写想表达的意思，比如"无语"、"笑死"、"买不起"，可以写几个词，自动挑最合适的一张；也可以直接给 find_stickers 返回的 media_handle。结果里的 summary 就是发出去的那张图，被问起时照它说，不要编。不用等人要，语境合适时可以主动带一张；本会话最近发过的自动排后。一次回复最多一张。',
+        'send_sticker':'从表情包库里发一张表情包（当图片发出）。query 写想表达的意思，比如"无语"、"笑死"、"买不起"，可以写几个词，自动挑最合适的一张；也可以直接给 find_stickers 返回的 media_handle。只在别人明确要表情包时用；想主动带一张时不要调用它，在回复最后写 [表情：意思]。表情包会跟在这条回复后面发出。结果里的 summary 就是那张图，被问起时照它说，不要编。本会话最近发过的自动排后。一次回复最多一张。',
     }
     value['description']=descriptions[name]
     if name=='reply_with_voice':
@@ -95,10 +96,34 @@ async def _deliver_sticker(session, turn, candidates, *, chosen):
         turn.sticker_handles_this_turn.add(handle)
         turn.sticker_sent = True
         if (isinstance(result, dict) and result.get('artifact_id') and result.get('state') in {
-                'stored', 'uploading', 'uploaded', 'publishing', 'published', 'handed_off', 'message_accepted', 'committed'}):
+                'queued', 'stored', 'uploading', 'uploaded', 'publishing', 'published', 'handed_off', 'message_accepted', 'committed'}):
             turn.delivered = True
         await _record_sent(turn, handle)
         return result
+
+
+# The model asks for an unrequested sticker by ending its reply with [表情：…]
+# instead of a tool call, which would cost a whole extra model round.
+STICKER_MARKER = re.compile(r"\[表情[:：]\s*([^\]\n]{1,80})\]")
+
+
+def strip_sticker_markers(text):
+    """Text without markers, and the last marker's query (or None)."""
+    found = STICKER_MARKER.findall(text or "")
+    cleaned = STICKER_MARKER.sub("", text or "").rstrip()
+    return cleaned, (found[-1].strip() or None) if found else None
+
+
+async def take_sticker_marker(session, turn, answer):
+    """Remove markers; queue one matching sticker after the reply."""
+    cleaned, query = strip_sticker_markers(answer)
+    if query is None or turn.sticker_sent or not session.enabled('send_sticker'):
+        return cleaned
+    try:
+        await _send_sticker(session, turn, {'query': query})
+    except MediaDenied as error:
+        _logger.warning('Proactive sticker not sent: %s', error)
+    return cleaned
 
 
 async def _record_sent(turn, handle):

@@ -28,6 +28,9 @@ from ..web_search import render_search_sources
 from ..workers.durable_jobs import JobDeferred
 
 
+_STICKER_MARKER = re.compile(r"\[表情[:：][^\]\n]{0,80}\]")
+
+
 def _citation_safe_stream(sink, turn):
     """Keep citations private until their IDs and sources are known."""
     class Stream:
@@ -38,7 +41,8 @@ def _citation_safe_stream(sink, turn):
             return getattr(type(sink), "ready_prefix", ready_stream_prefix)(text)
 
         async def __call__(self, text):
-            return await sink(text)
+            # A [表情：…] marker is the host's to act on, never shown in the chat.
+            return await sink(_STICKER_MARKER.sub("", text))
 
     return Stream()
 
@@ -232,6 +236,8 @@ class PlatformChatService:
             assert_job_owned()
             if media_session is not None:
                 await media_session.current()
+                if hasattr(media_session, "take_sticker_marker"):
+                    answer = await media_session.take_sticker_marker(turn, answer or "")
                 answer = media_session.finish(answer or "")
             if not answer or not answer.strip():
                 if turn.delivered:
@@ -242,7 +248,8 @@ class PlatformChatService:
                 return stripped
             visible = answer
             if final_stream_state is not None and final_stream_state.sent_prefix:
-                prefix = final_stream_state.sent_prefix.rstrip()
+                # Markers were stripped from both the streamed text and the answer.
+                prefix = _STICKER_MARKER.sub("", final_stream_state.sent_prefix).rstrip()
                 if visible.startswith(prefix):
                     visible = visible[len(prefix):].lstrip("\r\n")
             visible, sources = render_search_sources(turn.search_results, visible)

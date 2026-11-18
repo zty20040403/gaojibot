@@ -301,7 +301,7 @@ class MediaSession:
             return (platform.execution.handle.execution_id, row['deadline_at'],
                     row['journal_turn_id'], state(cursor, self.inbound.endpoint)['stop_generation'])
 
-    async def _send_bytes(self, content, filename, logical):
+    async def _send_bytes(self, content, filename, logical, *, defer=False):
         execution_id, deadline_at, turn_id, generation = await self.service.runtime._calls(self._turn_file_meta)
         handle = self.platform.execution.handle
         key = 'official-media:turn:' + execution_id + ':' + hashlib.sha256(logical.encode()).hexdigest()
@@ -318,6 +318,7 @@ class MediaSession:
             turn_id=turn_id,
             source_generation=generation,
             current=self.current,
+            defer=defer,
         )
 
     async def sticker(self, arguments, observed_handles):
@@ -360,11 +361,17 @@ class MediaSession:
             return content,filename,record
         content,filename,sticker = await self.service.runtime._calls(read)
         await self.current()
-        outcome = await self._send_bytes(content, filename, 'sticker:' + handle)
-        return {'state': 'message_accepted' if outcome.status == 'committed' else outcome.status,
-                'artifact_id': f'delivery:{outcome.delivery_id}',
+        # Uploaded now; queued in the turn's finish right after the reply text,
+        # so the sticker always follows the words (turns.ExecutionLifecycle.finish).
+        enqueue = await self._send_bytes(content, filename, 'sticker:' + handle, defer=True)
+        self.platform.pending_media.append(enqueue)
+        return {'state': 'queued', 'artifact_id': f'pending:{handle}',
                 'media_handle':handle,'summary':sticker.summary,'emotion':list(sticker.emotions),
-                'message':'贴纸已发送。被问起时按 summary 描述这张图。'}
+                'message':'表情包已选好，会跟在这条回复后面发出。被问起时按 summary 描述这张图。'}
+
+    async def take_sticker_marker(self, turn, answer):
+        from .media_tools import take_sticker_marker
+        return await take_sticker_marker(self, turn, answer)
 
     def finish(self, answer):
         # These are bounded original texts; final M3 rendering escapes all native

@@ -134,6 +134,8 @@ class OfficialTurnPlatform:
             raise PlatformBoundaryError("turn_binding_mismatch")
         self.account, self.endpoint, self.inbound = inbound.endpoint.account, inbound.endpoint, inbound
         self.execution, self.outbox, self._calls = execution, outbox, database_calls
+        # Uploaded media (stickers) queued by the turn's finish after the reply text.
+        self.pending_media = []
         self._transport_state, self._clock = transport_state, clock
         self._sender_wake = sender_wake or (lambda: None)
         self.policy = policy or TurnDeliveryPolicy()
