@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import time
 
+from .stances import MAX_STANCES_BYTES
 from .tools.memory import looks_like_secret
 
 MAX_CARD_CHARS = 600
@@ -318,12 +319,20 @@ class SelfFilesStore:
         return [entry[2] for entry in scored[:limit]]
 
     def read_stances(self, scope_key: str) -> str:
-        return self._safe_read(self.scope_dir(scope_key) / "stances.md")[:1500]
+        path = self.scope_dir(scope_key) / "stances.md"
+        try:
+            if path.is_symlink() or path.stat().st_size > MAX_STANCES_BYTES:
+                return ""
+        except OSError:
+            return ""
+        return self._safe_read(path)
 
     def write_stances(self, scope_key: str, text: str) -> tuple[str, str]:
-        clean = (text or "").strip()[:1500]
-        self._atomic_write(self.scope_dir(scope_key) / "stances.md", clean + ("\n" if clean else ""))
-        return "stances.md", clean + ("\n" if clean else "")
+        content = text.strip() + "\n" if text.strip() else ""
+        if len(content.encode("utf-8")) > MAX_STANCES_BYTES:
+            raise ValueError("立场文件超过大小限制。")
+        self._atomic_write(self.scope_dir(scope_key) / "stances.md", content)
+        return "stances.md", content
 
     # --- Container git sync ---
 

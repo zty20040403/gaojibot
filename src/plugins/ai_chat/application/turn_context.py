@@ -4,6 +4,8 @@ from __future__ import annotations
 from ..conversation_window import MEMORY_TOKENS, build_tail
 from ..message_ir import render_prompt_text
 from ..platform_types import InboundMessage
+from ..prompt_context import quote_evidence
+from ..stances import render_stances, verified_stances
 from ..status_line import compute_status_line
 from ..timeline import estimate_tokens, render_line
 from ..turn_journal import tool_effect_labels
@@ -109,6 +111,10 @@ def turn_window(
         )
         if promises:
             parts.append("[未兑现的承诺]\n" + "\n".join(item.format_line() for item in promises))
+        stances = verified_stances(self_files, ledger, inbound.endpoint)
+        if stances:
+            prefix = quote_evidence(render_stances(stances), "past_stances", stable=True)
+            tail = f"[本群过往看法]\n{prefix}\n\n{tail}"
     status = compute_status_line(
         ledger,
         scope,
