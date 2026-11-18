@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..platform_types import BackgroundToolSource, InboundMessage, TurnPlatform
 
@@ -67,6 +68,16 @@ class TurnState:
     image_sources: list[str] = field(default_factory=list)
     voice_message_id: int | None = None
     search_results: list[SearchResult] = field(default_factory=list)
+    search_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    search_background: bool = False
+    search_budget: Callable[[Callable[[dict[str, Any]], Any]], Awaitable[Any]] | None = field(default=None, repr=False)
+    search_count: int = 0
+    search_seconds: float = 0.0
+    search_no_new: int = 0
+    search_seen: set[tuple[str, str]] = field(default_factory=set)
+    search_terms: list[str] = field(default_factory=list)
+    search_found: list[str] = field(default_factory=list)
+    search_read: list[str] = field(default_factory=list)
     # Tried or sent this turn; a query never picks these again.
     sticker_handles_this_turn: set[str] = field(default_factory=set)
     # Shown by find_stickers; the model may send one of these by handle.

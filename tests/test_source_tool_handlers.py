@@ -48,7 +48,7 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
                               date="2026-11-19", provider="TEST_PROVIDER")
         with patch("src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock, return_value=[result]) as search:
             response = await self.execute("web_search", queries=[" x ", "y" * 80], max_results=9)
-            search.assert_awaited_once_with(["x", "y" * 40], max_results=4, timeout_seconds=12, api_key="TEST_KEY")
+            search.assert_awaited_once_with(["x", "y" * 40], max_results=4, timeout_seconds=12, api_key="TEST_KEY", all_results=[])
             hit = response["results"][0]
             self.assertEqual(response["queries"], ["x", "y" * 40])
             self.assertEqual((hit["id"], hit["url"]), (1, "https://example.test/evidence"))
@@ -209,6 +209,7 @@ class WebFetchFallbackTests(unittest.IsolatedAsyncioTestCase):
         from src.plugins.ai_chat.tools.state import TurnState
         self.turn = SimpleNamespace(
             search_results=[SearchResult("TEST title", "https://blocked.example/p", "TEST snippet")],
+            search_read=[],
             context=SimpleNamespace(app=SimpleNamespace(settings=SimpleNamespace(search_timeout_seconds=1),
                                                         logger=SimpleNamespace(warning=lambda *_: None))))
         self.assertTrue(TurnState)

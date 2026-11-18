@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import asyncio
 import base64
 import hashlib
+import json
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -26,7 +27,7 @@ PROMPT = '''你是 gaoji 的后台 agent，在本会话的 NixOS 容器里工作
 - 报告先结论后要点，写明来源和日期、生成文件的绝对路径和没做完的事，2000 字以内。
 - 任务里提到某个技能（比如 browser）时，用 use_skill 读它的全文。
 - 多步长任务可用 `todo` 工具记录步骤进度。
-- 联网用 web_search（宿主博查中继）找来源，用 `fetch_content` / `get_search_content`、`web_fetch` 或容器里的 `webread URL [--offset N]` 读网页正文、PDF 与 GitHub 仓库/Issue/PR。
+- 联网先看任务交接的已搜词和已读链接。新问题用宿主 web_search，把不同角度的自然语言放进同一个 queries，不写 OR、site:、引号组合。找到来源就用 `fetch_content` / `get_search_content`、`web_fetch` 或 `webread` 读原文，不重复前台的工作。没有新信息就收尾或问背景；不猜人名同音字，普通人最多搜一次，不调查私人身份。需要渲染的页面用本会话 Chromium，不用 shell 爬搜索引擎。工具失败重试前先 say 一句。
 - 浏览器：`gaoji-python` 里 `from gaoji_browser import page, snapshot`，`p = await page()` 之后是完整的 Playwright，`print(await snapshot(p))` 给出带编号的可访问性树。Chromium 常驻，截图存到 /work。
 - 中文 PDF 用 `gaoji-pdf input.md output.pdf`，交付前用 pdftotext 和 pdffonts 核对。
 - 视频在 /work/chat 里时：有 analyze_video 工具就先 `gaoji-video 文件`，把压缩后的路径和原 media_handle 交给它；宿主会看画面和声音并保存结论。没有视频模型则用 ffmpeg 抽帧、`gaoji-transcribe 文件` 转写音轨，最后必须用 record_video_summary 把结论记回原 media_handle。不要把模型密钥放进容器，失败须说明，不能声称看过未处理的部分。
@@ -211,15 +212,26 @@ class OfficialBackgroundAgents:
 
     async def session(self, row, job, question):
         inbound = await self.calls(self.restore, row)
-        def check_transaction(cursor):
+        def check_transaction(cursor, *, write=False):
             self.check(cursor, row)
-            current = cursor.execute('''SELECT j.status,j.lease_owner,j.lease_generation,j.lease_until,b.state,b.deadline_at
-                FROM durable_jobs j JOIN background_jobs b USING(job_id) WHERE j.job_id=? FOR SHARE OF j,b''',
+            lock = 'FOR UPDATE OF j FOR SHARE OF b' if write else 'FOR SHARE OF j,b'
+            current = cursor.execute('''SELECT j.status,j.lease_owner,j.lease_generation,j.lease_until,j.payload_json,b.state,b.deadline_at
+                FROM durable_jobs j JOIN background_jobs b USING(job_id) WHERE j.job_id=? ''' + lock,
                 (job.job_id,)).fetchone()
             if (current is None or current['status'] != 'running' or current['state'] != 'running'
                 or current['lease_owner'] != job.lease_owner or current['lease_generation'] != job.lease_generation
                 or current['lease_until'] <= self.clock() or current['deadline_at'] <= self.clock()):
                 raise asyncio.CancelledError
+            return current
+        def update_search_budget(change):
+            with self.runtime.store.transaction() as cursor:
+                current = check_transaction(cursor, write=True)
+                payload = json.loads(current['payload_json'])
+                budget = payload.setdefault('search_budget', {})
+                result = change(budget)
+                cursor.execute('UPDATE durable_jobs SET payload_json=? WHERE job_id=?',
+                    (json.dumps(payload, ensure_ascii=False, separators=(',', ':')), job.job_id))
+                return result
         def check():
             with self.runtime.store.transaction() as cursor:
                 check_transaction(cursor)
@@ -243,6 +255,7 @@ class OfficialBackgroundAgents:
             ask_notify=lambda text: self.ask_main(row, text),
             units_handler=self.vm_lifecycle,
         )
+        session.turn.search_budget = lambda change: self.calls(update_search_budget, change)
         session.billing_context = self.billing(SimpleNamespace(source=row, current=current))
         from ...background_video import VideoSession
         session.video = VideoSession(self.app, inbound, current=current, check=check_transaction, job_id=job.job_id)

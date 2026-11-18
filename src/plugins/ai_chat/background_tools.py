@@ -213,6 +213,7 @@ class BackgroundToolSession:
         self.sandbox_id = sandbox_id
         self.billing_context = None
         _, self.turn, self.registry, shared = build_shared_context(app, inbound.endpoint, inbound=inbound)
+        self.turn.search_background = True
         self.tools = shared + (GITHUB_TOOL,)
 
     async def execute_tool(self, name, arguments):

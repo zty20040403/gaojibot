@@ -58,6 +58,7 @@ def _log_attempt(provider: str, outcome: str, count: int = 0, fallback_reason: s
 async def search_web(
     queries: list[str], *, max_results: int = 10, timeout_seconds: int = 10,
     api_key: str = "", transport: httpx.AsyncBaseTransport | None = None,
+    all_results: list[SearchResult] | None = None,
 ) -> list[SearchResult]:
     async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
         batches = await asyncio.gather(*(
@@ -70,6 +71,8 @@ async def search_web(
                 unique.setdefault(result.url, result)
     if not unique and None in batches:
         raise SearchError("联网搜索失败。")
+    if all_results is not None:
+        all_results.extend(unique.values())
     return list(unique.values())[:max_results]
 
 
