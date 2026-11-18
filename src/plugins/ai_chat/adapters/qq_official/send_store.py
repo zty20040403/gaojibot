@@ -12,6 +12,7 @@ from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 
 from .binding import control_authorized, control_for_delivery
 from .identity_store import snapshot
+from .job_actions import delivery_current
 from .lease import assert_epoch
 from .migration_types import MigrationDenied
 from .plans import DEFAULT_MAX_WAIT_SECONDS, enqueue_plan, keyed_digest
@@ -230,7 +231,7 @@ class OfficialSendStore:
     def enqueue_media(self, token, *, endpoint, requester, filename, sha256, byte_size, mime,
                       uploaded, logical_key, source_scope_key, expires_at, source_native_message_id="",
                       source_canonical_message_id=None, turn_id=None, source_generation=None,
-                      purpose='requested_artifact', source_proof=None, transaction_cursor=None):
+                      purpose='requested_artifact', source_proof=None, job_request=None, transaction_cursor=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token,
@@ -243,9 +244,17 @@ class OfficialSendStore:
                 source_generation=source_generation,
                 source_guard=self.source_guard if purpose == 'unsolicited' else None,
                 source_proof=source_proof)
+            if not ref.created and job_request is not None:
+                plan = cursor.execute('SELECT manifest_json,manifest_digest FROM delivery_plans WHERE plan_id=?',
+                                      (ref.plan_id,)).fetchone()
+                if digest(plan['manifest_json']) != plan['manifest_digest'] or json.loads(plan['manifest_json']).get('job_request') != job_request:
+                    raise OutboxInvariantError('job_request_conflict')
             if ref.created:
-                manifest = stable_json({"v": 1, "media": {"file_info": uploaded.file_info},
-                    "source_native_message_id": source_native_message_id or ""})
+                manifest_data = {"v": 1, "media": {"file_info": uploaded.file_info},
+                    "source_native_message_id": source_native_message_id or ""}
+                if job_request is not None:
+                    manifest_data['job_request'] = job_request
+                manifest = stable_json(manifest_data)
                 kind = "audio" if mime == "audio/silk" else "image" if mime.startswith("image/") else "file"
                 body = body_to_json(MessageBody((MediaNode(0, kind, name=filename, mime=mime,
                     source_type="qq_official_file", raw_data={"sha256": sha256, "size": byte_size}),)))
@@ -341,7 +350,13 @@ class OfficialSendStore:
                 return False
         if row["purpose"] in {"binding_otp", "approval_otp"} or control_for_delivery(cursor, row):
             return True
-        plan = cursor.execute("SELECT conversation_generation FROM delivery_plans WHERE plan_id=?", (row["plan_id"],)).fetchone()
+        plan = cursor.execute("SELECT conversation_generation,manifest_json,manifest_digest FROM delivery_plans WHERE plan_id=?", (row["plan_id"],)).fetchone()
+        if plan is not None and row['purpose'] == 'requested_artifact':
+            if digest(plan['manifest_json']) != plan['manifest_digest']:
+                return False
+            meta = json.loads(plan['manifest_json']).get('job_request')
+            if meta is not None and not delivery_current(cursor, row, meta):
+                return False
         command = cursor.execute("SELECT 1 FROM qq_official_turn_executions WHERE plan_id=? AND execution_kind='command'",
             (row["plan_id"],)).fetchone() is not None
         return plan is not None and permitted(cursor, EndpointKey.parse(row["endpoint_key"]),

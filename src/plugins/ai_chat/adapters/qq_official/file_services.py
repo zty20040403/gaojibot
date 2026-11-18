@@ -22,6 +22,7 @@ from .conversation_control import permitted, state
 from .file_upload import FileUploadError, FileUploader, MAX_FILE_BYTES
 from .image_formats import artifact_filename as canonical_artifact_filename
 from .lease import assert_epoch
+from .send_types import SendOutcome
 
 GENERATION_TOOLS = frozenset({
     "sandbox_read_file",
@@ -63,7 +64,8 @@ class _SourceBinding:
     def __init__(self, *, service: FileServices, endpoint: EndpointKey, actor: ActorKey,
                  source_key: str, source_scope_key: str, deadline_at: int,
                  source_native_message_id: str | None, source_canonical_message_id: int | None,
-                 turn_id: int | None, generation: int | None, check, background: bool = False):
+                 turn_id: int | None, generation: int | None, check, background: bool = False,
+                 job_request=None, check_transaction=None):
         self.service = service
         self.endpoint = endpoint
         self.actor = actor
@@ -76,6 +78,8 @@ class _SourceBinding:
         self.generation = generation
         self._check = check
         self._background = background
+        self.job_request = job_request
+        self.check_transaction = check_transaction
 
     def allows_missing_native_source(self) -> bool:
         return self._background
@@ -108,7 +112,8 @@ class _DirectDelivery:
             requester=binding.actor,
             content=exported.content,
             filename=filename,
-            logical_key=f"{binding.source_key}:{logical_request_key}",
+            logical_key=(f"{binding.source_key}:action:{binding.job_request['request_id']}"
+                         if binding.job_request else f"{binding.source_key}:{logical_request_key}"),
             source_scope_key=binding.source_scope_key,
             expires_at=binding.deadline_at,
             source_native_message_id=binding.source_native_message_id or "",
@@ -116,6 +121,8 @@ class _DirectDelivery:
             turn_id=binding.turn_id,
             source_generation=binding.generation,
             current=binding.assert_current,
+            job_request=binding.job_request,
+            check_transaction=binding.check_transaction,
         )
         return ArtifactRegistration(
             artifact_ref=f"qqfile:{exported.sha256[:32]}",
@@ -194,7 +201,7 @@ class OfficialFileRuntime:
         )
         return await self._open_session(binding)
 
-    async def background(self, inbound, row, *, current):
+    async def background(self, inbound, row, *, current, job_request, check_transaction):
         service = self.service
         if not service.config.generation_enabled or service.config.manager is None:
             return None
@@ -217,6 +224,8 @@ class OfficialFileRuntime:
             generation=row["conversation_generation"],
             check=check,
             background=True,
+            job_request=job_request,
+            check_transaction=check_transaction,
         )
         return await self._open_session(binding)
 
@@ -261,7 +270,8 @@ class FileServices:
                          filename: str, logical_key: str, source_scope_key: str, expires_at: int,
                          source_native_message_id: str = "", source_canonical_message_id: int | None = None,
                          turn_id: int | None = None, source_generation: int | None = None,
-                         current=None, defer: bool = False, purpose: str = 'requested_artifact', source_proof=None):
+                         current=None, defer: bool = False, purpose: str = 'requested_artifact', source_proof=None,
+                         job_request=None, check_transaction=None):
         """Upload and send; with defer=True, upload and return a function that queues it."""
         filename = safe_filename(filename)
         size = len(content)
@@ -290,6 +300,8 @@ class FileServices:
 
         def enqueue(cursor):
             self._account(cursor)
+            if check_transaction is not None:
+                check_transaction(cursor)
             ref = self.runtime.outbox.enqueue_media(
                 self.token,
                 endpoint=endpoint,
@@ -308,19 +320,24 @@ class FileServices:
                 source_generation=source_generation,
                 purpose=purpose,
                 source_proof=source_proof,
+                job_request=job_request,
                 transaction_cursor=cursor,
             )
-            return ref.delivery_ids[0]
+            return ref
 
         if defer:
             # The caller queues it in its own transaction, e.g. right after the reply text.
-            return enqueue
+            return lambda cursor: enqueue(cursor).delivery_ids[0]
 
         def enqueue_now():
             with self.transaction() as cursor:
                 return enqueue(cursor)
 
-        delivery_id = await self.calls(enqueue_now)
+        ref = await self.calls(enqueue_now)
+        delivery_id = ref.delivery_ids[0]
+        if not ref.created and job_request is not None:
+            row = await self.calls(self.runtime.outbox.get, self.token, delivery_id)
+            return SendOutcome(row['status'], row['wait_reason'] or '', delivery_id)
         outcome = await self.runtime.sender.send_delivery(delivery_id)
         if outcome.status == "failed":
             reason = "这个群没开主动发言，请群主打开" if outcome.reason == "proactive_disabled_no_reply_window" else outcome.reason

@@ -150,7 +150,8 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
                 self.service.store.update(number, state=state, finished_at=self.f.now,
                     report='TEST report /work/result.html', error='TEST error' if state == 'failed' else '')
                 snapshot = await task_context(self.turn)
-                self.assertIn('TEST report /work/result.html', snapshot)
+                self.assertNotIn('/work/result.html', snapshot)
+                self.assertEqual(self.service.store.get(number)['report'], 'TEST report /work/result.html')
                 self.assertIn(state, snapshot)
                 status, = await self.ask('结果在哪', ('agent_status', {'job': created['job']}))
                 self.assertFalse(status['jobs'][0]['frontend_processed'])

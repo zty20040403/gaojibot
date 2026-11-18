@@ -212,6 +212,7 @@ class BackgroundToolSession:
         self.units_handler = units_handler
         self.sandbox_id = sandbox_id
         self.billing_context = None
+        self.file_actions = None
         _, self.turn, self.registry, shared = build_shared_context(app, inbound.endpoint, inbound=inbound)
         self.turn.search_background = True
         self.tools = shared + (GITHUB_TOOL,)
@@ -249,6 +250,9 @@ class BackgroundToolSession:
         if name == 'github':
             Draft202012Validator(allowed[name]).validate(arguments)
             return await execute_github_api(arguments)
+        if name in {'send_file', 'send_image', 'action_status'} and self.file_actions is not None:
+            Draft202012Validator(allowed[name]).validate(arguments)
+            return await self.file_actions.execute(name, arguments)
         if name == 'history' and not any(arguments.get(k) for k in ('query', 'who', 'from', 'to', 'around')):
             arguments = {**arguments, 'to': '#9223372036854775807'}
         from .billing_context import active_billing, billing_scope

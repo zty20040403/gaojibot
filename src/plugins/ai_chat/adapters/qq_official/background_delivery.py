@@ -14,25 +14,9 @@ from ...tool_policy import ToolCatalog, policy_for_tool
 from ...tools import neutral_registry_for
 from ...tools.background import DEFINITIONS
 from ...tools.state import ToolContext, TurnState
+from .billing import scoped
+from .job_actions import receipt_details, receipt_summary
 from .renderer import render_plan
-
-
-class ResultSource:
-    kind = 'background'
-
-    def __init__(self, service, row):
-        self.service, self.row = service, row
-
-    def current_source(self, cursor, binding, now):
-        self.service.check(cursor, self.row)
-        current = cursor.execute('SELECT * FROM background_jobs WHERE job_id=?', (self.row['job_id'],)).fetchone()
-        if current['state'] == 'cancelled' or current['delivered_at'] is not None:
-            raise PermissionError('后台任务结果已关闭。')
-        return dict(current, source_scope_key=current['scope_key'],
-            source_canonical_message_id=current['canonical_message_id'], source_native_message_id=current['native_message_id'])
-
-    def bind_artifact(self, cursor, binding, fields, **kwargs):
-        self.current_source(cursor, binding, kwargs['now'])
 
 
 async def present(service, row, *, question=None):
@@ -45,72 +29,54 @@ async def present(service, row, *, question=None):
 async def _present(service, row, *, question=None):
     app, runtime = service.app, service.runtime
     inbound = await service.calls(service.restore, row)
-    answer = report_notice(row['job_id'], row['report']) if question is None and row['state'] == 'completed' else None
-    if answer is not None:
+    if question is None:
+        answer = report_notice(row['job_id'], row['report']) if row['state'] == 'completed' else None
+        if answer is None:
+            state = {'completed': '已结束（旧版或非结构化报告）', 'failed': '失败', 'cancelled': '已取消'}[row['state']]
+            answer = f"job#{row['job_id']} {state}；原报告已保留，未自动读取或发送报告中的文件。"
         await _enqueue(service, row, inbound, answer, question=None, expected_report=row['report'])
         return
     profile = app.model_catalog.resolve_preference(row['profile'])
-    files, trace = None, AgentTrace()
-    answer = row.get('frontend_answer', '') if question is None else ''
+    trace = AgentTrace()
     try:
-        if not answer:
-            context = ToolContext(SimpleNamespace(context=app), inbound=inbound,
-                platform=BackgroundPlatform(inbound.endpoint), capabilities=frozenset({'self', 'context', 'memory'}))
-            def current():
-                with runtime.store.transaction() as cursor:
-                    ResultSource(service, row).current_source(cursor, None, int(service.clock()))
+        context = ToolContext(SimpleNamespace(context=app), inbound=inbound,
+            platform=BackgroundPlatform(inbound.endpoint), capabilities=frozenset({'self', 'context', 'memory'}))
+        turn = TurnState(context, model_profile=profile)
+        registry = neutral_registry_for(context)
+        tools = registry.definitions(context)
+        tools.append(next(item for item in DEFINITIONS if item['function']['name'] == 'agent_steer'))
 
-            if question is None and row['state'] != 'cancelled' and runtime.file_service is not None:
-                generation = runtime.file_service.generation
-                if hasattr(generation, 'background'):
-                    files = await generation.background(
-                        inbound, row, current=lambda: service.calls(current)
-                    )
-                else:
-                    files = await generation.bound_session(inbound)
-                if files is not None:
-                    context = files.context(context)
-            turn = TurnState(context, model_profile=profile)
-            registry = neutral_registry_for(context)
-            tools = registry.definitions(context)
-            if question is not None:
-                tools.append(next(item for item in DEFINITIONS if item['function']['name'] == 'agent_steer'))
+        def current():
+            with runtime.store.transaction() as cursor:
+                service.check(cursor, row)
+                job = cursor.execute('SELECT state,delivered_at FROM background_jobs WHERE job_id=?', (row['job_id'],)).fetchone()
+                if job['state'] != 'running' or job['delivered_at'] is not None:
+                    raise PermissionError('后台任务已结束。')
 
-            async def execute(name, args):
-                if name == 'agent_steer' and question is not None:
-                    await service.calls(service.store.steer, row['job_id'], row['endpoint_key'], row['actor_key'], str(args['message']))
-                    return '{"ok":true}'
-                return await registry.execute(turn, name, args)
+        async def execute(name, args):
+            if name == 'agent_steer':
+                await service.calls(service.store.steer, row['job_id'], row['endpoint_key'], row['actor_key'], str(args['message']))
+                return '{"ok":true}'
+            return await registry.execute(turn, name, args)
 
-            history, memory, _ = await service.calls(turn_window, app, inbound, profile)
-            report = (f"[job#{row['job_id']} 提问] {question}\n"
-                '根据聊天记录能回答就调用 agent_steer，把答案交回后台，然后输出 [silence]。'
-                '只有需要用户补充时才向用户提问，提醒用户可以直接告诉你补充要求。') if question is not None else (
-                f"[job#{row['job_id']} {row['state']}] {row['title']}\n{row['report'][:2000]}\n"
-                f"完整报告：/work/.gaoji/jobs/job-{row['job_id']}.md\n"
-                '这是用户先前要求的后台任务结果，请用你的语气向用户交付。文件在当前会话工作区，用 send_file_from_sandbox 传报告中的路径即可发送，PNG、JPG、GIF 在群里直接显示成图片；报告不完整时用 sandbox_read_file 读全文。'
-                '任务取消时不要继续执行。失败须说明具体原因，不能声称已经成功。')
-            from .billing import scoped
-            with scoped(app,inbound.endpoint,'background_agent',inbound.actor,background_job_id=row['job_id'],
-                    current=lambda:service.calls(current)):
-                answer = await ask_deepseek_with_tools(report, [], tools, execute, profile=profile, trace=trace,
-                    group_context=history, memory_context=memory, system_prompt=system_prompt(app.settings.system_prompt, examples=app.settings.style_examples),
-                    tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True, policies={name: replace(
-                        policy_for_tool(name), timeout_seconds=310) for name in ('send_file', 'send_file_from_sandbox')}),
-                    max_tool_rounds=24, max_total_calls=80, max_calls_per_round=24)
-            if not answer or not answer.strip():
-                if turn.delivered:
-                    answer = '[silence]'
-                else:
-                    raise ValueError('empty_background_answer')
-            if question is None:
-                await service.calls(service.store.update, row['job_id'], frontend_answer=answer)
+        history, memory, _ = await service.calls(turn_window, app, inbound, profile)
+        prompt = (f"[job#{row['job_id']} 提问] {question}\n"
+            '根据聊天记录能回答就调用 agent_steer，把答案交回后台，然后输出 [silence]。'
+            '只有需要用户补充时才向用户提问，提醒用户可以直接告诉你补充要求。')
+        with scoped(app,inbound.endpoint,'background_agent',inbound.actor,background_job_id=row['job_id'],
+                current=lambda:service.calls(current)):
+            answer = await ask_deepseek_with_tools(prompt, [], tools, execute, profile=profile, trace=trace,
+                group_context=history, memory_context=memory, system_prompt=system_prompt(app.settings.system_prompt, examples=app.settings.style_examples),
+                tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True),
+                max_tool_rounds=24, max_total_calls=80, max_calls_per_round=24)
+        if not answer or not answer.strip():
+            if not turn.delivered:
+                raise ValueError('empty_background_answer')
+            answer = '[silence]'
     except Exception as error:
         app.logger.exception('Background foreground response failed')
-        answer = f"job#{row['job_id']} 结果整理失败：{type(error).__name__}。\n" + (question or row['report'][:2000])
+        answer = f"job#{row['job_id']} 提问处理失败：{type(error).__name__}。\n" + question
     finally:
-        if files is not None:
-            await files.close()
         await service.record_usage(row, trace)
 
     await _enqueue(service, row, inbound, answer, question=question)
@@ -125,12 +91,15 @@ async def _enqueue(service, row, inbound, answer, *, question, expected_report=N
             if expected_report is not None:
                 current = cursor.execute('SELECT state,report,delivered_at FROM background_jobs WHERE job_id=? FOR UPDATE',
                                          (row['job_id'],)).fetchone()
-                if (current is None or current['state'] != 'completed' or current['report'] != expected_report
+                if (current is None or current['state'] != row['state'] or current['report'] != expected_report
                         or current['delivered_at'] is not None):
                     raise PermissionError('后台任务结果已改变或关闭。')
+                answer_with_receipts = answer + '\n' + receipt_summary(receipt_details(cursor, row))
+            else:
+                answer_with_receipts = answer
             if answer.strip() != '[silence]':
                 key = f"background:{row['job_id']}:" + ('result' if question is None else hashlib.sha256(question.encode()).hexdigest())
-                runtime.outbox.enqueue(service.token, rendered=render_plan(MessageBody((TextNode(0, answer),)), inbound.endpoint),
+                runtime.outbox.enqueue(service.token, rendered=render_plan(MessageBody((TextNode(0, answer_with_receipts),)), inbound.endpoint),
                     requester=inbound.actor, logical_key=key, source_scope_key=row['scope_key'], purpose='background_result',
                     expires_at=int(service.clock()) + min(runtime.outbox.max_wait_seconds, 86400),
                     source_native_message_id=row['native_message_id'], source_canonical_message_id=row['canonical_message_id'],
@@ -224,7 +193,6 @@ async def present_wake(service, endpoint, text: str, *, unit: str = ''):
             '（以上来自本会话容器后台单元或定时器的唤醒通知。请结合聊天上下文用你的语气向用户汇报结果，'
             '如无需打扰群友则输出 [silence]；若在 /work 下生成了需要交付的文件，可用 send_file_from_sandbox 发送。）'
         )
-        from .billing import scoped
         with scoped(app, endpoint, 'background_agent', requester):
             answer = await ask_deepseek_with_tools(
                 prompt,
