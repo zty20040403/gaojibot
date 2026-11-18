@@ -34,20 +34,33 @@ class ScheduleRuntime:
             return
         self.next_scan = now + 30
         def scan():
+            wakes = []
             with self.store.transaction() as cursor:
                 rows = cursor.execute('''SELECT id FROM schedules WHERE cancelled_at IS NULL AND next_at<=?
                     AND source_json::jsonb->>'account_key'=? ORDER BY next_at LIMIT 100''',
                     (now, self.agents.token.account_key)).fetchall()
             for row in rows:
                 try:
-                    self.fire(row['id'], now)
+                    woken = self.fire(row['id'], now)
+                    if woken is not None:
+                        wakes.append(woken)
                 except (ValueError, PermissionError) as error:
                     self.agents.app.logger.warning('Schedule %s failed: %s', row['id'], error)
                     with self.store.transaction() as cursor:
                         cursor.execute('UPDATE schedules SET last_error=? WHERE id=?', (str(error), row['id']))
                         if isinstance(error, PermissionError):
                             cursor.execute('UPDATE schedules SET cancelled_at=? WHERE id=?', (now, row['id']))
-        await self.agents.calls(scan)
+            return wakes
+        wakes = await self.agents.calls(scan)
+        for endpoint, sched_id, sched_text in wakes:
+            try:
+                await self.agents.container_wake(
+                    endpoint,
+                    f"[定时任务 #{sched_id} 到点触发]\n任务要求：{sched_text}",
+                    unit=f"schedule-{sched_id}",
+                )
+            except Exception as error:
+                self.agents.app.logger.warning('Schedule %s turn wake failed: %s', sched_id, error)
         if self.runtime.sender is not None:
             self.runtime.sender.wake()
 
@@ -71,6 +84,9 @@ class ScheduleRuntime:
                 self.agents.store.submit(cursor, kind=self.agents.kind, key=key, source=source,
                     task=row['text'], title=row['text'][:80], profile=source['profile'], independent=True,
                     hours=self.agents.store.hours(cursor,endpoint))
+                woken = None
+            elif row['kind'] == 'turn':
+                woken = (endpoint, row['id'], row['text'])
             else:
                 nodes = [TextNode(1, '提醒：' + row['text'])]
                 if endpoint.kind == 'group':
@@ -82,5 +98,7 @@ class ScheduleRuntime:
                     expires_at=now + min(self.runtime.outbox.max_wait_seconds, 86400), transaction_cursor=cursor)
                 self.agents.app.usage_store.record(scope_key=row['scope_key'], source='reminder', provider='qq-official',
                     model='', input_tokens=0, output_tokens=0, occurred_at=now, transaction_cursor=cursor)
+                woken = None
             due = next_time(cron=row['cron'], now=now) if row['cron'] else None
             cursor.execute("UPDATE schedules SET next_at=?,last_error='' WHERE id=?", (due, identifier))
+            return woken
