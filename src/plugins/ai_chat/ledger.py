@@ -13,6 +13,7 @@ from src.bot_storage import DatabaseSource, StoreCursor, StoreRow, open_store_co
 
 from .conversation_scope import ConversationScope
 from .platform_types import ActorKey, EndpointKey
+from .scope_lease import lock_scope
 from .message_ir import (
     MessageBody,
     MediaNode,
@@ -185,10 +186,7 @@ class MessageLedger:
         )
 
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(hashtext(?))",
-                (f"ledger:{scope.key}",),
-            )
+            lock_scope(cursor, scope.key)
             conversation_id = self._ensure_conversation(cursor, scope)
             identity_platform = actor.account.platform if actor is not None else (identity_platform or scope.platform).strip()
             identity_id: int | None = None

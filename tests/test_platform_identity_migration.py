@@ -33,7 +33,9 @@ class PlatformIdentityMigrationTests(unittest.TestCase):
 
     def test_existing_rows_keep_ids_and_old_uniqueness_after_upgrade(self):
         scope = ConversationScope("onebot-v11", "group", "123")
-        old = self.ledger.record_message(scope, native_message_id="old", sender_native_user_id="7", sender_display="Alice", body=MessageBody((TextNode(0, "old row"),)))
+        # This single-writer fixture seeds revision 0072, before conversation leases existed.
+        with patch("src.plugins.ai_chat.ledger.lock_scope"):
+            old = self.ledger.record_message(scope, native_message_id="old", sender_native_user_id="7", sender_display="Alice", body=MessageBody((TextNode(0, "old row"),)))
         self.db.require_revision("0072_qq_simple_binding")
         self.migrate(command.upgrade, HEAD_REVISION)
         reread = self.ledger.get_in_scope(scope, old.canonical_message_id)

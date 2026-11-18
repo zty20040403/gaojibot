@@ -14,6 +14,7 @@ from typing import Any, Iterator, Literal
 from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor, StoreRow
 
 from .conversation_scope import ConversationScope
+from .scope_lease import lock_scope
 
 
 TurnStatus = Literal[
@@ -134,10 +135,7 @@ class TurnJournal:
     ) -> TurnRecord:
         now = int(started_at or time.time())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(hashtext(?))",
-                (f"turn:{scope.key}",),
-            )
+            lock_scope(cursor, scope.key)
             self._ensure_visibility(cursor, scope.key)
             row = cursor.execute(
                 """
