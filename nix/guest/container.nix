@@ -6,10 +6,12 @@
   lib,
   pkgs,
   source,
+  appSource ? source,
+  gaojiCommit ? "unknown",
   pi,
   ...
 }: let
-  tools = import ./tools.nix {inherit pkgs pi source;};
+  tools = import ./tools.nix {inherit pkgs pi source appSource gaojiCommit;};
 in {
   boot.isContainer = true;
   system.stateVersion = "26.05";
@@ -153,13 +155,18 @@ in {
   systemd.settings.Manager.DefaultEnvironment = "PATH=/run/wrappers/bin:/run/current-system/sw/bin HOME=/work";
   users.users.root.home = lib.mkForce "/work";
   systemd.tmpfiles.rules =
-    map
+    [
+      "d /run/gaoji 0755 root root -"
+      "L+ /run/gaoji/source - - - - /etc/gaoji/source"
+    ]
+    ++ map
     (name: "L+ ${name} - - - - /run/current-system/sw/bin/${baseNameOf name}")
     tools.compatPaths;
   environment.systemPackages = tools.packages;
   environment.etc."gaoji/skills".source = source + "/skills";
   environment.etc."gaoji/pi".source = tools.piFiles;
   environment.etc."gaoji/runner".source = "${tools.share}/share/gaoji/runner";
+  environment.etc."gaoji/source".source = tools.sourceTree;
   environment.variables = tools.variables // {HOME = "/workspace";};
   programs.nix-ld.enable = true;
   programs.nix-ld.libraries = tools.ldLibraries;

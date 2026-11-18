@@ -3,6 +3,8 @@
   pkgs,
   pi ? null,
   source ? ../..,
+  appSource ? source,
+  gaojiCommit ? "unknown",
 }: let
   inherit (pkgs) lib;
   # courlan's own test suite fails in the build sandbox on this nixpkgs pin.
@@ -104,6 +106,8 @@
   '';
   fontConfig = pkgs.makeFontsConf {fontDirectories = [pkgs.wqy_microhei];};
   variables = {
+    GAOJI_COMMIT = gaojiCommit;
+    GAOJI_LIVE_SOURCE = "/run/gaoji/source";
     GAOJI_SHARE = "${share}/share/gaoji";
     GAOJI_COMMAND_PATH = "/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin";
     PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
@@ -200,6 +204,12 @@
 in {
   inherit python packages commands share variables fontConfig piExtensions;
   # The guest receives exactly these immutable files, never a host directory.
+  sourceTree = pkgs.runCommand "gaoji-live-source" {} ''
+    mkdir -p "$out"
+    cp -R ${appSource}/. "$out/"
+    chmod -R u+w "$out"
+    printf '%s\n' ${lib.escapeShellArg gaojiCommit} > "$out/.gaoji-commit"
+  '';
   piFiles = pkgs.runCommand "gaoji-pi-files" {} ''
     mkdir -p "$out"
     cp ${source}/src/plugins/ai_chat/sandbox_pi_tools.ts "$out/sandbox_pi_tools.ts"
