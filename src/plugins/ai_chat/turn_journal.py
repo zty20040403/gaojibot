@@ -7,7 +7,7 @@ import threading
 import time
 import zlib
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any, Iterator, Literal
 
@@ -63,6 +63,11 @@ class TurnRecord:
     @property
     def handle(self) -> str:
         return f"t#{self.turn_ordinal}"
+
+
+def _turn_projection(alias: str = "") -> str:
+    prefix = f"{alias}." if alias else ""
+    return ", ".join(prefix + field.name for field in fields(TurnRecord))
 
 
 @dataclass(frozen=True)
@@ -769,8 +774,8 @@ class TurnJournal:
     ) -> TurnRecord | None:
         with self._lock:
             row = self._connection.execute(
-                """
-                SELECT t.*
+                f"""
+                SELECT {_turn_projection("t")}
                 FROM agent_turns AS t
                 JOIN turn_visibility AS v ON v.scope_key = t.scope_key
                 WHERE t.scope_key = ? AND t.turn_ordinal = ?
@@ -783,7 +788,7 @@ class TurnJournal:
     def get_turn_by_id(self, turn_id: int) -> TurnRecord | None:
         with self._lock:
             row = self._connection.execute(
-                "SELECT * FROM agent_turns WHERE turn_id = ?",
+                f"SELECT {_turn_projection()} FROM agent_turns WHERE turn_id = ?",
                 (int(turn_id),),
             ).fetchone()
         return self._row_to_turn(row) if row is not None else None
@@ -848,7 +853,8 @@ class TurnJournal:
         with self._lock:
             rows = self._connection.execute(
                 f"""
-                SELECT t.*, plan.current_principal_id AS context_principal_id
+                SELECT {_turn_projection("t")},
+                       plan.current_principal_id AS context_principal_id
                 FROM agent_turns AS t
                 JOIN turn_visibility AS v ON v.scope_key = t.scope_key
                 LEFT JOIN turn_context_plans AS plan ON plan.turn_id = t.turn_id
@@ -1024,8 +1030,8 @@ class TurnJournal:
     ) -> TurnRecord | None:
         with self._lock:
             row = self._connection.execute(
-                """
-                SELECT t.*
+                f"""
+                SELECT {_turn_projection("t")}
                 FROM turn_send_links AS l
                 JOIN agent_turns AS t ON t.turn_id = l.turn_id
                 JOIN turn_visibility AS v ON v.scope_key = t.scope_key
@@ -1124,31 +1130,17 @@ class TurnJournal:
         return payload if isinstance(payload, dict) else None
 
     def digest_for_turn(self, turn_id: int) -> str:
+        read = "SELECT digest_skeleton, digest_approach FROM agent_turns WHERE turn_id=? AND digest_created_at IS NOT NULL"
         with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT skeleton, approach FROM turn_digests
-                WHERE turn_id = ?
-                """,
-                (int(turn_id),),
-            ).fetchone()
+            row = self._connection.execute(read, (turn_id,)).fetchone()
         if row is None:
             with self._transaction() as cursor:
-                turn_row = self._turn_row(cursor, int(turn_id))
-                if turn_row is not None and str(turn_row["status"]) != "running":
-                    self._upsert_digest(cursor, turn_row, int(time.time()))
-                    row = cursor.execute(
-                        """
-                        SELECT skeleton, approach FROM turn_digests
-                        WHERE turn_id = ?
-                        """,
-                        (int(turn_id),),
-                    ).fetchone()
-        if row is None:
-            return ""
-        return "\n".join(
-            item for item in (str(row["skeleton"]), str(row["approach"])) if item
-        )
+                turn = self._turn_row(cursor, turn_id)
+                if turn is None or turn["status"] == "running":
+                    return ""
+                self._upsert_digest(cursor, turn, int(time.time()))
+                row = cursor.execute(read, (turn_id,)).fetchone()
+        return "\n".join(filter(None, (row["digest_skeleton"], row["digest_approach"])))
 
     def _refresh_digest(self, turn_id: int) -> None:
         with self._transaction() as cursor:
@@ -1163,8 +1155,8 @@ class TurnJournal:
     ) -> TurnRecord | None:
         with self._lock:
             row = self._connection.execute(
-                """
-                SELECT parent.*
+                f"""
+                SELECT {_turn_projection("parent")}
                 FROM turn_edges AS edge
                 JOIN agent_turns AS child ON child.turn_id = edge.from_turn_id
                 JOIN agent_turns AS parent ON parent.turn_id = edge.to_turn_id
@@ -1402,19 +1394,15 @@ class TurnJournal:
         approach = "\n".join(f"- note: {note}" for note in notes[:12])
         cursor.execute(
             """
-            INSERT INTO turn_digests (
-                turn_id, skeleton, approach, created_at
-            ) VALUES (?, ?, ?, ?)
-            ON CONFLICT(turn_id) DO UPDATE SET
-                skeleton = excluded.skeleton,
-                approach = excluded.approach,
-                created_at = excluded.created_at
+            UPDATE agent_turns
+            SET digest_skeleton = ?, digest_approach = ?, digest_created_at = ?
+            WHERE turn_id = ?
             """,
             (
-                int(turn_row["turn_id"]),
                 "\n".join(skeleton_lines)[:12000],
                 approach[:4000],
                 now,
+                int(turn_row["turn_id"]),
             ),
         )
 
@@ -1431,8 +1419,8 @@ class TurnJournal:
         for _index in range(max(int(limit) - 1, 0)):
             with self._lock:
                 row = self._connection.execute(
-                    """
-                    SELECT parent.*
+                    f"""
+                    SELECT {_turn_projection("parent")}
                     FROM turn_edges AS edge
                     JOIN agent_turns AS parent
                       ON parent.turn_id = edge.to_turn_id
@@ -1573,7 +1561,7 @@ class TurnJournal:
         turn_id: int,
     ) -> StoreRow | None:
         return cursor.execute(
-            "SELECT * FROM agent_turns WHERE turn_id = ?",
+            f"SELECT {_turn_projection()} FROM agent_turns WHERE turn_id = ?",
             (int(turn_id),),
         ).fetchone()
 

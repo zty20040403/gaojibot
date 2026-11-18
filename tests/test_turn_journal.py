@@ -4,7 +4,7 @@ from tests.postgres_fixture import postgres_for_test
 
 import time
 import unittest
-
+from unittest.mock import patch
 
 
 from src.plugins.ai_chat.conversation_scope import ConversationScope
@@ -514,6 +514,34 @@ class TurnJournalTests(unittest.TestCase):
         self.assertEqual(replay.mode, "digest")
         self.assertEqual(replay.reason, "chat-only")
         self.assertIn("just chat", replay.digest_prefix)
+
+    def test_send_refreshes_digest_before_and_after_finish(self) -> None:
+        turn = self.start(self.group_a, "timed work")
+        self.journal.record_model_note(turn.turn_id, 1, "first note")
+        self.assertEqual(self.journal.digest_for_turn(turn.turn_id), "")
+        self.journal.record_send_started(turn.turn_id, 1)
+        self.assertIn("first note", self.journal.digest_for_turn(turn.turn_id))
+        self.journal.finish_turn(turn.turn_id, status="succeeded", finished_at=123)
+        with self.journal._lock:
+            created_at = self.journal._connection.execute(
+                "SELECT digest_created_at FROM agent_turns WHERE turn_id=?",
+                (turn.turn_id,),
+            ).fetchone()[0]
+        self.assertEqual(created_at, 123)
+        self.assertIn("first note", self.journal.digest_for_turn(turn.turn_id))
+
+        self.journal.record_model_note(turn.turn_id, 2, "later note")
+        with patch("src.plugins.ai_chat.turn_journal.time.time", return_value=456):
+            self.journal.record_send_finished(
+                turn.turn_id, 1, "committed", {"ok": True}
+            )
+        self.assertIn("later note", self.journal.digest_for_turn(turn.turn_id))
+        with self.journal._lock:
+            refreshed_at = self.journal._connection.execute(
+                "SELECT digest_created_at FROM agent_turns WHERE turn_id=?",
+                (turn.turn_id,),
+            ).fetchone()[0]
+        self.assertEqual(refreshed_at, 456)
 
     def test_digest_is_lazily_backfilled_for_existing_finished_turn(self) -> None:
         turn = self.start(self.group_a, "legacy work")
