@@ -217,16 +217,16 @@ def main(argv=None, *, client=None):
         elif command == 'agent':
             question = sys.stdin.read(4000) if args['question'] == '-' else args['question']
             job_dir = os.environ.get('GAOJI_JOB_DIR', '').strip()
-            if job_dir and Path(job_dir).is_dir():
-                (Path(job_dir) / 'asked').write_text(question, encoding='utf-8')
-            if client.is_job_token():
-                status, value = client.call_tool('ask_main', {'question': question}, timeout=7500)
-            else:
-                payload = {'question': question}
-                job_id = args.get('job_id') or (int(os.environ['GAOJI_JOB_ID']) if os.environ.get('GAOJI_JOB_ID', '').isdigit() else None)
-                if job_id is not None:
-                    payload['job_id'] = job_id
-                status, value = client.call_tool('agent_ask', payload)
+            asked_file = Path(job_dir) / 'asked' if job_dir and Path(job_dir).is_dir() else None
+            if asked_file is not None:
+                asked_file.write_text(question, encoding='utf-8')
+            payload = {'question': question}
+            job_id = args.get('job_id') or (int(os.environ['GAOJI_JOB_ID']) if os.environ.get('GAOJI_JOB_ID', '').isdigit() else None)
+            if job_id is not None:
+                payload['job_id'] = job_id
+            status, value = client.call_tool('agent_ask', payload)
+            if not 200 <= status < 300 and asked_file is not None:
+                asked_file.unlink(missing_ok=True)
         elif command == 'github':
             payload = {'method': args['method'], 'path': args['path']}
             if args.get('query'):

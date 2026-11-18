@@ -36,16 +36,19 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
             return self.store.submit(cursor, kind='TEST_AGENT', key=key, source=self.source,
                                      task='research', title='prices', profile='TEST_MODEL', independent=independent,hours=hours)
 
-    def test_three_jobs_limit_idempotency_and_actor_isolation(self):
+    def test_three_jobs_limit_idempotency_and_endpoint_isolation(self):
         first = self.submit()
         self.assertEqual(self.submit()['job_id'], first['job_id'])
         self.submit('TEST_TWO')
         self.submit('TEST_THREE')
         with self.assertRaises(ValueError):
             self.submit('TEST_FOUR')
+        # Another endpoint cannot steer; another member in the SAME endpoint CAN steer (§4.3).
         with self.assertRaises(ValueError):
-            self.store.steer(first['job_id'], 'TEST_ENDPOINT', 'TEST_OTHER_ACTOR', 'leak')
+            self.store.steer(first['job_id'], 'TEST_OTHER_ENDPOINT', 'TEST_ACTOR', 'leak')
+        self.store.steer(first['job_id'], 'TEST_ENDPOINT', 'TEST_OTHER_ACTOR', 'fellow member steer')
         self.assertFalse(self.store.cancel(first['job_id'], 'TEST_OTHER_ENDPOINT', 'TEST_ACTOR'))
+        self.assertFalse(self.store.cancel(first['job_id'], 'TEST_ENDPOINT', 'TEST_OTHER_ACTOR'))
         self.assertTrue(self.store.cancel(first['job_id'], 'TEST_ENDPOINT', 'TEST_ACTOR'))
         self.assertEqual(self.submit('TEST_FOUR')['state'], 'queued')
 
@@ -102,12 +105,34 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         await runner.execute(self.queue.get(row['job_id']))
         self.assertEqual(saved, ['report with sources'])
         self.assertEqual(self.store.get(row['job_id'])['state'], 'completed')
+
+        # §4.4: running jobs survive host restart and reconnect instead of failing!
         other = self.submit('TEST_RESTART')
-        self.store.update(other['job_id'], state='running')
+        claimed = self.queue.claim_due('OLD_WORKER', now=self.now)
+        self.assertTrue(any(j.job_id == other['job_id'] for j in claimed))
+        self.store.update(other['job_id'], state='running', started_at=self.now)
         self.store.recover('TEST_ACCOUNT')
+        self.assertEqual(self.store.get(other['job_id'])['state'], 'running')
+        self.assertEqual(self.queue.get(other['job_id']).status, 'pending')
         await runner.execute(self.queue.get(other['job_id']))
-        self.assertEqual(len(saved), 1)
-        self.assertEqual(self.store.get(other['job_id'])['state'], 'failed')
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(self.store.get(other['job_id'])['state'], 'completed')
+
+        # Resume (--fork) validation: rejects running job, accepts completed job.
+        running_job = self.submit('TEST_RUNNING_FOR_RESUME')
+        with self.assertRaisesRegex(ValueError, '还在运行'):
+            with self.store.transaction() as cursor:
+                self.store.submit(cursor, kind='TEST_AGENT', key='TEST_RESUME_FAIL', source=self.source,
+                                  task='continue', title='', profile='TEST_MODEL', independent=True,
+                                  resume_job_id=running_job['job_id'])
+        self.store.cancel(running_job['job_id'], 'TEST_ENDPOINT', 'TEST_ACTOR')
+        with self.store.transaction() as cursor:
+            resumed = self.store.submit(cursor, kind='TEST_AGENT', key='TEST_RESUME_OK', source=self.source,
+                                        task='continue', title='', profile='TEST_MODEL', independent=True,
+                                        resume_job_id=row['job_id'], workdir='subproj')
+        self.assertEqual(resumed['title'], 'prices')
+        self.assertEqual(self.queue.get(resumed['job_id']).payload, {'resume_job_id': row['job_id'], 'workdir': 'subproj'})
+
         queued = self.submit('TEST_QUEUE_TERMINATED')
         self.queue.cancel(queued['job_id'])
         self.store.pending_results('TEST_ACCOUNT')

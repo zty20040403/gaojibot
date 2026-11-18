@@ -1,41 +1,12 @@
-"""Pi RPC event, request, and launch contract without a real VM."""
+"""Pi --print engine launch, usage, deadline, and bounded stop contract without a real container."""
 import asyncio
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from src.plugins.ai_chat.agent_loop import AgentTrace
-from src.plugins.ai_chat.pi_engine import DEADLINE_NOTE
-from src.plugins.ai_chat.pi_engine import PiEngine, PiRun, launch_script, pi_models_json
-
-
-class Channel:
-    def __init__(self):
-        self.inbox = asyncio.Queue()
-        self.requests = []
-        self.session = None
-
-    async def wait(self, _timeout):
-        pass
-
-    async def receive(self):
-        message = await self.inbox.get()
-        if isinstance(message, Exception):
-            raise message
-        return message
-
-    async def send(self, message):
-        self.requests.append(message)
-        if message['type'] == 'extension_ui_response':
-            return
-        self.inbox.put_nowait({'type': 'response', 'id': message['id'], 'success': True,
-                               'data': {'disposition': 'started'}})
-        if message['type'] == 'prompt':
-            self.inbox.put_nowait({'type': 'tool_execution_start', 'toolName': 'history'})
-        if message['type'] == 'abort':
-            self.inbox.put_nowait({'type': 'message_end', 'message': {'role': 'assistant',
-                'content': [{'type': 'text', 'text': 'partial'}], 'usage': {}, 'stopReason': 'aborted'}})
-            self.inbox.put_nowait({'type': 'agent_settled', 'aborted': True})
+from src.plugins.ai_chat.pi_engine import DEADLINE_NOTE, PiEngine, launch_script, pi_models_json
+from tests.test_pi_engine import FakePiGuest
 
 
 class PiCoreTests(unittest.IsolatedAsyncioTestCase):
@@ -44,75 +15,121 @@ class PiCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config['apiKey'], '$GAOJI_JOB_TOKEN')
         self.assertEqual(config['models'][0]['id'], 'gaoji-background')
         self.assertEqual(config['models'][0]['contextWindow'], 123456)
+        self.assertEqual(config['models'][0]['thinkingLevelMap'], {'xhigh': 'xhigh', 'max': 'max'})
         self.assertEqual(config['compat'], {'supportsLongCacheRetention': False, 'supportsMaxOutputTokens': False})
-        script = launch_script(9, 'secret token', 'high', 18640, 'private prompt')
-        for item in ('PI_CODING_AGENT_DIR=/run/gaoji/jobs/job-9', '--no-approve',
-                     '--session-dir /work/.gaoji/jobs/job-9/pi', '/etc/gaoji/pi/sandbox_pi_tools.ts',
-                     '/etc/gaoji/pi/sandbox_agent_bridge.py', 'HOME=/work', 'PI_OFFLINE=1'):
+        script = launch_script(9, 'secret token', 'high', 18640, 'private prompt', task='do research')
+        for item in (
+            'PI_CODING_AGENT_DIR=/run/gaoji/jobs/job-9',
+            '--print',
+            '--no-approve',
+            '--session-dir /work/.gaoji/jobs',
+            '--session-id gaoji-job-9',
+            '/etc/gaoji/pi/sandbox_pi_tools.ts',
+            '/etc/gaoji/pi/sandbox_pi_agent.ts',
+            'HOME=/work',
+            'PI_OFFLINE=1',
+            'KillSignal=SIGUSR2',
+        ):
             self.assertIn(item, script)
+        self.assertNotIn('sandbox_agent_bridge.py', script)
+        self.assertNotIn('--no-context-files', script)
         self.assertNotIn('private prompt', script)
         self.assertNotIn('--no-session', script)
 
-    async def test_events_track_progress_usage_and_settled(self):
-        channel, trace, progress = Channel(), AgentTrace(), AsyncMock()
-        run = PiRun(channel, progress, trace)
-        reader = asyncio.create_task(run.read())
-        await run.request({'type': 'prompt', 'message': 'test'})
-        channel.inbox.put_nowait({'type': 'message_end', 'message': {'role': 'assistant',
-            'content': [{'type': 'text', 'text': 'result'}], 'stopReason': 'stop',
-            'usage': {'input': 20, 'output': 7, 'cacheRead': 100, 'cacheWrite': 3, 'totalTokens': 130}}})
-        channel.inbox.put_nowait({'type': 'agent_settled', 'aborted': False})
-        await asyncio.wait_for(run.settled.wait(), 2)
-        self.assertEqual(run.last_text, 'result')
-        self.assertEqual((trace.input_tokens, trace.cached_tokens, trace.output_tokens), (123, 100, 7))
+    async def test_inspect_tracks_progress_usage_and_report(self):
+        guest = FakePiGuest(final_text='result')
+        gateway = SimpleNamespace(
+            start=AsyncMock(),
+            open=lambda **_: ('token', guest),
+            revoke=Mock(),
+            port=18640,
+            failure=lambda _: '',
+        )
+        progress = AsyncMock()
+        trace = AgentTrace()
+        engine = PiEngine(
+            gateway,
+            SimpleNamespace(get=lambda: ('model', 'high')),
+            start_vm=AsyncMock(return_value='vm'),
+            guest_exec=AsyncMock(side_effect=guest.exec),
+            clock=lambda: 0,
+            poll_interval=0.01,
+        )
+        report = await engine(
+            {'job_id': 1, 'task': 'test', 'deadline_at': 100},
+            SimpleNamespace(prompt='p', current=AsyncMock()),
+            feedback=AsyncMock(return_value=[]),
+            progress=progress,
+            trace=trace,
+        )
+        self.assertEqual(report, 'result')
+        self.assertEqual((trace.input_tokens, trace.cached_tokens, trace.output_tokens), (120, 100, 7))
         progress.assert_awaited_once_with('history')
-        reader.cancel()
-        await asyncio.gather(reader, return_exceptions=True)
-
-    async def test_connection_loss_unblocks_pending_request(self):
-        channel, trace = Channel(), AgentTrace()
-        run = PiRun(channel, AsyncMock(), trace)
-        async def send_without_response(message):
-            channel.inbox.put_nowait(EOFError('closed'))
-        channel.send = send_without_response
-        reader = asyncio.create_task(run.read())
-        with self.assertRaisesRegex(RuntimeError, 'closed'):
-            await asyncio.wait_for(run.request({'type': 'prompt'}), 2)
-        self.assertTrue(run.settled.is_set())
-        await reader
-
-    async def test_deadline_aborts_and_revokes(self):
-        channel = Channel()
-        gateway = SimpleNamespace(start=AsyncMock(), open=lambda **_: ('token', channel), revoke=Mock(),
-                                  port=18640, failure=lambda _: '')
-        engine = PiEngine(gateway, SimpleNamespace(get=lambda: ('model', 'high')),
-                          start_vm=AsyncMock(return_value='vm'), guest_exec=AsyncMock(),
-                          clock=lambda: 10 if any(r['type'] == 'prompt' for r in channel.requests) else 9)
-        report = await engine({'job_id': 1, 'task': 'test', 'deadline_at': 10},
-            SimpleNamespace(prompt='p', current=AsyncMock()), feedback=AsyncMock(return_value=[]),
-            progress=AsyncMock(), trace=AgentTrace())
-        self.assertEqual(report, DEADLINE_NOTE + '\npartial')
-        self.assertIn('abort', [item['type'] for item in channel.requests])
         gateway.revoke.assert_called_once_with('token')
 
-    async def test_unresponsive_abort_has_bounded_cleanup(self):
-        channel = Channel()
-        old_send = channel.send
-        async def send(message):
-            if message['type'] == 'abort':
-                channel.requests.append(message)
-            else:
-                await old_send(message)
-        channel.send = send
-        gateway = SimpleNamespace(start=AsyncMock(), open=lambda **_: ('token', channel), revoke=Mock(),
-                                  port=18640, failure=lambda _: '')
-        engine = PiEngine(gateway, SimpleNamespace(get=lambda: ('model', 'high')),
-                          start_vm=AsyncMock(return_value='vm'), guest_exec=AsyncMock(),
-                          clock=lambda: 10 if any(r['type'] == 'prompt' for r in channel.requests) else 9)
-        with patch('src.plugins.ai_chat.pi_engine.ABORT_TIMEOUT', 0.02), patch('src.plugins.ai_chat.pi_engine.STOP_GRACE', 0.02):
-            report = await asyncio.wait_for(engine({'job_id': 2, 'task': 'test', 'deadline_at': 10},
-                SimpleNamespace(prompt='p', current=AsyncMock()), feedback=AsyncMock(return_value=[]),
-                progress=AsyncMock(), trace=AgentTrace()), 1)
+    async def test_deadline_stops_unit_and_revokes(self):
+        guest = FakePiGuest(partial_text='partial', wait_for_steer=True)
+        gateway = SimpleNamespace(
+            start=AsyncMock(),
+            open=lambda **_: ('token', guest),
+            revoke=Mock(),
+            port=18640,
+            failure=lambda _: '',
+        )
+        engine = PiEngine(
+            gateway,
+            SimpleNamespace(get=lambda: ('model', 'high')),
+            start_vm=AsyncMock(return_value='vm'),
+            guest_exec=AsyncMock(side_effect=guest.exec),
+            clock=lambda: 10 if guest.launched.is_set() else 9,
+            poll_interval=0.01,
+        )
+        report = await engine(
+            {'job_id': 1, 'task': 'test', 'deadline_at': 10},
+            SimpleNamespace(prompt='p', current=AsyncMock()),
+            feedback=AsyncMock(return_value=[]),
+            progress=AsyncMock(),
+            trace=AgentTrace(),
+        )
+        self.assertEqual(report, DEADLINE_NOTE + '\npartial')
+        self.assertTrue(guest.stop_called.is_set())
+        gateway.revoke.assert_called_once_with('token')
+
+    async def test_unresponsive_stop_has_bounded_cleanup(self):
+        guest = FakePiGuest(wait_for_steer=True, ignore_stop=True)
+
+        async def slow_exec(vm, script):
+            if script.startswith('if command -v systemctl'):
+                guest.stop_called.set()
+                await asyncio.Future()
+            return await guest.exec(vm, script)
+
+        gateway = SimpleNamespace(
+            start=AsyncMock(),
+            open=lambda **_: ('token', guest),
+            revoke=Mock(),
+            port=18640,
+            failure=lambda _: '',
+        )
+        engine = PiEngine(
+            gateway,
+            SimpleNamespace(get=lambda: ('model', 'high')),
+            start_vm=AsyncMock(return_value='vm'),
+            guest_exec=AsyncMock(side_effect=slow_exec),
+            clock=lambda: 10 if guest.launched.is_set() else 9.9,
+            poll_interval=0.01,
+        )
+        with patch('src.plugins.ai_chat.pi_engine.STOP_TIMEOUT', 0.03):
+            report = await asyncio.wait_for(
+                engine(
+                    {'job_id': 2, 'task': 'test', 'deadline_at': 10},
+                    SimpleNamespace(prompt='p', current=AsyncMock()),
+                    feedback=AsyncMock(return_value=[]),
+                    progress=AsyncMock(),
+                    trace=AgentTrace(),
+                ),
+                1,
+            )
         self.assertTrue(report.startswith(DEADLINE_NOTE))
-        self.assertIn('abort', [item['type'] for item in channel.requests])
+        self.assertTrue(guest.stop_called.is_set())
         gateway.revoke.assert_called_once_with('token')

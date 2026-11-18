@@ -158,7 +158,7 @@ in {
   piFiles = pkgs.runCommand "gaoji-pi-files" {} ''
     mkdir -p "$out"
     cp ${source}/src/plugins/ai_chat/sandbox_pi_tools.ts "$out/sandbox_pi_tools.ts"
-    cp ${source}/src/plugins/ai_chat/sandbox_agent_bridge.py "$out/sandbox_agent_bridge.py"
+    cp ${source}/src/plugins/ai_chat/sandbox_pi_agent.ts "$out/sandbox_pi_agent.ts"
   '';
   compatPaths = [
     "/bin/sh"

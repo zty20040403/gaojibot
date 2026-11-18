@@ -27,8 +27,10 @@
   opsSocket = "/run/${opsName}-tailscale/tailscaled.sock";
   opsTailscale = "${pkgs.tailscale}/bin/tailscale --socket=${opsSocket}";
   opsResolver = pkgs.writeText "${opsName}-resolv.conf" (lib.concatMapStrings (server: "nameserver ${server}\n") ops.dns);
-  # Containers on the operations network resolve names via MagicDNS, which knows the fleet's names.
-  opsGuestResolver = pkgs.writeText "${opsName}-guest-resolv.conf" "nameserver 100.100.100.100\n";
+  # Containers on the operations network resolve fleet names via MagicDNS first, falling back to public DNS.
+  opsGuestResolver = pkgs.writeText "${opsName}-guest-resolv.conf" (
+    "nameserver 100.100.100.100\n" + lib.concatMapStrings (server: "nameserver ${server}\n") ops.dns
+  );
   defaultWhisperModel = pkgs.fetchurl {
     url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
     hash = "sha256-YO1bw90U7qhWST0zQ0m0BXgt3K8AKNS130CINF+6Lv4=";
@@ -762,6 +764,7 @@ in {
     '';
     unit = mode: {
       description = "gaoji conversation container %i (${mode})";
+      restartIfChanged = false;
       requires = lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
       after = ["network.target"] ++ lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
       serviceConfig =

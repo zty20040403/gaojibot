@@ -124,37 +124,18 @@ class JobGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.gateway.revoke(token)
         self.assertEqual(self.gateway.failure(token), '')
 
-    async def test_revoke_closes_tunnel_even_before_engine_waits_for_it(self):
-        token,channel = self.gateway.open()
-        reader,writer = await asyncio.open_connection('127.0.0.1',self.gateway.port+1)
-        try:
-            writer.write(token.encode()+b'\n')
-            await writer.drain()
-            await asyncio.wait_for(asyncio.shield(channel.connected),2)
-            self.assertIsNone(channel.writer)
-            self.gateway.revoke(token)
-            self.assertEqual(await asyncio.wait_for(reader.read(),2),b'')
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    async def test_tunnel_accepts_only_its_token_once(self):
-        token, channel = self.gateway.open()
-        _, stranger = await asyncio.open_connection('127.0.0.1', self.gateway.port + 1)
-        stranger.write(b'TEST_WRONG\n')
-        await stranger.drain()
-        reader, writer = await asyncio.open_connection('127.0.0.1', self.gateway.port + 1)
-        writer.write(token.encode() + b'\n')
-        await writer.drain()
-        await channel.wait(5)
-        await channel.send({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'})
-        self.assertEqual(json.loads(await reader.readline())['method'], 'initialize')
-        writer.write(b'{"id": 1, "result": {}}\n')
-        await writer.drain()
-        self.assertEqual(await channel.receive(), {'id': 1, 'result': {}})
-        self.assertFalse(channel.connected.cancelled())
-        writer.close()
-        stranger.close()
+    async def test_open_with_existing_token_reattaches_and_revoke_closes(self):
+        token, channel = self.gateway.open(source={'job_id': 42})
+        channel.model_index = 2
+        same_token, reattached = self.gateway.open(source={'job_id': 42}, token=token)
+        self.assertEqual(same_token, token)
+        self.assertIs(reattached, channel)
+        self.assertEqual(reattached.model_index, 2)
+        self.gateway.revoke(token)
+        self.assertTrue(channel.revoked)
+        _, reopened = self.gateway.open(source={'job_id': 42}, token=token)
+        self.assertIsNot(reopened, channel)
+        self.assertFalse(reopened.revoked)
 
     async def test_job_tool_rejects_oversized_stream_before_reading_tail(self):
         from types import SimpleNamespace
