@@ -23,12 +23,97 @@ from ..prompt_context import quote_evidence
 from ..tool_policy import ToolCatalog, approval_from_user_text, policy_for_tool
 from ..tools import neutral_registry_for
 from ..tools.background import task_context as background_task_context
+from ..tools.sources import evidence_term, evidence_url, search_key
 from ..tools.state import ToolContext, TurnState
-from ..web_search import render_search_sources
+from ..web_search import SearchResult, render_search_sources
+from ..turn_checkpoint import safe_content
 from ..workers.durable_jobs import JobDeferred
 
 
 _STICKER_MARKER = re.compile(r"\[表情[:：][^\]\n]{0,80}\]")
+_USAGE = ('input_tokens', 'output_tokens', 'cached_tokens', 'total_tokens')
+
+
+class _TurnCheckpoint:
+    """Persist only state needed by tools and the final QQ renderer."""
+    def __init__(self, turn, media, trace, sink, saved):
+        self.turn, self.media, self.trace, self.sink = turn, media, trace, sink
+        self.last = saved
+        self.restored_sticker = None
+        if saved is None:
+            return
+        if not saved['resumable']:
+            raise RuntimeError('Turn checkpoint cannot be resumed')
+        adjunct = saved['adjunct']
+        saved_media = adjunct['media']
+        if (saved_media is None) != (media is None) or (adjunct['usage'] is None) != (trace is None):
+            raise RuntimeError('Turn checkpoint dependencies changed')
+        if adjunct['sticker_sent'] != bool(saved_media and saved_media['selected_sticker']) or (
+                saved_media and saved_media['selected_sticker'] and saved_media['selected_sticker'] not in
+                set(adjunct['seen']) | set(adjunct['tried'])):
+            raise RuntimeError('Turn checkpoint sticker is unavailable')
+        turn.search_results = [SearchResult(title, url, '') for title, url in adjunct['sources']]
+        turn.search_count = adjunct['search_count']
+        turn.search_seconds = adjunct['search_seconds']
+        turn.search_no_new = adjunct['search_no_new']
+        turn.search_seen = {tuple(key) for key in adjunct['search_seen']}
+        turn.search_terms = list(adjunct['search_terms'])
+        turn.search_found = list(adjunct['search_found'])
+        turn.search_read = list(adjunct['search_read'])
+        turn.delivered, turn.sticker_sent = adjunct['delivered'], adjunct['sticker_sent']
+        turn.sticker_handles_seen = set(adjunct['seen'])
+        turn.sticker_handles_this_turn = set(adjunct['tried'])
+        if trace is not None:
+            for name in _USAGE:
+                setattr(trace, name, adjunct['usage'][name])
+        if media is not None:
+            media.pending_text = list(saved_media['pending_text'])
+            media.voice_sent = saved_media['voice_sent']
+            media.selected_sticker = self.restored_sticker = saved_media['selected_sticker']
+
+    @staticmethod
+    def _safe_adjunct(adjunct):
+        # Never checkpoint snippets, signed URLs or opaque paths from web results.
+        urls = [url for _, url in adjunct['sources']] + adjunct['search_found'] + adjunct['search_read']
+        if any(not url or evidence_url(url) != url for url in urls):
+            return False
+        for host, path in adjunct['search_seen']:
+            authority = f'[{host}]' if ':' in host else host
+            if search_key(evidence_url(f'https://{authority}{path}')) != (host, path):
+                return False
+        return (all(evidence_term(term) == term for term in adjunct['search_terms'])
+                and len(json.dumps(adjunct, ensure_ascii=False)) <= 200_000 and safe_content(adjunct))
+
+    async def save(self, loop):
+        self.last = loop
+        media, turn = self.media, self.turn
+        adjunct = {'sources': [[r.title, r.url] for r in turn.search_results],
+            'search_count': turn.search_count, 'search_seconds': turn.search_seconds,
+            'search_no_new': turn.search_no_new,
+            'search_seen': [list(key) for key in sorted(turn.search_seen)],
+            'search_terms': list(turn.search_terms), 'search_found': list(turn.search_found),
+            'search_read': list(turn.search_read),
+            'delivered': turn.delivered, 'sticker_sent': turn.sticker_sent,
+            'seen': sorted(turn.sticker_handles_seen), 'tried': sorted(turn.sticker_handles_this_turn),
+            'usage': {name: getattr(self.trace, name) for name in _USAGE} if self.trace is not None else None,
+            'media': {'pending_text': list(media.pending_text), 'voice_sent': media.voice_sent,
+                      'selected_sticker': media.selected_sticker} if media is not None else None}
+        safe = self._safe_adjunct(adjunct)
+        # Until marker selection is checkpointed, a crash must not select or count it twice.
+        marker_pending = media is not None and loop.get('phase') == 'final' and _STICKER_MARKER.search(loop.get('answer', ''))
+        await self.sink({**loop, 'resumable': bool(loop['resumable'] and safe and not marker_pending),
+                         'adjunct': adjunct if safe else None})
+
+    async def requeue(self):
+        if self.restored_sticker:
+            await self.media.sticker({'media_handle': self.restored_sticker},
+                                     self.turn.sticker_handles_seen | self.turn.sticker_handles_this_turn)
+
+    async def finish(self, answer):
+        if self.last is not None and self.last.get('phase') == 'final':
+            safe = safe_content(answer)
+            await self.save({**self.last, 'resumable': bool(self.last['resumable'] and safe),
+                             'answer': answer if safe else ''})
 
 
 def _citation_safe_stream(sink, turn):
@@ -81,6 +166,7 @@ class PlatformChatService:
         turn_context: str = "", selected_model_override: str | None = None,
         selected_profile_override: ModelProfile | None = None,
         feedback_provider=None, final_stream_sink=None, final_stream_state=None,
+        checkpoint_state=None, checkpoint_sink=None, idempotency_key_prefix="",
         task_mode: bool = False, simple_chat_profile: str = "", resume_task_id=None,
         _approved_call=None, routine_execution=None, _mcp_execution=None,
     ) -> str:
@@ -189,6 +275,8 @@ class PlatformChatService:
                 }, ensure_ascii=False)
 
             try:
+                checkpoint = (_TurnCheckpoint(turn, media_session, turn_trace, checkpoint_sink, checkpoint_state)
+                              if checkpoint_sink is not None else None)
                 group_context, memory_context, quoted = await self.context.db_call(
                     turn_window, self.context, inbound, selected_profile)
                 context_parts = [quoted] if quoted else []
@@ -247,6 +335,9 @@ class PlatformChatService:
                     ),
                     tool_context="\n\n".join(context_parts), system_prompt=system,
                     trace=turn_trace, feedback_provider=feedback_provider,
+                    checkpoint_state=checkpoint_state, checkpoint_sink=checkpoint.save if checkpoint else None,
+                    idempotency_key_prefix=idempotency_key_prefix,
+                    checkpoint_replay_safe_tools=frozenset({'say'}),
                     event_sink=(
                         lambda event: record_loop_event(self.context, journal_turn_id, event)
                     ) if journal_turn_id is not None else None,
@@ -268,8 +359,12 @@ class PlatformChatService:
             assert_job_owned()
             if media_session is not None:
                 await media_session.current()
+                if checkpoint:
+                    await checkpoint.requeue()
                 if hasattr(media_session, "take_sticker_marker"):
                     answer = await media_session.take_sticker_marker(turn, answer or "")
+                if checkpoint:
+                    await checkpoint.finish(answer or "")
                 answer = media_session.finish(answer or "")
             if not answer or not answer.strip():
                 if turn.delivered:
