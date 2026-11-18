@@ -168,17 +168,26 @@ async def present_wake(service, endpoint, text: str, *, unit: str = ''):
             return inbound, peer
 
     inbound, requester = await service.calls(check_and_prepare)
-    pref_getter = getattr(app.model_preferences, 'get', None)
-    pref = pref_getter(endpoint.scope.key) if callable(pref_getter) else None
+    conv_pref = getattr(app.model_preferences, 'get_conversation_default', None)
+    if callable(conv_pref):
+        pref = conv_pref(endpoint.scope) or app.settings.model_profile_for_scope(endpoint.scope)
+    else:
+        pref_getter = getattr(app.model_preferences, 'get', None)
+        pref = pref_getter(endpoint.scope.key) if callable(pref_getter) else None
     profile = app.model_catalog.resolve_preference(pref)
+    persona_getter = getattr(app.model_preferences, 'get_scope_persona', None)
+    custom_persona = persona_getter(endpoint.scope) if callable(persona_getter) else None
     files, trace = None, AgentTrace()
     answer = ''
     try:
+        caps = {'self', 'context', 'memory'}
+        if getattr(app.settings, 'search_enabled', False):
+            caps.add('web')
         context = ToolContext(
             SimpleNamespace(context=app),
             inbound=inbound,
             platform=BackgroundPlatform(endpoint),
-            capabilities=frozenset({'self', 'context', 'memory'}),
+            capabilities=frozenset(caps),
         )
         file_service = getattr(runtime, 'file_service', None)
         if file_service is not None:
@@ -209,13 +218,13 @@ async def present_wake(service, endpoint, text: str, *, unit: str = ''):
                 trace=trace,
                 group_context=history,
                 memory_context=memory,
-                system_prompt=system_prompt(app.settings.system_prompt, examples=app.settings.style_examples),
+                system_prompt=system_prompt(custom_persona or app.settings.system_prompt, examples=app.settings.style_examples),
                 tool_catalog=ToolCatalog(
                     tools,
                     ignore_unknown_fields=True,
                     policies={
                         name: replace(policy_for_tool(name), timeout_seconds=310)
-                        for name in ('send_file', 'send_file_from_sandbox')
+                        for name in ('send_file', 'send_file_from_sandbox', 'send_image', 'shell', 'run_code')
                     },
                 ),
                 max_tool_rounds=16,

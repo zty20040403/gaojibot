@@ -83,3 +83,72 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(future['conversation_generation'],1)
         with f.tx() as cursor:
             service.check(cursor,future)  # Future occurrences are not old-turn replays.
+
+
+class ScheduledTurnTests(unittest.IsolatedAsyncioTestCase):
+    async def test_due_turn_schedule_wakes_full_main_model_turn_and_advances_cron(self):
+        f = ExecutionFixture('runTest')
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        handle = f.claim().handle
+        deliveries, usage = DeliveryStore(f.database), UsageStore(f.database)
+        self.addCleanup(deliveries.close)
+        self.addCleanup(usage.close)
+
+        async def db_calls(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        runtime = SimpleNamespace(
+            jobs=f.jobs,
+            _calls=db_calls,
+            sender=None,
+            file_service=None,
+            store=SimpleNamespace(transaction=f.tx, admitted=f.admission, clock=lambda: f.now),
+            outbox=OfficialSendStore(deliveries, admission=f.admission, pepper=b'TEST_SCHEDULE_PEPPER' * 3, clock=lambda: f.now),
+        )
+        woken_calls = []
+
+        async def fake_wake(endpoint, text, *, unit=''):
+            woken_calls.append((endpoint, text, unit))
+
+        app = SimpleNamespace(
+            logger=logging.getLogger(__name__),
+            usage_store=usage,
+            model_catalog=None,
+            model_preferences=SimpleNamespace(get_explicit=lambda _: None),
+            settings=SimpleNamespace(
+                background_model='TEST_MODEL',
+                background_effort='high',
+                background_upstream_profile='',
+                background_gateway_port=0,
+            ),
+        )
+        service = OfficialBackgroundAgents(runtime, f.token, app)
+        service.container_wake = fake_wake
+        store = Schedules(f.tx, clock=lambda: f.now)
+        source = dict(
+            account_key=f.account.key,
+            endpoint_key=f.endpoint.key,
+            actor_key=f.actor.key,
+            scope_key=f.endpoint.scope.key,
+            source_execution_id=handle.execution_id,
+            profile='TEST_MODEL',
+            canonical_message_id=f.message.canonical_message_id,
+            native_message_id='TEST_INPUT',
+            endpoint_generation=1,
+            route_epoch=1,
+        )
+        with f.tx() as cursor:
+            observe_ready(cursor, f.token, {'d': {'user': {'id': 'TEST_BOT'}}}, f.now)
+            daily = store.create(cursor, source, kind='turn', text='用 history 总结昨晚群聊发群日报', cron='0 9 * * *')
+
+        due = daily['next_at']
+        f.now = due
+        service.schedules.next_scan = 0
+        await service.schedules.tick()
+        self.assertEqual(len(woken_calls), 1)
+        self.assertEqual(woken_calls[0][0], f.endpoint)
+        self.assertIn('用 history 总结昨晚群聊发群日报', woken_calls[0][1])
+        updated = f.query('SELECT next_at, last_error FROM schedules WHERE id=?', (daily['id'],))[0]
+        self.assertGreater(updated['next_at'], due)
+        self.assertEqual(updated['last_error'], '')

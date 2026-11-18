@@ -33,8 +33,8 @@ class Schedules:
         self.transaction, self.clock = transaction, clock
 
     def create(self, cursor, source, *, text, kind='reminder', at=None, cron=None):
-        if kind not in {'reminder', 'routine'} or not text.strip():
-            raise ValueError('请提供 reminder 或 routine，以及具体内容。')
+        if kind not in {'reminder', 'routine', 'turn'} or not text.strip():
+            raise ValueError('请提供 reminder、turn 或 routine，以及具体内容。')
         now = int(self.clock())
         due = next_time(at=at, cron=cron, now=now)
         cursor.execute('SELECT pg_advisory_xact_lock(hashtextextended(?,0))', ('schedule:' + source['actor_key'],))
