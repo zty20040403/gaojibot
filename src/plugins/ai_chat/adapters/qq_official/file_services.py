@@ -28,6 +28,7 @@ GENERATION_TOOLS = frozenset({
     "send_file_from_sandbox",
     "send_file",
     "send_image",
+    "generate_image",
     "shell",
     "video",
     "run_code",

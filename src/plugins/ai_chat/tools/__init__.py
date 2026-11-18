@@ -14,6 +14,7 @@ def _base_registry() -> ToolRegistry:
     from .sources import HANDLERS as SOURCE_HANDLERS
     from .stickers import HANDLERS as STICKER_HANDLERS
     from .owned_sandbox import HANDLERS as OWNED_SANDBOX_HANDLERS
+    from .image_gen import HANDLERS as IMAGE_GEN_HANDLERS
     from .progress import HANDLERS as PROGRESS_HANDLERS
     from .recall import HANDLERS as RECALL_HANDLERS
     from .background import HANDLERS as BACKGROUND_HANDLERS
@@ -21,7 +22,7 @@ def _base_registry() -> ToolRegistry:
 
     return ToolRegistry(handler for handler in (
         *HISTORY_HANDLERS, *MEMORY_HANDLERS, *SOURCE_HANDLERS, *STICKER_HANDLERS,
-        *OWNED_SANDBOX_HANDLERS, *PROGRESS_HANDLERS, *RECALL_HANDLERS, *BACKGROUND_HANDLERS, *SCHEDULE_HANDLERS
+        *OWNED_SANDBOX_HANDLERS, *IMAGE_GEN_HANDLERS, *PROGRESS_HANDLERS, *RECALL_HANDLERS, *BACKGROUND_HANDLERS, *SCHEDULE_HANDLERS
     ) if handler.platform_neutral)
 
 

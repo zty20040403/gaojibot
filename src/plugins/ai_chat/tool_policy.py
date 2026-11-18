@@ -192,6 +192,13 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         timeout_seconds=250.0,
         max_identical_calls=2,
     )
+    policies["generate_image"] = ToolPolicy(
+        risk="medium",
+        idempotency="non-idempotent",
+        side_effects=("write:sandbox",),
+        timeout_seconds=150.0,
+        max_identical_calls=2,
+    )
     policies["sandbox_create"] = ToolPolicy(
         risk="medium",
         idempotency="non-idempotent",
