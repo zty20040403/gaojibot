@@ -1,4 +1,4 @@
 from __future__ import annotations
 
 
-HEAD_REVISION = "0109_schedule_turn_kind"
+HEAD_REVISION = "0110_drop_remaining_dead_tables"
