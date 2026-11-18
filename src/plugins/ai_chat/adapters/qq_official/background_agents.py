@@ -90,6 +90,7 @@ class OfficialBackgroundAgents:
             self.vm_lifecycle = OfficialVMLifecycle(transaction=runtime.store.transaction,lease=token,
                 private_admission=runtime.store.admitted,manager=app.sandbox_manager,calls=self.calls,
                 gateway=self.gateway,logger=app.logger,clock=self.clock,runtime=runtime,app=app)
+            self.vm_lifecycle.ask_handler = self.container_ask
         engine = make_engine(settings, self.gateway, self.model_settings, start_vm=self.start_vm,
                              guest_exec=self.guest_exec, clock=self.clock)
         self.runner = BackgroundRunner(self.store, calls=self.calls, session_factory=self.session,
@@ -236,6 +237,25 @@ class OfficialBackgroundAgents:
     async def ask_main(self, row, question):
         from .background_delivery import present
         await present(self, row, question=question)
+
+    async def container_ask(self, endpoint, arguments):
+        question = str(arguments.get('question') or '').strip()
+        if not question:
+            raise ValueError('提问内容不能为空。')
+        job_id = arguments.get('job_id')
+        def find_job():
+            if job_id is not None:
+                row = self.store.get(int(job_id))
+                if row is not None and row['endpoint_key'] == endpoint.key and row['state'] == 'running':
+                    return row
+                return None
+            rows = [r for r in self.store.list(endpoint.key) if r['state'] == 'running']
+            return rows[0] if rows else None
+        row = await self.calls(find_job)
+        if row is None:
+            raise ValueError('当前会话没有正在运行的后台任务。')
+        await self.ask_main(row, question)
+        return {'said': f"已向会话发出问题（job#{row['job_id']}），回答到达后会作为补充要求送入任务。"}
 
     async def execute(self, job):
         row = await self.calls(self.store.get,job.job_id)
