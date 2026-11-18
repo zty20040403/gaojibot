@@ -1,100 +1,163 @@
-"""The Pi engine against a scripted RPC server and a real agent bridge tunnel."""
+"""Pi --print engine tests: launch config, notes, --fork, inbox steering, deadlines, and host-restart reconnect."""
 from __future__ import annotations
 
 import asyncio
-import logging
 import inspect
-import os
-from pathlib import Path
+import json
+import subprocess
 import sys
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
-
-import httpx
+from unittest.mock import AsyncMock, Mock
 
 from src.plugins.ai_chat.agent_loop import AgentTrace
-from src.plugins.ai_chat.job_gateway import JobGateway
 from src.plugins.ai_chat.pi_engine import (
     DEADLINE_NOTE,
     BackgroundModelSettings,
     PiEngine,
+    _PREPARE_PY,
     launch_script,
+    notes_slug,
+    pi_arguments,
     pi_models_json,
     upstream_profile,
 )
-from tests.test_job_gateway import free_port
-from tests.test_llm_gateway import profile
 
 
-class FakePiRpcServer:
-    def __init__(self, *, steer_error: str | None = None, fail_error: str | None = None) -> None:
-        self.steer_error = steer_error
+class FakePiGuest:
+    """Simulates a container job unit controlled by launch_script / inspect_script / steer_script / stop_script."""
+
+    def __init__(
+        self,
+        *,
+        final_text: str = 'TEST final pi report',
+        partial_text: str = 'TEST partial pi report',
+        fail_error: str | None = None,
+        wait_for_steer: bool = False,
+        crash_on_start: bool = False,
+        ignore_stop: bool = False,
+    ) -> None:
+        self.final_text = final_text
+        self.partial_text = partial_text
         self.fail_error = fail_error
-        self.outbox: asyncio.Queue[dict] = asyncio.Queue()
-        self.requests: list[dict] = []
-        self.ui_responses: list[dict] = []
+        self.wait_for_steer = wait_for_steer
+        self.crash_on_start = crash_on_start
+        self.ignore_stop = ignore_stop
+        self.active = False
+        self.token = ''
+        self.steered = 0
+        self.steers: list[str] = []
+        self.last_tool = ''
+        self.result: dict | None = None
+        self.exit: dict | None = None
+        self.err_tail = ''
+        self.launched_scripts: list[str] = []
+        self.stop_called = asyncio.Event()
+        self.launched = asyncio.Event()
+        self.steered_event = asyncio.Event()
+        self.last_model: str | None = None
+        self.fallbacks: list[tuple[str, str, str]] = []
         self.session = None
+        self._polls = 0
 
-    async def wait(self, timeout: float) -> None:
-        return None
-
-    async def receive(self) -> dict:
-        return await self.outbox.get()
-
-    def push(self, record: dict) -> None:
-        self.outbox.put_nowait(record)
-
-    def _finish(self, text: str, *, stop_reason: str = 'stop', aborted: bool = False) -> None:
-        msg: dict = {
-            'role': 'assistant',
-            'content': [{'type': 'text', 'text': text}],
-            'usage': {'input': 20, 'output': 7, 'cacheRead': 100, 'cacheWrite': 0, 'totalTokens': 127},
-            'stopReason': stop_reason,
-        }
-        if self.fail_error and stop_reason == 'error':
-            msg['errorMessage'] = self.fail_error
-        self.push({'type': 'message_end', 'message': msg})
-        self.push({'type': 'agent_settled', 'aborted': aborted})
-
-    async def send(self, message: dict) -> None:
-        if message.get('type') == 'extension_ui_response':
-            self.ui_responses.append(message)
-            return
-        self.requests.append(message)
-        cmd_id = message.get('id')
-        cmd_type = message.get('type')
-        if cmd_type == 'steer' and self.steer_error is not None:
-            self.push({'id': cmd_id, 'type': 'response', 'command': 'steer', 'success': False, 'error': self.steer_error})
-            return
-        self.push({
-            'id': cmd_id,
-            'type': 'response',
-            'command': cmd_type,
-            'success': True,
-            'data': {'disposition': 'started'} if cmd_type == 'prompt' else None,
+    async def exec(self, _vm: str, script: str) -> str:
+        if 'GAOJI_JOB_EOF' in script:
+            self.launched_scripts.append(script)
+            for line in script.splitlines():
+                if line.startswith('export GAOJI_JOB_TOKEN='):
+                    self.token = line.split('=', 1)[1].strip("'\"")
+            if self.crash_on_start:
+                self.active = False
+                self.result = None
+                self.exit = {'service_result': 'exit-code', 'exit_code': 'exited', 'exit_status': '1'}
+                self.err_tail = 'pi failed to start'
+            else:
+                self.active = True
+                self.last_tool = 'history'
+            self.launched.set()
+            return ''
+        if script.startswith('if command -v systemctl'):
+            self.stop_called.set()
+            if not self.ignore_stop:
+                self.active = False
+                self.result = {
+                    'text': self.partial_text,
+                    'error': '',
+                    'stopped': True,
+                    'usage': {'input': 11, 'output': 4, 'cached': 0, 'total': 15},
+                }
+                self.exit = {'service_result': 'success', 'exit_code': 'killed', 'exit_status': 'USR2'}
+            return ''
+        if 'steered_count' in script and 'inbox' in script:
+            # Execute the real base64 decode logic to capture steers accurately.
+            with tempfile.TemporaryDirectory() as tmp:
+                patched = script.replace('/run/gaoji/jobs/job-', f'{tmp}/job-')
+                subprocess.run(['/bin/sh', '-c', patched], check=True)
+                job_dirs = list(Path(tmp).glob('job-*'))
+                if job_dirs:
+                    inbox = job_dirs[0] / 'inbox'
+                    for f in sorted(inbox.iterdir()):
+                        if not f.name.startswith('.'):
+                            self.steers.append(f.read_text('utf-8').strip())
+                    self.steered = int((job_dirs[0] / 'steered_count').read_text('utf-8').strip())
+            self.steered_event.set()
+            if self.wait_for_steer and self.active:
+                self._complete()
+            return ''
+        # inspect_script
+        self._polls += 1
+        if self.active and not self.wait_for_steer and self._polls >= 1:
+            self._complete()
+        return json.dumps({
+            'active': self.active,
+            'token': self.token,
+            'steered': self.steered,
+            'last_tool': self.last_tool,
+            'result': self.result,
+            'exit': self.exit,
+            'err_tail': self.err_tail,
         })
-        if cmd_type == 'prompt':
-            self.push({'type': 'tool_execution_start', 'toolCallId': 'c1', 'toolName': 'history', 'args': {'query': 'TEST'}})
-            if self.fail_error:
-                self._finish('', stop_reason='error')
-        elif cmd_type == 'steer':
-            self._finish('TEST final pi report')
-        elif cmd_type == 'abort':
-            self._finish('TEST partial pi report', stop_reason='aborted', aborted=True)
+
+    def _complete(self) -> None:
+        self.active = False
+        if self.fail_error:
+            self.result = {
+                'text': self.final_text if self.final_text != 'TEST final pi report' else '',
+                'error': self.fail_error,
+                'stopped': False,
+                'usage': {'input': 20, 'output': 7, 'cached': 100, 'total': 127},
+            }
+            self.exit = {'service_result': 'exit-code', 'exit_code': 'exited', 'exit_status': '1'}
+        else:
+            self.result = {
+                'text': self.final_text,
+                'error': '',
+                'stopped': False,
+                'usage': {'input': 120, 'output': 7, 'cached': 100, 'total': 127},
+            }
+            self.exit = {'service_result': 'success', 'exit_code': 'exited', 'exit_status': '0'}
+
+
+# Compatibility alias for tests importing FakePiRpcServer.
+FakePiRpcServer = FakePiGuest
 
 
 class PiEngineTests(unittest.IsolatedAsyncioTestCase):
-    def _engine(self, server: FakePiRpcServer, *, now: int = 0) -> PiEngine:
+    def _engine(self, guest: FakePiGuest, *, now: int = 0) -> PiEngine:
+        def open_channel(**kwargs):
+            tok = kwargs.get('token') or 'TEST_TOKEN'
+            return tok, guest
+
         self.gateway = SimpleNamespace(
             start=AsyncMock(),
-            open=lambda **kwargs: ('TEST_TOKEN', server),
+            open=Mock(side_effect=open_channel),
             revoke=Mock(),
             port=18640,
             failure=lambda token: '',
         )
-        self.exec = AsyncMock()
+        self.exec = AsyncMock(side_effect=guest.exec)
         settings = SimpleNamespace(get=lambda: ('TEST_PI_MODEL', 'high'))
         return PiEngine(
             self.gateway,
@@ -102,13 +165,14 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
             start_vm=AsyncMock(return_value='s123abc'),
             guest_exec=self.exec,
             clock=lambda: now,
+            poll_interval=0.02,
         )
 
     def _session(self):
         tool = {'type': 'function', 'function': {'name': 'history', 'description': 'TEST', 'parameters': {'type': 'object'}}}
         return SimpleNamespace(prompt='TEST pi prompt', tools=(tool,), current=AsyncMock(), execute_tool=AsyncMock(return_value='ok'))
 
-    def test_models_json_and_launch_script(self) -> None:
+    def test_models_json_thinking_map_and_launch_script(self) -> None:
         self.assertIn('context_window', inspect.signature(pi_models_json).parameters)
         self.assertIn('context_window', inspect.signature(launch_script).parameters)
         cfg = pi_models_json(18640, context_window=123456)
@@ -117,34 +181,87 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider['api'], 'openai-responses')
         self.assertEqual(provider['apiKey'], '$GAOJI_JOB_TOKEN')
         self.assertTrue(provider['authHeader'])
-        self.assertEqual(provider['models'][0]['id'], 'gaoji-background')
-        self.assertEqual(provider['models'][0]['contextWindow'], 123456)
+        model_entry = provider['models'][0]
+        self.assertEqual(model_entry['id'], 'gaoji-background')
+        self.assertEqual(model_entry['contextWindow'], 123456)
+        self.assertEqual(model_entry['thinkingLevelMap'], {'xhigh': 'xhigh', 'max': 'max'})
         self.assertEqual(provider['compat'], {'supportsLongCacheRetention': False, 'supportsMaxOutputTokens': False})
 
-        script = launch_script(9, 'TOK', 'high', 18640, 'hello prompt', context_window=123456)
+        args = pi_arguments('xhigh', '/run/gaoji/jobs/job-9', '/work/.gaoji/jobs', session_id='gaoji-job-9', title='Demo', fork_session='/work/.gaoji/jobs/prev.jsonl')
+        self.assertIn('--print', args)
+        self.assertNotIn('--mode', args)
+        self.assertNotIn('--no-context-files', args)
+        self.assertIn('--no-extensions', args)
+        self.assertIn('--fork', args)
+
+        script = launch_script(9, 'TOK', 'xhigh', 18640, 'hello prompt', task='@do_not_treat_as_file', title='My Job', context_window=123456)
         self.assertIn('PI_CODING_AGENT_DIR=/run/gaoji/jobs/job-9', script)
         self.assertIn('GAOJI_HOST_URL=http://10.0.2.2:18640', script)
         self.assertIn('/etc/gaoji/pi/sandbox_pi_tools.ts', script)
-        self.assertIn('/etc/gaoji/pi/sandbox_agent_bridge.py', script)
-        self.assertIn('--thinking high', script)
-        self.assertIn('--append-system-prompt /run/gaoji/jobs/job-9/job-system.md', script)
-        self.assertIn('--session-dir /work/.gaoji/jobs/job-9/pi', script)
-        self.assertIn('--no-approve', script)
-        self.assertIn('PI_OFFLINE=1', script)
-        self.assertIn('PI_SKIP_VERSION_CHECK=1', script)
-        self.assertIn('PI_TELEMETRY=0', script)
-        self.assertIn('HOME=/work', script)
-        self.assertIn('systemd-run --unit=gaoji-job-9 --collect', script)
-        self.assertNotIn('--no-session', script)
+        self.assertIn('/etc/gaoji/pi/sandbox_pi_agent.ts', script)
+        self.assertNotIn('sandbox_agent_bridge.py', script)
+        self.assertIn('--print', script)
+        self.assertIn('--thinking xhigh', script)
+        self.assertIn('--session-dir /work/.gaoji/jobs', script)
+        self.assertIn('--session-id gaoji-job-9', script)
+        self.assertIn('KillSignal=SIGUSR2', script)
+        self.assertIn('< /run/gaoji/jobs/job-9/task', script)
+        self.assertIn('set -e\n[ -r /etc/set-environment ] && . /etc/set-environment\nset -u', script)
         self.assertNotIn('hello prompt', script)
+        self.assertNotIn('@do_not_treat_as_file', script)
 
-    async def test_channel_wait_timeout_reports_startup_failure(self) -> None:
-        class NeverConnects(FakePiRpcServer):
-            async def wait(self, timeout: float) -> None:
-                raise TimeoutError('bridge never connected')
+    def test_prepare_py_notes_truncation_symlink_and_fork_resolution(self) -> None:
+        self.assertEqual(notes_slug('/work/my_repo/sub'), 'work-my-repo-sub')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / 'work'
+            conf = root / 'conf'
+            out = root / 'out'
+            (work / '.gaoji' / 'projects').mkdir(parents=True)
+            (work / '.gaoji' / 'jobs').mkdir(parents=True)
+            conf.mkdir()
+            out.mkdir()
 
+            patched_py = _PREPARE_PY.replace("'/work", f"'{work}")
+            prepare_file = conf / 'prepare.py'
+            prepare_file.write_text(patched_py, 'utf-8')
+            (conf / 'prompt-template.md').write_text('Dir=@WORKDIR@ File=@NOTES_FILE@\n[笔记]\n@NOTES@', 'utf-8')
+
+            # 1) Create an >16 KiB notes file and a previous session JSONL for --fork.
+            slug = notes_slug(f'{work}/app')
+            notes_path = work / '.gaoji' / 'projects' / f'{slug}.md'
+            big_notes = '\n'.join(f'line-{i:04d}-' + ('x' * 40) for i in range(500))
+            self.assertGreater(len(big_notes.encode()), 16384)
+            notes_path.write_text(big_notes, 'utf-8')
+
+            prev_session = work / '.gaoji' / 'jobs' / '20261118_gaoji-job-5.jsonl'
+            prev_session.write_text(
+                json.dumps({'type': 'header', 'cwd': f'{work}/app'}) + '\n'
+                + json.dumps({'type': 'session_info', 'name': 'Inherited Title'}) + '\n',
+                'utf-8',
+            )
+            (conf / 'meta.json').write_text(
+                json.dumps({'job_id': 6, 'workdir': '', 'title': '', 'resume_job_id': 5}),
+                'utf-8',
+            )
+            subprocess.run([sys.executable, str(prepare_file), str(conf), str(out)], check=True)
+            self.assertEqual((conf / 'workdir').read_text('utf-8'), f'{work}/app')
+            self.assertEqual((conf / 'title').read_text('utf-8'), 'Inherited Title')
+            self.assertEqual((conf / 'fork').read_text('utf-8'), str(prev_session))
+            rendered = (conf / 'job-system.md').read_text('utf-8')
+            self.assertIn('笔记超过 16 KiB，后面的没加载', rendered)
+            self.assertLess(len(rendered.encode()), 17500)
+
+            # 2) Symlink notes file is rejected safely.
+            notes_path.unlink()
+            notes_path.symlink_to('/etc/passwd')
+            subprocess.run([sys.executable, str(prepare_file), str(conf), str(out)], check=True)
+            self.assertIn('它是个链接', (conf / 'job-system.md').read_text('utf-8'))
+
+    async def test_startup_crash_reports_distinct_startup_error(self) -> None:
+        guest = FakePiGuest(crash_on_start=True)
         with self.assertRaisesRegex(RuntimeError, '后台进程没能启动'):
-            await self._engine(NeverConnects())(
+            await self._engine(guest)(
                 {'job_id': 21, 'task': 'TEST', 'deadline_at': 7200},
                 self._session(),
                 feedback=AsyncMock(return_value=[]),
@@ -154,12 +271,12 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
         self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
 
     async def test_steer_progress_usage_and_final_report(self) -> None:
-        server = FakePiRpcServer()
+        guest = FakePiGuest(wait_for_steer=True)
         session = self._session()
         trace = AgentTrace()
         progress = AsyncMock()
-        feedback = AsyncMock(side_effect=[['TEST extra detail'], [], []])
-        report = await self._engine(server)(
+        feedback = AsyncMock(side_effect=[['TEST extra detail'], []])
+        report = await self._engine(guest)(
             {'job_id': 7, 'task': 'TEST task', 'deadline_at': 7200},
             session,
             feedback=feedback,
@@ -167,17 +284,17 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
             trace=trace,
         )
         self.assertEqual(report, 'TEST final pi report')
+        self.assertEqual(guest.steers, ['TEST extra detail'])
         self.assertEqual(trace.provider, 'pi')
         self.assertEqual(trace.model, 'TEST_PI_MODEL')
         self.assertEqual((trace.input_tokens, trace.cached_tokens, trace.output_tokens, trace.total_tokens), (120, 100, 7, 127))
         progress.assert_awaited_with('history')
-        self.assertEqual([r['type'] for r in server.requests], ['prompt', 'steer'])
         self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
 
-    async def test_deadline_aborts_and_prefixes_deadline_note(self) -> None:
-        server = FakePiRpcServer()
-        engine = self._engine(server)
-        engine.clock = lambda: 7200 if any(r['type'] == 'prompt' for r in server.requests) else 7199
+    async def test_deadline_stops_with_sigusr2_and_prefixes_deadline_note(self) -> None:
+        guest = FakePiGuest(wait_for_steer=True)
+        engine = self._engine(guest)
+        engine.clock = lambda: 7200 if guest.launched.is_set() else 7199
         report = await engine(
             {'job_id': 8, 'task': 'TEST', 'deadline_at': 7200},
             self._session(),
@@ -186,212 +303,120 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
             trace=AgentTrace(),
         )
         self.assertEqual(report, DEADLINE_NOTE + '\nTEST partial pi report')
-        self.assertEqual([r['type'] for r in server.requests], ['prompt', 'abort'])
+        self.assertTrue(guest.stop_called.is_set())
+        self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
 
-    async def test_steer_rejection_and_model_error_raise(self) -> None:
-        server = FakePiRpcServer(steer_error='cannot steer')
-        with self.assertRaisesRegex(RuntimeError, '追加要求未被 Pi 接受'):
-            await self._engine(server)(
-                {'job_id': 9, 'task': 'TEST', 'deadline_at': 7200},
-                self._session(),
-                feedback=AsyncMock(return_value=['more']),
-                progress=AsyncMock(),
-                trace=AgentTrace(),
-            )
-        err_server = FakePiRpcServer(fail_error='upstream down')
+    async def test_model_error_and_relay_error_prefer_precise_message(self) -> None:
+        guest = FakePiGuest(fail_error='upstream down')
         with self.assertRaisesRegex(RuntimeError, 'upstream down'):
-            await self._engine(err_server)(
+            await self._engine(guest)(
                 {'job_id': 10, 'task': 'TEST', 'deadline_at': 7200},
                 self._session(),
                 feedback=AsyncMock(return_value=[]),
                 progress=AsyncMock(),
                 trace=AgentTrace(),
             )
+        relay_guest = FakePiGuest(fail_error='generic pi error')
+        engine = self._engine(relay_guest)
+        self.gateway.failure = lambda _: 'precise relay error'
+        with self.assertRaisesRegex(RuntimeError, 'precise relay error'):
+            await engine(
+                {'job_id': 13, 'task': 'TEST', 'deadline_at': 7200},
+                self._session(),
+                feedback=AsyncMock(return_value=[]),
+                progress=AsyncMock(),
+                trace=AgentTrace(),
+            )
+        partial_guest = FakePiGuest(final_text='useful partial result', fail_error='late error')
+        report = await self._engine(partial_guest)(
+            {'job_id': 14, 'task': 'TEST', 'deadline_at': 7200},
+            self._session(),
+            feedback=AsyncMock(return_value=[]),
+            progress=AsyncMock(),
+            trace=AgentTrace(),
+        )
+        self.assertEqual(report, 'useful partial result')
 
     async def test_fallback_model_and_reason_are_reported(self) -> None:
-        server = FakePiRpcServer()
-        server.last_model = 'fallback-model'
-        server.fallbacks = [('primary-model', 'fallback-model', 'HTTP 404')]
+        guest = FakePiGuest()
+        guest.last_model = 'fallback-model'
+        guest.fallbacks = [('primary-model', 'fallback-model', 'HTTP 404')]
         trace = AgentTrace()
-        report = await self._engine(server)({'job_id': 16, 'task': 'TEST', 'deadline_at': 7200},
-            self._session(), feedback=AsyncMock(return_value=['continue']), progress=AsyncMock(), trace=trace)
+        report = await self._engine(guest)(
+            {'job_id': 16, 'task': 'TEST', 'deadline_at': 7200},
+            self._session(),
+            feedback=AsyncMock(return_value=[]),
+            progress=AsyncMock(),
+            trace=trace,
+        )
         self.assertEqual(trace.model, 'fallback-model')
         self.assertIn('primary-model → fallback-model，原因：HTTP 404', report)
 
-    async def test_deadline_does_not_hang_when_pi_ignores_abort(self) -> None:
-        class Stuck(FakePiRpcServer):
-            async def send(self, message):
-                if message.get('type') == 'abort':
-                    self.requests.append(message)
-                    return
-                await super().send(message)
+    async def test_host_restart_leaves_container_unit_running_and_reconnects(self) -> None:
+        guest = FakePiGuest(wait_for_steer=True)
+        engine1 = self._engine(guest)
+        task1 = asyncio.create_task(
+            engine1(
+                {'job_id': 31, 'task': 'long work', 'deadline_at': 7200},
+                self._session(),
+                feedback=AsyncMock(return_value=['first steer']),
+                progress=AsyncMock(),
+                trace=AgentTrace(),
+                is_cancelled=AsyncMock(return_value=False),
+            )
+        )
+        await asyncio.wait_for(guest.launched.wait(), 2)
+        # Wait until 'first steer' was written before host restarts, without completing.
+        guest.wait_for_steer = False
+        guest.active = True
+        guest.result = None
+        guest.exit = None
+        task1.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task1
+        # Container unit MUST NOT be stopped when host restarts (is_cancelled=False)!
+        self.assertFalse(guest.stop_called.is_set())
+        self.assertTrue(guest.active)
+        self.assertEqual(len(guest.launched_scripts), 1)
 
-        server = Stuck()
-        engine = self._engine(server)
-        engine.clock = lambda: 7200 if any(r['type'] == 'prompt' for r in server.requests) else 7199
-        with patch('src.plugins.ai_chat.pi_engine.ABORT_TIMEOUT', 0.05, create=True), \
-             patch('src.plugins.ai_chat.pi_engine.STOP_GRACE', 0.05, create=True):
-            try:
-                report = await asyncio.wait_for(engine(
-                    {'job_id': 15, 'task': 'TEST', 'deadline_at': 7200}, self._session(),
-                    feedback=AsyncMock(return_value=[]), progress=AsyncMock(), trace=AgentTrace()), 1)
-            except TimeoutError:
-                self.fail('the engine waited indefinitely for the abort acknowledgement')
-        self.assertTrue(report.startswith(DEADLINE_NOTE))
-        self.assertIn('abort', [request['type'] for request in server.requests])
-        self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
+        # Now host restarts and engine2 reconnects to the running container unit.
+        guest.wait_for_steer = True
+        engine2 = self._engine(guest)
+        trace2 = AgentTrace()
+        report = await engine2(
+            {'job_id': 31, 'task': 'long work', 'started_at': 100, 'deadline_at': 7200},
+            self._session(),
+            feedback=AsyncMock(side_effect=[['first steer', 'second steer after restart'], []]),
+            progress=AsyncMock(),
+            trace=trace2,
+            is_cancelled=AsyncMock(return_value=False),
+        )
+        self.assertEqual(report, 'TEST final pi report')
+        # Did NOT relaunch run.sh; reused the existing container unit and token!
+        self.assertEqual(len(guest.launched_scripts), 1)
+        self.gateway.open.assert_called_once()
+        self.assertEqual(self.gateway.open.call_args.kwargs['token'], guest.token)
+        self.assertIn('second steer after restart', guest.steers)
 
-    async def test_early_disconnect_fails_and_revokes_token(self) -> None:
-        class Disconnected(FakePiRpcServer):
-            async def receive(self):
-                record = await super().receive()
-                if record is None:
-                    raise EOFError('connection closed')
-                return record
-
-            async def send(self, message):
-                await super().send(message)
-                if message.get('type') == 'prompt':
-                    self.outbox.put_nowait(None)
-
-        with self.assertRaisesRegex(RuntimeError, 'connection closed'):
-            await self._engine(Disconnected())(
-                {'job_id': 11, 'task': 'TEST', 'deadline_at': 7200}, self._session(),
-                feedback=AsyncMock(return_value=[]), progress=AsyncMock(), trace=AgentTrace())
-        self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
-
-    async def test_cancel_aborts_and_revokes_token(self) -> None:
-        server = FakePiRpcServer()
-        started = asyncio.Event()
-        async def progress(_tool):
-            started.set()
-        task = asyncio.create_task(self._engine(server)(
-            {'job_id': 12, 'task': 'TEST', 'deadline_at': 7200}, self._session(),
-            feedback=AsyncMock(return_value=[]), progress=progress, trace=AgentTrace()))
-        await asyncio.wait_for(started.wait(), 2)
+    async def test_user_cancel_stops_unit_and_revokes_token(self) -> None:
+        guest = FakePiGuest(wait_for_steer=True)
+        engine = self._engine(guest)
+        task = asyncio.create_task(
+            engine(
+                {'job_id': 12, 'task': 'TEST', 'deadline_at': 7200},
+                self._session(),
+                feedback=AsyncMock(return_value=[]),
+                progress=AsyncMock(),
+                trace=AgentTrace(),
+                is_cancelled=AsyncMock(return_value=True),
+            )
+        )
+        await asyncio.wait_for(guest.launched.wait(), 2)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
-        self.assertIn('abort', [request['type'] for request in server.requests])
-        self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
-
-    async def test_repeated_cancel_drains_the_same_ui_handler(self) -> None:
-        entered, draining, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
-        finished = []
-        class CleanupServer(FakePiRpcServer):
-            async def send(self, message):
-                if message.get('type') == 'extension_ui_response':
-                    entered.set()
-                    try:
-                        await asyncio.Future()
-                    finally:
-                        draining.set()
-                        await release.wait()
-                        finished.append(True)
-                    return
-                await super().send(message)
-                if message.get('type') == 'prompt':
-                    self.push({'type': 'extension_ui_request', 'id': 'ui-1'})
-
-        server = CleanupServer()
-        task = asyncio.create_task(self._engine(server)(
-            {'job_id': 17, 'task': 'TEST', 'deadline_at': 7200}, self._session(),
-            feedback=AsyncMock(return_value=[]), progress=AsyncMock(), trace=AgentTrace()))
-        try:
-            await asyncio.wait_for(entered.wait(), 2)
-            task.cancel()
-            await asyncio.wait_for(draining.wait(), 2)
-            task.cancel()
-            await asyncio.sleep(0.01)
-            self.assertFalse(task.done(), 'second cancellation interrupted handler cleanup')
-        finally:
-            release.set()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-        self.assertEqual(finished, [True])
-        self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
-
-    async def test_relay_error_preferred_and_partial_text_preserved(self) -> None:
-        server = FakePiRpcServer(fail_error='generic pi error')
-        engine = self._engine(server)
-        self.gateway.failure = lambda _: 'precise relay error'
-        with self.assertRaisesRegex(RuntimeError, 'precise relay error'):
-            await engine({'job_id': 13, 'task': 'TEST', 'deadline_at': 7200}, self._session(),
-                         feedback=AsyncMock(return_value=[]), progress=AsyncMock(), trace=AgentTrace())
-
-        class Partial(FakePiRpcServer):
-            async def send(self, message):
-                await super().send(message)
-                if message.get('type') == 'prompt':
-                    self._finish('useful partial result', stop_reason='error')
-
-        report = await self._engine(Partial())({'job_id': 14, 'task': 'TEST', 'deadline_at': 7200},
-            self._session(), feedback=AsyncMock(return_value=[]), progress=AsyncMock(), trace=AgentTrace())
-        self.assertEqual(report, 'useful partial result')
-
-    async def test_real_bridge_subprocess_roundtrip_over_gateway_tunnel(self) -> None:
-        gateway = JobGateway(
-            port=free_port(),
-            upstream=lambda: profile('relay', base_url='http://upstream.test/v1', api_key='KEY'),
-            model=lambda: ('TEST_MODEL', 'high'),
-            logger=logging.getLogger(__name__),
-            client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, content=b''))),
-        )
-        await gateway.start()
-        self.addAsyncCleanup(gateway.close)
-
-        with tempfile.TemporaryDirectory(prefix='pi_bridge_') as tmp:
-            fake_pi = Path(tmp) / 'fake_pi.py'
-            fake_pi.write_text(
-                "import json, sys\n"
-                "for line in sys.stdin:\n"
-                "    req = json.loads(line)\n"
-                "    sys.stdout.write(json.dumps({'id': req['id'], 'type': 'response', 'command': req['type'], 'success': True, 'data': {'disposition': 'started'}}) + '\\n')\n"
-                "    sys.stdout.write(json.dumps({'type': 'message_end', 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'bridge ok'}], 'usage': {'input': 5, 'output': 2, 'cacheRead': 0, 'totalTokens': 7}, 'stopReason': 'stop'}}) + '\\n')\n"
-                "    sys.stdout.write(json.dumps({'type': 'agent_settled', 'aborted': False}) + '\\n')\n"
-                "    sys.stdout.flush()\n",
-                encoding='utf-8',
-            )
-            bridge_path = Path(__file__).resolve().parents[1] / 'src' / 'plugins' / 'ai_chat' / 'sandbox_agent_bridge.py'
-            procs: list[asyncio.subprocess.Process] = []
-
-            async def guest_exec(_vm, _script):
-                token = next(iter(gateway.channels))
-                env = {**os.environ, 'GAOJI_JOB_TOKEN': token, 'GAOJI_PI_CWD': tmp,
-                       'GAOJI_AGENT_ERR': str(Path(tmp) / 'agent.err')}
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    str(bridge_path),
-                    '127.0.0.1',
-                    str(gateway.port + 1),
-                    '--',
-                    sys.executable,
-                    str(fake_pi),
-                    env=env,
-                    cwd=tmp,
-                )
-                procs.append(proc)
-
-            engine = PiEngine(
-                gateway,
-                SimpleNamespace(get=lambda: ('TEST_MODEL', 'high')),
-                start_vm=AsyncMock(return_value='s123abc'),
-                guest_exec=guest_exec,
-                clock=lambda: 0,
-            )
-            session = self._session()
-            trace = AgentTrace()
-            report = await engine(
-                {'job_id': 12, 'task': 'TEST bridge', 'deadline_at': 7200},
-                session,
-                feedback=AsyncMock(return_value=[]),
-                progress=AsyncMock(),
-                trace=trace,
-            )
-            self.assertEqual(report, 'bridge ok')
-            self.assertEqual(trace.total_tokens, 7)
-            for proc in procs:
-                await asyncio.wait_for(proc.wait(), 5)
+        self.assertTrue(guest.stop_called.is_set())
+        self.gateway.revoke.assert_called_with('TEST_TOKEN')
 
     def test_upstream_profile_reads_the_real_catalog(self) -> None:
         from src.plugins.ai_chat.model_catalog import ModelCatalog, ModelProfile
@@ -428,19 +453,12 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 Settings.from_env({'AI_BACKGROUND_MODELS': bad})
         self.assertEqual(settings.get(), ('m1', 'medium'))
-        settings.set('alpha, beta', 'high')
+        settings.set('alpha, beta', 'max')
         self.assertEqual(settings.chain(), ['alpha', 'beta'])
-        self.assertEqual(settings.get(), ('alpha', 'high'))
+        self.assertEqual(settings.get(), ('alpha', 'max'))
         for bad in ('', 'a, , b', ','.join(f'm{i}' for i in range(9)), 'x' * 101):
             with self.assertRaises(ValueError):
                 settings.set(bad, 'high')
-
-
-    def test_launch_script_sources_set_environment_before_nounset(self) -> None:
-        from src.plugins.ai_chat.pi_engine import launch_script
-        script = launch_script(7, 'TEST_TOKEN', 'medium', 18640, 'PROMPT')
-        self.assertIn('set -e\n[ -r /etc/set-environment ] && . /etc/set-environment\nset -u', script)
-        self.assertNotIn('set -eu\n[ -r /etc/set-environment ]', script)
 
 
 if __name__ == '__main__':

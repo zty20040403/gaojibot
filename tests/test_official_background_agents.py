@@ -104,8 +104,12 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
 
         async def engine(row, session, *, feedback, progress, trace):
             names = {item['function']['name'] for item in session.tools}
-            self.assertIn('ask_main', names)
+            self.assertNotIn('ask_main', names)
             self.assertNotIn('send_file', names)
+            with patch.object(service, 'ask_main', new=AsyncMock()) as mocked_ask:
+                ask_reply = json.loads(await session.execute_tool('agent_ask', {'question': 'TEST question via CLI'}))
+                self.assertTrue(ask_reply['ok'])
+                mocked_ask.assert_awaited_once_with(row, 'TEST question via CLI')
             self.assertEqual(await feedback(), ['TEST extra detail'])
             await progress('shell')
             context = service.billing(SimpleNamespace(source=row,current=session.current))
@@ -124,11 +128,15 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
 
         service.runner.engine = engine
         if steer_error is not None:
-            server = FakePiRpcServer(steer_error=steer_error)
+            server = FakePiRpcServer(wait_for_steer=True)
+            async def failing_steer_exec(sandbox_id, script):
+                if 'steered_count' in script and 'inbox' in script:
+                    raise RuntimeError('追加要求未被 Pi 接受：' + steer_error)
+                return await server.exec(sandbox_id, script)
             gateway = SimpleNamespace(start=AsyncMock(), open=lambda **kwargs: ('TEST_TOKEN', server),
                 revoke=Mock(), port=18640, failure=lambda token: '')
             service.runner.engine = PiEngine(gateway, service.model_settings, start_vm=service.start_vm,
-                                             guest_exec=service.guest_exec, clock=lambda: f.now)
+                                             guest_exec=failing_steer_exec, clock=lambda: f.now, poll_interval=0.01)
         job = f.jobs.claim_due('TEST_BACKGROUND_WORKER', kinds=(service.kind,), now=f.now)[0]
         worker = DurableJobWorker(f.jobs, logger=app.logger, database_calls=calls, worker_id=job.lease_owner)
         worker.register(service.kind, service.execute)
@@ -149,7 +157,6 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(row['finished_at'])
             self.assertIsNone(row['delivered_at'])
             self.assertEqual([item['job_id'] for item in service.store.pending_results(f.account.key)], [number])
-            self.assertEqual(len([r for r in server.requests if r.get('type') == 'steer']), 1)
             gateway.revoke.assert_called_once_with('TEST_TOKEN')
         self.assertEqual(f.jobs.get(number).status, 'succeeded')
         script = manager._guest_exec.await_args.args[2][1]

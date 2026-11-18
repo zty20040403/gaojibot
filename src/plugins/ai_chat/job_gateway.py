@@ -86,39 +86,15 @@ class RequestScope:
 
 
 class Channel(RequestScope):
-    """Only job scopes have an agent RPC TCP tunnel; VM scopes never do."""
+    """Per-job model relay and host-tool scope."""
 
     def __init__(self, *, source=None, current=None):
-        super().__init__(source=source,current=current)
-        self.connected = asyncio.get_running_loop().create_future()
-        self.reader = self.writer = None
+        super().__init__(source=source, current=current)
         self.session = None
         self.model_index = 0
         self.last_model = None
         self.stream_failures = 0
         self.fallbacks: list[tuple[str, str, str]] = []
-
-    async def wait(self, timeout):
-        self.reader, self.writer = await asyncio.wait_for(asyncio.shield(self.connected), timeout)
-
-    async def send(self, message):
-        self.writer.write(json.dumps(message, ensure_ascii=False).encode() + b'\n')
-        await self.writer.drain()
-
-    async def receive(self):
-        line = await self.reader.readline()
-        if not line:
-            raise EOFError('后台 agent 进程已退出。')
-        return json.loads(line)
-
-    def close(self):
-        super().close()
-        if not self.connected.done():
-            self.connected.cancel()
-        elif not self.connected.cancelled() and self.writer is None:
-            self.reader,self.writer = self.connected.result()
-        if self.writer is not None:
-            self.writer.close()
 
 
 class _ModelRequest:
@@ -215,12 +191,19 @@ class JobGateway:
         self.channels: dict[str, Channel] = {}
         self.failures: dict[str, str] = {}
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(30, read=IDLE_SECONDS), trust_env=False)
-        self.http = self.rpc = None
+        self.http = None
+        self.http_task = None
         self.started = asyncio.Lock()
 
-    def open(self, *, source=None, current=None):
-        token = secrets.token_urlsafe(32)
-        self.channels[token] = Channel(source=source,current=current)
+    def open(self, *, source=None, current=None, token: str | None = None):
+        token = token or secrets.token_urlsafe(32)
+        existing = self.channels.get(token)
+        if existing is not None and not existing.revoked:
+            existing.current = current
+            if source is not None:
+                existing.source = dict(source)
+            return token, existing
+        self.channels[token] = Channel(source=source, current=current)
         return token, self.channels[token]
 
     def failure(self, token):
@@ -234,8 +217,7 @@ class JobGateway:
 
     async def start(self):
         async with self.started:
-            if self.rpc is None:
-                self.rpc = await asyncio.start_server(self._tunnel, '127.0.0.1', self.port + 1, limit=2**24)
+            if self.http is None:
                 app = Starlette(routes=[Route('/v1/models', self._models),
                                         Route('/v1/responses', _ModelRequest(self), methods=['POST']),
                                         Route('/v1/responses/compact', _ModelRequest(self), methods=['POST']),
@@ -250,8 +232,6 @@ class JobGateway:
                 self.http = _Server(uvicorn.Config(app, host='127.0.0.1', port=self.port, log_level='warning',
                                                    access_log=False, lifespan='off'))
                 self.http_task = asyncio.create_task(self.http.serve())
-            # A previous start waiter can be cancelled after binding the RPC
-            # socket but before HTTP is ready; later callers must still wait.
             while not self.http.started:
                 if self.http_task.done():
                     self.http_task.result()
@@ -263,22 +243,10 @@ class JobGateway:
             await self.vm_authority.close()
         for token in tuple(self.channels):
             self.revoke(token)
-        if self.rpc is not None:
-            self.rpc.close()
+        if self.http is not None:
             self.http.should_exit = True
             await asyncio.gather(self.http_task, return_exceptions=True)
         await self.client.aclose()
-
-    async def _tunnel(self, reader, writer):
-        try:
-            token = (await asyncio.wait_for(reader.readline(), 10)).decode().strip()
-        except (TimeoutError, UnicodeDecodeError):
-            token = ''
-        channel = self.channels.get(token)
-        if channel is None or channel.connected.done():
-            writer.close()
-            return
-        channel.connected.set_result((reader, writer))
 
     def _authorized(self, request: Request):
         header = request.headers.get('authorization', '')

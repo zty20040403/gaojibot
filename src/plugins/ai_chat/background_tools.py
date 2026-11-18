@@ -188,22 +188,32 @@ async def execute_github_api(arguments: dict) -> str:
 class BackgroundToolSession:
     """The host's tools for one job; the background agent runs commands and edits files in the container itself."""
 
-    def __init__(self, app, inbound, *, prompt, question, current):
+    def __init__(self, app, inbound, *, prompt, question, current, ask_notify=None):
         self.app, self.inbound, self.prompt = app, inbound, prompt
         self.question, self.current = question, current
+        self.ask_notify = ask_notify
         self.billing_context = None
         _, self.turn, self.registry, shared = build_shared_context(app, inbound.endpoint, inbound=inbound)
-        self.tools = shared + (ASK_MAIN, GITHUB_TOOL)
+        self.tools = shared + (GITHUB_TOOL,)
 
     async def execute_tool(self, name, arguments):
         await self.current()
+        if name == 'agent_ask':
+            q = str((arguments or {}).get('question') or '').strip()
+            if not q:
+                raise ValueError('提问内容不能为空。')
+            if self.ask_notify is not None:
+                await self.ask_notify(q)
+                return json.dumps({
+                    'ok': True,
+                    'said': '已向前台发出提问，回答到达后会作为新消息出现在对话里；若还有别的事可先继续做，没别的事可停下等待（最多等 10 分钟，超时请自行判断并在报告中写明假设）。',
+                }, ensure_ascii=False)
+            return json.dumps({'ok': True, 'answer': await self.question(q)}, ensure_ascii=False)
         allowed = {item['function']['name']: item['function']['parameters'] for item in self.tools}
         if name not in allowed:
             raise ValueError('后台工具不可用')
         if name in {'analyze_video', 'record_video_summary'}:
             return json.dumps(await self.video.execute(name, arguments), ensure_ascii=False)
-        if name == 'ask_main':
-            return json.dumps({'answer': await self.question(str(arguments['question']))}, ensure_ascii=False)
         if name == 'github':
             Draft202012Validator(allowed[name]).validate(arguments)
             return await execute_github_api(arguments)
