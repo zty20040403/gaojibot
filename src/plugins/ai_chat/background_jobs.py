@@ -7,7 +7,6 @@ import json
 import time
 
 from .agent_loop import AgentTrace
-from .scope_lease import serialize_scope_writer
 
 ACTIVE = ('queued', 'running')
 
@@ -56,7 +55,7 @@ class BackgroundJobs:
     ):
         if type(hours) is not int or not 1 <= hours <= 6:
             raise ValueError('后台任务时限必须是1–6小时。')
-        serialize_scope_writer(cursor, 'gaoji-background-agents')
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended('gaoji-background-agents',0))")
         existing = cursor.execute('''SELECT b.* FROM background_jobs b JOIN durable_jobs j USING(job_id)
             WHERE j.idempotency_key=?''', (key,)).fetchone()
         if existing:

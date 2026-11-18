@@ -18,7 +18,6 @@ from .adapters.qq_official.vision_adapter import guarded_wait
 from .image_captions import CaptionSettings, sticker_collection
 from .message_ir import body_from_json, render_prompt_text
 from .model_budget import ModelCallBudget, model_budget_scope
-from .scope_lease import serialize_scope_writer
 from .platform_types import ActorKey, EndpointKey
 from .vision_worker import VisionJob, VisionWorker
 
@@ -150,7 +149,7 @@ class OfficialCaptionWorker:
     def reserve(self, job, reservation):
         with self.store.transaction() as connection:
             row = self._current(connection,job)
-            serialize_scope_writer(connection, 'official-media-usage:' + row['scope_key'])
+            connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(?,0))', ('official-media-usage:'+row['scope_key'],))
             quota = self.app.usage_store.status(row['scope_key'])
             charge = reservation.reserved
             if (not quota.allowed or quota.input_limit > 0 and quota.input_tokens+charge > quota.input_limit

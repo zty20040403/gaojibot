@@ -6,8 +6,6 @@ from zoneinfo import ZoneInfo
 
 from croniter import croniter
 
-from .scope_lease import serialize_scope_writer
-
 ZONE = ZoneInfo('Asia/Shanghai')
 
 
@@ -39,7 +37,7 @@ class Schedules:
             raise ValueError('请提供 reminder、turn 或 routine，以及具体内容。')
         now = int(self.clock())
         due = next_time(at=at, cron=cron, now=now)
-        serialize_scope_writer(cursor, 'schedule:' + source['actor_key'], now=now)
+        cursor.execute('SELECT pg_advisory_xact_lock(hashtextextended(?,0))', ('schedule:' + source['actor_key'],))
         count = cursor.execute('SELECT count(*) AS n FROM schedules WHERE actor_key=? AND cancelled_at IS NULL AND next_at IS NOT NULL',
                                (source['actor_key'],)).fetchone()['n']
         if count >= 20:

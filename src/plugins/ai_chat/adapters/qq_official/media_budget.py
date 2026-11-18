@@ -4,7 +4,6 @@ An uncertain provider call retains its conservative input/output bounds. Known
 usage only settles this exact internal reservation; it cannot authorize another
 call. No database transaction spans provider I/O and no new queue is created.
 """
-from ...scope_lease import serialize_scope_writer
 from .media_refs import MediaDenied
 
 
@@ -29,7 +28,8 @@ class OCRUsage:
                 # Serialize these additional OCR calls for the actual scope;
                 # ordinary chat retains its existing UsageStore admission rules.
                 scope = session.inbound.scope.key
-                serialize_scope_writer(cursor, 'official-media-usage:' + scope, now=now)
+                cursor.execute('SELECT pg_advisory_xact_lock(hashtextextended(?,0))',
+                               ('official-media-usage:' + scope,))
                 quota = usage.status(scope, now=now)
                 charge = reservation.reserved
                 if (not quota.allowed

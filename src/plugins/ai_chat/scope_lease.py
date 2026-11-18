@@ -1,45 +1,27 @@
-"""Single-row per-scope PostgreSQL lease replacing scattered advisory locks."""
-
-from __future__ import annotations
-
-import time
+from src.bot_storage import StoreCursor
 
 
-def _has_scope_leases_table(cursor) -> bool:
-    row = cursor.execute("SELECT to_regclass('scope_leases') AS rel").fetchone()
+class ScopeLeaseBusy(RuntimeError):
+    pass
+
+
+def lock_scope(cursor: StoreCursor, scope: str) -> None:
+    cursor.execute('INSERT INTO scope_leases(scope_key) VALUES (?) ON CONFLICT DO NOTHING', (scope,))
+    cursor.execute('SELECT scope_key FROM scope_leases WHERE scope_key=? FOR UPDATE', (scope,))
+
+
+def claim_scope(cursor: StoreCursor, scope: str, owner: str, *, now: int, until: int) -> int:
+    lock_scope(cursor, scope)
+    row = cursor.execute('''UPDATE scope_leases SET lease_owner=?, expires_at=?, lease_generation=lease_generation+1
+        WHERE scope_key=? AND expires_at<=? RETURNING lease_generation''', (owner, until, scope, now)).fetchone()
     if row is None:
-        return False
-    val = row[0] if isinstance(row, tuple) else row["rel"]
-    return val is not None
+        raise ScopeLeaseBusy('scope_lease_busy')
+    return row['lease_generation']
 
 
-def serialize_scope_writer(
-    cursor,
-    lease_key: str,
-    *,
-    owner: str = "host",
-    ttl_seconds: int = 300,
-    now: int | None = None,
-) -> int:
-    """Acquire an exclusive transactional row lock on one scope_leases row."""
-    if not _has_scope_leases_table(cursor):
-        # Historical pre-0111 schema during Alembic migration tests.
-        return 1
-    current = int(time.time()) if now is None else int(now)
-    ph = "%s" if type(cursor).__module__.startswith("psycopg") else "?"
-    row = cursor.execute(
-        f"""
-        INSERT INTO scope_leases (scope_key, lease_owner, lease_generation, expires_at, updated_at)
-        VALUES ({ph}, {ph}, 1, {ph}, {ph})
-        ON CONFLICT (scope_key) DO UPDATE SET
-            lease_owner = EXCLUDED.lease_owner,
-            lease_generation = scope_leases.lease_generation + 1,
-            expires_at = EXCLUDED.expires_at,
-            updated_at = EXCLUDED.updated_at
-        RETURNING lease_generation
-        """,
-        (str(lease_key), str(owner)[:128], current + max(1, int(ttl_seconds)), current),
-    ).fetchone()
-    if row is None:
-        return 1
-    return int(row[0] if isinstance(row, tuple) else row["lease_generation"])
+def renew_scope(cursor: StoreCursor, scope: str, owner: str, generation: int, *, now: int, until: int) -> None:
+    result = cursor.execute('''UPDATE scope_leases SET expires_at=?
+        WHERE scope_key=? AND lease_owner=? AND lease_generation=? AND expires_at>?''',
+        (until, scope, owner, generation, now))
+    if not result.rowcount:
+        raise ScopeLeaseBusy('scope_lease_lost')

@@ -1,9 +1,4 @@
-"""Add single-row scope_leases table and turn checkpoint columns for Stage 2.
-
-Downgrade drops the new columns and scope_leases table cleanly.
-"""
-from __future__ import annotations
-
+"""Conversation writer leases and resumable turn state."""
 import os
 import re
 
@@ -25,49 +20,16 @@ def _use_schema() -> None:
 
 def upgrade() -> None:
     _use_schema()
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS scope_leases (
-            scope_key TEXT PRIMARY KEY,
-            lease_owner TEXT NOT NULL,
-            lease_generation BIGINT NOT NULL DEFAULT 1,
-            expires_at BIGINT NOT NULL,
-            updated_at BIGINT NOT NULL
-        )
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE qq_official_turn_executions
-            ADD COLUMN IF NOT EXISTS checkpoint_json TEXT,
-            ADD COLUMN IF NOT EXISTS checkpoint_step INTEGER NOT NULL DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS checkpoint_updated_at BIGINT
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE agent_turns
-            ADD COLUMN IF NOT EXISTS checkpoint_json TEXT,
-            ADD COLUMN IF NOT EXISTS checkpoint_step INTEGER NOT NULL DEFAULT 0
-        """
-    )
+    op.execute('''CREATE TABLE scope_leases (
+        scope_key TEXT PRIMARY KEY, lease_owner TEXT,
+        lease_generation BIGINT NOT NULL DEFAULT 0, expires_at BIGINT NOT NULL DEFAULT 0
+    )''')
+    op.execute('ALTER TABLE qq_official_turn_executions ADD COLUMN checkpoint_json TEXT')
+    op.execute('ALTER TABLE agent_turns ADD COLUMN checkpoint_json TEXT')
 
 
 def downgrade() -> None:
     _use_schema()
-    op.execute(
-        """
-        ALTER TABLE agent_turns
-            DROP COLUMN IF EXISTS checkpoint_step,
-            DROP COLUMN IF EXISTS checkpoint_json
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE qq_official_turn_executions
-            DROP COLUMN IF EXISTS checkpoint_updated_at,
-            DROP COLUMN IF EXISTS checkpoint_step,
-            DROP COLUMN IF EXISTS checkpoint_json
-        """
-    )
-    op.execute("DROP TABLE IF EXISTS scope_leases")
+    op.execute('ALTER TABLE agent_turns DROP COLUMN checkpoint_json')
+    op.execute('ALTER TABLE qq_official_turn_executions DROP COLUMN checkpoint_json')
+    op.execute('DROP TABLE scope_leases')
