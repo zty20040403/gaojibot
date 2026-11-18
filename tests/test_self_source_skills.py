@@ -41,9 +41,24 @@ class SelfSourceTests(unittest.TestCase):
             root = Path(temporary)
             (root / "tests").mkdir()
             (root / "tests" / "x.py").write_text("x = 1\n", encoding="utf-8")
+            (root / "nix").mkdir()
+            (root / "nix" / "test.nix").write_text("{}: {}\n", encoding="utf-8")
             source = SelfSource(root)
             self.assertEqual(source.identity(), source.identity())
-            self.assertEqual(source.identity()["file_count"], 1)
+            self.assertEqual(source.identity()["file_count"], 2)
+            self.assertIn("version", source.identity())
+            self.assertIn("commit", source.identity())
+
+    def test_container_mounts_live_source_and_build_commit(self) -> None:
+        repo = Path(__file__).parents[1]
+        flake = (repo / "flake.nix").read_text(encoding="utf-8")
+        container = (repo / "nix" / "guest" / "container.nix").read_text(encoding="utf-8")
+        tools = (repo / "nix" / "guest" / "tools.nix").read_text(encoding="utf-8")
+        self.assertIn("GAOJI_COMMIT", flake)
+        self.assertIn(".gaoji-commit", flake)
+        self.assertIn("gaoji/source", container)
+        self.assertIn("/run/gaoji/source", container)
+        self.assertIn("GAOJI_LIVE_SOURCE", tools)
 
 
 class SkillRegistryTests(unittest.TestCase):

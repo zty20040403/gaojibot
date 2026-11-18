@@ -4,6 +4,9 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from .build_version import build_commit
+from .handler_constants import BOT_VERSION
+
 
 MAX_READ_LINES = 240
 MAX_SEARCH_MATCHES = 100
@@ -14,7 +17,7 @@ ALLOWED_TOP_LEVEL_FILES = {
     "pyproject.toml",
     "requirements.txt",
 }
-ALLOWED_DIRECTORIES = {"docs", "src", "tests", "skills", "tools"}
+ALLOWED_DIRECTORIES = {"docs", "nix", "src", "tests", "skills", "tools"}
 ALLOWED_SUFFIXES = {".html", ".md", ".nix", ".py", ".sh", ".toml", ".txt"}
 
 
@@ -106,6 +109,8 @@ class SelfSource:
             digest.update(payload)
             total_bytes += len(payload)
         return {
+            "version": BOT_VERSION,
+            "commit": build_commit(),
             "sha256": digest.hexdigest(),
             "file_count": len(paths),
             "byte_count": total_bytes,

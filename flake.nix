@@ -41,6 +41,7 @@
     ];
     forAllSystems = lib.genAttrs supportedSystems;
     project = builtins.fromTOML (builtins.readFile ./pyproject.toml);
+    gaojiCommit = self.rev or self.dirtyRev or "unknown";
     workspace = uv2nix.lib.workspace.loadWorkspace {workspaceRoot = ./.;};
     workspaceOverlay = workspace.mkPyprojectOverlay {
       sourcePreference = "wheel";
@@ -57,6 +58,7 @@
         ./LICENSE
         ./THIRD_PARTY_NOTICES.md
         (lib.fileset.fileFilter (file: file.hasExt "md" || file.hasExt "html") ./docs)
+        (lib.fileset.fileFilter (file: file.hasExt "nix") ./nix)
         (lib.fileset.fileFilter (file: file.hasExt "md") ./skills)
         (lib.fileset.fileFilter (
             file:
@@ -123,6 +125,7 @@
 
           mkdir -p "$out/bin" "$out/share/gaoji"
           cp -R . "$out/share/gaoji"
+          printf '%s\n' ${lib.escapeShellArg gaojiCommit} > "$out/share/gaoji/.gaoji-commit"
           mkdir -p "$out/share/gaoji/src/plugins/ai_chat/admin_ui_dist"
           cp -R ${adminUi}/dist/. \
             "$out/share/gaoji/src/plugins/ai_chat/admin_ui_dist/"
@@ -132,6 +135,7 @@
             --chdir "$out/share/gaoji" \
             --set PYTHONDONTWRITEBYTECODE 1 \
             --set PYTHONUNBUFFERED 1 \
+            --set-default GAOJI_COMMIT ${lib.escapeShellArg gaojiCommit} \
             --run 'state_home="''${XDG_STATE_HOME:-''${HOME:-/tmp}/.local/state}"' \
             --run 'cache_home="''${XDG_CACHE_HOME:-''${HOME:-/tmp}/.cache}"' \
             --run 'export AI_STATE_DIR="''${AI_STATE_DIR:-$state_home/gaoji}"' \
@@ -141,12 +145,14 @@
             --add-flags "-m src.bot_storage.cli" \
             --chdir "$out/share/gaoji" \
             --set PYTHONDONTWRITEBYTECODE 1 \
-            --set PYTHONUNBUFFERED 1
+            --set PYTHONUNBUFFERED 1 \
+            --set-default GAOJI_COMMIT ${lib.escapeShellArg gaojiCommit}
           makeWrapper ${virtualenv}/bin/python "$out/bin/gaoji-admin" \
             --add-flags "-m src.bot_security.cli" \
             --chdir "$out/share/gaoji" \
             --set PYTHONDONTWRITEBYTECODE 1 \
-            --set PYTHONUNBUFFERED 1
+            --set PYTHONUNBUFFERED 1 \
+            --set-default GAOJI_COMMIT ${lib.escapeShellArg gaojiCommit}
 
           runHook postInstall
         '';
@@ -226,6 +232,8 @@
       system = "x86_64-linux";
       specialArgs = {
         source = self;
+        appSource = applicationSource;
+        inherit gaojiCommit;
         pi = inputs.llm-agents.packages.x86_64-linux.pi;
       };
       modules = [./nix/guest/container.nix];

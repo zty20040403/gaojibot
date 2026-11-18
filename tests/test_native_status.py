@@ -101,8 +101,17 @@ class NativeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.query('SELECT * FROM model_usage_calls'),[])
 
     async def test_disabled_billing_never_falls_back_to_estimates_or_tasks(self):
-        _,text = await self.run_status(enabled=False)
-        self.assertIn('尚未配置',text); self.assertNotIn('$0',text)
+        with patch.dict('os.environ', {'GAOJI_COMMIT': 'abcdef1234567890'}):
+            _, text = await self.run_status(enabled=False)
+        self.assertIn('abcdef1', text)
+        self.assertIn('尚未配置', text); self.assertNotIn('$0', text)
+
+    async def test_status_displays_build_commit_from_env(self):
+        self.bill()
+        with patch.dict('os.environ', {'GAOJI_COMMIT': '1234567890abcdef'}):
+            _, text = await self.run_status()
+        self.assertIn('版本：', text)
+        self.assertIn('1234567', text)
 
     async def test_stale_route_prevents_projection_and_reply(self):
         consumer = self.build()
