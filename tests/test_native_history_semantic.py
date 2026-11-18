@@ -11,8 +11,7 @@ from src.plugins.ai_chat.message_vectors import REVISION,embedding_identity
 from src.plugins.ai_chat.platform_types import ActorKey,EndpointKey
 from src.plugins.ai_chat.semantic_recall import EmbeddingClient,PgVectorBackend,SemanticDocument,SemanticRecallService
 from tests import test_native_billing as fixture
-from tests.test_llm_gateway import FakeStream,stream_chunk
-from tests.test_model_budget import completion
+from tests.test_qq_official_turn_endtoend import model_response
 from tests.test_qq_official_runtime_sender import verified_ready_platform
 
 
@@ -38,11 +37,10 @@ class NativeHistorySemanticTests(unittest.IsolatedAsyncioTestCase):
             async def create_completion(self,profile,**kwargs):
                 seen.append(kwargs)
                 if len(seen)==1:
-                    chunk = stream_chunk()
-                    chunk.choices[0].delta.tool_calls = [SimpleNamespace(index=0,id='TEST_HISTORY_TOOL',type='function',
-                        function=SimpleNamespace(name='history',arguments='{"query":"怎么排版幻灯片","limit":1}'))]
-                    return FakeStream(chunk,stream_chunk(finish='tool_calls'),completion(1000,50,600))
-                return FakeStream(stream_chunk('TEST found SlidesForge'),stream_chunk(finish='stop'),completion(1000,50,600))
+                    call = SimpleNamespace(id='TEST_HISTORY_TOOL',type='function',
+                        function=SimpleNamespace(name='history',arguments='{"query":"怎么排版幻灯片","limit":1}'))
+                    return model_response('', [call], kwargs)
+                return model_response('TEST found SlidesForge', [], kwargs)
         app.llm_gateway = LLMGateway({'openai-chat':Provider()},catalog=app.model_catalog)
         with patch('src.plugins.ai_chat.agent_loop._runtime',return_value=(app.model_catalog,app.llm_gateway)):
             async with verified_ready_platform() as fake:

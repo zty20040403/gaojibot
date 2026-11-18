@@ -22,7 +22,7 @@ class NativeConfigTests(unittest.IsolatedAsyncioTestCase):
         if not private:raw['d']['group_openid'] = self.f.endpoint.native_conversation_id
         self.f.query('UPDATE qq_official_inbound_events SET payload_json=?,payload_expires_at=?,turn_text=?,turn_text_version=1 WHERE inbox_id=?',
             (json.dumps(raw),self.f.now-1 if expired else self.f.now+86400,text,self.f.inbox))
-        app = SimpleNamespace(running_tasks=self.tasks,model_preferences=object(),reasoning_preferences=object(),usage_store=None,
+        app = SimpleNamespace(settings=SimpleNamespace(sandbox_operations_owners=()), running_tasks=self.tasks,model_preferences=object(),reasoning_preferences=object(),usage_store=None,
             vision_worker=object() if available else None,media_library=object() if available else None)
         runtime = SimpleNamespace(agent_service=None,store=SimpleNamespace(admitted=self.f.admission,clock=lambda:self.f.now,
             authority=SimpleNamespace(owner_for_actor=lambda *_:object() if owner else None)),deliveries=self.deliveries,
