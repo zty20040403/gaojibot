@@ -1,5 +1,6 @@
 """The host relay swaps in its own model and key, and only for a live job token."""
 import asyncio
+import base64
 import json
 import logging
 import secrets
@@ -726,6 +727,74 @@ class JobGatewayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(r9.status_code, 200)
             self.assertEqual(attempts, ['m2'])
         self.assertTrue(all(r.finished for r in receipts))
+
+
+class GitHubGitRelayTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from unittest.mock import patch
+        patcher = patch.dict('os.environ', {'AI_GITHUB_LOGIN': 'TEST-LOGIN', 'AI_GITHUB_USER_ID': '123',
+                                            'AI_GITHUB_TOKEN': 'TEST_GH_TOKEN'})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.gateway = JobGateway(port=free_port(), upstream=lambda: None, model=lambda: ('TEST', 'high'),
+                                  logger=logging.getLogger(__name__))
+        self.upstream = []
+
+        def github(request):
+            self.upstream.append((request.method, str(request.url), request.headers.get('authorization'),
+                                  request.read()))
+            return httpx.Response(200, content=b'TEST_PACK_RESULT',
+                                  headers={'content-type': 'application/x-git-receive-pack-result'})
+
+        await self.gateway.github_client.aclose()
+        self.gateway.github_client = httpx.AsyncClient(transport=httpx.MockTransport(github))
+        await self.gateway.start()
+        self.addAsyncCleanup(self.gateway.close)
+        self.token, _ = self.gateway.open()
+        self.root = f'http://127.0.0.1:{self.gateway.port}'
+
+    async def request(self, method, path, **kwargs):
+        async with httpx.AsyncClient(trust_env=False) as client:
+            return await client.request(method, self.root + path,
+                                        headers={'Authorization': 'Bearer ' + self.token}, **kwargs)
+
+    async def test_identity_and_push_use_host_token_only_for_own_repositories(self):
+        identity = await self.request('GET', '/git/identity')
+        self.assertEqual(identity.json(), {'login': 'TEST-LOGIN', 'email': '123+TEST-LOGIN@users.noreply.github.com'})
+
+        refs = await self.request('GET', '/git/github/TEST-LOGIN/repo.git/info/refs?service=git-receive-pack')
+        self.assertEqual(refs.status_code, 200)
+        pushed = await self._push()
+        self.assertEqual(pushed.content, b'TEST_PACK_RESULT')
+        basic = 'Basic ' + base64.b64encode(b'x-access-token:TEST_GH_TOKEN').decode()
+        self.assertEqual(self.upstream, [
+            ('GET', 'https://github.com/TEST-LOGIN/repo.git/info/refs?service=git-receive-pack', basic, b''),
+            ('POST', 'https://github.com/test-login/repo.git/git-receive-pack', basic, b'TEST_PACK'),
+        ])
+        self.assertNotIn(self.token, repr(self.upstream))
+
+    async def _push(self):
+        async with httpx.AsyncClient(trust_env=False) as client:
+            return await client.post(self.root + '/git/github/test-login/repo.git/git-receive-pack', content=b'TEST_PACK',
+                                     headers={'Authorization': 'Bearer ' + self.token,
+                                              'Content-Type': 'application/x-git-receive-pack-request'})
+
+    async def test_relay_refuses_fetches_other_owners_and_missing_configuration(self):
+        for path in ('/git/github/TEST-LOGIN/repo.git/info/refs?service=git-upload-pack',
+                     '/git/github/TEST-LOGIN/repo.git/info/refs?service=git-receive-pack&x=1',
+                     '/git/github/TEST-OTHER/repo.git/info/refs?service=git-receive-pack',
+                     '/git/github/TEST-LOGIN/.hidden/info/refs?service=git-receive-pack'):
+            self.assertEqual((await self.request('GET', path)).status_code, 403, path)
+        self.assertEqual((await self.request('POST', '/git/github/TEST-LOGIN/repo.git/git-upload-pack')).status_code, 403)
+        async with httpx.AsyncClient(trust_env=False) as client:
+            anonymous = await client.get(self.root + '/git/github/TEST-LOGIN/repo.git/info/refs?service=git-receive-pack')
+        self.assertEqual(anonymous.status_code, 401)
+        from unittest.mock import patch
+        with patch.dict('os.environ', {'AI_GITHUB_TOKEN': ''}):
+            self.assertEqual((await self.request('GET', '/git/github/TEST-LOGIN/repo.git/info/refs?service=git-receive-pack')).status_code, 404)
+        with patch.dict('os.environ', {'AI_GITHUB_LOGIN': ''}):
+            self.assertEqual((await self.request('GET', '/git/identity')).status_code, 404)
+        self.assertEqual(self.upstream, [])
 
 
 if __name__ == '__main__':
