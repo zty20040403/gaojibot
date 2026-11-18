@@ -103,14 +103,38 @@ class ConversationStore:
             )
         return True
 
+    @staticmethod
+    def _scrub_media_urls(messages: list) -> list:
+        cleaned = []
+        for msg in messages:
+            if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
+                cleaned.append(msg)
+                continue
+            parts = []
+            changed = False
+            for part in msg["content"]:
+                if isinstance(part, dict) and part.get("type") in {"video_url", "image_url"}:
+                    key = part["type"]
+                    inner = part.get(key)
+                    url = inner.get("url") if isinstance(inner, dict) else None
+                    if isinstance(url, str) and (url.startswith("data:video/") or len(url) > 262144):
+                        prefix = url.split(",", 1)[0] if "," in url else "data:media"
+                        parts.append({**part, key: {**inner, "url": f"{prefix},<omitted {len(url)} chars>"}})
+                        changed = True
+                        continue
+                parts.append(part)
+            cleaned.append({**msg, "content": parts} if changed else msg)
+        return cleaned
+
     def record_request(self, *, turn_id: int | None, scope_key: str, model: str,
                        messages: list, tools: list) -> None:
-        """Keep exactly what the model was sent, for debugging a bad answer."""
+        """Keep what the model was sent, scrubbing multi-megabyte media blobs."""
+        safe_messages = self._scrub_media_urls(messages)
         with self._transaction() as cursor:
             cursor.execute(
                 """INSERT INTO turn_requests (turn_id, scope_key, model, messages_json, tools_json, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)""",
-                (turn_id, scope_key, model, json.dumps(messages, ensure_ascii=False, default=str),
+                (turn_id, scope_key, model, json.dumps(safe_messages, ensure_ascii=False, default=str),
                  json.dumps(tools, ensure_ascii=False), int(time.time())),
             )
 

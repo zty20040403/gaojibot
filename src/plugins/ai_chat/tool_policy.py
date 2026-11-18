@@ -70,12 +70,14 @@ _READ_TOOLS = {
     "view_forward",
     "job_status",
     "nix_search",
+    "video",
 }
 
 _SEND_TOOLS = {
     "reply_with_voice",
     "send_file_from_sandbox",
     "send_file",
+    "send_image",
     "say",
     "send_sticker",
     "send_forward_summary",
@@ -166,6 +168,29 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         execution_mode="durable-eligible",
         compensation="cancel-process",
         max_identical_calls=1,
+    )
+    policies["shell"] = ToolPolicy(
+        risk="high",
+        idempotency="non-idempotent",
+        side_effects=("write:sandbox", "execute:code"),
+        timeout_seconds=310.0,
+        compensation="cancel-process",
+        max_identical_calls=2,
+    )
+    policies["run_code"] = ToolPolicy(
+        risk="high",
+        idempotency="non-idempotent",
+        side_effects=("write:sandbox", "execute:code"),
+        timeout_seconds=310.0,
+        compensation="cancel-process",
+        max_identical_calls=2,
+    )
+    policies["video"] = ToolPolicy(
+        risk="low",
+        idempotency="pure",
+        side_effects=("read",),
+        timeout_seconds=250.0,
+        max_identical_calls=2,
     )
     policies["sandbox_create"] = ToolPolicy(
         risk="medium",

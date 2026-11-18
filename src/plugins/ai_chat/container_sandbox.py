@@ -411,6 +411,94 @@ class WorkspaceSandboxManager:
                         pass
                 self._active_execs.pop(activity_id, None)
 
+    async def run_container_command(
+        self,
+        owner: str,
+        sandbox_id: str,
+        command: str,
+        *,
+        workdir: str = "/work",
+        timeout_seconds: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> SandboxResult:
+        """Run a foreground command inside the conversation container without holding io_lock.
+
+        Tracking in _active_execs prevents stop/destroy during execution while
+        allowing re-entrant /job/tool calls (e.g. send_image / send_file from
+        inside run_code or shell) to acquire io_lock without deadlocking.
+        """
+        if not command.strip():
+            raise SandboxError("命令不能为空。")
+        await self._owned_running(owner, sandbox_id)
+        raw_wd = (workdir or "/work").strip()
+        if raw_wd in {"/work", "/workspace"}:
+            wd = "/work"
+        else:
+            rel = self._workspace_path(raw_wd).removeprefix("/workspace/")
+            wd = "/work/" + rel
+        timeout = min(max(timeout_seconds or self.default_timeout_seconds, 1), 300)
+        pids_limit = self.pids_limit
+        activity_id = secrets.token_hex(8)
+        activity = SandboxExecutionActivity(
+            activity_id=activity_id,
+            sandbox_id=sandbox_id,
+            owner=self._owner_ref(owner),
+            command=command[:2000],
+            started_at=int(time.time()),
+        )
+        self._active_execs[activity_id] = activity
+        started_at = time.monotonic()
+        wrapper = (
+            "[ -r /etc/set-environment ] && . /etc/set-environment\n"
+            'export HOME=/work PATH="/run/wrappers/bin:/run/current-system/sw/bin:${PATH:-/usr/bin:/bin}"\n'
+            f"mkdir -p -- {shlex.quote(wd)} && cd -- {shlex.quote(wd)}\n"
+            f"exec bash -lc {shlex.quote(command)}"
+        )
+        try:
+            code, out, err = await self._guest_exec(
+                sandbox_id,
+                "/usr/bin/prlimit",
+                [
+                    f"--nproc={pids_limit}:{pids_limit}",
+                    "--",
+                    "/usr/bin/timeout",
+                    "--signal=TERM",
+                    "--kill-after=5s",
+                    str(timeout),
+                    "/bin/sh",
+                    "-c",
+                    wrapper,
+                ],
+                timeout=timeout + 15,
+                input_bytes=input_bytes,
+            )
+            self._last_execs[sandbox_id] = SandboxExecutionActivity(
+                **{
+                    **activity.__dict__,
+                    "status": "completed" if code == 0 else "failed",
+                    "finished_at": int(time.time()),
+                    "returncode": code,
+                },
+            )
+            return SandboxResult(
+                stdout=out.decode(errors="replace")[:self.max_output_chars],
+                stderr=err.decode(errors="replace")[:self.max_output_chars],
+                returncode=code,
+                manifest=SandboxObservedManifest(
+                    command=command,
+                    duration_ms=max(int((time.monotonic() - started_at) * 1000), 0),
+                    stdout_sha256=hashlib.sha256(out).hexdigest(),
+                    stdout_bytes=len(out),
+                    stderr_sha256=hashlib.sha256(err).hexdigest(),
+                    stderr_bytes=len(err),
+                    changed_workspace_paths=(),
+                    container_diff=(),
+                    network_mode="bridge",
+                ),
+            )
+        finally:
+            self._active_execs.pop(activity_id, None)
+
     async def write_file(
         self, owner: str, sandbox_id: str, path: str, content: bytes, *, allow_large: bool = False,
     ) -> int:
@@ -457,8 +545,10 @@ class WorkspaceSandboxManager:
             await self._guest_exec(sandbox_id, "/bin/rm", ["-f", staged])
         return len(content)
 
-    async def _read_guest_file(self, sandbox_id: str, target: str, max_bytes: int | None) -> bytes:
-        limit = self.max_file_bytes or None
+    async def _read_guest_file(
+        self, sandbox_id: str, target: str, max_bytes: int | None, *, ignore_manager_cap: bool = False,
+    ) -> bytes:
+        limit = None if ignore_manager_cap else (self.max_file_bytes or None)
         if max_bytes and max_bytes > 0:
             limit = min(limit, max_bytes) if limit else max_bytes
         code, out, _ = await self._guest_exec(sandbox_id, "/usr/bin/stat", ["-c", "%F:%s", target], timeout=20)
@@ -532,6 +622,45 @@ class WorkspaceSandboxManager:
                     raise SandboxError("Bounded regular-file export failed")
                 return content, False
             return await self._export_artifact_locked(owner, sandbox_id, path)
+
+    async def export_temp_bytes(
+        self,
+        owner: str,
+        sandbox_id: str,
+        path: str,
+        *,
+        max_bytes: int,
+        delete_after: bool = False,
+    ) -> bytes:
+        """Read a regular file under /workspace up to max_bytes (<=64 MiB) for multimodal inspection."""
+        from src.sandbox_runtime.artifact_export import STAGE_FILE_SCRIPT
+
+        if type(max_bytes) is not int or not 0 < max_bytes <= 64 * 1024 * 1024:
+            raise SandboxError("Invalid multimodal export limit")
+        async with self.io_lock(sandbox_id):
+            await self._owned_running(owner, sandbox_id)
+            ws_full = self._workspace_path(path)
+            target = ws_full.removeprefix("/workspace/")
+            staged = "/root/gaoji-shown-" + secrets.token_hex(12)
+            try:
+                code, _, _ = await self._guest_exec(
+                    sandbox_id,
+                    "/usr/bin/python3",
+                    ["-I", "-c", STAGE_FILE_SCRIPT, target, str(max_bytes), staged],
+                    timeout=180,
+                )
+                if code:
+                    raise SandboxError("Bounded multimodal file export failed")
+                content = await self._read_guest_file(
+                    sandbox_id, staged, max_bytes=max_bytes, ignore_manager_cap=True,
+                )
+            finally:
+                await self._guest_exec(sandbox_id, "/bin/rm", ["-f", staged])
+                if delete_after and ws_full.startswith("/workspace/.gaoji/shown/"):
+                    await self._guest_exec(sandbox_id, "/bin/rm", ["-f", ws_full])
+            if not 0 < len(content) <= max_bytes:
+                raise SandboxError("Bounded multimodal file export failed")
+            return content
 
     async def _export_artifact_locked(self, owner: str, sandbox_id: str, path: str) -> tuple[bytes, bool]:
         await self._owned_running(owner, sandbox_id)

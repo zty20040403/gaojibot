@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import asyncio
+import base64
 import hashlib
 import inspect
 import json
 from pathlib import PurePosixPath
 import re
+import shlex
 import time
 from typing import Protocol
 import unicodedata
@@ -19,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 from src.plugins.ai_chat.execution_control import LeaseLost, assert_job_owned
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
+from src.plugins.ai_chat.tool_images import ToolImage
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id
 
 
@@ -263,7 +266,315 @@ class OwnedSandboxExecutor:
     async def retain_task_sandboxes(self):
         return {'stopped': 0, 'retained': len(self._resources)}
 
-    async def execute(self, name, arguments):
+    async def _ensure_workspace(self) -> str:
+        async with self._allocation_lock:
+            await self.readiness()
+            if hasattr(self.sandbox_manager, 'ensure_default'):
+                def remember_default(result):
+                    if isinstance(result, dict) and result.get('sandbox_id'):
+                        self._resources[(self.owner, result['sandbox_id'])] = True
+                info = await self._call(self.sandbox_manager.ensure_default, self.owner, observed=remember_default)
+                sid = info['sandbox_id']
+                self._resources[(self.owner, sid)] = True
+                await self._call(self.sandbox_manager.start_owned, self.owner, sid)
+                return sid
+            return await self._create_locked('python', owner=self.owner)
+
+    async def _run_in_container(
+        self, sid: str, command: str, *, workdir: str = '/work', timeout: int = 120, input_bytes: bytes | None = None,
+    ):
+        if hasattr(self.sandbox_manager, 'run_container_command'):
+            return await self._call(
+                self.sandbox_manager.run_container_command,
+                self.owner,
+                sid,
+                command,
+                workdir=workdir,
+                timeout_seconds=timeout,
+                input_bytes=input_bytes,
+            )
+        return await self._call(self.sandbox_manager.exec, self.owner, sid, command, timeout)
+
+    async def _read_multimodal_bytes(self, sid: str, path: str, *, max_bytes: int, delete_after: bool = False) -> bytes:
+        rel = workspace_path(path)
+        if hasattr(self.sandbox_manager, 'export_temp_bytes'):
+            return await self._call(
+                self.sandbox_manager.export_temp_bytes,
+                self.owner,
+                sid,
+                rel,
+                max_bytes=max_bytes,
+                delete_after=delete_after,
+            )
+        content, directory = await self._call(
+            self.sandbox_manager.export_artifact,
+            self.owner,
+            sid,
+            rel,
+            file_only=True,
+            max_bytes=max_bytes,
+        )
+        if directory or not isinstance(content, bytes) or not 0 < len(content) <= max_bytes:
+            raise GenerationError('invalid_export_receipt')
+        return content
+
+    @staticmethod
+    def _supports_video(model_profile) -> bool:
+        return bool(
+            model_profile is not None
+            and getattr(model_profile, 'protocol', None) == 'openai-chat'
+            and getattr(getattr(model_profile, 'capabilities', None), 'video', False)
+        )
+
+    async def _execute_shell(self, arguments: dict) -> str:
+        command = _text(arguments.get('command'), maximum=32768)
+        raw_wd = arguments.get('workdir')
+        if raw_wd is None or str(raw_wd).strip() in {'', '/work', '/workspace'}:
+            wd = '/work'
+        else:
+            wd = '/work/' + workspace_path(raw_wd)
+        background = arguments.get('background', False)
+        if type(background) is not bool:
+            raise GenerationError('invalid_tool_arguments')
+        sid = await self._ensure_workspace()
+        if background:
+            title = _text(arguments.get('title'), maximum=200) if arguments.get('title') else ''
+            bg_cmd = f'gaoji units start {shlex.quote(command)} --workdir {shlex.quote(wd)}'
+            if title:
+                bg_cmd += f' --title {shlex.quote(title)}'
+            result = await self._run_in_container(sid, bg_cmd, workdir=wd, timeout=30)
+            out_text = result.stdout.strip()
+            if result.returncode == 0 and out_text:
+                try:
+                    parsed = json.loads(out_text.splitlines()[-1])
+                    if isinstance(parsed, dict):
+                        return _json(parsed)
+                except ValueError:
+                    pass
+            return _json({
+                'ok': result.returncode == 0,
+                'returncode': result.returncode,
+                'stdout': result.stdout[:self.limits.max_output_chars],
+                'stderr': result.stderr[:self.limits.max_output_chars],
+            })
+        timeout = arguments.get('timeout', 120)
+        if type(timeout) is not int or not 1 <= timeout <= self.limits.max_seconds:
+            raise GenerationError('invalid_execution_limits')
+        remaining = int(self._identity[3] - self.clock())
+        if remaining <= 0:
+            raise LeaseLost('generation_deadline')
+        result = await self._run_in_container(sid, command, workdir=wd, timeout=min(timeout, remaining))
+        return _json({
+            'ok': result.returncode == 0,
+            'returncode': result.returncode,
+            'stdout': result.stdout[:self.limits.max_output_chars],
+            'stderr': result.stderr[:self.limits.max_output_chars],
+        })
+
+    @staticmethod
+    def _sniff_image_ext(content: bytes) -> str | None:
+        if content.startswith(b'\x89PNG\r\n\x1a\n'):
+            return '.png'
+        if content.startswith(b'\xff\xd8'):
+            return '.jpg'
+        if content[:6] in {b'GIF87a', b'GIF89a'}:
+            return '.gif'
+        return None
+
+    async def _execute_send_image(self, arguments: dict) -> str:
+        from src.plugins.ai_chat.adapters.qq_official.image_formats import (
+            ImageFormatError,
+            detect_image,
+            mime_matches_filename,
+        )
+
+        sid = await self._ensure_workspace()
+        path = workspace_path(arguments.get('path'))
+        call_id = active_tool_call_id.get()
+        if not isinstance(call_id, str) or not call_id:
+            raise GenerationError('host_tool_call_required')
+        logical = 'generated:' + hashlib.sha256(_json([self._identity[2], call_id]).encode()).hexdigest()
+        requested_name = arguments.get('filename') or arguments.get('name') or PurePosixPath(path).name
+        try:
+            async with asyncio.timeout(300):
+                raw_bytes = await self._read_multimodal_bytes(sid, path, max_bytes=16 * 1024 * 1024)
+                # Automatically convert WebP (common on the web) to PNG inside container before sending.
+                if (len(raw_bytes) >= 12 and raw_bytes[:4] == b'RIFF' and raw_bytes[8:12] == b'WEBP'
+                        and hasattr(self.sandbox_manager, 'run_container_command')):
+                    conv_rel = f'.gaoji/shown/conv-{hashlib.sha256(raw_bytes[:256]).hexdigest()[:12]}.png'
+                    py = (
+                        'from pathlib import Path; from PIL import Image; import sys; '
+                        'dst = Path(sys.argv[2]); dst.parent.mkdir(parents=True, exist_ok=True); '
+                        'Image.open(sys.argv[1]).save(dst, format="PNG")'
+                    )
+                    conv = await self._run_in_container(
+                        sid,
+                        f'gaoji-python -c {shlex.quote(py)} {shlex.quote("/work/" + path)} {shlex.quote("/work/" + conv_rel)}',
+                        timeout=30,
+                    )
+                    if conv.returncode == 0:
+                        path = conv_rel
+                        raw_bytes = await self._read_multimodal_bytes(sid, path, max_bytes=16 * 1024 * 1024)
+                sniffed_ext = self._sniff_image_ext(raw_bytes)
+                if sniffed_ext is not None:
+                    expected_mime = {'.png': 'image/png', '.jpg': 'image/jpeg', '.gif': 'image/gif'}[sniffed_ext]
+                    if not mime_matches_filename(expected_mime, str(requested_name)):
+                        stem = PurePosixPath(str(requested_name)).stem or 'image'
+                        requested_name = f'{stem}{sniffed_ext}'
+                exported = await self.export_file(sid, path, requested_name)
+                mime = detect_image(exported.content, exported.filename)
+                if exported.mime != mime:
+                    exported = ExportedArtifact(
+                        *self._identity[:3], self.owner, sid, exported.path, exported.filename,
+                        mime, exported.content, exported.sha256, exported.size, exported.checks,
+                    )
+                    self._exports[id(exported)] = exported
+        except ImageFormatError as error:
+            return _json({
+                'ok': False,
+                'code': str(error),
+                'error': f'图片格式或大小不符合要求（{error}），请先用 shell / ffmpeg / Pillow 转为合规 PNG/JPG/GIF 再发。',
+                'retryable': True,
+                'message_accepted': False,
+            })
+        except Exception as error:
+            return _json({
+                'ok': False,
+                'code': str(error) if isinstance(error, GenerationError) else 'image_export_failed',
+                'error': '图片尚未发送，读取或校验失败，请检查路径后重试。',
+                'retryable': True,
+                'message_accepted': False,
+            })
+        return await self.send_file_content(
+            exported.content, exported.filename, provenance=exported, logical_request_key=logical,
+        )
+
+    async def _execute_video(self, arguments: dict, *, model_profile=None):
+        if not self._supports_video(model_profile):
+            return _json({
+                'ok': False,
+                'code': 'video_not_supported',
+                'error': '当前会话模型不支持原生看视频，请切换 Gemini 模型或用 shell 抽帧/转写音频。',
+            })
+        sid = await self._ensure_workspace()
+        rel_path = workspace_path(arguments.get('path'))
+        req: dict[str, object] = {'work': '/work', 'path': '/work/' + rel_path}
+        if arguments.get('start') is not None:
+            if not isinstance(arguments['start'], (int, float, str)) or isinstance(arguments['start'], bool):
+                raise GenerationError('invalid_tool_arguments')
+            req['start'] = arguments['start']
+        if arguments.get('end') is not None:
+            if not isinstance(arguments['end'], (int, float, str)) or isinstance(arguments['end'], bool):
+                raise GenerationError('invalid_tool_arguments')
+            req['end'] = arguments['end']
+        remaining = int(self._identity[3] - self.clock())
+        if remaining <= 0:
+            raise LeaseLost('generation_deadline')
+        cmd = f'node /etc/gaoji/runner/runner.js --video {shlex.quote(_json(req))}'
+        res = await self._run_in_container(sid, cmd, workdir='/work', timeout=min(240, remaining))
+        line = res.stdout.strip().splitlines()[-1] if res.stdout.strip() else ''
+        try:
+            outcome = json.loads(line)
+        except ValueError:
+            return _json({
+                'ok': False,
+                'code': 'video_runner_failed',
+                'error': (res.stderr or res.stdout or '容器内视频转换失败')[:500],
+            })
+        if not isinstance(outcome, dict) or not outcome.get('ok'):
+            err = outcome.get('error') if isinstance(outcome, dict) else None
+            msg = err.get('message') if isinstance(err, dict) else str(err or '视频读取失败')
+            code = err.get('code') if isinstance(err, dict) else 'video_failed'
+            return _json({'ok': False, 'code': code, 'error': msg})
+        val = outcome.get('value') or {}
+        out_path = str(val.get('path') or '')
+        data = await self._read_multimodal_bytes(sid, out_path, max_bytes=32 * 1024 * 1024, delete_after=True)
+        meta = _json({
+            'ok': True,
+            'path': '/work/' + rel_path,
+            'seconds': val.get('seconds'),
+            'bytes': len(data),
+        })
+        b64 = base64.b64encode(data).decode('ascii')
+        return ToolImage(meta, f'data:video/mp4;base64,{b64}')
+
+    async def _execute_run_code(self, arguments: dict, *, model_profile=None):
+        from src.plugins.ai_chat.adapters.qq_official.image_formats import detect_image
+
+        code = _text(arguments.get('code'), maximum=65536)
+        extra_args = arguments.get('args')
+        if extra_args is not None and not isinstance(extra_args, dict):
+            raise GenerationError('invalid_tool_arguments')
+        timeout = arguments.get('timeout', 120)
+        if type(timeout) is not int or not 1 <= timeout <= self.limits.max_seconds:
+            raise GenerationError('invalid_execution_limits')
+        remaining = int(self._identity[3] - self.clock())
+        if remaining <= 0:
+            raise LeaseLost('generation_deadline')
+        sid = await self._ensure_workspace()
+        payload = json.dumps({'code': code, 'args': extra_args or {}, 'work': '/work'}, ensure_ascii=False).encode('utf-8')
+        res = await self._run_in_container(
+            sid,
+            'node /etc/gaoji/runner/runner.js',
+            workdir='/work',
+            timeout=min(timeout, remaining),
+            input_bytes=payload,
+        )
+        line = res.stdout.strip().splitlines()[-1] if res.stdout.strip() else ''
+        try:
+            envelope = json.loads(line)
+        except ValueError:
+            return _json({
+                'ok': False,
+                'returncode': res.returncode,
+                'error': (res.stderr or res.stdout or 'run_code 执行失败')[:4000],
+            })
+        shown_items = envelope.get('shown') if isinstance(envelope.get('shown'), list) else []
+        media_urls: list[str] = []
+        warnings: list[str] = []
+        for item in shown_items[:6]:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get('kind')
+            spath = str(item.get('path') or '')
+            if not spath:
+                continue
+            is_scratch = spath.startswith('/work/.gaoji/shown/')
+            try:
+                if kind == 'image':
+                    raw_img = await self._read_multimodal_bytes(
+                        sid, spath, max_bytes=10 * 1024 * 1024, delete_after=is_scratch,
+                    )
+                    ext = self._sniff_image_ext(raw_img) or '.png'
+                    mime = detect_image(raw_img, f'shown{ext}')
+                    media_urls.append(f"data:{mime};base64,{base64.b64encode(raw_img).decode('ascii')}")
+                elif kind == 'video':
+                    if not self._supports_video(model_profile):
+                        warnings.append(f'{spath}: 当前模型不支持原生视频输入')
+                        continue
+                    raw_vid = await self._read_multimodal_bytes(
+                        sid, spath, max_bytes=32 * 1024 * 1024, delete_after=True,
+                    )
+                    media_urls.append(f"data:video/mp4;base64,{base64.b64encode(raw_vid).decode('ascii')}")
+            except Exception as exc:
+                warnings.append(f'{spath}: {exc}')
+        body: dict[str, object] = {'ok': bool(envelope.get('ok'))}
+        if envelope.get('ok'):
+            body['result'] = str(envelope.get('result') or '')[:self.limits.max_output_chars]
+        else:
+            body['error'] = str(envelope.get('error') or '')[:self.limits.max_output_chars]
+        if res.stderr.strip():
+            body['logs'] = res.stderr[:4000]
+        if envelope.get('delivered') is True:
+            body['delivered'] = True
+        if warnings:
+            body['warnings'] = warnings
+        text = _json(body)
+        if media_urls:
+            return ToolImage(text, media_urls=tuple(media_urls))
+        return text
+
+    async def execute(self, name, arguments, *, model_profile=None):
         if name == 'send_file':
             items = await self._call(self.sandbox_manager.list, self.owner)
             sandboxes = [item['sandbox_id'] for item in items]
@@ -276,6 +587,10 @@ class OwnedSandboxExecutor:
             'sandbox_write_file': {'sandbox_id', 'path', 'content'}, 'sandbox_read_file': {'sandbox_id', 'path'},
             'sandbox_exec': {'sandbox_id', 'command', 'packages', 'timeout_seconds', 'background'},
             'send_file_from_sandbox': {'sandbox_id', 'path', 'filename'},
+            'shell': {'command', 'timeout', 'workdir', 'background', 'title'},
+            'send_image': {'path', 'filename', 'name'},
+            'video': {'path', 'start', 'end'},
+            'run_code': {'code', 'args', 'timeout'},
         }
         if name not in allowed:
             return None
@@ -283,6 +598,14 @@ class OwnedSandboxExecutor:
             if not isinstance(arguments, dict) or not set(arguments) <= allowed[name]:
                 raise GenerationError('invalid_tool_arguments')
             await self._fence()
+            if name == 'shell':
+                return await self._execute_shell(arguments)
+            if name == 'send_image':
+                return await self._execute_send_image(arguments)
+            if name == 'video':
+                return await self._execute_video(arguments, model_profile=model_profile)
+            if name == 'run_code':
+                return await self._execute_run_code(arguments, model_profile=model_profile)
             if name == 'sandbox_create':
                 sid = await self._create(arguments.get('runtime', 'python'))
                 return _json({'ok': True, 'sandbox_id': sid, 'purpose': 'task'})
