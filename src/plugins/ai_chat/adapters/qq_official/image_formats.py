@@ -17,9 +17,9 @@ import zlib
 import unicodedata
 
 
-MAX_IMAGE_BYTES = 3_500_000
-MAX_IMAGE_PIXELS = 16_000_000
-MAX_IMAGE_DECODED_BYTES = 64_000_000
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_PIXELS = 32_000_000
+MAX_IMAGE_DECODED_BYTES = 128_000_000
 IMAGE_MIMES = frozenset({'image/png', 'image/jpeg', 'image/gif'})
 ALL_ARTIFACT_MIMES = IMAGE_MIMES | {'application/pdf', 'application/zip'}
 
