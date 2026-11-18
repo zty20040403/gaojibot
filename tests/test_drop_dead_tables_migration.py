@@ -5,7 +5,6 @@ import importlib
 import unittest
 
 from src.bot_storage.database import PostgresDatabase
-from src.bot_storage.schema import HEAD_REVISION
 from tests import test_qq_official_outbox_migration as migration
 
 drop_migration = importlib.import_module("migrations.versions.0107_drop_dead_tables")
@@ -50,7 +49,7 @@ def _schema_snapshot(connection, schema: str) -> tuple[set[str], set[tuple], set
 
 class DropDeadTablesMigrationTests(unittest.TestCase):
     def test_upgrade_drops_dead_tables_and_downgrade_recreates_empty_schema(self) -> None:
-        self.assertEqual(HEAD_REVISION, "0107_drop_dead_tables")
+        self.assertEqual(drop_migration.revision, "0107_drop_dead_tables")
         self.assertEqual(len(DEAD_TABLES), 34)
         schema = migration.owned_schema()
         self.addCleanup(migration.drop, schema)
@@ -83,7 +82,7 @@ class DropDeadTablesMigrationTests(unittest.TestCase):
         db = PostgresDatabase(migration.checked_test_dsn(), schema=schema)
         try:
             db.healthcheck()
-            db.require_revision(HEAD_REVISION)
+            db.require_revision("0107_drop_dead_tables")
         finally:
             db.close()
 

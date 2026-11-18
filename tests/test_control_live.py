@@ -6,7 +6,6 @@ import unittest
 from tests import test_qq_official_turn_endtoend as base
 from tests.test_qq_official_runtime_sender import verified_ready_platform
 from src.plugins.ai_chat.adapters.qq_official.live_conversations import ConversationTasks
-from src.plugins.ai_chat.adapters.qq_official.message_batch import MessageBatcher
 
 
 class LiveControlTests(unittest.IsolatedAsyncioTestCase):
@@ -120,52 +119,33 @@ class LiveControlTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(fake.received,[])
                 await runtime.stop()
 
-    async def test_new_input_never_joins_old_batch_before_stop_notification_arrives(self):
-        from src.plugins.ai_chat.adapters.qq_official.conversation_control import change
-        from src.plugins.ai_chat.platform_types import EndpointKey
-        calls = []
-        async def completion(**kwargs):
-            calls.append(kwargs)
-            return base.model_response('TEST new answer',[],kwargs)
-        with patch('src.plugins.ai_chat.agent_loop._create_completion',new=completion), patch.object(
-                MessageBatcher,'forget'), patch(
-                'src.plugins.ai_chat.adapters.qq_official.message_batch.MessageBatcher',
-                side_effect=lambda dispatch:MessageBatcher(dispatch,idle=.4,maximum=1)):
-            async with verified_ready_platform() as fake:
-                runtime = await self.open_runtime(fake,self.application())
-                await self.emit(fake,native='TEST_OLD_BATCH',content='那个')
-                await self.wait_db("SELECT canonical_message_id FROM qq_official_inbound_events WHERE native_message_id='TEST_OLD_BATCH' AND status='processed'")
-                endpoint = EndpointKey(runtime.loaded.account,'private','TEST_RUNTIME_OWNER')
-                with runtime.store.transaction() as cursor:
-                    for action in ('stop','start'):
-                        change(cursor,endpoint,action,now=int(runtime.store.clock()),actor='TEST_ADMIN',authorized=True)
-                await self.emit(fake,native='TEST_NEW_BATCH',content='TEST new request')
-                await self.complete('TEST_NEW_BATCH')
-                await asyncio.sleep(.5)
-                self.assertEqual(len(calls),1)
-                self.assertEqual(len(fake.received),1)
-                await runtime.stop()
-
-    async def test_stop_forgets_unfinished_batch_without_replaying_after_start(self):
+    async def test_stop_forgets_pending_mid_turn_messages_without_replaying_after_start(self):
         app = self.application()
+        entered = asyncio.Event()
         calls = []
+
         async def completion(**kwargs):
             calls.append(kwargs)
-            return base.model_response('TEST response',[],kwargs)
-        with patch('src.plugins.ai_chat.agent_loop._create_completion',new=completion), patch(
-                'src.plugins.ai_chat.adapters.qq_official.message_batch.MessageBatcher',
-                side_effect=lambda dispatch:MessageBatcher(dispatch,idle=.4,maximum=1)):
+            if len(calls) == 1:
+                entered.set()
+                await asyncio.sleep(10)
+            return base.model_response('TEST new answer', [], kwargs)
+
+        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=completion):
             async with verified_ready_platform() as fake:
-                runtime = await self.open_runtime(fake,app)
-                await self.emit(fake,native='TEST_BATCH',content='那个')
-                await self.wait_db("SELECT canonical_message_id FROM qq_official_inbound_events WHERE native_message_id='TEST_BATCH' AND status='processed'")
-                await self.emit(fake,native='TEST_STOP',content='/stop')
+                runtime = await self.open_runtime(fake, app)
+                await self.emit(fake, native='TEST_BUSY', content='那个')
+                await asyncio.wait_for(entered.wait(), 5)
+                await self.emit(fake, native='TEST_PENDING_MID', content='补充一句')
+                await self.wait_db("SELECT canonical_message_id FROM qq_official_inbound_events WHERE native_message_id='TEST_PENDING_MID' AND status='processed'")
+                await self.emit(fake, native='TEST_STOP', content='/stop')
                 await self.complete('TEST_STOP')
-                await self.emit(fake,native='TEST_START',content='/start')
+                await self.emit(fake, native='TEST_START', content='/start')
                 await self.complete('TEST_START')
-                await asyncio.sleep(.5)
-                self.assertEqual(calls,[])
-                self.assertFalse(self.query("SELECT * FROM qq_official_turn_executions x JOIN qq_official_inbound_events i USING(inbox_id) WHERE i.native_message_id='TEST_BATCH'"))
+                await self.emit(fake, native='TEST_AFTER_START', content='TEST fresh request')
+                await self.complete('TEST_AFTER_START')
+                self.assertEqual(len(calls), 2)
+                self.assertFalse(self.query("SELECT * FROM qq_official_turn_executions x JOIN qq_official_inbound_events i USING(inbox_id) WHERE i.native_message_id='TEST_PENDING_MID'"))
                 await runtime.stop()
 
 

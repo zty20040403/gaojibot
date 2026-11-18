@@ -210,23 +210,18 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(self.query('SELECT * FROM qq_official_turn_executions')),1)
                 await runtime.stop()
 
-    async def test_media_only_batch_renders_canonical_handles_and_reads_previous_image(self):
-        from src.plugins.ai_chat.adapters.qq_official.message_batch import MessageBatcher
-        complete = self.completion([('view_image', {})])
-        received = asyncio.Event()
-        class CompleteMediaBatch(MessageBatcher):
-            def add(self,key,*args,**kwargs):
-                result = super().add(key,*args,**kwargs)
-                if key in self.pending and len(self.pending[key].messages)==2:received.set()
-                return result
-            async def _wait(self,key,batch):
-                # Verify canonical aggregation, not DB/media normalization speed.
-                # Real idle/max/stop behavior is covered by batcher unit tests.
-                await received.wait()
-                await super()._wait(key,batch)
-        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=complete), patch(
-                'src.plugins.ai_chat.adapters.qq_official.message_batch.MessageBatcher',
-                side_effect=lambda dispatch: CompleteMediaBatch(dispatch, idle=.3, maximum=2)):
+    async def test_media_and_mid_turn_followup_render_canonical_handles_and_read_previous_image(self):
+        base_complete = self.completion([('view_image', {})])
+        first_entered = asyncio.Event()
+        second_emitted = asyncio.Event()
+
+        async def complete(**kwargs):
+            if not self.model_calls:
+                first_entered.set()
+                await second_emitted.wait()
+            return await base_complete(**kwargs)
+
+        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=complete):
             async with platform() as fake:
                 runtime = await self.start(fake, flags=dict(ocr=True))
                 await self.emit(fake, 'TEST_MEDIA_BATCH', content='', attachments=[
@@ -234,14 +229,21 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                     {'url': 'https://example.invalid/video', 'content_type': 'video/mp4'},
                     {'url': 'https://example.invalid/audio', 'content_type': 'audio/wav'},
                     {'url': 'https://example.invalid/file', 'content_type': 'application/pdf'}])
+                await asyncio.wait_for(first_entered.wait(), 5)
                 await self.emit(fake, 'TEST_MEDIA_QUESTION', content='TEST 这是啥')
+                for _ in range(30):
+                    st = next(iter(runtime.active_conversation_turns.values()), None)
+                    if st is not None and st.pending:
+                        break
+                    await asyncio.sleep(0.02)
+                second_emitted.set()
                 await self.complete('TEST_MEDIA_BATCH')
-                last = self.model_calls[0]['messages'][-1]['content']
-                self.assertIn('[连续消息，请合起来回答一次]', last)
+                first_msg = json.dumps(self.model_calls[0]['messages'], ensure_ascii=False)
+                second_msg = json.dumps(self.model_calls[1]['messages'], ensure_ascii=False)
                 for kind in ('image', 'video', 'voice', 'file'):
-                    self.assertIn(f'[{kind}#', last)
-                self.assertNotIn('TEST_SECRET', last)
-                self.assertIn('TEST 这是啥', last)
+                    self.assertIn(f'[{kind}#', first_msg)
+                self.assertNotIn('TEST_SECRET', first_msg)
+                self.assertIn('TEST 这是啥', second_msg)
                 self.assertEqual(len(self.vision_calls), 1)
                 self.assertEqual(len(fake.received), 1)
                 await runtime.stop()

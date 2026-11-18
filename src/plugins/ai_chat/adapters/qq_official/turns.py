@@ -280,7 +280,8 @@ class OfficialTurnLifecycle:
                         enqueue(cursor)
                     return bool(pending) and status == "silence"
                 try:
-                    self.platform.enqueue_reply(cursor, MessageBody((TextNode(0, final_text),)),
+                    from .mentions import parse_mention_body
+                    self.platform.enqueue_reply(cursor, parse_mention_body(cursor, self.handle.endpoint, final_text),
                                                 now=now, turn_id=turn_id)
                 except PlatformBoundaryError as exc:
                     if str(exc) in {"needs_attachment", "delivery_expired"}:
@@ -358,15 +359,21 @@ class OfficialTurnConsumer:
         self.business_services = business_services
 
     @staticmethod
-    def _unpack(source) -> tuple[str, tuple[int, ...]]:
+    def _unpack(source) -> tuple[str, tuple[int, ...], str, object]:
         if isinstance(source, str):
-            return source, ()
+            return source, (), "", None
         payload = getattr(source, "payload", None)
         if isinstance(payload, dict):
-            return str(payload.get("inbox_id") or ""), tuple(payload.get("batch_message_ids", ()))
-        return str(getattr(source, "inbox_id", "")), tuple(getattr(source, "batch_message_ids", ()))
+            inbox_id = str(payload.get("inbox_id") or "")
+            batch_ids = tuple(payload.get("batch_message_ids", ()))
+        else:
+            inbox_id = str(getattr(source, "inbox_id", ""))
+            batch_ids = tuple(getattr(source, "batch_message_ids", ()))
+        proactive_reason = str(getattr(source, "proactive_reason", "") or "").strip()
+        mid_turn = getattr(source, "mid_turn_pending", None)
+        return inbox_id, batch_ids, proactive_reason, mid_turn
 
-    def _prepare(self, inbox_id: str, batch_ids: tuple[int, ...]):
+    def _prepare(self, inbox_id: str, batch_ids: tuple[int, ...], proactive_reason: str = ""):
         now = int(self.clock())
         with self.outbox.deliveries.transaction() as cursor:
             row = cursor.execute("""SELECT i.received_at,i.turn_text,i.turn_text_version,x.deadline_at,x.execution_kind
@@ -405,7 +412,44 @@ class OfficialTurnConsumer:
                     lines.append(render_line(message))
                 text = ("[连续消息，请合起来回答一次]\n" if batch_ids else "") + "\n".join(lines)
                 inbound = replace(inbound, batch_message_ids=batch_ids)
+            if kind == "chat" and proactive_reason:
+                text = f"[判定：{proactive_reason}]\n{text}"
             return decision, inbound, text
+
+    def _drain_mid_turn_lines(self, handle: ExecutionHandle, items: list[object]) -> list[str]:
+        lines: list[str] = []
+        with self.outbox.deliveries.transaction() as cursor:
+            assert_epoch(cursor, self.token)
+            for item in items:
+                item_inbox = str(getattr(item, "inbox_id", "") or "")
+                if not item_inbox:
+                    continue
+                row = cursor.execute(
+                    """SELECT i.canonical_message_id, i.trigger_requested
+                       FROM qq_official_inbound_events i
+                       WHERE i.inbox_id=? AND i.account_key=? AND i.endpoint_key=?""",
+                    (item_inbox, self.token.account_key, handle.endpoint.key),
+                ).fetchone()
+                if row is None or row["canonical_message_id"] is None:
+                    continue
+                cid = int(row["canonical_message_id"])
+                if not permitted(cursor, handle.endpoint, canonical=cid):
+                    continue
+                msg_row = MessageLedger._message_row(cursor, cid)
+                if msg_row is None:
+                    continue
+                msg = MessageLedger._row_to_message(msg_row)
+                if msg.direction != "inbound":
+                    continue
+                reason = str(getattr(item, "proactive_reason", "") or "").strip()
+                rendered = render_line(msg, max_chars=2000)
+                if reason:
+                    lines.append(f"[判定：{reason}]\n{rendered}")
+                elif row["trigger_requested"] and handle.endpoint.kind == "group":
+                    lines.append(f"{rendered}（@你）")
+                else:
+                    lines.append(rendered)
+        return lines
 
     async def __call__(self, source):
         observation = dict(kind=None, model="", profile="", tools=0, status="crashed")
@@ -425,9 +469,9 @@ class OfficialTurnConsumer:
             _turn_observation.reset(mark)
 
     async def _run(self, source):
-        inbox_id, batch_ids = self._unpack(source)
+        inbox_id, batch_ids, proactive_reason, mid_turn = self._unpack(source)
         try:
-            return await self._execute(inbox_id, batch_ids)
+            return await self._execute(inbox_id, batch_ids, proactive_reason=proactive_reason, mid_turn=mid_turn)
         except asyncio.CancelledError:
             raise
         except (ToolLeaseLost, LeaseLost, ExecutionFenceLost):
@@ -466,8 +510,8 @@ class OfficialTurnConsumer:
                 self.sender_wake()
             return {"status": "failed"}
 
-    async def _execute(self, inbox_id: str, batch_ids: tuple[int, ...]):
-        decision, inbound, text = await self._calls(self._prepare, inbox_id, batch_ids)
+    async def _execute(self, inbox_id: str, batch_ids: tuple[int, ...], *, proactive_reason: str = "", mid_turn=None):
+        decision, inbound, text = await self._calls(self._prepare, inbox_id, batch_ids, proactive_reason)
         if decision.handle is None:
             return {"status": decision.state, "reason": decision.reason}
         handle = decision.handle
@@ -511,11 +555,26 @@ class OfficialTurnConsumer:
                 await life.finish(turn_id=None, status="succeeded", trace=None,
                                   final_text=result.result.text, error_code="", scope_key=inbound.scope.key)
             else:
+                extra_kwargs = {}
+                if mid_turn is not None:
+                    async def feedback_provider():
+                        notes: list[str] = []
+                        for info in self.orchestrator.running_tasks.list_for_endpoint(handle.endpoint):
+                            notes.extend(self.orchestrator.running_tasks.drain_feedback(info.task_id))
+                        queued = list(mid_turn.pending)
+                        mid_turn.pending.clear()
+                        if queued:
+                            merged_lines = await self._calls(self._drain_mid_turn_lines, handle, queued)
+                            if merged_lines:
+                                notes.append("[新消息]\n" + "\n".join(merged_lines))
+                        return notes
+                    extra_kwargs["feedback_provider"] = feedback_provider
                 seconds = min(self.model_timeout_seconds, max(0, handle.deadline_at - self.clock()))
                 async with asyncio.timeout(seconds):
                     await self.orchestrator.run(
                         inbound, platform, text, durable_lifecycle=life,
                         final_stream_sink=ReplyStream(platform), final_stream_state=FinalStreamState(),
+                        **extra_kwargs,
                     )
         except BaseException:
             try:

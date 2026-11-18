@@ -30,8 +30,11 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
             except asyncio.CancelledError:
                 cancelled.set()
                 raise
-            return {'reply':'TEST new proactive reply'}
+            return {'trigger':True,'reason':'TEST proactive reason'}
+        async def main_completion(**kwargs):
+            return base.model_response('TEST new proactive reply',[],kwargs)
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',side_effect=completion) as model, \
+                patch('src.plugins.ai_chat.agent_loop._create_completion',new=main_completion), \
                 patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.DEBOUNCE_SECONDS',0):
             async with verified_ready_platform() as fake:
                 runtime = self.runtime(loaded=base.runtime_fixture.loaded_config(fake.app_id,base=fake.base_url),
@@ -74,14 +77,13 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
                 await self.wait_db("SELECT inbox_id FROM qq_official_proactive_observations WHERE inbox_id=? AND state='discarded'",(pending,),timeout=20)
                 self.assertFalse(fake.received)
                 fresh = await topic('TEST_FRESH')
-                await self.wait_db("SELECT d.status FROM deliveries d JOIN qq_official_proactive_observations o USING(plan_id) WHERE o.inbox_id=? AND d.status='committed'",(fresh,),timeout=20)
+                await self.wait_db("SELECT d.status FROM deliveries d JOIN qq_official_turn_executions x USING(plan_id) JOIN qq_official_proactive_observations o USING(inbox_id) WHERE o.inbox_id=? AND d.status='committed'",(fresh,),timeout=20)
                 self.assertEqual(model.call_count,2)
                 self.assertEqual(len(fake.received),1)
                 configure(False); configure(True)
                 with runtime.store.transaction() as cursor:
-                    plan = cursor.execute('SELECT p.* FROM delivery_plans p JOIN qq_official_proactive_observations o USING(plan_id) WHERE o.inbox_id=?',(fresh,)).fetchone()
                     with self.assertRaises(MigrationDenied):
-                        runtime.background_service.proactive.plan_guard(cursor,token=runtime._token,plan=plan,operation='send',now=int(runtime.store.clock()))
+                        runtime.background_service.proactive._load(cursor,fresh)
                 # Policy changes cannot erase a real accepted platform receipt.
                 self.assertEqual(self.query('SELECT status FROM deliveries')[0]['status'],'committed')
                 await runtime.stop()

@@ -32,11 +32,11 @@ _STICKER_MARKER = re.compile(r"\[表情[:：][^\]\n]{0,80}\]")
 
 
 def _citation_safe_stream(sink, turn):
-    """Keep citations private until their IDs and sources are known."""
+    """Keep citations and incomplete [mention#...] tokens private until complete."""
     class Stream:
         @staticmethod
         def ready_prefix(text):
-            if turn.search_results or re.search(r"\[\d+\]", text):
+            if turn.search_results or re.search(r"\[\d+\]", text) or re.search(r"\[mention#[^\]]*$", text):
                 return "", text
             return getattr(type(sink), "ready_prefix", ready_stream_prefix)(text)
 
