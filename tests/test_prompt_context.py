@@ -103,3 +103,16 @@ class PromptContextTests(unittest.TestCase):
         self.assertEqual(trace.total_tokens, 408)
         self.assertEqual(trace.to_payload()["usage"]["cached_tokens"], 280)
         self.assertEqual(metrics.registry.get_sample_value("gaoji_model_cached_tokens_total", {"profile": "fixture"}), 280)
+
+    def test_stage0_honesty_uncertainty_and_live_source_rules(self):
+        from src.plugins.ai_chat import prompt
+        from src.plugins.ai_chat.adapters.qq_official.background_agents import PROMPT as BG_PROMPT
+        text = prompt.system_prompt()
+        self.assertIn("https://github.com/zty20040403/gaojibot", text)
+        self.assertIn("/run/gaoji/source", text)
+        self.assertIn("/nix/store", text)
+        self.assertIn("借鉴 Max", text)
+        self.assertIn("晚点给你准话", text)
+        self.assertIn("/run/gaoji/source", BG_PROMPT)
+        self.assertIn("/nix/store", BG_PROMPT)
+        self.assertIn("借鉴自 Rust 版 Max", BG_PROMPT)
