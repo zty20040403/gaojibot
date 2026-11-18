@@ -84,8 +84,9 @@ class MessageRecallTests(OutboxFixture):
         self.query("UPDATE messages SET message_kind='command'")
         self.assertEqual(self.search(),[])
         self.query("UPDATE messages SET message_kind='chat'")
-        self.query('UPDATE conversation_visibility SET min_canonical_message_id=?',(target.canonical_message_id+1,))
-        self.assertEqual(self.search(),[])
+        for floor in (target.canonical_message_id + 1, None):
+            self.query('UPDATE conversations SET min_canonical_message_id=?', (floor,))
+            self.assertEqual(self.search(),[])
 
     def test_wrong_model_and_zero_vector_are_explicit_failures_or_no_candidates(self):
         self.index('TEST visible evidence',[1]+[0]*1023)

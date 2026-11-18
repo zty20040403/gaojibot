@@ -328,14 +328,14 @@ class OfficialTurnPlatform:
                            m.occurred_at, m.raw_event_json,
                            q.native_message_id AS q_native, q.direction AS q_direction
                     FROM messages m
-                    JOIN conversation_visibility v USING (conversation_id)
+                    JOIN conversations c USING (conversation_id)
                     LEFT JOIN qq_official_messages q
                       ON q.canonical_message_id = m.canonical_message_id
                      AND q.account_key = ?
                      AND q.endpoint_key = ?
                     WHERE m.canonical_message_id = ?
                       AND m.source_endpoint_key = ?
-                      AND m.canonical_message_id >= v.min_canonical_message_id
+                      AND m.canonical_message_id >= c.min_canonical_message_id
                     FOR UPDATE OF m
                     """,
                     (

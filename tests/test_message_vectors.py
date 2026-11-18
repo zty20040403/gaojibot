@@ -65,9 +65,10 @@ class MessageVectorTests(OutboxFixture):
         with self.assertRaises(PermissionError):self.catalog.save(job,document,self.vector)
         self.assertEqual(self.query('SELECT * FROM semantic_documents'),[])
         self.assertEqual(len(self.catalog.enqueue(self.endpoint)),1)
-        self.query('UPDATE conversation_visibility SET min_canonical_message_id=?',(message.canonical_message_id+1,))
-        with self.assertRaises(PermissionError):self.catalog.current(job)
-        self.assertEqual(self.catalog.enqueue(self.endpoint),[])
+        for floor in (message.canonical_message_id + 1, None):
+            self.query('UPDATE conversations SET min_canonical_message_id=?', (floor,))
+            with self.assertRaises(PermissionError):self.catalog.current(job)
+            self.assertEqual(self.catalog.enqueue(self.endpoint),[])
 
     def test_stop_start_and_route_replacement_never_reauthorize_old_task(self):
         self.message(); self.catalog.enqueue(self.endpoint); job = self.claim()

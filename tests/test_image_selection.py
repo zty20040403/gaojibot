@@ -75,6 +75,6 @@ class ImageSelectionTests(unittest.IsolatedAsyncioTestCase):
         image = self.say(image=True)
         self.say()
         with self.ledger._transaction() as cursor:
-            cursor.execute('UPDATE conversation_visibility SET min_canonical_message_id=?', (image + 1,))
+            cursor.execute('UPDATE conversations SET min_canonical_message_id=?', (image + 1,))
         with self.assertRaisesRegex(MediaDenied, 'message_handle'):
             await self.selected()

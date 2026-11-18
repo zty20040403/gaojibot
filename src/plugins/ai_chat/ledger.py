@@ -114,9 +114,7 @@ class MessageLedger:
                 FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
-                JOIN conversation_visibility AS v
-                  ON v.conversation_id = m.conversation_id
-                WHERE m.canonical_message_id >= v.min_canonical_message_id
+                WHERE m.canonical_message_id >= c.min_canonical_message_id
                   AND m.message_kind != 'command'
                 ORDER BY m.canonical_message_id DESC
                 LIMIT ?
@@ -324,11 +322,9 @@ class MessageLedger:
                 FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
-                JOIN conversation_visibility AS v
-                  ON v.conversation_id = m.conversation_id
                 WHERE c.scope_key = ?
                   AND m.canonical_message_id = ?
-                  AND m.canonical_message_id >= v.min_canonical_message_id
+                  AND m.canonical_message_id >= c.min_canonical_message_id
                 """,
                 (scope.key, int(canonical_message_id)),
             ).fetchone()
@@ -373,12 +369,10 @@ class MessageLedger:
                 FROM messages AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
-                JOIN conversation_visibility AS v
-                  ON v.conversation_id = m.conversation_id
                 WHERE c.scope_key = ?
                   AND m.native_message_id = ?
                   AND m.source_endpoint_key = ?
-                  AND m.canonical_message_id >= v.min_canonical_message_id
+                  AND m.canonical_message_id >= c.min_canonical_message_id
                 """,
                 (scope.key, str(native_message_id), source_key),
             ).fetchone()
@@ -398,10 +392,8 @@ class MessageLedger:
                     FROM messages_with_captions AS m
                     JOIN conversations AS c
                       ON c.conversation_id = m.conversation_id
-                    JOIN conversation_visibility AS v
-                      ON v.conversation_id = m.conversation_id
                     WHERE c.scope_key = ?
-                      AND m.canonical_message_id >= v.min_canonical_message_id
+                      AND m.canonical_message_id >= c.min_canonical_message_id
                     ORDER BY m.occurred_at DESC, m.canonical_message_id DESC
                     LIMIT ?
                 ) ORDER BY occurred_at ASC, canonical_message_id ASC
@@ -426,11 +418,9 @@ class MessageLedger:
                 FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
-                JOIN conversation_visibility AS v
-                  ON v.conversation_id = m.conversation_id
                 WHERE c.scope_key = ?
                   AND m.canonical_message_id > ?
-                  AND m.canonical_message_id >= v.min_canonical_message_id
+                  AND m.canonical_message_id >= c.min_canonical_message_id
                 ORDER BY m.canonical_message_id ASC
                 LIMIT ?
                 """,
@@ -450,11 +440,9 @@ class MessageLedger:
                 FROM messages AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
-                JOIN conversation_visibility AS v
-                  ON v.conversation_id = m.conversation_id
                 WHERE c.scope_key = ?
                   AND m.canonical_message_id > ?
-                  AND m.canonical_message_id >= v.min_canonical_message_id
+                  AND m.canonical_message_id >= c.min_canonical_message_id
                 """,
                 (scope.key, max(int(canonical_message_id), 0)),
             ).fetchone()
@@ -464,15 +452,13 @@ class MessageLedger:
         with self._lock:
             row = self._connection.execute(
                 """
-                SELECT v.min_canonical_message_id
+                SELECT c.min_canonical_message_id
                 FROM conversations AS c
-                JOIN conversation_visibility AS v
-                  ON v.conversation_id = c.conversation_id
                 WHERE c.scope_key = ?
                 """,
                 (scope.key,),
             ).fetchone()
-        return int(row[0]) if row is not None else 1
+        return int(row[0]) if row is not None and row[0] is not None else 1
 
     def visible_messages_by_ids(
         self,
@@ -490,11 +476,9 @@ class MessageLedger:
                 FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
-                JOIN conversation_visibility AS v
-                  ON v.conversation_id = m.conversation_id
                 WHERE c.scope_key = ?
                   AND m.canonical_message_id IN ({placeholders})
-                  AND m.canonical_message_id >= v.min_canonical_message_id
+                  AND m.canonical_message_id >= c.min_canonical_message_id
                 ORDER BY m.canonical_message_id ASC
                 """,
                 [scope.key, *ids],
@@ -518,10 +502,8 @@ class MessageLedger:
                 FROM messages_with_captions AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
-                JOIN conversation_visibility AS v
-                  ON v.conversation_id = m.conversation_id
                 WHERE c.scope_key = ?
-                  AND m.canonical_message_id >= v.min_canonical_message_id
+                  AND m.canonical_message_id >= c.min_canonical_message_id
                 ORDER BY m.occurred_at DESC, m.canonical_message_id DESC
                 LIMIT 2000
                 """,
@@ -556,7 +538,7 @@ class MessageLedger:
 
         clauses = [
             "c.scope_key = ?",
-            "m.canonical_message_id >= v.min_canonical_message_id",
+            "m.canonical_message_id >= c.min_canonical_message_id",
             "m.canonical_message_id > ?",
             "m.message_kind <> 'command'",
         ]
@@ -580,7 +562,6 @@ class MessageLedger:
                 SELECT m.*, c.scope_key
                 FROM messages_with_captions AS m
                 JOIN conversations AS c ON c.conversation_id = m.conversation_id
-                JOIN conversation_visibility AS v ON v.conversation_id = m.conversation_id
                 WHERE {' AND '.join(clauses)}
                 ORDER BY m.canonical_message_id {'DESC' if newest else 'ASC'}
                 LIMIT ?
@@ -697,10 +678,8 @@ class MessageLedger:
                     FROM messages AS m
                     JOIN conversations AS c
                       ON c.conversation_id = m.conversation_id
-                    JOIN conversation_visibility AS v
-                      ON v.conversation_id = m.conversation_id
                     WHERE c.scope_key = ?
-                      AND m.canonical_message_id >= v.min_canonical_message_id
+                      AND m.canonical_message_id >= c.min_canonical_message_id
                       AND m.sender_principal_id IS NOT NULL
                 ) AS latest
                 WHERE latest.roster_rank = 1
@@ -938,11 +917,9 @@ class MessageLedger:
                 FROM messages AS m
                 JOIN conversations AS c
                   ON c.conversation_id = m.conversation_id
-                JOIN conversation_visibility AS v
-                  ON v.conversation_id = m.conversation_id
                 WHERE c.scope_key = ?
                   AND m.occurred_at > ?
-                  AND m.canonical_message_id >= v.min_canonical_message_id
+                  AND m.canonical_message_id >= c.min_canonical_message_id
                   AND m.direction = 'inbound'
                   {exclusion}
                 """,
@@ -955,11 +932,9 @@ class MessageLedger:
                     FROM messages_with_captions AS m
                     JOIN conversations AS c
                       ON c.conversation_id = m.conversation_id
-                    JOIN conversation_visibility AS v
-                      ON v.conversation_id = m.conversation_id
                     WHERE c.scope_key = ?
                       AND m.occurred_at > ?
-                      AND m.canonical_message_id >= v.min_canonical_message_id
+                      AND m.canonical_message_id >= c.min_canonical_message_id
                       AND m.direction = 'inbound'
                       {exclusion}
                     ORDER BY m.occurred_at DESC, m.canonical_message_id DESC
@@ -981,22 +956,15 @@ class MessageLedger:
                     raise PermissionError("Public history clear was not authorized")
             conversation = cursor.execute(
                 """
-                SELECT conversation_id FROM conversations WHERE scope_key = ?
+                SELECT conversation_id, COALESCE(min_canonical_message_id, 1) AS minimum
+                FROM conversations WHERE scope_key = ? FOR UPDATE
                 """,
                 (scope.key,),
             ).fetchone()
             if conversation is None:
                 return 0
             conversation_id = int(conversation["conversation_id"])
-            visibility = cursor.execute(
-                """
-                SELECT min_canonical_message_id
-                FROM conversation_visibility
-                WHERE conversation_id = ?
-                """,
-                (conversation_id,),
-            ).fetchone()
-            minimum = int(visibility[0]) if visibility is not None else 1
+            minimum = conversation["minimum"]
             aggregate = cursor.execute(
                 """
                 SELECT COUNT(*) AS count, MAX(canonical_message_id) AS maximum
@@ -1009,14 +977,10 @@ class MessageLedger:
             maximum = int(aggregate["maximum"] or (minimum - 1))
             cursor.execute(
                 """
-                INSERT INTO conversation_visibility (
-                    conversation_id, min_canonical_message_id, cleared_at
-                ) VALUES (?, ?, ?)
-                ON CONFLICT(conversation_id) DO UPDATE SET
-                    min_canonical_message_id = excluded.min_canonical_message_id,
-                    cleared_at = excluded.cleared_at
+                UPDATE conversations SET min_canonical_message_id = ?,
+                    history_cleared_at = ? WHERE conversation_id = ?
                 """,
-                (conversation_id, maximum + 1, int(time.time())),
+                (maximum + 1, int(time.time()), conversation_id),
             )
             return count
 
@@ -1051,8 +1015,8 @@ class MessageLedger:
             """
             INSERT INTO conversations (
                 scope_key, platform, kind, native_conversation_id,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                created_at, updated_at, min_canonical_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 scope.key,
@@ -1063,16 +1027,7 @@ class MessageLedger:
                 now,
             ),
         )
-        conversation_id = int(cursor.lastrowid)
-        cursor.execute(
-            """
-            INSERT INTO conversation_visibility (
-                conversation_id, min_canonical_message_id
-            ) VALUES (?, 1)
-            """,
-            (conversation_id,),
-        )
-        return conversation_id
+        return int(cursor.lastrowid)
 
     def _ensure_identity(
         self,

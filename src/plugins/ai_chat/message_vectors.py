@@ -75,8 +75,7 @@ class MessageVectorJobs:
             bounded = min(max(int(limit),1),32,128-pending)
             if bounded<=0:return []
             page = cursor.execute('''SELECT m.canonical_message_id FROM messages m JOIN conversations c USING(conversation_id)
-                JOIN conversation_visibility v USING(conversation_id) WHERE c.scope_key=?
-                  AND m.canonical_message_id>=v.min_canonical_message_id AND m.message_kind='chat'
+                WHERE c.scope_key=? AND m.canonical_message_id>=c.min_canonical_message_id AND m.message_kind='chat'
                   AND m.direction IN ('inbound','outbound') AND (CAST(? AS bigint) IS NULL OR m.canonical_message_id<?)
                 ORDER BY m.canonical_message_id DESC LIMIT 128''',(route['canonical_scope_key'],before,before)).fetchall()
             ids = [row['canonical_message_id'] for row in page]
@@ -87,8 +86,7 @@ class MessageVectorJobs:
             prefix = self.prefix+':'+admission
             rows = cursor.execute(f'''SELECT m.canonical_message_id,{REVISION} AS revision
                 FROM messages_with_captions m JOIN conversations c USING(conversation_id)
-                JOIN conversation_visibility v USING(conversation_id)
-                WHERE c.scope_key=? AND m.canonical_message_id>=v.min_canonical_message_id
+                WHERE c.scope_key=? AND m.canonical_message_id>=c.min_canonical_message_id
                   AND m.canonical_message_id=ANY(?) AND m.message_kind='chat' AND m.direction IN ('inbound','outbound')
                   AND NOT EXISTS (SELECT 1 FROM semantic_documents d WHERE d.scope_key=c.scope_key
                     AND d.source_type='message' AND d.source_handle='msg#' || m.canonical_message_id::text
@@ -125,9 +123,8 @@ class MessageVectorJobs:
             raise PermissionError('semantic_job_source_changed')
         row = cursor.execute(f'''SELECT m.*,c.scope_key,{REVISION} AS source_revision
             FROM messages_with_captions m JOIN conversations c USING(conversation_id)
-            JOIN conversation_visibility v USING(conversation_id)
-            WHERE m.canonical_message_id=? AND c.scope_key=? AND m.canonical_message_id>=v.min_canonical_message_id
-              AND m.message_kind='chat' AND m.direction IN ('inbound','outbound') FOR SHARE OF m,c,v''',
+            WHERE m.canonical_message_id=? AND c.scope_key=? AND m.canonical_message_id>=c.min_canonical_message_id
+              AND m.message_kind='chat' AND m.direction IN ('inbound','outbound') FOR SHARE OF m,c''',
             (source['message_id'],source['scope'])).fetchone()
         if row is None or row['source_revision']!=source['revision']:raise PermissionError('semantic_message_changed_or_hidden')
         message = MessageLedger._row_to_message(row)

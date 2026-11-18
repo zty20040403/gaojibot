@@ -151,6 +151,35 @@ class MessageLedgerTests(unittest.TestCase):
             )
         )
 
+    def test_missing_imported_floor_stays_hidden_until_clear_initializes_it(self) -> None:
+        historical = self.record_text(self.group_a, "1", "imported history")
+        with self.ledger._transaction() as cursor:
+            cursor.execute(
+                "UPDATE conversations SET min_canonical_message_id=NULL WHERE scope_key=?",
+                (self.group_a.key,),
+            )
+
+        self.assertEqual(self.ledger.visible_message_floor(self.group_a), 1)
+        self.assertIsNone(self.ledger.get_in_scope(self.group_a, historical.canonical_message_id))
+        self.assertEqual(self.ledger.recent_in_scope(self.group_a), [])
+        self.assertEqual(self.ledger.hide_history(self.group_a), 1)
+
+        new = self.record_text(self.group_a, "2", "new history")
+        self.assertEqual(
+            self.ledger.visible_message_floor(self.group_a),
+            historical.canonical_message_id + 1,
+        )
+        self.assertEqual(self.ledger.recent_in_scope(self.group_a), [new])
+
+    def test_new_conversation_stores_explicit_initial_floor(self) -> None:
+        self.record_text(self.group_a, "1", "new conversation")
+        with self.ledger._transaction() as cursor:
+            row = cursor.execute(
+                "SELECT min_canonical_message_id FROM conversations WHERE scope_key=?",
+                (self.group_a.key,),
+            ).fetchone()
+        self.assertEqual(row[0], 1)
+
     def test_same_onebot_identity_has_stable_principal_across_groups(self) -> None:
         body = MessageBody((MentionNode(0, "88", "Bob"),))
         first = self.ledger.record_message(

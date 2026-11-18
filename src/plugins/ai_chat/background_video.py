@@ -46,10 +46,10 @@ class VideoSession:
     def guard(self, cursor, source):
         self.check(cursor)
         row = cursor.execute('''SELECT m.body_json FROM messages m
-            JOIN conversations c USING(conversation_id) JOIN conversation_visibility v USING(conversation_id)
+            JOIN conversations c USING(conversation_id)
             WHERE m.canonical_message_id=? AND c.scope_key=? AND m.source_endpoint_key=?
-                AND m.canonical_message_id>=v.min_canonical_message_id AND m.message_kind='chat' AND m.direction='inbound'
-            FOR SHARE OF m,v''', (source.ref.canonical_id,self.inbound.scope.key,self.inbound.endpoint.key)).fetchone()
+                AND m.canonical_message_id>=c.min_canonical_message_id AND m.message_kind='chat' AND m.direction='inbound'
+            FOR SHARE OF m,c''', (source.ref.canonical_id,self.inbound.scope.key,self.inbound.endpoint.key)).fetchone()
         if row is None or hashlib.sha256(body_to_json(body_from_json(row['body_json'])).encode()).hexdigest() != source.body_digest:
             raise MediaDenied('video_source_changed')
 
