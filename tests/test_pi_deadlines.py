@@ -280,7 +280,7 @@ class PiDeadlineTests(unittest.IsolatedAsyncioTestCase):
         server = Disconnected()
         fixture, engine, row = self.make_engine(server)
         row['deadline_at'] += 30
-        with self.assertRaisesRegex(TimeoutError, 'TEST tunnel timed out'):
+        with self.assertRaisesRegex(RuntimeError, '后台进程没能启动'):
             await engine(row, fixture._session(), feedback=AsyncMock(return_value=[]),
                 progress=AsyncMock(), trace=AgentTrace())
         fixture.gateway.revoke.assert_called_once_with('TEST_TOKEN')

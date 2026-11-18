@@ -134,8 +134,24 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('PI_SKIP_VERSION_CHECK=1', script)
         self.assertIn('PI_TELEMETRY=0', script)
         self.assertIn('HOME=/work', script)
+        self.assertIn('systemd-run --unit=gaoji-job-9 --collect', script)
         self.assertNotIn('--no-session', script)
         self.assertNotIn('hello prompt', script)
+
+    async def test_channel_wait_timeout_reports_startup_failure(self) -> None:
+        class NeverConnects(FakePiRpcServer):
+            async def wait(self, timeout: float) -> None:
+                raise TimeoutError('bridge never connected')
+
+        with self.assertRaisesRegex(RuntimeError, '后台进程没能启动'):
+            await self._engine(NeverConnects())(
+                {'job_id': 21, 'task': 'TEST', 'deadline_at': 7200},
+                self._session(),
+                feedback=AsyncMock(return_value=[]),
+                progress=AsyncMock(),
+                trace=AgentTrace(),
+            )
+        self.gateway.revoke.assert_called_once_with('TEST_TOKEN')
 
     async def test_steer_progress_usage_and_final_report(self) -> None:
         server = FakePiRpcServer()

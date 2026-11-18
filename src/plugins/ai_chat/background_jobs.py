@@ -193,10 +193,11 @@ class BackgroundRunner:
         session = None
         state, error, report = 'completed', '', ''
         report_failed = False
+        deadline = asyncio.timeout(max(0, row['deadline_at'] - self.clock()) + 180)
         try:
             session = await self.session_factory(row, durable_job, question)
             # The engine stops itself at the deadline; this only bounds a stuck one.
-            async with asyncio.timeout(max(0, row['deadline_at'] - self.clock()) + 180):
+            async with deadline:
                 report = await self.engine(row, session, feedback=feedback, progress=progress, trace=trace)
             if outcome_of(report) == 'failed':
                 report_failed = True
@@ -209,8 +210,12 @@ class BackgroundRunner:
             state = 'cancelled' if current['state'] == 'cancelled' else 'failed'
             error = '用户取消了任务。' if state == 'cancelled' else '服务停止，任务已中断；工作区文件保留。'
             raise
-        except TimeoutError:
-            state, error = 'failed', '任务超过创建时确定的截止时间且没能正常停下；请查看工作区中的现有文件。'
+        except TimeoutError as exc:
+            if deadline.expired():
+                state, error = 'failed', '任务超过创建时确定的截止时间且没能正常停下；请查看工作区中的现有文件。'
+            else:
+                state, error = 'failed', f'后台任务失败：后台进程没能启动或内部步骤超时（{exc}）'
+                self.logger.exception('Background job %s timed out before job deadline', row['job_id'])
         except Exception as exc:
             state, error = 'failed', f'后台任务失败：{type(exc).__name__}: {exc}'
             self.logger.exception('Background job %s failed', row['job_id'])
