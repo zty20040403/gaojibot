@@ -83,12 +83,13 @@ def pi_arguments(effort: str, conf: str, session_dir: str, extension: str) -> tu
 
 
 def launch_script(job_id: int, token: str, effort: str, port: int, prompt: str, *,
-                  context_window: int = 200000, pi_bin: str = 'pi') -> str:
+                  context_window: int = 200000, pi_bin: str = 'pi', runtime_max_sec: int = 21900) -> str:
     if not isinstance(job_id, int) or isinstance(job_id, bool) or job_id <= 0:
         raise ValueError('invalid background job id')
     encode = lambda data: base64.b64encode(data).decode()
     job_dir = f'/work/.gaoji/jobs/job-{job_id}'
     conf = f'/run/gaoji/jobs/job-{job_id}'
+    unit = f'gaoji-job-{job_id}'
     models = json.dumps(pi_models_json(port, context_window=context_window), ensure_ascii=False).encode()
     settings = json.dumps({'steeringMode': 'all', 'retry': {'maxRetries': 8}}).encode()
     args = ' '.join(shlex.quote(arg) for arg in (pi_bin, *pi_arguments(
@@ -100,11 +101,28 @@ chmod 700 {conf}
 printf %s {encode(models)} | base64 -d > {conf}/models.json
 printf %s {encode(settings)} | base64 -d > {conf}/settings.json
 printf %s {encode(prompt.encode())} | base64 -d > {conf}/job-system.md
+cat <<'GAOJI_JOB_EOF' > {conf}/run.sh
+#!/bin/sh
+set -eu
+[ -r /etc/set-environment ] && . /etc/set-environment
+export PATH="/run/wrappers/bin:/run/current-system/sw/bin:${{PATH:-/usr/bin:/bin}}"
 cd /work
-GAOJI_JOB_TOKEN={shlex.quote(token)} GAOJI_HOST_URL={shlex.quote(f'http://{HOST}:{port}')} \\
-  PI_CODING_AGENT_DIR={shlex.quote(conf)} PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 HOME=/work \\
-  GAOJI_AGENT_ERR={job_dir}/agent.err setsid nohup python3 /etc/gaoji/pi/sandbox_agent_bridge.py \\
-  {HOST} {port + 1} -- {args} >{job_dir}/bridge.log 2>&1 </dev/null &
+export GAOJI_JOB_TOKEN={shlex.quote(token)}
+export GAOJI_HOST_URL={shlex.quote(f'http://{HOST}:{port}')}
+export PI_CODING_AGENT_DIR={shlex.quote(conf)}
+export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 HOME=/work
+export GAOJI_AGENT_ERR={job_dir}/agent.err
+exec python3 /etc/gaoji/pi/sandbox_agent_bridge.py {HOST} {port + 1} -- {args} >{job_dir}/bridge.log 2>&1 </dev/null
+GAOJI_JOB_EOF
+chmod 700 {conf}/run.sh
+if command -v systemd-run >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  systemctl stop {unit}.service 2>/dev/null || true
+  systemctl reset-failed {unit}.service 2>/dev/null || true
+  systemd-run --unit={unit} --collect --quiet --service-type=exec --property=RuntimeMaxSec={int(runtime_max_sec)} {conf}/run.sh
+else
+  cd /work
+  setsid nohup {conf}/run.sh >/dev/null 2>&1 </dev/null &
+fi
 '''
 
 
@@ -271,7 +289,10 @@ class PiEngine:
                 ),
             )
             ensure_running()
-            await channel.wait(120)
+            try:
+                await channel.wait(120)
+            except TimeoutError as exc:
+                raise RuntimeError('后台进程没能启动：容器内桥接进程超时未连接宿主中转。') from exc
             ensure_running()
             reader = asyncio.create_task(run.read())
             data = await run.request({'type': 'prompt', 'message': row['task']})

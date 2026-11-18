@@ -1,5 +1,6 @@
 """Import as gaoji_browser inside a conversation VM; no host credentials."""
 import asyncio
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -15,25 +16,36 @@ async def page():
         try:
             _browser = await _driver.chromium.connect_over_cdp('http://127.0.0.1:9222', timeout=2000)
         except Exception:
-            profile = Path('/work/.gaoji/chromium')
-            profile.mkdir(parents=True, exist_ok=True)
-            executable = shutil.which('chromium') or shutil.which('chromium-browser')
-            if executable is None:
-                raise RuntimeError('Chromium 未安装，请安装 chromium 软件包。') from None
-            log = (profile.parent / 'chromium.log').open('ab')
-            subprocess.Popen([executable, '--headless', '--no-sandbox', '--disable-dev-shm-usage',
-                '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=9222',
-                '--user-data-dir=' + str(profile), 'about:blank'], stdin=subprocess.DEVNULL,
-                stdout=log, stderr=log, start_new_session=True)
-            log.close()
-            for attempt in range(20):
-                await asyncio.sleep(.25)
-                try:
-                    _browser = await _driver.chromium.connect_over_cdp('http://127.0.0.1:9222', timeout=1000)
-                    break
-                except Exception:
-                    if attempt == 19:
-                        raise
+            if os.geteuid() == 0 and Path('/run/systemd/system').is_dir() and shutil.which('systemctl'):
+                proc = await asyncio.create_subprocess_exec(
+                    'systemctl', 'start', 'gaoji-browser.service',
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                )
+                _, err = await proc.communicate()
+                if proc.returncode == 0:
+                    _browser = await _driver.chromium.connect_over_cdp('http://127.0.0.1:9222', timeout=5000)
+                else:
+                    raise RuntimeError('Chromium 服务启动失败：' + err.decode(errors='replace').strip()) from None
+            else:
+                profile = Path('/work/.gaoji/chromium')
+                profile.mkdir(parents=True, exist_ok=True)
+                executable = shutil.which('chromium') or shutil.which('chromium-browser')
+                if executable is None:
+                    raise RuntimeError('Chromium 未安装，请安装 chromium 软件包。') from None
+                log = (profile.parent / 'chromium.log').open('ab')
+                subprocess.Popen([executable, '--headless', '--no-sandbox', '--disable-dev-shm-usage',
+                    '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=9222',
+                    '--user-data-dir=' + str(profile), 'about:blank'], stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=log, start_new_session=True)
+                log.close()
+                for attempt in range(20):
+                    await asyncio.sleep(.25)
+                    try:
+                        _browser = await _driver.chromium.connect_over_cdp('http://127.0.0.1:9222', timeout=1000)
+                        break
+                    except Exception:
+                        if attempt == 19:
+                            raise
     context = _browser.contexts[0]
     return context.pages[-1] if context.pages else await context.new_page()
 

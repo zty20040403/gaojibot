@@ -58,6 +58,49 @@ in {
     serviceConfig.Type = "oneshot";
     script = "umask 022; cat /proc/sys/kernel/random/uuid > /run/gaoji-boot-id";
   };
+
+  # Resident headless Chromium shared across commands and jobs over CDP (9222).
+  # Running in its own service keeps browser tabs alive after transient
+  # systemd-run command units finish.
+  systemd.services.gaoji-browser = {
+    restartIfChanged = false;
+    unitConfig.RequiresMountsFor = "/work";
+    environment.TZ = "Asia/Shanghai";
+    serviceConfig = {
+      ExecStartPre = [
+        "${pkgs.coreutils}/bin/mkdir -p /work/.gaoji/chromium"
+        "${pkgs.coreutils}/bin/rm -f /work/.gaoji/chromium/SingletonLock /work/.gaoji/chromium/SingletonSocket /work/.gaoji/chromium/SingletonCookie"
+      ];
+      ExecStart = lib.escapeShellArgs [
+        "${pkgs.chromium}/bin/chromium"
+        "--headless=new"
+        "--no-sandbox"
+        "--disable-dev-shm-usage"
+        "--remote-debugging-address=127.0.0.1"
+        "--remote-debugging-port=9222"
+        "--user-data-dir=/work/.gaoji/chromium"
+        "--no-first-run"
+        "--no-default-browser-check"
+        "--lang=zh-CN"
+        "--accept-lang=zh-CN,zh"
+        "--window-size=1280,900"
+        "about:blank"
+      ];
+      ExecStartPost = pkgs.writeShellScript "gaoji-browser-ready" ''
+        for _ in $(seq 200); do
+          ${pkgs.curl}/bin/curl -sf http://127.0.0.1:9222/json/version >/dev/null && exit 0
+          sleep 0.1
+        done
+        exit 1
+      '';
+      SuccessExitStatus = 143;
+      Restart = "on-failure";
+      MemoryMax = "2G";
+    };
+  };
+
+  systemd.settings.Manager.DefaultEnvironment = "PATH=/run/wrappers/bin:/run/current-system/sw/bin HOME=/work";
+  users.users.root.home = lib.mkForce "/work";
   systemd.tmpfiles.rules =
     map
     (name: "L+ ${name} - - - - /run/current-system/sw/bin/${baseNameOf name}")

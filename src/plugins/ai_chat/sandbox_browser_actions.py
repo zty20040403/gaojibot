@@ -83,6 +83,12 @@ def processes(profile):
 
 
 async def stop_browser(profile):
+    if profile == PROFILE and os.geteuid() == 0 and Path('/run/systemd/system').is_dir() and shutil.which('systemctl'):
+        proc = await asyncio.create_subprocess_exec(
+            'systemctl', 'stop', 'gaoji-browser.service',
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
     for pid in processes(profile):
         try:
             descriptor = os.pidfd_open(pid)

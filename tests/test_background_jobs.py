@@ -205,3 +205,23 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored['error'], '后台报告任务失败：/root/missing 不存在')
         self.assertEqual(stored['report'], '结果：失败\n/root/missing 不存在')
 
+    async def test_internal_timeout_is_not_misreported_as_six_hour_deadline(self):
+        row = self.submit('TEST_STARTUP_TIMEOUT')
+
+        async def nothing(*args):
+            pass
+
+        async def session(*args):
+            return SimpleNamespace(prompt='TEST', tools=(), close=nothing)
+
+        async def engine(*args, **kwargs):
+            raise TimeoutError('channel wait 120s')
+
+        runner = BackgroundRunner(self.store, calls=self.calls, session_factory=session, save_report=nothing,
+            ask_main=nothing, record_usage=nothing, logger=logging.getLogger(__name__), engine=engine, clock=lambda: self.now)
+        await runner.execute(self.queue.get(row['job_id']))
+        stored = self.store.get(row['job_id'])
+        self.assertEqual(stored['state'], 'failed')
+        self.assertIn('后台进程没能启动', stored['error'])
+        self.assertNotIn('超过创建时确定的截止时间', stored['error'])
+
