@@ -236,6 +236,7 @@ class Settings:
     sandbox_container_broker: str = ""
     sandbox_operations_owners: frozenset[str] = frozenset()
     sandbox_operations_domain: str = ""
+    interest_state_dir: str = ""
     search_api_key: str = field(default="", repr=False)
     reasoning_router_profile: str = ""
     background_context_window: int = 200000
@@ -263,6 +264,7 @@ class Settings:
         ):
             raise ValueError('AI_BACKGROUND_MODELS must contain 1–8 nonempty model names of at most 100 characters')
         return cls(
+            interest_state_dir=environment.get("AI_GLOBAL_INTEREST_STATE_DIR", "").strip(),
             deepseek_api_key=environment.get("DEEPSEEK_API_KEY", "").strip(),
             deepseek_base_url=environment.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip(),
             deepseek_model=environment.get("DEEPSEEK_MODEL", "deepseek-v4-flash").strip(),

@@ -41,6 +41,7 @@ def record_group_activity(cursor, endpoint, canonical, now, *, direct):
     if direct:
         # A late @ can promote an older message while newer work is pending.
         cursor.execute('''UPDATE qq_official_endpoints SET
+            interest_after_lull=0,
             attention_cursor=GREATEST(attention_cursor,?),
             attention_end=GREATEST(attention_end,?),
             attention_next_at=CASE WHEN attention_end>GREATEST(attention_cursor,?)
@@ -58,8 +59,8 @@ def record_group_activity(cursor, endpoint, canonical, now, *, direct):
     hint=row['attention_next_at']
     if hint is not None and (row['attention_end']>row['attention_cursor'] or hint>now):
         due=min(hint,due)
-    cursor.execute('''UPDATE qq_official_endpoints SET attention_end=?,attention_next_at=?,attention_activity_at=?
-        WHERE endpoint_key=?''',(canonical,due,now,endpoint.key))
+    cursor.execute('''UPDATE qq_official_endpoints SET attention_end=?,attention_next_at=?,attention_activity_at=?,interest_after_lull=?
+        WHERE endpoint_key=?''',(canonical,due,now,canonical if gap is not None and gap>=QUIET_LOOK_SECONDS else 0,endpoint.key))
 
 
 def wake_available(cursor, endpoint, now):
@@ -86,6 +87,7 @@ class ProactiveIngress:
         self.billing=billing
         self.wake_turn=wake_turn
         self.media=media
+        self.sharing=None
         self._issued=weakref.WeakKeyDictionary()
 
     def _now(self):
@@ -175,13 +177,14 @@ class ProactiveIngress:
             classified=c.execute('''SELECT count(*) FROM qq_official_proactive_observations
                 WHERE endpoint_key=? AND created_at>?''',(ep.key,now-3600)).fetchone()[0]
             if classified>=MAX_CLASSIFICATIONS_PER_HOUR:return None
+            day,interest=self.sharing.reserve(c,inbox,ep,now) if self.sharing is not None else (None,None)
             inserted=c.execute('''INSERT INTO qq_official_proactive_observations
                 (inbox_id,account_key,endpoint_key,actor_key,canonical_message_id,source_native_message_id,source_received_at,
-                 deadline_at,ingest_job_id,worker_owner,worker_generation,account_epoch,endpoint_generation,endpoint_route_epoch,state,created_at,proactive_generation)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'scoring',?,?) ON CONFLICT DO NOTHING''',
+                 deadline_at,ingest_job_id,worker_owner,worker_generation,account_epoch,endpoint_generation,endpoint_route_epoch,state,created_at,proactive_generation,interest_day,interest_candidate_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'scoring',?,?,?,?) ON CONFLICT DO NOTHING''',
                 (inbox['inbox_id'],ep.account.key,ep.key,actor.key,inbox['canonical_message_id'],inbox['native_message_id'],inbox['received_at'],
                  inbox['received_at']+30,None,self.token.holder_id,self.token.epoch,self.token.epoch,
-                 inbox['endpoint_generation'],inbox['route_epoch'],now,proactive_state(c,ep)[1]))
+                 inbox['endpoint_generation'],inbox['route_epoch'],now,proactive_state(c,ep)[1],day,interest))
             if inserted.rowcount!=1:return None
             source=ProactiveCandidate(inbox['inbox_id'],batch,batch[0]['canonical_message_id'])
             self._issued[source]=True
@@ -305,6 +308,9 @@ class ProactiveIngress:
         marker=active_job_fence.set(JobFence(None,self.token.holder_id,1,check,self.token.epoch))
         try:
             lifetime=await self.current(source)
+            if self.sharing is not None and await self.calls(self.sharing.share,source):
+                self.sharing.wake()
+                return None
             async with asyncio.timeout(max(0,lifetime.deadline_at-self._now())):
                 result=await score_and_deliver(source=source,scorer=self.score,current=self.current,
                     send_policy=self.send_policy,wake=self.wake,now=self._now)
@@ -339,4 +345,7 @@ class ProactiveIngress:
                 or plan['route_epoch']!=inbox['route_epoch'] or not self._now()<plan['expires_at']<=row['deadline_at']
                 or json.loads(plan['manifest_json']).get('source_native_message_id')!=row['source_native_message_id']):
             raise MigrationDenied('proactive_plan_source_changed')
+        if row['interest_day'] is not None:
+            if self.sharing is None:raise MigrationDenied('interest_sharing_unavailable')
+            self.sharing.guard(c,row,loaded=(inbox,ep,actor,message),plan=plan)
         return True

@@ -1,5 +1,7 @@
 """Explicit account-runtime composition; no environment or bot instance."""
 from dataclasses import dataclass
+from pathlib import Path
+from .interest_sharing import InterestSharing
 from src.plugins.ai_chat.adapters.qq_official.proactive_ingress import ProactiveIngress
 from src.plugins.ai_chat.application.shared_proactive import SharedProactiveScorer
 from src.plugins.ai_chat.adapters.qq_official.native_background import NativeBackgroundService
@@ -51,6 +53,8 @@ def background_factory(*,proactive_configuration=ProactiveConfiguration(),proact
                 outbox=runtime.outbox,scorer=scorer,clock=runtime.store.clock,database_calls=runtime._calls,
                 billing=lambda endpoint,actor,current:scoped(app,endpoint,'proactive',actor,current=current),
                 wake_turn=getattr(runtime,'wake_proactive_turn',None),media=runtime.media_service)
+            if app.settings.interest_state_dir:
+                proactive.sharing=InterestSharing(proactive,state_dir=Path(app.settings.interest_state_dir),wake=runtime.sender.wake)
         service=NativeBackgroundService(runtime=runtime,token=token,proactive=proactive)
         service.attach()
         return service
