@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 
 from ...background_jobs import BackgroundJobs, BackgroundRunner, outcome_of
+from ...background_reports import text_report
 from ...background_tools import BackgroundToolSession, workspace_owner
 from ...job_gateway import JobGateway
 from ...pi_engine import BackgroundModelSettings, PiEngine, upstream_profile
@@ -24,9 +25,10 @@ from .keys import account_job_kind
 REPORT_BYTES = 90_000
 
 PROMPT = '''你是 gaoji 的后台 agent，在本会话的 NixOS 容器里工作：命令以 root 运行，只有 /work 会一直保留，其他位置的改动重启即丢失。
-聊天记录要用 history（或 bash 里 `gaoji history`）查；可用 `gaoji say` / `gaoji send-file` / `gaoji send-image` 向本会话交付中间结果，须核对真实回执，登记成功不等于已发出。你的最后一条消息就是报告，前台会转述它，并发送你在报告里写出路径的文件；不要重复交付已经发出的文件。
+聊天记录要用 history（或 bash 里 `gaoji history`）查；可用 `gaoji say` / `gaoji send-file` / `gaoji send-image` 向本会话交付中间结果，须核对真实回执，登记成功不等于已发出。你的最后一条消息就是报告；附件报告由前台处理报告里的文件路径，不要重复交付已经发出的文件。
 - 报告第一行必须是这三种之一：结果：成功、结果：部分完成、结果：失败。任务要求的事没做成就写失败，并在第二行写原因。
 - 报告先结论后要点，每条结论附可核查证据指针（来源链接/文件路径和行号/工具读到的片段），写明来源和日期、生成文件的绝对路径；证据不全要明确说明未核实范围和没做完的事，不要猜测，2000 字以内。
+- 仅当任务无需交付附件、结果为成功或部分完成时，最后报告改用以下纯文本格式（每条结论和对应证据各占一行，编号从 1 开始连续，最多 12 条；不要声称文件已发送）：\n结果：成功\n[纯文本报告 v1]\n结论 1: 原样交付给用户的结论\n证据 1: 来源指针及日期，未核实则说明\n[/纯文本报告]\n前台直接交付结论；群友可通过任务编号展开证据。需要交付附件或报告失败时仍按原有格式处理。
 - 查代码或文件先用 `rg` 缩小范围，再批量读取相关文件、批量跑检查；避免逐文件盲读或重复跑同类检查。
 - 任务里提到某个技能（比如 browser）时，用 use_skill 读它的全文。
 - 多步长任务可用 `todo` 工具记录步骤进度。
@@ -213,7 +215,13 @@ class OfficialBackgroundAgents:
                             number, inbound.endpoint.key, inbound.actor.key, allow_any_actor=is_privileged
                         ),
                     }
-                return {'jobs': [view(row, int(self.clock())) for row in rows]}
+                jobs = [view(row, int(self.clock())) for row in rows]
+                if name == 'agent_status' and number is not None and row['state'] == 'completed':
+                    report = text_report(row['report'])
+                    if report is not None:
+                        jobs[0]['report_detail'] = quote_evidence(
+                            json.dumps(report, ensure_ascii=False), 'background_report', stable=True)
+                return {'jobs': jobs}
         return await self.calls(run)
 
     def restore(self, row):

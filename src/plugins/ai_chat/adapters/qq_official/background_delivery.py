@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from ...agent_loop import AgentTrace, ask_deepseek_with_tools
 from ...application.turn_context import turn_window
 from ...background_tools import BackgroundPlatform
+from ...background_reports import report_notice
 from ...message_ir import MessageBody, TextNode
 from ...prompt import system_prompt
 from ...tool_policy import ToolCatalog, policy_for_tool
@@ -44,6 +45,10 @@ async def present(service, row, *, question=None):
 async def _present(service, row, *, question=None):
     app, runtime = service.app, service.runtime
     inbound = await service.calls(service.restore, row)
+    answer = report_notice(row['job_id'], row['report']) if question is None and row['state'] == 'completed' else None
+    if answer is not None:
+        await _enqueue(service, row, inbound, answer, question=None, expected_report=row['report'])
+        return
     profile = app.model_catalog.resolve_preference(row['profile'])
     files, trace = None, AgentTrace()
     answer = row.get('frontend_answer', '') if question is None else ''
@@ -108,9 +113,21 @@ async def _present(service, row, *, question=None):
             await files.close()
         await service.record_usage(row, trace)
 
+    await _enqueue(service, row, inbound, answer, question=question)
+
+
+async def _enqueue(service, row, inbound, answer, *, question, expected_report=None):
+    runtime = service.runtime
+
     def enqueue():
         with runtime.store.transaction() as cursor:
             service.check(cursor, row)
+            if expected_report is not None:
+                current = cursor.execute('SELECT state,report,delivered_at FROM background_jobs WHERE job_id=? FOR UPDATE',
+                                         (row['job_id'],)).fetchone()
+                if (current is None or current['state'] != 'completed' or current['report'] != expected_report
+                        or current['delivered_at'] is not None):
+                    raise PermissionError('后台任务结果已改变或关闭。')
             if answer.strip() != '[silence]':
                 key = f"background:{row['job_id']}:" + ('result' if question is None else hashlib.sha256(question.encode()).hexdigest())
                 runtime.outbox.enqueue(service.token, rendered=render_plan(MessageBody((TextNode(0, answer),)), inbound.endpoint),
