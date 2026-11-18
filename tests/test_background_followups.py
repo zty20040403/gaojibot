@@ -65,18 +65,28 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
         return results
 
     async def submit(self, task='TEST web page', **kwargs):
-        result = json.loads(await execute(self.turn, {'task': task, **kwargs}, name='agent'))
+        result = json.loads(await execute(self.turn, {'task': task, 'acceptance': 'TEST verify output against the request', **kwargs}, name='agent'))
         self.assertTrue(result['ok'], result)
         return result
 
+    async def test_missing_acceptance_is_a_tool_input_error(self):
+        for value in (None, '', '   '):
+            args = {'task': 'TEST task'} if value is None else {'task': 'TEST task', 'acceptance': value}
+            result = json.loads(await execute(self.turn, args, name='agent'))
+            self.assertFalse(result['ok'])
+            self.assertIn('验收标准', result['error'])
+        with self.assertRaisesRegex(ValueError, '验收标准'):
+            await self.service.control(self.turn, 'agent', {'task': 'TEST task'})
+        self.assertEqual(self.service.store.list(), [])
+
     async def test_start_status_and_steer_keep_one_job(self):
-        created, = await self.ask('帮我做个网页', ('agent', {'task': 'TEST web page'}))
+        created, = await self.ask('帮我做个网页', ('agent', {'task': 'TEST web page', 'acceptance': 'TEST page has requested contents'}))
         job = created['job']
         number = int(job[4:])
         self.service.store.update(number, state='running', last_tool='shell')
         self.f.now += 7
         rejected, status = await self.ask('做咋样了',
-            ('agent', {'task': 'TEST accidentally restart page'}), ('agent_status', {'job': job}))
+            ('agent', {'task': 'TEST accidentally restart page', 'acceptance': 'TEST page exists'}), ('agent_status', {'job': job}))
         self.assertFalse(rejected['ok'])
         self.assertIn(job, rejected['error'])
         self.assertEqual(status['jobs'][0]['last_tool'], 'shell')
@@ -96,7 +106,7 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
     async def test_independent_work_is_explicit_and_ambiguous_steer_is_not_guessed(self):
         first = await self.submit()
         rejected = json.loads(await execute(self.turn,
-            {'task': 'TEST second', 'independent': 'true'}, name='agent'))
+            {'task': 'TEST second', 'acceptance': 'TEST second result exists', 'independent': 'true'}, name='agent'))
         self.assertFalse(rejected['ok'])
         second = await self.submit('TEST independent chart', independent=True)
         snapshot = await task_context(self.turn)
@@ -110,6 +120,16 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(changed['steered'])
         self.assertEqual(json.loads(self.service.store.get(int(first['job'][4:]))['steering_json']), [])
         self.assertEqual(json.loads(self.service.store.get(int(second['job'][4:]))['steering_json']), ['TEST chart only'])
+
+    async def test_resume_keeps_previous_title_and_distinct_job(self):
+        first = await self.submit('TEST actual objective')
+        prior = self.service.store.get(int(first['job'][4:]))
+        self.assertEqual(prior['title'], 'TEST actual objective')
+        self.service.store.update(prior['job_id'], state='completed', finished_at=self.f.now)
+        resumed = await self.submit('TEST continue objective', resume=first['job'])
+        self.assertNotEqual(resumed['job'], first['job'])
+        self.assertEqual(self.service.store.get(int(resumed['job'][4:]))['title'], prior['title'])
+        self.assertIn('TEST continue objective', self.service.store.get(int(resumed['job'][4:]))['task'])
 
     async def test_finished_jobs_show_results_and_do_not_accept_steering(self):
         for state in ('completed', 'failed', 'cancelled'):

@@ -56,6 +56,14 @@ class SearchProgressTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await call(state, 'TEST'))['note'], sources.STOP_SEARCH)
             self.assertEqual(provider.await_count, 2)
 
+    async def test_search_handoff_remains_closed_when_escaped_evidence_grows(self):
+        state = turn()
+        state.search_terms = ['<' * 180 + str(i) for i in range(60)]
+        text = background.search_handoff(state)
+        self.assertLess(len(text), 6100)
+        self.assertIn('[已截断]', text)
+        self.assertRegex(text, r'</untrusted id="[0-9a-f]{32}">$')
+
     async def test_slow_foreground_passes_evidence_not_credentials(self):
         state = turn()
         clock = SimpleNamespace(monotonic=iter((0, 31)).__next__)
@@ -70,8 +78,12 @@ class SearchProgressTests(unittest.IsolatedAsyncioTestCase):
             await sources.web_fetch(state, {'url': 'https://example.test/read'})
         control = AsyncMock(return_value={'job': 'job#1'})
         with patch.object(background, 'service', return_value=SimpleNamespace(control=control)):
-            await background.execute(state, {'task': 'research'}, name='agent')
-        task = control.await_args.args[2]['task']
-        for text in ('TEST question', 'https://example.test/found', 'https://example.test/read', 'read_urls'):
-            self.assertIn(text, task)
-        self.assertNotIn('TEST_SECRET', task)
+            await background.execute(state, {'task': 'research', 'acceptance': 'cite read sources'}, name='agent')
+        args = control.await_args.args[2]
+        self.assertEqual(args['task'], 'research')
+        self.assertEqual(args['acceptance'], 'cite read sources')
+        handoff = background.search_handoff(state)
+        for text in ('TEST question', 'https://example.test/found', 'https://example.test/read', 'read_urls', 'found_urls'):
+            self.assertIn(text, handoff)
+        self.assertNotIn('TEST_SECRET', handoff)
+        self.assertNotIn('api_key', handoff)

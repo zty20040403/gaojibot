@@ -92,8 +92,28 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         turn = TurnState(ToolContext(SimpleNamespace(context=app), inbound=inbound,
             platform=SimpleNamespace(account=f.account, execution=life)), model_profile=profile)
         f.query('INSERT INTO conversation_settings(scope_key,agent_timeout_hours) VALUES (?,1)',(f.endpoint.scope.key,))
-        submitted = await service.control(turn, 'agent', {'task': 'TEST research'})
+        turn.search_terms = ['TEST question']
+        turn.search_found = ['https://example.test/found?token=TEST_SECRET']
+        turn.search_read = ['https://example.test/read?key=TEST_SECRET']
+        submitted = await service.control(turn, 'agent', {'task': 'TEST paraphrase research',
+            'acceptance': 'TEST cite the original wording and source', 'title': 'TEST research'})
         number = int(submitted['job'][4:])
+        stored = service.store.get(number)
+        self.assertEqual(stored['title'], 'TEST research')
+        self.assertEqual(stored['task'].count('[原用户消息 ·'), 1)
+        self.assertEqual(stored['task'].count('[任务目标 ·'), 1)
+        self.assertEqual(stored['task'].count('[验收标准 ·'), 1)
+        self.assertIn('TEST cite the original wording and source', stored['task'])
+        original_section, modeled = stored['task'].split('[任务目标 · 前台整理]', 1)
+        self.assertIn('TEST question', original_section)
+        self.assertNotIn('TEST paraphrase research', original_section)
+        self.assertIn('TEST paraphrase research', modeled)
+        self.assertIn('"found_urls": ["https://example.test/found"]', stored['task'])
+        self.assertIn('"read_urls": ["https://example.test/read"]', stored['task'])
+        self.assertNotIn('TEST_SECRET', stored['task'])
+        turn.search_terms.append('TEST evidence gathered since submission')
+        self.assertEqual((await service.control(turn, 'agent', {'task': 'TEST paraphrase research',
+            'acceptance': 'TEST cite the original wording and source', 'title': 'TEST research'}))['job'], submitted['job'])
         self.assertEqual(service.store.get(number)['deadline_at'],f.now+3600)
         await service.control(turn, 'agent_steer', {'job': submitted['job'], 'message': 'TEST extra detail'})
         from datetime import datetime, timezone
