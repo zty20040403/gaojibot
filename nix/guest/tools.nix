@@ -11,6 +11,8 @@
       courlan = super.courlan.overridePythonAttrs (_: {doCheck = false;});
     };
   };
+  # The store is read-only and pip wheels clash with Nix's numpy, so the
+  # libraries people routinely ask for are preinstalled here.
   python = python3.withPackages (ps:
     with ps; [
       aiohttp
@@ -37,7 +39,39 @@
       trafilatura
       wheel
       xlrd
+      # Data, plotting and science.
+      imageio
+      matplotlib
+      networkx
+      numpy
+      opencv4
+      pandas
+      plotly
+      pyarrow
+      scikit-image
+      scikit-learn
+      scipy
+      seaborn
+      statsmodels
+      sympy
+      # Everyday helpers.
+      chardet
+      markdown
+      pydantic
+      python-dateutil
+      qrcode
+      regex
+      rich
+      tabulate
+      tqdm
     ]);
+  # Headless plotting with Chinese labels and a correct minus sign by default.
+  matplotlibrc = pkgs.writeText "matplotlibrc" ''
+    backend: Agg
+    font.family: sans-serif
+    font.sans-serif: WenQuanYi Micro Hei, DejaVu Sans
+    axes.unicode_minus: False
+  '';
   scripts = [
     "sandbox_browser.py"
     "sandbox_browser_actions.py"
@@ -77,6 +111,8 @@
     GAOJI_PDF_FONT = "${pkgs.wqy_microhei}/share/fonts/truetype/wqy-microhei.ttc";
     SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
     PYTHONUNBUFFERED = "1";
+    MATPLOTLIBRC = "${matplotlibrc}";
+    MPLBACKEND = "Agg";
   };
   environment = lib.concatStringsSep "\n" (lib.mapAttrsToList
     (name: value: "export ${name}=${lib.escapeShellArg value}")
