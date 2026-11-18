@@ -141,6 +141,11 @@
             --run 'export AI_STATE_DIR="''${AI_STATE_DIR:-$state_home/gaoji}"' \
             --run 'export AI_CACHE_DIR="''${AI_CACHE_DIR:-$cache_home/gaoji}"' \
             --run '${pkgs.coreutils}/bin/mkdir -p "$AI_STATE_DIR" "$AI_CACHE_DIR"'
+          makeWrapper ${virtualenv}/bin/python "$out/bin/gaoji-interest" \
+            --add-flags "-m src.plugins.ai_chat.global_interest" \
+            --chdir "$out/share/gaoji" \
+            --set PYTHONDONTWRITEBYTECODE 1 \
+            --set PYTHONUNBUFFERED 1
           makeWrapper ${virtualenv}/bin/python "$out/bin/gaoji-db" \
             --add-flags "-m src.bot_storage.cli" \
             --chdir "$out/share/gaoji" \

@@ -8,6 +8,11 @@
   serviceName = "gaoji";
   statePath = "/var/lib/${cfg.stateDirectory}";
   cachePath = "/var/cache/${cfg.cacheDirectory}";
+  interestName = "gaoji-interest";
+  interestStateDirectory = "${cfg.stateDirectory}-interest";
+  interestStatePath = "/var/lib/${interestStateDirectory}";
+  interestResolver = pkgs.writeText "gaoji-interest-resolv.conf" "nameserver 1.1.1.1\n";
+  interestNss = pkgs.writeText "gaoji-interest-nsswitch.conf" "hosts: files dns\n";
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
   sandboxCt = cfg.runBot && cfg.sandbox.enable && cfg.sandbox.backend == "container";
   ctBroker = "/run/gaoji-ct/broker.sock";
@@ -430,6 +435,10 @@ in {
         message = "services.gaoji.cacheDirectory must be a directory name, not a path";
       }
       {
+        assertion = !cfg.runBot || (cfg.user != interestName && cfg.group != interestName);
+        message = "The bot and its primary group must differ from the dedicated interest account";
+      }
+      {
         assertion = !cfg.qqOfficial.enable || cfg.qqOfficial.hostConfigFile == null
           || officialCredentialPath cfg.qqOfficial.hostConfigFile;
         message = "QQ official hostConfigFile must be a protected absolute string path outside /nix/store";
@@ -457,6 +466,11 @@ in {
     ];
 
     users.groups.${serviceName} = lib.mkIf (cfg.group == serviceName) {};
+    users.groups.${interestName} = lib.mkIf cfg.runBot {};
+    users.users.${interestName} = lib.mkIf cfg.runBot {
+      isSystemUser = true;
+      group = interestName;
+    };
     users.users.${serviceName} = lib.mkIf (cfg.user == serviceName) {
       isSystemUser = true;
       group = cfg.group;
@@ -536,13 +550,15 @@ in {
         // lib.optionalAttrs cfg.voiceAsr.enable {
           AI_VIDEO_WHISPER_MODEL_PATH = toString cfg.voiceAsr.model;
         }
-        // cfg.environment;
+        // cfg.environment
+        // {AI_GLOBAL_INTEREST_STATE_DIR = interestStatePath;};
 
       serviceConfig =
         {
           Type = "simple";
           User = cfg.user;
           Group = cfg.group;
+          SupplementaryGroups = [interestName];
           StateDirectory = cfg.stateDirectory;
           CacheDirectory = cfg.cacheDirectory;
           WorkingDirectory = "${cfg.package}/share/gaoji";
@@ -551,7 +567,7 @@ in {
             then "upgrade"
             else "check"
           }";
-          ExecStart = lib.getExe cfg.package;
+          ExecStart = "${pkgs.coreutils}/bin/env AI_GLOBAL_INTEREST_STATE_DIR=${interestStatePath} ${lib.getExe cfg.package}";
           Restart = "on-failure";
           RestartSec = 5;
           UMask = "0077";
@@ -575,6 +591,50 @@ in {
         // lib.optionalAttrs (cfg.environmentFile != null) {
           EnvironmentFile = cfg.environmentFile;
         };
+    };
+
+    systemd.services.${interestName} = lib.mkIf cfg.runBot {
+      description = "Collect public global interest candidates";
+      wants = ["network-online.target"];
+      after = ["network-online.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        User = interestName;
+        Group = interestName;
+        StateDirectory = interestStateDirectory;
+        StateDirectoryMode = "0750";
+        ExecStart = "${cfg.package}/bin/gaoji-interest ${interestStatePath}";
+        TimeoutStartSec = 30;
+        UMask = "0027";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectHome = true;
+        ProtectSystem = "strict";
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        ProtectProc = "invisible";
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        CapabilityBoundingSet = "";
+        RestrictAddressFamilies = ["AF_UNIX" "AF_INET" "AF_INET6"];
+        InaccessiblePaths = ["-${statePath}" "-${cachePath}" "-/run/postgresql" "-/run/credentials"];
+        BindReadOnlyPaths = ["${interestResolver}:/etc/resolv.conf" "${interestNss}:/etc/nsswitch.conf"];
+        IPAddressDeny = ["localhost" "link-local" "multicast" "0.0.0.0/8" "10.0.0.0/8"
+          "100.64.0.0/10" "172.16.0.0/12" "192.168.0.0/16" "198.18.0.0/15"
+          "fc00::/7" "::/128" "::ffff:0:0/96"];
+      };
+    };
+
+    systemd.timers.${interestName} = lib.mkIf cfg.runBot {
+      description = "Daily public global interest collection";
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnCalendar = "*-*-* 05:00:00 Asia/Shanghai";
+        Persistent = true;
+        Unit = "${interestName}.service";
+      };
     };
 
     # The operations namespace, its uplink, and what it may reach: the

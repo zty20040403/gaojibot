@@ -21,7 +21,15 @@
     appSecretFile = "/run/secrets/TEST-app-secret";
     bindPepperFile = "/run/secrets/TEST-bind-pepper";
   };
-  native = evaluate {qqOfficial = official // {hostConfigFile = "/run/secrets/TEST-host.json";};};
+  native = evaluate {
+    qqOfficial = official // {hostConfigFile = "/run/secrets/TEST-host.json";};
+    stateDirectory = "TEST-state";
+    environmentFile = "/run/secrets/TEST-bot.env";
+    environment = {TEST_PRIVATE = "TEST_ONLY_BOT"; AI_GLOBAL_INTEREST_STATE_DIR = "/TEST-other";};
+  };
+  interest = native.systemd.services.gaoji-interest;
+  timer = native.systemd.timers.gaoji-interest;
+  bot = native.systemd.services.gaoji;
   noPlatform = evaluate {};
   badHost = value: evaluate {qqOfficial = official // {hostConfigFile = value;};};
   tests = {
@@ -33,6 +41,25 @@
     relativeHostPathRejected = failures (badHost "TEST-host.json") != [];
     traversingHostPathRejected = failures (badHost "/run/secrets/../TEST-host.json") != [];
     contextHostPathRejected = failures (badHost "${self}/TEST-host.json") != [];
+    interestTimer = builtins.elem "timers.target" timer.wantedBy && timer.timerConfig.Persistent
+      && timer.timerConfig.OnCalendar == "*-*-* 05:00:00 Asia/Shanghai" && timer.timerConfig.Unit == "gaoji-interest.service";
+    interestAccount = interest.serviceConfig.Type == "oneshot" && interest.serviceConfig.User == "gaoji-interest"
+      && interest.serviceConfig.Group == "gaoji-interest" && native.users.users.gaoji-interest.isSystemUser
+      && builtins.elem "gaoji-interest" bot.serviceConfig.SupplementaryGroups;
+    interestState = interest.serviceConfig.StateDirectory == "TEST-state-interest" && interest.serviceConfig.StateDirectoryMode == "0750"
+      && bot.environment.AI_GLOBAL_INTEREST_STATE_DIR == "/var/lib/TEST-state-interest"
+      && lib.hasInfix "AI_GLOBAL_INTEREST_STATE_DIR=/var/lib/TEST-state-interest" bot.serviceConfig.ExecStart
+      && lib.hasSuffix "/bin/gaoji-interest /var/lib/TEST-state-interest" interest.serviceConfig.ExecStart;
+    interestIsolation = !(interest.serviceConfig ? EnvironmentFile) && !(interest.serviceConfig ? LoadCredential)
+      && !(interest.environment ? TEST_PRIVATE) && !(interest.environment ? AI_POSTGRES_DSN)
+      && interest.serviceConfig.NoNewPrivileges && interest.serviceConfig.ProtectSystem == "strict"
+      && interest.serviceConfig.ProtectHome && interest.serviceConfig.PrivateTmp && interest.serviceConfig.CapabilityBoundingSet == ""
+      && interest.serviceConfig.TimeoutStartSec == 30 && builtins.elem "-/var/lib/TEST-state" interest.serviceConfig.InaccessiblePaths
+      && builtins.elem "-/run/postgresql" interest.serviceConfig.InaccessiblePaths && builtins.elem "-/run/credentials" interest.serviceConfig.InaccessiblePaths
+      && builtins.elem "localhost" interest.serviceConfig.IPAddressDeny && builtins.elem "10.0.0.0/8" interest.serviceConfig.IPAddressDeny
+      && builtins.elem "fc00::/7" interest.serviceConfig.IPAddressDeny && builtins.length interest.serviceConfig.BindReadOnlyPaths == 2;
+    noInterestWithoutBot = let config = evaluate {runBot = false;}; in
+      !(config.systemd.services ? gaoji-interest) && !(config.systemd.timers ? gaoji-interest);
   };
 in {
   inherit tests;
