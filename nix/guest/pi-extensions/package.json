@@ -1,0 +1,11 @@
+{
+  "name": "gaoji-pi-extensions",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@juicesharp/rpiv-todo": "2.15.0",
+    "pi-web-access": "0.46.0",
+    "typebox": "^1.0.0"
+  }
+}
