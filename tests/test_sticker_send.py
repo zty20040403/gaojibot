@@ -136,10 +136,3 @@ class StickerMarkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await take_sticker_marker(session, turn, "哈哈\n[表情：笑死]"), "哈哈")
         session.sticker.assert_awaited_once()
         self.assertTrue(turn.sticker_sent and turn.delivered)
-
-    async def test_marker_is_dropped_within_three_minutes_of_the_last_sticker(self):
-        import time
-        from src.plugins.ai_chat.adapters.qq_official.media_tools import take_sticker_marker
-        session, turn = self.session(), self.marker_turn({8: int(time.time()) - 30})
-        self.assertEqual(await take_sticker_marker(session, turn, "哈哈\n[表情：笑死]"), "哈哈")
-        session.sticker.assert_not_awaited()

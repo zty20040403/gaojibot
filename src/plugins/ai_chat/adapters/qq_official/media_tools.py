@@ -4,7 +4,6 @@ from copy import deepcopy
 import json
 import logging
 import re
-import time
 
 from src.plugins.ai_chat.ai_tools import TOOL_DEFINITIONS
 from src.plugins.ai_chat.tools.registry import FunctionTool, ToolRegistry
@@ -106,8 +105,6 @@ async def _deliver_sticker(session, turn, candidates, *, chosen):
 # The model asks for an unrequested sticker by ending its reply with [表情：…]
 # instead of a tool call, which would cost a whole extra model round.
 STICKER_MARKER = re.compile(r"\[表情[:：]\s*([^\]\n]{1,80})\]")
-# Unrequested stickers stay occasional: at most one per conversation in this window.
-PROACTIVE_STICKER_GAP_SECONDS = 180
 
 
 def strip_sticker_markers(text):
@@ -118,13 +115,9 @@ def strip_sticker_markers(text):
 
 
 async def take_sticker_marker(session, turn, answer):
-    """Remove markers; queue one matching sticker after the reply when allowed."""
+    """Remove markers; queue one matching sticker after the reply."""
     cleaned, query = strip_sticker_markers(answer)
     if query is None or turn.sticker_sent or not session.enabled('send_sticker'):
-        return cleaned
-    recent = await recent_sends(turn)
-    if recent and max(recent.values()) >= int(time.time()) - PROACTIVE_STICKER_GAP_SECONDS:
-        _logger.info('Proactive sticker skipped: one was sent here in the last %ss', PROACTIVE_STICKER_GAP_SECONDS)
         return cleaned
     try:
         await _send_sticker(session, turn, {'query': query})
