@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import logging
 from ...message_ir import MessageBody, TextNode
 from ...platform_types import ActorKey, EndpointKey
+from ...tool_invocation import active_tool_step
 from .send_types import digest, stable_json
 from .renderer import render_plan
 
@@ -22,13 +23,14 @@ class ProgressEmitter:
         self.token, self.outbox, self.current = token, outbox, current
         self.database_calls, self.wake = database_calls, wake
 
-    def _queue(self, text):
+    def _queue(self, text, step):
         now = int(self.outbox.clock())
         with self.outbox.deliveries.transaction() as cursor:
             context = self.current(cursor, now)
             ref = self.outbox.enqueue(self.token,
                 rendered=render_plan(MessageBody((TextNode(0, text),)), context.endpoint, max_chars=200, max_parts=1),
-                requester=context.actor, logical_key='qq-progress:'+digest(stable_json([context.source_key,text])),
+                requester=context.actor, logical_key='qq-progress:'+digest(stable_json(
+                    [context.source_key, text] if step is None else [context.source_key, *step, text])),
                 source_scope_key=context.scope_key, source_native_message_id=context.native_message_id,
                 source_canonical_message_id=context.canonical_message_id, purpose='progress',
                 expires_at=context.deadline_at, transaction_cursor=cursor)
@@ -38,7 +40,7 @@ class ProgressEmitter:
         if not isinstance(text, str) or not text.strip():
             return {'ok':False, 'reason':'progress_text_empty'}
         try:
-            result = await self.database_calls(self._queue, text.strip()[:200])
+            result = await self.database_calls(self._queue, text.strip()[:200], active_tool_step.get())
         except Exception as error:
             logging.getLogger(__name__).warning('QQ progress enqueue failed: %s', type(error).__name__)
             return {'ok':False, 'reason':'progress_unavailable'}
