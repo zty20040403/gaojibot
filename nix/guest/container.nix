@@ -99,6 +99,57 @@ in {
     };
   };
 
+  systemd.timers.gaoji-browser-idle = {
+    wantedBy = ["timers.target"];
+    timerConfig = {
+      OnBootSec = "10min";
+      OnUnitActiveSec = "5min";
+    };
+  };
+  systemd.services.gaoji-browser-idle = {
+    serviceConfig.Type = "oneshot";
+    script = ''
+      systemctl is-active --quiet gaoji-browser.service || exit 0
+      if [ ! -e /run/gaoji-browser.used ] || [ -z "$(${pkgs.findutils}/bin/find /run/gaoji-browser.used -mmin -20 2>/dev/null)" ]; then
+        systemctl stop gaoji-browser.service || true
+      fi
+    '';
+  };
+
+  # Slices and restore/notify units for lightweight background commands and
+  # persistent user units in /work/.gaoji/systemd (§4.6).
+  systemd.slices.gaoji-jobs = {
+    description = "gaoji background commands and agents";
+  };
+  systemd.slices.gaoji-units.sliceConfig = {
+    CPUWeight = 20;
+    IOWeight = 20;
+    MemoryMax = "50%";
+  };
+  systemd.services.gaoji-units = {
+    wantedBy = ["multi-user.target"];
+    after = ["network.target" "gaoji-boot-id.service"];
+    unitConfig.RequiresMountsFor = "/work";
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = "/run/current-system/sw/bin/gaoji units apply --boot";
+    };
+  };
+  systemd.services."gaoji-notify@" = {
+    description = "Notify gaoji host that %i ended";
+    restartIfChanged = false;
+    unitConfig.StartLimitIntervalSec = 0;
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "/run/current-system/sw/bin/gaoji units notify %i";
+      Restart = "on-failure";
+      RestartSec = 2;
+      RestartSteps = 5;
+      RestartMaxDelaySec = 60;
+    };
+  };
+
   systemd.settings.Manager.DefaultEnvironment = "PATH=/run/wrappers/bin:/run/current-system/sw/bin HOME=/work";
   users.users.root.home = lib.mkForce "/work";
   systemd.tmpfiles.rules =

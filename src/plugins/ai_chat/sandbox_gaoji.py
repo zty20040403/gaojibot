@@ -199,6 +199,28 @@ def parser():
     gh.add_argument('--method', default='GET', choices=('GET', 'POST', 'PUT', 'PATCH', 'DELETE'))
     gh.add_argument('--query', help='JSON object of query parameters')
     gh.add_argument('--body', help='JSON object body, or - for stdin')
+
+    wake_cmd = commands.add_parser('wake')
+    wake_cmd.add_argument('text', help='wake notice text for foreground model, or - for stdin')
+
+    units = commands.add_parser('units')
+    units_sub = units.add_subparsers(dest='units_command', required=True)
+    u_start = units_sub.add_parser('start')
+    u_start.add_argument('cmd_text', help='shell command to run in background, or - for stdin')
+    u_start.add_argument('--title', default='')
+    u_start.add_argument('--workdir', default='/work')
+    u_start.add_argument('--limit', type=int, default=21600)
+    u_start.add_argument('--unit', default='')
+    u_apply = units_sub.add_parser('apply')
+    u_apply.add_argument('--boot', action='store_true')
+    units_sub.add_parser('list')
+    u_stop = units_sub.add_parser('stop')
+    u_stop.add_argument('target', nargs='?', default='')
+    u_stop.add_argument('--all', action='store_true', dest='stop_all')
+    u_ended = units_sub.add_parser('ended')
+    u_ended.add_argument('unit_name')
+    u_notify = units_sub.add_parser('notify')
+    u_notify.add_argument('unit_name')
     return result
 
 
@@ -234,6 +256,42 @@ def main(argv=None, *, client=None):
             if args.get('body'):
                 payload['body'] = _read_json_arg(args['body'])
             status, value = client.call_tool('github', payload)
+        elif command == 'wake':
+            raw_text = sys.stdin.read(16000) if args['text'] == '-' else args['text']
+            try:
+                parsed_obj = json.loads(raw_text)
+                wake_text = str(parsed_obj['text']) if isinstance(parsed_obj, dict) and 'text' in parsed_obj else raw_text
+            except ValueError:
+                wake_text = raw_text
+            status, value = client.call_tool('units_wake', {'text': wake_text[:4000]})
+        elif command == 'units':
+            mod_dir = str(Path(__file__).resolve().parent)
+            if mod_dir not in sys.path:
+                sys.path.insert(0, mod_dir)
+            import sandbox_gaoji_units as units_mod  # type: ignore[import-not-found]
+            sub = args['units_command']
+            if sub == 'apply':
+                status, value = units_mod.apply_units(client, boot=bool(args.get('boot')))
+            elif sub == 'start':
+                cmd_str = sys.stdin.read(65536) if args['cmd_text'] == '-' else args['cmd_text']
+                status, value = units_mod.start_command(
+                    command=cmd_str,
+                    title=args['title'],
+                    workdir=args['workdir'],
+                    limit=args['limit'],
+                    unit=args['unit'],
+                )
+            elif sub == 'list':
+                status, value = units_mod.list_units()
+            elif sub == 'stop':
+                target = '--all' if args.get('stop_all') else args.get('target', '')
+                status, value = units_mod.stop_units(target)
+            elif sub == 'ended':
+                status, value = units_mod.ended_hook(args['unit_name'])
+            elif sub == 'notify':
+                status, value = units_mod.notify_hook(client, args['unit_name'])
+            else:
+                raise ClientError(f'unknown units command: {sub}')
         else:
             pos_q = args.pop('positional_query', None)
             data = {key: value for key, value in args.items() if value is not None}

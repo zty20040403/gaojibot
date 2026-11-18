@@ -99,6 +99,23 @@ VM_ACTION_TOOLS = (
         },
         ('question',),
     ),
+    definition(
+        'units_keepalive',
+        '登记容器内 /work/.gaoji/systemd 常驻单元数量（由 gaoji units apply 调用）。',
+        {
+            'units': {'type': 'integer', 'minimum': 0},
+        },
+        ('units',),
+    ),
+    definition(
+        'units_wake',
+        '后台命令或定时器向本会话前台发出完成/唤醒通知（由 gaoji units notify / gaoji wake 调用）。',
+        {
+            'text': {'type': 'string'},
+            'unit': {'type': 'string'},
+        },
+        ('text',),
+    ),
 )
 
 
@@ -188,10 +205,12 @@ async def execute_github_api(arguments: dict) -> str:
 class BackgroundToolSession:
     """The host's tools for one job; the background agent runs commands and edits files in the container itself."""
 
-    def __init__(self, app, inbound, *, prompt, question, current, ask_notify=None):
+    def __init__(self, app, inbound, *, prompt, question, current, ask_notify=None, units_handler=None, sandbox_id=None):
         self.app, self.inbound, self.prompt = app, inbound, prompt
         self.question, self.current = question, current
         self.ask_notify = ask_notify
+        self.units_handler = units_handler
+        self.sandbox_id = sandbox_id
         self.billing_context = None
         _, self.turn, self.registry, shared = build_shared_context(app, inbound.endpoint, inbound=inbound)
         self.tools = shared + (GITHUB_TOOL,)
@@ -206,9 +225,21 @@ class BackgroundToolSession:
                 await self.ask_notify(q)
                 return json.dumps({
                     'ok': True,
-                    'said': '已向前台发出提问，回答到达后会作为新消息出现在对话里；若还有别的事可先继续做，没别的事可停下等待（最多等 10 分钟，超时请自行判断并在报告中写明假设）。',
+                    'said': '已向前台发出提问，回答到达后会作为新消息出现在对话里；若还有别的事可先继续做，若已无别的事可停下等待（最多等 10 分钟，超时请自行判断并在报告中写明假设）。',
                 }, ensure_ascii=False)
             return json.dumps({'ok': True, 'answer': await self.question(q)}, ensure_ascii=False)
+        if name in {'units_keepalive', 'units_wake'} and self.units_handler is not None:
+            scope = SimpleNamespace(
+                identity=SimpleNamespace(endpoint=self.inbound.endpoint, sandbox_id=self.sandbox_id or ''),
+                current=self.current,
+            )
+            if name == 'units_keepalive':
+                res = await self.units_handler.keepalive(scope, int((arguments or {}).get('units') or 0))
+            else:
+                res = await self.units_handler.wake(
+                    scope, str((arguments or {}).get('text') or ''), unit=str((arguments or {}).get('unit') or '')
+                )
+            return json.dumps(res, ensure_ascii=False)
         allowed = {item['function']['name']: item['function']['parameters'] for item in self.tools}
         if name not in allowed:
             raise ValueError('后台工具不可用')
@@ -231,9 +262,10 @@ class BackgroundToolSession:
 class ContainerToolSession:
     """Unified /job/tool session for container-scoped gvm_ credentials (gaoji CLI, shell, run_code, units)."""
 
-    def __init__(self, app, scope, vm_http, *, ask_handler=None):
+    def __init__(self, app, scope, vm_http, *, ask_handler=None, units_handler=None):
         self.app, self.scope, self.vm_http = app, scope, vm_http
         self.ask_handler = ask_handler
+        self.units_handler = units_handler
         self.endpoint = scope.identity.endpoint
         _, self.turn, self.registry, shared = build_shared_context(app, self.endpoint)
         self.tools = shared + (GITHUB_TOOL,) + VM_ACTION_TOOLS
@@ -256,6 +288,16 @@ class ContainerToolSession:
             if self.ask_handler is None:
                 raise RuntimeError('当前环境未启用后台提问通道')
             result = await self.ask_handler(self.endpoint, arguments)
+            return json.dumps(result, ensure_ascii=False)
+        if name == 'units_keepalive':
+            if self.units_handler is None:
+                raise RuntimeError('当前环境未启用常驻单元管理')
+            result = await self.units_handler.keepalive(self.scope, int(arguments['units']))
+            return json.dumps(result, ensure_ascii=False)
+        if name == 'units_wake':
+            if self.units_handler is None:
+                raise RuntimeError('当前环境未启用唤醒通道')
+            result = await self.units_handler.wake(self.scope, str(arguments['text']), unit=str(arguments.get('unit') or ''))
             return json.dumps(result, ensure_ascii=False)
         from .adapters.qq_official.billing import scoped
         with scoped(self.app, self.endpoint, 'semantic_index', current=self.scope.current):
