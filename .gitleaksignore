@@ -2,3 +2,8 @@
 # unbound message bodies, nicknames, URLs and their hashes are never persisted.
 # Scope this historical false positive to its exact commit, file, rule and line.
 c3d0420a4a7b85826dad6e8bb17ee15ed27cda5b:tests/test_qq_official_inbox.py:generic-api-key:234
+# Historical Python keyword arguments: conversation_id after scope.key;
+# failure_policy after key in a function signature. No credential literals.
+d041a0eae8147c3b3a7d95baf0b817e1c6b21979:tests/test_task_file_outbox.py:generic-api-key:122
+b03ad34481d09f23ca5b1ae0ae1e404ca32303ef:tests/test_file_outbox_process_loss.py:generic-api-key:88
+97b27d271318eae526e9c2de05fa1708fe842026:tests/test_ops_deployment_runner.py:generic-api-key:155
