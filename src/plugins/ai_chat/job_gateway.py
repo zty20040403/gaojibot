@@ -37,14 +37,32 @@ MODEL_400_MARKERS = (
     'unsupported',
     'not supported',
 )
+TRANSIENT_ERROR_MARKERS = (
+    'high demand',
+    'overloaded',
+    'server_error',
+    'rate limit',
+    'rate_limit',
+    'capacity',
+    'quota',
+    'exhausted',
+    'temporarily unavailable',
+    'temporary errors',
+)
+
+
+def _is_transient_or_model_error(text: str) -> bool:
+    lowered = text.lower()
+    if any(marker in lowered for marker in TRANSIENT_ERROR_MARKERS):
+        return True
+    return 'model' in lowered and any(marker in lowered for marker in MODEL_400_MARKERS)
 
 
 def _should_fallback_status(status: int, body: bytes) -> bool:
     if status in FALLBACK_STATUSES:
         return True
-    if status == 400:
-        text = body.decode(errors='replace').lower()
-        return 'model' in text and any(marker in text for marker in MODEL_400_MARKERS)
+    if status in {400, 422}:
+        return _is_transient_or_model_error(body.decode(errors='replace'))
     return False
 
 
@@ -387,6 +405,11 @@ class JobGateway:
                                     channel.model_index = idx + 1
                                 channel.stream_failures = 0
                     else:
+                        if observer.error_reason and _is_transient_or_model_error(observer.error_reason) and not channel.revoked:
+                            if idx + 1 < len(chain):
+                                reason = observer.error_reason.replace(key, '[REDACTED]') if key else observer.error_reason
+                                channel.fallbacks.append((candidate, chain[idx + 1], f'SSE error: {reason[:120]}'))
+                                channel.model_index = idx + 1
                         channel.stream_failures = 0
                     await upstream.aclose()
 
