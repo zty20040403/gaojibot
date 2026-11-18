@@ -88,6 +88,15 @@ class ModelPreferenceStore:
     def clear_scope_member_default(self, scope: ConversationScope) -> bool:
         return self.clear(ScopeSettingAddress(scope, "member-default").key)
 
+    def get_scope_persona(self, scope: ConversationScope) -> str | None:
+        return self.get_explicit(f"persona:{scope.key}")
+
+    def set_scope_persona(self, scope: ConversationScope, persona: str) -> None:
+        self.set(f"persona:{scope.key}", persona)
+
+    def clear_scope_persona(self, scope: ConversationScope) -> bool:
+        return self.clear(f"persona:{scope.key}")
+
     def get_scope_enabled_override(self, scope: ConversationScope) -> bool | None:
         return self._get_scope_switch(scope, "enabled")
 

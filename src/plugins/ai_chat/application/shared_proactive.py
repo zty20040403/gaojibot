@@ -29,9 +29,10 @@ def proactive_prompt(persona: str, clock_prompt: str) -> str:
 
 
 class SharedProactiveScorer:
-    def __init__(self, *, profile, persona, clock_prompt, max_reply_chars=120, record_usage):
+    def __init__(self, *, profile, persona, clock_prompt, max_reply_chars=120, record_usage, persona_resolver=None):
         self.profile, self.persona, self.clock_prompt = profile, persona, clock_prompt
         self.max_reply_chars, self.record_usage = max_reply_chars, record_usage
+        self.persona_resolver = persona_resolver
 
     async def __call__(self, *, text, history, endpoint, actor) -> ProactiveDecision:
         trace = AgentTrace(
@@ -53,9 +54,10 @@ class SharedProactiveScorer:
             + "\n\n[待判断新消息]\n"
             + text
         )
+        active_persona = self.persona_resolver(endpoint) if callable(self.persona_resolver) else self.persona
         try:
             payload = await ask_deepseek_json(
-                proactive_prompt(self.persona, self.clock_prompt()),
+                proactive_prompt(active_persona or self.persona, self.clock_prompt()),
                 user,
                 profile=self.profile,
                 trace=trace,

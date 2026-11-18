@@ -30,8 +30,18 @@ def background_factory(*,proactive_configuration=ProactiveConfiguration(),proact
                     output_tokens=trace.output_tokens,cached_tokens=trace.cached_tokens,occurred_at=int(runtime.store.clock()))
             from src.plugins.ai_chat.prompt import PERSONA
             from src.plugins.ai_chat.runtime_clock import runtime_clock_prompt
-            scorer=SharedProactiveScorer(profile=profile,persona=app.settings.system_prompt or PERSONA,clock_prompt=runtime_clock_prompt,
-                max_reply_chars=proactive_configuration.max_reply_chars,record_usage=usage)
+            scorer=SharedProactiveScorer(
+                profile=profile,
+                persona=app.settings.system_prompt or PERSONA,
+                clock_prompt=runtime_clock_prompt,
+                max_reply_chars=proactive_configuration.max_reply_chars,
+                record_usage=usage,
+                persona_resolver=lambda ep: (
+                    (app.model_preferences.get_scope_persona(ep.scope) if getattr(app, "model_preferences", None) is not None else None)
+                    or app.settings.system_prompt
+                    or PERSONA
+                ),
+            )
             from .billing import scoped
             proactive=ProactiveIngress(token=token,transaction=runtime.store.transaction,admission=runtime.store.admitted,
                 outbox=runtime.outbox,scorer=scorer,clock=runtime.store.clock,database_calls=runtime._calls,

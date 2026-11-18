@@ -631,16 +631,27 @@ def build_turn_consumer(runtime, token, app):
         def policy(cursor):
             profiles = tuple(profile.name for profile in app.model_catalog.profiles if profile.configured)
             owner = runtime.store.authority.owner_for_actor(cursor, inbound.endpoint, inbound.actor)
+            role = ""
+            if inbound.endpoint.kind == "group":
+                from .message_roles import source_role
+                role = source_role(
+                    cursor, inbound.endpoint, inbound.actor,
+                    life.handle.canonical_message_id, now=int(runtime.store.clock()),
+                )
             preference = (app.model_preferences.get_conversation_default(inbound.endpoint.scope)
                           or app.settings.model_profile_for_scope(inbound.endpoint.scope))
             profile = app.model_catalog.resolve_preference(preference)
             efforts = tuple(SUPPORTED_REASONING_EFFORTS) if profile.configured and profile.provider in {"openai", "cliproxy"} else ()
+            auto_effort = bool(getattr(app.settings, "reasoning_router_profile", "") and profile.reasoning_effort and efforts)
             return CommandPolicy(
                 models=profiles, efforts=efforts, default_model=profile.name,
                 default_effort=profile.reasoning_effort or "",
                 allow_model_read=True, allow_model_change=owner is not None,
                 allow_effort_read=True, allow_effort_change=True,
-                allow_group_default=owner is not None, global_model=True,
+                allow_group_default=owner is not None,
+                allow_effort_group_default=(owner is not None or role in {"owner", "admin"}),
+                auto_effort=auto_effort,
+                global_model=True,
             )
 
         async def host_policy(_inbound):
@@ -667,9 +678,11 @@ def build_turn_consumer(runtime, token, app):
             return await agents.vm_lifecycle.browser.command(current, request, authorize=authorize, key=life.handle.execution_id)
 
         from .config_commands import command as config_command
+        from .persona_commands import command as persona_command
         from .status_commands import command as status_command
         services = CommandServices(
             running_tasks=tasks, config=config_command(runtime, life, app), status=status_command(runtime, life, app),
+            persona=persona_command(runtime, life, app),
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
             host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls),
             browser=browser if agents is not None and agents.vm_lifecycle is not None else None,
