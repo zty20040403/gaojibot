@@ -37,7 +37,11 @@ def background_factory(*,proactive_configuration=ProactiveConfiguration(),proact
                 max_reply_chars=proactive_configuration.max_reply_chars,
                 record_usage=usage,
                 persona_resolver=lambda ep: (
-                    (app.model_preferences.get_scope_persona(ep.scope) if getattr(app, "model_preferences", None) is not None else None)
+                    (
+                        app.model_preferences.get_scope_persona(ep.scope)
+                        if callable(getattr(getattr(app, "model_preferences", None), "get_scope_persona", None))
+                        else None
+                    )
                     or app.settings.system_prompt
                     or PERSONA
                 ),
