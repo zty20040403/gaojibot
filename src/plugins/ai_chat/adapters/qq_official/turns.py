@@ -13,6 +13,8 @@ import time
 import traceback
 
 from src.plugins.ai_chat.agent_loop import FinalStreamState
+from src.plugins.ai_chat.background_tools import workspace_owner
+from src.plugins.ai_chat.scope_lease import ScopeLeaseBusy, claim_scope, renew_scope
 from src.plugins.ai_chat.application.commands import CommandPolicy, CommandServices
 from src.plugins.ai_chat.application.platform_chat import PlatformChatService
 from src.plugins.ai_chat.application.platform_conversation import build_platform_chat_orchestrator
@@ -30,10 +32,13 @@ from .conversation_control import permitted
 from .lease import LeaseLost, assert_epoch
 from .renderer import render_plan
 from .sections import ReplyStream
+from .vision_adapter import guarded_wait
 from .turn_platform import (
     ExecutionBinding, ExecutionError, ExecutionFenceLost, ExecutionHandle,
     OfficialTurnPlatform, PlatformBoundaryError, TransportState, assert_execution_current,
 )
+
+TURN_LEASE_SECONDS = 12
 
 _turn_observation = ContextVar("qq_turn_observation", default=None)
 logger = logging.getLogger(__name__)
@@ -62,12 +67,12 @@ def _issue(row) -> ExecutionHandle:
         EndpointKey.parse(row["endpoint_key"]), ActorKey.parse(row["requester_actor_key"]),
         row["canonical_message_id"], row["source_native_message_id"], row["scope_key"],
         row["endpoint_generation"], row["route_epoch"], row["account_fencing_epoch"],
-        row["execution_revision"], row["deadline_at"], row["result_purpose"], row["execution_kind"],
+        row["execution_revision"], row['job_lease_generation'], row["deadline_at"], row["result_purpose"], row["execution_kind"],
     )
 
 
 def claim_execution(cursor, *, token, inbox_id: str, now: int, deadline_at: int,
-                    admission, result_purpose: str = "final", execution_kind: str = "chat") -> ExecutionDecision:
+                    admission, result_purpose: str = "final", execution_kind: str = "chat", resuming_execution_id=None) -> ExecutionDecision:
     assert_epoch(cursor, token)
     inbox = cursor.execute("SELECT * FROM qq_official_inbound_events WHERE inbox_id=? AND account_key=?",
                            (inbox_id, token.account_key)).fetchone()
@@ -77,19 +82,34 @@ def claim_execution(cursor, *, token, inbox_id: str, now: int, deadline_at: int,
                              (inbox["canonical_message_id"],)).fetchone()
     endpoint, actor = EndpointKey.parse(inbox["endpoint_key"]), ActorKey.parse(message["sender_actor_key"])
     if not admission(cursor, endpoint, actor):
+        if resuming_execution_id is not None:
+            return ExecutionDecision('cancelled', 'turn_not_admitted')
         raise ExecutionError("turn_source_unavailable")
     if not permitted(cursor, endpoint, canonical=inbox["canonical_message_id"], commands=execution_kind == "command"):
         return ExecutionDecision("cancelled", "conversation_stopped_or_replaced")
     existing = cursor.execute("SELECT * FROM qq_official_turn_executions WHERE inbox_id=?",
                               (inbox["inbox_id"],)).fetchone()
-    if existing is not None:
+    if resuming_execution_id is not None:
+        if (existing['execution_id'] != resuming_execution_id or existing['state'] not in {'prepared', 'executing'}
+                or existing['account_fencing_epoch'] >= token.epoch):
+            raise ExecutionFenceLost('turn_not_reclaimable')
+    elif existing is not None:
         return ExecutionDecision("already_running" if existing["state"] == "executing" else existing["state"])
+    if now >= deadline_at:
+        return ExecutionDecision('expired', 'turn_deadline_expired')
+    gen = claim_scope(cursor, message['scope_key'], token.holder_id, now=now,
+                      until=now+TURN_LEASE_SECONDS) if execution_kind == 'chat' else 1
+    if resuming_execution_id is not None:
+        row = cursor.execute('''UPDATE qq_official_turn_executions SET account_fencing_epoch=?,worker_owner=?,
+            job_lease_generation=?,execution_revision=execution_revision+1,updated_at=? WHERE execution_id=? RETURNING *''',
+            (token.epoch, token.holder_id, gen, now, resuming_execution_id)).fetchone()
+        return ExecutionDecision(row['state'], handle=_issue(row), journal_turn_id=row['journal_turn_id'])
     fields = dict(
         execution_id=secrets.token_hex(16), account_key=token.account_key,
         endpoint_key=endpoint.key, requester_actor_key=actor.key, inbox_id=inbox["inbox_id"], job_id=None,
         canonical_message_id=message["canonical_message_id"], source_native_message_id=inbox["native_message_id"],
         scope_key=message["scope_key"], endpoint_generation=inbox["endpoint_generation"], route_epoch=inbox["route_epoch"],
-        account_fencing_epoch=token.epoch, worker_owner=token.holder_id, job_lease_generation=1, execution_revision=1,
+        account_fencing_epoch=token.epoch, worker_owner=token.holder_id, job_lease_generation=gen, execution_revision=1,
         state="prepared", input_digest=hashlib.sha256(inbox["inbox_id"].encode()).hexdigest(), reason_code="",
         result_purpose=result_purpose, execution_kind=execution_kind, deadline_at=deadline_at,
         created_at=now, updated_at=now,
@@ -160,10 +180,11 @@ def load_turn_input(cursor, *, token, handle: ExecutionHandle, now: int, admissi
 
 class OfficialTurnLifecycle:
     def __init__(self, *, token, handle: ExecutionHandle, admission, transactions, journal,
-                 database_calls, usage=None, clock=time.time):
+                 database_calls, usage=None, clock=time.time, shutting_down=lambda: False):
         self.token, self.handle, self.admission = token, handle, admission
         self.transactions, self.journal = transactions, journal
         self._calls, self.usage, self.clock = database_calls, usage, clock
+        self.shutting_down = shutting_down
         self.platform: OfficialTurnPlatform | None = None
         self.journal_turn_id: int | None = None
         self.delivery_outcome: str = "pending"
@@ -211,6 +232,9 @@ class OfficialTurnLifecycle:
             now = int(self.clock())
             with self.transactions.transaction() as cursor:
                 row = self._current(cursor)
+                if row['state'] == 'executing':
+                    self.journal_turn_id = row['journal_turn_id']
+                    return self.journal_turn_id
                 if row["state"] != "prepared" or row["execution_kind"] != "chat":
                     raise LifecycleError("execution_not_prepared")
                 turn = self.journal.start_turn(
@@ -225,6 +249,17 @@ class OfficialTurnLifecycle:
                 return turn.turn_id
 
         return await self._calls(run)
+
+    async def save_checkpoint(self, state, source):
+        def save():
+            payload = (json.dumps({'source': source, 'loop': state}, ensure_ascii=False, separators=(',', ':'))
+                       if state['resumable'] else None)
+            with self.transactions.transaction() as cursor:
+                row = self._current(cursor)
+                cursor.execute('UPDATE qq_official_turn_executions SET checkpoint_json=? WHERE execution_id=?',
+                               (payload, self.handle.execution_id))
+                cursor.execute('UPDATE agent_turns SET checkpoint_json=? WHERE turn_id=?', (payload, row['journal_turn_id']))
+        await self._calls(save)
 
     async def finish(self, *, turn_id, status, trace, final_text, error_code, scope_key):
         observation = _turn_observation.get()
@@ -243,9 +278,10 @@ class OfficialTurnLifecycle:
                 row = self._current(cursor)
                 if row["state"] == "handed_off":
                     return False
-                if turn_id is not None:
+                turn_id_to_finish = row['journal_turn_id']
+                if turn_id_to_finish is not None:
                     journal_row = cursor.execute("SELECT status FROM agent_turns WHERE turn_id=? FOR UPDATE",
-                                                 (turn_id,)).fetchone()
+                                                 (turn_id_to_finish,)).fetchone()
                     if journal_row is None or journal_row["status"] != "running":
                         raise LifecycleError("execution_journal_not_running")
                     payload = trace.to_payload() if trace is not None else {}
@@ -255,7 +291,7 @@ class OfficialTurnLifecycle:
                         cursor.execute("UPDATE agent_turns SET provider=?,model=?,profile=? WHERE turn_id=?",
                                        (trace.provider, trace.model, trace.profile, turn_id))
                     recorded = self.journal.finish_turn(
-                        turn_id, status=status, final_text=final_text,
+                        turn_id_to_finish, status=status, final_text=final_text,
                         trace_payload=payload or None, input_tokens=trace.input_tokens if trace else 0,
                         output_tokens=trace.output_tokens if trace else 0,
                         total_tokens=trace.total_tokens if trace else 0,
@@ -272,7 +308,7 @@ class OfficialTurnLifecycle:
                     )
                 pending = list(getattr(self.platform, "pending_media", ()) or ())
                 if silent or self.platform is None:
-                    cursor.execute("UPDATE qq_official_turn_executions SET state='handed_off',plan_id=NULL,handed_off_at=?,updated_at=? WHERE execution_id=?",
+                    cursor.execute("UPDATE qq_official_turn_executions SET checkpoint_json=NULL,state='handed_off',plan_id=NULL,handed_off_at=?,updated_at=? WHERE execution_id=?",
                                    (now, now, self.handle.execution_id))
                     self.delivery_outcome = "silent"
                     # A sticker chosen without any reply text still goes out.
@@ -285,7 +321,7 @@ class OfficialTurnLifecycle:
                                                 now=now, turn_id=turn_id)
                 except PlatformBoundaryError as exc:
                     if str(exc) in {"needs_attachment", "delivery_expired"}:
-                        cursor.execute("UPDATE qq_official_turn_executions SET state='cancelled',reason_code=?,updated_at=? WHERE execution_id=?",
+                        cursor.execute("UPDATE qq_official_turn_executions SET checkpoint_json=NULL,state='cancelled',reason_code=?,updated_at=? WHERE execution_id=?",
                                        (str(exc), now, self.handle.execution_id))
                         self.delivery_outcome = str(exc)
                         return False
@@ -312,11 +348,16 @@ class OfficialTurnLifecycle:
                 if row is None or (row["endpoint_key"], row["requester_actor_key"], row["canonical_message_id"], row["scope_key"]) != (
                         self.handle.endpoint.key, self.handle.actor.key, self.handle.canonical_message_id, self.handle.scope_key):
                     raise LifecycleError("execution_source_mismatch")
+                if row['execution_revision'] != self.handle.execution_revision:
+                    raise ExecutionFenceLost('turn_lease_lost')
                 if row["journal_turn_id"] != turn_id:
                     raise LifecycleError("execution_journal_mismatch")
                 if row["state"] not in {"prepared", "executing"}:
                     return row["state"]
-                cursor.execute("UPDATE qq_official_turn_executions SET state='needs_attention',reason_code=?,updated_at=? WHERE execution_id=?",
+                if (reason == 'turn_cancelled_or_owner_lost' and self.shutting_down() and row['checkpoint_json'] is not None
+                        and now < row['deadline_at'] and permitted(cursor, self.handle.endpoint, canonical=self.handle.canonical_message_id)):
+                    return row['state']
+                cursor.execute("UPDATE qq_official_turn_executions SET checkpoint_json=NULL,state='needs_attention',reason_code=?,updated_at=? WHERE execution_id=?",
                                (reason, now, self.handle.execution_id))
                 if turn_id is not None:
                     payload = trace.to_payload() if trace else {}
@@ -348,7 +389,7 @@ class OfficialTurnConsumer:
     def __init__(self, *, token, store, outbox, journal, database_calls,
                  orchestrator, command_services, transport_state, usage=None,
                  sender_wake=None, policy=None, clock=time.time,
-                 model_timeout_seconds=600, business_services=None, rest_provider=None):
+                 model_timeout_seconds=600, business_services=None, rest_provider=None, operations_owners=frozenset(), shutting_down=lambda: False):
         if type(model_timeout_seconds) is not int or not 1 <= model_timeout_seconds <= 3600:
             raise ValueError("invalid_model_timeout")
         self.token, self.store, self.outbox = token, store, outbox
@@ -358,6 +399,8 @@ class OfficialTurnConsumer:
         self.model_timeout_seconds = model_timeout_seconds
         self.business_services = business_services
         self.rest_provider = rest_provider
+        self.operations_owners = operations_owners
+        self.shutting_down = shutting_down
 
     @staticmethod
     def _unpack(source) -> tuple[str, tuple[int, ...], str, object]:
@@ -374,10 +417,10 @@ class OfficialTurnConsumer:
         mid_turn = getattr(source, "mid_turn_pending", None)
         return inbox_id, batch_ids, proactive_reason, mid_turn
 
-    def _prepare(self, inbox_id: str, batch_ids: tuple[int, ...], proactive_reason: str = ""):
+    def _prepare(self, inbox_id: str, batch_ids: tuple[int, ...], proactive_reason: str, resuming_execution_id):
         now = int(self.clock())
         with self.outbox.deliveries.transaction() as cursor:
-            row = cursor.execute("""SELECT i.received_at,i.turn_text,i.turn_text_version,x.deadline_at,x.execution_kind
+            row = cursor.execute("""SELECT i.received_at,i.turn_text,i.turn_text_version,x.deadline_at,x.execution_kind,x.checkpoint_json
                 FROM qq_official_inbound_events i JOIN messages m ON m.canonical_message_id=i.canonical_message_id
                 LEFT JOIN qq_official_turn_executions x ON x.inbox_id=i.inbox_id
                 WHERE i.inbox_id=? AND i.account_key=?""",
@@ -393,13 +436,28 @@ class OfficialTurnConsumer:
             deadline = row["deadline_at"] or row["received_at"] + self.outbox.max_wait_seconds
             decision = claim_execution(
                 cursor, token=self.token, inbox_id=inbox_id, now=now,
-                deadline_at=deadline, admission=self.store.admitted, execution_kind=kind,
+                deadline_at=deadline, admission=self.store.admitted, execution_kind=kind, resuming_execution_id=resuming_execution_id,
             )
             if decision.handle is None:
-                return decision, None, None
+                if resuming_execution_id is not None:
+                    closed = cursor.execute('''UPDATE qq_official_turn_executions SET state='cancelled',reason_code=?,
+                        updated_at=?,checkpoint_json=NULL WHERE execution_id=? AND account_fencing_epoch<?
+                        AND state IN ('executing','prepared') RETURNING journal_turn_id''',
+                        (decision.reason, now, resuming_execution_id, self.token.epoch)).fetchone()
+                    if closed and closed['journal_turn_id'] is not None:
+                        self.journal.finish_turn(closed['journal_turn_id'], status='aborted', finished_at=now, transaction_cursor=cursor)
+                return decision, None, None, None
             inbound = load_turn_input(
                 cursor, token=self.token, handle=decision.handle, now=now, admission=self.store.admitted,
             )
+            checkpoint = None
+            if resuming_execution_id:
+                checkpoint = json.loads(row['checkpoint_json'])
+                batch_ids, proactive_reason = checkpoint['source']
+            elif kind == 'chat' and workspace_owner(inbound.endpoint) not in self.operations_owners:
+                checkpoint = {'source': [batch_ids, proactive_reason], 'loop': None}
+                cursor.execute('UPDATE qq_official_turn_executions SET checkpoint_json=? WHERE execution_id=?',
+                               (json.dumps(checkpoint, ensure_ascii=False), decision.handle.execution_id))
             if kind == "chat" and (batch_ids or any(isinstance(n, MediaNode) for n in inbound.body.nodes)):
                 lines = []
                 for canonical in batch_ids or (decision.handle.canonical_message_id,):
@@ -415,7 +473,7 @@ class OfficialTurnConsumer:
                 inbound = replace(inbound, batch_message_ids=batch_ids)
             if kind == "chat" and proactive_reason:
                 text = f"[判定：{proactive_reason}]\n{text}"
-            return decision, inbound, text
+            return decision, inbound, text, checkpoint
 
     def _drain_mid_turn_lines(self, handle: ExecutionHandle, items: list[object]) -> list[str]:
         lines: list[str] = []
@@ -471,11 +529,25 @@ class OfficialTurnConsumer:
 
     async def _run(self, source):
         inbox_id, batch_ids, proactive_reason, mid_turn = self._unpack(source)
+        resume = getattr(source, 'resuming_execution_id', None)
+        while True:
+            try:
+                decision, inbound, text, checkpoint = await self._calls(self._prepare, inbox_id, batch_ids, proactive_reason, resume)
+                break
+            except ScopeLeaseBusy:
+                await asyncio.sleep(1)
+        handle = decision.handle
+        if handle is None:
+            return {'status': decision.state, 'reason': decision.reason}
         try:
-            return await self._execute(inbox_id, batch_ids, proactive_reason=proactive_reason, mid_turn=mid_turn)
+            args = handle, inbound, text, checkpoint, mid_turn, decision.journal_turn_id
+            if handle.execution_kind != 'chat':
+                return await self._execute(*args)
+            return await guarded_wait(self._execute(*args), lambda: self._calls(self._renew, handle),
+                                      timeout=None, interval=TURN_LEASE_SECONDS / 3)
         except asyncio.CancelledError:
             raise
-        except (ToolLeaseLost, LeaseLost, ExecutionFenceLost):
+        except (ScopeLeaseBusy, ToolLeaseLost, LeaseLost):
             logger.warning("QQ turn stopped: account or permission changed")
             return {"status": "cancelled"}
         except Exception as error:
@@ -487,7 +559,7 @@ class OfficialTurnConsumer:
                 with self.outbox.deliveries.transaction() as cursor:
                     row = cursor.execute("SELECT * FROM qq_official_turn_executions WHERE inbox_id=?",
                                          (inbox_id,)).fetchone()
-                    if row is None:
+                    if row is None or row['execution_revision'] != handle.execution_revision or row['account_fencing_epoch'] != self.token.epoch:
                         return
                     endpoint, actor = EndpointKey.parse(row["endpoint_key"]), ActorKey.parse(row["requester_actor_key"])
                     if not permitted(cursor, endpoint, canonical=row["canonical_message_id"],
@@ -503,7 +575,7 @@ class OfficialTurnConsumer:
                     if row["journal_turn_id"] is not None:
                         self.journal.finish_turn(row["journal_turn_id"], status="crashed", final_text="",
                                                  finished_at=now, transaction_cursor=cursor)
-                    cursor.execute("UPDATE qq_official_turn_executions SET state='cancelled',reason_code='turn_failed',updated_at=? WHERE execution_id=? AND plan_id IS NULL",
+                    cursor.execute("UPDATE qq_official_turn_executions SET checkpoint_json=NULL,state='cancelled',reason_code='turn_failed',updated_at=? WHERE execution_id=? AND plan_id IS NULL",
                                    (now, row["execution_id"]))
 
             await self._calls(report)
@@ -511,17 +583,30 @@ class OfficialTurnConsumer:
                 self.sender_wake()
             return {"status": "failed"}
 
-    async def _execute(self, inbox_id: str, batch_ids: tuple[int, ...], *, proactive_reason: str = "", mid_turn=None):
-        decision, inbound, text = await self._calls(self._prepare, inbox_id, batch_ids, proactive_reason)
-        if decision.handle is None:
-            return {"status": decision.state, "reason": decision.reason}
-        handle = decision.handle
+        finally:
+            if handle.execution_kind == 'chat':
+                await self._calls(self._release, handle)
+
+    def _renew(self, handle):
+        now = int(self.clock())
+        with self.outbox.deliveries.transaction() as cursor:
+            assert_epoch(cursor, self.token)
+            renew_scope(cursor, handle.scope_key, self.token.holder_id, handle.lease_generation,
+                        now=now, until=now+TURN_LEASE_SECONDS)
+
+    def _release(self, handle):
+        with self.outbox.deliveries.transaction() as cursor:
+            cursor.execute('UPDATE scope_leases SET expires_at=0 WHERE scope_key=? AND lease_owner=? AND lease_generation=?',
+                           (handle.scope_key, self.token.holder_id, handle.lease_generation))
+
+    async def _execute(self, handle, inbound, text, checkpoint, mid_turn, journal_turn_id):
         admission = self.store.admitted
         life = OfficialTurnLifecycle(
             token=self.token, handle=handle, admission=admission,
             transactions=self.outbox.deliveries, journal=self.journal,
-            database_calls=self._calls, usage=self.usage, clock=self.clock,
+            database_calls=self._calls, usage=self.usage, clock=self.clock, shutting_down=self.shutting_down,
         )
+        life.journal_turn_id = journal_turn_id
         binding = ExecutionBinding(self.token, handle, admission)
         platform = OfficialTurnPlatform(
             inbound, execution=binding, outbox=self.outbox, database_calls=self._calls,
@@ -556,14 +641,20 @@ class OfficialTurnConsumer:
                 await life.finish(turn_id=None, status="succeeded", trace=None,
                                   final_text=result.result.text, error_code="", scope_key=inbound.scope.key)
             else:
-                extra_kwargs = {}
+                if workspace_owner(handle.endpoint) in self.operations_owners:
+                    extra_kwargs = dict(final_stream_sink=ReplyStream(platform), final_stream_state=FinalStreamState())
+                else:
+                    # A streamed fragment cannot be taken back if the model dies before its final checkpoint.
+                    extra_kwargs = dict(checkpoint_state=checkpoint['loop'], checkpoint_sink=lambda state: life.save_checkpoint(state, checkpoint['source']),
+                                        idempotency_key_prefix=f'turn:{handle.execution_id}')
                 if mid_turn is not None:
                     async def feedback_provider():
                         notes: list[str] = []
                         for info in self.orchestrator.running_tasks.list_for_endpoint(handle.endpoint):
                             notes.extend(self.orchestrator.running_tasks.drain_feedback(info.task_id))
-                        queued = list(mid_turn.pending)
-                        mid_turn.pending.clear()
+                        end = next((i for i, item in enumerate(mid_turn.pending) if getattr(item, 'resuming_execution_id', None)), len(mid_turn.pending))
+                        queued = mid_turn.pending[:end]
+                        del mid_turn.pending[:end]
                         if queued:
                             merged_lines = await self._calls(self._drain_mid_turn_lines, handle, queued)
                             if merged_lines:
@@ -574,9 +665,10 @@ class OfficialTurnConsumer:
                 async with asyncio.timeout(seconds):
                     await self.orchestrator.run(
                         inbound, platform, text, durable_lifecycle=life,
-                        final_stream_sink=ReplyStream(platform), final_stream_state=FinalStreamState(),
                         **extra_kwargs,
                     )
+        except asyncio.CancelledError:
+            raise
         except BaseException:
             try:
                 await life.interrupted(
@@ -696,6 +788,8 @@ def build_turn_consumer(runtime, token, app):
 
     from .business_commands import build_business_services
     return OfficialTurnConsumer(
+        operations_owners=app.settings.sandbox_operations_owners,
+        shutting_down=lambda: runtime._stopping or runtime._gateway is None,
         token=token, store=runtime.store, outbox=runtime.outbox, journal=runtime.journal,
         database_calls=runtime._calls, orchestrator=orchestrator, command_services=command_services,
         business_services=build_business_services(runtime, app),

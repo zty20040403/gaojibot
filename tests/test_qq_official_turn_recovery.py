@@ -1,4 +1,4 @@
-"""Direct turns report failures and close interrupted journals without replay."""
+"""Recovery respects shutdown and preserves the original journal."""
 from __future__ import annotations
 
 import asyncio
@@ -40,11 +40,37 @@ class OfficialTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.running_tasks.list_all(), [])
                 await runtime.stop()
 
-    async def test_stop_cancels_model_and_new_owner_does_not_execute_it_again(self):
+    async def test_nonresumable_snapshot_is_not_dispatched_after_restart(self):
+        app, started = self.application(), asyncio.Event()
+
+        async def blocked(**kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        with patch('src.plugins.ai_chat.agent_loop.durable_messages', return_value=([], False)), \
+                patch('src.plugins.ai_chat.agent_loop._create_completion', side_effect=blocked) as model:
+            async with verified_ready_platform() as fake:
+                runtime = await self.open_runtime(fake, app)
+                await self.emit(fake, native='TEST_NONRESUMABLE', content='TEST question')
+                await asyncio.wait_for(started.wait(), 5)
+                self.assertEqual(self.query('SELECT checkpoint_json FROM qq_official_turn_executions'),
+                                 [{'checkpoint_json': None}])
+                await runtime.stop()
+                restarted = await self.open_runtime(fake, app)
+                try:
+                    await self.wait_db("SELECT delivery_id FROM deliveries WHERE status='committed'")
+                    self.assertIn('刚才重启了', json.dumps(fake.received, ensure_ascii=False))
+                    model.assert_awaited_once()
+                finally:
+                    await restarted.stop()
+
+    async def test_shutdown_leaves_running_journal_for_next_ready_owner(self):
         app = self.application()
         started, cancelled = asyncio.Event(), asyncio.Event()
 
         async def blocked(**kwargs):
+            if started.is_set():
+                return turn_fixture.model_response('TEST recovered', [], kwargs)
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -60,17 +86,17 @@ class OfficialTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(cancelled.is_set())
                 self.assertEqual(app.running_tasks.list_all(), [])
                 self.assertEqual(fake.received, [])
-                # A clean cancellation now finalizes its journal before releasing
-                # ownership; restart must not relabel it as an unexplained crash.
-                self.assertEqual(self.query("SELECT status FROM agent_turns"), [{"status": "aborted"}])
+                original = self.query('SELECT turn_id,status FROM agent_turns')
+                self.assertEqual([r['status'] for r in original], ['running'])
                 restarted = await self.open_runtime(fake, app)
-                await self.wait_db("SELECT execution_id FROM qq_official_turn_executions WHERE reason_code='restart_notified'")
-                await self.wait_db("SELECT delivery_id FROM deliveries WHERE status='committed'")
-                model.assert_awaited_once()
+                await self.complete('TEST_STOP_RUNNING')
+                self.assertEqual(model.await_count, 2)
                 self.assertEqual(len(self.query("SELECT * FROM delivery_plans")), 1)
                 self.assertEqual(self.query("SELECT * FROM usage_events"), [])
-                self.assertEqual(self.query("SELECT status FROM agent_turns"), [{"status": "aborted"}])
-                self.assertIn('刚才重启了', json.dumps(fake.received, ensure_ascii=False))
+                self.assertEqual(self.query('SELECT turn_id,status FROM agent_turns'),
+                                 [{'turn_id': original[0]['turn_id'], 'status': 'succeeded'}])
+                self.assertEqual(len(fake.received), 1)
+                self.assertIn('TEST recovered', json.dumps(fake.received))
                 await restarted.stop()
                 again = await self.open_runtime(fake, app)
                 self.assertEqual(len(self.query("SELECT * FROM delivery_plans")), 1)

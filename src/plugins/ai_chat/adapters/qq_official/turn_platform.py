@@ -42,6 +42,7 @@ class ExecutionHandle:
     route_epoch: int
     account_fencing_epoch: int
     execution_revision: int
+    lease_generation: int
     deadline_at: int
     result_purpose: str
     execution_kind: str
@@ -53,8 +54,15 @@ def assert_execution_current(cursor, *, token, handle: ExecutionHandle, now: int
         raise ExecutionFenceLost("turn_not_admitted")
     row = cursor.execute("SELECT * FROM qq_official_turn_executions WHERE execution_id=?",
                          (handle.execution_id,)).fetchone()
-    if row is None or row["account_fencing_epoch"] != token.epoch or row["state"] in {"cancelled", "needs_attention"}:
+    if (row is None or row["account_fencing_epoch"] != token.epoch or handle.account_fencing_epoch != token.epoch
+            or row['execution_revision'] != handle.execution_revision or row["state"] in {"cancelled", "needs_attention"}):
         raise ExecutionFenceLost("turn_closed")
+    if handle.execution_kind == 'chat' and row['state'] in {'prepared', 'executing'}:
+        owned = cursor.execute('''SELECT 1 FROM scope_leases WHERE scope_key=? AND lease_owner=?
+            AND lease_generation=? AND expires_at>? FOR UPDATE''',
+            (handle.scope_key, token.holder_id, handle.lease_generation, now)).fetchone()
+        if not owned:
+            raise ExecutionFenceLost('turn_lease_lost')
     if not permitted(cursor, handle.endpoint, canonical=row["canonical_message_id"],
                      commands=row["execution_kind"] == "command"):
         raise ExecutionFenceLost("conversation_stopped_or_replaced")
@@ -236,7 +244,7 @@ class OfficialTurnPlatform:
             expires_at=handle.deadline_at, purpose=handle.result_purpose,
             source_native_message_id=self.inbound.native_message_id, transaction_cursor=cursor,
         )
-        cursor.execute("UPDATE qq_official_turn_executions SET state='handed_off',plan_id=?,handed_off_at=?,updated_at=? WHERE execution_id=?",
+        cursor.execute("UPDATE qq_official_turn_executions SET checkpoint_json=NULL,state='handed_off',plan_id=?,handed_off_at=?,updated_at=? WHERE execution_id=?",
                        (ref.plan_id, now, now, handle.execution_id))
         return ref.plan_id
 

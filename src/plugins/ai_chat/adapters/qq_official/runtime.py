@@ -30,7 +30,7 @@ from .lease import (
     DedicatedAccountLease, LeaseLost, LeaseRetryable, LeaseUnavailable,
     advisory_key_for, transient_database_error,
 )
-from .identity_store import observe_ready, observe_self_api
+from .identity_store import observe_ready, observe_self_api, snapshot
 from .send_store import OfficialSendStore
 from .official_metrics import observe
 
@@ -390,7 +390,18 @@ class OfficialRuntime:
             if accepted.binding is not None and accepted.binding.status == 'confirmed' and self.sender is not None:
                 await self.sender.refresh_bound_groups()
 
+        async def resume_ready_turns():
+            if not interrupted or gateway.state != 'ready':
+                return
+            def verified():
+                with self.store.transaction() as cursor:
+                    return snapshot(cursor, self.loaded.account) is not None
+            if await self._calls(verified):
+                while interrupted:
+                    await dispatch_turn(interrupted.pop(0))
+
         async def run_inbox(inbox_id, result):
+            await resume_ready_turns()
             observe(self.observer, 'ingest', result.status)
             if result.status != 'processed' or result.echo_state != 'not_echo':
                 return
@@ -534,6 +545,7 @@ class OfficialRuntime:
             while not self._stopping:
                 if not await self._calls(lease.probe):
                     raise LeaseLost("Official account lease was lost")
+                await resume_ready_turns()
                 await reconcile_controls()
                 if loop.time() >= next_purge:
                     try:
@@ -664,7 +676,7 @@ class OfficialRuntime:
             from ...message_vector_worker import build_worker as build_vector_worker
             vector_worker = await self._optional_feature('semantic',build_vector_worker,self,token)
             self.state, self.reason = "running", "receiving_events"
-            await self._calls(self._recover_interrupted_turns, token)
+            interrupted = await self._calls(self._recover_interrupted_turns, token)
             tasks = [asyncio.create_task(gateway.run(on_dispatch)), asyncio.create_task(monitor())]
             if self.sender is not None:
                 tasks.append(asyncio.create_task(self.sender.run()))
@@ -684,11 +696,11 @@ class OfficialRuntime:
                     await self._calls(self.store.pause, token, reason)
                     self.state, self.reason = "paused", reason
             finally:
+                self._gateway = None
                 active_by_endpoint.clear()
                 for turn in tuple(active_turns):
                     turn.cancel()
                 await asyncio.gather(*tuple(active_turns), return_exceptions=True)
-                self._gateway = None
                 self._token = None
                 try:
                     await gateway.stop()
@@ -710,17 +722,23 @@ class OfficialRuntime:
         from .renderer import render_plan
         from .conversation_control import permitted
 
+        from ...background_tools import workspace_owner
+        ops = self.application.settings.sandbox_operations_owners if self.application is not None else ()
+        resumable = []
         now = int(self.store.clock())
         notice = '刚才重启了，这条没处理完，麻烦再说一次'
         with self.store.transaction() as cursor:
             self.store.epoch_guard(cursor, token)
             cursor.execute("UPDATE qq_official_inbound_events SET status='skipped',reason_code='restart_interrupted',processed_at=?,updated_at=? WHERE account_key=? AND status='pending'",
                 (now, now, token.account_key))
-            rows = cursor.execute('''SELECT x.* FROM qq_official_turn_executions x
+            rows = cursor.execute('''SELECT x.*, i.conversation_generation, e.generation AS current_generation,
+                e.route_epoch AS current_route FROM qq_official_turn_executions x
+                JOIN qq_official_inbound_events i USING (inbox_id)
+                JOIN qq_official_endpoints e ON e.endpoint_key=x.endpoint_key
                 LEFT JOIN agent_turns t ON t.turn_id=x.journal_turn_id
                 WHERE x.account_key=? AND x.account_fencing_epoch<?
                 AND (t.status='running' OR x.state IN ('prepared','executing','needs_attention','result_ready'))
-                ORDER BY x.created_at DESC FOR UPDATE OF x''', (token.account_key, token.epoch)).fetchall()
+                ORDER BY x.created_at, x.execution_id FOR UPDATE OF x''', (token.account_key, token.epoch)).fetchall()
             notified = set()
             for row in rows:
                 endpoint = EndpointKey.parse(row['endpoint_key'])
@@ -730,10 +748,18 @@ class OfficialRuntime:
                         self.journal.finish_turn(row['journal_turn_id'], status='aborted', finished_at=now,
                             trace_payload={'failure': {'code': 'conversation_stopped_or_replaced'}, 'usage_incomplete': True},
                             transaction_cursor=cursor)
-                    cursor.execute('''UPDATE qq_official_turn_executions SET state='cancelled',
+                    cursor.execute('''UPDATE qq_official_turn_executions SET checkpoint_json=NULL,state='cancelled',
                         reason_code='conversation_stopped_or_replaced',updated_at=? WHERE execution_id=?''', (now, row['execution_id']))
                     continue
-                if endpoint.key not in notified and self.store.admitted(cursor, endpoint, actor):
+                admitted = self.store.admitted(cursor, endpoint, actor)
+                if (admitted and self.turn_consumer is not None and row['checkpoint_json'] is not None
+                        and workspace_owner(endpoint) not in ops and row['execution_kind'] == 'chat'
+                        and row['state'] in {'prepared', 'executing'} and now < row['deadline_at']
+                        and (row['endpoint_generation'], row['route_epoch']) == (row['current_generation'], row['current_route'])):
+                    resumable.append(SimpleNamespace(inbox_id=row['inbox_id'], endpoint=endpoint.key, command=False,
+                        conversation_generation=row['conversation_generation'], resuming_execution_id=row['execution_id']))
+                    continue
+                if endpoint.key not in notified and admitted:
                     self.outbox.enqueue(token, rendered=render_plan(MessageBody((TextNode(0, notice),)), endpoint),
                         requester=actor, logical_key='restart:' + row['execution_id'],
                         source_scope_key=row['scope_key'], expires_at=now + 300,
@@ -743,10 +769,11 @@ class OfficialRuntime:
                 if row['journal_turn_id'] is not None:
                     self.journal.finish_turn(row['journal_turn_id'], status='crashed',
                         final_text=notice, finished_at=now, transaction_cursor=cursor)
-                cursor.execute('''UPDATE qq_official_turn_executions SET state=CASE WHEN plan_id IS NULL THEN 'cancelled' ELSE 'handed_off' END,
+                cursor.execute('''UPDATE qq_official_turn_executions SET checkpoint_json=NULL,state=CASE WHEN plan_id IS NULL THEN 'cancelled' ELSE 'handed_off' END,
                     reason_code='restart_notified',updated_at=? WHERE execution_id=?''', (now, row['execution_id']))
             if rows:
-                self.logger.info(f'QQ restart recovery: closed={len(rows)} conversations={len(notified)}')
+                self.logger.info('QQ restart recovery: resumable=%d closed=%d', len(resumable), len(rows)-len(resumable))
+        return resumable
 
     async def _optional_feature(self, name, factory, *args):
         try:

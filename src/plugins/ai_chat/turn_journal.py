@@ -662,7 +662,7 @@ class TurnJournal:
             cursor.execute(
                 """
                 UPDATE agent_turns
-                SET status = ?, final_text = ?, finished_at = ?,
+                SET checkpoint_json = NULL, status = ?, final_text = ?, finished_at = ?,
                     input_tokens = ?, output_tokens = ?, total_tokens = ?
                 WHERE turn_id = ? AND status = 'running'
                 """,
