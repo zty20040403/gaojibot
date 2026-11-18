@@ -642,6 +642,21 @@ class JobGatewayTests(unittest.IsolatedAsyncioTestCase):
                     return httpx.Response(400, content=b'model does not exist')
                 return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
                                       headers={'content-type': 'text/event-stream'})
+            if mode['kind'] == '400_demand':
+                if model == 'm1':
+                    return httpx.Response(400, content=b"We're currently experiencing high demand, which may cause temporary errors.")
+                return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
+                                      headers={'content-type': 'text/event-stream'})
+            if mode['kind'] == 'sse_demand':
+                if model == 'm1':
+                    sse = (
+                        b'data: {"type":"response.created"}\n\n'
+                        b'data: {"type":"response.failed","response":{"error":{"code":"server_error",'
+                        b'"message":"We\'re currently experiencing high demand, which may cause temporary errors."}}}\n\n'
+                    )
+                    return httpx.Response(200, content=sse, headers={'content-type': 'text/event-stream'})
+                return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
+                                      headers={'content-type': 'text/event-stream'})
             if mode['kind'] == 'all_fail':
                 return httpx.Response(503, content=b'busy')
             if mode['kind'] == 'stream_break':
@@ -708,6 +723,26 @@ class JobGatewayTests(unittest.IsolatedAsyncioTestCase):
             attempts.clear()
             r6 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token5})
             self.assertEqual(r6.status_code, 200)
+            self.assertEqual(attempts, ['m2'])
+
+            # 6) 400 high demand falls back immediately; 200 SSE high demand advances model_index for retry
+            attempts.clear()
+            mode['kind'] = '400_demand'
+            token6, _ = self.gateway.open()
+            r7 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token6})
+            self.assertEqual(r7.status_code, 200)
+            self.assertEqual(attempts, ['m1', 'm2'])
+
+            attempts.clear()
+            mode['kind'] = 'sse_demand'
+            token7, ch7 = self.gateway.open()
+            r8 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token7})
+            self.assertEqual(r8.status_code, 200)
+            self.assertEqual(ch7.model_index, 1)
+            self.assertIn('high demand', ch7.fallbacks[0][2])
+            attempts.clear()
+            r9 = await client.post(self.base + '/responses', json={'input': []}, headers={'Authorization': 'Bearer ' + token7})
+            self.assertEqual(r9.status_code, 200)
             self.assertEqual(attempts, ['m2'])
         self.assertTrue(all(r.finished for r in receipts))
 

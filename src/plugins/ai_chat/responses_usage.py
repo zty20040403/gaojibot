@@ -19,6 +19,7 @@ class ResponsesUsage:
         self.skip_lf = self.drop_line = self.drop_event = False
         self.seen = self.conflict = False
         self.usage = TokenUsage.read(None)
+        self.error_reason = ''
 
     def feed(self,chunk):
         if not self.sse:
@@ -64,9 +65,23 @@ class ResponsesUsage:
         except (ValueError,UnicodeError,RecursionError):return
         if not isinstance(payload,dict):return
         if sse:
-            if payload.get('type') not in {'response.completed','response.incomplete','response.failed'}:return
+            ptype = payload.get('type')
+            if ptype == 'error':
+                err = payload.get('error')
+                if isinstance(err, dict):
+                    self.error_reason = str(err.get('message') or err.get('code') or '')[:200]
+                elif isinstance(payload.get('message'), str):
+                    self.error_reason = payload['message'][:200]
+                return
+            if ptype not in {'response.completed','response.incomplete','response.failed'}:return
             payload = payload.get('response')
             if not isinstance(payload,dict):return
+            if ptype == 'response.failed':
+                err = payload.get('error')
+                if isinstance(err, dict):
+                    self.error_reason = str(err.get('message') or err.get('code') or 'response.failed')[:200]
+                elif not self.error_reason:
+                    self.error_reason = 'response.failed'
         elif payload.get('object','response') not in {'response','response.compaction'}:return
         usage = TokenUsage.read(payload.get('usage'))
         if self.seen and usage!=self.usage:self.conflict = True
