@@ -209,6 +209,13 @@ def _policy_registry() -> dict[str, ToolPolicy]:
     policies['agent_steer'] = ToolPolicy(side_effects=('write:job',))
     policies['agent_status'] = ToolPolicy(risk='low', idempotency='pure', side_effects=())
     policies['agent_cancel'] = ToolPolicy(idempotency='idempotent', side_effects=('write:job',))
+    policies["recall_message"] = ToolPolicy(
+        risk="medium",
+        idempotency="idempotent",
+        side_effects=("send:conversation",),
+        timeout_seconds=30.0,
+        max_identical_calls=2,
+    )
     policies["job_cancel"] = ToolPolicy(
         risk="critical",
         idempotency="idempotent",

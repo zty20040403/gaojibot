@@ -51,6 +51,7 @@ class FakePlatform:
         self.resume_count = 0
         self.heartbeats: list[int | None] = []
         self.received: list[dict] = []
+        self.recalled: list[dict] = []
         self.connections: set[web.WebSocketResponse] = set()
         self.ready_notifications: asyncio.Queue = asyncio.Queue()
         self.windows: dict[tuple[str, str, str, str], FakeWindow] = {}
@@ -87,6 +88,7 @@ class FakePlatform:
         app.router.add_get('/v2/groups/{target}/bot_state', bot_state)
         app.router.add_get("/ws", self._websocket)
         app.router.add_post("/v2/{collection:groups|users}/{target}/messages", self._send)
+        app.router.add_delete("/v2/{collection:groups|users}/{target}/messages/{message_id}", self._recall)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", 0)
@@ -324,3 +326,15 @@ class FakePlatform:
                 request.transport.close()
             return web.Response(status=200)
         return web.json_response(receipt)
+
+    async def _recall(self, request):
+        if not self._authorized(request):
+            return web.json_response({"code": FAKE_INVALID_PAYLOAD}, status=401)
+        if self.next_errors:
+            status, code = self.next_errors.popleft()
+            return web.json_response({"code": code, "message": "TEST_REMOTE_ERROR"}, status=status)
+        kind = "group" if request.match_info["collection"] == "groups" else "user"
+        target = request.match_info["target"]
+        message_id = request.match_info["message_id"]
+        self.recalled.append({"kind": kind, "target": target, "message_id": message_id})
+        return web.Response(status=200)

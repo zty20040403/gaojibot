@@ -121,7 +121,7 @@ class OfficialTurnPlatform:
 
     def __init__(self, inbound: InboundMessage, *, execution: ExecutionBinding,
                  outbox, database_calls, transport_state, sender_wake=None,
-                 policy=None, clock=time.time):
+                 policy=None, clock=time.time, rest_provider=None):
         if not isinstance(inbound, InboundMessage) or not isinstance(execution, ExecutionBinding):
             raise PlatformBoundaryError("invalid_turn_binding")
         handle = execution.handle
@@ -138,6 +138,7 @@ class OfficialTurnPlatform:
         self.pending_media = []
         self._transport_state, self._clock = transport_state, clock
         self._sender_wake = sender_wake or (lambda: None)
+        self._rest_provider = rest_provider
         self.policy = policy or TurnDeliveryPolicy()
         if not isinstance(self.policy, TurnDeliveryPolicy):
             raise PlatformBoundaryError("invalid_delivery_policy")
@@ -296,4 +297,96 @@ class OfficialTurnPlatform:
 
     async def recall(self, endpoint, native_message_id):
         self._endpoint(endpoint)
-        return False
+        rest = self._rest_provider() if callable(self._rest_provider) else None
+        if rest is None:
+            return False
+        await rest.recall_message(endpoint.kind, endpoint.native_conversation_id, native_message_id)
+        return True
+
+    async def recall_own_message(self, canonical_id: int) -> dict[str, object]:
+        import json
+        from src.qq_official.errors import QQAPIError
+
+        if type(canonical_id) is not int or canonical_id < 1:
+            return {"ok": False, "code": "invalid_id", "error": "消息编号必须是正整数。"}
+
+        def prepare():
+            now = int(self._clock())
+            with self.outbox.deliveries.transaction() as cursor:
+                self.execution.current(cursor, now)
+                row = cursor.execute(
+                    """
+                    SELECT m.canonical_message_id, m.direction, m.native_message_id,
+                           m.occurred_at, m.raw_event_json,
+                           q.native_message_id AS q_native, q.direction AS q_direction
+                    FROM messages m
+                    JOIN conversation_visibility v USING (conversation_id)
+                    LEFT JOIN qq_official_messages q
+                      ON q.canonical_message_id = m.canonical_message_id
+                     AND q.account_key = ?
+                     AND q.endpoint_key = ?
+                    WHERE m.canonical_message_id = ?
+                      AND m.source_endpoint_key = ?
+                      AND m.canonical_message_id >= v.min_canonical_message_id
+                    FOR UPDATE OF m
+                    """,
+                    (
+                        self.execution.token.account_key,
+                        self.endpoint.key,
+                        canonical_id,
+                        self.endpoint.key,
+                    ),
+                ).fetchone()
+                if row is None:
+                    return {"ok": False, "code": "not_found", "error": f"本会话里没有消息 #{canonical_id}。"}
+                if row["direction"] != "outbound" or (row["q_direction"] is not None and row["q_direction"] != "outbound"):
+                    return {"ok": False, "code": "forbidden", "error": "只能撤回你自己发出的消息，不能撤回别人的消息。"}
+                try:
+                    raw = json.loads(row["raw_event_json"] or "{}")
+                except Exception:
+                    raw = {}
+                if isinstance(raw, dict) and raw.get("recalled") is True:
+                    return {"ok": False, "code": "already_recalled", "error": f"消息 #{canonical_id} 已经撤回过了。"}
+                sent_at = int(row["occurred_at"] or 0)
+                if now - sent_at > 120:
+                    return {"ok": False, "code": "expired", "error": "超过 2 分钟了，QQ 官方接口不再允许撤回。"}
+                native_id = str(row["q_native"] or row["native_message_id"] or "").strip()
+                if not native_id:
+                    return {"ok": False, "code": "missing_native_id", "error": "该消息缺少平台消息 ID，无法撤回。"}
+                return {"ok": True, "native_id": native_id}
+
+        checked = await self._calls(prepare)
+        if not checked.get("ok"):
+            return checked
+        rest = self._rest_provider() if callable(self._rest_provider) else None
+        if rest is None:
+            return {"ok": False, "code": "unavailable", "error": "当前连接暂不支持撤回消息。"}
+        try:
+            await rest.recall_message(self.endpoint.kind, self.endpoint.native_conversation_id, str(checked["native_id"]))
+        except QQAPIError as err:
+            return {"ok": False, "code": "platform_refused", "error": f"QQ 拒绝撤回（{err.code or err.category}）。"}
+
+        def mark_recalled():
+            now = int(self._clock())
+            with self.outbox.deliveries.transaction() as cursor:
+                row = cursor.execute(
+                    "SELECT raw_event_json FROM messages WHERE canonical_message_id=? FOR UPDATE",
+                    (canonical_id,),
+                ).fetchone()
+                if row is None:
+                    return
+                try:
+                    raw = json.loads(row["raw_event_json"] or "{}")
+                except Exception:
+                    raw = {}
+                if not isinstance(raw, dict):
+                    raw = {}
+                raw["recalled"] = True
+                raw["recalled_at"] = now
+                cursor.execute(
+                    "UPDATE messages SET raw_event_json=? WHERE canonical_message_id=?",
+                    (json.dumps(raw, ensure_ascii=False), canonical_id),
+                )
+
+        await self._calls(mark_recalled)
+        return {"ok": True, "recalled": canonical_id}

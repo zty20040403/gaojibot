@@ -352,6 +352,28 @@ class RestClient:
             raise QQAPIError("missing_receipt", stage="send")
         return result
 
+    async def recall_message(self, kind: str, target: str, message_id: str) -> None:
+        path = self._message_path(kind, target)
+        if (
+            not isinstance(message_id, str)
+            or not message_id.strip()
+            or len(message_id.encode("utf-8")) > 256
+            or message_id in {".", ".."}
+            or "/" in message_id
+            or "\\" in message_id
+            or any(unicodedata.category(c) in {"Cc", "Cf", "Cs"} or c.isspace() for c in message_id)
+        ):
+            raise ValueError("Invalid message id")
+        token = await self.token_manager.get()
+        await self._request_response_with_token(
+            "DELETE",
+            f"{path}/{quote(message_id, safe='')}",
+            token,
+            None,
+            stage="moderation",
+            empty_moderation_delete=True,
+        )
+
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
