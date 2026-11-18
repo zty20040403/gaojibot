@@ -28,7 +28,7 @@ class NativeStatusTests(unittest.IsolatedAsyncioTestCase):
 
     def build(self,text='/status',*,enabled=True):
         self.f.query('UPDATE qq_official_inbound_events SET turn_text=?,turn_text_version=1 WHERE inbox_id=?',(text,self.f.inbox))
-        app = SimpleNamespace(running_tasks=self.tasks,model_preferences=object(),reasoning_preferences=object(),usage_store=None,
+        app = SimpleNamespace(settings=SimpleNamespace(sandbox_operations_owners=()), running_tasks=self.tasks,model_preferences=object(),reasoning_preferences=object(),usage_store=None,
             model_billing=ModelBilling(self.f.database) if enabled else None)
         runtime = SimpleNamespace(agent_service=None,store=SimpleNamespace(admitted=self.f.admission,clock=lambda:self.f.now,
             authority=SimpleNamespace(owner_for_actor=lambda *_:None)),deliveries=self.deliveries,outbox=self.outbox,

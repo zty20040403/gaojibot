@@ -62,7 +62,7 @@ class NativeVMCommandTests(unittest.IsolatedAsyncioTestCase):
                 failures.append(error)
                 raise
         provider = SimpleNamespace(command=guarded)
-        app = SimpleNamespace(running_tasks=self.tasks,model_preferences=object(),reasoning_preferences=object(),usage_store=None)
+        app = SimpleNamespace(settings=SimpleNamespace(sandbox_operations_owners=()), running_tasks=self.tasks,model_preferences=object(),reasoning_preferences=object(),usage_store=None)
         runtime = SimpleNamespace(agent_service=SimpleNamespace(vm_lifecycle=SimpleNamespace(status=provider,browser=provider)),
             store=SimpleNamespace(admitted=self.f.admission,clock=lambda:self.f.now,
                 authority=SimpleNamespace(owner_for_actor=lambda *_:object() if owner else None)),deliveries=self.deliveries,

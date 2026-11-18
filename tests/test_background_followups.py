@@ -74,13 +74,13 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
         job = created['job']
         number = int(job[4:])
         self.service.store.update(number, state='running', last_tool='shell')
-        self.f.now += 30
+        self.f.now += 7
         rejected, status = await self.ask('做咋样了',
             ('agent', {'task': 'TEST accidentally restart page'}), ('agent_status', {'job': job}))
         self.assertFalse(rejected['ok'])
         self.assertIn(job, rejected['error'])
         self.assertEqual(status['jobs'][0]['last_tool'], 'shell')
-        self.assertEqual(status['jobs'][0]['elapsed_seconds'], 30)
+        self.assertEqual(status['jobs'][0]['elapsed_seconds'], 7)
         snapshot = self.prompts[-1]['tool_context']
         for text in (job, 'TEST web page', 'running', 'shell'):
             self.assertIn(text, snapshot)
