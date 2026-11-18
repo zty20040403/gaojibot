@@ -88,6 +88,7 @@ _MEMORY_WRITE_TOOLS = {
     "impression",
     "memory_append",
     "memory_write",
+    "promise",
 }
 
 _SANDBOX_WRITE_TOOLS = {
