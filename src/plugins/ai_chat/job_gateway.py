@@ -7,8 +7,11 @@ model and the reasoning effort are the host's, never the container's.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
+import os
+import re
 import secrets
 
 import httpx
@@ -25,6 +28,9 @@ from .tool_images import ToolImage
 
 MAX_BODY = 64 * 1024 * 1024
 MAX_JOB_TOOL_BODY = 1024 * 1024
+MAX_GIT_PUSH_BODY = 512 * 1024 * 1024
+GITHUB_LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?')
+GITHUB_REPO = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}')
 TOOL_HEARTBEAT_SECONDS = 25.0
 IDLE_SECONDS = 120
 FALLBACK_STATUSES = frozenset({401, 403, 404, 408, 409, 429, 500, 502, 503, 504, 529})
@@ -49,6 +55,16 @@ TRANSIENT_ERROR_MARKERS = (
     'temporarily unavailable',
     'temporary errors',
 )
+
+
+def github_identity() -> tuple[str, str] | None:
+    """The bot's own GitHub account (AI_GITHUB_LOGIN, AI_GITHUB_USER_ID), as commit author."""
+    login = os.environ.get('AI_GITHUB_LOGIN', '').strip()
+    user_id = os.environ.get('AI_GITHUB_USER_ID', '').strip()
+    if not GITHUB_LOGIN.fullmatch(login):
+        return None
+    prefix = f'{user_id}+' if user_id.isdigit() else ''
+    return login, f'{prefix}{login}@users.noreply.github.com'
 
 
 def _is_transient_or_model_error(text: str) -> bool:
@@ -191,6 +207,9 @@ class JobGateway:
         self.channels: dict[str, Channel] = {}
         self.failures: dict[str, str] = {}
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(30, read=IDLE_SECONDS), trust_env=False)
+        # git pushes to GitHub; separate so a slow push never holds model connections.
+        self.github_client = httpx.AsyncClient(timeout=httpx.Timeout(60, read=600), trust_env=False,
+                                               follow_redirects=False)
         self.http = None
         self.http_task = None
         self.started = asyncio.Lock()
@@ -222,7 +241,10 @@ class JobGateway:
                                         Route('/v1/responses', _ModelRequest(self), methods=['POST']),
                                         Route('/v1/responses/compact', _ModelRequest(self), methods=['POST']),
                                         Route('/job/tools', _ModelRequest(self, self._job_tools, vm_tool=True), methods=['GET']),
-                                        Route('/job/tool', _ModelRequest(self, self._job_tool, vm_tool=True), methods=['POST'])])
+                                        Route('/job/tool', _ModelRequest(self, self._job_tool, vm_tool=True), methods=['POST']),
+                                        Route('/git/identity', _ModelRequest(self, self._git_identity, vm_tool=True), methods=['GET']),
+                                        Route('/git/github/{owner}/{repo}/{rest:path}',
+                                              _ModelRequest(self, self._github_git, vm_tool=True), methods=['GET', 'POST'])])
                 if self.vm_handler is not None:
                     for path,method,write in (('/vm/say','POST',True),('/vm/wake','POST','wake'),('/vm/send-file','POST',True),('/vm/actions/{action_id}','GET',False),('/vm/actions','GET',False),
                             ('/vm/events','GET',False),('/vm/units','POST',False),('/vm/history','POST',False),('/vm/web-search','POST',False),('/vm/web-fetch','POST',False),
@@ -247,6 +269,66 @@ class JobGateway:
             self.http.should_exit = True
             await asyncio.gather(self.http_task, return_exceptions=True)
         await self.client.aclose()
+        await self.github_client.aclose()
+
+    async def _git_identity(self, request: Request):
+        if not await self._job_current(request.state.channel):
+            return JSONResponse({'error': '后台任务已失权或授权检查不可用'}, 403)
+        identity = github_identity()
+        if identity is None:
+            return JSONResponse({'error': 'github_not_configured'}, 404)
+        login, email = identity
+        return JSONResponse({'login': login, 'email': email})
+
+    async def _github_git(self, request: Request):
+        """git push over HTTPS to the bot's own GitHub repositories, with the host's token.
+
+        Only receive-pack (push) passes, and only to repositories the bot's account owns;
+        clones and fetches go straight to github.com. The caller's bearer token is
+        dropped and never reaches GitHub; GitHub's token never reaches the container.
+        """
+        if not await self._job_current(request.state.channel):
+            return JSONResponse({'error': '后台任务已失权或授权检查不可用'}, 403)
+        identity, token = github_identity(), os.environ.get('AI_GITHUB_TOKEN', '').strip()
+        if identity is None or not token:
+            return JSONResponse({'error': 'github_not_configured'}, 404)
+        owner, repo, rest = (request.path_params[key] for key in ('owner', 'repo', 'rest'))
+        if owner.lower() != identity[0].lower() or not GITHUB_REPO.fullmatch(repo):
+            return JSONResponse({'error': f'只能推送到 {identity[0]} 自己名下的仓库'}, 403)
+        service = request.query_params.get('service')
+        if not ((request.method == 'GET' and rest == 'info/refs' and service == 'git-receive-pack'
+                 and set(request.query_params) == {'service'})
+                or (request.method == 'POST' and rest == 'git-receive-pack' and not request.query_params)):
+            return JSONResponse({'error': '中转只用于 git push；clone 和 fetch 直接用 https://github.com'}, 403)
+
+        async def body():
+            size = 0
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_GIT_PUSH_BODY:
+                    raise ValueError('git push exceeds the relay limit')
+                yield chunk
+
+        basic = base64.b64encode(f'x-access-token:{token}'.encode()).decode()
+        headers = {'Authorization': 'Basic ' + basic, 'User-Agent': 'gaoji-git-relay'}
+        for name in ('content-type', 'accept', 'content-encoding', 'git-protocol'):
+            if name in request.headers:
+                headers[name] = request.headers[name]
+        upstream_request = self.github_client.build_request(
+            request.method, f'https://github.com/{owner}/{repo}/{rest}',
+            params=dict(request.query_params) or None, headers=headers,
+            content=body() if request.method == 'POST' else None)
+        try:
+            upstream = await self.github_client.send(upstream_request, stream=True)
+        except ValueError:
+            return JSONResponse({'error': f'推送超过 {MAX_GIT_PUSH_BODY // (1024 * 1024)} MiB 上限'}, 413)
+        except httpx.HTTPError as error:
+            return JSONResponse({'error': f'GitHub 连接失败：{type(error).__name__}'}, 502)
+        request.state.resources.push_async_callback(upstream.aclose)
+        response_headers = {name: upstream.headers[name] for name in ('content-type', 'cache-control')
+                            if name in upstream.headers}
+        # aiter_bytes undoes any gzip httpx negotiated, so no content-encoding is passed on.
+        return StreamingResponse(upstream.aiter_bytes(), upstream.status_code, headers=response_headers)
 
     def _authorized(self, request: Request):
         header = request.headers.get('authorization', '')

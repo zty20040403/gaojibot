@@ -166,6 +166,37 @@ class SandboxGaojiTests(unittest.TestCase):
             self.assertNotIn(TOKEN, out + error)
         self.assertEqual(len(self.server.seen), 1)
 
+    def test_git_runs_as_bot_account_and_pushes_through_relay(self):
+        self.server.value = {'login': 'TEST-LOGIN', 'email': '1+TEST-LOGIN@users.noreply.github.com'}
+        seen = {}
+
+        def execvpe(file, args, env):
+            seen.update(file=file, args=args, env=env)
+            raise SystemExit(0)
+
+        with patch.object(cli.os, 'execvpe', side_effect=execvpe), patch.dict(cli.os.environ, {'GIT_CONFIG_COUNT': '1'}):
+            with self.assertRaises(SystemExit):
+                cli.main(['git', '-C', '/work/repo', 'push', '-u', 'origin', 'TEST_BRANCH'], client=self.client)
+        self.assertEqual(self.server.seen[-1][:3], ('GET', '/git/identity', 'Bearer ' + TOKEN))
+        self.assertEqual(seen['args'], ['git', '-C', '/work/repo', 'push', '-u', 'origin', 'TEST_BRANCH'])
+        self.assertNotIn(TOKEN, ' '.join(seen['args']))
+        env = seen['env']
+        config = {env[f'GIT_CONFIG_KEY_{i}']: env[f'GIT_CONFIG_VALUE_{i}'] for i in range(1, int(env['GIT_CONFIG_COUNT']))}
+        relay = 'http://10.0.2.2:18640/git/github/'
+        self.assertEqual(config, {
+            f'http.{relay}.extraHeader': 'Authorization: Bearer ' + TOKEN,
+            f'url.{relay}.pushInsteadOf': 'https://github.com/',
+            'user.name': 'TEST-LOGIN',
+            'user.email': '1+TEST-LOGIN@users.noreply.github.com',
+        })
+
+        self.server.status, self.server.value = 404, {'error': 'github_not_configured'}
+        with patch.object(cli.os, 'execvpe') as never:
+            result, _, error = self.run_cli('git', 'status')
+        self.assertEqual(result, 1)
+        self.assertIn('github_not_configured', error)
+        never.assert_not_called()
+
     def test_container_ships_dependency_free_cli(self):
         tools_nix = (Path(__file__).parents[1] / 'nix/guest/tools.nix').read_text()
         self.assertIn('"sandbox_gaoji.py"', tools_nix)

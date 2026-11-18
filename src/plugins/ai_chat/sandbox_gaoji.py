@@ -200,6 +200,8 @@ def parser():
     gh.add_argument('--method', default='GET', choices=('GET', 'POST', 'PUT', 'PATCH', 'DELETE'))
     gh.add_argument('--query', help='JSON object of query parameters')
     gh.add_argument('--body', help='JSON object body, or - for stdin')
+    # Listed for --help only; main() hands `gaoji git ...` to git before argparse.
+    commands.add_parser('git', help='run git as the bot GitHub account; pushes to github.com use the host relay')
 
     wake_cmd = commands.add_parser('wake')
     wake_cmd.add_argument('text', help='wake notice text for foreground model, or - for stdin')
@@ -225,7 +227,44 @@ def parser():
     return result
 
 
+def git_environment(client, environ):
+    """git's environment for the bot's GitHub account.
+
+    Pushes to https://github.com/ go to the host relay, which adds the account's
+    token; this container's own bearer goes only to the relay. Config travels in
+    GIT_CONFIG_* so the bearer never shows in the process list.
+    """
+    host, port, token = client.credentials()
+    status, identity = client.request('GET', '/git/identity')
+    if not 200 <= status < 300 or not isinstance(identity, dict):
+        error = identity.get('error') if isinstance(identity, dict) else identity
+        raise ClientError(f'GitHub is not available here: {error}')
+    relay = f'http://{host}:{port}/git/github/'
+    config = {
+        f'http.{relay}.extraHeader': 'Authorization: Bearer ' + token,
+        f'url.{relay}.pushInsteadOf': 'https://github.com/',
+        'user.name': str(identity['login']),
+        'user.email': str(identity['email']),
+    }
+    env = dict(environ)
+    raw = env.get('GIT_CONFIG_COUNT', '0')
+    start = int(raw) if raw.isdigit() else 0
+    for index, (key, value) in enumerate(config.items(), start):
+        env[f'GIT_CONFIG_KEY_{index}'], env[f'GIT_CONFIG_VALUE_{index}'] = key, value
+    env['GIT_CONFIG_COUNT'] = str(start + len(config))
+    return env
+
+
 def main(argv=None, *, client=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ['git']:
+        # Not argparse: everything after `git` is git's own, flags included.
+        try:
+            env = git_environment(client or Client(), os.environ)
+        except ClientError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        os.execvpe('git', ['git', *argv[1:]], env)
     args = vars(parser().parse_args(argv))
     command = args.pop('command')
     client = client or Client()
