@@ -46,6 +46,7 @@ class Setting:
 SETTINGS = {
     'agent_timeout_hours':Setting(6,'commands','1–6小时；只影响新任务',6,1),
     'proactive_enabled':Setting(True,'conversations','仅群聊主动接话；仍需宿主启用分类器'),
+    'interest_sharing_enabled':Setting(True,'conversations','冷场后同话题公共资讯分享；仍受主动接话总开关限制'),
     'proactive_hourly_limit':Setting(8,'conversations','每群滚动一小时最多主动接话次数；0禁用',60),
     'proactive_quiet_utc':Setting('off','conversations','UTC 静默时段 HH:MM-HH:MM（可跨午夜）；off 关闭',interval=True),
     'image_captions':Setting(False,'captions','新入站图片说明；仍需宿主视觉服务'),
@@ -101,7 +102,7 @@ def change(cursor, endpoint, name, value, *, actor, now, expected_version=None):
     version += 1
     cursor.execute('UPDATE admin_resource_versions SET version=?,updated_at=? WHERE resource_key=?',(version,now,item.resource))
     cursor.execute('INSERT INTO conversation_settings(scope_key) VALUES (?) ON CONFLICT DO NOTHING',(endpoint.scope.key,))
-    proactive_setting = name in ('proactive_enabled','proactive_hourly_limit','proactive_quiet_utc')
+    proactive_setting = name in ('proactive_enabled','proactive_hourly_limit','proactive_quiet_utc','interest_sharing_enabled')
     extra = ',proactive_generation=proactive_generation+?' if proactive_setting else ''
     stored = None if name=='proactive_quiet_utc' and value=='off' else value
     args = (stored,int(before!=value),endpoint.scope.key) if proactive_setting else (stored,endpoint.scope.key)
