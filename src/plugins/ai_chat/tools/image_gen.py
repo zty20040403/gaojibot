@@ -15,6 +15,7 @@ from ..adapters.qq_official.image_formats import detect_image
 from ..application.owned_sandbox import OwnedSandboxExecutor, workspace_path
 from ..tool_images import ToolImage
 from .owned_sandbox import enabled as sandbox_enabled
+from .progress import enabled as progress_enabled
 from .registry import FunctionTool
 from .state import structured_tool_source
 
@@ -23,7 +24,7 @@ GENERATE_IMAGE_TOOL = {
     "function": {
         "name": "generate_image",
         "description": (
-            "调用 AI 出图模型（默认 gemini-3.1-flash-image，失败自动回退 gpt-image-2.5）根据描述生成图片（梗图、头像、插画等），"
+            "调用 AI 出图模型（默认 gemini-3.1-flash-image，失败可能回退 gpt-image-2.5；审核或版权限制不回退）根据描述生成图片（梗图、头像、插画等），"
             "保存到本会话容器 /work 下并附给你预览。确认画面无误后调用 send_image 发到当前会话。"
         ),
         "parameters": {
@@ -72,6 +73,54 @@ def _decode_data_url_or_b64(raw_url: str) -> bytes:
     return base64.b64decode(raw_url)
 
 
+# Only fixed vocabulary is returned: arbitrary provider text can contain the request or credentials.
+_RESTRICTED = (
+    "content_policy_violation", "content_filter", "content policy", "safety system",
+    "safety filter", "safety policy", "moderation", "copyright", "prohibited_content",
+    "image_safety", "image_recitation", "recitation", "内容审核", "内容安全", "版权",
+)
+_CODES = frozenset({
+    "content_policy_violation", "content_filter", "moderation_blocked", "safety",
+    "image_safety", "prohibited_content", "recitation", "image_recitation",
+    "copyright_violation", "responsibleaipolicyviolation", "insufficient_quota",
+    "quota_exceeded", "resource_exhausted", "rate_limit_exceeded", "invalid_request_error",
+})
+_EXCERPTS = _RESTRICTED + (
+    "quota exceeded", "insufficient quota", "exceeded your current quota",
+    "rate limit exceeded", "high demand", "额度不足", "配额不足",
+)
+
+
+class ImageProviderError(RuntimeError):
+    def __init__(self, response: httpx.Response, route: str, *, finish_reason=None):
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        error = {"code": finish_reason} if finish_reason else body.get("error") if isinstance(body, dict) else None
+        fields = error if isinstance(error, dict) else {"message": error}
+        code = fields.get("code")
+        if isinstance(code, str) and code.casefold() in _CODES:
+            code = code.casefold()
+        elif type(code) is not int or not 100 <= code <= 599:
+            code = next((value.casefold() for value in (fields.get("type"), fields.get("status"))
+                         if isinstance(value, str) and value.casefold() in _CODES), None)
+        texts = [fields.get(key) for key in ("code", "type", "status", "message")]
+        text = " ".join(value.casefold() for value in texts if isinstance(value, str))
+        self.restricted = any(phrase in text for phrase in _RESTRICTED) or any(
+            value in {"safety", "recitation", "responsibleaipolicyviolation"} for value in text.split()
+        )
+        message = fields.get("message")
+        message = message.casefold() if isinstance(message, str) else ""
+        excerpt = next((phrase for phrase in _EXCERPTS if phrase in message), None)
+        details = [f"{route}_http_{response.status_code}"]
+        if code is not None:
+            details.append(f"code={code}")
+        if excerpt:
+            details.append(f"message={excerpt}")
+        super().__init__(", ".join(details))
+
+
 async def _generate_via_chat(client: httpx.AsyncClient, base_url: str, api_key: str, model: str, prompt: str):
     resp = await client.post(
         f"{base_url.rstrip('/')}/chat/completions",
@@ -80,10 +129,14 @@ async def _generate_via_chat(client: httpx.AsyncClient, base_url: str, api_key: 
         timeout=90.0,
     )
     if resp.status_code >= 400:
-        raise RuntimeError(f"chat_image_http_{resp.status_code}")
+        raise ImageProviderError(resp, "chat_image")
     data = resp.json()
     choices = data.get("choices") or []
-    msg = choices[0].get("message") if choices and isinstance(choices[0], dict) else None
+    choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+    reason = choice.get('finish_reason')
+    if isinstance(reason, str) and reason.casefold() in {'content_filter', 'safety', 'image_safety', 'recitation', 'image_recitation'}:
+        raise ImageProviderError(resp, 'chat_image', finish_reason=reason)
+    msg = choice.get("message")
     images = (msg.get("images") if isinstance(msg, dict) else None) or []
     if not images:
         raise RuntimeError("chat_image_empty")
@@ -110,7 +163,7 @@ async def _generate_via_images_api(client: httpx.AsyncClient, base_url: str, api
         timeout=90.0,
     )
     if resp.status_code >= 400:
-        raise RuntimeError(f"images_api_http_{resp.status_code}")
+        raise ImageProviderError(resp, "images_api")
     data = resp.json()
     items = data.get("data") or []
     b64 = items[0].get("b64_json") if items and isinstance(items[0], dict) else None
@@ -163,15 +216,18 @@ async def execute(turn, arguments):
                 client, profile.base_url, profile.api_key, primary_model, prompt
             )
         except Exception as err1:
-            last_err = str(err1)
-            if fallback_model:
+            last_err = str(err1) if isinstance(err1, ImageProviderError) else "chat_image_error"
+            if fallback_model and not (isinstance(err1, ImageProviderError) and err1.restricted):
+                if progress_enabled(turn.context):
+                    await turn.context.platform.progress.say("出图服务失败，我再尝试备用服务。")
                 used_model = fallback_model
                 try:
                     raw_bytes, in_tokens, out_tokens = await _generate_via_images_api(
                         client, profile.base_url, profile.api_key, fallback_model, prompt
                     )
                 except Exception as err2:
-                    last_err = f"{last_err}; fallback={err2}"
+                    detail = str(err2) if isinstance(err2, ImageProviderError) else "images_api_error"
+                    last_err = f"{last_err}; fallback={detail}"
 
     if not raw_bytes:
         return json.dumps({"ok": False, "code": "generation_failed", "error": f"出图失败（{last_err or 'empty'}）。"}, ensure_ascii=False)

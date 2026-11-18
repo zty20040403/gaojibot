@@ -7,12 +7,17 @@ import json
 import threading
 from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock, patch
 
+import httpx
+
+from src.plugins.ai_chat.adapters.qq_official.progress import ProgressEmitter
 from src.plugins.ai_chat.application.owned_sandbox import OwnedSandboxExecutor
 from src.plugins.ai_chat.model_catalog import ModelCatalog
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import InboundMessage
 from src.plugins.ai_chat.tool_images import ToolImage
+from src.plugins.ai_chat.tools import image_gen
 from src.plugins.ai_chat.tools.image_gen import HANDLERS as IMAGE_GEN_HANDLERS
 from src.plugins.ai_chat.tools.registry import ToolRegistry
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
@@ -114,7 +119,10 @@ class GenerateImageTests(unittest.IsolatedAsyncioTestCase):
             usage_store=SimpleNamespace(record=lambda **kw: recorded_usage.append(kw)),
             db_call=db_call,
         )
-        platform = SimpleNamespace(account=binding.endpoint.account, features=SimpleNamespace())
+        progress = ProgressEmitter(token=None, outbox=None, current=None, database_calls=None)
+        progress.say = AsyncMock(return_value={"ok": False})
+        platform = SimpleNamespace(account=binding.endpoint.account, features=SimpleNamespace(),
+                                   progress=progress, progress_enabled=True)
         ctx = ToolContext(
             SimpleNamespace(context=app),
             capabilities=frozenset({"sandbox"}),
@@ -147,3 +155,77 @@ class GenerateImageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta2["path"], "/work/memes/penguin.png")
         self.assertEqual(manager.own(executor.owner, sid)["files"]["memes/penguin.png"], _tiny_png())
         self.assertEqual(recorded_usage[-1]["model"], "gpt-image-2.5")
+        progress.say.assert_awaited_once_with("出图服务失败，我再尝试备用服务。")
+        self.assertFalse(turn.delivered)  # enqueue is not a delivery receipt
+
+    async def test_safe_errors_for_both_routes(self):
+        secret = "TEST_KEY Authorization Bearer TEST_TOKEN https://TEST_USER:TEST_PASS@TEST_HOST/?sig=TEST_SIG"
+        prompt = "TEST_PRIVATE_PROMPT"
+        payloads = [
+            ({"error": {"code": "content_policy_violation", "message": f"Content policy {secret} {prompt}"}},
+             "code=content_policy_violation", "message=content policy", True),
+            ({"error": {"code": "insufficient_quota", "message": f"Quota exceeded {secret}"}},
+             "code=insufficient_quota", "message=quota exceeded", False),
+            ({"error": {"status": "IMAGE_RECITATION", "message": "Copyright restriction"}},
+             "code=image_recitation", "message=copyright", True),
+            ({"error": {"code": secret, "message": "TEST_BASE64_AAAAAAA"}}, None, None, False),
+            (f"<html>{secret} {prompt}</html>", None, None, False),
+            ([secret], None, None, False),
+        ]
+        for route in (image_gen._generate_via_chat, image_gen._generate_via_images_api):
+            for body, code, excerpt, restricted in payloads:
+                with self.subTest(route=route.__name__, body=body):
+                    response = httpx.Response(400, text=body) if isinstance(body, str) else httpx.Response(400, json=body)
+                    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response)) as client:
+                        with self.assertRaises(image_gen.ImageProviderError) as caught:
+                            await route(client, "https://TEST_HOST", "TEST_KEY", "TEST_MODEL", prompt)
+                    result = str(caught.exception)
+                    self.assertEqual(caught.exception.restricted, restricted)
+                    if code:
+                        self.assertIn(code, result)
+                    if excerpt:
+                        self.assertIn(excerpt, result)
+                    for forbidden in ("TEST_KEY", "Authorization", "TEST_TOKEN", "TEST_USER", "TEST_PASS",
+                                      "TEST_HOST", "TEST_SIG", prompt, "TEST_BASE64", "<html>"):
+                        self.assertNotIn(forbidden, result)
+                    self.assertLess(len(result), 150)
+
+    async def test_http_success_with_filtered_finish_reason_is_not_empty_or_retryable(self):
+        body = {'choices': [{'finish_reason': 'content_filter', 'message': {}}]}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))) as client:
+            with self.assertRaisesRegex(image_gen.ImageProviderError, 'code=content_filter') as caught:
+                await image_gen._generate_via_chat(client, 'https://example.test', 'TEST_KEY', 'TEST', 'TEST')
+        self.assertTrue(caught.exception.restricted)
+
+    async def test_restrictions_stop_and_transient_errors_fallback(self):
+        cases = [
+            ([{"code": "content_policy_violation", "message": "Content policy"}], 1, "content_policy_violation"),
+            ([{"status": "SAFETY", "message": "blocked"}], 1, "code=safety"),
+            ([{"message": "Copyright restriction"}], 1, "message=copyright"),
+            ([{"message": "high demand"}, {"code": "insufficient_quota", "message": "quota exceeded"}],
+             2, "code=insufficient_quota"),
+            ([{"message": "high demand"}, {"code": "copyright_violation", "message": "copyright"}],
+             2, "code=copyright_violation"),
+            ([None, None], 2, "images_api_error"),
+        ]
+        for errors, count, expected in cases:
+            paths = []
+            def respond(request):
+                paths.append(request.url.path)
+                error = errors[len(paths) - 1]
+                if error is None:
+                    raise httpx.ConnectError("TEST_KEY TEST_PRIVATE_PROMPT https://TEST_HOST/?sig=TEST_SIG")
+                return httpx.Response(503 if len(paths) == 1 else 429, json={"error": error})
+            client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+            turn = SimpleNamespace(context=SimpleNamespace(platform=None))
+            profile = SimpleNamespace(base_url="https://TEST_HOST", api_key="TEST_KEY")
+            with self.subTest(errors=errors), patch.object(image_gen, "enabled", return_value=True), \
+                    patch.object(image_gen, "_cliproxy_profile", return_value=profile), \
+                    patch.object(image_gen.httpx, "AsyncClient", return_value=client):
+                result = json.loads(await image_gen.execute(turn, {"prompt": "TEST_PRIVATE_PROMPT"}))
+            self.assertEqual(len(paths), count)
+            self.assertIn(expected, result["error"])
+            self.assertNotIn("TEST_KEY", result["error"])
+            self.assertNotIn("TEST_PRIVATE_PROMPT", result["error"])
+            self.assertNotIn("TEST_HOST", result["error"])
+            self.assertNotIn("TEST_SIG", result["error"])
