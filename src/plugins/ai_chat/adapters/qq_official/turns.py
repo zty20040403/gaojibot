@@ -348,7 +348,7 @@ class OfficialTurnConsumer:
     def __init__(self, *, token, store, outbox, journal, database_calls,
                  orchestrator, command_services, transport_state, usage=None,
                  sender_wake=None, policy=None, clock=time.time,
-                 model_timeout_seconds=600, business_services=None):
+                 model_timeout_seconds=600, business_services=None, rest_provider=None):
         if type(model_timeout_seconds) is not int or not 1 <= model_timeout_seconds <= 3600:
             raise ValueError("invalid_model_timeout")
         self.token, self.store, self.outbox = token, store, outbox
@@ -357,6 +357,7 @@ class OfficialTurnConsumer:
         self.sender_wake, self.policy, self.clock = sender_wake, policy, clock
         self.model_timeout_seconds = model_timeout_seconds
         self.business_services = business_services
+        self.rest_provider = rest_provider
 
     @staticmethod
     def _unpack(source) -> tuple[str, tuple[int, ...], str, object]:
@@ -525,7 +526,7 @@ class OfficialTurnConsumer:
         platform = OfficialTurnPlatform(
             inbound, execution=binding, outbox=self.outbox, database_calls=self._calls,
             transport_state=self.transport_state, sender_wake=self.sender_wake,
-            policy=self.policy, clock=self.clock,
+            policy=self.policy, clock=self.clock, rest_provider=self.rest_provider,
         )
         life.platform = platform
         if await platform.ready(inbound.endpoint) is not None:
@@ -688,4 +689,5 @@ def build_turn_consumer(runtime, token, app):
         policy=runtime.loaded.delivery.turn_policy(), transport_state=transport_state,
         usage=app.usage_store, sender_wake=lambda: runtime.sender.wake() if runtime.sender is not None else None,
         clock=runtime.store.clock,
+        rest_provider=lambda: runtime.sender.rest if runtime.sender is not None else None,
     )
