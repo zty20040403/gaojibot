@@ -4,7 +4,6 @@ import {
   Check,
   CircleAlert,
   Clock3,
-  Database,
   Eye,
   ExternalLink,
   FileText,
@@ -294,22 +293,11 @@ export function TracesView({ plane, onOpenDetail }: { plane: Plane; onOpenDetail
   )
 }
 
-export function DatabasesView({ plane }: { plane: Plane }) {
-  const database = plane.data.databases ?? {}
-  const nodes = rows(database.nodes)
-  return (
-    <>
-      <PageHeader title="数据库" description="主库、备用节点、连接池和复制延迟" action={<RefreshButton onClick={() => void plane.refresh('databases')} />} />
-      <div className="database-summary"><Metric label="整体状态" value={<StatusBadge value={database.overall} />} hint={`写节点：${database.writable_node ?? '-'}`} /><Metric label="连接池" value={`${database.pool?.available ?? 0}/${database.pool?.size ?? 0}`} hint={`${database.pool?.waiting ?? 0} 个等待`} /><Metric label="检查时间" value={fmtTime(database.checked_at)} /></div>
-      <div className="database-grid">{nodes.map((node) => <section className={`database-card ${node.status}`} key={node.name}><div className="database-title"><Database size={19} /><div><h2>{node.name}</h2><code>{node.host}:{node.port}</code></div><StatusBadge value={node.status} /></div><dl><div><dt>角色</dt><dd>{node.role}</dd></div><div><dt>写入</dt><dd>{node.writable ? '可写' : '只读'}</dd></div><div><dt>连接延迟</dt><dd>{node.latency_ms ?? '-'} ms</dd></div><div><dt>数据库大小</dt><dd>{fmtBytes(node.database_size_bytes)}</dd></div><div><dt>复制延迟</dt><dd>{node.replication_lag_seconds ?? '-'} s</dd></div><div><dt>PostgreSQL</dt><dd>{node.server_version ?? '-'}</dd></div></dl>{node.error && <p className="error-text">{node.error}</p>}</section>)}</div>
-    </>
-  )
-}
-
 export function SandboxesView({ plane }: { plane: Plane }) {
   const payload = plane.data.sandboxes ?? {}
   const sandboxes = rows(payload.items)
   const vmBackend = payload.backend === 'vm'
+  const backendLabel = vmBackend ? 'KVM' : payload.backend === 'container' ? 'NixOS 容器' : payload.backend === 'none' ? '沙盒后端' : '容器'
   const [pendingSandbox, setPendingSandbox] = useState('')
 
   const runAction = async (sandbox: any, action: 'start' | 'stop' | 'destroy') => {
@@ -336,7 +324,7 @@ export function SandboxesView({ plane }: { plane: Plane }) {
         <Metric label="保留沙盒" value={sandboxes.length} />
         <Metric label="运行中" value={sandboxes.filter((item) => item.running).length} />
         <Metric label="活动命令" value={fmtNumber(payload.active_commands)} />
-        <Metric label={vmBackend ? 'KVM' : payload.backend === 'none' ? '沙盒后端' : 'Docker'} value={<StatusBadge value={payload.available ? 'online' : 'offline'} />} />
+        <Metric label={backendLabel} value={<StatusBadge value={payload.available ? 'online' : 'offline'} />} />
       </div>
       <div className="sandbox-grid">
         {sandboxes.map((sandbox) => {
@@ -425,8 +413,7 @@ const HELP_SECTIONS = [
     items: [
       ['任务与投递', '查看当前 Agent、后台持久任务和 QQ 消息投递。Sub-Agent 列表中的“+”表示并行、“→”表示依赖；点分支图标查看方块执行拓扑和实时状态。右侧方形按钮取消任务，旋转箭头重试任务，播放按钮重试失败投递。'],
       ['Trace 与上下文', '用 Trace ID 串起一次回答的模型、工具、Token 和耗时；上下文决策显示“你觉得呢”等追问最终关联了哪条消息及置信度。'],
-      ['数据库', '查看当前主库和备用节点、连接池、延迟及复制状态。出现 offline 或 degraded 时先看节点错误，不要直接清数据。'],
-      ['沙盒', '查看隔离环境、正在执行的命令、资源占用和 Agent 任务。任务完成后沙盒按保留期限回收，因此这里为空通常是正常状态。'],
+      ['沙盒', '查看隔离容器环境、正在执行的命令、资源占用和常驻单元。任务完成后空闲容器按保留期限自动回收，有活跃单元的会话容器保持运行。'],
     ],
   },
   {
