@@ -35,7 +35,7 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
             return base.model_response('TEST new proactive reply',[],kwargs)
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',side_effect=completion) as model, \
                 patch('src.plugins.ai_chat.agent_loop._create_completion',new=main_completion), \
-                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.DEBOUNCE_SECONDS',0):
+                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.HOT_LOOK_SECONDS',0):
             async with verified_ready_platform() as fake:
                 runtime = self.runtime(loaded=base.runtime_fixture.loaded_config(fake.app_id,base=fake.base_url),
                     application=app,ledger=app.message_ledger,journal=app.turn_journal,

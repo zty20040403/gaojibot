@@ -477,6 +477,7 @@ class OfficialInboxTests(unittest.TestCase):
         accepted = self.accept(native='TEST_LATE_AT_MESSAGE', content='first accepted body')
         result = self.ingest(accepted.inbox_id)
         self.assertEqual(result.status, 'processed')
+        newer = self.ingest(self.accept(native='TEST_NEWER', content='newer topic still pending').inbox_id)
         before_messages = self.query('SELECT * FROM messages')
         for _ in range(2):
             replay = self.accept(native='TEST_LATE_AT_MESSAGE', content='different duplicate body',
@@ -487,6 +488,8 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertIsNone(row['dispatch_job_id'])
         self.assertEqual(self.count('durable_jobs'), 0)
         self.assertEqual(self.query('SELECT * FROM messages'), before_messages)
+        pending = self.query('SELECT attention_cursor,attention_end FROM qq_official_endpoints WHERE endpoint_key=?', (row['endpoint_key'],))[0]
+        self.assertEqual((pending['attention_cursor'], pending['attention_end']), (result.canonical_message_id, newer.canonical_message_id))
 
     def test_expired_late_at_does_not_dispatch_and_purge_waits_for_queue_settlement(self):
         self.activate_group()

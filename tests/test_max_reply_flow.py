@@ -6,7 +6,6 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import re
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -163,9 +162,6 @@ class MaxReplyFlowTests(unittest.IsolatedAsyncioTestCase):
         app = self.application()
         main_calls = []
 
-        async def fast_debounce(_seconds):
-            await asyncio.sleep(0.01)
-
         async def main_completion(**kwargs):
             main_calls.append(kwargs)
             return base.model_response("来劲了，这题我会", [], kwargs)
@@ -176,9 +172,7 @@ class MaxReplyFlowTests(unittest.IsolatedAsyncioTestCase):
             return verdicts.pop(0)
 
         with patch("src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json", new=classify), \
-                patch("src.plugins.ai_chat.agent_loop._create_completion", new=main_completion), \
-                patch("src.plugins.ai_chat.adapters.qq_official.proactive_ingress.asyncio",
-                      SimpleNamespace(sleep=fast_debounce, timeout=asyncio.timeout)):
+                patch("src.plugins.ai_chat.agent_loop._create_completion", new=main_completion):
             async with verified_ready_platform() as fake:
                 runtime = self.runtime(
                     loaded=runtime_fixture.loaded_config(fake.app_id, base=fake.base_url),

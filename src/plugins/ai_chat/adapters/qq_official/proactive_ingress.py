@@ -1,29 +1,65 @@
-"""Immediate, at-most-once proactive classification after real M2 ingestion.
+"""One durable, bounded attention glance per due physical group.
 
-The durable row is a source/decision marker, never a dispatch queue. Interrupted
-classification is not recovered. Ordinary ingest retries cannot rescore it.
+Observation rows are at-most-once decision markers, not dispatch jobs. An
+interrupted classifier is never replayed, including after a new account epoch.
 """
 from dataclasses import dataclass
 from contextlib import nullcontext
 import asyncio
 import json
+import logging
 import math
 import weakref
 
+import psycopg
+from src.bot_storage import DatabaseError
+
 from .conversation_control import state as control_state
 from .media_refs import MediaDenied
-from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
+from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch,LeaseLost as AccountLeaseLost
+from src.plugins.ai_chat.adapters.qq_official.identity_store import snapshot
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
 from src.plugins.ai_chat.execution_control import JobFence,active_job_fence,LeaseLost
-from src.plugins.ai_chat.platform_types import EndpointKey,ActorKey
+from src.plugins.ai_chat.platform_types import EndpointKey,ActorKey,AccountKey
 from src.plugins.ai_chat.proactive import is_candidate_message
 from src.plugins.ai_chat.conversation_config import proactive_state,proactive_attention,in_quiet_utc
 from src.plugins.ai_chat import daily_budgets
 from src.plugins.ai_chat.adapters.qq_official import peer_bots
 from src.plugins.ai_chat.adapters.qq_official.proactive_delivery import ProactiveLifetime,score_and_deliver
 
-DEBOUNCE_SECONDS = 3
+logger = logging.getLogger(__name__)
+
 MAX_CLASSIFICATIONS_PER_HOUR = 60
+ATTENTION_BATCH = 20
+HOT_LOOK_SECONDS = 3
+QUIET_LOOK_SECONDS = 600
+
+
+def record_group_activity(cursor, endpoint, canonical, now, *, direct):
+    """The ledger transaction already holds this physical endpoint's row lock."""
+    if endpoint.kind != 'group':return
+    if direct:
+        # A late @ can promote an older message while newer work is pending.
+        cursor.execute('''UPDATE qq_official_endpoints SET
+            attention_cursor=GREATEST(attention_cursor,?),
+            attention_end=GREATEST(attention_end,?),
+            attention_next_at=CASE WHEN attention_end>GREATEST(attention_cursor,?)
+                THEN attention_next_at ELSE NULL END,
+            attention_activity_at=GREATEST(COALESCE(attention_activity_at,0),?),
+            attention_suppressed_through=GREATEST(attention_suppressed_through,?)
+            WHERE endpoint_key=?''',(canonical,canonical,canonical,now,canonical,endpoint.key))
+        return
+    row=cursor.execute('''SELECT attention_cursor,attention_end,attention_next_at,attention_activity_at
+        FROM qq_official_endpoints WHERE endpoint_key=?''',(endpoint.key,)).fetchone()
+    gap=None if row['attention_activity_at'] is None else now-row['attention_activity_at']
+    # The fresh source expires in 30s; a long idle hint cannot delay it beyond that.
+    interval=HOT_LOOK_SECONDS if gap is None or gap<=15 or gap>=QUIET_LOOK_SECONDS else min(20,gap)
+    due=now+interval
+    hint=row['attention_next_at']
+    if hint is not None and (row['attention_end']>row['attention_cursor'] or hint>now):
+        due=min(hint,due)
+    cursor.execute('''UPDATE qq_official_endpoints SET attention_end=?,attention_next_at=?,attention_activity_at=?
+        WHERE endpoint_key=?''',(canonical,due,now,endpoint.key))
 
 
 def wake_available(cursor, endpoint, now):
@@ -39,7 +75,8 @@ def wake_available(cursor, endpoint, now):
 @dataclass(frozen=True,repr=False,eq=False)
 class ProactiveCandidate:
     inbox_id: str
-    job: object
+    batch: tuple
+    first_canonical: int
 
 
 class ProactiveIngress:
@@ -50,17 +87,13 @@ class ProactiveIngress:
         self.wake_turn=wake_turn
         self.media=media
         self._issued=weakref.WeakKeyDictionary()
-        self._latest={}
-
-    def cancel_pending(self,endpoint):
-        self._latest.pop(endpoint,None)
 
     def _now(self):
         value=self.clock()
         if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<0:raise MigrationDenied('invalid_proactive_clock')
         return int(value)
 
-    def _load(self,c,inbox_id,*,job=None):
+    def _load(self,c,inbox_id,*,operation='execute'):
         assert_epoch(c,self.token)
         inbox=c.execute('SELECT * FROM qq_official_inbound_events WHERE inbox_id=? AND account_key=?',(inbox_id,self.token.account_key)).fetchone()
         if inbox is None:raise MigrationDenied('proactive_source_unavailable')
@@ -78,7 +111,7 @@ class ProactiveIngress:
             raise MigrationDenied('conversation_proactive_disabled_or_replaced')
         actor=ActorKey.parse(message['sender_actor_key'])
         if getattr(self.admission,'require_inbox',None) is not None:
-            self.admission.require_inbox(c,inbox_id,endpoint=ep,actor=actor,operation='execute' if job else 'send')
+            self.admission.require_inbox(c,inbox_id,endpoint=ep,actor=actor,operation=operation)
         physical=c.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=? FOR UPDATE',(ep.key,)).fetchone()
         if (ep.kind!='group' or not actor.matches_endpoint(ep) or actor.identity_kind=='bot' or inbox['status']!='processed'
                 or inbox['echo_state']!='not_echo' or inbox['trigger_requested'] or inbox['dispatch_job_id'] is not None
@@ -87,17 +120,57 @@ class ProactiveIngress:
                 or message['direction']!='inbound' or message['reply_to_native_message_id']
                 or physical['membership_state']!='present' or physical['binding_state']!='active'
                 or physical['generation']!=inbox['endpoint_generation'] or physical['route_epoch']!=inbox['route_epoch']
+                or physical['attention_suppressed_through']>=message['canonical_message_id']
                 or self.admission(c,ep,actor) is not True
                 or (peer_bots.is_bot_message(message) and peer_bots.exchange_exhausted(c,ep.key,inbox['received_at']))
                 or not c.execute('SELECT 1 FROM qq_official_gateway_receipts WHERE inbox_id=? AND account_key=?',(inbox_id,self.token.account_key)).fetchone()):
             raise MigrationDenied('proactive_source_unavailable')
         return inbox,ep,actor,message,physical
 
-    def begin(self,job):
+    def claim_due(self):
+        """Consume exactly one due range and mark its decision in one transaction.
+
+        Claimed-but-interrupted scoring is intentionally not recovered. A new
+        message gets a new range; it does not revive an unknown decision.
+        """
         with self.tx() as c:
-            inbox,ep,actor,_,_=self._load(c,job.payload.get('inbox_id'),job=job)
+            assert_epoch(c,self.token)
+            if snapshot(c,AccountKey.parse(self.token.account_key)) is None:
+                return None
             now=self._now()
-            if not inbox['received_at']<=now<inbox['received_at']+30:return None
+            physical=c.execute('''SELECT * FROM qq_official_endpoints
+                WHERE account_key=? AND kind='group' AND attention_end>attention_cursor
+                    AND attention_next_at<=?
+                ORDER BY attention_next_at,endpoint_key LIMIT 1 FOR UPDATE SKIP LOCKED''',
+                (self.token.account_key,now)).fetchone()
+            if physical is None:return None
+            start,end=physical['attention_cursor'],physical['attention_end']
+            rows=c.execute('''SELECT i.inbox_id,i.canonical_message_id,i.received_at,i.turn_text,
+                    i.trigger_requested,m.sender_display,m.reply_to_native_message_id
+                FROM qq_official_inbound_events i JOIN messages m USING(canonical_message_id)
+                JOIN conversation_visibility v USING(conversation_id)
+                WHERE i.account_key=? AND i.endpoint_key=? AND i.status='processed'
+                    AND i.echo_state='not_echo' AND i.canonical_message_id>?
+                    AND i.canonical_message_id<=? AND i.canonical_message_id>=v.min_canonical_message_id
+                ORDER BY i.canonical_message_id DESC LIMIT ?''',
+                (self.token.account_key,physical['endpoint_key'],start,end,ATTENTION_BATCH)).fetchall()
+            batch=tuple(reversed(rows))
+            previous=c.execute('''SELECT created_at FROM qq_official_proactive_observations
+                WHERE endpoint_key=? ORDER BY created_at DESC LIMIT 1''',
+                (physical['endpoint_key'],)).fetchone()
+            interval=(min(QUIET_LOOK_SECONDS,max(10,(now-previous['created_at'])*2))
+                      if previous is not None else 10)
+            c.execute('''UPDATE qq_official_endpoints SET attention_cursor=?,attention_next_at=?
+                WHERE endpoint_key=?''',(end,now+interval,physical['endpoint_key']))
+            if not batch or now>=batch[-1]['received_at']+30:return None
+            chosen=next((item for item in reversed(batch)
+                if item['received_at']<=now<item['received_at']+30 and not item['trigger_requested']
+                    and not item['reply_to_native_message_id'] and is_candidate_message(item['turn_text'])),None)
+            if chosen is None:return None
+            try:
+                inbox,ep,actor,_,_=self._load(c,chosen['inbox_id'],operation='execute')
+            except MigrationDenied:
+                return None  # Expected admission/config/route revocation; cursor commits.
             if not wake_available(c,ep,now):return None
             classified=c.execute('''SELECT count(*) FROM qq_official_proactive_observations
                 WHERE endpoint_key=? AND created_at>?''',(ep.key,now-3600)).fetchone()[0]
@@ -107,18 +180,19 @@ class ProactiveIngress:
                  deadline_at,ingest_job_id,worker_owner,worker_generation,account_epoch,endpoint_generation,endpoint_route_epoch,state,created_at,proactive_generation)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'scoring',?,?) ON CONFLICT DO NOTHING''',
                 (inbox['inbox_id'],ep.account.key,ep.key,actor.key,inbox['canonical_message_id'],inbox['native_message_id'],inbox['received_at'],
-                 inbox['received_at']+30,job.job_id,job.lease_owner,job.lease_generation,self.token.epoch,inbox['endpoint_generation'],inbox['route_epoch'],now,
-                 proactive_state(c,ep)[1]))
+                 inbox['received_at']+30,None,self.token.holder_id,self.token.epoch,self.token.epoch,
+                 inbox['endpoint_generation'],inbox['route_epoch'],now,proactive_state(c,ep)[1]))
             if inserted.rowcount!=1:return None
-            candidate=ProactiveCandidate(inbox['inbox_id'],job);self._issued[candidate]=True
-            return candidate
+            source=ProactiveCandidate(inbox['inbox_id'],batch,batch[0]['canonical_message_id'])
+            self._issued[source]=True
+            return source
 
     def _candidate(self,c,source):
         if type(source) is not ProactiveCandidate or source not in self._issued:raise MigrationDenied('unissued_proactive_source')
-        loaded=self._load(c,source.inbox_id,job=source.job)
+        loaded=self._load(c,source.inbox_id,operation='execute')
         row=c.execute('SELECT * FROM qq_official_proactive_observations WHERE inbox_id=?',(source.inbox_id,)).fetchone()
-        if (row is None or row['state']!='scoring' or row['worker_owner']!=source.job.lease_owner
-                or row['worker_generation']!=source.job.lease_generation or row['account_epoch']!=self.token.epoch
+        if (row is None or row['state']!='scoring' or row['worker_owner']!=self.token.holder_id
+                or row['worker_generation']!=self.token.epoch or row['account_epoch']!=self.token.epoch
                 or row['proactive_generation']!=proactive_state(c,loaded[1])[1]):
             raise MigrationDenied('proactive_source_lost')
         return row,loaded
@@ -133,16 +207,15 @@ class ProactiveIngress:
     def _text(self,source):
         with self.tx() as c:
             _,(inbox,ep,actor,message,_)=self._candidate(c,source)
-            recent=c.execute('''SELECT m.body_json, m.sender_display, m.direction FROM messages m JOIN conversation_visibility v USING(conversation_id)
+            recent=c.execute('''SELECT m.body_json,m.sender_display,m.direction FROM messages m
+                JOIN conversation_visibility v USING(conversation_id)
                 WHERE m.source_endpoint_key=? AND m.canonical_message_id>=v.min_canonical_message_id
-                AND m.canonical_message_id<? ORDER BY m.canonical_message_id DESC LIMIT 20''',
-                (ep.key,message['canonical_message_id'])).fetchall()
-            return (
-                f"[{message['sender_display'] or '群友'}]: {inbox['turn_text']}",
-                tuple(dict(body_json=r['body_json'], sender_display=r['sender_display'], direction=r['direction']) for r in reversed(recent)),
-                ep,
-                actor,
-            )
+                    AND m.canonical_message_id<? ORDER BY m.canonical_message_id DESC LIMIT ?''',
+                (ep.key,source.first_canonical,ATTENTION_BATCH)).fetchall()
+            text='\n'.join(f"[{r['sender_display'] or '群友'}]: {r['turn_text']}" for r in source.batch)
+            return (text,
+                tuple(dict(body_json=r['body_json'],sender_display=r['sender_display'],direction=r['direction'])
+                      for r in reversed(recent)),ep,actor)
 
     async def score(self,source):
         from .vision_adapter import guarded_wait
@@ -164,8 +237,6 @@ class ProactiveIngress:
     def _mark_woken(self, source, enqueue=None):
         with self.tx() as c:
             row, (inbox, ep, _, message, _) = self._candidate(c, source)
-            if self._latest.get(ep.key) != source.inbox_id:
-                raise MigrationDenied('conversation_continued')
             now=self._now()
             if not now < row['deadline_at']:
                 raise MigrationDenied('proactive_source_expired')
@@ -223,36 +294,34 @@ class ProactiveIngress:
             c.execute("UPDATE qq_official_proactive_observations SET state='discarded' WHERE inbox_id=? AND account_epoch=? AND state='scoring'",
                 (source.inbox_id,self.token.epoch))
 
-    async def on_ingested(self,job):
-        # Called only after process_inbox's transaction commits. Failure of an
-        # optional classifier cannot turn a durable ingest into repeated scoring.
-        def endpoint():
-            with self.tx() as c:
-                return self._load(c,job.payload['inbox_id'])[1].key
-        try:key=await self.calls(endpoint)
-        except MigrationDenied:return {'status':'discarded','reason':'ineligible_ingress'}
-        self._latest[key]=job.payload['inbox_id']
-        await asyncio.sleep(DEBOUNCE_SECONDS)
-        if self._latest.get(key)!=job.payload['inbox_id']:
-            return {'status':'discarded','reason':'conversation_continued'}
-        try:source=await self.calls(self.begin,job)
-        except MigrationDenied:return {'status':'discarded','reason':'ineligible_ingress'}
-        if source is None:return {'status':'discarded','reason':'not_selected'}
+    async def glance(self):
+        # claim_due is the only consumer of pending work, including after a
+        # restart. DB/lease failures must reach the account supervisor.
+        source=await self.calls(self.claim_due)
+        if source is None:return None
         def check():
             try:return self._now()<self._current(source).deadline_at
-            except Exception:return False
-        marker=active_job_fence.set(JobFence(job.job_id,job.lease_owner,job.attempts,check,job.lease_generation))
+            except MigrationDenied:return False
+        marker=active_job_fence.set(JobFence(None,self.token.holder_id,1,check,self.token.epoch))
         try:
             lifetime=await self.current(source)
             async with asyncio.timeout(max(0,lifetime.deadline_at-self._now())):
-                result=await score_and_deliver(source=source,scorer=self.score,current=self.current,send_policy=self.send_policy,
-                    wake=self.wake,now=self._now)
+                result=await score_and_deliver(source=source,scorer=self.score,current=self.current,
+                    send_policy=self.send_policy,wake=self.wake,now=self._now)
             if result.status=='discarded':await self.calls(self._discard,source)
-            return {'status':result.status,'reason':result.reason}
-        except (Exception,LeaseLost):
-            try:await self.calls(self._discard,source)
-            except Exception:pass
-            return {'status':'discarded','reason':'proactive_unavailable'}
+            return result
+        except (AccountLeaseLost,DatabaseError,psycopg.Error):
+            raise
+        except asyncio.CancelledError:
+            await self.calls(self._discard,source)
+            raise
+        except (MigrationDenied,LeaseLost):
+            await self.calls(self._discard,source)
+            return None
+        except Exception as error:
+            logger.warning('QQ attention glance failed: %s',type(error).__name__)
+            await self.calls(self._discard,source)
+            return None
         finally:active_job_fence.reset(marker)
 
     def plan_guard(self,c,*,token,plan,operation,now,source_proof=None,**_):
@@ -262,7 +331,7 @@ class ProactiveIngress:
         else:
             row=c.execute('SELECT * FROM qq_official_proactive_observations WHERE plan_id=?',(plan['plan_id'],)).fetchone()
             if row is None or row['state']!='queued':raise MigrationDenied('proactive_plan_source_missing')
-            inbox,ep,actor,message,_=self._load(c,row['inbox_id'])
+            inbox,ep,actor,message,_=self._load(c,row['inbox_id'],operation='send')
         if (row['proactive_generation']!=proactive_state(c,ep)[1]
                 or plan['purpose']!='unsolicited' or plan['account_key']!=ep.account.key or plan['endpoint_key']!=ep.key
                 or plan['requester_actor_key']!=actor.key or plan['source_canonical_message_id']!=message['canonical_message_id']
