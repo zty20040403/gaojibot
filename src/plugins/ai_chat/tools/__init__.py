@@ -10,6 +10,7 @@ from .state import ToolContext, structured_tool_source
 @cache
 def _base_registry() -> ToolRegistry:
     from .history import HANDLERS as HISTORY_HANDLERS
+    from .impressions import HANDLERS as IMPRESSION_HANDLERS
     from .memory import HANDLERS as MEMORY_HANDLERS
     from .sources import HANDLERS as SOURCE_HANDLERS
     from .stickers import HANDLERS as STICKER_HANDLERS
@@ -21,7 +22,7 @@ def _base_registry() -> ToolRegistry:
     from .schedules import HANDLERS as SCHEDULE_HANDLERS
 
     return ToolRegistry(handler for handler in (
-        *HISTORY_HANDLERS, *MEMORY_HANDLERS, *SOURCE_HANDLERS, *STICKER_HANDLERS,
+        *HISTORY_HANDLERS, *IMPRESSION_HANDLERS, *MEMORY_HANDLERS, *SOURCE_HANDLERS, *STICKER_HANDLERS,
         *OWNED_SANDBOX_HANDLERS, *IMAGE_GEN_HANDLERS, *PROGRESS_HANDLERS, *RECALL_HANDLERS, *BACKGROUND_HANDLERS, *SCHEDULE_HANDLERS
     ) if handler.platform_neutral)
 

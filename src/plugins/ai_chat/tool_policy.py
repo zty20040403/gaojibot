@@ -85,6 +85,7 @@ _SEND_TOOLS = {
 }
 
 _MEMORY_WRITE_TOOLS = {
+    "impression",
     "memory_append",
     "memory_write",
 }

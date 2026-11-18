@@ -82,6 +82,11 @@ def turn_window(
         exclude_ids=exclude, before_id=current if not inbound.batch_message_ids else None,
     )
     parts: list[str] = []
+    speakers: list[tuple[str, str]] = [(inbound.actor.key, inbound.sender_display)]
+    for cid in inbound.batch_message_ids:
+        batched = ledger.get_in_scope(scope, cid)
+        if batched is not None and batched.direction == "inbound":
+            speakers.append((batched.sender_actor_key, batched.sender_display))
     roster = build_roster(ledger, inbound)
     if roster:
         parts.append(roster)
@@ -90,6 +95,13 @@ def turn_window(
         message = ledger.get_in_scope(scope, target) if target is not None else None
         if message is not None:
             parts.append("[引用的消息]\n" + render_line(message, max_chars=4000))
+            if message.direction == "inbound":
+                speakers.append((message.sender_actor_key, message.sender_display))
+    self_files = getattr(app, "self_files", None)
+    if self_files is not None:
+        cards = self_files.select_impressions_for_batch(scope.key, speakers)
+        if cards:
+            parts.append("[对说话人的印象]\n" + "\n\n".join(cards))
     status = compute_status_line(
         ledger,
         scope,

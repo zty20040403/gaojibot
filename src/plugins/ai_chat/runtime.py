@@ -34,6 +34,7 @@ from src.bot_security.service import MobileAuthorization
 from .quota import UsageStore
 from src.sandbox_runtime.factory import manager_from_settings
 from .container_sandbox import ContainerSandboxManager
+from .self_files import SelfFilesStore
 from .self_source import SelfSource
 from .semantic_recall import (
     EmbeddingClient,
@@ -97,6 +98,7 @@ class AppContext:
     vision_worker: VisionWorker | None = None
     cold_archive: ColdArchiveService | None = None
     mobile_authorization: MobileAuthorization | None = None
+    self_files: SelfFilesStore | None = None
     official_runtime: OfficialRuntime | None = field(default=None, repr=False)
     db_call: DatabaseCalls = field(default_factory=DatabaseCalls, repr=False)
     migration_service: Any = field(default=None, repr=False)
@@ -581,4 +583,5 @@ def _build_app_context(
         vision_worker=vision_worker,
         cold_archive=cold_archive,
         mobile_authorization=mobile_authorization,
+        self_files=SelfFilesStore(state_dir, logger=logger),
     )
