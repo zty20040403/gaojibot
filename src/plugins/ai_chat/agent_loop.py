@@ -28,7 +28,8 @@ from .model_catalog import ModelCatalog, ModelProfile
 from .model_budget import ModelBudgetExceeded
 from .observability import current_trace_id, telemetry
 from .runtime_clock import runtime_clock_prompt
-from .tool_invocation import active_tool_call_id
+from .tool_invocation import active_tool_call_id, active_tool_step
+from .turn_checkpoint import UNKNOWN_RESULT, durable_messages, safe_content
 from .tool_images import ToolImage
 from .prompt_context import quote_evidence, quote_group_context
 from .tool_policy import (
@@ -569,10 +570,40 @@ async def ask_deepseek_with_tools(
     tool_catalog: ToolCatalog | None = None,
     system_prompt: str | None = None,
     input_images: tuple[ToolImage, ...] = (),
+    checkpoint_state: dict[str, Any] | None = None,
+    checkpoint_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    idempotency_key_prefix: str = "",
+    checkpoint_replay_safe_tools: frozenset[str] = frozenset(),
 ) -> str:
+    """Run one loop. Checkpoint sink commits fenced snapshots or raises.
+
+    A stable, unique turn prefix is required for checkpointing. The caller must
+    restore the same inputs, tools and budgets, and suppress unsafe turns. Unsafe
+    results and images are omitted. In-flight keyed/non-idempotent tools replay
+    only with an explicit downstream dedup guarantee in checkpoint_replay_safe_tools
+    (e.g. say with the same keyed QQ outbox). The feedback provider must redeliver
+    until its consumption is committed with the snapshot. Streaming may already
+    have delivered text on crash.
+    """
     async def publish_transcript(items):
         if transcript_sink is not None:
             transcript_sink(deepcopy([item for item in items if item.get("role") != "system"]))
+
+    checkpointing = checkpoint_sink is not None or checkpoint_state is not None
+    if checkpointing and (not checkpoint_sink or not idempotency_key_prefix):
+        raise DeepSeekConfigError("Checkpointing requires a sink and stable turn key")
+    saved = checkpoint_state
+    if saved is not None:
+        if not saved.get("resumable"):
+            raise RuntimeError("Checkpoint content was suppressed and cannot be resumed")
+        if saved.get("phase") == "final":
+            return saved["answer"]
+
+    async def save_final(answer: str) -> None:
+        if checkpoint_sink is not None:
+            safe = safe_content(answer)
+            await checkpoint_sink({"phase": "final", "resumable": safe,
+                "answer": answer if safe else ""})
 
     _last_completion_profile.set(None)
     selected_profile = _resolve_profile(profile, model)
@@ -598,6 +629,7 @@ async def ask_deepseek_with_tools(
             input_images=input_images,
         )
         await publish_transcript([*history, {"role": "user", "content": user_text}, {"role": "assistant", "content": answer}])
+        await save_final(answer)
         return answer
 
     messages = _build_messages(
@@ -612,9 +644,14 @@ async def ask_deepseek_with_tools(
         system_prompt=system_prompt,
         input_images=input_images,
     )
+    base_message_count = len(messages)
+    if saved is not None:
+        messages.extend(saved["messages"])
     if trace is not None:
         _configure_trace(trace, selected_profile)
         trace.messages.append({"role": "user", "content": user_text})
+        if saved is not None:
+            trace.messages.extend(deepcopy(saved["messages"]))
     next_tool_choice: ToolChoice = tool_choice
     tool_round = 0
     loop_sequence = 0
@@ -625,27 +662,74 @@ async def ask_deepseek_with_tools(
         next_tool_choice = "none"
     catalog = tool_catalog or ToolCatalog(tools)
     stop_reason = "工具调用轮次已达到系统上限。"
+    unknown_stop_reason = "之前的工具执行结果未知；已停止后续工具调用。"
     fingerprint_history: list[str] = []
     fingerprint_counts: dict[str, int] = {}
-    while max_tool_rounds is None or tool_round < max_tool_rounds:
-        tool_round += 1
+    phase = "between"
+    next_index = 0
+    batch_images = False
+    budget_exhausted = False
+    if saved is not None:
+        phase = saved["phase"]
+        tool_round = saved["tool_round"]
+        loop_sequence = saved["loop_sequence"]
+        tool_context_chars = saved["tool_context_chars"]
+        total_tool_calls = saved["total_tool_calls"]
+        next_tool_choice = saved["next_tool_choice"]
+        stop_reason = saved["stop_reason"]
+        fingerprint_history = list(saved["fingerprint_history"])
+        fingerprint_counts = dict(saved["fingerprint_counts"])
+        next_index = saved["next_index"]
+        batch_images = saved["batch_images"]
+        budget_exhausted = saved["budget_exhausted"]
+
+    async def save(phase_name: str, index: int = 0) -> None:
+        if checkpoint_sink is None:
+            return
+        suffix, resumable = durable_messages(messages[base_message_count:])
+        await checkpoint_sink({
+            "phase": phase_name,
+            "resumable": resumable, "messages": suffix, "tool_round": tool_round,
+            "loop_sequence": loop_sequence, "tool_context_chars": tool_context_chars,
+            "total_tool_calls": total_tool_calls, "next_tool_choice": next_tool_choice,
+            "stop_reason": stop_reason, "fingerprint_history": list(fingerprint_history),
+            "fingerprint_counts": dict(fingerprint_counts), "next_index": index,
+            "batch_images": batch_images, "budget_exhausted": budget_exhausted,
+        })
+
+    while phase != "stop" and (
+        phase in {"batch", "inflight", "model"}
+        or max_tool_rounds is None or tool_round < max_tool_rounds
+    ):
         tool_images = []
-        await _append_pending_feedback(messages, trace, feedback_provider)
-        await publish_transcript(messages)
-        response, emitted = await _completion_with_optional_stream(
-            final_text_sink,
-            selected_profile,
-            trace=trace,
-            **_completion_kwargs(messages, selected_profile),
-            tools=tools,
-            tool_choice=next_tool_choice,
-        )
-        if trace is not None:
-            _configure_trace(trace, _actual_profile(selected_profile))
-            trace.add_usage(response)
-        message = response.choices[0].message
-        tool_calls = list(getattr(message, "tool_calls", None) or [])
-        if tool_calls and tool_batch_sink is not None:
+        lost_batch_images = phase in {"batch", "inflight"} and batch_images
+        if phase in {"batch", "inflight"}:
+            assistant_message = next(item for item in reversed(messages) if item.get("tool_calls"))
+            tool_calls = [
+                SimpleNamespace(id=call.get("id", ""), function=SimpleNamespace(**call["function"]))
+                for call in assistant_message["tool_calls"]
+            ]
+            emitted = ""
+        else:
+            if phase != "model":
+                tool_round += 1
+                await _append_pending_feedback(messages, trace, feedback_provider)
+                await save("model")
+            await publish_transcript(messages)
+            response, emitted = await _completion_with_optional_stream(
+                final_text_sink,
+                selected_profile,
+                trace=trace,
+                **_completion_kwargs(messages, selected_profile),
+                tools=tools,
+                tool_choice=next_tool_choice,
+            )
+            if trace is not None:
+                _configure_trace(trace, _actual_profile(selected_profile))
+                trace.add_usage(response)
+            message = response.choices[0].message
+            tool_calls = list(getattr(message, "tool_calls", None) or [])
+        if tool_calls and tool_batch_sink is not None and phase not in {"batch", "inflight"}:
             tool_batch_sink(tuple(str(getattr(getattr(call, 'function', None), 'name', '')) for call in tool_calls))
         if not tool_calls:
             content = (message.content or "").strip()
@@ -661,6 +745,8 @@ async def ask_deepseek_with_tools(
                     trace.messages.append(candidate)
                 await publish_transcript(messages)
                 next_tool_choice = "auto"
+                phase = "between"
+                await save(phase)
                 continue
             raced_feedback = (
                 [] if emitted else await _drain_feedback(feedback_provider)
@@ -677,6 +763,8 @@ async def ask_deepseek_with_tools(
                         [dict(assistant_message), dict(feedback_message)]
                     )
                 next_tool_choice = "auto"
+                phase = "between"
+                await save(phase)
                 continue
             if trace is not None:
                 trace.messages.append(_assistant_final_message(message))
@@ -684,27 +772,30 @@ async def ask_deepseek_with_tools(
             if final_stream_state is not None:
                 final_stream_state.sent_prefix = emitted
                 final_stream_state.streamed_calls += int(bool(emitted))
+            await save_final(content)
             return content
 
-        assistant_message = _assistant_tool_message(message)
-        messages.append(assistant_message)
-        await publish_transcript(messages)
-        if trace is not None:
-            trace.messages.append(dict(assistant_message))
-        model_note = str(assistant_message.get("content") or "").strip()
-        if model_note:
-            loop_sequence += 1
-            await _emit_loop_event(
-                event_sink,
-                AgentLoopEvent(
-                    kind="model_note",
-                    sequence=loop_sequence,
-                    note=model_note,
-                ),
-            )
+        if phase not in {"batch", "inflight"}:
+            assistant_message = _assistant_tool_message(message)
+            messages.append(assistant_message)
+            await publish_transcript(messages)
+            if trace is not None:
+                trace.messages.append(dict(assistant_message))
+            model_note = str(assistant_message.get("content") or "").strip()
+            if model_note:
+                loop_sequence += 1
+                await _emit_loop_event(
+                    event_sink,
+                    AgentLoopEvent(kind="model_note", sequence=loop_sequence, note=model_note),
+                )
+            next_index = 0
+            batch_images = False
+            budget_exhausted = False
+            await save("batch", 0)
         max_calls = max_calls_per_round or settings.tool_max_calls_per_round
-        budget_exhausted = False
-        for call in tool_calls[:max_calls]:
+        for index, call in enumerate(tool_calls[:max_calls]):
+            if index < next_index:
+                continue
             function = getattr(call, "function", None)
             name = getattr(function, "name", "")
             call_id = str(getattr(call, "id", "") or "")
@@ -719,21 +810,46 @@ async def ask_deepseek_with_tools(
                 call_id=call_id,
                 fingerprint=fingerprint,
             )
-            loop_sequence += 1
+            resumed_inflight = phase == "inflight" and index == next_index
+            if not resumed_inflight:
+                loop_sequence += 1
+                total_tool_calls += 1
             tool_sequence = loop_sequence
-            total_tool_calls += 1
+            is_handoff = policy.execution_mode in {"durable-eligible", "durable-required"} and (
+                policy.execution_mode == "durable-required" or arguments.get("background") is True
+            )
+            if resumed_inflight and not (
+                (not is_handoff and policy.idempotency in {"pure", "idempotent"})
+                or name in checkpoint_replay_safe_tools
+            ):
+                tool_message = {"role": "tool", "tool_call_id": call_id, "content": UNKNOWN_RESULT}
+                messages.append(tool_message)
+                tool_context_chars += len(UNKNOWN_RESULT)
+                if trace is not None:
+                    trace.messages.append(dict(tool_message))
+                await _emit_loop_event(event_sink, AgentLoopEvent(
+                    kind="tool_finished", sequence=tool_sequence, tool_name=name,
+                    result=UNKNOWN_RESULT, state="outcome-unknown", **event_fields))
+                budget_exhausted = True
+                stop_reason = unknown_stop_reason
+                phase = "batch"
+                await save(phase, index + 1)
+                await publish_transcript(messages)
+                continue
             validation = catalog.validate(
                 name,
                 arguments,
                 parse_error=parse_error,
             )
-            if total_tool_calls > (max_total_calls or settings.tool_max_total_calls):
+            if stop_reason == unknown_stop_reason:
+                validation_error = "之前的工具结果未知，已停止后续调用。"
+            elif total_tool_calls > (max_total_calls or settings.tool_max_total_calls):
                 validation_error = "本回合工具调用总数已达到系统预算。"
                 budget_exhausted = True
                 stop_reason = validation_error
             elif not validation.ok:
                 validation_error = validation.message
-            elif _is_repeated_tool_call(
+            elif not resumed_inflight and _is_repeated_tool_call(
                 fingerprint,
                 policy,
                 fingerprint_history,
@@ -757,19 +873,23 @@ async def ask_deepseek_with_tools(
                 if not approval.allowed:
                     validation_error = approval.reason or "危险操作尚未获得用户批准。"
             if validation_error:
-                rejected_result = json.dumps(
+                rejected_result = UNKNOWN_RESULT if resumed_inflight else json.dumps(
                     {"ok": False, "error": validation_error},
                     ensure_ascii=False,
                 )
+                if resumed_inflight:
+                    tool_context_chars += len(rejected_result)
+                    budget_exhausted = True
+                    stop_reason = unknown_stop_reason
                 await _emit_loop_event(
                     event_sink,
                     AgentLoopEvent(
-                        kind="tool_rejected",
+                        kind="tool_finished" if resumed_inflight else "tool_rejected",
                         sequence=tool_sequence,
                         tool_name=name,
                         arguments=arguments,
                         result=rejected_result,
-                        state="rejected",
+                        state="outcome-unknown" if resumed_inflight else "rejected",
                         approval=approval.source,
                         **event_fields,
                     ),
@@ -782,12 +902,16 @@ async def ask_deepseek_with_tools(
                 messages.append(tool_message)
                 if trace is not None:
                     trace.messages.append(dict(tool_message))
+                phase = "batch"
+                await save(phase, index + 1)
                 await publish_transcript(messages)
                 continue
-            fingerprint_history.append(fingerprint)
-            fingerprint_counts[fingerprint] = (
-                fingerprint_counts.get(fingerprint, 0) + 1
-            )
+            if not resumed_inflight:
+                fingerprint_history.append(fingerprint)
+                fingerprint_counts[fingerprint] = (
+                    fingerprint_counts.get(fingerprint, 0) + 1
+                )
+            await save("inflight", index)
             await _emit_loop_event(
                 event_sink,
                 AgentLoopEvent(
@@ -803,14 +927,11 @@ async def ask_deepseek_with_tools(
             started_at = time.monotonic()
             completion_state = ""
             invocation = active_tool_call_id.set(call_id)
+            step_token = active_tool_step.set(
+                (idempotency_key_prefix, tool_sequence) if idempotency_key_prefix else None
+            )
             try:
-                if (
-                    policy.execution_mode in {"durable-eligible", "durable-required"}
-                    and (
-                        policy.execution_mode == "durable-required"
-                        or arguments.get("background") is True
-                    )
-                ):
+                if is_handoff:
                     if handoff_tool is None:
                         tool_result = json.dumps(
                             {"ok": False, "error": "持久任务执行器暂时不可用。"},
@@ -918,6 +1039,7 @@ async def ask_deepseek_with_tools(
                 )
                 completion_state = "failed"
             finally:
+                active_tool_step.reset(step_token)
                 active_tool_call_id.reset(invocation)
             # A failed local file read cannot have sent a message. Permit its
             # next attempt; successful/uncertain deliveries still cannot replay.
@@ -935,6 +1057,7 @@ async def ask_deepseek_with_tools(
             )
             if isinstance(tool_result, ToolImage):
                 tool_images.extend(tool_result.parts())
+                batch_images = True
             tool_result = _bounded_tool_result(
                 tool_result,
                 min(settings.tool_max_result_chars, remaining_context),
@@ -964,11 +1087,15 @@ async def ask_deepseek_with_tools(
                     **event_fields,
                 ),
             )
-            await publish_transcript(messages)
             if tool_context_chars >= settings.tool_max_context_chars:
                 budget_exhausted = True
+            phase = "batch"
+            await save(phase, index + 1)
+            await publish_transcript(messages)
 
-        for call in tool_calls[max_calls:]:
+        for index, call in enumerate(tool_calls[max_calls:], start=max_calls):
+            if index < next_index:
+                continue
             function = getattr(call, "function", None)
             name = getattr(function, "name", "")
             arguments, _parse_error = _parse_tool_arguments_checked(
@@ -976,13 +1103,15 @@ async def ask_deepseek_with_tools(
             )
             total_tool_calls += 1
             rejection = (
-                "本回合工具调用总数已达到系统预算。"
+                "之前的工具结果未知，已停止后续调用。" if stop_reason == unknown_stop_reason
+                else "本回合工具调用总数已达到系统预算。"
                 if total_tool_calls > (max_total_calls or settings.tool_max_total_calls)
                 else "单轮工具调用次数过多。"
             )
             if total_tool_calls > (max_total_calls or settings.tool_max_total_calls):
                 budget_exhausted = True
-                stop_reason = rejection
+                if stop_reason != unknown_stop_reason:
+                    stop_reason = rejection
             rejected_result = json.dumps(
                 {"ok": False, "error": rejection},
                 ensure_ascii=False,
@@ -1007,17 +1136,27 @@ async def ask_deepseek_with_tools(
             messages.append(tool_message)
             if trace is not None:
                 trace.messages.append(dict(tool_message))
+            phase = "batch"
+            await save(phase, index + 1)
+        if lost_batch_images:
+            messages.append({'role': 'user', 'content': '[恢复时部分图片未保存，无法查看原图片。]'})
         if tool_images:
             messages.append({'role': 'user', 'content': tool_images})
         await publish_transcript(messages)
         if after_tool_round is not None:
             after_tool_round()
         if budget_exhausted:
-            if tool_context_chars >= settings.tool_max_context_chars:
+            if tool_context_chars >= settings.tool_max_context_chars and stop_reason != unknown_stop_reason:
                 stop_reason = "工具结果累计内容已达到系统预算。"
+            phase = "stop"
+            await save(phase)
             break
         next_tool_choice = "auto"
+        phase = "between"
+        await save(phase)
 
+    if phase != "stop":
+        await save("stop")
     stop_message = {
         "role": "system",
         "content": (
@@ -1048,7 +1187,9 @@ async def ask_deepseek_with_tools(
         if final_stream_state is not None:
             final_stream_state.sent_prefix = emitted
             final_stream_state.streamed_calls += int(bool(emitted))
-        return content.strip()
+        answer = content.strip()
+        await save_final(answer)
+        return answer
     raise RuntimeError("Model did not finish after reaching the tool limit.")
 
 
