@@ -135,6 +135,11 @@ class PlatformChatService:
             )
         if selected_profile.provider in {"openai", "cliproxy"}:
             from ..model_catalog import SUPPORTED_REASONING_EFFORTS
+            if effort is None and selected_profile.reasoning_effort and not force_search:
+                # Nobody chose an effort: chit-chat thinks less, real questions keep it.
+                from ..reasoning_router import chat_effort
+                effort = await chat_effort(self.context.model_catalog,
+                                           getattr(self.context.settings, "reasoning_router_profile", ""), user_text)
             if effort in SUPPORTED_REASONING_EFFORTS:
                 selected_profile = selected_profile.with_reasoning_effort(effort)
 

@@ -238,6 +238,7 @@ class Settings:
     sandbox_operations_domain: str = ""
     search_provider: str = "scrape"
     search_api_key: str = field(default="", repr=False)
+    reasoning_router_profile: str = ""
     background_context_window: int = 200000
 
     @classmethod
@@ -278,6 +279,7 @@ class Settings:
                 "AI_SIMPLE_CHAT_PROFILE",
                 "",
             ).strip(),
+            reasoning_router_profile=environment.get("AI_REASONING_ROUTER_PROFILE", "").strip(),
             model_profiles_json=environment.get("AI_MODEL_PROFILES_JSON", "").strip(),
             local_model_profile=environment.get("AI_LOCAL_MODEL_PROFILE", "qwen-local").strip(),
             local_model_probe_interval_seconds=max(integer("AI_LOCAL_MODEL_PROBE_INTERVAL_SECONDS", 15), 1),
