@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ..conversation_window import MEMORY_TOKENS, build_tail
+from ..message_ir import render_prompt_text
 from ..platform_types import InboundMessage
 from ..status_line import compute_status_line
 from ..timeline import estimate_tokens, render_line
@@ -102,6 +103,12 @@ def turn_window(
         cards = self_files.select_impressions_for_batch(scope.key, speakers)
         if cards:
             parts.append("[对说话人的印象]\n" + "\n\n".join(cards))
+        promises = self_files.relevant_promises(
+            scope.key,
+            query_text=render_prompt_text(inbound.body),
+        )
+        if promises:
+            parts.append("[未兑现的承诺]\n" + "\n".join(item.format_line() for item in promises))
     status = compute_status_line(
         ledger,
         scope,
