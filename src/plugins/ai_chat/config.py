@@ -236,7 +236,6 @@ class Settings:
     sandbox_container_broker: str = ""
     sandbox_operations_owners: frozenset[str] = frozenset()
     sandbox_operations_domain: str = ""
-    search_provider: str = "scrape"
     search_api_key: str = field(default="", repr=False)
     reasoning_router_profile: str = ""
     background_context_window: int = 200000
@@ -254,9 +253,6 @@ class Settings:
         sandbox_max_file_mb = integer("AI_SANDBOX_MAX_FILE_MB", 20)
         intent_timeout = floating("AI_TOOL_INTENT_TIMEOUT_SECONDS", 3.0)
         intent_timeout = min(max(intent_timeout, 0.1), 10.0) if math.isfinite(intent_timeout) else 3.0
-        search_provider = environment.get("AI_SEARCH_PROVIDER", "").strip().lower() or "scrape"
-        if search_provider not in {"scrape", "tavily", "bocha"}:
-            raise ValueError("AI_SEARCH_PROVIDER must be scrape, tavily or bocha")
         raw_background_models = environment.get('AI_BACKGROUND_MODELS', '').strip()
         background_models = (
             tuple(item.strip() for item in raw_background_models.split(','))
@@ -367,9 +363,8 @@ class Settings:
             background_gateway_port=integer('AI_BACKGROUND_GATEWAY_PORT', 18640),
             background_context_window=resource_limit('AI_BACKGROUND_CONTEXT_WINDOW', 200000, 32000, 10000000),
             search_auto_enabled=boolean("AI_SEARCH_AUTO_ENABLED", True),
-            search_max_results=integer("AI_SEARCH_MAX_RESULTS", 5),
+            search_max_results=resource_limit("AI_SEARCH_MAX_RESULTS", 10, 1, 10),
             search_timeout_seconds=integer("AI_SEARCH_TIMEOUT_SECONDS", 10),
-            search_provider=search_provider,
             search_api_key=environment.get("AI_SEARCH_API_KEY", "").strip(),
             media_enabled=boolean("AI_MEDIA_ENABLED", False),
             media_root=environment.get("AI_MEDIA_ROOT", "").strip(),

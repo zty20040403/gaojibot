@@ -133,7 +133,7 @@ VM 后端启动时中转服务随账号运行时启动，无需先有后台任�
 
 ### 程序只读工具
 
-VM 令牌可 `POST /vm/history`（例如 `{"query":"TEST"}`）、`/vm/web-search`（`{"query":"TEST","freshness":"week"}`）及 `/vm/web-fetch`（`{"url":"https://example.test","offset":0}`）。参数与对应宿主工具一致，不接受 scope、actor 或 API key。
+VM 令牌可 `POST /vm/history`（例如 `{"query":"TEST"}`）、`/vm/web-search`（`{"queries":["TEST_TOPIC","TEST_SOURCE"],"max_results":5}`）及 `/vm/web-fetch`（`{"url":"https://example.test","offset":0}`）。参数与对应宿主工具一致，不接受 scope、actor 或 API key。
 
 只读入口在 `/stop` 和程序写动作停用期间仍可用，也不需要 sender；历史固定到物理会话，网页仍只允许公网目标，搜索凭据只由宿主使用。每会话最多 4 个、宿主合计 16 个并发，满了返回 429；请求体最多 16 KiB，工具等待上限 60 秒，断开客户端或撤销 VM 凭据会取消在途读取。参数错误返回 400，工具被禁用返回 403，网页/搜索失败返回 502。
 

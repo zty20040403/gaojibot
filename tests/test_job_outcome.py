@@ -6,7 +6,7 @@ import json
 import logging
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.background_agents import PROMPT, view
@@ -118,7 +118,7 @@ class JobOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(calls.close)
         app = SimpleNamespace(
             db_call=calls,
-            settings=replace(settings, search_enabled=False),
+            settings=replace(settings, search_enabled=True),
             skill_registry=SimpleNamespace(get=lambda name: skill if name == "programs" else None, list=lambda: [skill]),
             message_ledger=None,
             semantic_recall=None,
@@ -136,6 +136,15 @@ class JobOutcomeTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(await session.execute_tool("use_skill", {"name": "programs"}))
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["instructions"], "程序部署说明")
+        schema = next(item["function"]["parameters"] for item in session.tools if item["function"]["name"] == "web_search")
+        self.assertEqual(schema["required"], ["queries"])
+        with patch("src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock, return_value=[]) as search:
+            payload = json.loads(await session.execute_tool("web_search", {"queries": ["TEST_A", "TEST_B"], "max_results": 2}))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(search.await_args.args, (["TEST_A", "TEST_B"],))
+            self.assertEqual(search.await_args.kwargs["max_results"], min(2, settings.search_max_results))
+            self.assertFalse(json.loads(await session.execute_tool("web_search", {"query": "TEST"}))["ok"])
+            search.assert_awaited_once()
         self.assertIn("结果：失败", PROMPT)
         self.assertIn("use_skill", PROMPT)
         self.assertNotIn("outcome 是 partial 或 unknown 时", system_prompt())

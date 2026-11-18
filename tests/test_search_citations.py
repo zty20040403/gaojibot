@@ -105,7 +105,7 @@ class CitationStreamingTests(unittest.IsolatedAsyncioTestCase):
 
         async def llm(_text, _history, _tools, execute_tool, **kwargs):
             if with_sources:
-                await execute_tool("web_search", {"query": "TEST"})
+                await execute_tool("web_search", {"queries": ["TEST"]})
             content = "第一段引用[3]。\n\n第二段引用[1]。" if with_sources else "普通第一段。\n\n普通第二段。"
 
             async def chunks():
@@ -147,7 +147,7 @@ class CitationStreamingTests(unittest.IsolatedAsyncioTestCase):
         turn = SimpleNamespace(search_results=[])
         profile = SimpleNamespace(provider="test", name="TEST_PROFILE")
         call = SimpleNamespace(index=0, id="call_TEST", type="function",
-                               function=SimpleNamespace(name="web_search", arguments='{"query":"test"}'))
+                               function=SimpleNamespace(name="web_search", arguments='{"queries":["test"]}'))
 
         async def chunks():
             for delta in (SimpleNamespace(content="猜测引用[3]。\n\n", tool_calls=[]),
