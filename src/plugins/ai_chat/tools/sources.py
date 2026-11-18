@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import re
+import time
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
 from jsonschema import Draft202012Validator
@@ -14,6 +19,61 @@ from .registry import FunctionTool
 from .state import ToolContext, TurnState
 
 PAGE_CHARS = 8000
+STOP_SEARCH = "没有新信息了。用已知的回答，或者问用户要背景（哪个圈子、做什么的）。"
+_SECRET = re.compile(r"(?i)api[_-]?key|access[_-]?token|token|secret|password|passwd|authorization|bearer|密钥|密码|凭证|\bkey\s*[=:]")
+_OPAQUE = re.compile(r"[A-Za-z0-9_-]{32,}|\b(?:sk|ghp|github_pat)[-_][A-Za-z0-9_-]{12,}", re.I)
+
+
+def evidence_url(url: str) -> str:
+    """Keep only a public URL without userinfo, query, fragment, or likely path secrets."""
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or '').encode('idna').decode('ascii').lower().rstrip('.')
+        path = unquote(parts.path)
+        if (parts.scheme not in {'http', 'https'} or not host or _SECRET.search(path)
+                or _OPAQUE.search(path) or len(url) > 2048):
+            return ''
+        netloc = f'[{host}]' if ':' in host else host
+        if parts.port is not None:
+            netloc += f':{parts.port}'
+        safe = urlunsplit((parts.scheme, netloc, parts.path or '/', '', ''))
+        return safe if len(safe) <= 500 else ''
+    except (ValueError, UnicodeError):
+        return ''
+
+
+def search_key(url: str) -> tuple[str, str] | None:
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or '').encode('idna').decode('ascii').lower().rstrip('.')
+        return (host, parts.path or '/') if parts.scheme in {'http', 'https'} and host else None
+    except (ValueError, UnicodeError):
+        return None
+
+
+def remember(items: list[str], value: str, limit: int = 200) -> None:
+    if value and value not in items and len(items) < limit:
+        items.append(value)
+
+
+def evidence_term(query: str) -> str:
+    query = re.sub(r'https?://\S+', '[链接已省略]', query, flags=re.I)
+    if _SECRET.search(query) or _OPAQUE.search(query):
+        return ''
+    return ' '.join(query.split())[:200]
+
+
+def progress(turn: TurnState, new: int) -> dict[str, str]:
+    payload = {'progress': f'[本轮第 {turn.search_count} 次搜索 · 已用 {int(turn.search_seconds)} 秒 · 新链接 {new} 条]'}
+    if not turn.search_background and turn.search_seconds >= 30:
+        payload['handoff'] = '先用 say 告知已知进展，再用 agent 交接；仅在任务实际启动后用 promise 安排回访，不要声称尚未成功的操作已成功。'
+    return payload
+
+
+def stopped(turn):
+    reason = 'no_new_links' if turn.search_no_new >= (3 if turn.search_background else 2) else 'hard_limit'
+    logging.getLogger(__name__).info('search_stop reason=%s background=%s count=%d', reason, turn.search_background, turn.search_count)
+    return json.dumps({'ok': False, 'note': STOP_SEARCH, **progress(turn, 0)}, ensure_ascii=False)
 
 
 def self_tools_enabled(context: ToolContext) -> bool:
@@ -104,37 +164,70 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
         return json.dumps({"ok": False, "error": "搜索参数不合法。"}, ensure_ascii=False)
     queries = [query.strip()[:settings.max_input_chars] for query in arguments["queries"]]
     max_results = min(int(arguments.get("max_results", 10)), settings.search_max_results)
-    try:
-        results = await search_web(
-            queries,
-            max_results=max_results,
-            timeout_seconds=settings.search_timeout_seconds,
-            api_key=settings.search_api_key,
-        )
-    except SearchError:
-        return json.dumps({"ok": False, "error": "联网搜索暂时失败。"}, ensure_ascii=False)
-
-    id_by_url = {result.url: index for index, result in enumerate(turn.search_results, start=1)}
-    payload_results: list[dict[str, object]] = []
-    for result in results:
-        cleaned_url = clean_source_url(result.url)
-        cleaned = SearchResult(result.title, cleaned_url, result.snippet[:800], result.date, result.provider)
-        source_id = id_by_url.get(cleaned_url)
-        if source_id is None:
-            turn.search_results.append(cleaned)
-            source_id = len(turn.search_results)
-            id_by_url[cleaned_url] = source_id
-        payload_results.append(
-            {
-                "id": source_id,
-                "title": cleaned.title,
-                "url": cleaned.url,
-                "snippet": cleaned.snippet,
-                "date": cleaned.date,
-                "provider": cleaned.provider,
-            }
-        )
-    return json.dumps({"ok": True, "queries": queries, "results": payload_results}, ensure_ascii=False)
+    async with turn.search_lock:
+        if turn.search_budget:
+            def reserve(budget):
+                count, no_new = budget.get('count', 0), budget.get('no_new', 0)
+                allowed = count < 40 and no_new < 3
+                budget['count'] = count + int(allowed)
+                return allowed, budget['count'], budget.get('seconds', 0), no_new
+            allowed, turn.search_count, turn.search_seconds, turn.search_no_new = await turn.search_budget(reserve)
+            if not allowed:
+                return stopped(turn)
+        else:
+            if turn.search_count >= (40 if turn.search_background else 15) or turn.search_no_new >= (3 if turn.search_background else 2):
+                return stopped(turn)
+            turn.search_count += 1
+        for query in queries:
+            remember(turn.search_terms, evidence_term(query), 60)
+        all_results: list[SearchResult] = []
+        started = time.monotonic()
+        failed = True
+        try:
+            results = await search_web(
+                queries, max_results=max_results, timeout_seconds=settings.search_timeout_seconds,
+                api_key=settings.search_api_key, all_results=all_results,
+            )
+            failed = False
+        except SearchError:
+            pass
+        finally:
+            elapsed = time.monotonic() - started
+            keys = {key for result in all_results if (key := search_key(result.url)) is not None} if not failed else set()
+            if turn.search_budget:
+                hashes = {hashlib.sha256(json.dumps(key, ensure_ascii=True, separators=(',', ':')).encode()).hexdigest()
+                          for key in keys}
+                def finish(budget):
+                    seen = set(budget.get('seen', []))
+                    new = len(hashes - seen)
+                    budget['seen'] = sorted(seen | hashes)
+                    budget['seconds'] = budget.get('seconds', 0) + elapsed
+                    budget['no_new'] = 0 if new else budget.get('no_new', 0) + 1
+                    return budget['count'], budget['seconds'], budget['no_new'], new
+                turn.search_count, turn.search_seconds, turn.search_no_new, new = await turn.search_budget(finish)
+            else:
+                turn.search_seconds += elapsed
+                new = len(keys - turn.search_seen)
+                turn.search_no_new = 0 if new else turn.search_no_new + 1
+            turn.search_seen.update(keys)
+        if failed:
+            return json.dumps({"ok": False, "error": "联网搜索暂时失败。", **progress(turn, 0)}, ensure_ascii=False)
+        for result in all_results:
+            remember(turn.search_found, evidence_url(result.url))
+        id_by_url = {result.url: index for index, result in enumerate(turn.search_results, start=1)}
+        payload_results: list[dict[str, object]] = []
+        for result in results:
+            cleaned_url = clean_source_url(result.url)
+            cleaned = SearchResult(result.title, cleaned_url, result.snippet[:800], result.date, result.provider)
+            source_id = id_by_url.get(cleaned_url)
+            if source_id is None:
+                turn.search_results.append(cleaned)
+                source_id = len(turn.search_results)
+                id_by_url[cleaned_url] = source_id
+            payload_results.append({"id": source_id, "title": cleaned.title, "url": cleaned.url,
+                                    "snippet": cleaned.snippet, "date": cleaned.date, "provider": cleaned.provider})
+        return json.dumps({"ok": True, "queries": queries, "results": payload_results,
+                           **progress(turn, new)}, ensure_ascii=False)
 
 
 async def web_fetch(turn: TurnState, arguments: dict[str, object]) -> str:
@@ -176,6 +269,8 @@ async def web_fetch(turn: TurnState, arguments: dict[str, object]) -> str:
         turn.search_results.append(SearchResult(page.title or cleaned_url, cleaned_url, ""))
         source_id = len(turn.search_results)
     end = offset + PAGE_CHARS
+    if page.text[offset:end]:
+        remember(turn.search_read, evidence_url(page.url))
     return json.dumps(
         {
             "ok": True,

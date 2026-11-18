@@ -1,7 +1,7 @@
 # Browser
 Summary: 操作本会话常驻 Chromium 浏览器（前台 `run_code` 或后台 `agent` 共用，标签页和资料跨轮保留）。
 
-1. 普通公开资料先用 `web_search` 和 `web_fetch`；只有 JavaScript 渲染、页面交互或已登录页面才用浏览器。
+1. 普通公开资料先用 `web_search` 和 `web_fetch`。百度、B 站、小红书、知乎、抖音等需要渲染的页面用本会话 Chromium，不写 shell/urllib 脚本爬搜索引擎，不破解验证码。
 2. 前台单轮操作直接调 `run_code`：
    - `const p = await gaoji.page();` 获取最近活动标签页（没有则新建），完整 Playwright API；
    - `const snap = await gaoji.snapshot(p);` 读取标题、URL 与无障碍树（支持 `aria-ref=eN` 定位）；
