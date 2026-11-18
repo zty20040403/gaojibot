@@ -87,6 +87,7 @@ class MediaSession:
         self.service, self.inbound, self.platform = service, inbound, platform
         self.pending_text = []
         self.voice_sent = False
+        self.selected_sticker = None
         self.frontend_vision = False
         self.images = {}
         self.deadline = None
@@ -365,6 +366,7 @@ class MediaSession:
         # so the sticker always follows the words (turns.ExecutionLifecycle.finish).
         enqueue = await self._send_bytes(content, filename, 'sticker:' + handle, defer=True)
         self.platform.pending_media.append(enqueue)
+        self.selected_sticker = handle
         return {'state': 'queued', 'artifact_id': f'pending:{handle}',
                 'media_handle':handle,'summary':sticker.summary,'emotion':list(sticker.emotions),
                 'message':'表情包已选好，会跟在这条回复后面发出。被问起时按 summary 描述这张图。'}
