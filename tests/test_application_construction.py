@@ -52,18 +52,18 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(dict(os.environ),before)
 
     def test_parallel_explicit_settings_do_not_change_default_environment(self):
-        with patch.dict(os.environ,{'AI_ADMIN_ENABLED':'false','AI_SEARCH_MAX_RESULTS':'211'}):
+        with patch.dict(os.environ,{'AI_ADMIN_ENABLED':'false','AI_SEARCH_MAX_RESULTS':'10'}):
             original = dict(os.environ)
             def make(index):
-                env={**MODE,'AI_ADMIN_ENABLED':str(index%2==1),'AI_SEARCH_MAX_RESULTS':str(1000+index),
+                env={**MODE,'AI_ADMIN_ENABLED':str(index%2==1),'AI_SEARCH_MAX_RESULTS':str(1+index),
                      'AI_STATE_DIR':f'/TEST/state-{index}'}
                 host=create_application(env=env).state.gaoji_runtime
                 return host.settings.admin_enabled,host.settings.search_max_results,host.state_dir
             with ThreadPoolExecutor(max_workers=4) as pool:
-                rows=list(pool.map(make,range(12)))
+                rows=list(pool.map(make,range(9)))
             for index,row in enumerate(rows):
-                self.assertEqual(row,(index%2==1,1000+index,Path(f'/TEST/state-{index}')))
-            self.assertEqual(Settings.from_env().search_max_results,211)
+                self.assertEqual(row,(index%2==1,1+index,Path(f'/TEST/state-{index}')))
+            self.assertEqual(Settings.from_env().search_max_results,10)
             self.assertEqual(dict(os.environ),original)
 
 class OwnedConstructionTests(unittest.IsolatedAsyncioTestCase):

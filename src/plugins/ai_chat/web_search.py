@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from html.parser import HTMLParser
+import json
+from itertools import zip_longest
 import logging
 import re
-import time
-from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlsplit, urlunsplit
-from xml.etree import ElementTree
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
 _logger = logging.getLogger(__name__)
-SEARCH_PROVIDERS = frozenset({"scrape", "tavily", "bocha"})
-_BOCHA_FRESHNESS = {"d": "oneDay", "w": "oneWeek", "m": "oneMonth", "y": "oneYear"}
+_QUERY_SLOTS = asyncio.Semaphore(4)
+_bocha_exhausted = False
 _STRICT_QUERY_DOMAINS = (
     "bilibili.com",
     "b23.tv",
@@ -26,8 +26,6 @@ _STRIP_QUERY_PARAMS = frozenset({"spm", "from", "fbclid", "gclid", "vd_source"})
 _CODE_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)$")
 _INLINE_MARKER = re.compile(r"(?<!`)(`{3,})(?!`)")
 _CITATION_RE = re.compile(r"\[(\d+)\]")
-_DDG_BLOCK_TTL_SECONDS = 3600.0
-_ddg_blocked_until = 0.0
 
 
 @dataclass(frozen=True)
@@ -35,299 +33,205 @@ class SearchResult:
     title: str
     url: str
     snippet: str
+    date: str = ""
+    provider: str = ""
 
 
 class SearchError(RuntimeError):
     pass
 
 
-class _DuckDuckGoHTMLParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.results: list[SearchResult] = []
-        self._capture_title = False
-        self._capture_snippet = False
-        self._current_title: list[str] = []
-        self._current_snippet: list[str] = []
-        self._current_url = ""
-        self._pending_title = ""
-        self._pending_url = ""
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attr_map = {name: value or "" for name, value in attrs}
-        classes = set(attr_map.get("class", "").split())
-
-        if tag == "a" and "result__a" in classes:
-            self._push_pending_result("")
-            self._capture_title = True
-            self._current_title = []
-            self._current_url = _clean_duckduckgo_url(attr_map.get("href", ""))
-            return
-
-        if "result__snippet" in classes or "result-snippet" in classes:
-            self._capture_snippet = True
-            self._current_snippet = []
-
-    def handle_data(self, data: str) -> None:
-        if self._capture_title:
-            self._current_title.append(data)
-        if self._capture_snippet:
-            self._current_snippet.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "a" and self._capture_title:
-            self._capture_title = False
-            self._pending_title = _clean_text("".join(self._current_title))
-            self._pending_url = self._current_url
-            return
-
-        if self._capture_snippet and tag in {"a", "div", "td"}:
-            self._capture_snippet = False
-            snippet = _clean_text("".join(self._current_snippet))
-            self._push_pending_result(snippet)
-
-    def close(self) -> None:
-        super().close()
-        self._push_pending_result("")
-
-    def _push_pending_result(self, snippet: str) -> None:
-        if not self._pending_title or not self._pending_url:
-            return
-
-        self.results.append(
-            SearchResult(
-                title=self._pending_title,
-                url=self._pending_url,
-                snippet=snippet,
-            )
-        )
-        self._pending_title = ""
-        self._pending_url = ""
+class _ProviderError(Exception):
+    """A fixed diagnostic safe to log without upstream bodies or credentials."""
 
 
-def should_search(text: str) -> bool:
-    normalized = text.strip().lower()
-    return any(
-        keyword in normalized
-        for keyword in (
-            "搜索",
-            "搜一下",
-            "查一下",
-            "查查",
-            "联网",
-            "网上",
-            "最新",
-            "今天",
-            "现在",
-            "刚刚",
-            "新闻",
-            "价格",
-            "官网",
-            "发布",
-            "更新",
-        )
+def _log_attempt(provider: str, outcome: str, count: int = 0, fallback_reason: str = "none") -> None:
+    _logger.log(
+        logging.INFO if outcome in {"success", "empty"} else logging.WARNING,
+        "search provider=%s fallback_reason=%s outcome=%s result_count=%d",
+        provider, fallback_reason, outcome, count,
+        extra={"provider": provider, "fallback_reason": fallback_reason,
+               "outcome": outcome, "result_count": count},
     )
 
 
 async def search_web(
-    query: str,
-    max_results: int = 5,
-    timeout_seconds: int = 10,
-    freshness: str | None = None,
-    provider: str = "scrape",
-    api_key: str = "",
-    transport: httpx.AsyncBaseTransport | None = None,
+    queries: list[str], *, max_results: int = 10, timeout_seconds: int = 10,
+    api_key: str = "", transport: httpx.AsyncBaseTransport | None = None,
 ) -> list[SearchResult]:
-    global _ddg_blocked_until
-    cleaned_query = query.strip()
-    if not cleaned_query:
-        return []
+    async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
+        batches = await asyncio.gather(*(
+            _search_query(client, query, max_results, timeout_seconds, api_key) for query in queries
+        ))
+    unique = {}
+    for group in zip_longest(*(batch for batch in batches if batch)):
+        for result in group:
+            if result is not None:
+                unique.setdefault(result.url, result)
+    if not unique and None in batches:
+        raise SearchError("联网搜索失败。")
+    return list(unique.values())[:max_results]
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        ),
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    }
 
-    async with httpx.AsyncClient(
-        timeout=timeout_seconds, follow_redirects=True, headers=headers, transport=transport
-    ) as client:
-        if provider in {"tavily", "bocha"} and api_key:
+async def _search_query(client: httpx.AsyncClient, query: str, limit: int,
+                        timeout: int, api_key: str) -> list[SearchResult] | None:
+    previous = "none"
+    async with _QUERY_SLOTS:
+        for provider in ("exa", "bocha"):
+            if provider == "bocha" and (not api_key or _bocha_exhausted):
+                break
+            results = []
             try:
-                return _unique_results(
-                    await _search_api(client, provider, api_key, cleaned_query, max_results, freshness),
-                    max_results,
-                )
-            except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
-                # A paid API that is out of credit should not take search down with it.
-                _logger.warning("%s search failed, falling back to scraping: %s", provider, exc)
-        now = time.monotonic()
-        duckduckgo_results: list[SearchResult] = []
-        if now >= _ddg_blocked_until:
-            try:
-                params = {"q": cleaned_query}
-                if freshness in {"d", "w", "m", "y"}:
-                    params["df"] = freshness
-                response = await client.get(
-                    "https://duckduckgo.com/html/",
-                    params=params,
-                )
-                duckduckgo_results = _parse_duckduckgo_results(response.text)
-                # Several searches may already be in flight when the first
-                # challenge arrives; only its response starts the cooldown.
-                now = time.monotonic()
-                if (not duckduckgo_results and "anomaly" in response.text.lower()
-                        and now >= _ddg_blocked_until):
-                    _ddg_blocked_until = now + _DDG_BLOCK_TTL_SECONDS
-                    _logger.info(
-                        "DuckDuckGo HTML search returned anomaly challenge; skipping DuckDuckGo for %d seconds.",
-                        int(_DDG_BLOCK_TTL_SECONDS),
-                    )
-                response.raise_for_status()
-            except httpx.HTTPError:
-                duckduckgo_results = []
+                async with asyncio.timeout(timeout):
+                    results = (await _search_exa(client, query, limit) if provider == "exa" else
+                               await _search_bocha(client, query, limit, api_key))
+                outcome = "success" if results else "empty"
+            except TimeoutError:
+                outcome = "timeout"
+            except _ProviderError as exc:
+                outcome = str(exc)
+            _log_attempt(provider, outcome, len(results), previous)
+            if results:
+                return results
+            previous = outcome
+    return [] if previous == "empty" else None
 
-        if duckduckgo_results:
-            matches = _unique_results(relevant(cleaned_query, duckduckgo_results), max_results)
-            if matches:
-                return matches
 
-        try:
-            response = await client.get(
-                "https://www.bing.com/search",
-                params={
-                    "q": cleaned_query,
-                    "format": "rss",
-                    "setlang": "zh-hans",
-                },
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            if duckduckgo_results:
-                return []
-            raise SearchError("联网搜索失败。") from exc
+async def _post(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Response:
+    try:
+        return await client.post(url, **kwargs)
+    except httpx.TimeoutException:
+        raise _ProviderError("timeout") from None
+    except httpx.HTTPError:
+        raise _ProviderError("network_error") from None
 
-    return _unique_results(
-        relevant(cleaned_query, _parse_bing_rss_results(response.text)),
-        max_results,
+
+def _rpc(response: httpx.Response, request_id: int) -> dict:
+    if not response.is_success:
+        raise _ProviderError("rate_limit" if response.status_code == 429 else "http_error")
+    try:
+        if "text/event-stream" in response.headers.get("content-type", ""):
+            data = "\n".join(line[5:].lstrip() for line in response.text.splitlines()
+                             if line.startswith("data:"))
+            payload = json.loads(data)
+        else:
+            payload = response.json()
+        if not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0" or payload.get("id") != request_id:
+            raise ValueError
+        if "error" in payload:
+            raise _ProviderError("rpc_error")
+        if not isinstance(payload.get("result"), dict):
+            raise ValueError
+        return payload["result"]
+    except (ValueError, TypeError):
+        raise _ProviderError("schema_error") from None
+
+
+async def _search_exa(client: httpx.AsyncClient, query: str, limit: int) -> list[SearchResult]:
+    url = "https://mcp.exa.ai/mcp"
+    headers = {"Accept": "application/json, text/event-stream"}
+    response = await _post(client, url, headers=headers, json={
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-03-26", "capabilities": {},
+            "clientInfo": {"name": "gaoji", "version": "1"},
+        },
+    })
+    init = _rpc(response, 1)
+    session = response.headers.get("mcp-session-id")
+    if not session or init.get("protocolVersion") != "2025-03-26":
+        raise _ProviderError("schema_error")
+    headers.update({"Mcp-Session-Id": session, "MCP-Protocol-Version": "2025-03-26"})
+    response = await _post(client, url, headers=headers, json={
+        "jsonrpc": "2.0", "method": "notifications/initialized",
+    })
+    if response.status_code != 202:
+        raise _ProviderError("rate_limit" if response.status_code == 429 else "http_error")
+    response = await _post(client, url, headers=headers, json={
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "web_search_exa", "arguments": {
+            "query": query, "objective": query, "numResults": limit,
+        }},
+    })
+    result = _rpc(response, 2)
+    if result.get("isError"):
+        raise _ProviderError("tool_error")
+    content = result.get("content")
+    if not isinstance(content, list):
+        raise _ProviderError("schema_error")
+    results = []
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") != "text" or not isinstance(text := item.get("text"), str):
+            raise _ProviderError("schema_error")
+        if not text.strip() or text.strip().lower().startswith("no results found"):
+            continue
+        for block in re.split(r"\n[ \t]*\n---[ \t]*\n[ \t]*\n(?=Title:)", text.strip().replace("\r\n", "\n")):
+            parts = re.split(r"(?m)^(?:Highlights|Text):[ \t]*", block, maxsplit=1)
+            fields = dict(line.split(":", 1) for line in parts[0].splitlines() if ":" in line)
+            title, link = fields.get("Title", ""), fields.get("URL", "")
+            results.append(_result(title, link, parts[1] if len(parts) > 1 else "",
+                                   fields.get("Published", ""), "exa"))
+            if len(results) == limit:
+                return results
+    return results
+
+
+def _result(title: str, url: str, snippet: str, date: str, provider: str) -> SearchResult:
+    if not all(isinstance(value, str) for value in (title, url, snippet, date)):
+        raise _ProviderError("schema_error")
+    url = url.strip()
+    try:
+        parsed = urlsplit(url)
+        valid = parsed.scheme in {"http", "https"} and bool(parsed.hostname) and len(url) <= 2048
+    except ValueError:
+        valid = False
+    if not valid or not title.strip():
+        raise _ProviderError("schema_error")
+    return SearchResult(_clean_text(title)[:300], url, _clean_text(snippet)[:800],
+                        _clean_text(date)[:50], provider)
+
+
+def _balance_error(status: int, payload: object) -> bool:
+    if status == 402:
+        return True
+    if not isinstance(payload, dict):
+        return False
+    code = str(payload.get("code", "")).lower()
+    message = str(payload.get("msg") or payload.get("message") or "").lower()
+    return code in {"402", "insufficient_balance", "balance_insufficient"} or any(
+        phrase in message for phrase in ("余额不足", "账户欠费", "insufficient balance", "balance exhausted")
     )
 
 
-async def _search_api(
-    client: httpx.AsyncClient,
-    provider: str,
-    api_key: str,
-    query: str,
-    max_results: int,
-    freshness: str | None,
-) -> list[SearchResult]:
-    headers = {"Authorization": f"Bearer {api_key}"}
-    if provider == "tavily":
-        body: dict[str, object] = {"query": query, "max_results": min(max_results, 20)}
-        if freshness:
-            body["time_range"] = freshness
-        response = await client.post("https://api.tavily.com/search", json=body, headers=headers)
-        response.raise_for_status()
-        return [
-            SearchResult(_clean_text(row.get("title") or ""), str(row.get("url") or ""),
-                         _clean_text(row.get("content") or ""))
-            for row in response.json().get("results") or []
-        ]
-    body = {
-        "query": query,
-        "count": min(max_results, 50),
-        "summary": True,
-        "freshness": _BOCHA_FRESHNESS.get(freshness or "", "noLimit"),
-    }
-    response = await client.post("https://api.bochaai.com/v1/web-search", json=body, headers=headers)
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("code") is not None and str(payload["code"]) != "200":
-        # Never log the provider's error body; it may echo the API key.
-        raise ValueError("Bocha search returned an error")
-    pages = ((payload.get("data") or {}).get("webPages") or {}).get("value") or []
-    results = []
-    for page in pages:
-        # The publish date is what tells a reader whether a quoted price is current.
-        date = str(page.get("datePublished") or page.get("dateLastCrawled") or "")[:10]
-        snippet = _clean_text(page.get("summary") or page.get("snippet") or "")
-        results.append(SearchResult(_clean_text(page.get("name") or ""), str(page.get("url") or ""),
-                                    f"[{date}] {snippet}" if date else snippet))
-    return results
-
-
-def _parse_duckduckgo_results(html: str) -> list[SearchResult]:
-    parser = _DuckDuckGoHTMLParser()
-    parser.feed(html)
-    parser.close()
-    return parser.results
-
-
-def _parse_bing_rss_results(xml: str) -> list[SearchResult]:
+async def _search_bocha(client: httpx.AsyncClient, query: str, limit: int, api_key: str) -> list[SearchResult]:
+    global _bocha_exhausted
+    response = await _post(client, "https://api.bochaai.com/v1/web-search",
+                           headers={"Authorization": f"Bearer {api_key}"},
+                           json={"query": query, "count": limit, "summary": True, "freshness": "noLimit"})
     try:
-        root = ElementTree.fromstring(xml)
-    except ElementTree.ParseError:
-        return []
-
-    results: list[SearchResult] = []
-    for item in root.findall("./channel/item"):
-        title = _clean_text(item.findtext("title", ""))
-        url = item.findtext("link", "").strip()
-        snippet = _clean_text(item.findtext("description", ""))
-        if title and url:
-            results.append(
-                SearchResult(
-                    title=title,
-                    url=url,
-                    snippet=snippet,
-                )
-            )
-    return results
-
-
-def relevant(query: str, results: list[SearchResult]) -> list[SearchResult]:
-    terms = [word.lower() for word in query.split() if len(word) >= 2]
-    if not terms:
-        return list(results)
-    filtered: list[SearchResult] = []
-    for result in results:
-        haystack = f"{result.title}\n{result.snippet}".lower()
-        if any(term in haystack for term in terms):
-            filtered.append(result)
-    return filtered
-
-
-def _unique_results(
-    results: list[SearchResult],
-    max_results: int,
-) -> list[SearchResult]:
-    unique_results: list[SearchResult] = []
-    seen_urls: set[str] = set()
-    for result in results:
-        if not result.title or not result.url or result.url in seen_urls:
-            continue
-        seen_urls.add(result.url)
-        unique_results.append(result)
-        if len(unique_results) >= max_results:
-            break
-
-    return unique_results
-
-
-def render_search_context(results: list[SearchResult]) -> str:
-    if not results:
-        return ""
-
-    lines: list[str] = []
-    for index, result in enumerate(results, start=1):
-        lines.append(
-            f"[{index}] {result.title}\n"
-            f"URL: {result.url}\n"
-            f"摘要: {result.snippet or '无摘要'}"
-        )
-    return "\n\n".join(lines)
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if _balance_error(response.status_code, payload):
+        if not _bocha_exhausted:
+            _bocha_exhausted = True
+            _logger.warning("search provider=bocha fallback_reason=balance_exhausted disabled=true",
+                            extra={"provider": "bocha", "fallback_reason": "balance_exhausted"})
+        raise _ProviderError("balance_exhausted")
+    if not response.is_success:
+        raise _ProviderError("rate_limit" if response.status_code == 429 else "http_error")
+    if not isinstance(payload, dict):
+        raise _ProviderError("schema_error")
+    if payload.get("code") is not None and str(payload["code"]) != "200":
+        raise _ProviderError("rate_limit" if str(payload["code"]) == "429" else "api_error")
+    try:
+        pages = payload["data"]["webPages"]["value"]
+    except (KeyError, TypeError):
+        raise _ProviderError("schema_error") from None
+    if not isinstance(pages, list) or any(not isinstance(page, dict) for page in pages[:limit]):
+        raise _ProviderError("schema_error")
+    return [_result(page.get("name"), page.get("url"), page.get("summary") or page.get("snippet") or "",
+                    page.get("datePublished") or page.get("dateLastCrawled") or "", "bocha")
+            for page in pages[:limit]]
 
 
 def clean_source_url(url: str) -> str:
@@ -441,54 +345,6 @@ def render_search_sources(
         result = results[old_index - 1]
         lines.append(f"{new_index}. {result.title}\n{result.url}")
     return "".join(parts), "\n".join(lines)
-
-
-def render_direct_search_results(
-    results: list[SearchResult],
-    max_results: int = 5,
-) -> str:
-    if not results:
-        return ""
-
-    lines = ["搜索结果："]
-    for index, result in enumerate(results[:max_results], start=1):
-        lines.append(
-            f"{index}. {result.title}\n"
-            f"{result.snippet or '无摘要'}\n"
-            f"{result.url}"
-        )
-    return "\n\n".join(lines)
-
-
-def search_freshness(text: str) -> str | None:
-    """Time filter for the direct search command; prices and specs stay unfiltered."""
-    normalized = text.strip().lower()
-    if any(keyword in normalized for keyword in ("今天", "今日", "刚刚", "天气", "比分")):
-        return "d"
-    if any(keyword in normalized for keyword in ("新闻", "近期", "最近", "本周")):
-        return "w"
-    return None
-
-
-def _clean_duckduckgo_url(href: str) -> str:
-    if not href:
-        return ""
-
-    if href.startswith("//"):
-        href = "https:" + href
-    elif href.startswith("/"):
-        href = "https://duckduckgo.com" + href
-
-    parsed = urlsplit(href)
-    query = parse_qs(parsed.query)
-    redirected_url = query.get("uddg", [""])[0]
-    if redirected_url:
-        return unquote(redirected_url)
-    if parsed.hostname == "duckduckgo.com":
-        # Ad clicks (/y.js?ad_domain=...) only open through DuckDuckGo's redirector.
-        return ""
-
-    return href
 
 
 def _clean_text(text: str) -> str:

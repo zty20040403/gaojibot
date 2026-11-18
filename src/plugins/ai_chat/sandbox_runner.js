@@ -402,7 +402,7 @@ async function runCodeMain() {
       get(target, key) {
         if (key === "then" || key === "catch" || key === "finally") return target[key].bind(target);
         if (typeof key === "symbol") return target[key];
-        throw new TypeError("a tool call returns a Promise: await it first, e.g. const r = await tools.web_search({query})");
+        throw new TypeError("a tool call returns a Promise: await it first, e.g. const r = await tools.web_search({queries: [query]})");
       },
     });
     if (controller) controllers.set(proxy, controller);

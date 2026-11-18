@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import httpx
+from jsonschema import Draft202012Validator
 
 from ..ai_tools import INSPECT_SOURCE_TOOL, USE_SKILL_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL
 from ..web_fetch import BLOCKED_STATUSES, BROWSER_HEADERS, FetchError, fetch_page
@@ -98,51 +99,26 @@ async def inspect_source(turn: TurnState, arguments: dict[str, object]) -> str:
 
 async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
     settings = turn.context.app.settings
-    query = str(arguments.get("query", "")).strip() or turn.user_text
-    query = query[: settings.max_input_chars]
-    # "auto" means no time filter: a one-day window hides nearly every price,
-    # spec and how-to page, so only an explicit choice narrows it.
-    freshness = {
-        "day": "d",
-        "week": "w",
-        "month": "m",
-        "year": "y",
-    }.get(str(arguments.get("freshness", "auto")))
-    options = {
-        "max_results": settings.search_max_results,
-        "timeout_seconds": settings.search_timeout_seconds,
-        "provider": settings.search_provider,
-        "api_key": settings.search_api_key,
-    }
+    schema = WEB_SEARCH_TOOL["function"]["parameters"]
+    if not Draft202012Validator(schema).is_valid(arguments):
+        return json.dumps({"ok": False, "error": "搜索参数不合法。"}, ensure_ascii=False)
+    queries = [query.strip()[:settings.max_input_chars] for query in arguments["queries"]]
+    max_results = min(int(arguments.get("max_results", 10)), settings.search_max_results)
     try:
-        results = await search_web(query, freshness=freshness, **options)
-        if not results and freshness is not None:
-            results = await search_web(query, freshness=None, **options)
-            freshness = None
-    except SearchError as exc:
-        turn.context.app.logger.warning(f"Web search tool failed: {exc}")
-        return json.dumps(
-            {"ok": False, "error": "联网搜索暂时失败。"},
-            ensure_ascii=False,
+        results = await search_web(
+            queries,
+            max_results=max_results,
+            timeout_seconds=settings.search_timeout_seconds,
+            api_key=settings.search_api_key,
         )
-
-    if not results:
-        return json.dumps(
-            {
-                "ok": True,
-                "query": query,
-                "freshness": freshness or "all",
-                "results": [],
-                "note": "搜索引擎没有返回和这个词相关的结果，换一个说法再搜。",
-            },
-            ensure_ascii=False,
-        )
+    except SearchError:
+        return json.dumps({"ok": False, "error": "联网搜索暂时失败。"}, ensure_ascii=False)
 
     id_by_url = {result.url: index for index, result in enumerate(turn.search_results, start=1)}
     payload_results: list[dict[str, object]] = []
     for result in results:
         cleaned_url = clean_source_url(result.url)
-        cleaned = SearchResult(result.title, cleaned_url, result.snippet)
+        cleaned = SearchResult(result.title, cleaned_url, result.snippet[:800], result.date, result.provider)
         source_id = id_by_url.get(cleaned_url)
         if source_id is None:
             turn.search_results.append(cleaned)
@@ -154,17 +130,11 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
                 "title": cleaned.title,
                 "url": cleaned.url,
                 "snippet": cleaned.snippet,
+                "date": cleaned.date,
+                "provider": cleaned.provider,
             }
         )
-    return json.dumps(
-        {
-            "ok": True,
-            "query": query,
-            "freshness": freshness or "all",
-            "results": payload_results,
-        },
-        ensure_ascii=False,
-    )
+    return json.dumps({"ok": True, "queries": queries, "results": payload_results}, ensure_ascii=False)
 
 
 async def web_fetch(turn: TurnState, arguments: dict[str, object]) -> str:

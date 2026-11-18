@@ -292,12 +292,6 @@ def _build_app_context(
     ))
     database.require_revision(HEAD_REVISION)
     logger.info(f"PostgreSQL storage ready in schema {settings.postgres_schema}.")
-    if settings.search_provider in {"tavily", "bocha"} and not settings.search_api_key:
-        logger.warning(
-            "AI_SEARCH_PROVIDER is %s but AI_SEARCH_API_KEY is empty; web search will fall back to scraping.",
-            settings.search_provider,
-        )
-
 
     running_tasks = RunningTaskRegistry()
     user_profiles = _construction.own(GroupUserProfileStore(database))

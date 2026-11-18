@@ -8,7 +8,7 @@ import httpx
 
 from src.plugins.ai_chat import web_search as web_search_module
 from src.plugins.ai_chat.web_fetch import FetchError, fetch_page, public_address
-from src.plugins.ai_chat.web_search import SearchResult, clean_source_url, relevant, render_search_sources, search_freshness, search_web
+from src.plugins.ai_chat.web_search import SearchError, SearchResult, clean_source_url, render_search_sources, search_web
 
 
 ADDRESSES = {"shop.example": "93.184.216.34", "internal.example": "100.100.10.10"}
@@ -65,67 +65,120 @@ class WebFetchTests(unittest.IsolatedAsyncioTestCase):
             await fetch_page("file:///etc/passwd", resolver=resolver)
 
 
+def exa_response(request: httpx.Request, text: str) -> httpx.Response:
+    body = json.loads(request.content)
+    if body["method"] == "notifications/initialized":
+        return httpx.Response(202)
+    result = ({"protocolVersion": "2025-03-26"} if body["method"] == "initialize" else
+              {"content": [{"type": "text", "text": text}]})
+    data = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result})
+    return httpx.Response(200, headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "TEST_SESSION"},
+                          text=f"event: message\ndata: {data}\n\n")
+
+
+def block(name: str, snippet: str = "snippet") -> str:
+    return f"Title: {name}\nURL: https://example.test/{name}\nPublished: 2026-11-19\nHighlights: {snippet}"
+
+
 class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
-    async def test_bocha_results_carry_publish_dates(self) -> None:
-        seen = []
+    def setUp(self) -> None:
+        web_search_module._QUERY_SLOTS = asyncio.Semaphore(4)
+        web_search_module._bocha_exhausted = False
+        self.addCleanup(setattr, web_search_module, "_QUERY_SLOTS", asyncio.Semaphore(4))
+        self.addCleanup(setattr, web_search_module, "_bocha_exhausted", False)
 
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen.append(request)
-            return httpx.Response(200, json={"code": 200, "data": {"webPages": {"value": [
-                {"name": "RTX 5070 报价", "url": "https://shop.example/1", "snippet": "短",
-                 "summary": "到手价 4599 元", "datePublished": "2026-10-29T08:00:00+08:00"},
-            ]}}})
+    async def test_mcp_handshake_and_header_parsing(self) -> None:
+        requests = []
+        def handler(request):
+            requests.append(request)
+            text = block("first", "x" * 900) + "\n\n---\n\n" + block("second", "Title: nested\nURL: https://nested.test\n---")
+            return exa_response(request, text.replace("\n", "\r\n"))
+        results = await search_web(["TEST_query"], max_results=2, transport=httpx.MockTransport(handler))
+        self.assertEqual([json.loads(r.content)["method"] for r in requests], ["initialize", "notifications/initialized", "tools/call"])
+        self.assertEqual(requests[0].headers["accept"], "application/json, text/event-stream")
+        self.assertEqual(json.loads(requests[0].content)["params"]["protocolVersion"], "2025-03-26")
+        self.assertEqual(requests[2].headers["mcp-session-id"], "TEST_SESSION")
+        self.assertEqual(json.loads(requests[2].content)["params"], {"name": "web_search_exa", "arguments": {
+            "query": "TEST_query", "objective": "TEST_query", "numResults": 2}})
+        self.assertEqual(results[0], SearchResult("first", "https://example.test/first", "x" * 800, "2026-11-19", "exa"))
+        self.assertEqual((results[1].title, results[1].url), ("second", "https://example.test/second"))
+        self.assertIn("Title: nested", results[1].snippet)
 
-        results = await search_web("RTX 5070 价格", freshness="w", provider="bocha", api_key="key",
-                                   transport=httpx.MockTransport(handler))
-        self.assertEqual(str(seen[0].url), "https://api.bochaai.com/v1/web-search")
-        self.assertEqual(seen[0].headers["authorization"], "Bearer key")
-        self.assertEqual(json.loads(seen[0].content)["freshness"], "oneWeek")
-        self.assertEqual(results[0].title, "RTX 5070 报价")
-        self.assertEqual(results[0].snippet, "[2026-10-29] 到手价 4599 元")
+    async def test_fallback_balance_and_safe_logs(self) -> None:
+        cases = [("empty", 200, {}, False), ("429", 200, {}, False), ("schema", 200, {}, False),
+                 ("500", 402, {}, True), ("500", 200, {"code": "INSUFFICIENT_BALANCE"}, True),
+                 ("500", 403, {"msg": "余额不足"}, True), ("500", 403, {}, False), ("500", 429, {}, False)]
+        for exa, status, payload, exhausted in cases:
+            with self.subTest(exa=exa, status=status, payload=payload):
+                web_search_module._bocha_exhausted = False
+                calls = []
+                def handler(request):
+                    if request.url.host == "api.bochaai.com":
+                        calls.append(request)
+                        data = {"code": 200, "data": {"webPages": {"value": [{"name": "B", "url": "https://example.test/b",
+                                "summary": "摘要", "datePublished": "2026-11-19"}]}}}
+                        return httpx.Response(status, json=payload or (data if status == 200 else {}))
+                    if exa in {"429", "500"}:
+                        return httpx.Response(int(exa), text="TEST_SECRET TEST_query")
+                    if exa == "schema":
+                        return httpx.Response(200, text="TEST_SECRET")
+                    return exa_response(request, "No results found.")
+                with self.assertLogs(web_search_module._logger, level="INFO") as logs:
+                    for _ in range(2):
+                        if exa in {"empty", "429", "schema"}:
+                            results = await search_web(["TEST_query"], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
+                            self.assertEqual(results[0], SearchResult("B", "https://example.test/b", "摘要", "2026-11-19", "bocha"))
+                        else:
+                            with self.assertRaises(SearchError):
+                                await search_web(["TEST_query"], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
+                self.assertEqual(len(calls), 1 if exhausted else 2)
+                self.assertEqual(sum("disabled=true" in line for line in logs.output), int(exhausted))
+                self.assertNotIn("TEST_SECRET", " ".join(logs.output))
+                self.assertNotIn("TEST_query", " ".join(logs.output))
+                if exa == "schema":
+                    self.assertTrue(any(r.provider == "bocha" and r.fallback_reason == "schema_error" for r in logs.records))
 
-    async def test_failed_api_falls_back_to_scraping(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.host == "api.tavily.com":
-                return httpx.Response(432, json={"detail": "out of credits"})
-            return httpx.Response(200, text=(
-                '<a class="result__a" href="//duckduckgo.com/y.js?ad_domain=ads.example">Ad</a>'
-                '<div class="result__snippet">ad</div>'
-                '<a class="result__a" href="https://shop.example/2">Scraped query</a>'
-                '<div class="result__snippet">snippet</div>'
-            ))
+    async def test_concurrency_interleaving_and_partial_failure(self) -> None:
+        active = peak = 0
+        four, release = asyncio.Event(), asyncio.Event()
+        async def handler(request):
+            nonlocal active, peak
+            body = json.loads(request.content)
+            if body["method"] == "initialize":
+                active += 1
+                peak = max(peak, active)
+                if active == 4:
+                    four.set()
+                await release.wait()
+            if body["method"] == "tools/call":
+                active -= 1
+                query = body["params"]["arguments"]["query"]
+                if query == "bad":
+                    return httpx.Response(500)
+                if query == "one":
+                    await asyncio.sleep(0.01)
+                return exa_response(request, block(query) + "\n\n---\n\n" + block("shared"))
+            return exa_response(request, "")
+        transport = httpx.MockTransport(handler)
+        with self.assertLogs(web_search_module._logger, level="WARNING") as logs:
+            tasks = [asyncio.create_task(search_web(queries, max_results=3, transport=transport))
+                     for queries in (["one", "bad", "two"], ["three", "four"])]
+            await asyncio.wait_for(four.wait(), 1)
+            self.assertEqual((active, peak), (4, 4))
+            release.set()
+            first, second = await asyncio.wait_for(asyncio.gather(*tasks), 2)
+        self.assertEqual(peak, 4)
+        self.assertEqual([r.title for r in first], ["one", "two", "shared"])
+        self.assertEqual([r.title for r in second], ["three", "four", "shared"])
+        self.assertEqual(logs.records[0].outcome, "http_error")
 
-        results = await search_web("query", provider="tavily", api_key="key",
-                                   transport=httpx.MockTransport(handler))
-        self.assertEqual([result.url for result in results], ["https://shop.example/2"])
-
-    async def test_paid_api_failure_filters_actual_scrape_fallback(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.host == "api.tavily.com":
-                return httpx.Response(432, json={"detail": "out of credits"})
-            return httpx.Response(200, text=(
-                '<a class="result__a" href="https://afdian.com/a">爱发电创作者</a>'
-                '<div class="result__snippet">赞助支持</div>'
-                '<a class="result__a" href="https://example.test/b">吴家村是什么梗</a>'
-                '<div class="result__snippet">解释</div>'
-            ))
-
-        with self.assertLogs("src.plugins.ai_chat.web_search", level="WARNING"):
-            results = await search_web("吴家村 是哪里", max_results=1, provider="tavily", api_key="key",
-                                       transport=httpx.MockTransport(handler))
-        self.assertEqual([result.url for result in results], ["https://example.test/b"])
-
-    async def test_paid_api_results_are_not_filtered_as_scrape(self) -> None:
-        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json={"results": [
-            {"title": "不含查询词", "url": "https://example.test/api", "content": "语义相关"}
-        ]}))
-        results = await search_web("吴家村", provider="tavily", api_key="key", transport=transport)
-        self.assertEqual([result.url for result in results], ["https://example.test/api"])
-
-    def test_direct_command_no_longer_limits_price_queries_to_one_day(self) -> None:
-        self.assertIsNone(search_freshness("目前显卡价格"))
-        self.assertEqual(search_freshness("今天天气"), "d")
-        self.assertEqual(search_freshness("最近新闻"), "w")
+    async def test_unexpected_internal_exception_propagates(self) -> None:
+        def handler(request):
+            if request.url.host == "api.bochaai.com":
+                self.fail("unexpected internal bug must not call Bocha")
+            raise RuntimeError("internal bug")
+        with self.assertRaisesRegex(RuntimeError, "internal bug"):
+            await search_web(["query"], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
 
     def test_clean_source_url_strips_tracking_parameters(self) -> None:
         self.assertEqual(
@@ -159,130 +212,6 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
             sources,
             "来源：\n1. Three\nhttps://example.test/3\n2. One\nhttps://example.test/1",
         )
-
-    async def test_duckduckgo_anomaly_block_skips_subsequent_requests_for_one_hour(self) -> None:
-        web_search_module._ddg_blocked_until = 0.0
-        self.addCleanup(setattr, web_search_module, "_ddg_blocked_until", 0.0)
-        ddg_hosts: list[str] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.host == "duckduckgo.com":
-                ddg_hosts.append(request.url.host)
-                return httpx.Response(200, text="<html><body>anomaly challenge</body></html>")
-            return httpx.Response(
-                200,
-                text=(
-                    "<rss><channel><item><title>吴家村 梗</title>"
-                    "<link>https://example.test/bing</link>"
-                    "<description>解释</description></item></channel></rss>"
-                ),
-            )
-
-        with self.assertLogs("src.plugins.ai_chat.web_search", level="INFO") as logs:
-            first = await search_web("吴家村", transport=httpx.MockTransport(handler))
-            second = await search_web("吴家村", transport=httpx.MockTransport(handler))
-        self.assertEqual([r.url for r in first], ["https://example.test/bing"])
-        self.assertEqual([r.url for r in second], ["https://example.test/bing"])
-        self.assertEqual(len(ddg_hosts), 1)
-        self.assertEqual(sum("anomaly" in line.lower() for line in logs.output), 1)
-
-    async def test_403_anomaly_still_opens_cooldown(self) -> None:
-        web_search_module._ddg_blocked_until = 0.0
-        self.addCleanup(setattr, web_search_module, '_ddg_blocked_until', 0.0)
-        hosts = []
-        def handler(request):
-            hosts.append(request.url.host)
-            if request.url.host == 'duckduckgo.com':
-                return httpx.Response(403, text='anomaly challenge')
-            return httpx.Response(200, text='<rss><channel/></rss>')
-        with self.assertLogs('src.plugins.ai_chat.web_search', level='INFO') as logs:
-            await search_web('吴家村', transport=httpx.MockTransport(handler))
-            await search_web('吴家村', transport=httpx.MockTransport(handler))
-        self.assertEqual(hosts.count('duckduckgo.com'), 1)
-        self.assertEqual(hosts.count('www.bing.com'), 2)
-        self.assertEqual(sum('anomaly' in line.lower() for line in logs.output), 1)
-
-    async def test_filtered_duckduckgo_hits_fall_back_to_relevant_bing(self) -> None:
-        web_search_module._ddg_blocked_until = 0.0
-        self.addCleanup(setattr, web_search_module, '_ddg_blocked_until', 0.0)
-        hosts = []
-        def handler(request):
-            hosts.append(request.url.host)
-            if request.url.host == 'duckduckgo.com':
-                return httpx.Response(200, text='<a class="result__a" href="https://example.test/no">爱发电</a>')
-            return httpx.Response(200, text=(
-                '<rss><channel><item><title>吴家村是什么梗</title><link>https://example.test/yes</link>'
-                '<description>解释</description></item></channel></rss>'
-            ))
-        results = await search_web('吴家村 是哪里', transport=httpx.MockTransport(handler))
-        self.assertEqual(hosts, ['duckduckgo.com', 'www.bing.com'])
-        self.assertEqual([r.url for r in results], ['https://example.test/yes'])
-
-    async def test_unrelated_duckduckgo_and_failed_bing_return_empty(self) -> None:
-        web_search_module._ddg_blocked_until = 0.0
-        self.addCleanup(setattr, web_search_module, '_ddg_blocked_until', 0.0)
-        def handler(request):
-            if request.url.host == 'duckduckgo.com':
-                return httpx.Response(200, text='<a class="result__a" href="https://example.test/no">爱发电</a>')
-            return httpx.Response(500)
-        try:
-            results = await search_web('吴家村', transport=httpx.MockTransport(handler))
-        except web_search_module.SearchError as error:
-            self.fail(f'an unrelated DDG result still permits an empty answer: {error}')
-        self.assertEqual(results, [])
-
-    async def test_bocha_error_envelope_falls_back_without_leaking_key(self) -> None:
-        web_search_module._ddg_blocked_until = 0.0
-        self.addCleanup(setattr, web_search_module, '_ddg_blocked_until', 0.0)
-        hosts = []
-        def handler(request):
-            hosts.append(request.url.host)
-            if request.url.host == 'api.bochaai.com':
-                return httpx.Response(200, json={'code': 401, 'msg': 'TEST_SECRET'})
-            return httpx.Response(200, text='<a class="result__a" href="https://example.test/yes">吴家村</a>')
-        with self.assertLogs('src.plugins.ai_chat.web_search', level='WARNING') as logs:
-            results = await search_web('吴家村', provider='bocha', api_key='TEST_SECRET',
-                                       transport=httpx.MockTransport(handler))
-        self.assertEqual(hosts, ['api.bochaai.com', 'duckduckgo.com'])
-        self.assertEqual([r.url for r in results], ['https://example.test/yes'])
-        self.assertNotIn('TEST_SECRET', '\n'.join(logs.output))
-
-    async def test_concurrent_anomalies_log_only_once_and_skip_new_requests(self) -> None:
-        web_search_module._ddg_blocked_until = 0.0
-        self.addCleanup(setattr, web_search_module, "_ddg_blocked_until", 0.0)
-        both_started = asyncio.Event()
-        count = 0
-
-        async def handler(request: httpx.Request) -> httpx.Response:
-            nonlocal count
-            if request.url.host == "duckduckgo.com":
-                count += 1
-                if count == 2:
-                    both_started.set()
-                await asyncio.wait_for(both_started.wait(), timeout=2)
-                return httpx.Response(200, text="anomaly challenge")
-            return httpx.Response(200, text=(
-                "<rss><channel><item><title>吴家村 梗</title>"
-                "<link>https://example.test/bing</link><description>解释</description>"
-                "</item></channel></rss>"
-            ))
-
-        transport = httpx.MockTransport(handler)
-        with self.assertLogs("src.plugins.ai_chat.web_search", level="INFO") as logs:
-            await asyncio.wait_for(asyncio.gather(
-                search_web("吴家村", transport=transport), search_web("吴家村", transport=transport),
-            ), timeout=5)
-            await search_web("吴家村", transport=transport)
-        self.assertEqual(count, 2)
-        self.assertEqual(sum("anomaly" in line.lower() for line in logs.output), 1)
-
-    def test_relevant_filters_unrelated_results(self) -> None:
-        results = [
-            SearchResult("爱发电创作者主页", "https://afdian.com/1", "支持创作者"),
-            SearchResult("吴家村是什么梗", "https://example.test/wjc", "抖音热梗"),
-        ]
-        self.assertEqual([r.url for r in relevant("吴家村 是哪里", results)], ["https://example.test/wjc"])
-        self.assertEqual(len(relevant("a", results)), 2)
 
 
 if __name__ == "__main__":

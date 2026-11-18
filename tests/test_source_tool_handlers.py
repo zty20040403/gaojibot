@@ -7,8 +7,6 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-import httpx
-
 from src.bot_storage import DatabaseCalls
 
 
@@ -16,7 +14,7 @@ from src.plugins.ai_chat import tool_policy
 from src.plugins.ai_chat.tools import _base_registry
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.web_fetch import FetchError, FetchedPage
-from src.plugins.ai_chat.web_search import SearchError, SearchResult, search_web
+from src.plugins.ai_chat.web_search import SearchError, SearchResult
 
 
 class SourceToolTests(unittest.IsolatedAsyncioTestCase):
@@ -24,7 +22,7 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
         self.app = SimpleNamespace(
             settings=SimpleNamespace(
                 max_input_chars=40, search_max_results=4, search_timeout_seconds=12,
-                search_provider="bocha", search_api_key="key",
+                search_api_key="TEST_KEY",
             ),
             logger=Mock(),
             skill_registry=Mock(),
@@ -45,42 +43,42 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
     async def execute(self, tool_name: str, **arguments: object) -> dict:
         return json.loads(await _base_registry().execute(self.turn, tool_name, arguments))
 
-    async def test_search_preserves_fallback_limits_freshness_and_turn_sources(
-        self,
-    ) -> None:
-        result = SearchResult("title", "https://example.test/evidence", "snippet")
-        options = {"max_results": 4, "timeout_seconds": 12, "provider": "bocha", "api_key": "key"}
-        with patch(
-            "src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock
-        ) as search:
-            search.return_value = [result]
-            response = await self.execute("web_search", freshness="month")
-            search.assert_awaited_once_with(self.turn.user_text, freshness="m", **options)
-            self.assertEqual(response["results"][0]["id"], 1)
-            self.assertEqual(response["results"][0]["url"], result.url)
-            self.assertEqual(self.turn.search_results, [result])
-            response = await self.execute(
-                "web_search", query="x" * 80, freshness="year"
-            )
-            self.assertEqual(search.call_args.args, ("x" * 40,))
-            self.assertEqual(response["freshness"], "y")
-            # Price questions are no longer forced into a one-day window.
-            response = await self.execute("web_search", query="目前价格")
-            self.assertEqual(response["freshness"], "all")
-            self.assertIsNone(search.call_args.kwargs["freshness"])
-            self.assertEqual(self.turn.search_results, [result])
+    async def test_search_bounds_queries_and_results_preserves_metadata_and_ids(self) -> None:
+        result = SearchResult("title", "https://example.test/evidence?utm_source=TEST", "s" * 900,
+                              date="2026-11-19", provider="TEST_PROVIDER")
+        with patch("src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock, return_value=[result]) as search:
+            response = await self.execute("web_search", queries=[" x ", "y" * 80], max_results=9)
+            search.assert_awaited_once_with(["x", "y" * 40], max_results=4, timeout_seconds=12, api_key="TEST_KEY")
+            hit = response["results"][0]
+            self.assertEqual(response["queries"], ["x", "y" * 40])
+            self.assertEqual((hit["id"], hit["url"]), (1, "https://example.test/evidence"))
+            self.assertEqual((hit["date"], hit["provider"], len(hit["snippet"])), ("2026-11-19", "TEST_PROVIDER", 800))
+            self.assertEqual(self.turn.search_results[0].snippet, hit["snippet"])
+            await self.execute("web_search", queries=["z", "a", "b"], max_results=2.0)
+            self.assertEqual(search.await_args.args, (["z", "a", "b"],))
+            self.assertEqual(search.await_args.kwargs["max_results"], 2)
+            self.assertEqual(len(self.turn.search_results), 1)
             self.assertEqual(TurnState(self.turn.context).search_results, [])
 
-    async def test_empty_filtered_search_retries_without_time_filter(self) -> None:
-        result = SearchResult("title", "https://example.test/old", "snippet")
-        with patch(
-            "src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock
-        ) as search:
-            search.side_effect = [[], [result]]
-            response = await self.execute("web_search", query="显卡", freshness="day")
-            self.assertEqual([call.kwargs["freshness"] for call in search.await_args_list], ["d", None])
-            self.assertEqual(response["freshness"], "all")
-            self.assertEqual(response["results"][0]["url"], result.url)
+    async def test_search_rejects_invalid_contract_without_calling_provider(self) -> None:
+        invalid = [
+            {}, {"query": "TEST"}, {"queries": []}, {"queries": [" "]},
+            {"queries": ["TEST", 1]}, {"queries": ["x"] * 4}, {"queries": ["x" * 1501]},
+            {"queries": ["x"], "freshness": "day"}, {"queries": ["x"], "max_results": 0},
+            {"queries": ["x"], "max_results": 11}, {"queries": ["x"], "max_results": True},
+        ]
+        with patch("src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock) as search:
+            for arguments in invalid:
+                with self.subTest(arguments=arguments):
+                    self.assertFalse((await self.execute("web_search", **arguments))["ok"])
+            search.assert_not_awaited()
+
+    async def test_empty_search_is_not_retried(self) -> None:
+        with patch("src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock, return_value=[]) as search:
+            response = await self.execute("web_search", queries=["显卡"])
+            self.assertTrue(response["ok"])
+            self.assertEqual(response["results"], [])
+            search.assert_awaited_once()
 
     async def test_fetch_pages_text_and_keeps_citation_ids_stable(self) -> None:
         self.turn.search_results.append(SearchResult("hit", "https://example.test/hit", ""))
@@ -108,14 +106,16 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_then_fetch_preserves_stable_ids_and_cleans_urls(self) -> None:
         raw = [
-            SearchResult("A", "https://www.bilibili.com/video/BV1TEST?vd_source=x&p=3", "s1"),
-            SearchResult("B", "https://shop.example/p?id=1&utm_source=feed", "s2"),
+            SearchResult("A", "https://www.bilibili.com/video/BV1TEST?vd_source=x&p=3", "s1", "2026-01-01", "TEST_EXA"),
+            SearchResult("B", "https://shop.example/p?id=1&utm_source=feed", "s2", "", "TEST_BOCHA"),
         ]
         with patch("src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock, return_value=raw), \
                 patch("src.plugins.ai_chat.tools.sources.fetch_page", new_callable=AsyncMock,
                       return_value=FetchedPage("https://other.example/c", "C", "body")):
-            search_resp = await self.execute("web_search", query="TEST")
+            search_resp = await self.execute("web_search", queries=["TEST"])
             self.assertEqual([r["id"] for r in search_resp["results"]], [1, 2])
+            self.assertEqual([(r["date"], r["provider"]) for r in search_resp["results"]],
+                             [("2026-01-01", "TEST_EXA"), ("", "TEST_BOCHA")])
             self.assertEqual(search_resp["results"][0]["url"], "https://www.bilibili.com/video/BV1TEST?p=3")
             self.assertEqual(search_resp["results"][1]["url"], "https://shop.example/p?id=1")
             fetch_resp = await self.execute("web_fetch", url="https://other.example/c")
@@ -132,7 +132,7 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
                    return_value=[SearchResult('TEST', raw, 'snippet'), SearchResult('TEST_DUP', clean, '')]), \
              patch('src.plugins.ai_chat.tools.sources.fetch_page', new_callable=AsyncMock,
                    return_value=FetchedPage(raw, 'TEST', 'text')) as fetch:
-            search = await self.execute('web_search', query='TEST')
+            search = await self.execute('web_search', queries=['TEST'])
             self.assertEqual([item['url'] for item in search['results']], [clean, clean])
             self.assertEqual([item.url for item in self.turn.search_results], [clean])
             page = await self.execute('web_fetch', url=raw)
@@ -140,38 +140,21 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(page['url'], clean)
             self.assertEqual([item.url for item in self.turn.search_results], [clean])
 
-    async def test_scrape_filters_unrelated_results_and_adds_note_when_empty(self) -> None:
-        self.app.settings.search_provider = "scrape"
-        self.app.settings.search_api_key = ""
-        transport = httpx.MockTransport(lambda _request: httpx.Response(200, text=(
-            '<a class="result__a" href="https://afdian.com/a">爱发电创作者</a>'
-            '<div class="result__snippet">赞助支持</div>'
-        )))
-
-        async def search_with_transport(query, **options):
-            return await search_web(query, transport=transport, **options)
-
-        with (patch("src.plugins.ai_chat.web_search._ddg_blocked_until", 0.0),
-              patch("src.plugins.ai_chat.tools.sources.search_web", side_effect=search_with_transport)):
-            response = await self.execute("web_search", query="吴家村 是哪里")
-        self.assertTrue(response["ok"])
-        self.assertEqual(response["results"], [])
-        self.assertIn("换一个说法再搜", response["note"])
-
     async def test_search_failure_is_reported_without_leaking_provider_error(
         self,
     ) -> None:
         with patch(
             "src.plugins.ai_chat.tools.sources.search_web", new_callable=AsyncMock
         ) as search:
-            search.side_effect = SearchError("upstream details")
-            response = await self.execute("web_search")
+            search.side_effect = SearchError("TEST_KEY upstream details")
+            response = await self.execute("web_search", queries=["TEST"])
             self.assertFalse(response["ok"])
             self.assertNotIn("upstream", response["error"])
+            self.assertNotIn("TEST_KEY", str(self.app.logger.warning.call_args))
             self.assertEqual(self.turn.search_results, [])
             search.side_effect = asyncio.CancelledError
             with self.assertRaises(asyncio.CancelledError):
-                await self.execute("web_search")
+                await self.execute("web_search", queries=["TEST"])
 
     async def test_disabled_tools_never_access_search_skills_or_source(self) -> None:
         self.turn.context = replace(self.turn.context, capabilities=frozenset())

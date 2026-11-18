@@ -127,6 +127,10 @@ class SandboxGaojiTests(unittest.TestCase):
 
         history = next(row[3]['arguments'] for row in self.server.seen if row[3] and row[3].get('name') == 'history')
         self.assertEqual(history['to'], '#9223372036854775807')
+        search = next(row[3]['arguments'] for row in self.server.seen if row[3] and row[3].get('name') == 'web_search')
+        self.assertEqual(search, {'queries': ['TEST_QUERY']})
+        self.assertEqual(self.run_cli('web-search', 'TEST_A', 'TEST_B', '--max-results', '3')[0], 0)
+        self.assertEqual(self.server.seen[-1][3]['arguments'], {'queries': ['TEST_A', 'TEST_B'], 'max_results': 3})
         self.assertEqual(self.run_cli('tools')[0], 0)
         self.assertEqual(self.server.seen[-1][:2], ('GET', '/job/tools'))
 

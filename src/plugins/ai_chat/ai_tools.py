@@ -42,21 +42,19 @@ WEB_SEARCH_TOOL: ToolDefinition = {
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "适合搜索引擎的简洁关键词，保留必要的人名、日期和限定词。",
+                "queries": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 1500, "pattern": "\\S"},
+                    "description": "1 到 3 个搜索词，保留必要的人名、日期和限定词。",
                 },
-                "freshness": {
-                    "type": "string",
-                    "enum": ["auto", "day", "week", "month", "year"],
-                    "description": (
-                        "时间范围，默认 auto 即不限。只有天气、比分、当天新闻用 day，"
-                        "近期新闻用 week；价格、型号、资料、教程不要限定时间，"
-                        "结果的日期自己判断。"
-                    ),
+                "max_results": {
+                    "type": "integer", "minimum": 1, "maximum": 10, "default": 10,
+                    "description": "结果数量上限，默认 10，且不超过宿主配置上限。",
                 },
             },
-            "required": ["query"],
+            "required": ["queries"],
             "additionalProperties": False,
         },
     },

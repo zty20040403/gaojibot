@@ -213,7 +213,7 @@ class RunnerNodeIntegrationTests(unittest.TestCase):
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.end_headers()
                 self.wfile.write((json.dumps({"type": "heartbeat"}) + "\n").encode())
-                res = {"ok": True, "echo": args.get("query") or args.get("text")}
+                res = {"ok": True, "echo": (args.get("queries") or [args.get("text")])[0]}
                 line = json.dumps({"type": "result", "ok": True, "content": [{"type": "text", "text": json.dumps(res)}]})
                 self.wfile.write((line + "\n").encode())
 
@@ -235,8 +235,8 @@ class RunnerNodeIntegrationTests(unittest.TestCase):
                     "code": """
                       console.log("starting batch");
                       const [a, b] = await Promise.all([
-                        tools.web_search({ query: "alpha" }),
-                        tools.web_search({ query: "beta" }),
+                        tools.web_search({ queries: ["alpha"] }),
+                        tools.web_search({ queries: ["beta"] }),
                       ]);
                       await tools.say({ text: "done" });
                       return { a: a.echo, b: b.echo };
@@ -261,7 +261,7 @@ class RunnerNodeIntegrationTests(unittest.TestCase):
                     "token": "TEST_TOKEN",
                     "work": tmp,
                     "tools": ["web_search"],
-                    "code": "return tools.web_search({ query: 'oops' }).echo;",
+                    "code": "return tools.web_search({ queries: ['oops'] }).echo;",
                 }).encode(),
                 capture_output=True,
                 timeout=10,

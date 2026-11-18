@@ -175,8 +175,8 @@ def parser():
     history.add_argument('--limit', type=int, default=50)
 
     search = commands.add_parser('web-search')
-    search.add_argument('query')
-    search.add_argument('--freshness', choices=('auto', 'day', 'week', 'month', 'year'), default='auto')
+    search.add_argument('queries', nargs='+', help='1 to 3 search queries')
+    search.add_argument('--max-results', type=int)
 
     fetch = commands.add_parser('web-fetch')
     fetch.add_argument('url')
