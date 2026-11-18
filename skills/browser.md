@@ -18,14 +18,14 @@ Summary: 操作本会话常驻 Chromium 浏览器（前台 `run_code` 或后台 
    不索取、猜测或使用密码、短信验证码。用户主动发来也不使用、不复述、不写入脚本，提醒撤回。
 5. 扫码流程（只在上述授权成立后执行）：
    - 打开该网站登录页，定位真实二维码，只截必要区域到 `/work/login-qr.png`；不要截密码、cookie 或浏览器存储值。
-   - 前台用 `send_image`（或 `run_code` 内 `await tools.send_image({ path: '/work/login-qr.png', request_id })`），后台用 `gaoji send-image /work/login-qr.png --request-id <本次随机ID>` 发回本会话。
+   - 前台用 `send_image`（或 `run_code` 内 `await tools.send_image({ path: '/work/login-qr.png', request_id })`），后台用 `gaoji send-image` / `gaoji send-file /work/login-qr.png --request-id <本次随机ID>` 发回本会话。
      保留原 request_id，用 `gaoji status --request-id <原ID>` 核对投递；已登记不等于已发送。
      失败/结果不明要说明，不换 ID 盲重试；二维码变更属于新操作，不能静默重复发码。
    - 在同一个页面上每几秒检查一次**真实登录标志**（例如已登录用户菜单），最多三分钟：
      前台 `await gaoji.wait_for_login(() => p.locator('按实际页面确定的已登录标志').isVisible())`，
      后台 `await wait_for_login(lambda: p.locator('按实际页面确定的已登录标志').is_visible())`。
      示例选择器不能照抄；检查必须返回布尔值。二维码消失、有 cookie 或页面跳转不能单独证明成功。
-     只输出登录成功/未确认等结果，不打印 `cookies()`、`storageState()` 或带认证参数的回跳 URL。
+     只输出登录成功/未确认等结果，不打印 `cookies()`、`storage_state()` / `storageState()` 或带认证参数的回跳 URL。
    - 超时、网站拦截、要求密码/验证码或出现额外授权时停止并说明，不反复重试。
      成功后回报网站域名；二维码若已交付，不要再次重复发送。
 6. `/logins` 可列本会话 Cookie 域名；容器离线会明确提示，不擅自开机。它不是网站登录有效性检查。`/logout <域名>` 清理该域及子域的本地站点状态，不撤销其他设备或服务器会话；父域 Cookie 要另行明确指定，不能偷偷扩大范围。群公共浏览器只让 owner/群管亲自发该命令，不为普通成员用脚本绕过。结果不明不能说已退出或自动重做。登录管理员可在管理台“会话浏览器”明确确认清空全部本地资料；清理进行中或结果不明时先核对再重新登录，不重复发起清理。
