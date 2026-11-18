@@ -91,28 +91,27 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
             JOIN deliveries d ON d.plan_id=x.plan_id
             WHERE i.native_message_id=? AND d.status='committed'""", (native,), timeout=timeout)
 
-    async def test_unfinished_messages_share_one_reply_with_complete_input(self):
-        from src.plugins.ai_chat.adapters.qq_official.message_batch import MessageBatcher
+    async def test_mid_turn_messages_merge_into_running_turn_without_queueing(self):
         app=self.application()
         calls=[]
-        received = asyncio.Event()
-        class CompleteBurst(MessageBatcher):
-            def add(self, key, *args, **kwargs):
-                result = super().add(key,*args,**kwargs)
-                if key in self.pending and len(self.pending[key].messages)==3:
-                    received.set()
-                return result
-            async def _wait(self, key, batch):
-                # DB/gateway scheduling is not the debounce clock. The focused
-                # batcher tests cover the real timer; here test full composition.
-                await received.wait()
-                await super()._wait(key,batch)
+        first_entered = asyncio.Event()
+        extra_sent = asyncio.Event()
+
         async def completion(**kwargs):
             calls.append(kwargs)
-            return model_response('TEST complete answer',[],kwargs)
-        with patch('src.plugins.ai_chat.agent_loop._create_completion',new=completion), \
-                patch('src.plugins.ai_chat.adapters.qq_official.message_batch.MessageBatcher',
-                      side_effect=lambda dispatch:CompleteBurst(dispatch,idle=.01,maximum=2)):
+            if len(calls)==1:
+                first_entered.set()
+                await extra_sent.wait()
+                # Yield so gateway ingest appends the two mid-turn messages into active_state.pending
+                for _ in range(30):
+                    endpoint = next(iter(runtime.active_conversation_turns.values()), None)
+                    if endpoint is not None and len(endpoint.pending) >= 2:
+                        break
+                    await asyncio.sleep(0.02)
+                return model_response('TEST first draft', [], kwargs)
+            return model_response('TEST merged answer', [], kwargs)
+
+        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=completion):
             async with verified_ready_platform() as fake:
                 runtime=await self.open_runtime(fake,app)
                 await self.emit(fake,native='TEST_BATCH_UNBOUND',content='TEST setup',group=True)
@@ -120,11 +119,14 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 endpoint=EndpointKey(runtime.loaded.account,'group','TEST_GROUP')
                 with runtime.store.transaction() as cursor:
                     cursor.execute("UPDATE qq_official_endpoints SET binding_state='active' WHERE endpoint_key=?",(endpoint.key,))
-                for index,text in enumerate(('那个','明天的会','改到几点了')):
-                    await self.emit(fake,native=f'TEST_BATCH_{index}',content=text,group=True)
+                await self.emit(fake,native='TEST_BATCH_0',content='那个',group=True)
+                await asyncio.wait_for(first_entered.wait(), 5)
+                await self.emit(fake,native='TEST_BATCH_1',content='明天的会',group=True)
+                await self.emit(fake,native='TEST_BATCH_2',content='改到几点了',group=True)
+                extra_sent.set()
                 await self.complete('TEST_BATCH_0')
-                self.assertEqual(len(calls),1)
-                messages=json.dumps(calls[0]['messages'],ensure_ascii=False)
+                self.assertEqual(len(calls),2)
+                messages=json.dumps(calls[1]['messages'],ensure_ascii=False)
                 for text in ('那个','明天的会','改到几点了'):
                     self.assertIn(text,messages)
                 self.assertEqual(len(fake.received),1)
@@ -135,14 +137,19 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         from src.plugins.ai_chat.adapters.qq_official.native_background_factory import background_factory, ProactiveConfiguration
         app=self.application()
         received,count = asyncio.Event(),0
+        main_calls = []
         async def debounce(_seconds):
             nonlocal count
             count += 1
             if count>=3:
                 received.set()
             await received.wait()
+        async def main_completion(**kwargs):
+            main_calls.append(kwargs)
+            return model_response('TEST main proactive answer', [], kwargs)
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',
-                   return_value={'reply':'TEST spontaneous reply'}) as model, \
+                   return_value={'trigger': True, 'reason': '在讨论算法问题'}) as model, \
+                patch('src.plugins.ai_chat.agent_loop._create_completion', new=main_completion), \
                 patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.asyncio',
                       SimpleNamespace(sleep=debounce,timeout=asyncio.timeout)):
             async with verified_ready_platform() as fake:
@@ -172,9 +179,11 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                         predicate=lambda rows:rows[0]['count']==index+1)
                 await emit(8)
                 await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id='TEST_PASSIVE_8'")
-                await asyncio.sleep(.3)
+                await asyncio.sleep(.4)
                 self.assertEqual(model.call_count,8)
-                self.assertEqual(len(self.query("SELECT plan_id FROM qq_official_proactive_observations WHERE state='queued'")),8)
+                self.assertEqual(len(self.query("SELECT inbox_id FROM qq_official_proactive_observations WHERE state='queued'")),8)
+                self.assertGreaterEqual(len(main_calls), 1)
+                self.assertIn('[判定：在讨论算法问题]', json.dumps(main_calls[0]['messages'], ensure_ascii=False))
                 await runtime.stop()
 
     async def test_actual_group_at_and_c2c_share_model_loop_and_commit_real_wire_receipts(self):

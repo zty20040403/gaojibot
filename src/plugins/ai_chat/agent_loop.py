@@ -1371,10 +1371,15 @@ async def _drain_feedback(
     except Exception as exc:
         _logger.warning("Turn feedback provider failed: %s", exc)
         return []
-    return [str(note).strip()[:1000] for note in notes if str(note).strip()]
+    return [str(note).strip()[:4000] for note in notes if str(note).strip()]
 
 
 def _feedback_message(notes: list[str]) -> ChatMessage:
+    if any(note.startswith("[新消息]") for note in notes):
+        return {
+            "role": "user",
+            "content": "\n\n".join(notes),
+        }
     return {
         "role": "user",
         "content": "[feedback]: " + " | ".join(notes),

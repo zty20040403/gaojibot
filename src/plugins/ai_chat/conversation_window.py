@@ -156,11 +156,14 @@ class ConversationStore:
 
 
 def build_tail(ledger: MessageLedger, store: ConversationStore, scope: ConversationScope, *,
-               high_tokens: int, exclude_ids: frozenset[int] = frozenset()) -> str:
+               high_tokens: int, exclude_ids: frozenset[int] = frozenset(),
+               before_id: int | None = None) -> str:
     anchor = store.tail_after(scope.key)
     rows = ledger.history(scope, after_id=anchor, limit=MAX_TAIL_ROWS, newest=True)
     lines = [(message.canonical_message_id, render_line(message, max_chars=2000)) for message in rows
-             if message.canonical_message_id not in exclude_ids and not is_noise(message)]
+             if message.canonical_message_id not in exclude_ids
+             and (before_id is None or message.canonical_message_id < before_id)
+             and not is_noise(message)]
     total = sum(estimate_tokens(line) for _, line in lines)
     if total > high_tokens or len(rows) >= MAX_TAIL_ROWS:
         # Jump forward to about half the budget; the start then stays put again.

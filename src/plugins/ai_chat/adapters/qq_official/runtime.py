@@ -149,7 +149,8 @@ class OfficialRuntime:
         self._token = None
         self._gateway = None
         self.conversation_tasks = None
-        self.turn_locks = {}
+        self.active_conversation_turns = {}
+        self.wake_proactive_turn = None
         self.control_changed = None
         self._message_gap = False
         self.state = "disabled"
@@ -198,8 +199,10 @@ class OfficialRuntime:
                 private_policy=self.loaded.private_policy, private_allowed_openids=self.loaded.private_allowed_openids,
                 payload_retention_hours=self.loaded.payload_retention_hours, ledger=self.ledger)
             await self._calls(self.store.ensure_account, self.loaded.account)
+            from .mentions import endpoint_mention_authority
             self.outbox = OfficialSendStore(self.deliveries, admission=self.store.admitted,
-                pepper=self.loaded.binding_pepper, max_wait_seconds=self.loaded.delivery.max_wait_seconds)
+                pepper=self.loaded.binding_pepper, mention_authority=endpoint_mention_authority,
+                max_wait_seconds=self.loaded.delivery.max_wait_seconds)
         except Exception:
             await self._close_stores()
             self.state, self.reason = "failed", "configuration_or_storage_unavailable"
@@ -284,6 +287,8 @@ class OfficialRuntime:
                     self.turn_consumer = None
                     self.agent_service = None
                     self.conversation_tasks = None
+                    self.active_conversation_turns = {}
+                    self.wake_proactive_turn = None
                     self.control_changed = None
                     # DatabaseCalls drains non-cancellable transaction threads
                     # before this close or any later account acquisition.
@@ -318,7 +323,7 @@ class OfficialRuntime:
         from .live_conversations import ConversationTasks
         work = self.conversation_tasks = ConversationTasks()
         active_turns = set()
-        turn_locks = self.turn_locks = {}
+        active_by_endpoint = self.active_conversation_turns = {}
         self_identity_attempted = False
 
         async def on_checkpoint(value):
@@ -400,26 +405,60 @@ class OfficialRuntime:
                 payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
                 lease_generation=1, attempts=1, endpoint=result.endpoint_key,
                 conversation_generation=result.conversation_generation,
+                canonical_message_id=result.canonical_message_id,
+                proactive_reason="",
                 command=result.turn_text.lstrip().startswith(('/', '!')),
             )
-            key = result.endpoint_key, result.sender_actor_key, result.route_epoch, result.conversation_generation
-            if batcher.add(key, source, result.turn_text, requested=result.reply_requested,
-                           canonical_id=result.canonical_message_id):
-                return
             await dispatch_turn(source, result.reply_requested)
 
         async def dispatch_turn(source, reply_requested=True):
+            if reply_requested and not source.command:
+                running_state = active_by_endpoint.get(source.endpoint)
+                if running_state is not None and running_state.conversation_generation == source.conversation_generation:
+                    running_state.pending.append(source)
+                    return
+
+                active_state = SimpleNamespace(
+                    endpoint=source.endpoint,
+                    conversation_generation=source.conversation_generation,
+                    pending=[],
+                )
+                active_by_endpoint[source.endpoint] = active_state
+
+                async def run_chat_actor():
+                    current = source
+                    try:
+                        while current is not None:
+                            current.mid_turn_pending = active_state
+                            with work.track(current.endpoint, current.conversation_generation):
+                                try:
+                                    if self.turn_consumer is not None:
+                                        await self.turn_consumer(current)
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as error:
+                                    frames = [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)[-4:]]
+                                    self.logger.warning(f'QQ turn error={type(error).__name__} frames={frames}')
+                            if active_state.pending:
+                                current = active_state.pending.pop(0)
+                            else:
+                                current = None
+                    finally:
+                        if active_by_endpoint.get(source.endpoint) is active_state:
+                            active_by_endpoint.pop(source.endpoint, None)
+
+                task = asyncio.create_task(run_chat_actor())
+                active_turns.add(task)
+                task.add_done_callback(active_turns.discard)
+                return
+
             async def run():
                 # Control and inspection commands never queue behind a model.
                 with nullcontext() if source.command else work.track(source.endpoint,source.conversation_generation):
                     try:
                         if reply_requested:
                             if self.turn_consumer is not None:
-                                if source.command:
-                                    await self.turn_consumer(source)
-                                else:
-                                    async with turn_locks.setdefault(source.endpoint, asyncio.Lock()):
-                                        await self.turn_consumer(source)
+                                await self.turn_consumer(source)
                         elif self.background_service is not None:
                             await self.background_service.on_ingested(source)
                     except asyncio.CancelledError:
@@ -431,8 +470,30 @@ class OfficialRuntime:
             active_turns.add(task)
             task.add_done_callback(active_turns.discard)
 
-        from .message_batch import MessageBatcher
-        batcher = MessageBatcher(dispatch_turn)
+        async def wake_proactive_turn(*, inbox_id: str, endpoint: str, conversation_generation: int,
+                                      canonical_message_id: int | None = None, reason: str = ""):
+            from ...execution_control import active_job_fence
+            source = SimpleNamespace(
+                inbox_id=inbox_id, batch_message_ids=(), job_id=None,
+                payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
+                lease_generation=1, attempts=1, endpoint=endpoint,
+                conversation_generation=conversation_generation,
+                canonical_message_id=canonical_message_id,
+                proactive_reason=reason,
+                command=False,
+            )
+            fence_reset = active_job_fence.set(None)
+            try:
+                await dispatch_turn(source, reply_requested=True)
+            finally:
+                active_job_fence.reset(fence_reset)
+
+        self.wake_proactive_turn = wake_proactive_turn
+
+        def forget_pending(endpoint, *, before_generation=None):
+            st = active_by_endpoint.get(endpoint)
+            if st is not None and (before_generation is None or st.conversation_generation < before_generation):
+                st.pending.clear()
 
         def on_control(endpoint, receipt):
             if receipt['status'] != 'ok':
@@ -441,13 +502,13 @@ class OfficialRuntime:
             if receipt['action']=='stop':
                 generation = receipt['generation']
                 work.interrupt(endpoint,before_generation=generation)
-                batcher.forget(endpoint,before_generation=generation)
+                forget_pending(endpoint,before_generation=generation)
         loop = asyncio.get_running_loop()
         self.control_changed = lambda endpoint,receipt: loop.call_soon_threadsafe(on_control,endpoint,receipt)
 
         async def reconcile_controls():
             # Also observes changes made through another host's admin process.
-            endpoints = {item.endpoint for item in work.active.values()} | {key[0] for key in batcher.pending}
+            endpoints = {item.endpoint for item in work.active.values()} | set(active_by_endpoint)
             jobs = tuple({item.job_id for item in work.active.values() if item.job_id is not None})
             if not endpoints:
                 return
@@ -463,7 +524,7 @@ class OfficialRuntime:
             work.cancel_jobs(cancelled)
             for endpoint,generation in generations.items():
                 work.interrupt(endpoint,before_generation=generation)
-                batcher.forget(endpoint,before_generation=generation)
+                forget_pending(endpoint,before_generation=generation)
 
         async def monitor():
             loop = asyncio.get_running_loop()
@@ -623,7 +684,7 @@ class OfficialRuntime:
                     await self._calls(self.store.pause, token, reason)
                     self.state, self.reason = "paused", reason
             finally:
-                await batcher.close()
+                active_by_endpoint.clear()
                 for turn in tuple(active_turns):
                     turn.cancel()
                 await asyncio.gather(*tuple(active_turns), return_exceptions=True)

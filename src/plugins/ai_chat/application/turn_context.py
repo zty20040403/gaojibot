@@ -41,21 +41,55 @@ def speaker(inbound: InboundMessage) -> str:
     return name + "（@你）" if inbound.mentions_bot and inbound.endpoint.kind == "group" else name
 
 
-def turn_window(app, inbound: InboundMessage, profile) -> tuple[str, str, str]:
+def build_roster(ledger, inbound: InboundMessage, *, limit: int = 80) -> str:
+    """Render [上下文里的人] ([mention#id] 名字) for group conversations."""
+    if ledger is None or inbound.endpoint.kind != "group":
+        return ""
+    rows = ledger.history(inbound.scope, limit=400, newest=True)
+    seen: dict[int, tuple[str, bool]] = {}
+    for message in reversed(rows):
+        if message.source_endpoint_key and message.source_endpoint_key != inbound.endpoint.key:
+            continue
+        pid = message.sender_principal_id
+        if pid is None or pid in seen:
+            continue
+        is_bot = message.direction == "outbound"
+        name = ("gaoji" if is_bot else (message.sender_display or f"群友{pid}")).replace("\n", " ").replace("\r", " ").strip()
+        seen[pid] = (name or f"群友{pid}", is_bot)
+        if len(seen) >= limit:
+            break
+    if not seen:
+        return ""
+    lines = [
+        f"[mention#{pid}] {name}{'（你）' if is_bot else ''}"
+        for pid, (name, is_bot) in sorted(seen.items())
+    ]
+    return "[上下文里的人]\n" + "\n".join(lines)
+
+
+def turn_window(
+    app, inbound: InboundMessage, profile, *, extra_exclude_ids: frozenset[int] = frozenset(),
+) -> tuple[str, str, str]:
     ledger, store = app.message_ledger, getattr(app, "conversations", None)
     if ledger is None or store is None:
         return "", "", ""
     scope = inbound.scope
     current = ledger.canonical_id_for_native(scope, inbound.native_message_id, endpoint=inbound.endpoint)
-    exclude = frozenset((*inbound.batch_message_ids, *((current,) if current is not None else ())))
-    tail = build_tail(ledger, store, scope, high_tokens=tail_budget(profile), exclude_ids=exclude)
-    quoted = ""
+    exclude = frozenset((*inbound.batch_message_ids, *extra_exclude_ids, *((current,) if current is not None else ())))
+    tail = build_tail(
+        ledger, store, scope, high_tokens=tail_budget(profile),
+        exclude_ids=exclude, before_id=current if not inbound.batch_message_ids else None,
+    )
+    parts: list[str] = []
+    roster = build_roster(ledger, inbound)
+    if roster:
+        parts.append(roster)
     if inbound.reply_to_native_message_id is not None:
         target = ledger.canonical_id_for_native(scope, inbound.reply_to_native_message_id, endpoint=inbound.endpoint)
         message = ledger.get_in_scope(scope, target) if target is not None else None
         if message is not None:
-            quoted = "[引用的消息]\n" + render_line(message, max_chars=4000)
-    return tail, render_memory(store.memory(scope.key)), quoted
+            parts.append("[引用的消息]\n" + render_line(message, max_chars=4000))
+    return tail, render_memory(store.memory(scope.key)), "\n\n".join(parts)
 
 
 async def record_loop_event(app, turn_id: int, event) -> None:

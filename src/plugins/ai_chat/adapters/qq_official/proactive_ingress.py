@@ -11,10 +11,8 @@ import math
 import weakref
 
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
-from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
 from src.plugins.ai_chat.execution_control import JobFence,active_job_fence,LeaseLost
-from src.plugins.ai_chat.message_ir import MessageBody,TextNode
 from src.plugins.ai_chat.platform_types import EndpointKey,ActorKey
 from src.plugins.ai_chat.proactive import is_candidate_message
 from src.plugins.ai_chat.conversation_config import proactive_state
@@ -32,10 +30,11 @@ class ProactiveCandidate:
 
 
 class ProactiveIngress:
-    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls,billing=None):
+    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls,billing=None,wake_turn=None):
         self.token,self.tx,self.admission,self.outbox=token,transaction,admission,outbox
         self.scorer,self.clock,self.calls=scorer,clock,database_calls
         self.billing=billing
+        self.wake_turn=wake_turn
         self._issued=weakref.WeakKeyDictionary()
         self._latest={}
 
@@ -119,13 +118,16 @@ class ProactiveIngress:
     def _text(self,source):
         with self.tx() as c:
             _,(inbox,ep,actor,message,_)=self._candidate(c,source)
-            # Current actual-endpoint visible chat only; a canonical history alias
-            # does not implicitly include other physical conversations here.
-            recent=c.execute('''SELECT m.body_json FROM messages m JOIN conversation_visibility v USING(conversation_id)
+            recent=c.execute('''SELECT m.body_json, m.sender_display, m.direction FROM messages m JOIN conversation_visibility v USING(conversation_id)
                 WHERE m.source_endpoint_key=? AND m.canonical_message_id>=v.min_canonical_message_id
-                AND m.canonical_message_id<=? ORDER BY m.canonical_message_id DESC LIMIT 20''',
+                AND m.canonical_message_id<? ORDER BY m.canonical_message_id DESC LIMIT 20''',
                 (ep.key,message['canonical_message_id'])).fetchall()
-            return inbox['turn_text'],tuple(r['body_json'] for r in reversed(recent)),ep,actor
+            return (
+                f"[{message['sender_display'] or '群友'}]: {inbox['turn_text']}",
+                tuple(dict(body_json=r['body_json'], sender_display=r['sender_display'], direction=r['direction']) for r in reversed(recent)),
+                ep,
+                actor,
+            )
 
     async def score(self,source):
         from .vision_adapter import guarded_wait
@@ -144,19 +146,31 @@ class ProactiveIngress:
 
     async def send_policy(self,*args,**kwargs):return await self.calls(self._send_policy,*args,**kwargs)
 
-    def _enqueue(self,source,text,*,purpose,expires_at):
+    def _mark_woken(self, source):
         with self.tx() as c:
-            row,(inbox,ep,actor,message,_)=self._candidate(c,source)
-            if self._latest.get(ep.key)!=source.inbox_id:raise MigrationDenied('conversation_continued')
-            if not self._now()<expires_at<=row['deadline_at']:raise MigrationDenied('proactive_source_expired')
-            plan=self.outbox.enqueue(self.token,rendered=render_plan(MessageBody((TextNode(0,text),)),ep),requester=actor,
-                logical_key='proactive:'+source.inbox_id,source_scope_key=message['scope_key'],source_native_message_id=inbox['native_message_id'],
-                source_canonical_message_id=message['canonical_message_id'],expires_at=expires_at,purpose=purpose,
-                source_proof=source,transaction_cursor=c)
-            c.execute("UPDATE qq_official_proactive_observations SET state='queued',plan_id=? WHERE inbox_id=?",(plan.plan_id,source.inbox_id))
-            return plan.plan_id
+            row, (inbox, ep, _, message, _) = self._candidate(c, source)
+            if self._latest.get(ep.key) != source.inbox_id:
+                raise MigrationDenied('conversation_continued')
+            if not self._now() < row['deadline_at']:
+                raise MigrationDenied('proactive_source_expired')
+            from .conversation_control import state as control_state
+            conv_gen = control_state(c, ep)['stop_generation']
+            c.execute(
+                "UPDATE qq_official_proactive_observations SET state='queued' WHERE inbox_id=?",
+                (source.inbox_id,),
+            )
+            return inbox['inbox_id'], ep.key, conv_gen, message['canonical_message_id']
 
-    async def enqueue(self,*args,**kwargs):return await self.calls(self._enqueue,*args,**kwargs)
+    async def wake(self, source, reason: str):
+        inbox_id, ep_key, conv_gen, canonical_id = await self.calls(self._mark_woken, source)
+        if self.wake_turn is not None:
+            await self.wake_turn(
+                inbox_id=inbox_id,
+                endpoint=ep_key,
+                conversation_generation=conv_gen,
+                canonical_message_id=canonical_id,
+                reason=reason,
+            )
 
     def _discard(self,source):
         with self.tx() as c:
@@ -187,7 +201,7 @@ class ProactiveIngress:
             lifetime=await self.current(source)
             async with asyncio.timeout(max(0,lifetime.deadline_at-self._now())):
                 result=await score_and_deliver(source=source,scorer=self.score,current=self.current,send_policy=self.send_policy,
-                    enqueue=self.enqueue,now=self._now)
+                    wake=self.wake,now=self._now)
             if result.status=='discarded':await self.calls(self._discard,source)
             return {'status':result.status,'reason':result.reason}
         except (Exception,LeaseLost):

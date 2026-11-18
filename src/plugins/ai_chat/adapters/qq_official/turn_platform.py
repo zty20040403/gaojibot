@@ -9,7 +9,7 @@ from src.plugins.ai_chat.adapters.qq_official.identity_store import snapshot
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost, assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.execution_control import LeaseLost as ToolLeaseLost
-from src.plugins.ai_chat.message_ir import MessageBody, TextNode
+from src.plugins.ai_chat.message_ir import MessageBody
 from src.plugins.ai_chat.message_lowering import OutboundCapabilities
 from src.plugins.ai_chat.platform_types import (
     AccountKey, ActorKey, EffectiveCapabilities, EndpointKey, InboundMessage,
@@ -240,13 +240,15 @@ class OfficialTurnPlatform:
         return ref.plan_id
 
     def _enqueue_fragment(self, text, index):
+        from .mentions import parse_mention_body
         now = int(self._clock())
         handle = self.execution.handle
         with self.outbox.deliveries.transaction() as cursor:
             current = self.execution.current(cursor, now)
-            rendered = render_plan(MessageBody((TextNode(0, text),)), self.endpoint,
+            rendered = render_plan(parse_mention_body(cursor, self.endpoint, text), self.endpoint,
                 markdown=self.policy.markdown, max_chars=self.policy.max_chars,
                 max_parts=16, max_bytes=self.policy.max_bytes,
+                allowed_mentions=self.outbox.mention_authority(cursor, self.endpoint),
                 paragraphs=True, math_mode="dollar_delimiters")
             self.outbox.enqueue(self.execution.token, rendered=rendered, requester=handle.actor,
                 logical_key=f"{self.execution.logical_key()}:stream:{index}",
