@@ -11,6 +11,18 @@ _driver = _browser = None
 async def page():
     from playwright.async_api import async_playwright
     global _driver, _browser
+    try:
+        Path('/run/gaoji-browser.used').touch()
+    except OSError:
+        pass
+    if _browser is not None and not _browser.is_connected():
+        _browser = None
+        if _driver is not None:
+            try:
+                await _driver.stop()
+            except Exception:
+                pass
+            _driver = None
     if _browser is None:
         _driver = await async_playwright().start()
         try:

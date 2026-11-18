@@ -123,3 +123,149 @@ async def _present(service, row, *, question=None):
     await service.calls(enqueue)
     if runtime.sender is not None:
         runtime.sender.wake()
+
+
+async def present_wake(service, endpoint, text: str, *, unit: str = ''):
+    app, runtime = service.app, service.runtime
+
+    def check_and_prepare():
+        from .conversation_control import state
+        from .lease import assert_epoch
+        from ...platform_types import ActorKey, InboundMessage
+
+        with runtime.store.transaction() as cursor:
+            assert_epoch(cursor, service.token)
+            route = cursor.execute(
+                'SELECT * FROM qq_official_endpoints WHERE endpoint_key=?',
+                (endpoint.key,),
+            ).fetchone()
+            if route is None or endpoint.account.key != service.token.account_key:
+                raise PermissionError('唤醒目标会话不可用。')
+            if endpoint.kind == 'private':
+                peer = ActorKey(endpoint.account, 'c2c_user', '', endpoint.native_conversation_id)
+                if not runtime.store.admitted(cursor, endpoint, peer):
+                    raise PermissionError('私聊会话未准入。')
+            else:
+                peer = ActorKey(endpoint.account, 'group_member', endpoint.native_conversation_id, 'container')
+                if not runtime.store.admitted(cursor, endpoint, peer):
+                    raise PermissionError('群会话未准入。')
+            if state(cursor, endpoint)['stopped']:
+                raise PermissionError('会话已停止，本次唤醒不发言。')
+            inbound = InboundMessage(
+                endpoint=endpoint,
+                actor=peer,
+                event_id=None,
+                native_message_id='wake',
+                sender_display='system',
+                platform_role='member',
+                body=MessageBody((TextNode(0, text),)),
+                mentions_bot=False,
+                reply_to_native_message_id=None,
+                occurred_at=int(service.clock()),
+                reply_credential=None,
+                route_epoch=route['route_epoch'],
+            )
+            return inbound, peer
+
+    inbound, requester = await service.calls(check_and_prepare)
+    pref_getter = getattr(app.model_preferences, 'get', None)
+    pref = pref_getter(endpoint.scope.key) if callable(pref_getter) else None
+    profile = app.model_catalog.resolve_preference(pref)
+    files, trace = None, AgentTrace()
+    answer = ''
+    try:
+        context = ToolContext(
+            SimpleNamespace(context=app),
+            inbound=inbound,
+            platform=BackgroundPlatform(endpoint),
+            capabilities=frozenset({'self', 'context', 'memory'}),
+        )
+        file_service = getattr(runtime, 'file_service', None)
+        if file_service is not None:
+            files = await file_service.generation.bound_session(inbound)
+            if files is not None:
+                context = files.context(context)
+        turn = TurnState(context, model_profile=profile)
+        registry = neutral_registry_for(context)
+        tools = registry.definitions(context)
+
+        async def execute(name, args):
+            return await registry.execute(turn, name, args)
+
+        history, memory, _ = await service.calls(turn_window, app, inbound, profile)
+        prompt = (
+            f'{text}\n\n'
+            '（以上来自本会话容器后台单元或定时器的唤醒通知。请结合聊天上下文用你的语气向用户汇报结果，'
+            '如无需打扰群友则输出 [silence]；若在 /work 下生成了需要交付的文件，可用 send_file_from_sandbox 发送。）'
+        )
+        from .billing import scoped
+        with scoped(app, endpoint, 'background_agent', requester):
+            answer = await ask_deepseek_with_tools(
+                prompt,
+                [],
+                tools,
+                execute,
+                profile=profile,
+                trace=trace,
+                group_context=history,
+                memory_context=memory,
+                system_prompt=system_prompt(app.settings.system_prompt, examples=app.settings.style_examples),
+                tool_catalog=ToolCatalog(
+                    tools,
+                    ignore_unknown_fields=True,
+                    policies={
+                        name: replace(policy_for_tool(name), timeout_seconds=310)
+                        for name in ('send_file', 'send_file_from_sandbox')
+                    },
+                ),
+                max_tool_rounds=16,
+                max_total_calls=48,
+                max_calls_per_round=16,
+            )
+        if not answer or not answer.strip():
+            answer = '[silence]' if turn.delivered else ''
+    except Exception:
+        app.logger.exception('Container wake foreground response failed')
+        answer = text[:1500]
+    finally:
+        if files is not None:
+            await files.close()
+        if getattr(app, 'usage_store', None) is not None:
+            await service.calls(
+                app.usage_store.record,
+                scope_key=endpoint.scope.key,
+                source='background_agent',
+                provider=trace.provider,
+                model=trace.model,
+                input_tokens=trace.input_tokens,
+                output_tokens=trace.output_tokens,
+                cached_tokens=trace.cached_tokens,
+            )
+
+    if not answer.strip() or answer.strip() == '[silence]':
+        return
+
+    now_ts = int(service.clock())
+    key_seed = f'{endpoint.key}:{unit}:{now_ts // 2}:{hashlib.sha256(text.encode()).hexdigest()[:16]}'
+    logical_key = 'wake:' + hashlib.sha256(key_seed.encode()).hexdigest()[:32]
+
+    def enqueue_wake():
+        check_and_prepare()
+        with runtime.store.transaction() as cursor:
+            runtime.outbox.enqueue(
+                service.token,
+                rendered=render_plan(MessageBody((TextNode(0, answer),)), endpoint),
+                requester=requester,
+                logical_key=logical_key,
+                source_scope_key=endpoint.scope.key,
+                purpose='background_result',
+                expires_at=now_ts + min(runtime.outbox.max_wait_seconds, 3600),
+                source_native_message_id='',
+                source_canonical_message_id=None,
+                transaction_cursor=cursor,
+            )
+
+    await service.calls(enqueue_wake)
+    sender = getattr(runtime, 'sender', None)
+    if sender is not None:
+        sender.wake()

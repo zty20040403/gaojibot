@@ -571,7 +571,7 @@ class Settings:
                 max(integer("AI_SANDBOX_MAX_PER_USER", 2), 1), 5
             ),
             sandbox_max_total=min(
-                max(integer("AI_SANDBOX_MAX_TOTAL", 8), 1), 20
+                max(integer("AI_SANDBOX_MAX_TOTAL", 12), 1), 20
             ),
             sandbox_timeout_seconds=min(
                 max(integer("AI_SANDBOX_TIMEOUT_SECONDS", 120), 5), 300
