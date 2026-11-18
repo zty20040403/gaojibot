@@ -111,7 +111,7 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
                 if step == 1:
                     name, args = 'say', {'text': 'TEST beginning PDF'}
                 elif step == 2:
-                    name, args = 'agent', {'task': 'TEST generate a PDF', 'title': 'TEST PDF'}
+                    name, args = 'agent', {'task': 'TEST generate a PDF', 'acceptance': 'TEST PDF file exists and is readable', 'title': 'TEST PDF'}
                 else:
                     self.assertIn('job#', responses[-1])
             elif step == 1:
