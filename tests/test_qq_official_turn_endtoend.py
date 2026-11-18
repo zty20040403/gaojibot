@@ -186,6 +186,59 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('[判定：在讨论算法问题]', json.dumps(main_calls[0]['messages'], ensure_ascii=False))
                 await runtime.stop()
 
+    async def test_proactive_hourly_limit_is_independent_per_group_and_zero_skips_scoring(self):
+        from src.plugins.ai_chat.adapters.qq_official.native_background_factory import background_factory, ProactiveConfiguration
+        from src.plugins.ai_chat.conversation_config import change
+        app=self.application()
+        async def main_completion(**kwargs):
+            return model_response('TEST proactive answer',[],kwargs)
+        with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',
+                   return_value={'trigger':True,'reason':'TEST reason'}) as classifier, \
+                patch('src.plugins.ai_chat.agent_loop._create_completion',new=main_completion), \
+                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.DEBOUNCE_SECONDS',0):
+            async with verified_ready_platform() as fake:
+                runtime=self.runtime(loaded=runtime_fixture.loaded_config(fake.app_id,base=fake.base_url),
+                    application=app,ledger=app.message_ledger,journal=app.turn_journal,
+                    background_factory=background_factory(proactive_configuration=ProactiveConfiguration(enabled=True),proactive_profile='test'))
+                self.assertTrue(await runtime.start())
+                await asyncio.wait_for(fake.wait_ready(),5)
+                await self.wait_db("SELECT bot_native_id FROM qq_official_accounts WHERE bot_identity_source='ready'")
+                groups=['TEST_GROUP','TEST_GROUP_B']
+                for group in groups:
+                    await fake.emit('GROUP_AT_MESSAGE_CREATE',{
+                        'id':'TEST_SETUP_'+group,'content':'TEST setup',
+                        'timestamp':datetime.now(timezone.utc).isoformat(),
+                        'group_openid':group,'author':{'member_openid':'TEST_MEMBER'},
+                        'mentions':[{'member_openid':'TEST_BOT_MENTION','is_you':True,'bot':True}]})
+                    await self.wait_db('SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id=?',('TEST_SETUP_'+group,))
+                    ep=EndpointKey(runtime.loaded.account,'group',group)
+                    with runtime.store.transaction() as cursor:
+                        cursor.execute("UPDATE qq_official_endpoints SET binding_state='active' WHERE endpoint_key=?",(ep.key,))
+                        change(cursor,ep,'proactive_hourly_limit',1,actor='TEST_ADMIN',now=int(runtime.store.clock()))
+                    fake.proactive_allowed[('group',group)]=True
+                await runtime.sender.refresh_bound_groups()
+                async def topic(group,index):
+                    native=f'TEST_TOPIC_{group}_{index}'
+                    await fake.emit('GROUP_MESSAGE_CREATE',{
+                        'id':native,'content':'TEST conversation topic',
+                        'timestamp':datetime.now(timezone.utc).isoformat(),
+                        'group_openid':group,'author':{'member_openid':'TEST_MEMBER'}})
+                    return (await self.wait_db('SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id=? AND status=\'processed\'',(native,),timeout=20))[0]['inbox_id']
+                first=await topic(groups[0],0)
+                second=await topic(groups[1],0)
+                for inbox in (first,second):
+                    await self.wait_db("SELECT inbox_id FROM qq_official_proactive_observations WHERE inbox_id=? AND state='queued'",(inbox,),timeout=20)
+                with runtime.store.transaction() as cursor:
+                    change(cursor,EndpointKey(runtime.loaded.account,'group',groups[0]),
+                           'proactive_hourly_limit',0,actor='TEST_ADMIN',now=int(runtime.store.clock()))
+                for group in groups:
+                    await topic(group,1)
+                # Wait for ingest workers to attempt classification, not just event persistence.
+                await asyncio.sleep(.4)
+                self.assertEqual(classifier.call_count,2)
+                self.assertEqual(len(self.query("SELECT inbox_id FROM qq_official_proactive_observations WHERE state='queued'")),2)
+                await runtime.stop()
+
     async def test_actual_group_at_and_c2c_share_model_loop_and_commit_real_wire_receipts(self):
         app = self.application()
         model_calls = []
@@ -216,6 +269,10 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                         cursor.execute("UPDATE qq_official_endpoints SET binding_state='active' WHERE endpoint_key=?",
                                        (endpoint.key,))
                 await runtime._calls(bind_fixture)
+                from src.plugins.ai_chat.conversation_config import change
+                with runtime.store.transaction() as cursor:
+                    change(cursor,endpoint,'proactive_hourly_limit',0,actor='TEST_ADMIN',now=int(runtime.store.clock()))
+                    change(cursor,endpoint,'proactive_quiet_utc','00:00-23:59',actor='TEST_ADMIN',now=int(runtime.store.clock()))
                 await self.emit(fake, native="TEST_GROUP_TURN", content="<@!TEST_BOT_MENTION> TEST group question", group=True)
                 await self.complete("TEST_GROUP_TURN")
                 self.assertEqual(len(model_calls), 2)

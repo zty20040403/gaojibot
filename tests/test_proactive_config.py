@@ -20,7 +20,7 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
     application = base.OfficialTurnEndToEndTests.application
     emit = base.OfficialTurnEndToEndTests.emit
 
-    async def exercise(self,*,budget=False):
+    async def exercise(self,*,budget=False,attention=False,quiet=False):
         app = self.application()
         entered,release,cancelled = asyncio.Event(),asyncio.Event(),asyncio.Event()
         async def completion(*args,**kwargs):
@@ -52,8 +52,13 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.sender.refresh_bound_groups()
                 def configure(value):
                     with runtime.store.transaction() as cursor:
-                        change(cursor,endpoint,'daily_budget_usd' if budget else 'proactive_enabled',
-                            ('off' if value else '0') if budget else value,actor='TEST_ADMIN',now=int(runtime.store.clock()))
+                        now=int(runtime.store.clock())
+                        minute=(now//60)%1440
+                        def hhmm(value):return f'{value//60:02d}:{value%60:02d}'
+                        interval=f'{hhmm((minute-2)%1440)}-{hhmm((minute+2)%1440)}'
+                        change(cursor,endpoint,'daily_budget_usd' if budget else 'proactive_quiet_utc' if quiet else 'proactive_hourly_limit' if attention else 'proactive_enabled',
+                            ('off' if value else '0') if budget else ('off' if value else interval) if quiet else (8 if value else 0) if attention else value,
+                            actor='TEST_ADMIN',now=now)
                         if budget:
                             # Isolate classifier/plan fencing from independent
                             # budget notice delivery.
@@ -93,3 +98,9 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_budget_skips_classifier_and_rapid_restore_never_replays_model_or_plan(self):
         await self.exercise(budget=True)
+
+    async def test_zero_limit_skips_classifier_and_change_invalidates_inflight_work(self):
+        await self.exercise(attention=True)
+
+    async def test_quiet_utc_skips_classifier_and_change_invalidates_inflight_work(self):
+        await self.exercise(quiet=True)

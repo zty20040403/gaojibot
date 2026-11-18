@@ -15,12 +15,23 @@ from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDe
 from src.plugins.ai_chat.execution_control import JobFence,active_job_fence,LeaseLost
 from src.plugins.ai_chat.platform_types import EndpointKey,ActorKey
 from src.plugins.ai_chat.proactive import is_candidate_message
-from src.plugins.ai_chat.conversation_config import proactive_state
+from src.plugins.ai_chat.conversation_config import proactive_state,proactive_attention,in_quiet_utc
 from src.plugins.ai_chat import daily_budgets
 from src.plugins.ai_chat.adapters.qq_official import peer_bots
 from src.plugins.ai_chat.adapters.qq_official.proactive_delivery import ProactiveLifetime,score_and_deliver
 
 DEBOUNCE_SECONDS = 3
+MAX_CLASSIFICATIONS_PER_HOUR = 60
+
+
+def wake_available(cursor, endpoint, now):
+    limit, quiet = proactive_attention(cursor, endpoint)
+    if not limit or in_quiet_utc(quiet, now):
+        return False
+    # The observation timestamp precedes its wake by at most 30 seconds.
+    queued = cursor.execute("""SELECT count(*) FROM qq_official_proactive_observations
+        WHERE endpoint_key=? AND created_at>? AND state='queued'""", (endpoint.key, now-3630)).fetchone()[0]
+    return queued < limit
 
 
 @dataclass(frozen=True,repr=False,eq=False)
@@ -84,9 +95,10 @@ class ProactiveIngress:
             inbox,ep,actor,_,_=self._load(c,job.payload.get('inbox_id'),job=job)
             now=self._now()
             if not inbox['received_at']<=now<inbox['received_at']+30:return None
-            count=c.execute("SELECT count(*) FROM qq_official_proactive_observations WHERE endpoint_key=? AND created_at>? AND state IN ('scoring','queued')",
-                (ep.key,now-3600)).fetchone()[0]
-            if count>=8:return None
+            if not wake_available(c,ep,now):return None
+            classified=c.execute('''SELECT count(*) FROM qq_official_proactive_observations
+                WHERE endpoint_key=? AND created_at>?''',(ep.key,now-3600)).fetchone()[0]
+            if classified>=MAX_CLASSIFICATIONS_PER_HOUR:return None
             inserted=c.execute('''INSERT INTO qq_official_proactive_observations
                 (inbox_id,account_key,endpoint_key,actor_key,canonical_message_id,source_native_message_id,source_received_at,
                  deadline_at,ingest_job_id,worker_owner,worker_generation,account_epoch,endpoint_generation,endpoint_route_epoch,state,created_at,proactive_generation)
@@ -151,8 +163,12 @@ class ProactiveIngress:
             row, (inbox, ep, _, message, _) = self._candidate(c, source)
             if self._latest.get(ep.key) != source.inbox_id:
                 raise MigrationDenied('conversation_continued')
-            if not self._now() < row['deadline_at']:
+            now=self._now()
+            if not now < row['deadline_at']:
                 raise MigrationDenied('proactive_source_expired')
+            # The endpoint is locked again after the classifier's network call.
+            if not wake_available(c,ep,now):
+                raise MigrationDenied('proactive_attention_unavailable')
             from .conversation_control import state as control_state
             conv_gen = control_state(c, ep)['stop_generation']
             c.execute(
