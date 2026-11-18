@@ -58,11 +58,11 @@ def _log_attempt(provider: str, outcome: str, count: int = 0, fallback_reason: s
 async def search_web(
     queries: list[str], *, max_results: int = 10, timeout_seconds: int = 10,
     api_key: str = "", transport: httpx.AsyncBaseTransport | None = None,
-    all_results: list[SearchResult] | None = None,
+    all_results: list[SearchResult] | None = None, browser=None,
 ) -> list[SearchResult]:
     async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
         batches = await asyncio.gather(*(
-            _search_query(client, query, max_results, timeout_seconds, api_key) for query in queries
+            _search_query(client, query, max_results, timeout_seconds, api_key, browser) for query in queries
         ))
     unique = {}
     for group in zip_longest(*(batch for batch in batches if batch)):
@@ -77,17 +77,23 @@ async def search_web(
 
 
 async def _search_query(client: httpx.AsyncClient, query: str, limit: int,
-                        timeout: int, api_key: str) -> list[SearchResult] | None:
+                        timeout: int, api_key: str, browser) -> list[SearchResult] | None:
     previous = "none"
     async with _QUERY_SLOTS:
-        for provider in ("exa", "bocha"):
+        for provider in ("exa", "browser", "bocha"):
+            if provider == 'browser' and browser is None:
+                continue
             if provider == "bocha" and (not api_key or _bocha_exhausted):
                 break
             results = []
             try:
-                async with asyncio.timeout(timeout):
-                    results = (await _search_exa(client, query, limit) if provider == "exa" else
-                               await _search_bocha(client, query, limit, api_key))
+                async with asyncio.timeout(min(10, timeout) if provider == 'browser' else timeout):
+                    if provider == 'browser':
+                        results = await browser(query, limit)
+                    elif provider == 'exa':
+                        results = await _search_exa(client, query, limit)
+                    else:
+                        results = await _search_bocha(client, query, limit, api_key)
                 outcome = "success" if results else "empty"
             except TimeoutError:
                 outcome = "timeout"

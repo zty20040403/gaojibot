@@ -312,6 +312,17 @@ async function page() {
   }
 }
 
+async function search(engine, query) {
+  const safeEngine = typeof engine === "string" && engine.length <= 32 ? engine : "";
+  const safeQuery = typeof query === "string" && query.length <= 512 ? query : null;
+  try {
+    const { stdout } = await execFileAsync("gaoji-python", ["-m", "sandbox_search", JSON.stringify([safeEngine, safeQuery])], { timeout: 25_000 });
+    return JSON.parse(stdout);
+  } catch {
+    return { status: "error", error: "helper_error", results: [] };
+  }
+}
+
 async function snapshot(targetPage, { selector, depth } = {}) {
   if (!targetPage || typeof targetPage.locator !== "function") {
     throw new TypeError("gaoji.snapshot requires a Playwright page");
@@ -476,7 +487,7 @@ async function runCodeMain() {
     },
   });
 
-  const gaoji = Object.freeze({ raw, cancel, race, browser, page, snapshot, wait_for_login });
+  const gaoji = Object.freeze({ raw, cancel, race, browser, page, search, snapshot, wait_for_login });
   const AsyncFunction = (async () => {}).constructor;
   const fn = new AsyncFunction("tools", "gaoji", "args", "max", input.code);
   try {

@@ -25,7 +25,7 @@ class JobSearchBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(calls.close)
         profile = ModelProfile('TEST_MODEL', 'test', 'openai-chat', 'TEST_MODEL', 'https://example.invalid', api_key_required=False)
         app = SimpleNamespace(settings=replace(settings, search_enabled=True), logger=logging.getLogger(__name__),
-            db_call=calls, message_ledger=f.ledger, model_catalog=ModelCatalog({'TEST_MODEL': profile}, default_profile='TEST_MODEL'),
+            db_call=calls, sandbox_manager=AsyncMock(), message_ledger=f.ledger, model_catalog=ModelCatalog({'TEST_MODEL': profile}, default_profile='TEST_MODEL'),
             model_preferences=SimpleNamespace(get_explicit=lambda _: None))
         runtime = SimpleNamespace(store=SimpleNamespace(transaction=f.tx, admitted=f.admission, clock=lambda: f.now),
                                   jobs=f.jobs, _calls=calls)
