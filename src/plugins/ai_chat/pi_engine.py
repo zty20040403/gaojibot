@@ -17,6 +17,8 @@ EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 DEFAULT_EXTENSIONS = (
     '/etc/gaoji/pi/sandbox_pi_tools.ts',
     '/etc/gaoji/pi/sandbox_pi_agent.ts',
+    '/etc/gaoji/pi/node_modules/@juicesharp/rpiv-todo/index.ts',
+    '/etc/gaoji/pi/node_modules/pi-web-access/index.ts',
 )
 POLL_INTERVAL = 1.5
 STOP_TIMEOUT = 35
@@ -92,6 +94,20 @@ def pi_models_json(port: int, *, context_window: int = 200000) -> dict:
             'maxTokens': 32000,
         }],
     }}}
+
+
+def pi_web_access_config() -> dict:
+    """Keyless pi-web-access configuration: search stays on host-relayed Bocha."""
+    return {
+        'toolActivation': 'eager',
+        'webSearch': {'enabled': False},
+        'tools': {
+            'webSearch': {'enabled': False},
+            'sourceCheck': {'enabled': False},
+            'fetchContent': {'enabled': True},
+            'getSearchContent': {'enabled': True},
+        },
+    }
 
 
 def pi_arguments(
@@ -261,6 +277,7 @@ def launch_script(
     unit = f'gaoji-job-{job_id}'
     models = json.dumps(pi_models_json(port, context_window=context_window), ensure_ascii=False).encode()
     settings = json.dumps({'steeringMode': 'all', 'retry': {'maxRetries': 8}}).encode()
+    web_cfg = json.dumps(pi_web_access_config(), ensure_ascii=False).encode()
     meta = json.dumps({
         'job_id': job_id,
         'workdir': workdir,
@@ -282,6 +299,7 @@ printf '%s\\n' {limit_val} > {conf}/limit
 printf '0\\n' > {conf}/steered_count
 printf %s {encode(models)} | base64 -d > {conf}/models.json
 printf %s {encode(settings)} | base64 -d > {conf}/settings.json
+printf %s {encode(web_cfg)} | base64 -d > {conf}/web-search.json
 printf %s {encode(meta)} | base64 -d > {conf}/meta.json
 printf %s {encode(prompt.encode())} | base64 -d > {conf}/prompt-template.md
 printf %s {encode(task.encode())} | base64 -d > {conf}/task

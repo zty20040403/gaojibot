@@ -152,13 +152,15 @@
       e2fsprogs
     ])
     ++ [python share] ++ commands ++ lib.optional (pi != null) pi;
+  piExtensions = pkgs.callPackage ./pi-extensions {};
 in {
-  inherit python packages commands share variables fontConfig;
+  inherit python packages commands share variables fontConfig piExtensions;
   # The guest receives exactly these immutable files, never a host directory.
   piFiles = pkgs.runCommand "gaoji-pi-files" {} ''
     mkdir -p "$out"
     cp ${source}/src/plugins/ai_chat/sandbox_pi_tools.ts "$out/sandbox_pi_tools.ts"
     cp ${source}/src/plugins/ai_chat/sandbox_pi_agent.ts "$out/sandbox_pi_agent.ts"
+    ln -s ${piExtensions}/node_modules "$out/node_modules"
   '';
   compatPaths = [
     "/bin/sh"
