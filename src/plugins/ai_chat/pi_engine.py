@@ -103,8 +103,9 @@ printf %s {encode(settings)} | base64 -d > {conf}/settings.json
 printf %s {encode(prompt.encode())} | base64 -d > {conf}/job-system.md
 cat <<'GAOJI_JOB_EOF' > {conf}/run.sh
 #!/bin/sh
-set -eu
+set -e
 [ -r /etc/set-environment ] && . /etc/set-environment
+set -u
 export PATH="/run/wrappers/bin:/run/current-system/sw/bin:${{PATH:-/usr/bin:/bin}}"
 cd /work
 export GAOJI_JOB_TOKEN={shlex.quote(token)}
