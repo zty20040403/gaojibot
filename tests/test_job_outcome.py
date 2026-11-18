@@ -138,7 +138,7 @@ class JobOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["instructions"], "程序部署说明")
         self.assertIn("结果：失败", PROMPT)
         self.assertIn("use_skill", PROMPT)
-        self.assertIn("outcome 是 partial 或 unknown 时", system_prompt())
+        self.assertNotIn("outcome 是 partial 或 unknown 时", system_prompt())
 
 
 if __name__ == "__main__":

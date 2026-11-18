@@ -163,6 +163,8 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
     def test_policy_covers_progress_clarification_and_independent_intent(self):
         from src.plugins.ai_chat.prompt import system_prompt
         prompt = system_prompt()
-        for text in ('做咋样了', '你刚刚没做吗', 'agent_status', 'agent_steer', 'independent=true',
-                     '多个任务都可能相关就问用户', 'completed/failed/cancelled', '发送回执'):
+        for text in ('很多步的活交给后台', '做咋样了', '你刚刚没做吗', 'agent_status', 'agent_steer',
+                     'independent=true', '多个任务都可能相关就问用户'):
             self.assertIn(text, prompt)
+        for internal in ('frontend_processed', 'outcome 是 partial', '[常驻程序]', '请求预留'):
+            self.assertNotIn(internal, prompt)
