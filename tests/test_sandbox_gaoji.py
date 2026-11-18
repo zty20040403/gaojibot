@@ -17,6 +17,9 @@ TOKEN = 'gvm_' + ('TEST_' * 9)[:43]
 
 
 class Handler(BaseHTTPRequestHandler):
+    # The real host streams /job/tool over HTTP/1.1 chunked transfer encoding.
+    protocol_version = 'HTTP/1.1'
+
     def log_message(self, *args):
         pass
 
@@ -46,8 +49,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             body = json.dumps(self.server.value).encode()
         self.send_response(self.server.status)
-        self.send_header('Content-Length', str(len(body)))
         self.send_header('Location', 'http://example.invalid/TEST_REDIRECT')
+        if self.server.chunked:
+            self.send_header('Transfer-Encoding', 'chunked')
+            self.end_headers()
+            # Split mid-line, as a streaming host does, so framing must be decoded.
+            for start in range(0, len(body), 7):
+                piece = body[start:start + 7]
+                self.wfile.write(b'%x\r\n%s\r\n' % (len(piece), piece))
+            self.wfile.write(b'0\r\n\r\n')
+            return
+        self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
@@ -62,6 +74,7 @@ class SandboxGaojiTests(unittest.TestCase):
         self.client = cli.Client(self.root, use_env=False)
         server = self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         server.seen, server.status, server.value, server.drop, server.tool_ok = [], 200, {'state': 'queued'}, False, True
+        server.chunked = False
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
@@ -116,6 +129,14 @@ class SandboxGaojiTests(unittest.TestCase):
         self.assertEqual(history['to'], '#9223372036854775807')
         self.assertEqual(self.run_cli('tools')[0], 0)
         self.assertEqual(self.server.seen[-1][:2], ('GET', '/job/tools'))
+
+    def test_chunked_tool_stream_is_decoded(self):
+        self.server.chunked = True
+        self.server.value = {'ok': True, 'data': {'login': 'TEST_LOGIN'}}
+        result, out, error = self.run_cli('github', '/user')
+        self.assertEqual(result, 0, error)
+        self.assertEqual(json.loads(out), self.server.value)
+        self.assertEqual(self.run_cli('tools')[0], 0)
 
     def test_http_denials_are_nonzero_and_writes_are_never_retried(self):
         self.server.status, self.server.value = 429, {'error': 'program_rate_limited'}

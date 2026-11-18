@@ -109,7 +109,8 @@ class Client:
                     raise ClientError('invalid JSON response; use status for writes') from None
             total = 0
             while True:
-                line = response.fp.readline(MAX_RESPONSE + 1)
+                # response.readline decodes chunked framing; the raw socket file does not.
+                line = response.readline(MAX_RESPONSE + 1)
                 if not line:
                     raise ClientError('host closed /job/tool stream without a result; use status for writes')
                 total += len(line)
