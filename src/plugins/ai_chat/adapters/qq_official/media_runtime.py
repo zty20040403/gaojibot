@@ -70,6 +70,23 @@ class OfficialMediaService:
     async def close(self):
         self.closed = True
 
+    async def unsolicited_sticker(self, query, endpoint, actor):
+        """Select and verify a curated image without creating a foreground turn."""
+        if (self.closed or not self.config.stickers or self.runtime._stopping
+                or self.runtime._token is not self.token or self.runtime.file_service is None
+                or self.app.media_library is None):
+            raise MediaDenied('sticker_unavailable')
+        def select():
+            records = self.app.media_library.find_stickers(query, limit=5)
+            for record in records:
+                try:
+                    return _verified_sticker(self, record.handle, endpoint, actor)
+                except MediaDenied as error:
+                    if str(error) not in {'sticker_content_unavailable', 'sticker_bytes_unavailable'}:
+                        raise
+            raise MediaDenied('sticker_content_unavailable')
+        return await self.runtime._calls(select)
+
     async def foreground(self, inbound, platform):
         if (platform.execution.token is not self.token or platform.inbound != inbound
                 or platform.account.key != self.token.account_key):
@@ -329,38 +346,8 @@ class MediaSession:
             raise MediaDenied('sticker_reference_unavailable')
         await self.current()
         await self.service.runtime._calls(self._turn_file_meta)
-        def read():
-            library = self.service.app.media_library
-            connection = library.database.store_connection()
-            try:
-                row = connection.execute('''SELECT b.sha256,b.byte_size,b.mime_type FROM media_blobs b
-                    JOIN media_analysis a USING(media_id) JOIN sticker_library s USING(media_id)
-                    WHERE media_id=? AND a.is_sticker=1 AND s.enabled=1 AND s.banned=0''',
-                    (int(handle[6:]),)).fetchone()
-            finally:
-                connection.close()
-            if (row is None or row['mime_type'] not in IMAGE_MIMES
-                    or not 1<=row['byte_size']<=MAX_IMAGE_BYTES):
-                raise MediaDenied('sticker_content_unavailable')
-            files = self.service.runtime.file_service
-            with files.transaction() as cursor:
-                files._account(cursor)
-                if files._route(cursor, self.inbound.endpoint, self.inbound.actor, row['byte_size']) is not True:
-                    raise MediaDenied('native_image_route_unavailable')
-            record = library.get_sticker(int(handle[6:]))
-            if record is None or record.handle != handle or record.mime_type != row['mime_type']:
-                raise MediaDenied('sticker_content_unavailable')
-            content = _read_library_bytes(library.root,record.storage_path,row['byte_size'],row['sha256'])
-            filename = sticker_filename(record.summary, row['mime_type'])
-            try:
-                detected = detect_image(content,filename)
-            except ImageFormatError as error:
-                _logger.warning('Sticker %s is not a sendable image: %s', handle, error)
-                raise MediaDenied('sticker_content_unavailable') from None
-            if detected!=row['mime_type']:
-                raise MediaDenied('sticker_content_unavailable')
-            return content,filename,record
-        content,filename,sticker = await self.service.runtime._calls(read)
+        content,filename,sticker = await self.service.runtime._calls(
+            _verified_sticker, self.service, handle, self.inbound.endpoint, self.inbound.actor)
         await self.current()
         # Uploaded now; queued in the turn's finish right after the reply text,
         # so the sticker always follows the words (turns.ExecutionLifecycle.finish).
@@ -379,6 +366,39 @@ class MediaSession:
         # These are bounded original texts; final M3 rendering escapes all native
         # markup. No tool directly sends an extra message or spends a window.
         return '\n\n'.join([answer,*self.pending_text])
+
+
+def _verified_sticker(service, handle, endpoint, actor):
+    library = service.app.media_library
+    connection = library.database.store_connection()
+    try:
+        row = connection.execute('''SELECT b.sha256,b.byte_size,b.mime_type FROM media_blobs b
+            JOIN media_analysis a USING(media_id) JOIN sticker_library s USING(media_id)
+            WHERE media_id=? AND a.is_sticker=1 AND s.enabled=1 AND s.banned=0''',
+            (int(handle[6:]),)).fetchone()
+    finally:
+        connection.close()
+    if (row is None or row['mime_type'] not in IMAGE_MIMES
+            or not 1<=row['byte_size']<=MAX_IMAGE_BYTES):
+        raise MediaDenied('sticker_content_unavailable')
+    files = service.runtime.file_service
+    with files.transaction() as cursor:
+        files._account(cursor)
+        if files._route(cursor, endpoint, actor, row['byte_size']) is not True:
+            raise MediaDenied('native_image_route_unavailable')
+    record = library.get_sticker(int(handle[6:]))
+    if record is None or record.handle != handle or record.mime_type != row['mime_type']:
+        raise MediaDenied('sticker_content_unavailable')
+    content = _read_library_bytes(library.root,record.storage_path,row['byte_size'],row['sha256'])
+    filename = sticker_filename(record.summary, row['mime_type'])
+    try:
+        detected = detect_image(content,filename)
+    except ImageFormatError as error:
+        _logger.warning('Sticker %s is not a sendable image: %s', handle, error)
+        raise MediaDenied('sticker_content_unavailable') from None
+    if detected!=row['mime_type']:
+        raise MediaDenied('sticker_content_unavailable')
+    return content,filename,record
 
 
 _logger = logging.getLogger(__name__)

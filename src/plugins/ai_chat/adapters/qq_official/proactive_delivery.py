@@ -1,4 +1,4 @@
-"""Score eligible unsolicited messages and wake the main turn when triggered."""
+"""Check unsolicited send authority before acting on a group glance."""
 from dataclasses import dataclass
 
 
@@ -31,7 +31,7 @@ async def score_and_deliver(*, source, scorer, current, send_policy, wake, now):
     decision = await scorer(source)
     if await current(source) != lifetime:
         raise PermissionError("proactive_source_changed")
-    if not decision.trigger:
+    if decision.action == "silent":
         return ProactiveOutcome("discarded", "silent")
     observed = now()
     if observed >= lifetime.deadline_at:
@@ -43,5 +43,6 @@ async def score_and_deliver(*, source, scorer, current, send_policy, wake, now):
         raise PermissionError("proactive_source_changed")
     if now() >= lifetime.deadline_at:
         return ProactiveOutcome("discarded", "source_expired")
-    await wake(source, decision.reason or "可以自然接话")
+    if not await wake(source, decision):
+        return ProactiveOutcome("discarded", "action_unavailable")
     return ProactiveOutcome("queued", "current_send_authority")

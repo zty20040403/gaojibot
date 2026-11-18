@@ -50,7 +50,7 @@ def background_factory(*,proactive_configuration=ProactiveConfiguration(),proact
             proactive=ProactiveIngress(token=token,transaction=runtime.store.transaction,admission=runtime.store.admitted,
                 outbox=runtime.outbox,scorer=scorer,clock=runtime.store.clock,database_calls=runtime._calls,
                 billing=lambda endpoint,actor,current:scoped(app,endpoint,'proactive',actor,current=current),
-                wake_turn=getattr(runtime,'wake_proactive_turn',None))
+                wake_turn=getattr(runtime,'wake_proactive_turn',None),media=runtime.media_service)
         service=NativeBackgroundService(runtime=runtime,token=token,proactive=proactive)
         service.attach()
         return service

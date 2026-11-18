@@ -198,7 +198,8 @@ class OfficialSender:
             except QQAPIError:
                 return await self._calls(self.outbox.fail, self.token, delivery_id, 'token_unavailable')
             bot_origin = ActorKey.parse(row['requester_actor_key']).identity_kind == 'bot'
-            credential = await self._credential(endpoint, route, proactive_only=bot_origin)
+            proactive_only = bot_origin or (row['purpose'] == 'unsolicited' and row['source_canonical_message_id'] is not None)
+            credential = await self._credential(endpoint, route, proactive_only=proactive_only)
             if credential is None:
                 log.warning('QQ send failed: 这个群没开主动发言，请群主打开')
                 return await self._calls(self.outbox.fail, self.token, delivery_id, PASSIVE_UNAVAILABLE)
@@ -259,7 +260,7 @@ class OfficialSender:
                 reason = 'content_rejected'
             elif error.code == 40034105 and mode == 'proactive':
                 await self._calls(self.outbox.deny_proactive, self.token, endpoint)
-                retry, reason = not bot_origin, 'proactive_denied'
+                retry, reason = not proactive_only, 'proactive_denied'
             elif error.code == 40034128:
                 if mode == 'passive':
                     self._passive[endpoint.key]['used'] = 5 if endpoint.kind == 'group' else 4

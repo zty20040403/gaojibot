@@ -31,14 +31,15 @@ class MaxReplyFlowTests(unittest.IsolatedAsyncioTestCase):
     emit = base.OfficialTurnEndToEndTests.emit
     complete = base.OfficialTurnEndToEndTests.complete
 
-    def test_parse_proactive_decision_supports_json_and_fences(self):
-        d1 = parse_proactive_decision('```json\n{"trigger": true, "reason": " 有人问数学题 "}\n```')
-        self.assertTrue(d1.trigger)
-        self.assertEqual(d1.reason, "有人问数学题")
-
-        d2 = parse_proactive_decision({"trigger": False, "reason": "闲聊"})
-        self.assertFalse(d2.trigger)
-        self.assertEqual(d2.reason, "")
+    def test_classifier_requires_one_action_and_bounds_its_note(self):
+        for action in ('speak', 'sticker'):
+            decision = parse_proactive_decision({'action': action, 'reason': ' 庆祝' * 40})
+            self.assertEqual(decision.action, action)
+            self.assertEqual(len(decision.reason), 40)
+        self.assertEqual(parse_proactive_decision({'action': 'silent', 'reason': '闲聊'}).reason, '')
+        for payload in ({'reply': '旧格式'}, {'action': 'sticker', 'reason': ''}, {'action': 'unknown'}):
+            with self.assertRaisesRegex(ValueError, 'invalid proactive decision'):
+                parse_proactive_decision(payload)
 
     async def test_group_roster_injected_and_mention_id_renders_qqbot_at_user(self):
         app = self.application()
@@ -158,7 +159,7 @@ class MaxReplyFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(fake.received), 1)
                 await runtime.stop()
 
-    async def test_proactive_false_stays_silent_and_true_wakes_main_model(self):
+    async def test_silent_skips_main_model_and_speak_wakes_it(self):
         app = self.application()
         main_calls = []
 
@@ -169,7 +170,7 @@ class MaxReplyFlowTests(unittest.IsolatedAsyncioTestCase):
             main_calls.append(kwargs)
             return base.model_response("来劲了，这题我会", [], kwargs)
 
-        verdicts = [{"trigger": False, "reason": ""}, {"trigger": True, "reason": "在问内核调度问题"}]
+        verdicts = [{"action": "silent", "reason": ""}, {"action": "speak", "reason": "在问内核调度问题"}]
 
         async def classify(*args, **kwargs):
             return verdicts.pop(0)
@@ -200,7 +201,6 @@ class MaxReplyFlowTests(unittest.IsolatedAsyncioTestCase):
                 fake.proactive_allowed[("group", "TEST_GROUP")] = True
                 await runtime.sender.refresh_bound_groups()
 
-                # First message -> classifier says trigger=False -> main model never called
                 await fake.emit("GROUP_MESSAGE_CREATE", {
                     "id": "TEST_P_FALSE",
                     "content": "今天中午吃什么面条比较好呢",
@@ -211,7 +211,6 @@ class MaxReplyFlowTests(unittest.IsolatedAsyncioTestCase):
                 await self.wait_db("SELECT state FROM qq_official_proactive_observations WHERE state='discarded'")
                 self.assertEqual(len(main_calls), 0)
 
-                # Second message -> classifier says trigger=True -> wakes main model turn with [判定：...]
                 await fake.emit("GROUP_MESSAGE_CREATE", {
                     "id": "TEST_P_TRUE",
                     "content": "Linux CFS 和 EEVDF 调度器差别到底在哪",
