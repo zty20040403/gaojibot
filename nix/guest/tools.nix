@@ -76,6 +76,7 @@
   '';
   scripts = [
     "sandbox_browser.py"
+    "sandbox_search.py"
     "sandbox_browser_actions.py"
     "sandbox_browser_state.py"
     "sandbox_webread.py"

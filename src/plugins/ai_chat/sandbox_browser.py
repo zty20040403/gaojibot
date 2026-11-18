@@ -8,7 +8,7 @@ import subprocess
 _driver = _browser = None
 
 
-async def page():
+async def _connect_browser():
     from playwright.async_api import async_playwright
     global _driver, _browser
     try:
@@ -58,8 +58,17 @@ async def page():
                     except Exception:
                         if attempt == 19:
                             raise
-    context = _browser.contexts[0]
+    return _browser
+
+
+async def page():
+    context = (await _connect_browser()).contexts[0]
     return context.pages[-1] if context.pages else await context.new_page()
+
+
+async def search(engine, query):
+    from sandbox_search import search as public_search
+    return await public_search(engine, query, _connect_browser)
 
 
 async def wait_for_login(check, *, timeout=180, interval=3):

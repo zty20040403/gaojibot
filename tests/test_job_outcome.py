@@ -117,7 +117,7 @@ class JobOutcomeTests(unittest.IsolatedAsyncioTestCase):
         calls = DatabaseCalls()
         self.addAsyncCleanup(calls.close)
         app = SimpleNamespace(
-            db_call=calls,
+            db_call=calls, sandbox_manager=AsyncMock(),
             settings=replace(settings, search_enabled=True),
             skill_registry=SimpleNamespace(get=lambda name: skill if name == "programs" else None, list=lambda: [skill]),
             message_ledger=None,
