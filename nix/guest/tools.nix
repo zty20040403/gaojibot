@@ -50,8 +50,15 @@
     "sandbox_gaoji_units.py"
     "sandbox_identity.py"
   ];
+  playwrightCore = pkgs.fetchurl {
+    url = "https://registry.npmjs.org/playwright-core/-/playwright-core-1.59.0.tgz";
+    hash = "sha512-PW/X/IoZ6BMUUy8rpwHEZ8Kc0IiLIkgKYGNFaMs5KmQhcfLILNx9yCQD0rnWeWfz1PNeqcFP1BsihQhDOBCwZw==";
+  };
   share = pkgs.runCommand "gaoji-sandbox-tools" {} ''
-    mkdir -p "$out/share/gaoji"
+    mkdir -p "$out/share/gaoji/runner/node_modules/playwright-core"
+    tar -xzf ${playwrightCore} --strip-components=1 \
+      -C "$out/share/gaoji/runner/node_modules/playwright-core"
+    cp ${source}/src/plugins/ai_chat/sandbox_runner.js "$out/share/gaoji/runner/runner.js"
     ${lib.concatMapStringsSep "\n" (name: ''
         cp ${source}/src/plugins/ai_chat/${name} "$out/share/gaoji/${
           if name == "sandbox_browser.py"

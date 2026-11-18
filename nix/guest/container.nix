@@ -159,6 +159,7 @@ in {
   environment.systemPackages = tools.packages;
   environment.etc."gaoji/skills".source = source + "/skills";
   environment.etc."gaoji/pi".source = tools.piFiles;
+  environment.etc."gaoji/runner".source = "${tools.share}/share/gaoji/runner";
   environment.variables = tools.variables // {HOME = "/workspace";};
   programs.nix-ld.enable = true;
   programs.nix-ld.libraries = tools.ldLibraries;

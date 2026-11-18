@@ -40,7 +40,13 @@ class ModelCapabilities:
     video: bool = False
 
     @classmethod
-    def defaults_for(cls, protocol: str) -> "ModelCapabilities":
+    def defaults_for(
+        cls,
+        protocol: str,
+        *,
+        provider: str = "",
+        model: str = "",
+    ) -> "ModelCapabilities":
         if protocol == "anthropic-messages":
             return cls(
                 tools=True,
@@ -49,15 +55,23 @@ class ModelCapabilities:
                 model_listing=False,
                 vision=False,
             )
-        return cls()
+        video = (
+            protocol == "openai-chat"
+            and provider == "cliproxy"
+            and model.lower().startswith("gemini")
+        )
+        return cls(video=video)
 
     @classmethod
     def from_mapping(
         cls,
         protocol: str,
         raw: object,
+        *,
+        provider: str = "",
+        model: str = "",
     ) -> "ModelCapabilities":
-        defaults = cls.defaults_for(protocol)
+        defaults = cls.defaults_for(protocol, provider=provider, model=model)
         if raw is None:
             return defaults
         if not isinstance(raw, Mapping):
@@ -528,6 +542,8 @@ def _parse_profile(
         capabilities=ModelCapabilities.from_mapping(
             protocol,
             raw.get("capabilities"),
+            provider=provider,
+            model=model,
         ),
     )
 

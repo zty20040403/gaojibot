@@ -23,7 +23,15 @@ from .file_upload import FileUploadError, FileUploader, MAX_FILE_BYTES
 from .image_formats import artifact_filename as canonical_artifact_filename
 from .lease import assert_epoch
 
-GENERATION_TOOLS = frozenset({"sandbox_read_file", "send_file_from_sandbox", "send_file"})
+GENERATION_TOOLS = frozenset({
+    "sandbox_read_file",
+    "send_file_from_sandbox",
+    "send_file",
+    "send_image",
+    "shell",
+    "video",
+    "run_code",
+})
 
 
 @dataclass(frozen=True)

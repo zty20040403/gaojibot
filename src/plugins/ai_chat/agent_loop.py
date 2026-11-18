@@ -921,7 +921,7 @@ async def ask_deepseek_with_tools(
                 active_tool_call_id.reset(invocation)
             # A failed local file read cannot have sent a message. Permit its
             # next attempt; successful/uncertain deliveries still cannot replay.
-            if name in {'send_file_from_sandbox', 'send_file'}:
+            if name in {'send_file_from_sandbox', 'send_file', 'send_image'}:
                 try:
                     result = json.loads(str(tool_result))
                 except (TypeError, ValueError):
