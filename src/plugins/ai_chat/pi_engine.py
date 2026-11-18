@@ -150,7 +150,7 @@ def pi_arguments(
     return tuple(args)
 
 
-_PREPARE_PY = """import json, os, re, sys
+_PREPARE_PY = """import json, os, re, subprocess, sys
 from pathlib import Path
 
 conf = Path(sys.argv[1])
@@ -160,6 +160,10 @@ workdir = (meta.get('workdir') or '').strip()
 title = (meta.get('title') or '').strip()
 resume_id = meta.get('resume_job_id')
 fork_path = ''
+
+if meta.get('fork_project'):
+    subprocess.run(['gaoji-project-fork', meta['fork_project'], str(meta['job_id'])], check=True)
+    workdir = str(out_dir / 'project')
 
 if resume_id is not None:
     jobs_root = Path('/work/.gaoji/jobs')
@@ -261,6 +265,7 @@ def launch_script(
     task: str = '',
     title: str = '',
     workdir: str = '/work',
+    fork_project: str = '',
     resume_job_id: int | None = None,
     started_at: int | None = None,
     limit_sec: int = 21600,
@@ -281,6 +286,7 @@ def launch_script(
     meta = json.dumps({
         'job_id': job_id,
         'workdir': workdir,
+        'fork_project': fork_project,
         'title': title,
         'resume_job_id': resume_job_id,
     }, ensure_ascii=False).encode()
@@ -589,6 +595,7 @@ class PiEngine:
                         title=str(row.get('title') or ''),
                         workdir=str(row.get('workdir') or '/work'),
                         resume_job_id=row.get('resume_job_id'),
+                        fork_project=row.get('fork_project', ''),
                         started_at=now_ts,
                         limit_sec=limit_sec,
                         pi_bin=self.pi_bin,

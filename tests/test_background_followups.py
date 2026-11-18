@@ -122,6 +122,16 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(self.service.store.get(int(first['job'][4:]))['steering_json']), [])
         self.assertEqual(json.loads(self.service.store.get(int(second['job'][4:]))['steering_json']), ['TEST chart only'])
 
+    async def test_parallel_project_inputs_are_persisted_not_used_as_an_arbitrary_cwd(self):
+        for args in ({'fork_project': '../outside'}, {'fork_project': 'TEST_project', 'workdir': '/work'}):
+            error = json.loads(await execute(self.turn, {'task': 'TEST', 'acceptance': 'TEST result', **args}, name='agent'))
+            self.assertFalse(error['ok'])
+        first = await self.submit('TEST table', fork_project='TEST_project')
+        second = await self.submit('TEST graph', fork_project='TEST_project', independent=True)
+        for result in (first, second):
+            self.assertEqual(self.f.jobs.get(int(result['job'][4:])).payload['fork_project'], 'TEST_project')
+        self.assertNotEqual(first['job'], second['job'])
+
     async def test_resume_keeps_previous_title_and_distinct_job(self):
         first = await self.submit('TEST actual objective')
         prior = self.service.store.get(int(first['job'][4:]))

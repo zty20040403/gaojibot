@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -168,11 +169,17 @@ class OfficialBackgroundAgents:
                     resume_raw = str(arguments.get('resume') or '').strip()
                     resume_id = job_number(resume_raw) if resume_raw else None
                     workdir = str(arguments.get('workdir') or '').strip()
+                    project = arguments.get('fork_project', '')
+                    if project and (not isinstance(project, str) or not re.fullmatch(r'[\w-]{1,80}', project) or resume_id is not None or workdir):
+                        raise ValueError('fork_project 只填 /work/projects 下的项目名，不与 workdir 或 resume 一起使用。')
                     from .conversation_control import state
                     source = dict(source, actor_key=inbound.actor.key, native_message_id=inbound.native_message_id,
                         conversation_generation=state(cursor, inbound.endpoint)['stop_generation'],
                         source_execution_id=life.handle.execution_id)
-                    key_seed = json.dumps([task, acceptance, resume_id, workdir], ensure_ascii=False)
+                    key_fields = [task, acceptance, resume_id, workdir]
+                    if project:
+                        key_fields.append(project)
+                    key_seed = json.dumps(key_fields, ensure_ascii=False)
                     key = 'background:' + life.handle.execution_id + ':' + hashlib.sha256(key_seed.encode()).hexdigest()
                     row = self.store.submit(
                         cursor,
@@ -186,6 +193,7 @@ class OfficialBackgroundAgents:
                         hours=self.store.hours(cursor, inbound.endpoint),
                         resume_job_id=resume_id,
                         workdir=workdir,
+                        fork_project=project,
                     )
                     return view(row, int(self.clock()))
                 number = job_number(arguments['job']) if arguments.get('job') else None
