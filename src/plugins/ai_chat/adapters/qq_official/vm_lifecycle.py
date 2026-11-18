@@ -1,7 +1,7 @@
 """Bind the account runtime's authenticated endpoints to owned conversation VMs."""
 import asyncio
 
-from ...background_tools import workspace_owner
+from ...background_tools import ContainerToolSession, workspace_owner
 from ...platform_types import EndpointKey
 from .browser_runtime import BrowserRuntime
 from .lease import assert_epoch
@@ -14,7 +14,8 @@ from .vm_sessions import VMSessions
 class OfficialVMLifecycle:
     def __init__(self, *, transaction, lease, private_admission, manager, calls, gateway, logger, clock, runtime, app):
         self.transaction, self.lease, self.manager, self.calls = transaction, lease, manager, calls
-        self.gateway, self.logger = gateway, logger
+        self.gateway, self.logger, self.app = gateway, logger, app
+        self.ask_handler = None
         self.store = VMSessions(transaction, lease, private_admission=private_admission, clock=clock)
         self.credentials = VMCredentials(self.store, manager, calls, port=gateway.port)
         self.api = VMAPIAuthority(self.credentials, actions=VMWriteAdmission(self.store))
@@ -69,6 +70,9 @@ class OfficialVMLifecycle:
         self.manager.conversation_lifecycle = self
         self.gateway.vm_authority = self.api
         self.gateway.vm_handler = self.http.handle
+        self.gateway.vm_tool_session = lambda scope: ContainerToolSession(
+            self.app, scope, self.http, ask_handler=self.ask_handler,
+        )
         await self.gateway.start()
         self.restoring = asyncio.create_task(self.restore())
 

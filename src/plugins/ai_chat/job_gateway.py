@@ -128,9 +128,9 @@ class _ModelRequest:
     reject the next request. The response's upstream socket closes even if
     cancellation occurs before the streaming generator starts.
     """
-    def __init__(self, gateway, handler=None, *, vm_only=False, job_only=False, write=False):
+    def __init__(self, gateway, handler=None, *, vm_only=False, job_only=False, vm_tool=False, write=False):
         self.gateway = gateway
-        self.vm_only, self.job_only, self.write = vm_only, job_only, write
+        self.vm_only, self.job_only, self.vm_tool, self.write = vm_only, job_only, vm_tool, write
         self.handler = handler or gateway._responses
         self.model_request = handler is None
 
@@ -139,7 +139,8 @@ class _ModelRequest:
         header = request.headers.get('authorization','')
         channel = self.gateway.channels.get(header[7:]) if header.startswith('Bearer ') and not self.vm_only else None
         if (channel is None and not self.model_request and not self.job_only and header.startswith('Bearer gvm_')
-                and self.gateway.vm_authority is not None):
+                and self.gateway.vm_authority is not None
+                and (not self.vm_tool or self.gateway.vm_tool_session is not None)):
             try:
                 channel = await self.gateway.vm_authority.authorize(header[7:],write=self.write)
             except asyncio.CancelledError:
@@ -204,13 +205,13 @@ class _Server(uvicorn.Server):
 
 
 class JobGateway:
-    def __init__(self, *, port, upstream, model, logger, client=None, vm_authority=None, vm_handler=None, billing=None, tool_heartbeat_seconds=TOOL_HEARTBEAT_SECONDS):
+    def __init__(self, *, port, upstream, model, logger, client=None, vm_authority=None, vm_handler=None, vm_tool_session=None, billing=None, tool_heartbeat_seconds=TOOL_HEARTBEAT_SECONDS):
         # upstream() -> ModelProfile; model() -> (model, effort). One snapshot
         # provides both the actual route/key and its optional price.
         self.port, self.upstream, self.model, self.logger = port, upstream, model, logger
         self.billing = billing
         self.tool_heartbeat_seconds = tool_heartbeat_seconds
-        self.vm_authority,self.vm_handler = vm_authority,vm_handler
+        self.vm_authority, self.vm_handler, self.vm_tool_session = vm_authority, vm_handler, vm_tool_session
         self.channels: dict[str, Channel] = {}
         self.failures: dict[str, str] = {}
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(30, read=IDLE_SECONDS), trust_env=False)
@@ -238,8 +239,8 @@ class JobGateway:
                 app = Starlette(routes=[Route('/v1/models', self._models),
                                         Route('/v1/responses', _ModelRequest(self), methods=['POST']),
                                         Route('/v1/responses/compact', _ModelRequest(self), methods=['POST']),
-                                        Route('/job/tools', _ModelRequest(self, self._job_tools, job_only=True), methods=['GET']),
-                                        Route('/job/tool', _ModelRequest(self, self._job_tool, job_only=True), methods=['POST'])])
+                                        Route('/job/tools', _ModelRequest(self, self._job_tools, vm_tool=True), methods=['GET']),
+                                        Route('/job/tool', _ModelRequest(self, self._job_tool, vm_tool=True), methods=['POST'])])
                 if self.vm_handler is not None:
                     for path,method,write in (('/vm/say','POST',True),('/vm/wake','POST','wake'),('/vm/send-file','POST',True),('/vm/actions/{action_id}','GET',False),('/vm/actions','GET',False),
                             ('/vm/events','GET',False),('/vm/units','POST',False),('/vm/history','POST',False),('/vm/web-search','POST',False),('/vm/web-fetch','POST',False),
@@ -435,9 +436,15 @@ class JobGateway:
             self.logger.warning('Background tool authority check failed: %s', type(exc).__name__)
             return False
 
+    def _resolve_tool_session(self, channel):
+        session = getattr(channel, 'session', None)
+        if session is None and self.vm_tool_session is not None and getattr(channel, 'identity', None) is not None:
+            session = self.vm_tool_session(channel)
+        return session
+
     async def _job_tools(self, request: Request):
         channel = request.state.channel
-        session = getattr(channel, 'session', None)
+        session = self._resolve_tool_session(channel)
         if session is None:
             return JSONResponse({'error': 'job session unavailable'}, 404)
         if not await self._job_current(channel):
@@ -455,7 +462,7 @@ class JobGateway:
 
     async def _job_tool(self, request: Request):
         channel = request.state.channel
-        session = getattr(channel, 'session', None)
+        session = self._resolve_tool_session(channel)
         if session is None:
             return JSONResponse({'error': 'job session unavailable'}, 404)
         if not await self._job_current(channel):

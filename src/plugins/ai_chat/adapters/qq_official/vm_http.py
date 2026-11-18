@@ -7,6 +7,7 @@ import json
 import mimetypes
 from pathlib import PurePosixPath
 import re
+import secrets
 from types import SimpleNamespace
 
 from jsonschema import Draft202012Validator
@@ -22,7 +23,7 @@ from ...tools.sources import HANDLERS as SOURCE_HANDLERS
 from ...tools.state import ToolContext, TurnState
 from .file_upload import FileUploadError
 from .identity_store import snapshot
-from .image_formats import artifact_filename
+from .image_formats import ImageFormatError, artifact_filename, detect_image
 from .lease import assert_epoch
 from .plans import enqueue_plan
 from .renderer import render_plan
@@ -278,18 +279,19 @@ class VMHTTP:
             )
             return ref.plan_id, ref.delivery_ids[0]
 
-    def _enqueue_file(self, current, *, generation: int, request_id: str, path: str, filename: str, content: bytes, uploaded):
+    def _enqueue_file(self, current, *, generation: int, request_id: str, path: str, filename: str, content: bytes, uploaded, image: bool = False):
         meta = {
-            "kind": "send_file",
+            "kind": "send_image" if image else "send_file",
             "request_id": request_id,
             "path": path,
             "filename": filename,
             "sandbox_id": current.sandbox_id,
             "token_generation": current.token_generation,
         }
-        rendered = render_plan(MessageBody((TextNode(0, "文件：" + filename),)), current.endpoint)
+        label = ("图片：" if image else "文件：") + filename
+        rendered = render_plan(MessageBody((TextNode(0, label),)), current.endpoint)
         mime = "audio/silk" if filename.lower().endswith(".silk") else (mimetypes.guess_type(filename)[0] or "application/octet-stream")
-        kind = "audio" if mime == "audio/silk" else "file"
+        kind = "image" if image or mime.startswith("image/") else ("audio" if mime == "audio/silk" else "file")
         sha = hashlib.sha256(content).hexdigest()
         with self.sessions.transaction() as cursor:
             self.sessions.check(cursor, current)
@@ -348,11 +350,20 @@ class VMHTTP:
                 pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
 
-    async def _submit_file(self, scope, *, path, request_id: str, filename=None):
+    def _capture_generation(self, current) -> int:
+        actions = getattr(self.lifecycle.api, "actions", None)
+        if actions is None:
+            raise VMDenied("vm_actions_unavailable", 403)
+        with self.sessions.transaction() as cursor:
+            self.sessions.check(cursor, current)
+            return actions._capture(cursor, current)
+
+    async def _submit_file(self, scope, *, path, request_id: str, filename=None, image: bool = False):
         path = workspace_path(path)
         filename = artifact_filename(safe_filename(filename if filename is not None else PurePosixPath(path).name), draft=False)
         current = scope.identity
-        expected = {"kind": "send_file", "request_id": request_id, "path": path, "filename": filename}
+        generation = scope.generation if scope.generation is not None else await self.calls(self._capture_generation, current)
+        expected = {"kind": "send_image" if image else "send_file", "request_id": request_id, "path": path, "filename": filename}
         existing = await self.calls(self._existing_or_conflict, current, request_id, expected)
         if existing is not None:
             return existing
@@ -381,13 +392,18 @@ class VMHTTP:
             except Exception as error:
                 self.logger.warning("VM file export failed error=%s", type(error).__name__)
                 raise VMDenied("vm_file_export_failed", 502) from None
+            if image:
+                try:
+                    detect_image(content, filename)
+                except ImageFormatError as error:
+                    raise VMDenied(str(error), 400) from None
             try:
                 uploaded = await service.uploader.upload(current.endpoint, content, filename, current=scope.current)
             except FileUploadError as error:
                 raise VMDenied(str(error), 502) from None
             plan_id, delivery_id = await self.calls(
-                self._enqueue_file, current, generation=scope.generation,
-                request_id=request_id, path=path, filename=filename, content=content, uploaded=uploaded,
+                self._enqueue_file, current, generation=generation,
+                request_id=request_id, path=path, filename=filename, content=content, uploaded=uploaded, image=image,
             )
         finally:
             self.inflight.discard(inflight_key)
@@ -396,6 +412,38 @@ class VMHTTP:
                 self.active_exports[key] = remaining
             else:
                 self.active_exports.pop(key)
+        try:
+            async with asyncio.timeout(25):
+                await sender.send_delivery(delivery_id)
+        except TimeoutError:
+            pass
+        return await self.calls(self.get_action, current, plan_id)
+
+    async def execute_tool_action(self, scope, name: str, arguments: dict) -> dict[str, object]:
+        current = scope.identity
+        if name == "action_status":
+            action_id = arguments.get("action_id")
+            request_id = arguments.get("request_id")
+            if bool(action_id) == bool(request_id):
+                raise ValueError("请提供 request_id 或 action_id 之一")
+            return await self.calls(self.get_action, current, action_id or request_id, by_request=action_id is None)
+        sender = getattr(self.runtime, "sender", None)
+        if sender is None:
+            raise VMDenied("vm_sender_unavailable", 503)
+        request_id = self._validate_request_id(arguments.get("request_id") or secrets.token_hex(16))
+        if name in {"send_file", "send_image"}:
+            return await self._submit_file(
+                scope, path=arguments["path"], request_id=request_id,
+                filename=arguments.get("filename"), image=(name == "send_image"),
+            )
+        generation = scope.generation if scope.generation is not None else await self.calls(self._capture_generation, current)
+        expected = {"kind": "say", "request_id": request_id, "text": arguments["text"]}
+        existing = await self.calls(self._existing_or_conflict, current, request_id, expected)
+        if existing is not None:
+            return existing
+        plan_id, delivery_id = await self.calls(
+            self._enqueue_say, current, generation=generation, request_id=request_id, text=arguments["text"],
+        )
         try:
             async with asyncio.timeout(25):
                 await sender.send_delivery(delivery_id)

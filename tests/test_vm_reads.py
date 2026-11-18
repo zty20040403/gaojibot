@@ -149,3 +149,24 @@ class VMReadTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
                         pending.cancel()
                         await asyncio.gather(pending,return_exceptions=True)
         self.assertEqual(self.reads.active,{})
+
+    async def test_unified_job_tool_accepts_vm_token_for_reads_and_github_hook(self):
+        import json
+        actor = ActorKey(self.account,'group_member',self.endpoint.native_conversation_id,'TEST_ACTOR')
+        self.app.message_ledger.record_message(self.endpoint.scope,native_message_id='TEST_UNIFIED',sender_native_user_id='TEST_ACTOR',
+            sender_display='TEST_DISPLAY',body=MessageBody((TextNode(0,'TEST_UNIFIED_HISTORY'),)),occurred_at=self.now,
+            actor=actor,source_endpoint=self.endpoint)
+        listed = await self.client.get(self.base+'/job/tools')
+        self.assertEqual(listed.status_code,200,listed.text)
+        names = {item['name'] for item in listed.json()['tools']}
+        self.assertTrue({'history','web_search','web_fetch','use_skill','say','send_file','send_image','agent_ask','github'} <= names)
+        res = await self.client.post(self.base+'/job/tool',json={'name':'history','arguments':{'query':'TEST_UNIFIED_HISTORY'}})
+        self.assertEqual(res.status_code,200,res.text)
+        last = json.loads(res.text.strip().splitlines()[-1])
+        self.assertTrue(last['ok'])
+        self.assertIn('TEST_UNIFIED_HISTORY',last['content'][0]['text'])
+        gh_res = await self.client.post(self.base+'/job/tool',json={'name':'github','arguments':{'path':'/user'}})
+        self.assertEqual(gh_res.status_code,200)
+        gh_last = json.loads(gh_res.text.strip().splitlines()[-1])
+        self.assertTrue(gh_last['ok'])
+        self.assertIn('github_token_not_configured',gh_last['content'][0]['text'])
