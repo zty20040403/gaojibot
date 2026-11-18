@@ -261,7 +261,7 @@ class FileServices:
                          filename: str, logical_key: str, source_scope_key: str, expires_at: int,
                          source_native_message_id: str = "", source_canonical_message_id: int | None = None,
                          turn_id: int | None = None, source_generation: int | None = None,
-                         current=None, defer: bool = False):
+                         current=None, defer: bool = False, purpose: str = 'requested_artifact', source_proof=None):
         """Upload and send; with defer=True, upload and return a function that queues it."""
         filename = safe_filename(filename)
         size = len(content)
@@ -306,6 +306,8 @@ class FileServices:
                 source_canonical_message_id=source_canonical_message_id,
                 turn_id=turn_id,
                 source_generation=source_generation,
+                purpose=purpose,
+                source_proof=source_proof,
                 transaction_cursor=cursor,
             )
             return ref.delivery_ids[0]

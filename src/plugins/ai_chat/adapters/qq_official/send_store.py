@@ -13,6 +13,7 @@ from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from .binding import control_authorized, control_for_delivery
 from .identity_store import snapshot
 from .lease import assert_epoch
+from .migration_types import MigrationDenied
 from .plans import DEFAULT_MAX_WAIT_SECONDS, enqueue_plan, keyed_digest
 from .renderer import content_payload, render_plan, restore_plan
 from .send_types import OfficialAttemptContext, OutboxInvariantError, SendOutcome, SendReservation, digest, stable_json
@@ -229,7 +230,7 @@ class OfficialSendStore:
     def enqueue_media(self, token, *, endpoint, requester, filename, sha256, byte_size, mime,
                       uploaded, logical_key, source_scope_key, expires_at, source_native_message_id="",
                       source_canonical_message_id=None, turn_id=None, source_generation=None,
-                      transaction_cursor=None):
+                      purpose='requested_artifact', source_proof=None, transaction_cursor=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token,
@@ -237,9 +238,11 @@ class OfficialSendStore:
                 requester=requester, logical_key=logical_key, source_scope_key=source_scope_key,
                 source_native_message_id=source_native_message_id or "",
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
-                expires_at=expires_at, now=now, purpose="requested_artifact",
+                expires_at=expires_at, now=now, purpose=purpose,
                 admission=self.admission, max_wait_seconds=self.max_wait_seconds,
-                source_generation=source_generation)
+                source_generation=source_generation,
+                source_guard=self.source_guard if purpose == 'unsolicited' else None,
+                source_proof=source_proof)
             if ref.created:
                 manifest = stable_json({"v": 1, "media": {"file_info": uploaded.file_info},
                     "source_native_message_id": source_native_message_id or ""})
@@ -325,8 +328,17 @@ class OfficialSendStore:
             cursor.execute("UPDATE qq_official_endpoints SET proactive_state='denied',updated_at=? WHERE endpoint_key=?",
                 (int(self.clock()), endpoint.key))
 
-    def _conversation_permitted(self, cursor, row):
+    def _conversation_permitted(self, cursor, row, token):
         from .conversation_control import permitted
+        if row['purpose'] == 'unsolicited' and row['source_canonical_message_id'] is not None:
+            if self.source_guard is None:
+                return False
+            plan = cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?', (row['plan_id'],)).fetchone()
+            try:
+                if not self.source_guard(cursor, token=token, plan=plan, operation='prepare', now=int(self.clock())):
+                    return False
+            except MigrationDenied:
+                return False
         if row["purpose"] in {"binding_otp", "approval_otp"} or control_for_delivery(cursor, row):
             return True
         plan = cursor.execute("SELECT conversation_generation FROM delivery_plans WHERE plan_id=?", (row["plan_id"],)).fetchone()
@@ -352,7 +364,7 @@ class OfficialSendStore:
                 (reservation.delivery_id, token.account_key)).fetchone()
             if row is None or row["current_attempt_id"] != reservation.attempt_id or row["status"] != "sending":
                 return "delivery_attempt_replaced"
-            if not self._conversation_permitted(cursor, row):
+            if not self._conversation_permitted(cursor, row, token):
                 return "conversation_stopped_or_replaced"
             return self._vm_authorized(cursor, token, row)[1]
 
@@ -369,7 +381,7 @@ class OfficialSendStore:
             endpoint = EndpointKey.parse(row["endpoint_key"])
             actor = ActorKey.parse(row["requester_actor_key"])
             route = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,)).fetchone()
-            if not self._conversation_permitted(cursor, row):
+            if not self._conversation_permitted(cursor, row, token):
                 return self._finish(cursor, token, row, "cancelled", "conversation_stopped_or_replaced", now)
             control = control_for_delivery(cursor, row)
             vm_ok, vm_error = self._vm_authorized(cursor, token, row)

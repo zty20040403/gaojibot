@@ -10,6 +10,8 @@ import json
 import math
 import weakref
 
+from .conversation_control import state as control_state
+from .media_refs import MediaDenied
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDenied
 from src.plugins.ai_chat.execution_control import JobFence,active_job_fence,LeaseLost
@@ -41,11 +43,12 @@ class ProactiveCandidate:
 
 
 class ProactiveIngress:
-    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls,billing=None,wake_turn=None):
+    def __init__(self,*,token,transaction,admission,outbox,scorer,clock,database_calls,billing=None,wake_turn=None,media=None):
         self.token,self.tx,self.admission,self.outbox=token,transaction,admission,outbox
         self.scorer,self.clock,self.calls=scorer,clock,database_calls
         self.billing=billing
         self.wake_turn=wake_turn
+        self.media=media
         self._issued=weakref.WeakKeyDictionary()
         self._latest={}
 
@@ -158,7 +161,7 @@ class ProactiveIngress:
 
     async def send_policy(self,*args,**kwargs):return await self.calls(self._send_policy,*args,**kwargs)
 
-    def _mark_woken(self, source):
+    def _mark_woken(self, source, enqueue=None):
         with self.tx() as c:
             row, (inbox, ep, _, message, _) = self._candidate(c, source)
             if self._latest.get(ep.key) != source.inbox_id:
@@ -169,24 +172,50 @@ class ProactiveIngress:
             # The endpoint is locked again after the classifier's network call.
             if not wake_available(c,ep,now):
                 raise MigrationDenied('proactive_attention_unavailable')
-            from .conversation_control import state as control_state
             conv_gen = control_state(c, ep)['stop_generation']
-            c.execute(
-                "UPDATE qq_official_proactive_observations SET state='queued' WHERE inbox_id=?",
-                (source.inbox_id,),
-            )
+            plan_id = None
+            if enqueue is not None:
+                plan_id = c.execute('SELECT plan_id FROM deliveries WHERE delivery_id=?',
+                                    (enqueue(c),)).fetchone()['plan_id']
+            c.execute("UPDATE qq_official_proactive_observations SET state='queued',plan_id=? WHERE inbox_id=?",
+                      (plan_id, source.inbox_id))
             return inbox['inbox_id'], ep.key, conv_gen, message['canonical_message_id']
 
-    async def wake(self, source, reason: str):
+    def _sticker_source(self, source):
+        with self.tx() as c:
+            row,(inbox,ep,actor,message,_)=self._candidate(c,source)
+            return dict(endpoint=ep, requester=actor, source_scope_key=message['scope_key'],
+                        source_native_message_id=inbox['native_message_id'], source_canonical_message_id=message['canonical_message_id'],
+                        expires_at=row['deadline_at'], source_generation=control_state(c,ep)['stop_generation'])
+
+    async def _wake_sticker(self,source,query):
+        if self.media is None:
+            return False
+        route = await self.calls(self._sticker_source, source)
+        try:
+            content, filename, _ = await self.media.unsolicited_sticker(query, route['endpoint'], route['requester'])
+        except MediaDenied:
+            return False
+        enqueue = await self.media.runtime.file_service.send_bytes(**route, content=content, filename=filename,
+            logical_key='official-media:proactive:' + source.inbox_id, current=lambda:self.current(source),
+            defer=True, purpose='unsolicited', source_proof=source)
+        await self.calls(self._mark_woken, source, enqueue)
+        self.media.runtime.sender.wake()
+        return True
+
+    async def wake(self, source, decision):
+        if decision.action=='sticker':
+            return await self._wake_sticker(source,decision.reason)
+        if self.wake_turn is None:return False
         inbox_id, ep_key, conv_gen, canonical_id = await self.calls(self._mark_woken, source)
-        if self.wake_turn is not None:
-            await self.wake_turn(
-                inbox_id=inbox_id,
-                endpoint=ep_key,
-                conversation_generation=conv_gen,
-                canonical_message_id=canonical_id,
-                reason=reason,
-            )
+        await self.wake_turn(
+            inbox_id=inbox_id,
+            endpoint=ep_key,
+            conversation_generation=conv_gen,
+            canonical_message_id=canonical_id,
+            reason=decision.reason,
+        )
+        return True
 
     def _discard(self,source):
         with self.tx() as c:

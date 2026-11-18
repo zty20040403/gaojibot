@@ -19,6 +19,8 @@ from src.bot_security.store import SecurityStore
 from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration
 from src.plugins.ai_chat.adapters.qq_official.content_reader import PinnedContentReader, PinnedMediaTransport
 from src.plugins.ai_chat.adapters.qq_official.media_runtime import MediaSession
+from src.plugins.ai_chat.adapters.qq_official.native_background_factory import ProactiveConfiguration, background_factory
+from src.plugins.ai_chat.conversation_config import change
 from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.llm_gateway import LLMGateway
 from src.plugins.ai_chat.media_library import MediaLibrary
@@ -64,7 +66,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
     application=turn_fixture.OfficialTurnEndToEndTests.application
     complete=turn_fixture.OfficialTurnEndToEndTests.complete
 
-    async def start(self,fake,*,flags,images=False,unknown_vision=False,frontend_vision=False):
+    async def start(self,fake,*,flags,images=False,unknown_vision=False,frontend_vision=False,background=None):
         self.app=self.application()
         profile = self.app.model_catalog.resolve('test')
         self.app.model_catalog = ModelCatalog({'test': replace(profile,
@@ -120,7 +122,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.runtime_instance=self.runtime(loaded=runtime_fixture.loaded_config(fake.app_id,base=fake.base_url),
             application=self.app,ledger=self.app.message_ledger,journal=self.app.turn_journal,
             migration_factory=self.host.migration_factory,media_factory=self.host.media_factory,
-            file_services_factory=self.host.files_factory if images else None)
+            file_services_factory=self.host.files_factory if images else None, background_factory=background)
         self.assertTrue(await self.runtime_instance.start())
         await asyncio.wait_for(fake.wait_ready(),5)
         await self.wait_db("SELECT bot_native_id FROM qq_official_accounts WHERE bot_identity_source='ready'")
@@ -283,6 +285,66 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
             cursor.execute('INSERT INTO sticker_library(media_id,created_at,updated_at) VALUES (?,?,?)',
                            (media,int(time.time()),int(time.time())))
         return media
+
+    async def test_group_attention_sends_one_curated_image_without_a_chat_turn(self):
+        decision = {'action': 'sticker', 'reason': 'TEST'}
+        with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json', return_value=decision) as scorer, \
+                patch('src.plugins.ai_chat.agent_loop._create_completion') as chat:
+            async with platform() as fake:
+                runtime = await self.start(fake, flags={'stickers': True}, images=True,
+                    background=background_factory(proactive_configuration=ProactiveConfiguration(enabled=True),
+                                                  proactive_profile='test'))
+                self.addAsyncCleanup(runtime.stop)
+                async def emit(native, text):
+                    await fake.emit('GROUP_MESSAGE_CREATE', {'id': native, 'content': text,
+                        'timestamp': datetime.now(timezone.utc).isoformat(), 'group_openid': 'TEST_GROUP',
+                        'author': {'member_openid': 'TEST_MEMBER'}})
+                await emit('TEST_INIT', 'hi')
+                endpoint = EndpointKey(runtime.loaded.account, 'group', 'TEST_GROUP')
+                await self.wait_db('SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id=?', ('TEST_INIT',))
+                with runtime.store.transaction() as cursor:
+                    cursor.execute("UPDATE qq_official_endpoints SET binding_state='active' WHERE endpoint_key=?", (endpoint.key,))
+                fake.proactive_allowed[('group', 'TEST_GROUP')] = True
+                await runtime.sender.refresh_bound_groups()
+                await emit('TEST_MISSING', 'TEST 有个好消息！')
+                await self.wait_db("SELECT inbox_id FROM qq_official_proactive_observations WHERE state='discarded'")
+                self.assertFalse(fake.received)
+                await self.seed_sticker()
+                fake.files_release = asyncio.Event()
+                await emit('TEST_CANCEL', 'TEST 又过了一次验收！')
+                await asyncio.wait_for(fake.files_seen.wait(), 12)
+                with runtime.store.transaction() as cursor:
+                    change(cursor, endpoint, 'proactive_enabled', False, actor='TEST_ADMIN', now=int(time.time()))
+                fake.files_release.set()
+                await self.wait_db("""SELECT inbox_id FROM qq_official_proactive_observations
+                    WHERE source_native_message_id='TEST_CANCEL' AND state='discarded' AND plan_id IS NULL""")
+                self.assertFalse(fake.received)
+                with runtime.store.transaction() as cursor:
+                    change(cursor, endpoint, 'proactive_enabled', True, actor='TEST_ADMIN', now=int(time.time()))
+                await emit('TEST_CELEBRATE', 'TEST 项目验收通过啦！')
+                await self.wait_db("""SELECT d.delivery_id FROM deliveries d JOIN qq_official_proactive_observations o USING(plan_id)
+                    WHERE d.purpose='unsolicited' AND d.status='committed' AND o.state='queued'""")
+                self.assertEqual(fake.uploaded['groups', 'TEST_GROUP'], png())
+                self.assertTrue(all(x[3]['file_type'] == 1 for x in fake.media_calls))
+                self.assertEqual([x['payload']['msg_type'] for x in fake.received], [7])
+                entered, release = asyncio.Event(), asyncio.Event()
+                async def hold_send(endpoint):
+                    entered.set()
+                    await release.wait()
+                with patch.object(runtime.sender.rate_gate, 'acquire', new=hold_send):
+                    await emit('TEST_QUEUED', 'TEST 我终于毕业啦！')
+                    await asyncio.wait_for(entered.wait(), 12)
+                    with runtime.store.transaction() as cursor:
+                        change(cursor, endpoint, 'proactive_enabled', False, actor='TEST_ADMIN', now=int(time.time()))
+                        change(cursor, endpoint, 'proactive_enabled', True, actor='TEST_ADMIN', now=int(time.time()))
+                    release.set()
+                    await self.wait_db("""SELECT delivery_id FROM deliveries JOIN qq_official_proactive_observations USING(plan_id)
+                        WHERE source_native_message_id='TEST_QUEUED' AND deliveries.status='cancelled'""")
+                self.assertEqual(len(fake.received), 1)
+                self.assertEqual(scorer.call_count, 4)
+                chat.assert_not_called()
+                self.assertFalse(self.query('SELECT execution_id FROM qq_official_turn_executions'))
+                await runtime.stop()
 
     async def test_voice_uses_native_audio_and_sends_once_per_turn(self):
         complete=self.completion([('reply_with_voice',{'text':'TEST voice'}),

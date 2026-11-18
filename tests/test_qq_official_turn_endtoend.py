@@ -148,7 +148,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
             main_calls.append(kwargs)
             return model_response('TEST main proactive answer', [], kwargs)
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',
-                   return_value={'trigger': True, 'reason': '在讨论算法问题'}) as model, \
+                   return_value={'action': 'speak', 'reason': '在讨论算法问题'}) as model, \
                 patch('src.plugins.ai_chat.agent_loop._create_completion', new=main_completion), \
                 patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.asyncio',
                       SimpleNamespace(sleep=debounce,timeout=asyncio.timeout)):
@@ -193,7 +193,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         async def main_completion(**kwargs):
             return model_response('TEST proactive answer',[],kwargs)
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',
-                   return_value={'trigger':True,'reason':'TEST reason'}) as classifier, \
+                   return_value={'action':'speak','reason':'TEST reason'}) as classifier, \
                 patch('src.plugins.ai_chat.agent_loop._create_completion',new=main_completion), \
                 patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.DEBOUNCE_SECONDS',0):
             async with verified_ready_platform() as fake:

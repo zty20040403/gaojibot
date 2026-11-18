@@ -30,7 +30,7 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
             except asyncio.CancelledError:
                 cancelled.set()
                 raise
-            return {'trigger':True,'reason':'TEST proactive reason'}
+            return {'action':'speak','reason':'TEST proactive reason'}
         async def main_completion(**kwargs):
             return base.model_response('TEST new proactive reply',[],kwargs)
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',side_effect=completion) as model, \

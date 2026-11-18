@@ -1,6 +1,5 @@
-"""A small classifier decides whether gaoji should chime in, outputting {trigger, reason}."""
+"""Decisions from the group attention classifier."""
 from dataclasses import dataclass
-import json
 import re
 
 NOTE_MAX_CHARS = 40
@@ -8,34 +7,18 @@ NOTE_MAX_CHARS = 40
 
 @dataclass(frozen=True)
 class ProactiveDecision:
-    trigger: bool = False
-    reason: str = ""
+    action: str
+    reason: str
 
 
-def parse_proactive_decision(payload) -> ProactiveDecision:
-    if isinstance(payload, str):
-        start = payload.find("{")
-        end = payload.rfind("}")
-        if start < 0 or end < start:
-            return ProactiveDecision(False, "")
-        try:
-            payload = json.loads(payload[start : end + 1])
-        except ValueError:
-            return ProactiveDecision(False, "")
-    if not isinstance(payload, dict):
-        return ProactiveDecision(False, "")
-    if "trigger" in payload:
-        trigger = payload.get("trigger")
-        if not isinstance(trigger, bool):
-            return ProactiveDecision(False, "")
-        raw_reason = payload.get("reason")
-        reason = str(raw_reason).strip()[:NOTE_MAX_CHARS] if isinstance(raw_reason, str) else ""
-        return ProactiveDecision(trigger, reason if trigger else "")
-    # Compatibility fallback if a legacy test fixture returns {"reply": "..."}
-    reply = payload.get("reply")
-    if isinstance(reply, str) and reply.strip():
-        return ProactiveDecision(True, reply.strip()[:NOTE_MAX_CHARS])
-    return ProactiveDecision(False, "")
+def parse_proactive_decision(payload: dict) -> ProactiveDecision:
+    action = payload.get("action")
+    if action == "silent":
+        return ProactiveDecision(action, "")
+    reason = payload.get("reason")
+    if action not in ("speak", "sticker") or not isinstance(reason, str) or not reason.strip():
+        raise ValueError("invalid proactive decision")
+    return ProactiveDecision(action, reason.strip()[:NOTE_MAX_CHARS])
 
 
 _LOW_VALUE_PLACEHOLDERS = frozenset(
