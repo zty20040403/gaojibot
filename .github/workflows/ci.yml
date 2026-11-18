@@ -42,6 +42,8 @@ jobs:
       PYTHON_DOTENV_DISABLED: "1"
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Isolate runtime state
         run: echo "AI_STATE_DIR=$RUNNER_TEMP/gaoji-ci-state" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v6
