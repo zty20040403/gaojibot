@@ -11,6 +11,7 @@ from .adapters.qq_official.vision_adapter import guarded_wait
 from .message_ir import MediaNode, body_from_json, body_to_json, render_prompt_text
 from .model_budget import ModelCallBudget, model_budget_scope
 from .prompt_context import quote_evidence
+from .scope_lease import serialize_scope_writer
 from .tools.background import definition
 from .video_format import duration, MAX_BYTES
 
@@ -137,7 +138,7 @@ class VideoSession:
         with self.app.message_ledger._transaction() as cursor:
             self.guard(cursor,source)
             scope = self.inbound.scope.key
-            cursor.execute('SELECT pg_advisory_xact_lock(hashtextextended(?,0))',('official-media-usage:'+scope,))
+            serialize_scope_writer(cursor, 'official-media-usage:' + scope)
             quota = self.app.usage_store.status(scope)
             charge = reservation.reserved
             if (not quota.allowed or quota.input_limit > 0 and quota.input_tokens+charge > quota.input_limit

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -13,6 +14,7 @@ from src.bot_storage import DatabaseSource, StoreCursor, StoreRow, open_store_co
 
 from .conversation_scope import ConversationScope
 from .platform_types import ActorKey, EndpointKey
+from .scope_lease import serialize_scope_writer
 from .message_ir import (
     MessageBody,
     MediaNode,
@@ -185,10 +187,7 @@ class MessageLedger:
         )
 
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self._transaction()) as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(hashtext(?))",
-                (f"ledger:{scope.key}",),
-            )
+            serialize_scope_writer(cursor, f"ledger:{scope.key}", now=occurred_at)
             conversation_id = self._ensure_conversation(cursor, scope)
             identity_platform = actor.account.platform if actor is not None else (identity_platform or scope.platform).strip()
             identity_id: int | None = None
@@ -1090,11 +1089,11 @@ class MessageLedger:
             self._require_legacy_platform(platform)
         account, kind, namespace = self._identity_domain(actor)
         display = display.strip()
-        cursor.execute(
-            "SELECT pg_advisory_xact_lock(hashtext(?))",
-            (_json_dump({"platform": platform, "account": account, "kind": kind,
-                         "namespace": namespace, "native": native_user_id}),),
-        )
+        identity_digest = hashlib.sha256(
+            _json_dump({"platform": platform, "account": account, "kind": kind,
+                        "namespace": namespace, "native": native_user_id}).encode("utf-8")
+        ).hexdigest()
+        serialize_scope_writer(cursor, f"identity:{identity_digest}")
         row = cursor.execute(
             """
             SELECT identity_id, principal_id
