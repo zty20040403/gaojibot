@@ -238,6 +238,7 @@ class PlatformChatService:
                         'shell': replace(policy_for_tool('shell'), timeout_seconds=310),
                         'run_code': replace(policy_for_tool('run_code'), timeout_seconds=310),
                         'video': replace(policy_for_tool('video'), timeout_seconds=250),
+                        'generate_image': replace(policy_for_tool('generate_image'), timeout_seconds=150),
                     }),
                     max_calls_per_round=24, max_total_calls=160,
                     max_tool_rounds=(
