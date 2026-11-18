@@ -144,7 +144,7 @@ class RetireLegacyImportTests(HistoricalImport, unittest.TestCase):
             ))
             kept = {name: connection.execute(f'SELECT * FROM {name}').fetchall() for name in
                     ("storage_migration_runs", "message_topic_edges", "delivery_attempt_quotas")}
-        migration.migrate(schema, "head")
+        migration.migrate(schema, "0114_retire_legacy_import")
         with migration.connect(schema) as connection:
             self.assertEqual(tables - _schema_snapshot(connection, schema)[0], set(TABLES))
             for name, rows in kept.items():
