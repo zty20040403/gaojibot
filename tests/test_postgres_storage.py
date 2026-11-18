@@ -19,8 +19,8 @@ from src.bot_storage.database import (
     _convert_qmark_placeholders,
     _translate_sql,
 )
-from src.bot_storage.legacy_migration import capture_legacy_snapshot
 from src.plugins.ai_chat.semantic_recall import SemanticDocument, _document_key
+from tests.legacy_import_history import HistoricalImport
 
 
 class PostgresCompatibilityTests(unittest.TestCase):
@@ -138,7 +138,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("ON CONFLICT DO NOTHING", ignored)
 
 
-class LegacySnapshotTests(unittest.TestCase):
+class LegacySnapshotTests(HistoricalImport, unittest.TestCase):
     def test_snapshot_has_stable_row_and_json_digests(self) -> None:
         with TemporaryDirectory() as temporary:
             state_dir = Path(temporary)
@@ -171,8 +171,8 @@ class LegacySnapshotTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            first = capture_legacy_snapshot(state_dir)
-            second = capture_legacy_snapshot(state_dir)
+            first = self.legacy.capture_legacy_snapshot(state_dir)
+            second = self.legacy.capture_legacy_snapshot(state_dir)
 
             self.assertEqual(first.fingerprint, second.fingerprint)
             self.assertEqual(first.row_count, 1)
@@ -194,7 +194,7 @@ class LegacySnapshotTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(RuntimeError, "legacy JSON is invalid"):
-                capture_legacy_snapshot(state_dir)
+                self.legacy.capture_legacy_snapshot(state_dir)
 
     def test_legacy_semantic_keys_are_normalized_for_postgres(self) -> None:
         document = SemanticDocument("scope", "message", "msg#1", "body", {})
@@ -219,7 +219,7 @@ class LegacySnapshotTests(unittest.TestCase):
             connection.commit()
             connection.close()
 
-            snapshot = capture_legacy_snapshot(state_dir)
+            snapshot = self.legacy.capture_legacy_snapshot(state_dir)
             table = next(
                 item
                 for item in snapshot.tables

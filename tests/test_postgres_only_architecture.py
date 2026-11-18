@@ -30,6 +30,7 @@ class PostgresOnlyArchitectureTests(unittest.TestCase):
         paths += [
             ROOT / "src/bot_security/store.py",
             ROOT / "src/bot_storage/database.py",
+            ROOT / "src/bot_storage/cli.py",
         ]
         for path in paths:
             source = path.read_text()
@@ -54,8 +55,8 @@ class PostgresOnlyArchitectureTests(unittest.TestCase):
                         self.assertNotEqual(node.attr, "_legacy_sqlite")
 
     def test_sqlite_fixtures_are_only_legacy_imports_or_guest_cookie_files(self):
-        allowed = {"test_postgres_storage.py", "test_postgres_integration.py",
-            "test_browser_state.py"}  # Creates only disposable Chromium fixtures.
+        allowed = {"test_postgres_storage.py", "test_browser_state.py"}
+        # Historical importer and disposable Chromium fixtures, never host stores.
         for path in (ROOT / "tests").glob("*.py"):
             tree = ast.parse(path.read_text())
             for node in ast.walk(tree):

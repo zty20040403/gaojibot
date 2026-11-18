@@ -93,7 +93,6 @@ _IDENTITY_COLUMNS = {
     "principals": "principal_id",
     "principal_identities": "identity_id",
     "messages": "canonical_message_id",
-    "embeddings": "embedding_id",
     "deliveries": "delivery_id",
     "delivery_attempts": "attempt_id",
     "usage_events": "usage_id",
@@ -627,8 +626,8 @@ def open_store_connection(
 ) -> tuple[None, StoreConnection]:
     if not isinstance(source, PostgresDatabase):
         raise DatabaseError(
-            "PostgreSQL storage is required; import legacy data with legacy_migration "
-            "and apply the Alembic migrations before starting the bot"
+            "PostgreSQL storage is required; see docs/postgresql-migration.md for "
+            "historical offline imports and apply Alembic migrations before starting the bot"
         )
     return None, source.store_connection()
 

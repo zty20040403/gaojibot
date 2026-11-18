@@ -10,12 +10,6 @@ from alembic import command
 from alembic.config import Config
 
 from .database import PostgresDatabase
-from .legacy_migration import (
-    capture_legacy_snapshot,
-    migrate_legacy_snapshot,
-    snapshot_report,
-    verify_legacy_snapshot,
-)
 from .media_cleanup import LegacyMediaCleanup
 from .schema import HEAD_REVISION
 
@@ -26,35 +20,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="gaoji-db",
-        description="Manage the bot PostgreSQL schema and legacy data migration.",
+        description="Manage the bot PostgreSQL schema and media cleanup.",
+        epilog="Historical SQLite/JSON imports: docs/postgresql-migration.md",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("upgrade", help="upgrade PostgreSQL to the schema head")
     subcommands.add_parser("current", help="show the current Alembic revision")
     subcommands.add_parser("check", help="check connectivity and schema revision")
-
-    inspect_parser = subcommands.add_parser(
-        "inspect-legacy",
-        help="inspect SQLite and JSON state without writing PostgreSQL",
-    )
-    inspect_parser.add_argument("--state-dir", type=Path, required=True)
-    inspect_parser.add_argument("--report", type=Path)
-
-    migrate_parser = subcommands.add_parser(
-        "migrate-legacy",
-        help="atomically import SQLite and JSON state into PostgreSQL",
-    )
-    migrate_parser.add_argument("--state-dir", type=Path, required=True)
-    migrate_parser.add_argument("--apply", action="store_true")
-    migrate_parser.add_argument("--resume", action="store_true")
-    migrate_parser.add_argument("--report", type=Path)
-
-    verify_parser = subcommands.add_parser(
-        "verify-legacy",
-        help="compare legacy state with PostgreSQL without writing",
-    )
-    verify_parser.add_argument("--state-dir", type=Path, required=True)
-    verify_parser.add_argument("--report", type=Path)
 
     cleanup_parser = subcommands.add_parser(
         "cleanup-legacy-media",
@@ -100,27 +72,6 @@ def main(argv: list[str] | None = None) -> int:
             _emit_report(report, args.report)
             return 0
 
-        snapshot = capture_legacy_snapshot(args.state_dir)
-        if args.command == "inspect-legacy":
-            report = snapshot_report(snapshot)
-        elif args.command == "migrate-legacy":
-            if not args.apply:
-                report = snapshot_report(snapshot)
-                report["dry_run"] = True
-            else:
-                report = migrate_legacy_snapshot(
-                    snapshot,
-                    _dsn(),
-                    schema=_schema(),
-                    resume=args.resume,
-                )
-        elif args.command == "verify-legacy":
-            report = verify_legacy_snapshot(snapshot, _dsn(), schema=_schema())
-        else:
-            parser.error("unknown command")
-            return 2
-        _emit_report(report, args.report)
-        return 0 if report.get("verified", True) else 1
     except Exception as exc:
         print(f"database command failed: {exc}", file=sys.stderr)
         return 1

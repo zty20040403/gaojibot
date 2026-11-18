@@ -19,7 +19,7 @@
 | 外部请求意图、幂等键、作业句柄与结果 | subagent_external_calls | 有句柄则查询；提交回执丢失则使用同一个幂等键核对/重试 |
 | 最终回复 | deliveries / delivery_attempts | 任务完成后独立入队，QQ 恢复连接再投递 |
 
-生产数据和隔离测试统一使用 PostgreSQL，SQLite 旧数据仅通过专用迁移工具导入。
+生产数据和隔离测试统一使用 PostgreSQL，SQLite 旧数据仅通过[固定历史版本离线导入](postgresql-migration.md)，不由当前宿主读取。
 本次需要 Alembic `0027_external_continuations`；迁移保留已有任务和消息，不重发历史终态任务。
 
 ## 执行顺序

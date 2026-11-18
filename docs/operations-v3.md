@@ -342,7 +342,7 @@ PYTHON_DOTENV_DISABLED=1 python -m unittest discover -s tests -v
 `AI_POSTGRES_DSN` 和 `TEST_POSTGRES_DSN`，并按 CI 配置完成 Alembic 迁移。
 `TEST_POSTGRES_DSN` 只接受显式回环地址和 `_test` / `_acceptance` 库名，不能与
 `AI_POSTGRES_DSN` 指向同一数据库。各测试 fixture 拥有独立 schema，结束后自动清理。
-SQLite 只保留在旧数据导入，以及隔离沙盒、独立本地模型管理器的请求回执中，不能作为 Bot 主库。
+SQLite 不能作为 Bot 主库。旧数据仅通过[固定历史版本的离线导入流程](postgresql-migration.md)处理；当前宿主包不再提供旧导入 CLI。隔离沙盒、独立本地模型管理器的 SQLite 不属于 Bot 主库。
 
 然后再启动 `python bot.py`，依次观察：OneBot 连接、outbox worker、可选 Matrix sync、
 semantic worker、Historian/Dream 日志。不要一次同时修改所有开关，否则某个外部服务
