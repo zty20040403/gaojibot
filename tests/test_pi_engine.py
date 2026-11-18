@@ -436,5 +436,12 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
                 settings.set(bad, 'high')
 
 
+    def test_launch_script_sources_set_environment_before_nounset(self) -> None:
+        from src.plugins.ai_chat.pi_engine import launch_script
+        script = launch_script(7, 'TEST_TOKEN', 'medium', 18640, 'PROMPT')
+        self.assertIn('set -e\n[ -r /etc/set-environment ] && . /etc/set-environment\nset -u', script)
+        self.assertNotIn('set -eu\n[ -r /etc/set-environment ]', script)
+
+
 if __name__ == '__main__':
     unittest.main()
