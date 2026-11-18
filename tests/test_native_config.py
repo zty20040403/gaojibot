@@ -63,6 +63,16 @@ class NativeConfigTests(unittest.IsolatedAsyncioTestCase):
         row = self.f.query('SELECT stopped,stop_generation,command_generation,image_daily_limit FROM conversation_settings')[0]
         self.assertEqual(tuple(row.values()),(True,4,9,200))
 
+    async def test_attention_command_requires_admin_and_accepts_explicit_utc_interval(self):
+        text,audits=await self.exercise('/config proactive_quiet_utc 23:30-01:15',role='admin')
+        self.assertIn('23:30-01:15',text); self.assertEqual(len(audits),1)
+        self.assertEqual(self.f.query('SELECT proactive_quiet_utc FROM conversation_settings')[0]['proactive_quiet_utc'],'23:30-01:15')
+
+    async def test_attention_command_rejects_malformed_interval(self):
+        text,audits=await self.exercise('/config proactive_quiet_utc 24:00-01:00',role='admin')
+        self.assertIn('用法',text); self.assertFalse(audits)
+        self.assertEqual(self.f.query('SELECT * FROM conversation_settings'),[])
+
     async def test_budget_admin_write_is_exact_once_and_default_off_is_a_mutation(self):
         text,audits = await self.exercise('/config daily_budget_usd 0.001000',role='admin')
         self.assertIn('daily_budget_usd = $0.001',text); self.assertEqual(len(audits),1)

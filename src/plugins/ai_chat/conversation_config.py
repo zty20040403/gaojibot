@@ -16,8 +16,16 @@ class Setting:
     about: str
     maximum: int = 0
     minimum: int = 0
+    interval: bool = False
 
     def validate(self, value):
+        if self.interval:
+            if value == 'off':
+                return value
+            if (type(value) is not str or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]-(?:[01][0-9]|2[0-3]):[0-5][0-9]', value)
+                    or value[:5] == value[6:]):
+                raise ValueError('invalid_conversation_setting_value')
+            return value
         if type(self.default) is str:
             return self.default if value==self.default else usd(daily_budgets.amount(value))
         if type(value) is not type(self.default) or type(value) is int and not self.minimum<=value<=self.maximum:
@@ -38,6 +46,8 @@ class Setting:
 SETTINGS = {
     'agent_timeout_hours':Setting(6,'commands','1–6小时；只影响新任务',6,1),
     'proactive_enabled':Setting(True,'conversations','仅群聊主动接话；仍需宿主启用分类器'),
+    'proactive_hourly_limit':Setting(8,'conversations','每群滚动一小时最多主动接话次数；0禁用',60),
+    'proactive_quiet_utc':Setting('off','conversations','UTC 静默时段 HH:MM-HH:MM（可跨午夜）；off 关闭',interval=True),
     'image_captions':Setting(False,'captions','新入站图片说明；仍需宿主视觉服务'),
     'image_daily_limit':Setting(200,'captions','北京时间每天图片数；0禁用',10000),
     'daily_budget_usd':Setting('off','budgets','美元/天，最多1000000、6位小数；0禁自动动作，off关闭；北京时间零点恢复，@仍计费'),
@@ -56,6 +66,7 @@ def snapshot(cursor, endpoint):
     values = {name:row[name] if row else item.default for name,item in SETTINGS.items()}
     if row:
         values['daily_budget_usd'] = usd(row['daily_budget_usd']) if row['daily_budget_usd'] is not None else 'off'
+        values['proactive_quiet_utc'] = row['proactive_quiet_utc'] or 'off'
     return values
 
 
@@ -90,8 +101,10 @@ def change(cursor, endpoint, name, value, *, actor, now, expected_version=None):
     version += 1
     cursor.execute('UPDATE admin_resource_versions SET version=?,updated_at=? WHERE resource_key=?',(version,now,item.resource))
     cursor.execute('INSERT INTO conversation_settings(scope_key) VALUES (?) ON CONFLICT DO NOTHING',(endpoint.scope.key,))
-    extra = ',proactive_generation=proactive_generation+CASE WHEN proactive_enabled<>? THEN 1 ELSE 0 END' if name=='proactive_enabled' else ''
-    args = (value,value,endpoint.scope.key) if extra else (value,endpoint.scope.key)
+    proactive_setting = name in ('proactive_enabled','proactive_hourly_limit','proactive_quiet_utc')
+    extra = ',proactive_generation=proactive_generation+?' if proactive_setting else ''
+    stored = None if name=='proactive_quiet_utc' and value=='off' else value
+    args = (stored,int(before!=value),endpoint.scope.key) if proactive_setting else (stored,endpoint.scope.key)
     if name=='daily_budget_usd':
         extra = ',budget_generation=budget_generation+?,proactive_generation=proactive_generation+?'
         changed = int(before!=value)
@@ -102,6 +115,23 @@ def change(cursor, endpoint, name, value, *, actor, now, expected_version=None):
         VALUES (?,?,?,?,?,'succeeded',?,?,'',?)''',(item.resource,version,actor,'conversation.config',endpoint.key,
             json.dumps({name:before}),json.dumps({name:value}),now))
     return snapshot(cursor,endpoint)
+
+
+def proactive_attention(cursor, endpoint):
+    """Per-physical-group policy; absence of a row means defaults."""
+    row = cursor.execute('SELECT proactive_hourly_limit,proactive_quiet_utc FROM conversation_settings WHERE scope_key=?',
+        (endpoint.scope.key,)).fetchone()
+    return (row['proactive_hourly_limit'],row['proactive_quiet_utc']) if row else (8,None)
+
+
+def in_quiet_utc(interval, now):
+    """Half-open UTC minute interval; handles midnight and excludes the end."""
+    if interval is None:return False
+    start,end = interval.split('-')
+    def minute(hhmm):return int(hhmm[:2])*60+int(hhmm[3:])
+    start,end = minute(start),minute(end)
+    current = (now//60)%1440
+    return start<=current<end if start<end else current>=start or current<end
 
 
 def proactive_state(cursor, endpoint):

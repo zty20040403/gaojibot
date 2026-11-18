@@ -1,5 +1,6 @@
 """Fixed settings, physical scope, atomic audit and independent proactive fencing."""
 import unittest
+from datetime import datetime,timezone
 
 from src.plugins.ai_chat import conversation_config as config
 from src.plugins.ai_chat.platform_types import EndpointKey
@@ -22,6 +23,26 @@ class ConfigParsingTests(unittest.TestCase):
         for value in (True,1.0,'1',None):
             with self.assertRaises(ValueError):config.SETTINGS['agent_timeout_hours'].validate(value)
 
+
+    def test_attention_settings_validate_strict_utc_bounds_and_hourly_range(self):
+        self.assertEqual(config.parse('proactive_hourly_limit 0'),('proactive_hourly_limit',0))
+        self.assertEqual(config.parse('proactive_hourly_limit 60'),('proactive_hourly_limit',60))
+        self.assertEqual(config.parse('proactive_quiet_utc 23:30-01:15'),('proactive_quiet_utc','23:30-01:15'))
+        self.assertEqual(config.parse('proactive_quiet_utc off'),('proactive_quiet_utc','off'))
+        for value in ('23:30-23:30','24:00-01:00','00:60-01:00','1:00-02:00',
+                      '00:00/02:00','００:００-02:00','offf',None,True,1):
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                config.SETTINGS['proactive_quiet_utc'].validate(value)
+        for value in (-1,61,True,'8',1.5):
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                config.SETTINGS['proactive_hourly_limit'].validate(value)
+        def at(hour,minute):
+            return int(datetime(2026,1,1,hour,minute,tzinfo=timezone.utc).timestamp())
+        for hour,minute,quiet in ((23,29,False),(23,30,True),(0,0,True),(1,14,True),(1,15,False)):
+            self.assertEqual(config.in_quiet_utc('23:30-01:15',at(hour,minute)),quiet)
+        self.assertFalse(config.in_quiet_utc(None,at(23,30)))
+        self.assertTrue(config.in_quiet_utc('09:00-10:00',at(9,0)))
+        self.assertFalse(config.in_quiet_utc('09:00-10:00',at(10,0)))
 
     def test_daily_dollar_budget_is_exact_off_is_not_read_and_invalid_values_reject(self):
         self.assertEqual(config.parse('daily_budget_usd 0.001000'),('daily_budget_usd','0.001'))
@@ -65,6 +86,26 @@ class ConversationConfigTests(unittest.TestCase):
         self.assertEqual({row['resource_key']:row['version'] for row in self.query('SELECT * FROM admin_resource_versions')},
             {'conversations':4,'commands':1,'captions':1})
 
+    def test_attention_is_per_physical_group_and_changed_only_on_real_policy_change(self):
+        other=EndpointKey(self.account,'group','TEST_OTHER_GROUP')
+        self.provision(other)
+        with self.tx() as cursor:
+            self.assertEqual(config.proactive_attention(cursor,self.endpoint),(8,None))
+            self.assertEqual(config.proactive_attention(cursor,other),(8,None))
+        self.assertEqual(self.change('proactive_hourly_limit',0)['proactive_hourly_limit'],0)
+        self.assertEqual(self.change('proactive_quiet_utc','23:30-01:15')['proactive_quiet_utc'],'23:30-01:15')
+        self.change('proactive_quiet_utc','23:30-01:15')
+        with self.tx() as cursor:
+            self.assertEqual(config.proactive_attention(cursor,self.endpoint),(0,'23:30-01:15'))
+            self.assertEqual(config.proactive_attention(cursor,other),(8,None))
+            self.assertEqual(config.proactive_state(cursor,self.endpoint),(True,2))
+            self.assertEqual(config.proactive_state(cursor,other),(True,0))
+        self.assertEqual(self.change('proactive_quiet_utc','off')['proactive_quiet_utc'],'off')
+        with self.tx() as cursor:
+            self.assertEqual(config.proactive_attention(cursor,self.endpoint),(0,None))
+            self.assertEqual(config.proactive_state(cursor,self.endpoint),(True,3))
+        self.assertEqual(self.query('SELECT version FROM admin_resource_versions WHERE resource_key=?',('conversations',))[0]['version'],4)
+
     def test_budget_change_uses_exact_audit_and_generations_without_clearing_stop(self):
         self.query('INSERT INTO conversation_settings(scope_key,stopped,stop_generation) VALUES (?,TRUE,7)',(self.endpoint.scope.key,))
         self.assertEqual(self.change('daily_budget_usd','0.001000')['daily_budget_usd'],'0.001')
@@ -87,6 +128,26 @@ class ConversationConfigTests(unittest.TestCase):
                 raise RuntimeError('TEST rollback')
         for table in ('conversation_settings','admin_audit_log','admin_resource_versions'):
             self.assertEqual(self.query('SELECT * FROM '+table),[])
+
+    def test_attention_migration_preserves_rows_and_rejects_invalid_database_values(self):
+        schema=migration.owned_schema(); self.addCleanup(migration.drop,schema)
+        migration.migrate(schema,'0111_scope_leases_checkpoints')
+        with migration.connect(schema) as connection:
+            connection.execute("INSERT INTO conversation_settings(scope_key,proactive_enabled) VALUES ('TEST_SCOPE',FALSE)")
+        migration.migrate(schema,'0112_proactive_attention')
+        with migration.connect(schema) as connection:
+            self.assertEqual(connection.execute('SELECT proactive_enabled,proactive_hourly_limit,proactive_quiet_utc FROM conversation_settings').fetchone(),
+                (False,8,None))
+            for sql in ("UPDATE conversation_settings SET proactive_hourly_limit=61",
+                        "UPDATE conversation_settings SET proactive_quiet_utc='23:00-23:00'",
+                        "UPDATE conversation_settings SET proactive_quiet_utc='25:00-01:00'"):
+                with self.assertRaises(Exception),connection.transaction():connection.execute(sql)
+            connection.execute("UPDATE conversation_settings SET proactive_hourly_limit=0,proactive_quiet_utc='23:00-01:00'")
+        with self.assertRaisesRegex(RuntimeError,'proactive_attention_requires_export'):
+            migration.migrate(schema,'0111_scope_leases_checkpoints',downgrade=True)
+        with migration.connect(schema) as connection:
+            connection.execute('UPDATE conversation_settings SET proactive_hourly_limit=8,proactive_quiet_utc=NULL')
+        migration.migrate(schema,'0111_scope_leases_checkpoints',downgrade=True)
 
     def test_real_migration_preserves_existing_values_and_guards_generation_downgrade(self):
         schema = migration.owned_schema(); self.addCleanup(migration.drop,schema)
