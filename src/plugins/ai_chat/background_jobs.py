@@ -52,6 +52,7 @@ class BackgroundJobs:
         hours=6,
         resume_job_id=None,
         workdir='',
+        fork_project='',
     ):
         if type(hours) is not int or not 1 <= hours <= 6:
             raise ValueError('后台任务时限必须是1–6小时。')
@@ -89,6 +90,8 @@ class BackgroundJobs:
             payload['resume_job_id'] = int(resume_job_id)
         if workdir:
             payload['workdir'] = str(workdir)
+        if fork_project:
+            payload['fork_project'] = fork_project
         job, _ = self.jobs.enqueue(
             kind=kind,
             idempotency_key=key,

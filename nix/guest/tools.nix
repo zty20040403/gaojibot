@@ -85,6 +85,7 @@
     "sandbox_pdf.py"
     "sandbox_gaoji.py"
     "sandbox_gaoji_units.py"
+    "sandbox_project_fork.py"
     "sandbox_identity.py"
   ];
   playwrightCore = pkgs.fetchurl {
@@ -131,6 +132,7 @@
   commands = [
     (wrapper "gaoji" "${share}/share/gaoji/sandbox_gaoji.py")
     (wrapper "gaoji-python" "")
+    (wrapper "gaoji-project-fork" "${share}/share/gaoji/sandbox_project_fork.py")
     (wrapper "gaoji-video" "${share}/share/gaoji/sandbox_video.py")
     (wrapper "gaoji-transcribe" "${share}/share/gaoji/sandbox_transcribe.py")
     (wrapper "gaoji-pdf" "${share}/share/gaoji/sandbox_pdf.py")
