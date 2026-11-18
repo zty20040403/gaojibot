@@ -16,7 +16,7 @@ from ..platform_types import InboundMessage
 from ..tasks import RunningTaskRegistry
 
 
-CommandName = Literal["help", "bind", "model", "effort", "usage", "task", "cancel", "memory", "clear", "stop", "start", "kill", "logins", "logout", "config", "status"]
+CommandName = Literal["help", "bind", "model", "effort", "persona", "usage", "task", "cancel", "memory", "clear", "stop", "start", "kill", "logins", "logout", "config", "status"]
 CommandStatus = Literal["ok", "unknown", "syntax", "denied", "unavailable", "not_found", "unsupported", "error"]
 _ALIASES: dict[str, CommandName] = {
     "memory": "memory", "记忆": "memory",
@@ -25,6 +25,7 @@ _ALIASES: dict[str, CommandName] = {
     "bind": "bind", "绑定": "bind",
     "model": "model", "模型": "model", "切换模型": "model",
     "effort": "effort", "强度": "effort", "推理强度": "effort", "思考强度": "effort", "reasoning": "effort",
+    "persona": "persona", "人设": "persona",
     "usage": "usage", "用量": "usage", "token用量": "usage",
     "task": "task", "tasks": "task", "任务": "task", "ps": "task", "status": "status",
     "cancel": "cancel", "停止": "cancel", "取消": "cancel", "取消任务": "cancel",
@@ -32,6 +33,7 @@ _ALIASES: dict[str, CommandName] = {
     "logins": "logins", "logout": "logout", "config": "config",
 }
 _RESETS = frozenset({"default", "reset", "默认", "重置"})
+_EFFORT_RESETS = _RESETS | frozenset({"auto", "自动"})
 _STATUS = frozenset({"status", "list", "ls", "状态", "列表"})
 _EFFORT_ALIASES = {"最低": "minimal", "低": "low", "中": "medium", "高": "high", "超高": "xhigh", "最高": "max", "关闭": "none"}
 
@@ -87,6 +89,8 @@ class CommandPolicy:
     allow_effort_read: bool = False
     allow_effort_change: bool = False
     allow_group_default: bool = False
+    allow_effort_group_default: bool | None = None
+    auto_effort: bool = False
     # /model (without 群默认) reads and sets the one host-wide model, not a personal one.
     global_model: bool = False
 
@@ -110,6 +114,7 @@ class CommandServices:
     browser: ResultCallback | None = None
     config: ResultCallback | None = None
     status: ResultCallback | None = None
+    persona: ResultCallback | None = None
 
 
 async def _await(value):
@@ -138,7 +143,7 @@ async def dispatch_command(
     if request.name == "help":
         if request.argument:
             return CommandResult("syntax", "用法：/help")
-        extras = [label for key, label in (("memory", "/memory"), ("clear", "/clear"), ("browser", "/logins、/logout <域名>"), ("config", "/config"), ("status", "/status"))
+        extras = [label for key, label in (("persona", "/persona"), ("memory", "/memory"), ("clear", "/clear"), ("browser", "/logins、/logout <域名>"), ("config", "/config"), ("status", "/status"))
                   if getattr(services, key) is not None]
         if services.conversation_control is not None:
             extras += ['/stop', '/start', '/kill']
@@ -178,6 +183,14 @@ async def dispatch_command(
             return result if isinstance(result,CommandResult) else CommandResult('error','命令服务返回无效结果。')
         except Exception:
             return CommandResult('unavailable','会话配置暂时不可用；请重新查询，不能假定已修改。')
+    if request.name=='persona':
+        if services.persona is None:
+            return CommandResult('unavailable','人设配置入口尚未接通。')
+        try:
+            result = await _await(services.persona(inbound,request))
+            return result if isinstance(result,CommandResult) else CommandResult('error','命令服务返回无效结果。')
+        except Exception:
+            return CommandResult('unavailable','人设配置暂时不可用；请稍后再试。')
     if request.name in {'stop','start','kill'}:
         if request.argument:
             return CommandResult('syntax', f'用法：/{request.name}')
@@ -260,7 +273,12 @@ async def _setting_command(request: ParsedCommand, inbound: InboundMessage, serv
     words = value.split(None, 1)
     group_default = bool(words and words[0].casefold() in {"group", "群默认"})
     if group_default:
-        if inbound.endpoint.kind != "group" or not policy.allow_group_default:
+        group_allowed = (
+            policy.allow_group_default
+            if model or policy.allow_effort_group_default is None
+            else policy.allow_effort_group_default
+        )
+        if inbound.endpoint.kind != "group" or not group_allowed:
             return CommandResult("denied", "宿主未授权修改当前入口的群默认配置。")
         value = words[1].strip() if len(words) == 2 else ""
     read_allowed = policy.allow_model_read if model else policy.allow_effort_read
@@ -285,13 +303,17 @@ async def _setting_command(request: ParsedCommand, inbound: InboundMessage, serv
             if current is None and inbound.endpoint.kind == "group":
                 current = await _store(services, store.get_scope_default if model else store.get_scope_member_default, target_scope)
         # Policy may hide a saved profile whose access has since been revoked.
-        displayed = current if current in options else default if default in options else "宿主默认"
-        return CommandResult("ok", f"当前{label}：{displayed}\n可用：" + ("、".join(options) or "无"))
+        if not model and current is None and policy.auto_effort:
+            displayed = f"自动（闲聊 medium / 提问 {default or 'high'}）"
+        else:
+            displayed = current if current in options else default if default in options else "宿主默认"
+        avail = ("、".join(options) + ("、auto" if not model and options else "")) or "无"
+        return CommandResult("ok", f"当前{label}：{displayed}\n可用：{avail}")
     if not change_allowed:
         if global_model:
             return CommandResult("denied", "模型由宿主 owner 统一设置，其他人只能查看。")
         return CommandResult("denied", "宿主未授权更改此模型配置。")
-    reset = value.casefold() in _RESETS
+    reset = value.casefold() in (_RESETS if model else _EFFORT_RESETS)
     if not model and not reset:
         value = _EFFORT_ALIASES.get(value.casefold(), value.casefold())
     if not reset and value not in options:
