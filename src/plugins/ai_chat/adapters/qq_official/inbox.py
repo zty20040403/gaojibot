@@ -29,6 +29,7 @@ from .codec import DecodedMessage, RejectedMessage, decode_message
 from .conversation_control import ingest as ingest_control
 from .input_normalization import normalize_input
 from .lease import LeaseToken, assert_epoch
+from .proactive_ingress import record_group_activity
 
 
 class IngressError(RuntimeError):
@@ -175,6 +176,7 @@ def _write_to_ledger(
         reply = False
     cursor.execute("UPDATE qq_official_inbound_events SET trigger_requested=? WHERE inbox_id=? AND account_key=?",
                    (reply, inbox_id, account.key))
+    record_group_activity(cursor, endpoint, canonical, now, direct=reply or command or current['stopped'])
     return IngestResult(
         "processed", "", canonical, echo_state="not_echo", reply_requested=reply,
         endpoint_key=endpoint.key, sender_actor_key=decoded.actor.key,
@@ -527,6 +529,8 @@ class OfficialInboxStore:
                         return Acceptance("duplicate", inbox_id, "migration_route_unavailable")
                 cursor.execute("UPDATE qq_official_inbound_events SET trigger_requested=TRUE,updated_at=? WHERE inbox_id=?",
                                (now, inbox_id))
+                if original['status'] == 'processed':
+                    record_group_activity(cursor, endpoint, original['canonical_message_id'], now, direct=True)
                 return Acceptance("inbox", inbox_id, "new_at_event")
         return Acceptance("duplicate", inbox_id, "duplicate_message")
 

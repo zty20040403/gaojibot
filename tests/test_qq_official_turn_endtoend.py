@@ -136,22 +136,14 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def test_proactive_debounces_and_limits_conversation_to_eight_per_hour(self):
         from src.plugins.ai_chat.adapters.qq_official.native_background_factory import background_factory, ProactiveConfiguration
         app=self.application()
-        received,count = asyncio.Event(),0
         main_calls = []
-        async def debounce(_seconds):
-            nonlocal count
-            count += 1
-            if count>=3:
-                received.set()
-            await received.wait()
         async def main_completion(**kwargs):
             main_calls.append(kwargs)
             return model_response('TEST main proactive answer', [], kwargs)
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',
                    return_value={'action': 'speak', 'reason': '在讨论算法问题'}) as model, \
                 patch('src.plugins.ai_chat.agent_loop._create_completion', new=main_completion), \
-                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.asyncio',
-                      SimpleNamespace(sleep=debounce,timeout=asyncio.timeout)):
+                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.HOT_LOOK_SECONDS',1):
             async with verified_ready_platform() as fake:
                 runtime=self.runtime(loaded=runtime_fixture.loaded_config(fake.app_id,base=fake.base_url),
                     application=app,ledger=app.message_ledger,journal=app.turn_journal,
@@ -195,7 +187,7 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',
                    return_value={'action':'speak','reason':'TEST reason'}) as classifier, \
                 patch('src.plugins.ai_chat.agent_loop._create_completion',new=main_completion), \
-                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.DEBOUNCE_SECONDS',0):
+                patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.HOT_LOOK_SECONDS',0):
             async with verified_ready_platform() as fake:
                 runtime=self.runtime(loaded=runtime_fixture.loaded_config(fake.app_id,base=fake.base_url),
                     application=app,ledger=app.message_ledger,journal=app.turn_journal,

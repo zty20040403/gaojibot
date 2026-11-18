@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, asynccontextmanager
 import inspect
 import hashlib
 import logging
@@ -407,10 +407,8 @@ class OfficialRuntime:
                 return
             if result.conversation_control:
                 on_control(result.endpoint_key, result.conversation_control)
-            if result.conversation_stopped and not result.reply_requested:
+            if not result.reply_requested:
                 return
-            if result.reply_requested and self.background_service is not None:
-                self.background_service.direct_message(result.endpoint_key)
             source = SimpleNamespace(
                 inbox_id=inbox_id, batch_message_ids=(), job_id=None,
                 payload={'inbox_id': inbox_id}, lease_owner=token.holder_id,
@@ -420,10 +418,10 @@ class OfficialRuntime:
                 proactive_reason="",
                 command=result.turn_text.lstrip().startswith(('/', '!')),
             )
-            await dispatch_turn(source, result.reply_requested)
+            await dispatch_turn(source)
 
-        async def dispatch_turn(source, reply_requested=True):
-            if reply_requested and not source.command:
+        async def dispatch_turn(source):
+            if not source.command:
                 running_state = active_by_endpoint.get(source.endpoint)
                 if running_state is not None and running_state.conversation_generation == source.conversation_generation:
                     running_state.pending.append(source)
@@ -465,18 +463,14 @@ class OfficialRuntime:
 
             async def run():
                 # Control and inspection commands never queue behind a model.
-                with nullcontext() if source.command else work.track(source.endpoint,source.conversation_generation):
-                    try:
-                        if reply_requested:
-                            if self.turn_consumer is not None:
-                                await self.turn_consumer(source)
-                        elif self.background_service is not None:
-                            await self.background_service.on_ingested(source)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as error:
-                        frames = [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)[-4:]]
-                        self.logger.warning(f'QQ turn error={type(error).__name__} frames={frames}')
+                try:
+                    if self.turn_consumer is not None:
+                        await self.turn_consumer(source)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    frames = [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)[-4:]]
+                    self.logger.warning(f'QQ turn error={type(error).__name__} frames={frames}')
             task = asyncio.create_task(run())
             active_turns.add(task)
             task.add_done_callback(active_turns.discard)
@@ -495,7 +489,7 @@ class OfficialRuntime:
             )
             fence_reset = active_job_fence.set(None)
             try:
-                await dispatch_turn(source, reply_requested=True)
+                await dispatch_turn(source)
             finally:
                 active_job_fence.reset(fence_reset)
 
@@ -563,6 +557,12 @@ class OfficialRuntime:
                 if self.file_service is not None and loop.time() >= next_file_scan:
                     await self.file_service.maintain()
                     next_file_scan = loop.time() + 30
+                await asyncio.sleep(self.probe_seconds)
+
+        async def attention_worker():
+            while not self._stopping:
+                if gateway.state == 'ready':
+                    await background.proactive.glance()
                 await asyncio.sleep(self.probe_seconds)
 
         async with self.protocol_factory(self.loaded, checkpoint=checkpoint, on_checkpoint=on_checkpoint,
@@ -678,6 +678,8 @@ class OfficialRuntime:
             self.state, self.reason = "running", "receiving_events"
             interrupted = await self._calls(self._recover_interrupted_turns, token)
             tasks = [asyncio.create_task(gateway.run(on_dispatch)), asyncio.create_task(monitor())]
+            if background.proactive is not None:
+                tasks.append(asyncio.create_task(attention_worker()))
             if self.sender is not None:
                 tasks.append(asyncio.create_task(self.sender.run()))
             if self.approval_service is not None:
