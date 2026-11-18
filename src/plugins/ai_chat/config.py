@@ -579,7 +579,7 @@ class Settings:
             sandbox_max_file_bytes=(
                 0
                 if sandbox_max_file_mb <= 0
-                else min(sandbox_max_file_mb, 100) * 1024 * 1024
+                else min(sandbox_max_file_mb, 200) * 1024 * 1024
             ),
             enabled_groups=group_ids("AI_ENABLED_GROUPS"),
             disabled_groups=group_ids("AI_DISABLED_GROUPS"),

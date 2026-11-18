@@ -41,7 +41,7 @@ class FileServiceConfig:
     manager: object = field(default=None, repr=False)
     generation_enabled: bool = False
     generation_limits: GenerationLimits = GenerationLimits(
-        max_file_bytes=MAX_FILE_BYTES, max_total_artifact_bytes=256 * 1024 * 1024
+        max_file_bytes=MAX_FILE_BYTES, max_total_artifact_bytes=512 * 1024 * 1024
     )
     max_file_bytes: int = MAX_FILE_BYTES
     quota_bytes: int = 2 * 1024 * 1024 * 1024

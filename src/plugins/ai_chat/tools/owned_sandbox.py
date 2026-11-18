@@ -16,7 +16,7 @@ _SEND_FILE_TOOL = {
     "type": "function",
     "function": {
         "name": "send_file",
-        "description": "从当前会话沙盒读取并发送任意格式文件（图片含 GIF 直接显示成图，上限 100 MB）。",
+        "description": "从当前会话沙盒读取并发送任意格式文件（上限 200 MB；图片含 GIF 直接显示成图，上限 10 MB；传 20 MB 以上大文件前先用 say 说一声）。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -38,7 +38,7 @@ _SEND_IMAGE_TOOL = {
     "type": "function",
     "function": {
         "name": "send_image",
-        "description": "把本会话容器 /work 里的图片（PNG/JPEG/GIF；WebP 自动转 PNG）直接发到当前会话显示。",
+        "description": "把本会话容器 /work 里的图片（PNG/JPEG/GIF，上限 10 MB；WebP 自动转 PNG）直接发到当前会话显示。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -216,7 +216,7 @@ def project(definition, context):
         return
     function["description"] = {
         "sandbox_read_file": "读取本会话工作区里的文本文件（例如报告或输出）。",
-        "send_file_from_sandbox": "从本会话工作区发送任意格式文件（图片含 GIF 直接显示成图，上限 100 MB）。",
+        "send_file_from_sandbox": "从本会话工作区发送任意格式文件（上限 200 MB；图片含 GIF 直接显示成图，上限 10 MB）。",
     }[name]
     function["parameters"]["properties"].pop("sandbox_id", None)
     function["parameters"]["required"] = ["path"]

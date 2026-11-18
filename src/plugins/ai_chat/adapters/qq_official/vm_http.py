@@ -372,7 +372,7 @@ class VMHTTP:
         cap = getattr(self.manager, "max_file_bytes", None)
         if service is None or sender is None or type(cap) is not int or cap <= 0:
             raise VMDenied("vm_files_unavailable", 503)
-        cap = min(cap, service.config.max_file_bytes, 100 * 1024 * 1024)
+        cap = min(cap, service.config.max_file_bytes, 200 * 1024 * 1024)
         key = current.endpoint.key
         inflight_key = (key, request_id)
         if inflight_key in self.inflight:

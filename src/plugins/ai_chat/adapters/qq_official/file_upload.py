@@ -15,9 +15,8 @@ import httpx
 from src.qq_official.errors import QQAPIError
 from ...application.owned_sandbox import GenerationError
 
-MAX_FILE_BYTES = 100 * 1024 * 1024
+MAX_FILE_BYTES = 200 * 1024 * 1024
 SMALL_FILE_BYTES = 5 * 1024 * 1024
-DAILY_BYTES = 2 * 1024 * 1024 * 1024
 HASH_PREFIX_BYTES = 10_002_432
 logger = logging.getLogger(__name__)
 
@@ -25,6 +24,8 @@ _UPLOAD_REASONS = {
     40093003: "群文件超过上限，请清理群文件空间。",
     40093001: "分片上传会话无效或已过期，请重试。",
     40093002: "分片上传校验失败，请重试。",
+    40093006: "文件大小超过腾讯单文件上限（200 MB）。",
+    40093011: "图片或文件名参数不符合腾讯要求。",
     850012: "腾讯拒绝了文件上传参数（大小或摘要不合法）。",
     40034006: "文件内容未通过腾讯安全审核。",
     40034105: "这个群没开主动发言，请群主打开。",
@@ -51,12 +52,10 @@ class UploadedFile:
 class FileUploader:
     def __init__(self, rest, *, clock=time.time, client=None):
         self.rest, self.clock = rest, clock
-        self.client = client or httpx.AsyncClient(timeout=120, trust_env=False)
+        self.client = client or httpx.AsyncClient(timeout=240, trust_env=False)
         self._owns_client = client is None
         self.cache: dict[tuple[str, str, str], UploadedFile] = {}
         self._lock = asyncio.Lock()
-        self._day: int | None = None
-        self._bytes = 0
 
     async def close(self):
         if self._owns_client:
@@ -76,11 +75,17 @@ class FileUploader:
             return await self.rest.request("POST", path, payload)
 
     async def _multipart(self, path, content, metadata, current=None):
-        prepared = await self._request(path + "/upload_prepare", metadata, current)
+        part_meta = (
+            {**metadata, "file_name": "picture"}
+            if metadata["file_type"] == 1
+            else metadata
+        )
+        prepared = await self._request(path + "/upload_prepare", part_meta, current)
         upload_id, block_size = prepared["upload_id"], int(prepared["block_size"])
-        for part in sorted(prepared["parts"], key=lambda item: item["index"]):
+        parts = sorted(prepared["parts"], key=lambda item: int(item["index"]))
+        for pos, part in enumerate(parts):
             index = int(part["index"])
-            block = content[index * block_size:(index + 1) * block_size]
+            block = content[pos * block_size:(pos + 1) * block_size]
             if current is not None:
                 await current()
             response = await self.client.put(part["presigned_url"], content=block)
@@ -93,8 +98,8 @@ class FileUploader:
             }, current)
         return await self._request(path + "/files", {
             "upload_id": upload_id,
-            "file_type": metadata["file_type"],
-            "file_name": metadata["file_name"],
+            "file_type": part_meta["file_type"],
+            "file_name": part_meta["file_name"],
             "srv_send_msg": False,
         }, current)
 
@@ -105,7 +110,7 @@ class FileUploader:
         if size <= 0:
             raise FileUploadError("文件为空，无法上传。")
         if size > MAX_FILE_BYTES:
-            raise FileUploadError("文件超过 100 MB，无法上传。")
+            raise FileUploadError("文件超过 200 MB，无法上传。")
         sha = hashlib.sha256(content).hexdigest()
         key = (endpoint.key, sha, filename)
         collection = "groups" if endpoint.kind == "group" else "users"
@@ -125,10 +130,6 @@ class FileUploader:
             self.cache = {k: v for k, v in self.cache.items() if v.expires_at > now}
             if key in self.cache:
                 return self.cache[key]
-            if self._day != now // 86400:
-                self._day, self._bytes = now // 86400, 0
-            if self._bytes + size > DAILY_BYTES:
-                raise FileUploadError("今天上传的文件已达到 2 GB，请明天再试。")
             started = time.monotonic()
             try:
                 if size <= SMALL_FILE_BYTES:
@@ -159,6 +160,5 @@ class FileUploader:
                 raise FileUploadError("腾讯没有返回文件信息，文件还没有发送，可以重试。")
             result = UploadedFile(info, int(self.clock()) + min(86400, int(response.get("ttl", 86400))))
             self.cache[key] = result
-            self._bytes += size
             logger.info("QQ upload bytes=%d elapsed=%.2f result=uploaded", size, time.monotonic() - started)
             return result

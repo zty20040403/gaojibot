@@ -12,7 +12,6 @@ import httpx
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.file_services import FileServiceConfig, FileServices
 from src.plugins.ai_chat.adapters.qq_official.file_upload import (
-    DAILY_BYTES,
     MAX_FILE_BYTES,
     SMALL_FILE_BYTES,
     FileUploadError,
@@ -90,11 +89,50 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(FileUploadError, "群文件超过上限.*40093003"):
             await uploader.upload(ENDPOINT, b"TEST", "report.txt")
         self.assertEqual((await uploader.upload(ENDPOINT, b"TEST", "report.txt")).file_info, "TEST_RETRY")
-        with self.assertRaisesRegex(FileUploadError, "100 MB"):
+        with self.assertRaisesRegex(FileUploadError, "200 MB"):
             await uploader.upload(ENDPOINT, b"x" * (MAX_FILE_BYTES + 1), "huge.bin")
-        uploader._day, uploader._bytes = int(uploader.clock()) // 86400, DAILY_BYTES
-        with self.assertRaisesRegex(FileUploadError, "2 GB"):
-            await uploader.upload(ENDPOINT, b"y", "next.bin")
+
+    async def test_one_based_ten_plus_parts_and_large_image_multipart_and_no_daily_cap(self):
+        # 12 parts with 1-based string indices ("1".."12") must sort numerically and slice from offset 0
+        block_size = 512 * 1024
+        content = b"".join(bytes([i + 1]) * block_size for i in range(11)) + b"Z" * 123
+        calls, blocks = [], []
+
+        async def request(_method, path, payload):
+            calls.append((path, payload))
+            if path.endswith("/upload_prepare"):
+                return {
+                    "upload_id": "TEST_1BASED",
+                    "block_size": str(block_size),
+                    "parts": [
+                        {"index": str(i), "presigned_url": f"https://storage.example/part/{i}"}
+                        for i in [10, 2, 1, 12, 11, 3, 4, 5, 6, 7, 8, 9]
+                    ],
+                }
+            return {"file_info": "TEST_1BASED_OK", "ttl": 86400} if path.endswith("/files") else {}
+
+        async def put(url, *, content):
+            blocks.append(content)
+            return httpx.Response(200, request=httpx.Request("PUT", url))
+
+        uploader = FileUploader(SimpleNamespace(request=request), client=SimpleNamespace(put=put))
+        res = await uploader.upload(ENDPOINT, content, "archive.bin")
+        self.assertEqual(res.file_info, "TEST_1BASED_OK")
+        self.assertEqual(b"".join(blocks), content)
+        self.assertEqual(
+            [payload["part_index"] for path, payload in calls if path.endswith("part_finish")],
+            list(range(1, 13)),
+        )
+
+        # >5 MiB image multipart uses file_name='picture' in upload_prepare and /files merge
+        calls.clear()
+        blocks.clear()
+        img_bytes = b"\x89PNG\r\n\x1a\n" + b"p" * (SMALL_FILE_BYTES + 64)
+        res_img = await uploader.upload(ENDPOINT, img_bytes, "big_photo.png")
+        self.assertEqual(res_img.file_info, "TEST_1BASED_OK")
+        self.assertEqual(calls[0][1]["file_type"], 1)
+        self.assertEqual(calls[0][1]["file_name"], "picture")
+        self.assertEqual(calls[-1][1]["file_name"], "picture")
 
 
 class FileDeliveryTests(ExecutionFixture, unittest.IsolatedAsyncioTestCase):

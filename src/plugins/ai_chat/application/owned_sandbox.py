@@ -45,7 +45,7 @@ class GenerationLimits:
     def __post_init__(self):
         bounds = {'max_file_bytes': 256 * 1024 * 1024, 'max_write_bytes': 16 * 1024 * 1024,
             'max_read_bytes': 64 * 1024, 'max_seconds': 300, 'max_sandboxes': 16,
-            'max_artifacts': 16, 'max_total_artifact_bytes': 256 * 1024 * 1024, 'max_output_chars': 100000, 'max_zip_entries': 10000,
+            'max_artifacts': 16, 'max_total_artifact_bytes': 512 * 1024 * 1024, 'max_output_chars': 100000, 'max_zip_entries': 10000,
             'max_zip_expanded_bytes': 256 * 1024 * 1024}
         if any(type(getattr(self, k)) is not int or not 1 <= getattr(self, k) <= v for k, v in bounds.items()):
             raise GenerationError('invalid_generation_limits')
