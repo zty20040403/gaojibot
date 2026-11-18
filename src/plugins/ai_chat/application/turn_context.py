@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ..conversation_window import MEMORY_TOKENS, build_tail
 from ..platform_types import InboundMessage
+from ..status_line import compute_status_line
 from ..timeline import estimate_tokens, render_line
 from ..turn_journal import tool_effect_labels
 
@@ -89,6 +90,15 @@ def turn_window(
         message = ledger.get_in_scope(scope, target) if target is not None else None
         if message is not None:
             parts.append("[引用的消息]\n" + render_line(message, max_chars=4000))
+    status = compute_status_line(
+        ledger,
+        scope,
+        now=inbound.occurred_at or None,
+        current_message_id=current,
+        mentions_bot=inbound.mentions_bot,
+    )
+    if status:
+        parts.append("[状态]\n" + status)
     return tail, render_memory(store.memory(scope.key)), "\n\n".join(parts)
 
 
