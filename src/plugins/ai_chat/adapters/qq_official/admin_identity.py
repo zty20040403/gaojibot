@@ -7,6 +7,7 @@ import json
 import re
 import secrets
 
+from src.bot_security.store import lock_admin_security
 from src.plugins.ai_chat.platform_types import AccountKey,ActorKey,EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
 from src.plugins.ai_chat.adapters.qq_official.authority import ConsoleAuthorization,OwnerAuthority,audit
@@ -67,11 +68,6 @@ class AdminIdentityBinding:
         if self.runtime._token is not self.token or self.runtime._stopping:raise IdentityBindingDenied()
         assert_epoch(c,self.token)
 
-    @staticmethod
-    def _security_lock(c):
-        c.execute('INSERT INTO admin_security_lock VALUES (1,0) ON CONFLICT(lock_id) DO NOTHING')
-        c.execute('UPDATE admin_security_lock SET revision=revision+1 WHERE lock_id=1')
-
     def _console(self,c,authorization):
         if type(authorization) is not ConsoleAuthorization or not self.owners.console_current(c,authorization):
             raise IdentityBindingDenied()
@@ -81,7 +77,7 @@ class AdminIdentityBinding:
 
     def create(self,authorization):
         with self.runtime.store.transaction() as c:
-            self._fence(c);self._security_lock(c);self._console(c,authorization);now=self._now()
+            self._fence(c);lock_admin_security(c);self._console(c,authorization);now=self._now()
             count=c.execute('''SELECT COUNT(*) AS n FROM qq_official_admin_identity_challenges
                 WHERE account_key=? AND admin_account_id=? AND created_at>?''',
                 (self.account.key,authorization.account_id,now-600)).fetchone()['n']
@@ -118,7 +114,7 @@ class AdminIdentityBinding:
         try:self._source_route(c,row)
         except IdentityBindingDenied:
             if require_source:raise
-        self._security_lock(c);self._console(c,authorization)
+        lock_admin_security(c);self._console(c,authorization)
         return c.execute(query+' FOR UPDATE',args).fetchone()
 
     def status(self,identity,authorization):

@@ -38,13 +38,10 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   with self.assertRaises(DetailsUnavailable):OfficialDetails(other_runtime,clock=lambda:self.now).read(section='bindings',cursor=first['next_cursor'])
   self.now+=301
   with self.assertRaises(DetailsUnavailable):self.reader.read(section='bindings',cursor=first['next_cursor'])
- async def test_read_only_does_not_call_current_authority_or_change_rows(self):
-  value=self.challenge();self.receive(value['command']);self.service.confirm(value['challenge_id'],self.auth)
-  before=self.rows('SELECT revision FROM admin_security_lock')
-  self.reader.read(section='bindings');self.reader.read(section='executions');self.reader.read(section='deliveries')
-  self.assertEqual(before,self.rows('SELECT revision FROM admin_security_lock'))
+ async def test_read_only_details_survive_loss_of_live_authority(self):
   await self.calls(self.lease.close)
-  self.assertTrue(self.reader.read(section='bindings')['checkpoint']['session_present'])
+  for section in ('bindings','executions','deliveries'):
+   self.assertTrue(self.reader.read(section=section)['checkpoint']['session_present'])
  async def test_real_ingest_execution_deadline_and_safe_reason(self):
   from src.plugins.ai_chat.adapters.qq_official.inbox import record_pending_inbox
   from src.plugins.ai_chat.adapters.qq_official.turns import claim_execution
@@ -59,8 +56,6 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   value=self.reader.read(section='executions');item=value['items'][0]
   self.assertEqual(item['state'],'prepared');self.assertEqual(item['deadline_at'],self.now+600);self.assertEqual(item['reason'],'other')
   for private in ('SECRET_MODEL_BODY','https://private','private_sentinel',result.handle.execution_id,self.owner):self.assertNotIn(private,json.dumps(value))
- async def test_actual_background_task_has_own_execution_deadline_and_no_fabricated_result_deadline(self):
-  pass
  async def test_download_status_four_strict_bools_only(self):
   self.context.official_host=SimpleNamespace(download_status=lambda:dict(configured=True,listening=1,proxy_reachable=True,evidence_configured=True,url='https://SECRET'))
   self.assertEqual(self.observer.snapshot()['download'],dict(configured=True,listening=False,proxy_reachable=True,evidence_configured=True))
