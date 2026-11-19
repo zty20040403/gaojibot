@@ -135,24 +135,12 @@ class OfficialDetails:
         return items
 
     def _bindings(self,c,as_of,count,offset):
-        rows=c.execute('''SELECT e.endpoint_key,e.kind,e.binding_state,e.membership_state,e.generation,e.route_epoch,
-            e.capability_revision,e.updated_at,b.binding_id,b.admin_account_id,b.c2c_actor_key,b.state AS admin_state,
-            b.revision,b.updated_at AS admin_updated_at,
-            (o.state='active' AND o.revision=b.owner_revision) AS owner_current,
-            (b.state='active' AND o.state='active' AND o.revision=b.owner_revision AND a.enabled=1
-                AND a.role='admin' AND a.version=b.admin_account_version AND e.membership_state='present'
-                AND e.binding_state<>'revoked') AS current
-            FROM qq_official_endpoints e LEFT JOIN qq_official_admin_bindings b ON b.c2c_endpoint_key=e.endpoint_key AND b.account_key=e.account_key
-            LEFT JOIN admin_accounts a ON a.account_id=b.admin_account_id
-            LEFT JOIN qq_official_owner_grants o ON o.grant_id=b.owner_grant_id AND o.account_key=b.account_key
-            WHERE e.account_key=? AND e.created_at<=? ORDER BY e.created_at DESC,e.endpoint_key DESC LIMIT ? OFFSET ?''',
+        rows=c.execute('''SELECT endpoint_key,kind,binding_state,membership_state,generation,route_epoch,
+            capability_revision,updated_at FROM qq_official_endpoints WHERE account_key=? AND created_at<=?
+            ORDER BY created_at DESC,endpoint_key DESC LIMIT ? OFFSET ?''',
             (self.account,as_of,count,offset)).fetchall()
         return [{'ref':self._ref('endpoint',r['endpoint_key']),'kind':finite(r['kind'],('group','private'),'other'),
             'state':finite(r['binding_state'],('active','unbound','revoked'),'other'),
             'membership':finite(r['membership_state'],('unknown','present','absent'),'unknown'),
             'generation':_integer(r['generation']),'route_epoch':_integer(r['route_epoch']),
-            'capability_revision':_integer(r['capability_revision']),'updated_at':_integer(r['updated_at']),
-            'admin_binding':None if r['binding_id'] is None else {'ref':self._ref('binding',r['binding_id']),
-                'admin_ref':self._ref('admin',r['admin_account_id']),'actor_ref':self._ref('actor',r['c2c_actor_key']),
-                'state':finite(r['admin_state'],('active','revoked'),'other'),'revision':_integer(r['revision']),
-                'current':r['current'] is True,'owner_current':r['owner_current'] is True,'updated_at':_integer(r['admin_updated_at'])}} for r in rows]
+            'capability_revision':_integer(r['capability_revision']),'updated_at':_integer(r['updated_at'])} for r in rows]
