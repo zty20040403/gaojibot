@@ -80,7 +80,7 @@
 - Personal browser logins belong only in a private conversation VM; group bot-account login requires a verified owner/admin request and a shared-use notice. `/logins` lists this conversation's cookie domains, not proof of valid login; offline VMs are not automatically booted. `/logout <domain>` clears that site's local state; group cleanup requires an owner/admin. Uncertain results are never retried automatically. The admin conversation browser panel lists domains and recent cleanup outcomes, and can clear all local browser data after explicit confirmation. It requires a current VM snapshot and resource version; uncertain outcomes never trigger an automatic replay.
 - A finished job, an uploaded file, a queued message and a platform receipt are separate stages. **A generated result is not counted as delivered.**
 
-See [Sandbox security](docs/sandbox-security.md) and the [current handoff record](docs/HANDOFF.md).
+See [Sandbox security](docs/sandbox-security.md).
 
 </details>
 
@@ -141,7 +141,7 @@ Persistent workspaces run as NixOS containers (`systemd-nspawn`) and need `sandb
 
 The background model and its reasoning effort can be changed on the console's jobs and delivery page. `voiceAsr.enable` turns on a local transcription fallback for short voice messages. Container root filesystems are rebuilt from the NixOS module on restart while `/work` persists.
 
-**Read before going live → [Deployment and data changes](docs/deploy-rework.md) · [Sandbox security](docs/sandbox-security.md)**
+**Read before going live → [Container sandbox](docs/container-sandbox.md) · [Sandbox security](docs/sandbox-security.md)**
 
 <a id="documentation"></a>
 ## 05 · Documentation
@@ -153,8 +153,7 @@ Most documents are currently written in Chinese.
 | How QQ is connected, bound and sent to | [Official QQ integration](docs/qq-official.md) |
 | How files, media and proactive replies are enabled | [Official QQ host configuration](docs/qq-official-host-config.md) |
 | Why the VM cannot reach the host or the internal network | [Sandbox security](docs/sandbox-security.md) |
-| How to deploy, back up and adjust historical data | [Deployment guide](docs/deploy-rework.md) |
-| What is implemented and what still awaits acceptance | [Latest handoff record](docs/HANDOFF.md) |
+| How conversation workspaces run | [Container sandbox](docs/container-sandbox.md) |
 
 <details>
 <summary><strong>Development checks and contribution rules</strong></summary>

@@ -28,4 +28,4 @@ AppID、AppSecret、绑定 pepper 分别放在受保护文件。pepper 是随机
 
 ## 排查
 
-先查看管理台“最近请求”：模型当时看到的提示词、上下文和工具。随后核对 `turn_journal_events`、`background_jobs`、`deliveries` 和 `delivery_attempts`。日志中不打印密钥。部署后的数据处理和回滚见 [上线步骤](deploy-rework.md)。
+先查看管理台“最近请求”：模型当时看到的提示词、上下文和工具。随后核对 `turn_journal_events`、`background_jobs`、`deliveries` 和 `delivery_attempts`。日志中不打印密钥。

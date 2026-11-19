@@ -80,7 +80,7 @@
 - 个人浏览器登录只在私聊 VM；群内 bot 公共账号须核验 owner/群管请求并说明全群可用。`/logins` 列本会话 Cookie 域名，不代表登录仍有效；VM 离线时不自动开机。`/logout <域名>` 可清理该站点的本地状态，群公共浏览器须 owner/群管操作；结果不明不自动重试。管理台“模型、群与用户”中的“会话浏览器”可查看域名和近期清理结果，并经明确确认清空全部本地浏览器资料；操作绑定所见 VM 快照和资源版本，结果不明不自动重做。
 - 任务完成、文件上传、消息入队和平台回执是不同阶段。**不把生成成功当作最终送达。**
 
-详见 [沙箱安全边界](docs/sandbox-security.md) 与 [当前交接记录](docs/HANDOFF.md)。
+详见 [沙箱安全边界](docs/sandbox-security.md)。
 
 </details>
 
@@ -141,7 +141,7 @@ services.gaoji = {
 
 后台模型及推理强度可在管理台「任务与投递」修改。`voiceAsr.enable` 可启用短语音本地转写回退。容器系统目录重启即按最新 NixOS 配置重建，`/work` 下的群文件持久保留。
 
-**上线前先读 → [部署与数据调整](docs/deploy-rework.md) · [沙箱安全](docs/sandbox-security.md)**
+**上线前先读 → [容器沙盒](docs/container-sandbox.md) · [沙箱安全](docs/sandbox-security.md)**
 
 <a id="documentation"></a>
 ## 05 · 文档导航
@@ -151,8 +151,7 @@ services.gaoji = {
 | QQ 如何接入、绑定与发送 | [官方 QQ 接入](docs/qq-official.md) |
 | 文件、媒体和主动接话如何启用 | [官方 QQ 宿主配置](docs/qq-official-host-config.md) |
 | VM 为什么不能访问宿主和内网 | [Sandbox Security](docs/sandbox-security.md) |
-| 如何部署、备份和调整历史数据 | [部署说明](docs/deploy-rework.md) |
-| 哪些已实现、哪些仍待验收 | [HANDOFF 最新执行记录](docs/HANDOFF.md) |
+| 会话工作区怎么运行 | [容器沙盒](docs/container-sandbox.md) |
 
 <details>
 <summary><strong>开发检查与贡献约定</strong></summary>
