@@ -36,7 +36,6 @@ class AdminServices:
     sandbox_manager: Any = None
     sticker_inventory: Any = None
     media_library: Any = None
-    source_store: Any = None
     media_cleanup: Any = None
     vision_worker: Any = None
     turn_journal: Any = None

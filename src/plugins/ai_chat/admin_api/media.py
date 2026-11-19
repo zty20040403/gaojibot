@@ -174,37 +174,6 @@ def create_router(context: AdminRouteContext) -> APIRouter:
         reviewed = result.value if isinstance(result.value, dict) else {}
         return mutation_payload(result, **reviewed)
 
-    @router.get("/api/sources")
-    def sources(
-        limit: int = Query(default=100, ge=1, le=500),
-        authorization: Optional[str] = Header(default=None),
-    ) -> dict[str, object]:
-        authorize(authorization)
-        if services.source_store is None:
-            return {
-                "counts": {},
-                "platforms": [],
-                "items": [],
-                "configured": False,
-                "available": False,
-            }
-        try:
-            snapshot = services.source_store.admin_snapshot(limit=limit)
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            return {
-                "counts": {},
-                "platforms": [],
-                "items": [],
-                "configured": True,
-                "available": False,
-                "error": str(exc)[:500],
-            }
-        return {
-            **snapshot,
-            "configured": True,
-            "available": True,
-        }
-
     @router.delete("/api/media/legacy-images")
     async def cleanup_legacy_images(
         confirmation: CleanupConfirmationRequest,

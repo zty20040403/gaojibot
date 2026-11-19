@@ -22,7 +22,6 @@ const INITIAL_RESOURCES: ResourceName[] = [
   'sandboxes',
   'stickers',
   'media',
-  'sources',
   'groups',
   'conversations',
   'budgets',

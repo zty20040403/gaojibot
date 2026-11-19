@@ -6,7 +6,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
-  ExternalLink,
   Play,
   RotateCcw,
   Search,
@@ -34,7 +33,6 @@ export type DetailViewId =
   | 'deliveries'
   | 'traces'
   | 'media-items'
-  | 'sources'
   | 'audit-records'
 
 export const DETAIL_META: Record<DetailViewId, {
@@ -49,7 +47,6 @@ export const DETAIL_META: Record<DetailViewId, {
   deliveries: { parent: 'tasks', route: 'tasks/deliveries', title: '全部消息投递', description: '查询 QQ 消息回执、发送时间和失败原因', parentLabel: '任务与投递' },
   traces: { parent: 'traces', route: 'traces/all', title: '全部 Trace', description: '查询模型、工具、Token 与完整 Trace ID', parentLabel: 'Trace 与上下文' },
   'media-items': { parent: 'media', route: 'media/stickers', title: '全部表情候选', description: '查询表情识图、安全状态和审核记录', parentLabel: '媒体审核' },
-  sources: { parent: 'media', route: 'media/sources', title: '全部分享内容', description: '查询帖子和视频解析状态及最后出现时间', parentLabel: '媒体审核' },
   'audit-records': { parent: 'audit', route: 'audit/records', title: '全部审计记录', description: '查询控制台修改、操作者、资源版本和结果', parentLabel: '审计记录' },
 }
 
@@ -65,7 +62,6 @@ const DETAIL_SOURCES: Record<DetailViewId, DetailSource> = {
   deliveries: { resource: 'deliveries', path: '/deliveries?limit=500', extract: (payload) => rows(payload.items) },
   traces: { resource: 'traces', path: '/traces?limit=500', extract: (payload) => rows(payload.items) },
   'media-items': { resource: 'media', path: '/media?limit=500', extract: (payload) => rows(payload.items) },
-  sources: { resource: 'sources', path: '/sources?limit=500', extract: (payload) => rows(payload.items) },
   'audit-records': { resource: 'audit', path: '/audit?limit=500', extract: (payload) => rows(payload.items) },
 }
 
@@ -168,16 +164,6 @@ function detailColumns(detail: DetailViewId, plane: Plane): DetailColumn[] {
     { label: '安全', render: (item) => <StatusBadge value={item.safety} /> },
     { label: '发送', render: (item) => item.enabled && !item.banned ? `已启用 · ${item.times_sent} 次` : item.banned ? '已拒绝' : '未启用' },
     { label: '审核', className: 'actions', render: (item) => <><button className="icon-button success" title="批准并允许发送" onClick={() => void plane.mutate('media', `/media/${item.media_id}/review`, 'PUT', { state: 'approved' }, ['media', 'stickers'])}><Check size={15} /></button><button className="icon-button" title="保留待审" onClick={() => void plane.mutate('media', `/media/${item.media_id}/review`, 'PUT', { state: 'pending' }, ['media', 'stickers'])}><Clock3 size={15} /></button><button className="icon-button danger" title="拒绝并禁止发送" onClick={() => void plane.mutate('media', `/media/${item.media_id}/review`, 'PUT', { state: 'rejected' }, ['media', 'stickers'])}><X size={15} /></button></> },
-  ]
-  if (detail === 'sources') return [
-    { label: '最后出现', render: (item) => fmtTime(item.last_seen_at ?? item.fetched_at) },
-    { label: '平台', render: (item) => item.platform },
-    { label: '标题', render: (item) => <a className="record-link" href={item.canonical_url} target="_blank" rel="noreferrer">{item.title || item.canonical_url}<ExternalLink size={13} /></a> },
-    { label: '作者', render: (item) => item.author || '-' },
-    { label: '类型', render: (item) => item.content_kind },
-    { label: '状态', render: (item) => <StatusBadge value={item.status} /> },
-    { label: '出现次数', render: (item) => fmtNumber(item.occurrences) },
-    { label: '错误', className: 'detail-message', render: (item) => item.last_error || '-' },
   ]
   return [
     { label: '时间', render: (item) => fmtTime(item.created_at) },

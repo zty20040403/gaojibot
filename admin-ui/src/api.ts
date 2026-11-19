@@ -13,7 +13,6 @@ export type ResourceName =
   | 'sandboxes'
   | 'stickers'
   | 'media'
-  | 'sources'
   | 'groups'
   | 'conversations'
   | 'budgets'
@@ -49,7 +48,6 @@ export const RESOURCE_PATHS: Record<ResourceName, string> = {
   sandboxes: '/sandboxes',
   stickers: '/stickers',
   media: '/media',
-  sources: '/sources',
   groups: '/group-models',
   conversations: '/conversations',
   budgets: '/conversations/budgets',
@@ -74,7 +72,6 @@ export const EVENT_RESOURCES: Record<string, ResourceName[]> = {
   stickers: ['stickers'],
   media: ['media'],
   captions: ['media'],
-  sources: ['sources'],
   groups: ['groups'],
   conversations: ['conversations'],
   budgets: ['budgets'],
