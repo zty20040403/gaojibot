@@ -29,7 +29,7 @@ from src.bot_storage.media_cleanup import LegacyMediaCleanup
 from .model_catalog import ModelCatalog
 from .model_billing import ModelBilling
 from .model_preferences import ModelPreferenceStore
-from .mobile_authorization import build_mobile_authorization
+from .application_security import build_console_authorization
 from src.bot_security.service import MobileAuthorization
 from .quota import UsageStore
 from src.sandbox_runtime.factory import manager_from_settings
@@ -344,7 +344,7 @@ def _build_app_context(
 
     conversations = _construction.own(ConversationStore(database)) if message_ledger is not None else None
     source_store = _construction.own(ContentSourceStore(database))
-    mobile_authorization = build_mobile_authorization(settings, database, onebot_enabled=False)
+    mobile_authorization = build_console_authorization(settings, database)
     if mobile_authorization is not None:
         _construction.own(mobile_authorization.store)
     delivery_store: DeliveryStore | None = None
