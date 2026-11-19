@@ -52,62 +52,42 @@ class PlatformTurnContinuityTests(unittest.TestCase):
         self.journal.link_send(previous.turn_id, sent.canonical_message_id)
         return previous
 
-    def current(self, inbound=None):
-        inbound = inbound or self.own
-        trigger = self.message(inbound, inbound.native_message_id, "CURRENT_TRIGGER_MUST_BE_EXCLUDED", 130)
-        turn = self.journal.start_turn(self.scope, trigger_canonical_message_id=trigger.canonical_message_id,
-            objective="continuation", provider="test", model="TEST_MODEL", started_at=130)
-        return turn, trigger
+    def current(self):
+        return self.message(self.own, self.own.native_message_id, "CURRENT_TRIGGER_MUST_BE_EXCLUDED", 130)
 
-    def edges(self):
-        return self.journal._connection.execute(
-            "SELECT from_turn_id, to_turn_id, created_by_principal_id FROM turn_edges ORDER BY edge_id"
-        ).fetchall()
-
-    def test_actual_reply_target_creates_fork_with_requesting_actor_principal(self):
+    def test_reference_shows_evidence_without_changing_requesting_actor(self):
         previous = self.previous(self.own)
-        current, trigger = self.current()
+        trigger = self.current()
         other_principal = self.ledger.ensure_actor_identity(self.other.actor, "Other")
         self.assertEqual(reply_target_turn(self.app, self.own).turn_id, previous.turn_id)
-        context = current_turn_context(self.app, self.own, current.turn_id)
+        context = current_turn_context(self.app, self.own)
         self.assertIn(previous.handle, context)
-        edges = self.edges()
-        self.assertEqual(len(edges), 1)
-        self.assertEqual((edges[0]["from_turn_id"], edges[0]["to_turn_id"]), (current.turn_id, previous.turn_id))
-        self.assertEqual(edges[0]["created_by_principal_id"], trigger.sender_principal_id)
-        self.assertNotEqual(edges[0]["created_by_principal_id"], other_principal)
-        self.assertEqual(self.journal.fork_parent(self.scope, current.turn_id).turn_id, previous.turn_id)
+        self.assertEqual(trigger.sender_principal_id, self.ledger.principal_id_for_actor(self.own.actor))
+        self.assertNotEqual(trigger.sender_principal_id, other_principal)
 
     def test_same_native_reply_id_in_bound_other_endpoint_cannot_select_its_turn(self):
         foreign = self.previous(self.other)
-        current, _ = self.current()
         self.assertIsNone(reply_target_turn(self.app, self.own))
-        self.assertEqual(current_turn_context(self.app, self.own, current.turn_id), "")
-        self.assertEqual(self.edges(), [])
+        self.assertEqual(current_turn_context(self.app, self.own), "")
         previous = self.previous(self.own)
         self.assertEqual(reply_target_turn(self.app, self.own).turn_id, previous.turn_id)
-        current, _ = self.current()
-        current_turn_context(self.app, self.own, current.turn_id)
-        self.assertNotEqual(self.edges()[0]["to_turn_id"], foreign.turn_id)
-        self.assertEqual(self.edges()[0]["to_turn_id"], previous.turn_id)
-
+        self.assertNotEqual(foreign.turn_id, previous.turn_id)
 
     def test_ambient_delta_keeps_other_endpoint_same_id_but_excludes_current_source(self):
         self.previous(self.own)
         self.message(self.other, self.own.native_message_id, "OTHER_ENDPOINT_SAME_ID_STAYS_VISIBLE", 120)
-        current, _ = self.current()
-        context = current_turn_context(self.app, self.own, current.turn_id)
+        self.current()
+        context = current_turn_context(self.app, self.own)
         self.assertIn("此前回合之后有 1 条其他消息", context)
         self.assertIn("OTHER_ENDPOINT_SAME_ID_STAYS_VISIBLE", context)
         self.assertNotIn("CURRENT_TRIGGER_MUST_BE_EXCLUDED", context)
 
-    def test_absent_unlinked_or_hidden_reply_does_not_create_a_fork(self):
-        current, _ = self.current()
+    def test_absent_unlinked_or_hidden_reply_gives_no_context(self):
+        self.current()
         self.assertIsNone(reply_target_turn(self.app, replace(self.own, reply_to_native_message_id=None)))
         self.message(self.own, "TEST_REPLY_SAME_ID", "unlinked answer", 100, outbound=True)
         self.assertIsNone(reply_target_turn(self.app, self.own))
         self.previous(self.own)
         self.ledger.hide_history(self.scope)
         self.assertIsNone(reply_target_turn(self.app, self.own))
-        self.assertEqual(current_turn_context(self.app, self.own, current.turn_id), "")
-        self.assertEqual(self.edges(), [])
+        self.assertEqual(current_turn_context(self.app, self.own), "")

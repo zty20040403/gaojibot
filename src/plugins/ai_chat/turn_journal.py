@@ -758,43 +758,6 @@ class TurnJournal:
             ).fetchone()
         return self._row_to_turn(row) if row is not None else None
 
-    def add_fork_edge(
-        self,
-        from_turn_id: int,
-        to_turn_id: int,
-        *,
-        created_by_principal_id: int | None,
-    ) -> bool:
-        if int(from_turn_id) == int(to_turn_id):
-            return False
-        with self._transaction() as cursor:
-            rows = cursor.execute(
-                """
-                SELECT turn_id, scope_key FROM agent_turns
-                WHERE turn_id IN (?, ?)
-                """,
-                (int(from_turn_id), int(to_turn_id)),
-            ).fetchall()
-            scopes = {str(row["scope_key"]) for row in rows}
-            if len(rows) != 2 or len(scopes) != 1:
-                return False
-            cursor.execute(
-                """
-                INSERT INTO turn_edges (
-                    from_turn_id, to_turn_id, kind,
-                    created_by_principal_id, created_at
-                ) VALUES (?, ?, 'fork-from', ?, ?)
-                ON CONFLICT DO NOTHING
-                """,
-                (
-                    int(from_turn_id),
-                    int(to_turn_id),
-                    created_by_principal_id,
-                    int(time.time()),
-                ),
-            )
-            return cursor.rowcount > 0
-
     def hide_history(self, scope: ConversationScope) -> int:
         with self._transaction() as cursor:
             self._ensure_visibility(cursor, scope.key)
@@ -862,30 +825,6 @@ class TurnJournal:
             turn_row = self._turn_row(cursor, int(turn_id))
             if turn_row is not None:
                 self._upsert_digest(cursor, turn_row, int(time.time()))
-
-    def fork_parent(
-        self,
-        scope: ConversationScope,
-        turn_id: int,
-    ) -> TurnRecord | None:
-        with self._lock:
-            row = self._connection.execute(
-                f"""
-                SELECT {_turn_projection("parent")}
-                FROM turn_edges AS edge
-                JOIN agent_turns AS child ON child.turn_id = edge.from_turn_id
-                JOIN agent_turns AS parent ON parent.turn_id = edge.to_turn_id
-                JOIN turn_visibility AS visibility
-                  ON visibility.scope_key = parent.scope_key
-                WHERE edge.from_turn_id = ? AND edge.kind = 'fork-from'
-                  AND child.scope_key = ? AND parent.scope_key = ?
-                  AND parent.turn_ordinal >= visibility.min_turn_ordinal
-                ORDER BY edge.edge_id ASC
-                LIMIT 1
-                """,
-                (int(turn_id), scope.key, scope.key),
-            ).fetchone()
-        return self._row_to_turn(row) if row is not None else None
 
     def _insert_event(
         self,
