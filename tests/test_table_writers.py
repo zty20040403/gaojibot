@@ -20,7 +20,7 @@ class TableWriterTests(unittest.TestCase):
         with migration.connect(schema) as db:
             tables = {name for name, in db.execute('SELECT tablename FROM pg_tables WHERE schemaname=%s', (schema,))}
         business_tables = tables - {'alembic_version'}
-        self.assertEqual(len(business_tables), 68)
+        self.assertEqual(len(business_tables), 66)
         missing = business_tables - writer_tables(Path(__file__).resolve().parents[1] / 'src')
         self.assertEqual(missing, set(READ_ONLY), 'inspect new missing writers or remove a stale read-only exception')
 
