@@ -155,12 +155,6 @@ class ConfiguredHost:
             proactive_profile=self.config.proactive_profile)
         return await factory(runtime,token)
 
-    def approval_factory(self,runtime,token):
-        self._session(runtime,token)
-        from .approval import approval_services_factory
-        return approval_services_factory(
-            security=getattr(getattr(self.context,'mobile_authorization',None),'store',None))(runtime,token)
-
     async def files_factory(self,runtime,token,rest):
         session=self._session(runtime,token)
         if self.config.files is None:return None

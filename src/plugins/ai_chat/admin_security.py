@@ -5,15 +5,14 @@ import json
 import re
 from typing import Any, Literal
 
-import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.bot_security.passwords import hash_password
-from src.bot_security.service import MobileAuthorization, approved_request, current_principal, principal
-from src.bot_security.store import SecurityError, canonical
+from src.bot_security.service import MobileAuthorization, current_principal, principal
+from src.bot_security.store import SecurityError
 
 SESSION_COOKIE = "gaoji_session"
 CSRF_COOKIE = "gaoji_csrf"
@@ -74,44 +73,28 @@ def secure_route(mobile: MobileAuthorization | None, *, prefix: str, origin: str
                     if mobile is None:
                         raise SecurityError("账户认证尚未初始化，控制台已锁定；请按部署说明初始化管理员", 503)
                     suffix = api_suffix(request.url.path, prefix)
-                    internal = request.scope.get("gaoji.approved")
-                    if internal is not None:
-                        if internal is not approved_request.get() or internal["kind"] != "http":
-                            raise SecurityError("操作授权不匹配")
-                        bound = internal["payload"]
-                        if (request.method != bound["method"] or suffix != bound["path"]
-                                or request.url.query != bound["query"]
-                                or await request.body() != canonical(bound["body"]).encode()
-                                or request.headers.get("if-match", "") != bound["if_match"]):
-                            raise SecurityError("操作参数已变化，请重新确认")
-                        identity_token = current_principal.set(internal["account"])
-                    else:
-                        if request.method not in SAFE_METHODS:
-                            supplied_origin = request.headers.get("origin", "")
-                            if supplied_origin != _origin(request, origin):
-                                raise SecurityError("请求来源校验失败")
-                        if suffix != "/auth/login":
-                            account = await asyncio.to_thread(mobile.store.session,
-                                request.cookies.get(SESSION_COOKIE, ""),
-                                request.headers.get("x-csrf-token", "") if request.method not in SAFE_METHODS else None)
-                            identity_token = current_principal.set(account)
-                            if suffix not in {"/me", "/status", "/auth/logout"}:
-                                require_admin()
-                        handled_security_action = (
-                            (request.method == "POST" and suffix in {"/auth/login", "/auth/logout", "/accounts"})
-                            or (request.method == "PUT" and re.fullmatch(r"/accounts/[^/]+", suffix))
-                        )
-                        if request.method not in SAFE_METHODS and not handled_security_action:
-                            body_bytes = await request.body()
-                            if len(body_bytes) > 128 * 1024:
-                                raise SecurityError("操作内容过长", 413)
-                            try:
-                                if body_bytes:
-                                    json.loads(body_bytes)
-                            except (ValueError, UnicodeError):
-                                raise SecurityError("操作参数必须是 JSON", 400) from None
-                            # The authenticated admin's click is the authorization.
-                            # Resource handlers still enforce versions and write audits.
+                    write = request.method not in SAFE_METHODS
+                    if write and request.headers.get("origin", "") != _origin(request, origin):
+                        raise SecurityError("请求来源校验失败")
+                    if suffix != "/auth/login":
+                        account = await asyncio.to_thread(mobile.store.session, request.cookies.get(SESSION_COOKIE, ""),
+                            request.headers.get("x-csrf-token", "") if write else None)
+                        identity_token = current_principal.set(account)
+                        if suffix not in {"/me", "/status", "/auth/logout"}:
+                            require_admin()
+                    handled_security_action = (
+                        (request.method == "POST" and suffix in {"/auth/login", "/auth/logout", "/accounts"})
+                        or (request.method == "PUT" and re.fullmatch(r"/accounts/[^/]+", suffix))
+                    )
+                    if write and not handled_security_action:
+                        body_bytes = await request.body()
+                        if len(body_bytes) > 128 * 1024:
+                            raise SecurityError("操作内容过长", 413)
+                        try:
+                            if body_bytes:
+                                json.loads(body_bytes)
+                        except (ValueError, UnicodeError):
+                            raise SecurityError("操作参数必须是 JSON", 400) from None
                     response = await original(request)
                     response.headers["Cache-Control"] = "no-store"
                     return response
@@ -124,25 +107,6 @@ def secure_route(mobile: MobileAuthorization | None, *, prefix: str, origin: str
             return handler
 
     return AccountRoute
-
-
-async def mutation_summary(mobile: MobileAuthorization, payload: dict[str, Any]) -> str:
-    labels = {
-        "/alert-notifications/control": "修改 QQ 告警通知开关",
-        "/local-model/control": "启动或停止本地模型",
-    }
-    path = payload["path"]
-    summary = labels.get(path, "管理变更") + f"\n账户：{principal()['username']}\n接口：{payload['method']} {path}\n"
-    summary += "参数：" + json.dumps(payload["body"], ensure_ascii=False, indent=2)
-    if payload["query"]:
-        summary += "\n查询参数：" + payload["query"]
-    if payload["if_match"]:
-        summary += "\n资源版本：" + payload["if_match"]
-    # Fleet approval summaries are replaced with the exact remote contract by integration.
-    resolver = getattr(mobile, "http_summary", None)
-    if resolver is not None:
-        summary = await resolver(payload, summary)
-    return summary
 
 
 def register_security_routes(router: APIRouter, mobile: MobileAuthorization | None, services: Any, *, prefix: str, origin: str) -> None:
@@ -224,29 +188,3 @@ def register_security_routes(router: APIRouter, mobile: MobileAuthorization | No
     async def audit():
         require_admin()
         return {"items": await asyncio.to_thread(configured().store.audit)}
-
-
-def register_http_executor(app: Any, mobile: MobileAuthorization, prefix: str) -> None:
-    async def execute(request: dict[str, Any]) -> dict[str, Any]:
-        payload = request["payload"]
-
-        async def internal_app(scope, receive, send):
-            # An in-process capability, never an HTTP header or a client-supplied field.
-            scope["gaoji.approved"] = request
-            await app(scope, receive, send)
-
-        transport = httpx.ASGITransport(app=internal_app)
-        path = prefix + "/api/v1" + payload["path"]
-        if payload["query"]:
-            path += "?" + payload["query"]
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
-            response = await client.request(payload["method"], path,
-                headers={"Content-Type": "application/json", "If-Match": payload["if_match"]},
-                content=canonical(payload["body"]).encode())
-        result = response.json()
-        if not isinstance(result, dict):
-            result = {"data": result}
-        return {**result, "ok": response.is_success, "status_code": response.status_code,
-                "needs_attention": response.status_code >= 500}
-
-    mobile.executors["http"] = execute

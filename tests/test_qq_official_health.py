@@ -27,6 +27,7 @@ class HealthTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.runtime._gateway.health['message_gap']=True
   value=await self.service.sample()
   self.assertTrue(value['healthy']);self.assertEqual(value['state'],'ready')
+  self.assertFalse({'files','quota'} & value.keys());self.assertNotIn('pending_blobs',value['cleanup'])
   self.assertEqual(value['reason'],'ready_with_message_gap')
   self.assertTrue(value['gateway']['message_gap'])
   self.assertIn('gaoji_qq_official_message_gap 1.0',generate_latest(self.registry).decode())

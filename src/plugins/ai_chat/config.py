@@ -209,7 +209,6 @@ class Settings:
     admin_enabled: bool
     admin_secret_file: str
     admin_origin: str
-    admin_bot_id: str
     admin_path: str
     admin_user_ids: set[int]
     observability_enabled: bool
@@ -523,7 +522,6 @@ class Settings:
             admin_enabled=boolean("AI_ADMIN_ENABLED", False),
             admin_secret_file=environment.get("AI_ADMIN_SECRET_FILE", "").strip(),
             admin_origin=environment.get("AI_ADMIN_ORIGIN", "").strip().rstrip("/"),
-            admin_bot_id=environment.get("AI_ADMIN_BOT_ID", "").strip(),
             admin_path=(
                 environment.get("AI_ADMIN_PATH", "/bot-admin").strip()
                 or "/bot-admin"

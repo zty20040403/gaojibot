@@ -16,16 +16,14 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.observer=OfficialObservability(self.context,registry=CollectorRegistry(),clock=lambda:self.now)
   self.reader=OfficialDetails(self.runtime,clock=lambda:self.now)
  async def asyncTearDown(self):await self.observer.close();await self.calls.close()
- async def test_actual_checkpoint_and_current_binding_without_raw_identity_or_code(self):
-  challenge=self.challenge();self.receive(challenge['command']);self.service.confirm(challenge['challenge_id'],self.auth)
+ async def test_actual_checkpoint_and_endpoint_without_console_identity(self):
+  self.receive('TEST_MESSAGE')
   value=await self.observer.details(section='bindings')
   self.assertEqual(value['checkpoint']['durable_seq'],1);self.assertTrue(value['checkpoint']['session_present'])
   self.assertEqual(value['checkpoint']['fencing_epoch'],self.token.epoch)
-  item=value['items'][0];self.assertTrue(item['admin_binding']['current']);self.assertTrue(item['admin_binding']['owner_current'])
-  with self.tx() as c:c.execute("UPDATE qq_official_owner_grants SET state='revoked' WHERE account_key=?",(self.account.key,))
-  self.assertFalse((await self.observer.details(section='bindings'))['items'][0]['admin_binding']['current'])
+  item=value['items'][0];self.assertEqual(item['kind'],'private');self.assertNotIn('admin_binding',item)
   encoded=json.dumps(value)
-  for secret in (self.account.key,self.owner,self.session,self.auth.account_id,self.auth.session_hash,challenge['command'],'TEST_NATIVE_1'):
+  for secret in (self.account.key,self.owner,self.session,self.auth.account_id,self.auth.session_hash,'TEST_MESSAGE','TEST_NATIVE_1'):
    self.assertNotIn(secret,encoded)
  async def test_bound_pagination_tamper_account_and_expiry(self):
   for i in range(3):
@@ -38,13 +36,10 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   with self.assertRaises(DetailsUnavailable):OfficialDetails(other_runtime,clock=lambda:self.now).read(section='bindings',cursor=first['next_cursor'])
   self.now+=301
   with self.assertRaises(DetailsUnavailable):self.reader.read(section='bindings',cursor=first['next_cursor'])
- async def test_read_only_does_not_call_current_authority_or_change_rows(self):
-  value=self.challenge();self.receive(value['command']);self.service.confirm(value['challenge_id'],self.auth)
-  before=self.rows('SELECT revision FROM admin_security_lock')
-  self.reader.read(section='bindings');self.reader.read(section='executions');self.reader.read(section='deliveries')
-  self.assertEqual(before,self.rows('SELECT revision FROM admin_security_lock'))
+ async def test_read_only_details_survive_loss_of_live_authority(self):
   await self.calls(self.lease.close)
-  self.assertTrue(self.reader.read(section='bindings')['checkpoint']['session_present'])
+  for section in ('bindings','executions','deliveries'):
+   self.assertTrue(self.reader.read(section=section)['checkpoint']['session_present'])
  async def test_real_ingest_execution_deadline_and_safe_reason(self):
   from src.plugins.ai_chat.adapters.qq_official.inbox import record_pending_inbox
   from src.plugins.ai_chat.adapters.qq_official.turns import claim_execution
@@ -59,8 +54,6 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   value=self.reader.read(section='executions');item=value['items'][0]
   self.assertEqual(item['state'],'prepared');self.assertEqual(item['deadline_at'],self.now+600);self.assertEqual(item['reason'],'other')
   for private in ('SECRET_MODEL_BODY','https://private','private_sentinel',result.handle.execution_id,self.owner):self.assertNotIn(private,json.dumps(value))
- async def test_actual_background_task_has_own_execution_deadline_and_no_fabricated_result_deadline(self):
-  pass
  async def test_download_status_four_strict_bools_only(self):
   self.context.official_host=SimpleNamespace(download_status=lambda:dict(configured=True,listening=1,proxy_reachable=True,evidence_configured=True,url='https://SECRET'))
   self.assertEqual(self.observer.snapshot()['download'],dict(configured=True,listening=False,proxy_reachable=True,evidence_configured=True))
@@ -111,6 +104,6 @@ class DetailReceiptTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
 class DetailsSSETests(unittest.TestCase):
  def test_existing_sse_database_counters_invalidate_details_without_body_or_ids(self):
   from src.plugins.ai_chat.admin_api.realtime import _changed_database_resources
-  for table in ('delivery_receipts','delivery_attempts','qq_official_admin_bindings','qq_official_endpoints','qq_official_owner_grants','admin_accounts','background_jobs'):
+  for table in ('delivery_receipts','delivery_attempts','qq_official_endpoints','background_jobs'):
    before={table:(0,0,0)};after={table:(1,0,0)}
    self.assertIn('qq-official',_changed_database_resources(before,after))

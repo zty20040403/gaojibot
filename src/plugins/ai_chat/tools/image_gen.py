@@ -1,8 +1,8 @@
 """AI image generation via cliproxy (gemini-3.1-flash-image primary, gpt-image-2.5 fallback)."""
 from __future__ import annotations
 
+import asyncio
 import base64
-import inspect
 import json
 import os
 from pathlib import PurePosixPath
@@ -19,12 +19,14 @@ from .progress import enabled as progress_enabled
 from .registry import FunctionTool
 from .state import structured_tool_source
 
+REQUEST_SECONDS = 90
+
 GENERATE_IMAGE_TOOL = {
     "type": "function",
     "function": {
         "name": "generate_image",
         "description": (
-            "调用 AI 出图模型（默认 gemini-3.1-flash-image，失败可能回退 gpt-image-2.5；审核或版权限制不回退）根据描述生成图片（梗图、头像、插画等），"
+            "调用 AI 出图模型（默认 gemini-3.1-flash-image，明确拒绝可换备用；审核、版权限制或结果未知不重试）根据描述生成图片（梗图、头像、插画等），"
             "保存到本会话容器 /work 下并附给你预览。确认画面无误后调用 send_image 发到当前会话。"
         ),
         "parameters": {
@@ -67,10 +69,7 @@ def enabled(context) -> bool:
 
 
 def _decode_data_url_or_b64(raw_url: str) -> bytes:
-    if raw_url.startswith("data:"):
-        _, _, payload = raw_url.partition(",")
-        return base64.b64decode(payload)
-    return base64.b64decode(raw_url)
+    return base64.b64decode(raw_url.partition(",")[2] if raw_url.startswith("data:") else raw_url, validate=True)
 
 
 # Only fixed vocabulary is returned: arbitrary provider text can contain the request or credentials.
@@ -111,7 +110,9 @@ class ImageProviderError(RuntimeError):
             value in {"safety", "recitation", "responsibleaipolicyviolation"} for value in text.split()
         )
         message = fields.get("message")
-        message = message.casefold() if isinstance(message, str) else ""
+        message = message.strip().casefold() if isinstance(message, str) else ""
+        self.uncertain = response.status_code == 408 or (response.status_code >= 500 and not (
+            message == "high demand" or code in {"insufficient_quota", "quota_exceeded", "rate_limit_exceeded"}))
         excerpt = next((phrase for phrase in _EXCERPTS if phrase in message), None)
         details = [f"{route}_http_{response.status_code}"]
         if code is not None:
@@ -126,7 +127,6 @@ async def _generate_via_chat(client: httpx.AsyncClient, base_url: str, api_key: 
         f"{base_url.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={"model": model, "messages": [{"role": "user", "content": prompt}]},
-        timeout=90.0,
     )
     if resp.status_code >= 400:
         raise ImageProviderError(resp, "chat_image")
@@ -160,7 +160,6 @@ async def _generate_via_images_api(client: httpx.AsyncClient, base_url: str, api
         f"{base_url.rstrip('/')}/images/generations",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={"model": model, "prompt": prompt, "n": 1},
-        timeout=90.0,
     )
     if resp.status_code >= 400:
         raise ImageProviderError(resp, "images_api")
@@ -169,14 +168,12 @@ async def _generate_via_images_api(client: httpx.AsyncClient, base_url: str, api
     b64 = items[0].get("b64_json") if items and isinstance(items[0], dict) else None
     if not isinstance(b64, str) or not b64:
         raise RuntimeError("images_api_empty")
-    raw = base64.b64decode(b64)
+    raw = base64.b64decode(b64, validate=True)
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     return raw, int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0)
 
 
 def _ext_for_bytes(content: bytes) -> str:
-    if content.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
     if content.startswith(b"\xff\xd8"):
         return ".jpg"
     if content[:6] in {b"GIF87a", b"GIF89a"}:
@@ -205,76 +202,53 @@ async def execute(turn, arguments):
     primary_model = os.environ.get("AI_IMAGE_GEN_MODEL", "gemini-3.1-flash-image").strip() or "gemini-3.1-flash-image"
     fallback_model = os.environ.get("AI_IMAGE_GEN_FALLBACK_MODEL", "gpt-image-2.5").strip() or "gpt-image-2.5"
 
-    used_model = primary_model
-    in_tokens = out_tokens = 0
-    raw_bytes: bytes | None = None
-    last_err = ""
-
-    async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
-        try:
-            raw_bytes, in_tokens, out_tokens = await _generate_via_chat(
-                client, profile.base_url, profile.api_key, primary_model, prompt
-            )
-        except Exception as err1:
-            last_err = str(err1) if isinstance(err1, ImageProviderError) else "chat_image_error"
-            if fallback_model and not (isinstance(err1, ImageProviderError) and err1.restricted):
-                if progress_enabled(turn.context):
-                    await turn.context.platform.progress.say("出图服务失败，我再尝试备用服务。")
-                used_model = fallback_model
-                try:
-                    raw_bytes, in_tokens, out_tokens = await _generate_via_images_api(
-                        client, profile.base_url, profile.api_key, fallback_model, prompt
-                    )
-                except Exception as err2:
-                    detail = str(err2) if isinstance(err2, ImageProviderError) else "images_api_error"
-                    last_err = f"{last_err}; fallback={detail}"
-
+    errors = []
+    raw_bytes = None
+    async with httpx.AsyncClient(timeout=REQUEST_SECONDS, trust_env=False, follow_redirects=False) as client:
+        for route, used_model in ((_generate_via_chat, primary_model), (_generate_via_images_api, fallback_model)):
+            if errors and progress_enabled(turn.context):
+                await turn.context.platform.progress.say("出图服务失败，我再尝试备用服务。")
+            try:
+                async with asyncio.timeout(REQUEST_SECONDS):
+                    raw_bytes, in_tokens, out_tokens = await route(client, profile.base_url, profile.api_key, used_model, prompt)
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+                errors.append("images_api_error" if errors else "chat_image_error")
+            except ImageProviderError as exc:
+                errors.append(str(exc))
+                if exc.restricted:
+                    return json.dumps({"ok": False, "code": "generation_failed", "error": "; ".join(errors)}, ensure_ascii=False)
+                if not exc.uncertain:
+                    continue
+                break
+            except (TimeoutError, httpx.RequestError, ValueError, RuntimeError, AttributeError, TypeError):
+                break
+        else:
+            return json.dumps({"ok": False, "code": "generation_failed", "error": "; ".join(errors)}, ensure_ascii=False)
     if not raw_bytes:
-        return json.dumps({"ok": False, "code": "generation_failed", "error": f"出图失败（{last_err or 'empty'}）。"}, ensure_ascii=False)
+        return json.dumps({"ok": False, "code": "generation_unknown", "error": "; ".join([*errors, "出图结果未知，请勿自动重试。"])}, ensure_ascii=False)
 
     ext = _ext_for_bytes(raw_bytes)
     p_obj = PurePosixPath(rel_path)
-    if p_obj.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif"} or (
-        ext == ".png" and p_obj.suffix.lower() != ".png"
-    ) or (ext == ".jpg" and p_obj.suffix.lower() not in {".jpg", ".jpeg"}):
+    if p_obj.suffix.lower() not in ({'.jpg', '.jpeg'} if ext == '.jpg' else {ext}):
         rel_path = str(p_obj.with_suffix(ext))
 
     mime = detect_image(raw_bytes, PurePosixPath(rel_path).name)
     executor: OwnedSandboxExecutor = turn.context.agent_executor
     sid = await executor._ensure_workspace()
-    write_fn = executor.sandbox_manager.write_file
-    if "allow_large" in inspect.signature(write_fn).parameters:
-        await executor._call(write_fn, executor.owner, sid, rel_path, raw_bytes, allow_large=True)
-    else:
-        await executor._call(write_fn, executor.owner, sid, rel_path, raw_bytes)
+    await executor._call(executor.sandbox_manager.write_file, executor.owner, sid, rel_path, raw_bytes, allow_large=True)
 
     app = _app_of(turn.context)
     source = structured_tool_source(turn.context)
     usage_store = getattr(app, "usage_store", None)
     db_call = getattr(app, "db_call", None)
     if usage_store is not None and source is not None and callable(db_call):
-        await db_call(
-            usage_store.record,
-            scope_key=source.scope.key,
-            source="image_gen",
-            provider="cliproxy",
-            model=used_model,
-            input_tokens=in_tokens,
-            output_tokens=out_tokens,
-        )
+        await db_call(usage_store.record, scope_key=source.scope.key, source="image_gen", provider="cliproxy",
+                      model=used_model, input_tokens=in_tokens, output_tokens=out_tokens)
 
     b64 = base64.b64encode(raw_bytes).decode("ascii")
-    meta = json.dumps(
-        {
-            "ok": True,
-            "path": f"/work/{rel_path}",
-            "model": used_model,
-            "mime": mime,
-            "bytes": len(raw_bytes),
-            "hint": "图片已保存到容器，确认无误后调用 send_image 发送到当前会话。",
-        },
-        ensure_ascii=False,
-    )
+    meta = json.dumps({"ok": True, "path": f"/work/{rel_path}", "model": used_model, "mime": mime,
+                       "bytes": len(raw_bytes), "hint": "图片已保存到容器，确认无误后调用 send_image 发送到当前会话。"}, ensure_ascii=False)
     return ToolImage(meta, f"data:{mime};base64,{b64}")
 
 

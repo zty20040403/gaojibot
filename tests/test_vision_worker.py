@@ -116,9 +116,6 @@ class VisionWorkerCacheTests(unittest.IsolatedAsyncioTestCase):
         worker._analysis_cache = {}
         worker._analysis_inflight = {}
         worker._cache_lock = asyncio.Lock()
-        worker._cache_hits = 0
-        worker._cache_misses = 0
-        worker._deduplicated_requests = 0
         result = VisionResult(
             summary="终端报错截图",
             description="终端显示连接超时。",
@@ -143,8 +140,6 @@ class VisionWorkerCacheTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((first, second, third), (result, result, result))
         self.assertEqual(worker._request_analysis.await_count, 1)
-        self.assertEqual(worker._deduplicated_requests, 1)
-        self.assertEqual(worker._cache_hits, 1)
 
     async def test_source_resolver_returns_fresh_qq_url(self) -> None:
         worker = VisionWorker.__new__(VisionWorker)

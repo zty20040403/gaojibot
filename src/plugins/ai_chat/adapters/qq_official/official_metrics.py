@@ -67,7 +67,7 @@ class OfficialMetrics:
         self.message_gap.set(int(value.get('gateway',{}).get('message_gap') is True))
         keys = set()
         # These are count-only gauges. Refresh never increments event counters.
-        for domain in ('inbox','execution','delivery','files','migration'):
+        for domain in SAFE_STATES:
             for state,count in value.get(domain,{}).items():
                 if state not in SAFE_STATES.get(domain,()) or type(count) is not int or count < 0:
                     continue
@@ -81,7 +81,6 @@ SAFE_STATES = {
     'inbox': STATES['inbox'],
     'execution': frozenset(('prepared','executing','result_ready','handed_off','cancelled','needs_attention')),
     'delivery': frozenset(('pending','sending','accepted','committed','ambiguous','failed','cancelled')),
-    'files': frozenset(('stored','publishing','publication_unknown','pending','uploading','uploaded','upload_unknown','link_ready','queued','message_accepted','send_failed','delivery_unknown','cancelled','expired','unsupported','cleanup_pending')),
     'migration': frozenset(('planned','frozen','draining','switching','verifying','completed','rollback_pending','rolled_back')),
 }
 

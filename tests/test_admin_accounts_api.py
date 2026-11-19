@@ -157,6 +157,7 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get("/bot-admin/api/v1/me")).status_code, 401)
 
     async def test_no_web_approval_route_or_code_delivery(self):
+        self.assertNotIn('http', self.mobile.executors)
         await self.login()
         for prefix in ('/bot-admin/api', '/bot-admin/api/v1'):
             for method, tail in (('GET',''), ('GET','/TEST_ID'), ('POST','/TEST_ID/resend'),

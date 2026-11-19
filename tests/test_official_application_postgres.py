@@ -141,8 +141,7 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertNotIn('TEST_',response.text)
                         self.assertIsInstance(context.mobile_authorization,ConsoleAuthorization)
                         self.assertEqual(context.migration_service.baselines,{})
-                        self.assertIsNotNone(official.approval_service)
-                        self.assertIs(official.approval_service.token,token)
+                        self.assertNotIn('approval_transport_connected',official.status())
                         self.assertIs(official.file_service.token,token)
                         self.assertNotIn('agent.sandbox_exec',context.job_worker.registered_kinds)
                         context.mobile_authorization.store.bootstrap_local_admin('consoleadmin','TEST safe password 12345')
@@ -151,6 +150,29 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                             'content':'/whoami','timestamp':datetime.now(timezone.utc).isoformat()})
                         async with asyncio.timeout(10):
                             while not fake.received:await asyncio.sleep(.02)
+                        self.assertEqual(len(fake.received),1)
+                        with context.delivery_store.transaction() as cursor:
+                            before=cursor.execute("SELECT count(*) FROM messages WHERE direction='inbound'").fetchone()[0]
+                        for native,content in (('TEST_RETIRED_OTP','123456'),
+                                ('TEST_RETIRED_APPROVAL','/confirm AP-ABCDEF123456 123456')):
+                            await fake.emit('C2C_MESSAGE_CREATE',{'id':native,'author':{'user_openid':'TEST_OWNER'},
+                                'content':content,'timestamp':datetime.now(timezone.utc).isoformat()})
+                        async with asyncio.timeout(10):
+                            while True:
+                                with context.delivery_store.transaction() as cursor:
+                                    controls=cursor.execute('''SELECT status,reason_code,payload_json,canonical_message_id,turn_text
+                                        FROM qq_official_inbound_events WHERE native_message_id IN (?,?) ORDER BY native_message_id''',
+                                        ('TEST_RETIRED_OTP','TEST_RETIRED_APPROVAL')).fetchall()
+                                if len(controls)==2:break
+                                await asyncio.sleep(.02)
+                        expected={'status':'processed','reason_code':'admin_control_unavailable',
+                            'payload_json':None,'canonical_message_id':None,'turn_text':None}
+                        self.assertTrue(all(dict(row)==expected for row in controls))
+                        with context.delivery_store.transaction() as cursor:
+                            self.assertEqual(cursor.execute(
+                                "SELECT count(*) FROM messages WHERE direction='inbound'").fetchone()[0],before)
+                            self.assertEqual(cursor.execute('SELECT count(*) FROM qq_official_turn_executions').fetchone()[0],0)
+                            self.assertEqual(cursor.execute('SELECT count(*) FROM admin_approvals').fetchone()[0],0)
                         self.assertEqual(len(fake.received),1)
                         await fake.close_connections()
                         await asyncio.wait_for(fake.wait_ready(),10)

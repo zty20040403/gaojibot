@@ -199,7 +199,6 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(self.fake.files_seen.wait(), 20)
             except TimeoutError:
                 self.fail(str({'calls': len(calls),
-                    'files': self.query('SELECT state,reason_code FROM qq_official_file_deliveries'),
                     'jobs': self.query('SELECT kind,status,last_error FROM durable_jobs'),
                     'responses': [m['content'] for c in calls for m in c['messages'] if m['role'] == 'tool']}))
             self.assertEqual(self.query("SELECT job_id FROM durable_jobs WHERE kind LIKE ? OR kind LIKE ?", ('qq_official.ingest.%', 'qq_official.turn.%')), [])
@@ -348,7 +347,6 @@ class FileCompositionTests(unittest.IsolatedAsyncioTestCase):
             await self.complete('TEST_NO_ROUTE')
             self.assertEqual(self.fake.media_calls, [])
             self.assertEqual(self.manager.calls, [])
-            self.assertEqual(self.query('SELECT * FROM qq_official_file_artifacts'), [])
             await runtime.stop()
 
 

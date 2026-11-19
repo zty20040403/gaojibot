@@ -171,6 +171,22 @@ class RetireLegacyImportTests(HistoricalImport, unittest.TestCase):
                 self.assertEqual(connection.execute(f'SELECT * FROM {name}').fetchall(), rows)
         with self.assertRaisesRegex(RuntimeError, 'pre-0119 full database backup'):
             migration.migrate(schema, '0118_retire_semantic_state', downgrade=True)
+        migration.migrate(schema, '0122_retire_security_lock')
+        with migration.connect(schema) as connection:
+            before = _schema_snapshot(connection, schema)[0]
+            connection.execute('UPDATE qq_official_quota_periods SET reserved_count=1')
+        with self.assertRaisesRegex(RuntimeError, 'outstanding legacy files or quota'):
+            migration.migrate(schema, '0123_retire_outbox_diagnostics')
+        with migration.connect(schema) as connection:
+            connection.execute('UPDATE qq_official_quota_periods SET reserved_count=0, used_count=6')
+        migration.migrate(schema, '0123_retire_outbox_diagnostics')
+        with migration.connect(schema) as connection:
+            self.assertEqual(before - _schema_snapshot(connection, schema)[0],
+                             {'qq_official_file_artifacts','qq_official_file_deliveries','qq_official_quota_periods'})
+            for name in ('deliveries', 'delivery_attempts'):
+                self.assertEqual(connection.execute(f'SELECT * FROM {name}').fetchall(), retained[name])
+        with self.assertRaisesRegex(RuntimeError, 'pre-0123 full database backup'):
+            migration.migrate(schema, '0122_retire_security_lock', downgrade=True)
 
     def test_uncommitted_writer_blocks_migration_then_committed_data_refuses(self):
         schema = self.schema()

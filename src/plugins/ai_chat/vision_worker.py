@@ -143,9 +143,6 @@ class VisionWorker:
         self._analysis_cache: dict[str, tuple[float, VisionResult]] = {}
         self._analysis_inflight: dict[str, asyncio.Task[VisionResult]] = {}
         self._cache_lock = asyncio.Lock()
-        self._cache_hits = 0
-        self._cache_misses = 0
-        self._deduplicated_requests = 0
         self._execution_slots = asyncio.Semaphore(self.worker_concurrency)
 
         profile = self._vision_profile()
@@ -445,15 +442,11 @@ class VisionWorker:
         async with self._cache_lock:
             cached = self._analysis_cache.get(cache_key)
             if cached is not None and cached[0] > now:
-                self._cache_hits += 1
                 return cached[1]
             if cached is not None:
                 self._analysis_cache.pop(cache_key, None)
             task = self._analysis_inflight.get(cache_key) if not owned else None
-            if owned:
-                self._cache_misses += 1
-            elif task is None:
-                self._cache_misses += 1
+            if not owned and task is None:
                 task = asyncio.create_task(
                     self._request_analysis(job, content, mime_type),
                     name=f"vision-analysis:{cache_key[:12]}",
@@ -464,8 +457,6 @@ class VisionWorker:
                         self._finalize_analysis_task(key, completed)
                     )
                 )
-            else:
-                self._deduplicated_requests += 1
         if owned:
             result = await self._request_analysis(job, content, mime_type)
             async with self._cache_lock:
@@ -929,69 +920,6 @@ class VisionWorker:
             )
         finally:
             connection.close()
-
-    def admin_snapshot(self, *, limit: int = 100) -> dict[str, object]:
-        now = int(time.time())
-        connection = self.database.store_connection()
-        try:
-            counts = connection.execute(
-                """
-                SELECT
-                    COUNT(*) FILTER (WHERE status IN ('pending', 'running')) AS queued,
-                    COUNT(*) FILTER (WHERE status = 'failed') AS failed,
-                    COUNT(*) FILTER (WHERE status = 'delivered') AS delivered,
-                    COUNT(*) FILTER (WHERE created_at >= ?) AS jobs_24h,
-                    COUNT(*) FILTER (
-                        WHERE created_at >= ? AND status = 'delivered'
-                    ) AS delivered_24h,
-                    COUNT(*) FILTER (
-                        WHERE created_at >= ? AND status = 'failed'
-                    ) AS failed_24h,
-                    COALESCE(AVG(
-                        (finished_at - created_at)::double precision
-                    ) FILTER (
-                        WHERE created_at >= ? AND finished_at IS NOT NULL
-                          AND status IN ('succeeded', 'delivered')
-                    ), 0) AS avg_latency_seconds
-                FROM vision_jobs
-                """,
-                (now - 86400, now - 86400, now - 86400, now - 86400),
-            ).fetchone()
-            rows = connection.execute(
-                """
-                SELECT vision_job_id, scope_key, native_message_id,
-                       segment_index, mode, status, attempts, last_error,
-                       created_at, updated_at, finished_at
-                FROM vision_jobs
-                ORDER BY updated_at DESC, vision_job_id DESC
-                LIMIT ?
-                """,
-                (min(max(int(limit), 1), 500),),
-            ).fetchall()
-        finally:
-            connection.close()
-        count_payload = dict(counts) if counts is not None else {}
-        completed_24h = int(count_payload.get("delivered_24h") or 0) + int(
-            count_payload.get("failed_24h") or 0
-        )
-        count_payload["success_rate_24h"] = (
-            round(int(count_payload.get("delivered_24h") or 0) / completed_24h, 4)
-            if completed_24h
-            else None
-        )
-        return {
-            "counts": count_payload,
-            "profile": self.vision_profile_name,
-            "cache": {
-                "entries": len(self._analysis_cache),
-                "inflight": len(self._analysis_inflight),
-                "hits": self._cache_hits,
-                "misses": self._cache_misses,
-                "deduplicated": self._deduplicated_requests,
-                "ttl_seconds": self.cache_seconds,
-            },
-            "jobs": [dict(row) for row in rows],
-        }
 
     async def close(self) -> None:
         self._closed = True
