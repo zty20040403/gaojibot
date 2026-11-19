@@ -1,25 +1,14 @@
 """Real isolated PG and fake loopback M3, using unapplied source overlay."""
-import unittest
 
 from src.bot_security.passwords import hash_password
 from src.bot_security.store import SecurityStore, SecurityError, canonical, digest
-from src.bot_security.service import MobileAuthorization
-from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.approval import (
- ApprovalContext, ApprovalOtpSender, FrozenSource, HostAction, TaskPolicy, Recipient, OfficialApprovalTransport)
+ ApprovalContext, FrozenSource, HostAction, TaskPolicy, Recipient, OfficialApprovalTransport)
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.turn_platform import assert_execution_current
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
-from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
-from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
-from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
-from src.plugins.ai_chat.delivery import DeliveryStore
-from src.qq_official.credentials import Credentials
-from src.qq_official.http import RestClient
-from src.qq_official.token import TokenManager
-from src.qq_official.testing.fake_platform import FakePlatform
 from tests.qq_official_turn_fixture import ExecutionFixture
 
 SECRET=b'TEST_APPROVAL_ONLY_01234567890123456789'
@@ -79,37 +68,3 @@ class ApprovalFixture(ExecutionFixture):
  def propose(self,**changes):
   return self.store.propose(self.account_a,**(dict(bot_id=None,kind='server_task',payload=self.context.payload(),
    summary='TEST exact approved task',transport_context=self.context)|changes))
-
-class ApprovalLoopbackFixture(ApprovalFixture,unittest.IsolatedAsyncioTestCase):
- async def asyncSetUp(self):
-  self.calls=DatabaseCalls();self.deliveries=DeliveryStore(self.database);self.addCleanup(self.deliveries.close)
-  self.outbox=OfficialSendStore(self.deliveries,admission=lambda c,e,a:self.owners.owner_for_actor(c,e,a) is not None,
-   pepper=SECRET,clock=lambda:self.now,approval_authority=self.transport)
-  self.fake=FakePlatform(clock=lambda:self.now);self.fake.app_id=self.account.app_id;await self.fake.start()
-  self.query("UPDATE qq_official_endpoints SET proactive_state='unknown'")
-  for endpoint in (self.endpoint,self.other):
-   self.fake.add_window('user',endpoint.native_conversation_id,'TEST_SOURCE')
-   self.fake.proactive_allowed[('user',endpoint.native_conversation_id)]=True
-  self.tokens=TokenManager(Credentials(self.account.app_id,self.fake.app_secret),self.fake.base_url,allow_test_server=True)
-  self.rest=RestClient(self.tokens,allow_test_server=True)
-  async def ensure():
-   def check():
-    with self.tx() as c:assert_epoch(c,self.token)
-   await self.calls(check)
-  self.sender=OfficialSender(self.account,self.token,self.outbox,self.rest,self.ledger,database_calls=self.calls,
-   ensure_current=ensure,wall_clock=lambda:self.now,poll_seconds=.01)
-  self.otp=ApprovalOtpSender(sender=self.sender,transport=self.transport,store=self.store)
-  async def legacy(*args):raise AssertionError('legacy transport called')
-  self.mobile=MobileAuthorization(self.store,sender=legacy,bot_selector=lambda:None,official_sender=self.otp)
- async def asyncTearDown(self):
-  await self.sender.stop();await self.calls.close();await self.rest.aclose();await self.tokens.aclose();await self.fake.close()
- async def delivered(self,request,code):
-  await self.mobile._send_code(request,code)
- async def approved(self):
-  request,code=self.propose();await self.delivered(request,code)
-  result=self.store.confirm(request['approval_id'],None,None,code,recipient=self.recipient)
-  self.assertEqual(result['status'],'awaiting_quorum')
-  vote,vcode=self.store.request_review(request['approval_id'],None,None,recipient=self.recipient_b)
-  await self.delivered(vote,vcode)
-  self.store.confirm(vote['approval_id'],None,None,vcode,recipient=self.recipient_b)
-  return request

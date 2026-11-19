@@ -9,7 +9,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 
-from src.bot_security.store import SecurityError, SecurityStore, canonical, digest, public_account
+from src.bot_security.store import SecurityError, canonical, digest, public_account
 from ...conversation_scope import ConversationScope
 from ...message_ir import MessageBody, TextNode
 from ...platform_types import ActorKey, EndpointKey
@@ -407,51 +407,3 @@ class OfficialApprovalTransport:
             (attempt_id,delivery['delivery_id'],delivery['plan_id']))
         if cursor.rowcount!=1:
             denied()
-
-
-class ApprovalOtpSender:
-    """Host-only bridge into the existing M3 sender; code is RAM-only.
-
-    The callback cannot authorize itself: persisted approval generation, current
-    admin/source, exact window, HMAC body and M3 plan are checked in one TX.
-    """
-    def __init__(self, *, sender, transport, store):
-        self.sender,self.transport,self.store=sender,transport,store
-
-    def _prepare(self, request, code, text):
-        with self.sender.outbox.deliveries.transaction() as cursor:
-            self.transport.begin(cursor)
-            row = cursor.execute('''SELECT * FROM qq_official_admin_otp_sources
-                WHERE approval_id=? AND code_generation=? AND account_key=?''',
-                (request['approval_id'],request['code_generation'],self.transport.token.account_key)).fetchone()
-            if row is None:
-                return None
-            source,current = self.transport._source(cursor,row['source_id'],now=self.transport.now())
-            if (not isinstance(code,str) or re.fullmatch('[0-9]{6}',code) is None
-                    or not hmac.compare_digest(current['code_hash'],self.store._code_hash(current,code))):
-                denied()
-            rendered = self.transport.render_code(current,code)
-            from src.bot_security.service import MobileAuthorization
-            if text!=MobileAuthorization.code_text(current,code):
-                denied()
-            window=cursor.execute('SELECT * FROM qq_official_reply_windows WHERE window_id=?',
-                                  (source['window_id'],)).fetchone()
-            return self.sender.outbox.enqueue(self.transport.token,rendered=rendered,
-                requester=ActorKey.parse(source['actor_key']),logical_key='approval_otp:'+source['source_id'],
-                source_scope_key=rendered.endpoint.scope.key,expires_at=source['expires_at'],purpose='approval_otp',
-                source_native_message_id=window['credential_value'] if window else '',transaction_cursor=cursor,
-                approval_source_id=source['source_id'])
-
-    async def send_code(self,request,code,text):
-        return await self.sender.emit_ephemeral(self._prepare,request,code,text)
-
-    async def send_receipt(self,request):
-        # Typed control receipt integration is intentionally not connected by
-        # this source: never replay an OTP or grant general notification rights.
-        return 'failed'
-
-
-class OwnerApprovalStore(SecurityStore):
-    @staticmethod
-    def required_quorum(kind, requested=1):
-        return 1
