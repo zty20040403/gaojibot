@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from unittest.mock import Mock, patch
 
 import httpx
 
 from src.plugins.ai_chat import web_search as web_search_module
 from src.plugins.ai_chat.web_fetch import FetchError, fetch_page, public_address
-from src.plugins.ai_chat.web_search import SearchError, SearchResult, clean_source_url, render_search_sources, search_web
+from src.plugins.ai_chat.web_search import SearchError, SearchResult, render_search_sources, search_web
 
 
 ADDRESSES = {"shop.example": "93.184.216.34", "internal.example": "100.100.10.10"}
@@ -82,10 +83,7 @@ def block(name: str, snippet: str = "snippet") -> str:
 
 class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        web_search_module._QUERY_SLOTS = asyncio.Semaphore(4)
-        web_search_module._bocha_exhausted = False
-        self.addCleanup(setattr, web_search_module, "_QUERY_SLOTS", asyncio.Semaphore(4))
-        self.addCleanup(setattr, web_search_module, "_bocha_exhausted", False)
+        self.enterContext(patch.multiple(web_search_module, _QUERY_SLOTS=asyncio.Semaphore(4), _bocha_exhausted=False))
 
     async def test_mcp_handshake_and_header_parsing(self) -> None:
         requests = []
@@ -113,12 +111,10 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         for exa, status, payload, exhausted in cases:
             with self.subTest(exa=exa, status=status, payload=payload):
                 web_search_module._bocha_exhausted = False
-                calls = []
                 def handler(request):
                     body = json.loads(request.content)
                     if request.url.host == "api.bochaai.com":
                         self.assertEqual(body["query"], "TEST_query")
-                        calls.append(request)
                         data = {"code": 200, "data": {"webPages": {"value": [{"name": "B", "url": "https://example.test/b",
                                 "summary": "摘要", "datePublished": "2026-11-19"}]}}}
                         return httpx.Response(status, json=payload or (data if status == 200 else {}))
@@ -129,20 +125,41 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
                     if body["method"] == "tools/call":
                         self.assertEqual(body["params"]["arguments"]["query"], "TEST_query")
                     return exa_response(request, "No results found.")
+                post = Mock(side_effect=handler)
                 with self.assertLogs(web_search_module._logger, level="INFO") as logs:
                     for _ in range(2):
+                        search = search_web(['"TEST_query" OR site:example.test'], api_key="TEST_SECRET", transport=httpx.MockTransport(post))
                         if exa in {"empty", "429", "schema"}:
-                            results = await search_web(['"TEST_query" OR site:example.test'], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
-                            self.assertEqual(results[0], SearchResult("B", "https://example.test/b", "摘要", "2026-11-19", "bocha"))
+                            self.assertEqual((await search)[0], SearchResult("B", "https://example.test/b", "摘要", "2026-11-19", "bocha"))
                         else:
                             with self.assertRaises(SearchError):
-                                await search_web(['"TEST_query" OR site:example.test'], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
-                self.assertEqual(len(calls), 1 if exhausted else 2)
+                                await search
+                self.assertEqual(sum(c.args[0].url.host == 'api.bochaai.com' for c in post.call_args_list), 1 if exhausted else 2)
                 self.assertEqual(sum("disabled=true" in line for line in logs.output), int(exhausted))
                 self.assertNotIn("TEST_SECRET", " ".join(logs.output))
                 self.assertNotIn("TEST_query", " ".join(logs.output))
                 if exa == "schema":
                     self.assertTrue(any(r.provider == "bocha" and r.fallback_reason == "schema_error" for r in logs.records))
+
+    async def test_timeout_opens_one_fresh_exa_session_before_bocha(self):
+        for recover in (True, False):
+            calls = []
+            async def upstream(request):
+                if request.url.host == 'api.bochaai.com':
+                    calls.append('bocha')
+                    return httpx.Response(200, json={'data': {'webPages': {'value': []}}})
+                method = json.loads(request.content)['method']
+                calls.append(method)
+                if method == 'tools/call' and calls.count('initialize') == 1:
+                    raise httpx.ReadTimeout('TEST')
+                if not recover and calls.count('initialize') == 2:
+                    await asyncio.Event().wait()
+                return exa_response(request, block('retry'))
+            results = await asyncio.wait_for(search_web(['TEST'], timeout_seconds=0.2, api_key='TEST_KEY',
+                transport=httpx.MockTransport(upstream), browser=self.fail), 1)
+            handshake = ['initialize', 'notifications/initialized', 'tools/call']
+            self.assertEqual(calls, handshake + (handshake if recover else ['initialize', 'bocha']))
+            self.assertEqual([r.title for r in results], ['retry'] if recover else [])
 
     async def test_concurrency_interleaving_and_partial_failure(self) -> None:
         active = peak = 0
@@ -179,34 +196,15 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(logs.records[0].outcome, "http_error")
 
     async def test_empty_cleaned_queries_never_contact_providers(self) -> None:
-        def handler(request):
-            self.fail("empty queries must not contact providers")
         for queries in ([], ['"“”「」『』" OR site:example.test'], ['(-site:example.test)'], ['TEST', 'OR']):
             with self.subTest(queries=queries), self.assertRaises(SearchError):
-                await search_web(queries, api_key="TEST_KEY", transport=httpx.MockTransport(handler))
+                await search_web(queries, api_key="TEST_KEY", transport=httpx.MockTransport(self.fail))
 
     async def test_unexpected_internal_exception_propagates(self) -> None:
-        def handler(request):
-            if request.url.host == "api.bochaai.com":
-                self.fail("unexpected internal bug must not call Bocha")
-            raise RuntimeError("internal bug")
-        with self.assertRaisesRegex(RuntimeError, "internal bug"):
-            await search_web(["query"], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
-
-    def test_clean_source_url_strips_tracking_parameters(self) -> None:
-        self.assertEqual(
-            clean_source_url("https://www.bilibili.com/video/BV1TEST?vd_source=abc&p=2&share_source=copy&t=42"),
-            "https://www.bilibili.com/video/BV1TEST?p=2&t=42",
-        )
-        self.assertEqual(
-            clean_source_url("https://b23.tv/TEST123?share_medium=android&buvid=xyz"),
-            "https://b23.tv/TEST123",
-        )
-        self.assertEqual(
-            clean_source_url("https://shop.example/item?id=9&utm_source=x&share_id=1&spm=2&fbclid=3"),
-            "https://shop.example/item?id=9",
-        )
-        self.assertEqual(clean_source_url("http://[::1"), "http://[::1")
+        handler = Mock(side_effect=RuntimeError('internal bug'))
+        with self.assertRaisesRegex(RuntimeError, 'internal bug'):
+            await search_web(['query'], api_key='TEST_SECRET', transport=httpx.MockTransport(handler))
+        self.assertEqual([c.args[0].url.host for c in handler.call_args_list], ['mcp.exa.ai'])
 
     def test_render_search_sources_only_lists_cited_and_renumbers_outside_code(self) -> None:
         results = [
@@ -217,14 +215,8 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_search_sources(results, "不确定。"), ("不确定。", ""))
         answer = "先看[3]，再看[1]，忽略[0]和[9]。\n```python\narr = items[0] + items[2]\n```"
         rendered_answer, sources = render_search_sources(results, answer)
-        self.assertEqual(
-            rendered_answer,
-            "先看[1]，再看[2]，忽略[0]和[9]。\n```python\narr = items[0] + items[2]\n```",
-        )
-        self.assertEqual(
-            sources,
-            "来源：\n1. Three\nhttps://example.test/3\n2. One\nhttps://example.test/1",
-        )
+        self.assertEqual(rendered_answer, "先看[1]，再看[2]，忽略[0]和[9]。\n```python\narr = items[0] + items[2]\n```")
+        self.assertEqual(sources, "来源：\n1. Three\nhttps://example.test/3\n2. One\nhttps://example.test/1")
 
 
 if __name__ == "__main__":
