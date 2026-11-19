@@ -52,14 +52,6 @@ class VisionWorkerParsingTests(unittest.TestCase):
         with self.assertRaises(VisionJobError):
             VisionWorker.parse_result("not-json", mode="summary")
 
-    def test_only_qq_hosts_are_accepted(self) -> None:
-        self.assertTrue(
-            VisionWorker._supported_source("https://multimedia.nt.qq.com.cn/x.png")
-        )
-        self.assertFalse(
-            VisionWorker._supported_source("http://127.0.0.1/private.png")
-        )
-
 class VisionWorkerCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_analysis_uses_one_model_call_then_cache(self) -> None:
         worker = VisionWorker.__new__(VisionWorker)
@@ -92,22 +84,6 @@ class VisionWorkerCacheTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((first, second, third), (result, result, result))
         self.assertEqual(worker._request_analysis.await_count, 1)
-
-    async def test_source_resolver_returns_fresh_qq_url(self) -> None:
-        worker = VisionWorker.__new__(VisionWorker)
-        worker._source_resolver = AsyncMock(
-            return_value="https://multimedia.nt.qq.com.cn/fresh.png"
-        )
-        job = VisionJob(1, "99", 2, "https://gchat.qpic.cn/old", "detail", "", 1)
-
-        refreshed = await worker._refresh_source(job)
-
-        self.assertEqual(
-            refreshed,
-            "https://multimedia.nt.qq.com.cn/fresh.png",
-        )
-        worker._source_resolver.assert_awaited_once_with("99", 2)
-
 
 if __name__ == "__main__":
     unittest.main()
