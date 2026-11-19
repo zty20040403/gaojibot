@@ -90,13 +90,19 @@ async def _search_query(client: httpx.AsyncClient, query: str, limit: int,
     previous = "none"
     async with _QUERY_SLOTS:
         for provider in ("exa", "browser", "bocha"):
-            if provider == 'browser' and browser is None:
-                continue
+            deadline = timeout
+            if provider == "browser":
+                if previous == "timeout":
+                    provider, deadline = "exa", min(3, timeout / 2)
+                elif browser is None:
+                    continue
+                else:
+                    deadline = min(10, timeout)
             if provider == "bocha" and (not api_key or _bocha_exhausted):
                 break
             results = []
             try:
-                async with asyncio.timeout(min(10, timeout) if provider == 'browser' else timeout):
+                async with asyncio.timeout(deadline):
                     if provider == 'browser':
                         results = await browser(query, limit)
                     elif provider == 'exa':
