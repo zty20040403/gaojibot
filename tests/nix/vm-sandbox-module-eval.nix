@@ -1,23 +1,9 @@
 {self}: let
   lib = self.inputs.nixpkgs.lib;
-  evaluate = module: (import (self.inputs.nixpkgs + "/nixos/lib/eval-config.nix") {
-    system = "x86_64-linux";
-    modules = [self.nixosModules.default ({pkgs, ...}: {
-      system.stateVersion = "26.05";
-      boot.isContainer = true;
-      fileSystems."/" = {device = "none"; fsType = "tmpfs";};
-      services.gaoji = {
-        enable = true;
-        package = pkgs.hello;
-        qqOfficial = {
-          enable = true;
-          appIdFile = "/run/secrets/TEST-app-id";
-          appSecretFile = "/run/secrets/TEST-app-secret";
-          bindPepperFile = "/run/secrets/TEST-bind-pepper";
-        };
-      };
-    }) module];
-  }).config;
+  evaluate = module: import ./evaluate.nix {inherit self;} [{services.gaoji.qqOfficial = {
+    enable = true; appIdFile = "/run/secrets/TEST-app-id";
+    appSecretFile = "/run/secrets/TEST-app-secret"; bindPepperFile = "/run/secrets/TEST-bind-pepper";
+  };} module];
   noSandbox = evaluate {};
   owner = "qqo:conversation:" + lib.fixedWidthString 64 "0" "1";
   container = extra: evaluate {

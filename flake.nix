@@ -216,6 +216,8 @@
         ${virtualenv}/bin/python -c 'import ast, pathlib; [ast.parse(path.read_text(encoding="utf-8"), filename=str(path)) for path in pathlib.Path("src").rglob("*.py")]'
         touch "$out"
       '';
+    } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      public-search-browser = import ./tests/nix/public-search-browser.nix {inherit self pkgs;};
     });
 
     devShells = forAllSystems (system: let

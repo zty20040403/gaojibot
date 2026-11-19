@@ -13,6 +13,25 @@
   interestStatePath = "/var/lib/${interestStateDirectory}";
   interestResolver = pkgs.writeText "gaoji-interest-resolv.conf" "nameserver 1.1.1.1\n";
   interestNss = pkgs.writeText "gaoji-interest-nsswitch.conf" "hosts: files dns\n";
+  searchName = "gaoji-search-browser";
+  searchEnabled = cfg.runBot && cfg.searchBrowser.enable;
+  searchUid = config.users.users.${searchName}.uid;
+  searchGid = config.users.groups.${searchName}.gid;
+  searchNss = pkgs.writeText "gaoji-search-nsswitch.conf" "passwd: files\ngroup: files\nhosts: dns\n";
+  searchPasswd = pkgs.writeText "gaoji-search-passwd" "${searchName}:x:${toString searchUid}:${toString searchGid}::/tmp:/bin/sh\n";
+  searchGroup = pkgs.writeText "gaoji-search-group" "${searchName}:x:${toString searchGid}:\n";
+  searchModule = pkgs.runCommand "gaoji-search-module" {} ''
+    mkdir -p "$out/share"
+    cp ${../src/plugins/ai_chat/sandbox_search.py} "$out/share/sandbox_search.py"
+  '';
+  searchPython = pkgs.python3.withPackages (ps: [ps.aiohttp ps.playwright]);
+  searchFonts = pkgs.makeFontsConf {fontDirectories = [pkgs.dejavu_fonts];};
+  searchScope = pkgs.runCommandCC "gaoji-search-scope" {} ''
+    $CC -Wall -Werror ${./search-scope.c} -o "$out"
+  '';
+  publicIpDeny = ["localhost" "link-local" "multicast" "0.0.0.0/8" "10.0.0.0/8"
+    "100.64.0.0/10" "172.16.0.0/12" "192.168.0.0/16" "198.18.0.0/15"
+    "fc00::/7" "::/128" "::ffff:0:0/96"];
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
   sandboxCt = cfg.runBot && cfg.sandbox.enable && cfg.sandbox.backend == "container";
   ctBroker = "/run/gaoji-ct/broker.sock";
@@ -237,6 +256,8 @@ in {
       };
     };
 
+    searchBrowser.enable = lib.mkEnableOption "the isolated shared public search browser";
+
     user = lib.mkOption {
       type = lib.types.str;
       default = serviceName;
@@ -439,6 +460,22 @@ in {
         message = "The bot and its primary group must differ from the dedicated interest account";
       }
       {
+        assertion = !searchEnabled || (cfg.user != searchName && cfg.group != searchName
+          && config.networking.nftables.enable && config.security.unprivilegedUsernsClone
+          && config.security.allowUserNamespaces && !(builtins.elem (config.boot.kernel.sysctl."user.max_user_namespaces" or 1) [0 "0"])
+          && searchUid != null && searchGid != null && config.users.users.${searchName}.extraGroups == []);
+        message = "The public search browser requires nftables, unprivileged user namespaces and a dedicated account without supplementary groups";
+      }
+      {
+        assertion = !searchEnabled || (
+          !(builtins.elem searchUid (builtins.attrValues config.ids.uids))
+          && !(builtins.elem searchGid (builtins.attrValues config.ids.gids))
+          && lib.all (user: user.name == searchName || user.uid != searchUid) (builtins.attrValues config.users.users)
+          && lib.all (group: group.name == searchName || group.gid != searchGid) (builtins.attrValues config.users.groups)
+        );
+        message = "The search browser UID/GID conflicts; override users.users.gaoji-search-browser.uid and users.groups.gaoji-search-browser.gid";
+      }
+      {
         assertion = !cfg.qqOfficial.enable || cfg.qqOfficial.hostConfigFile == null
           || officialCredentialPath cfg.qqOfficial.hostConfigFile;
         message = "QQ official hostConfigFile must be a protected absolute string path outside /nix/store";
@@ -470,6 +507,12 @@ in {
     users.users.${interestName} = lib.mkIf cfg.runBot {
       isSystemUser = true;
       group = interestName;
+    };
+    users.groups.${searchName} = lib.mkIf searchEnabled {gid = lib.mkDefault 497;};
+    users.users.${searchName} = lib.mkIf searchEnabled {
+      isSystemUser = true;
+      uid = lib.mkDefault 497;
+      group = searchName;
     };
     users.users.${serviceName} = lib.mkIf (cfg.user == serviceName) {
       isSystemUser = true;
@@ -621,10 +664,90 @@ in {
         RestrictAddressFamilies = ["AF_UNIX" "AF_INET" "AF_INET6"];
         InaccessiblePaths = ["-${statePath}" "-${cachePath}" "-/run/postgresql" "-/run/credentials"];
         BindReadOnlyPaths = ["${interestResolver}:/etc/resolv.conf" "${interestNss}:/etc/nsswitch.conf"];
-        IPAddressDeny = ["localhost" "link-local" "multicast" "0.0.0.0/8" "10.0.0.0/8"
-          "100.64.0.0/10" "172.16.0.0/12" "192.168.0.0/16" "198.18.0.0/15"
-          "fc00::/7" "::/128" "::ffff:0:0/96"];
+        IPAddressDeny = publicIpDeny;
       };
+    };
+
+    systemd.sockets.${searchName} = lib.mkIf searchEnabled {
+      description = "Public search browser socket";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenStream = "/run/${searchName}/search.sock";
+        SocketGroup = cfg.group;
+        SocketMode = "0660";
+        DirectoryMode = "0755";
+      };
+    };
+
+    systemd.services.${searchName} = lib.mkIf searchEnabled {
+      description = "Isolated public search browser";
+      confinement = {enable = true; packages = [searchModule searchFonts pkgs.cacert];};
+      wantedBy = ["multi-user.target"];
+      wants = ["network-online.target"];
+      requires = ["${searchName}.socket" "nftables.service"];
+      after = ["${searchName}.socket" "nftables.service" "network-online.target"];
+      environment = {
+        HOME = "/tmp";
+        XDG_CACHE_HOME = "/tmp/cache";
+        XDG_CONFIG_HOME = "/tmp/config";
+        PYTHONPATH = "${searchModule}/share";
+        FONTCONFIG_FILE = searchFonts;
+        PYTHONDONTWRITEBYTECODE = "1";
+        PYTHONUNBUFFERED = "1";
+      };
+      serviceConfig = {
+        User = searchName;
+        Group = searchName;
+        ExecStart = "${searchScope} ${searchPython}/bin/python ${./search-browser.py} ${pkgs.chromium}/bin/chromium";
+        Restart = "on-failure";
+        RestartSec = 5;
+        MemoryMax = "2G";
+        CPUQuota = "200%";
+        TasksMax = 256;
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectHome = true;
+        ProtectSystem = "strict";
+        ProtectControlGroups = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        RestrictSUIDSGID = true;
+        CapabilityBoundingSet = "";
+        RestrictAddressFamilies = ["AF_UNIX" "AF_INET" "AF_INET6"];
+        PrivateIPC = true;
+        BindReadOnlyPaths = [
+          "${interestResolver}:/etc/resolv.conf"
+          "${searchNss}:/etc/nsswitch.conf"
+          "${searchPasswd}:/etc/passwd"
+          "${searchGroup}:/etc/group"
+          "${pkgs.cacert}/etc/ssl/certs:/etc/ssl/certs"
+        ];
+        IPAddressDeny = publicIpDeny;
+      };
+    };
+
+    # The host's own public addresses are local too. Port filtering cannot distinguish DoH inside HTTPS.
+    networking.nftables.tables.${searchName} = lib.mkIf searchEnabled {
+      family = "inet";
+      content = ''
+        chain output {
+          type filter hook output priority filter; policy accept;
+          meta skuid != ${toString searchUid} return
+          fib daddr type local drop
+          ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8,
+            169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24,
+            192.168.0.0/16, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24,
+            224.0.0.0/4, 240.0.0.0/4 } drop
+          ip6 daddr { ::/128, ::1/128, ::ffff:0:0/96, fc00::/7, fe80::/10, ff00::/8 } drop
+          ip daddr 1.1.1.1 udp dport 53 accept
+          ip daddr 1.1.1.1 tcp dport 53 accept
+          tcp dport 443 accept
+          drop
+        }
+      '';
     };
 
     systemd.timers.${interestName} = lib.mkIf cfg.runBot {
