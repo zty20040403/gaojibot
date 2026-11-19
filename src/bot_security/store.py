@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Callable
 
-from src.bot_storage.database import DatabaseError, DatabaseSource, PostgresDatabase
+from src.bot_storage.database import DatabaseError, DatabaseSource, PostgresDatabase, StoreCursor
 from .passwords import DUMMY_HASH, hash_password, verify_password
 from .quorum import ApprovalQuorum
 
@@ -34,12 +34,13 @@ def public_account(account: dict[str, Any]) -> dict[str, Any]:
     return {key: account[key] for key in ("account_id", "username", "role", "qq_id", "enabled", "version")}
 
 
-class SecurityStore(ApprovalQuorum):
-    """Serialize short security transactions across workers, including OTP consumption.
+def lock_admin_security(cursor: StoreCursor) -> None:
+    # Advisory locks are database-wide; keep separate schemas independent.
+    cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended('gaoji-admin-security:' || current_schema(), 0))")
 
-    No network or password hashing takes place while the database lock is held.
-    All instances share PostgreSQL; schema changes are managed by Alembic.
-    """
+
+class SecurityStore(ApprovalQuorum):
+    """Keep network and password hashing outside short, serialized security transactions."""
 
     def __init__(self, source: DatabaseSource, secret: bytes, *, clock: Callable[[], float] = time.time, transport=None):
         if len(secret) < 32:
@@ -68,8 +69,7 @@ class SecurityStore(ApprovalQuorum):
     def _security_lock(self, cursor):
         if self.transport is not None:
             self.transport.begin(cursor)
-        cursor.execute("INSERT INTO admin_security_lock VALUES (1, 0) ON CONFLICT (lock_id) DO NOTHING")
-        cursor.execute("UPDATE admin_security_lock SET revision=revision+1 WHERE lock_id=1")
+        lock_admin_security(cursor)
 
     def _store_where(self, alias=''):
         if self.transport is not None:
@@ -133,7 +133,6 @@ class SecurityStore(ApprovalQuorum):
                 connection.rollback()
                 raise
             finally:
-                cursor.close()
                 connection.close()
 
     def _audit(self, db, account: str, action: str, target: str = "", detail: str = "") -> None:
