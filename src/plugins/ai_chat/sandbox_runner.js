@@ -14,7 +14,7 @@ const execFileAsync = promisify(execFile);
 const CDP_URL = "http://127.0.0.1:9222";
 const MAX_VIDEO_SECONDS = 600;
 const MAX_VIDEO_BYTES = 32 * 1024 * 1024;
-const VIDEO_SCALE = "scale='min(640,iw)':'min(640,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2";
+const VIDEO_SCALE = "scale='min(640,iw)':'min(640,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2";
 
 const writeStdout = process.stdout.write.bind(process.stdout);
 const writeStderr = text => process.stderr.write(text);
@@ -66,12 +66,6 @@ function parseTime(value) {
   return value.trim().split(":").reduce((acc, part) => acc * 60 + Number(part), 0);
 }
 
-function lastFfmpegLine(error, file) {
-  const lines = String(error?.stderr ?? "").trim().split("\n").filter(Boolean);
-  const last = lines.at(-1) ?? error?.message ?? "unknown ffmpeg error";
-  return last.startsWith(`${file}: `) ? last.slice(file.length + 2) : last;
-}
-
 async function watchVideo(work, path, { start, end } = {}) {
   if (typeof path !== "string" || !path.trim()) {
     return failed("bad_arguments", "video requires {path}, with optional start and end");
@@ -85,11 +79,11 @@ async function watchVideo(work, path, { start, end } = {}) {
   let duration;
   try {
     const { stdout } = await execFileAsync("ffprobe", [
-      "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", local,
+      "-v", "error", "-protocol_whitelist", "file,pipe", "-show_entries", "format=duration", "-of", "csv=p=0", local,
     ], { timeout: 30_000 });
     duration = Number(stdout.trim());
-  } catch (err) {
-    return failed("not_a_video", `cannot read video ${path}: ${lastFfmpegLine(err, local)}`);
+  } catch {
+    return failed("not_a_video", "Cannot read local video metadata; check the file and ffprobe installation.");
   }
   const begin = from ?? 0;
   const stop = to ?? duration;
@@ -111,17 +105,22 @@ async function watchVideo(work, path, { start, end } = {}) {
   try {
     await execFileAsync("ffmpeg", [
       "-nostdin", "-y", "-v", "error",
-      ...cut, "-i", local,
+      "-protocol_whitelist", "file,pipe", ...cut, "-i", local,
       "-map", "0:v:0", "-map", "0:a:0?",
-      "-vf", `fps=1,${VIDEO_SCALE}`,
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
+      "-vf", `fps=1:eof_action=pass,${VIDEO_SCALE}`,
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-bf", "0", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-ac", "1", "-b:a", "32k",
       "-movflags", "+faststart",
       written,
     ], { timeout: 180_000 });
-  } catch (err) {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v", "error", "-protocol_whitelist", "file,pipe", "-select_streams", "v:0",
+      "-read_intervals", "%+#1", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", written,
+    ], { timeout: 20_000 });
+    if (!(Number(stdout.trim()) > 0)) throw new Error("no_video_packets");
+  } catch {
     await unlink(written).catch(() => {});
-    return failed("not_a_video", `cannot transcode ${path}: ${lastFfmpegLine(err, local)}`);
+    return failed("not_a_video", "Video preparation failed: no video data or unsupported encoding; check the source file and ffmpeg. No video was sent.");
   }
   const info = await stat(written);
   if (info.size <= 0 || info.size > MAX_VIDEO_BYTES) {
