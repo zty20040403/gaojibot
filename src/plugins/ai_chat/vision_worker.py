@@ -15,10 +15,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from src.bot_storage import PostgresDatabase
 
-from .conversation_scope import ConversationScope
-from .delivery import DeliveryStore
 from .llm_gateway import LLMGateway
 from .model_catalog import ModelCatalog, ModelProfile
 from .model_budget import active_model_budget
@@ -84,42 +81,31 @@ class VisionResult:
 
 
 class VisionWorker:
-    """Durable control plane for transient image understanding jobs.
-
-    The queue keeps a QQ message reference and a short-lived signed URL. Image
-    bytes are only held in memory or a temporary directory and are never added
-    to the durable media library.
-    """
+    """Prepare and interpret images for OCR and media captions."""
 
     def __init__(
         self,
-        database: PostgresDatabase,
         *,
         model_catalog: ModelCatalog,
         llm_gateway: LLMGateway,
         vision_profile: str,
-        delivery_store: DeliveryStore | None = None,
         max_source_bytes: int = 100 * 1024 * 1024,
         max_vision_bytes: int = 20 * 1024 * 1024,
         prepare_threshold_bytes: int = 1024 * 1024,
         max_edge_pixels: int = 1568,
         timeout_seconds: int = 180,
-        worker_concurrency: int = 2,
         cache_seconds: int = 600,
         cache_entries: int = 256,
         ffmpeg_path: str = "ffmpeg",
     ) -> None:
-        self.database = database
         self.model_catalog = model_catalog
         self.llm_gateway = llm_gateway
         self.vision_profile_name = vision_profile.strip()
-        self.delivery_store = delivery_store
         self.max_source_bytes = max(int(max_source_bytes), 1024)
         self.max_vision_bytes = max(int(max_vision_bytes), 1024)
         self.prepare_threshold_bytes = max(int(prepare_threshold_bytes), 0)
         self.max_edge_pixels = max(int(max_edge_pixels), 256)
         self.timeout_seconds = max(int(timeout_seconds), 5)
-        self.worker_concurrency = min(max(int(worker_concurrency), 1), 8)
         self.cache_seconds = max(int(cache_seconds), 0)
         self.cache_entries = min(max(int(cache_entries), 1), 2048)
         self.ffmpeg_path = ffmpeg_path.strip() or "ffmpeg"
@@ -127,7 +113,6 @@ class VisionWorker:
         self._analysis_cache: dict[str, tuple[float, VisionResult]] = {}
         self._analysis_inflight: dict[str, asyncio.Task[VisionResult]] = {}
         self._cache_lock = asyncio.Lock()
-        self._execution_slots = asyncio.Semaphore(self.worker_concurrency)
 
         profile = self._vision_profile()
         if not profile.capabilities.vision:
@@ -139,127 +124,6 @@ class VisionWorker:
                 f"vision profile {profile.name!r} has no usable API key"
             )
 
-    def submit(
-        self,
-        *,
-        scope_key: str,
-        native_message_id: str | int,
-        segment_index: int,
-        requester_native_user_id: str | int,
-        source_url: str,
-        mode: str = "summary",
-        question: str = "",
-        delivery_target: ConversationScope | None = None,
-        reply_to_native_message_id: str | int | None = None,
-    ) -> int:
-        selected_mode = str(mode).strip().lower()
-        if selected_mode not in {"summary", "detail"}:
-            raise VisionJobError("vision mode must be summary or detail")
-        if not self._supported_source(source_url):
-            raise VisionJobError("unsupported image source URL")
-        if delivery_target is not None and self.delivery_store is None:
-            raise VisionJobError("durable delivery outbox is unavailable")
-        now = int(time.time())
-        connection = self.database.store_connection()
-        cursor = connection.cursor()
-        try:
-            cursor.execute(
-                """
-                INSERT INTO vision_jobs (
-                    scope_key, native_message_id, segment_index,
-                    requester_native_user_id, source_url, mode, question,
-                    auto_deliver, target_platform, target_kind,
-                    target_native_conversation_id, reply_to_native_message_id,
-                    status, attempts, next_attempt_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          'pending', 0, ?, ?, ?)
-                RETURNING vision_job_id
-                """,
-                (
-                    str(scope_key),
-                    str(native_message_id),
-                    max(int(segment_index), 0),
-                    str(requester_native_user_id),
-                    source_url,
-                    selected_mode,
-                    str(question).strip()[:2000],
-                    delivery_target is not None,
-                    delivery_target.platform if delivery_target is not None else "",
-                    delivery_target.kind if delivery_target is not None else "",
-                    (
-                        delivery_target.native_conversation_id
-                        if delivery_target is not None
-                        else ""
-                    ),
-                    str(reply_to_native_message_id or ""),
-                    now,
-                    now,
-                    now,
-                ),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise VisionJobError("could not create vision job")
-            job_id = int(row["vision_job_id"])
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-        return job_id
-
-    async def submit_and_wait(
-        self,
-        *,
-        scope_key: str,
-        native_message_id: str | int,
-        segment_index: int,
-        requester_native_user_id: str | int,
-        source_url: str,
-        mode: str = "summary",
-        question: str = "",
-        wait_seconds: float = 45,
-    ) -> VisionResult | None:
-        budget = active_model_budget()
-        if budget is not None:
-            selected_mode = str(mode).strip().lower()
-            if selected_mode not in {"summary", "detail"}:
-                raise VisionJobError("vision mode must be summary or detail")
-            if not self._supported_source(source_url):
-                raise VisionJobError("unsupported image source URL")
-            # The parent durable run owns this read and its budget. A separate
-            # queue or shielded task could outlive cancellation and settlement.
-            job = VisionJob(
-                0, str(native_message_id), max(int(segment_index), 0),
-                source_url, selected_mode, str(question).strip()[:2000], 1,
-            )
-            async with asyncio.timeout(min(max(float(wait_seconds), 1.0), self.timeout_seconds)):
-                async with self._execution_slots:
-                    if budget.before_request is not None:
-                        await budget.before_request()
-                    return await self._analyze(job)
-        job_id = await asyncio.to_thread(
-            self.submit,
-            scope_key=scope_key,
-            native_message_id=native_message_id,
-            segment_index=segment_index,
-            requester_native_user_id=requester_native_user_id,
-            source_url=source_url,
-            mode=mode,
-            question=question,
-        )
-        deadline = time.monotonic() + max(float(wait_seconds), 1.0)
-        while time.monotonic() < deadline:
-            result, terminal = await asyncio.to_thread(self._consume_if_ready, job_id)
-            if result is not None:
-                return result
-            if terminal:
-                return None
-            await asyncio.sleep(0.35)
-        await asyncio.to_thread(self.expire, job_id, "request wait timed out")
-        return None
-
     async def _analyze(self, job: VisionJob) -> VisionResult:
         try:
             content, mime_type = await self._download(job.source_url)
@@ -268,8 +132,6 @@ class VisionWorker:
             if not refreshed or refreshed == job.source_url:
                 raise original_error
             content, mime_type = await self._download(refreshed)
-            if job.job_id:
-                await asyncio.to_thread(self._update_source_url, job.job_id, refreshed)
         content, mime_type = await asyncio.to_thread(
             self._prepare_for_vision,
             content,
@@ -400,20 +262,6 @@ class VisionWorker:
             return None
         candidate = str(refreshed or "").strip()
         return candidate if self._supported_source(candidate) else None
-
-    def _update_source_url(self, job_id: int, source_url: str) -> None:
-        connection = self.database.store_connection()
-        try:
-            connection.execute(
-                """
-                UPDATE vision_jobs
-                SET source_url = ?, updated_at = ?
-                WHERE vision_job_id = ? AND status = 'running'
-                """,
-                (source_url, int(time.time()), int(job_id)),
-            )
-        finally:
-            connection.close()
 
     @staticmethod
     def _analysis_cache_key(job: VisionJob, content: bytes) -> str:
@@ -609,57 +457,6 @@ class VisionWorker:
         if not strict and len(content) <= max_vision_bytes:
             return content, mime_type
         raise VisionJobError("ffmpeg could not prepare image")
-
-    def expire(self, job_id: int, reason: str = "expired") -> None:
-        now = int(time.time())
-        connection = self.database.store_connection()
-        try:
-            connection.execute(
-                """
-                UPDATE vision_jobs
-                SET status = 'expired', source_url = '', result_json = '',
-                    lease_until = NULL, worker_id = '', last_error = ?,
-                    updated_at = ?, finished_at = ?, expires_at = ?
-                WHERE vision_job_id = ?
-                  AND status IN ('pending', 'running', 'succeeded')
-                """,
-                (str(reason)[:500], now, now, now + 86400, int(job_id)),
-            )
-        finally:
-            connection.close()
-
-    def _consume_if_ready(self, job_id: int) -> tuple[VisionResult | None, bool]:
-        connection = self.database.store_connection()
-        try:
-            row = connection.execute(
-                """
-                SELECT status, mode, result_json
-                FROM vision_jobs WHERE vision_job_id = ?
-                """,
-                (int(job_id),),
-            ).fetchone()
-            if row is None:
-                return None, True
-            status = str(row["status"])
-            if status != "succeeded":
-                return None, status in {"failed", "expired", "delivered"}
-            raw = str(row["result_json"] or "")
-            if not raw:
-                return None, True
-            result = self.parse_result(raw, mode=str(row["mode"]))
-            now = int(time.time())
-            connection.execute(
-                """
-                UPDATE vision_jobs
-                SET status = 'delivered', result_json = '', source_url = '',
-                    updated_at = ?, expires_at = ?
-                WHERE vision_job_id = ? AND status = 'succeeded'
-                """,
-                (now, now + 86400, int(job_id)),
-            )
-            return result, False
-        finally:
-            connection.close()
 
     async def close(self) -> None:
         tasks = tuple(self._analysis_inflight.values())
