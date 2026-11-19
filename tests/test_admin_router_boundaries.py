@@ -90,7 +90,6 @@ class AdminRouterBoundaryTests(unittest.IsolatedAsyncioTestCase):
             test_case=self,
             path=prefix,
         )
-        self.addCleanup(app.state.mobile.store.close)
         return app
 
     async def login(self, client=None, prefix="/bot-admin"):

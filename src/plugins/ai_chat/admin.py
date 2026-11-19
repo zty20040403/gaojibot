@@ -68,9 +68,8 @@ def register_admin(
     token: str = "",  # Obsolete: never reopens token login.
 ) -> None:
     prefix = "/" + path.strip("/")
-    mobile = services.mobile_authorization
     origin = str(getattr(services.settings, "admin_origin", "") or "")
-    route_class = secure_route(mobile, prefix=prefix, origin=origin)
+    route_class = secure_route(services.console_store, prefix=prefix, origin=origin)
     control_store = AdminControlStore(services.database)
     configure_tool_overrides(control_store.tool_overrides())
     event_broker = AdminEventBroker(control_store.versions)
@@ -84,7 +83,7 @@ def register_admin(
     )
     router = APIRouter(route_class=route_class)
     security_router = context.new_router()
-    register_security_routes(security_router, mobile, services, prefix=prefix, origin=origin)
+    register_security_routes(security_router, services.console_store, services, prefix=prefix, origin=origin)
     legacy_api_prefix = f"{prefix}/api"
     pages = [security_router, *(page.create_router(context) for page in _PAGE_ROUTERS)]
     for page_router in pages:

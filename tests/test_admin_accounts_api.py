@@ -55,7 +55,7 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         register_admin(self.app, AdminServices(version="test", started_at=1,
             settings=SimpleNamespace(admin_origin="https://test", alert_notify_enabled=False),
             official_observability=lambda:SimpleNamespace(snapshot=lambda:self.health),
-            mobile_authorization=self.mobile,
+            console_store=self.store,
             sandbox_manager=self.sandbox), token="obsolete-token")
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="https://test", headers={"Origin": "https://test"})
         self.addAsyncCleanup(self.client.aclose)

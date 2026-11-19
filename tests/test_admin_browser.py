@@ -65,7 +65,6 @@ class AdminBrowserTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         recent = (await self.admin.get(self.path,params={'endpoint_key':self.endpoint.key})).json()['recent']
         self.assertEqual(recent[0]['state'],'cleared')
         self.assertEqual(recent[0]['operation_id'],response.json()['operation_id'])
-        self.assertEqual(self.app.state.auth_messages,[])
 
     async def test_login_csrf_version_and_explicit_confirmation_are_required(self):
         self.assertEqual((await self.admin.get(self.path)).status_code,401)
@@ -115,7 +114,7 @@ class AdminBrowserTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.perform.side_effect = waiting
         pending = asyncio.create_task(self.clear())
         await asyncio.wait_for(entered.wait(),3)
-        self.app.state.mobile.store.logout(self.admin.cookies['gaoji_session'])
+        self.app.state.console_store.logout(self.admin.cookies['gaoji_session'])
         result = await asyncio.wait_for(pending,3)
         self.assertEqual(result.status_code,200,result.text)
         self.assertEqual(result.json()['state'],'unknown')

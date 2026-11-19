@@ -11,8 +11,8 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.bot_security.passwords import hash_password
-from src.bot_security.service import MobileAuthorization, current_principal, principal
-from src.bot_security.store import SecurityError
+from src.bot_security.service import current_principal, principal
+from src.bot_security.store import SecurityError, SecurityStore
 
 SESSION_COOKIE = "gaoji_session"
 CSRF_COOKIE = "gaoji_csrf"
@@ -60,7 +60,7 @@ def _origin(request: Request, configured: str) -> str:
     return configured.rstrip("/") or str(request.base_url).rstrip("/")
 
 
-def secure_route(mobile: MobileAuthorization | None, *, prefix: str, origin: str = "") -> type[APIRoute]:
+def secure_route(store: SecurityStore | None, *, prefix: str, origin: str = "") -> type[APIRoute]:
     class AccountRoute(APIRoute):
         def get_route_handler(self):
             original = super().get_route_handler()
@@ -70,14 +70,14 @@ def secure_route(mobile: MobileAuthorization | None, *, prefix: str, origin: str
                     return await original(request)
                 identity_token = None
                 try:
-                    if mobile is None:
+                    if store is None:
                         raise SecurityError("账户认证尚未初始化，控制台已锁定；请按部署说明初始化管理员", 503)
                     suffix = api_suffix(request.url.path, prefix)
                     write = request.method not in SAFE_METHODS
                     if write and request.headers.get("origin", "") != _origin(request, origin):
                         raise SecurityError("请求来源校验失败")
                     if suffix != "/auth/login":
-                        account = await asyncio.to_thread(mobile.store.session, request.cookies.get(SESSION_COOKIE, ""),
+                        account = await asyncio.to_thread(store.session, request.cookies.get(SESSION_COOKIE, ""),
                             request.headers.get("x-csrf-token", "") if write else None)
                         identity_token = current_principal.set(account)
                         if suffix not in {"/me", "/status", "/auth/logout"}:
@@ -109,19 +109,14 @@ def secure_route(mobile: MobileAuthorization | None, *, prefix: str, origin: str
     return AccountRoute
 
 
-def register_security_routes(router: APIRouter, mobile: MobileAuthorization | None, services: Any, *, prefix: str, origin: str) -> None:
-    def configured() -> MobileAuthorization:
-        if mobile is None:
-            raise SecurityError("账户认证尚未初始化", 503)
-        return mobile
+def register_security_routes(router: APIRouter, store: SecurityStore | None, services: Any, *, prefix: str, origin: str) -> None:
 
     @router.post("/api/auth/login")
     async def login(body: LoginRequest, request: Request):
-        security = configured()
         secure = _origin(request, origin).startswith("https://")
         if not secure and request.url.hostname not in {"localhost", "127.0.0.1", "::1", "test"}:
             raise SecurityError("账户登录需要 HTTPS；本机调试可用 localhost", 400)
-        credentials = await asyncio.to_thread(security.store.login, body.username, body.password,
+        credentials = await asyncio.to_thread(store.login, body.username, body.password,
                                               request.client.host if request.client else "unknown")
         response = JSONResponse({"account": credentials["account"]})
         response.set_cookie(SESSION_COOKIE, credentials["session"], max_age=28800, httponly=True, secure=secure, samesite="strict", path=prefix)
@@ -130,7 +125,7 @@ def register_security_routes(router: APIRouter, mobile: MobileAuthorization | No
 
     @router.post("/api/auth/logout")
     async def logout(request: Request):
-        await asyncio.to_thread(configured().store.logout, request.cookies.get(SESSION_COOKIE, ""))
+        await asyncio.to_thread(store.logout, request.cookies.get(SESSION_COOKIE, ""))
         response = JSONResponse({"ok": True})
         response.delete_cookie(SESSION_COOKIE, path=prefix)
         response.delete_cookie(CSRF_COOKIE, path=prefix)
@@ -153,15 +148,15 @@ def register_security_routes(router: APIRouter, mobile: MobileAuthorization | No
     @router.get("/api/accounts")
     async def accounts():
         require_admin()
-        return {"items": await asyncio.to_thread(configured().store.accounts)}
+        return {"items": await asyncio.to_thread(store.accounts)}
 
     @router.post("/api/accounts")
     async def create_account(body: AccountCreate):
         account = require_admin()
         username = body.username.strip().lower()
-        configured().store.validate_account(username, body.role, body.qq_id)
+        store.validate_account(username, body.role, body.qq_id)
         encoded = await asyncio.to_thread(hash_password, body.password)
-        result = await asyncio.to_thread(configured().store.apply_account_change, account,
+        result = await asyncio.to_thread(store.apply_account_change, account,
             {"action": "create", "username": username, "password_hash": encoded, "role": body.role, "qq_id": body.qq_id})
         return {"ok": True, "account": result}
 
@@ -176,15 +171,15 @@ def register_security_routes(router: APIRouter, mobile: MobileAuthorization | No
             changes["password_hash"] = await asyncio.to_thread(hash_password, password)
         if not changes:
             raise SecurityError("没有账户变更", 400)
-        target = next((item for item in await asyncio.to_thread(configured().store.accounts) if item["account_id"] == account_id), None)
+        target = next((item for item in await asyncio.to_thread(store.accounts) if item["account_id"] == account_id), None)
         if not target:
             raise SecurityError("账户不存在", 404)
-        configured().store.validate_account(target["username"], changes.get("role", target["role"]), changes.get("qq_id", target["qq_id"]))
-        result = await asyncio.to_thread(configured().store.apply_account_change, account,
+        store.validate_account(target["username"], changes.get("role", target["role"]), changes.get("qq_id", target["qq_id"]))
+        result = await asyncio.to_thread(store.apply_account_change, account,
             {"action": "update", "account_id": account_id, "expected_version": body.expected_version, "changes": changes})
         return {"ok": True, "account": result}
 
     @router.get("/api/security-audit")
     async def audit():
         require_admin()
-        return {"items": await asyncio.to_thread(configured().store.audit)}
+        return {"items": await asyncio.to_thread(store.audit)}

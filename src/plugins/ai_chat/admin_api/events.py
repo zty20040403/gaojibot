@@ -17,7 +17,7 @@ from .context import AdminRouteContext, authorize
 
 def create_router(context: AdminRouteContext) -> APIRouter:
     router = context.new_router()
-    mobile = context.services.mobile_authorization
+    store = context.services.console_store
     control_store = context.control_store
     event_broker = context.event_broker
     realtime_monitor = context.realtime_monitor
@@ -44,9 +44,9 @@ def create_router(context: AdminRouteContext) -> APIRouter:
                 yield f"data: {json.dumps(ready, separators=(',', ':'))}\n\n"
                 while not await request.is_disconnected():
                     try:
-                        if mobile is None:
+                        if store is None:
                             break
-                        active = await asyncio.to_thread(mobile.store.session, request.cookies.get(SESSION_COOKIE, ""))
+                        active = await asyncio.to_thread(store.session, request.cookies.get(SESSION_COOKIE, ""))
                         if active["role"] != "admin":
                             break
                     except SecurityError:
