@@ -54,7 +54,6 @@ PAGE_ROUTES = (
     ("GET", "/api/media"),
     ("PUT", "/api/media/{media_id}/review"),
     ("PUT", "/api/media/captions/settings"),
-    ("GET", "/api/sources"),
     ("DELETE", "/api/media/legacy-images"),
     ("GET", "/api/traces"),
     ("GET", "/api/audit"),

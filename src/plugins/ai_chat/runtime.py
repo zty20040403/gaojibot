@@ -16,7 +16,6 @@ from src.bot_storage.schema import HEAD_REVISION
 from .application_construction import ConstructionResources
 from .cold_archive import ColdArchiveService
 from .config import Settings
-from .content_sources import ContentSourceStore
 from .conversation_window import ConversationStore
 from .delivery import DeliveryStore
 from .identity import GroupUserProfileStore
@@ -93,7 +92,6 @@ class AppContext:
     semantic_recall: SemanticRecallService | None = None
     turn_journal: TurnJournal | None = None
     media_library: MediaLibrary | None = None
-    source_store: ContentSourceStore | None = None
     media_cleanup: LegacyMediaCleanup | None = None
     vision_worker: VisionWorker | None = None
     cold_archive: ColdArchiveService | None = None
@@ -343,7 +341,6 @@ def _build_app_context(
             logger.error(f"Canonical message ledger could not be opened: {exc}")
 
     conversations = _construction.own(ConversationStore(database)) if message_ledger is not None else None
-    source_store = _construction.own(ContentSourceStore(database))
     mobile_authorization = build_console_authorization(settings, database)
     if mobile_authorization is not None:
         _construction.own(mobile_authorization.store)
@@ -571,7 +568,6 @@ def _build_app_context(
         semantic_recall=semantic_recall,
         turn_journal=turn_journal,
         media_library=media_library,
-        source_store=source_store,
         media_cleanup=media_cleanup,
         vision_worker=vision_worker,
         cold_archive=cold_archive,

@@ -96,51 +96,6 @@ class ContentSourceStore:
             connection.close()
         return added
 
-    def admin_snapshot(self, *, limit: int = 100) -> dict[str, object]:
-        connection = self.database.store_connection()
-        try:
-            counts = connection.execute(
-                """
-                SELECT COUNT(*) AS total,
-                       COUNT(*) FILTER (WHERE status = 'ready') AS ready,
-                       COUNT(*) FILTER (WHERE status = 'pending') AS pending,
-                       COUNT(*) FILTER (WHERE status = 'fetching') AS fetching,
-                       COUNT(*) FILTER (WHERE status = 'failed') AS failed
-                FROM content_sources
-                """
-            ).fetchone()
-            platforms = connection.execute(
-                """
-                SELECT platform, COUNT(*) AS total
-                FROM content_sources
-                GROUP BY platform
-                ORDER BY total DESC, platform ASC
-                """
-            ).fetchall()
-            rows = connection.execute(
-                """
-                SELECT source.source_id, source.platform, source.content_kind,
-                       source.canonical_url, source.remote_id, source.title,
-                       source.author, source.summary, source.status,
-                       source.last_error, source.fetched_at, source.last_seen_at,
-                       COUNT(link.message_source_id) AS occurrences,
-                       COUNT(DISTINCT link.scope_key) AS scopes
-                FROM content_sources AS source
-                LEFT JOIN message_sources AS link ON link.source_id = source.source_id
-                GROUP BY source.source_id
-                ORDER BY source.last_seen_at DESC, source.source_id DESC
-                LIMIT ?
-                """,
-                (min(max(int(limit), 1), 500),),
-            ).fetchall()
-        finally:
-            connection.close()
-        return {
-            "counts": dict(counts) if counts is not None else {},
-            "platforms": [dict(row) for row in platforms],
-            "items": [dict(row) for row in rows],
-        }
-
     def _upsert_source(
         self,
         cursor: Any,
