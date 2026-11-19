@@ -8,9 +8,6 @@ from tools.dev.table_writers import writer_tables
 
 # Retire these exceptions along with their runtime readers; they are not writable stores.
 READ_ONLY = {
-    'qq_official_file_artifacts': 'legacy file backlog still read by gateway health',
-    'qq_official_file_deliveries': 'legacy delivery states still read by gateway health',
-    'qq_official_quota_periods': 'old usage totals still read by gateway diagnostics',
     'qq_official_reply_windows': 'historical windows still read by approval and gateway health',
 }
 
@@ -23,7 +20,7 @@ class TableWriterTests(unittest.TestCase):
         with migration.connect(schema) as db:
             tables = {name for name, in db.execute('SELECT tablename FROM pg_tables WHERE schemaname=%s', (schema,))}
         business_tables = tables - {'alembic_version'}
-        self.assertEqual(len(business_tables), 75)
+        self.assertEqual(len(business_tables), 71)
         missing = business_tables - writer_tables(Path(__file__).resolve().parents[1] / 'src')
         self.assertEqual(missing, set(READ_ONLY), 'inspect new missing writers or remove a stale read-only exception')
 

@@ -1,11 +1,17 @@
 import hashlib,json,secrets,unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from src.plugins.ai_chat.platform_types import AccountKey
+from psycopg.errors import LockNotAvailable
+from src.bot_storage.database import DatabaseError
+from src.plugins.ai_chat.platform_types import AccountKey,ActorKey,EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.authority import ConsoleAuthorization
 from src.plugins.ai_chat.adapters.qq_official.inbox import OfficialInboxStore
 from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease
+from src.bot_security.store import lock_admin_security
+from src.plugins.ai_chat.adapters.qq_official import admin_identity
+from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
 from src.plugins.ai_chat.adapters.qq_official.admin_identity import AdminIdentityBinding,IdentityBindingDenied
+from src.plugins.ai_chat.adapters.qq_official.validation import Unavailable
 
 PASSWORD='TEST-bind-password-only-123456'
 from tests.qq_official_admin_identity_fixture import IdentityFixture
@@ -69,7 +75,6 @@ class IdentityTests(IdentityFixture,unittest.TestCase):
 
  def test_simultaneous_confirmation_exactly_one_binding_and_same_transaction_rollback(self):
   import concurrent.futures,threading
-  from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
   value=self.challenge();self.receive(value['command'])
   original=AdminBindingStore._insert
   def fail(store,*args,**kwargs):original(store,*args,**kwargs);raise RuntimeError('TEST_AFTER_BIND_INSERT')
@@ -99,27 +104,23 @@ class IdentityTests(IdentityFixture,unittest.TestCase):
   with self.assertRaises(IdentityBindingDenied):self.service.confirm(value['challenge_id'],self.auth)
 
 
- def test_global_security_update_and_confirmation_have_consistent_real_lock_order(self):
-  import concurrent.futures,threading
+ def test_console_and_both_official_paths_share_the_transaction_lock(self):
   value=self.challenge();self.receive(value['command'])
-  held=threading.Event();about_to_lock=threading.Event()
-  original=self.service._security_lock
-  def mark(c):about_to_lock.set();return original(c)
-  def security_update():
-   with self.security.transaction() as c:
-    held.set();assert about_to_lock.wait(3)
-    c.execute("SET LOCAL lock_timeout = '750ms'")
-    c.execute('UPDATE admin_accounts SET version=version+1 WHERE account_id=?',(self.auth.account_id,))
-   return 'updated'
-  def confirm():
-   assert held.wait(3)
-   try:self.service.confirm(value['challenge_id'],self.auth)
-   except IdentityBindingDenied:return 'denied'
-   return 'consumed'
-  with patch.object(self.service,'_security_lock',side_effect=mark),concurrent.futures.ThreadPoolExecutor(2) as pool:
-   update=pool.submit(security_update);binding=pool.submit(confirm)
-   self.assertEqual(update.result(timeout=5),'updated');self.assertEqual(binding.result(timeout=5),'denied')
-  self.assertFalse(self.rows('SELECT * FROM qq_official_admin_bindings'))
+  def bounded_lock(c):
+   c.execute("SET LOCAL lock_timeout = '150ms'")
+   lock_admin_security(c)
+  with self.security.transaction():
+   with patch.object(admin_identity,'lock_admin_security',bounded_lock),self.assertRaises(DatabaseError) as error:
+    self.service.confirm(value['challenge_id'],self.auth)
+   self.assertIsInstance(error.exception.__cause__,LockNotAvailable)
+  self.service.confirm(value['challenge_id'],self.auth)
+  endpoint=EndpointKey(self.account,'private',self.owner)
+  actor=ActorKey(self.account,'c2c_user','',self.owner)
+  with self.security.transaction(),self.assertRaises(Unavailable),self.tx() as c:
+   c.execute("SET LOCAL lock_timeout = '150ms'")
+   AdminBindingStore().resolve_admin(c,endpoint=endpoint,actor=actor)
+  with self.tx() as c:
+   self.assertEqual(AdminBindingStore().resolve_admin(c,endpoint=endpoint,actor=actor).admin_account_id,self.auth.account_id)
 
 
  def test_issued_c2c_actor_receipt_cannot_be_reused_with_a_forged_code_dto(self):
@@ -145,32 +146,21 @@ class IdentityHTTPTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.diagnostics=OfficialObservability(SimpleNamespace(official_runtime=self.runtime),registry=CollectorRegistry(),clock=lambda:self.now)
   self.app=FastAPI();register_admin(self.app,AdminServices(version='test',started_at=1,database=self.database,
    settings=SimpleNamespace(admin_origin='https://test'),mobile_authorization=MobileAuthorization(self.security,sender=None,bot_selector=lambda:None),
-   official_identity_service=lambda:self.service,official_observability=lambda:self.diagnostics))
+   official_observability=lambda:self.diagnostics))
   self.client=httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://test',headers={'Origin':'https://test'})
-  self.path='/bot-admin/api/qq-official/admin-binding/challenges'
  async def asyncTearDown(self):await self.client.aclose();await self.diagnostics.close();await self.calls.close()
  async def login_http(self):
   response=await self.client.post('/bot-admin/api/auth/login',json={'username':'test_admin','password':PASSWORD})
   self.assertEqual(response.status_code,200,response.text)
   self.client.headers['x-csrf-token']=self.client.cookies['gaoji_csrf']
- async def test_real_cookie_csrf_c2c_and_same_session_confirmation(self):
-  self.assertEqual((await self.client.post(self.path,json={})).status_code,401)
+ async def test_console_cannot_create_poll_or_confirm_qq_identity(self):
   await self.login_http()
-  response=await self.client.post(self.path,json={});self.assertEqual(response.status_code,200,response.text)
-  value=response.json();self.receive(value['command'])
-  path=self.path+'/'+value['challenge_id']
-  self.assertTrue((await self.client.get(path)).json()['can_confirm'])
-  response=await self.client.post(path+'/confirm',json={});self.assertEqual(response.status_code,200,response.text)
-  self.assertEqual(response.json()['state'],'consumed')
-  self.assertEqual(response.headers['cache-control'],'no-store')
- async def test_body_cannot_supply_openid_account_or_admin_and_csrf_required(self):
-  await self.login_http()
-  csrf=self.client.headers.pop('x-csrf-token')
-  self.assertEqual((await self.client.post(self.path,json={})).status_code,403)
-  self.client.headers['x-csrf-token']=csrf
-  for body in ({'openid':'TEST_OTHER'},{'account':'TEST_OTHER'},{'admin_account_id':'OTHER'}):
-   self.assertEqual((await self.client.post(self.path,json=body)).status_code,422)
-  self.assertEqual((await self.client.post(self.path+'?account=TEST_OTHER',json={})).status_code,400)
+  for prefix in ('/bot-admin/api','/bot-admin/api/v1'):
+   path=prefix+'/qq-official/admin-binding/challenges'
+   self.assertEqual((await self.client.post(path,json={})).status_code,404)
+   self.assertEqual((await self.client.get(path+'/TEST_ID')).status_code,404)
+   self.assertEqual((await self.client.post(path+'/TEST_ID/confirm',json={})).status_code,404)
+  self.assertFalse(self.rows('SELECT * FROM qq_official_admin_identity_challenges'))
   self.assertFalse(self.rows('SELECT * FROM qq_official_admin_bindings'))
 
  async def test_protected_status_rejects_anonymous_member_and_account_queries(self):

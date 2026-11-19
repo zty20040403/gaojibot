@@ -373,7 +373,7 @@ class TurnJournalTests(unittest.TestCase):
         )
         self.assertIsNone(self.journal.archive_payload(secret_turn.turn_id))
 
-    def test_replay_requires_matching_environment_and_strips_final_reasoning(self) -> None:
+    def test_digest_preserves_tool_name(self) -> None:
         turn = self.start(self.group_a, "build project")
         self.journal.record_tool_started(
             turn.turn_id,
@@ -390,118 +390,13 @@ class TurnJournalTests(unittest.TestCase):
             '{"ok":true}',
             ("read",),
         )
-        trace_payload = {
-            "provider": "deepseek-openai-compatible",
-            "model": "deepseek-chat",
-            "messages": [
-                {"role": "user", "content": "build project"},
-                {
-                    "role": "assistant",
-                    "content": "checking",
-                    "reasoning_content": "tool reasoning",
-                    "tool_calls": [
-                        {
-                            "id": "call-1",
-                            "type": "function",
-                            "function": {
-                                "name": "sandbox_list",
-                                "arguments": "{}",
-                            },
-                        }
-                    ],
-                },
-                {"role": "tool", "tool_call_id": "call-1", "content": "ok"},
-                {
-                    "role": "assistant",
-                    "content": "done",
-                    "reasoning_content": "final private reasoning",
-                },
-            ],
-        }
-        self.journal.finish_turn(
-            turn.turn_id,
-            status="succeeded",
-            final_text="done",
-            trace_payload=trace_payload,
-        )
-        self.journal.link_send(turn.turn_id, 99)
-
-        replay = self.journal.build_replay(
-            self.group_a,
-            turn.turn_ordinal,
-            current_model="deepseek-chat",
-            prompt_version="v1",
-            tool_catalog_version="tools-v1",
-        )
-
-        self.assertEqual(replay.mode, "verbatim")
-        self.assertEqual(replay.reason, "valid")
-        self.assertIn(1, replay.covered_canonical_message_ids)
-        self.assertIn(99, replay.covered_canonical_message_ids)
-        assistants = [
-            message for message in replay.messages if message["role"] == "assistant"
-        ]
-        self.assertEqual(assistants[0]["reasoning_content"], "tool reasoning")
-        self.assertNotIn("reasoning_content", assistants[-1])
+        self.journal.finish_turn(turn.turn_id, status="succeeded", final_text="done")
         self.assertIn("sandbox_list", self.journal.digest_for_turn(turn.turn_id))
 
-        mismatch = self.journal.build_replay(
-            self.group_a,
-            turn.turn_ordinal,
-            current_model="another-model",
-            prompt_version="v1",
-            tool_catalog_version="tools-v1",
-        )
-        self.assertEqual(mismatch.mode, "digest")
-        self.assertEqual(mismatch.reason, "model-changed")
-
-        provider_mismatch = self.journal.build_replay(
-            self.group_a,
-            turn.turn_ordinal,
-            current_model="deepseek-chat",
-            current_provider="anthropic:anthropic-messages",
-            current_profile="default",
-            prompt_version="v1",
-            tool_catalog_version="tools-v1",
-        )
-        self.assertEqual(provider_mismatch.reason, "provider-changed")
-
-        profile_mismatch = self.journal.build_replay(
-            self.group_a,
-            turn.turn_ordinal,
-            current_model="deepseek-chat",
-            current_provider="deepseek-openai-compatible",
-            current_profile="another-profile",
-            prompt_version="v1",
-            tool_catalog_version="tools-v1",
-        )
-        self.assertEqual(profile_mismatch.reason, "profile-changed")
-
-    def test_chat_only_turn_degrades_to_digest(self) -> None:
+    def test_chat_only_turn_has_digest(self) -> None:
         turn = self.start(self.group_a, "just chat")
-        self.journal.finish_turn(
-            turn.turn_id,
-            status="succeeded",
-            final_text="hello",
-            trace_payload={
-                "messages": [
-                    {"role": "user", "content": "just chat"},
-                    {"role": "assistant", "content": "hello"},
-                ]
-            },
-        )
-
-        replay = self.journal.build_replay(
-            self.group_a,
-            turn.turn_ordinal,
-            current_model="deepseek-chat",
-            prompt_version="v1",
-            tool_catalog_version="tools-v1",
-        )
-
-        self.assertEqual(replay.mode, "digest")
-        self.assertEqual(replay.reason, "chat-only")
-        self.assertIn("just chat", replay.digest_prefix)
+        self.journal.finish_turn(turn.turn_id, status="succeeded", final_text="hello")
+        self.assertIn("just chat", self.journal.digest_for_turn(turn.turn_id))
 
     def test_send_refreshes_digest_before_and_after_finish(self) -> None:
         turn = self.start(self.group_a, "timed work")

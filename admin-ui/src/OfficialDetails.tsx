@@ -44,8 +44,7 @@ export function OfficialDetails({ plane }: { plane: Plane }) {
         {!item.receipts.length && <p>暂无已持久回执；不会因此自动重发。</p>}{item.receipts_truncated && <p>仅显示有界回执记录。</p>}
       </>}
       {section === 'executions' && <dl className="official-grid"><div><dt>类型</dt><dd>{show(item.kind)}</dd></div><div><dt>结果</dt><dd>{show(item.result_status)}</dd></div><div><dt>原因</dt><dd>{show(item.reason)}</dd></div><div><dt>执行原截止</dt><dd>{date(item.deadline_at)}</dd></div><div><dt>结果原截止</dt><dd>{date(item.result_deadline_at)}</dd></div><div><dt>输出计划</dt><dd>{show(item.plan_ref)}</dd></div><div><dt>更新时间</dt><dd>{date(item.updated_at)}</dd></div></dl>}
-      {section === 'bindings' && <><dl className="official-grid"><div><dt>端点类型</dt><dd>{show(item.kind)}</dd></div><div><dt>成员状态</dt><dd>{show(item.membership)}</dd></div><div><dt>端点世代</dt><dd>{show(item.generation)}</dd></div><div><dt>路由世代</dt><dd>{show(item.route_epoch)}</dd></div><div><dt>能力版本</dt><dd>{show(item.capability_revision)}</dd></div></dl>
-        {item.admin_binding ? <p>管理员 <code>{show(item.admin_binding.admin_ref)}</code>；状态 {state(item.admin_binding.state)}；版本 {show(item.admin_binding.revision)}；当前有效 {flag(item.admin_binding.current)}；所有者当前有效 {flag(item.admin_binding.owner_current)}</p> : <p>此端点无控制台管理员关联。群绑定本身不创建个人所有者权限。</p>}</>}
+      {section === 'bindings' && <dl className="official-grid"><div><dt>端点类型</dt><dd>{show(item.kind)}</dd></div><div><dt>成员状态</dt><dd>{show(item.membership)}</dd></div><div><dt>端点世代</dt><dd>{show(item.generation)}</dd></div><div><dt>路由世代</dt><dd>{show(item.route_epoch)}</dd></div><div><dt>能力版本</dt><dd>{show(item.capability_revision)}</dd></div></dl>}
     </article>)}</div>
     {visible && !visible.items.length && <p>此页没有记录。</p>}
     {visible?.truncated && <p>已达到近期明细上限（{show(visible.bounded_rows)} 条），更早记录需受保护审计查询。</p>}

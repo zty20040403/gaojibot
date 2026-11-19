@@ -5,9 +5,9 @@ const sections = ['executions', 'deliveries', 'bindings'];
 const integer = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const marker = (value: unknown) => typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,128}$/.test(value) ? value : null;
 const object = (value: unknown): DetailRecord => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as DetailRecord : {};
-const tokenKeys = ['ref', 'plan_ref', 'endpoint_ref', 'actor_ref', 'admin_ref', 'state', 'kind', 'result_status', 'reason', 'wait_reason', 'membership', 'native_ref', 'acceptance'];
-const timeKeys = ['deadline_at', 'result_deadline_at', 'created_at', 'updated_at', 'expires_at', 'next_attempt_at', 'part_index', 'part_count', 'attempt_count', 'observed_at', 'applied_at', 'send_by_at', 'revision', 'generation', 'route_epoch', 'capability_revision'];
-const boolKeys = ['current', 'owner_current', 'ref_index_present', 'receipts_truncated'];
+const tokenKeys = ['ref', 'plan_ref', 'endpoint_ref', 'actor_ref', 'state', 'kind', 'result_status', 'reason', 'wait_reason', 'membership', 'native_ref', 'acceptance'];
+const timeKeys = ['deadline_at', 'result_deadline_at', 'created_at', 'updated_at', 'expires_at', 'next_attempt_at', 'part_index', 'part_count', 'attempt_count', 'observed_at', 'applied_at', 'send_by_at', 'generation', 'route_epoch', 'capability_revision'];
+const boolKeys = ['ref_index_present', 'receipts_truncated'];
 function record(value: unknown): DetailRecord {
   const input = object(value), result: DetailRecord = {};
   for (const key of tokenKeys) result[key] = marker(input[key]);
@@ -31,7 +31,6 @@ export function checkedPage(value: unknown, expected: DetailSection): DetailPage
     gap_reason: marker(input.gap_reason), updated_at: integer(input.updated_at) };
   const items = page.items.map((value: unknown) => {
     const input = object(value), result = record(input);
-    result.admin_binding = input.admin_binding ? record(input.admin_binding) : null;
     result.attempt = input.attempt ? record(input.attempt) : null;
     result.receipts = Array.isArray(input.receipts) ? input.receipts.slice(0, 50).map(record) : [];
     if (Array.isArray(input.receipts) && input.receipts.length > 50) result.receipts_truncated = true;

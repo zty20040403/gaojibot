@@ -1,10 +1,4 @@
-"""Draft official admin identity mode, using the existing local account store.
-
-No approval queue or remote operations here. Console/bootstrap adapters are
-trusted host ports; their callback must authenticate provenance under this
-transaction and return strict True. A caller-supplied boolean is not evidence.
-Passwords are hashed by existing hash_password BEFORE opening the transaction.
-"""
+"""Bind official identities only through a trusted, transaction-local control guard."""
 from __future__ import annotations
 
 import re
@@ -12,6 +6,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 
+from src.bot_security.store import lock_admin_security
 from .validation import Denied, _deny, _positive, _safe_database_errors, _text
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
@@ -91,11 +86,8 @@ class AdminBindingStore:
                 or row['membership_state'] != 'present' or row['binding_state'] == 'revoked'
                 or (endpoint.kind == 'group' and row['binding_state'] != 'active')):
             raise Denied()
-        # All official approval adapters must use account -> endpoint -> security
-        # lock order; never enter legacy SecurityStore.transaction then acquire
-        # an official account. Legacy-only calls never acquire official rows.
-        cursor.execute('INSERT INTO admin_security_lock VALUES (1,0) ON CONFLICT(lock_id) DO NOTHING')
-        cursor.execute('UPDATE admin_security_lock SET revision=revision+1 WHERE lock_id=1')
+        # Lock order: official account -> endpoint -> security, never the reverse.
+        lock_admin_security(cursor)
 
     def _control(self, cursor, *, endpoint, actor, authorization, bootstrap, operation):
         self._lock(cursor, endpoint, actor)

@@ -91,11 +91,11 @@ class AttentionSchedulerTests(base.OfficialTurnFixture, unittest.IsolatedAsyncio
                     self.assertEqual((row['state'],row['decision_reason']),(state,reason))
             self.assertIn('不抄聊天原文、人名、ID，也不输出思维链',model.await_args_list[0].args[0])
             p.wake_turn.assert_awaited_once()
-            schema = self.database.schema
             await runtime.stop()
-            with patch.dict(os.environ, {'AI_POSTGRES_DSN': os.environ['TEST_POSTGRES_DSN'], 'AI_POSTGRES_SCHEMA': schema}):
-                with self.assertRaisesRegex(RuntimeError, 'attention_reasons_require_backup_restore_before_downgrade'):
-                    command.downgrade(Config('alembic.ini'), '0120_retire_context_feedback')
+            saved = self.query('SELECT inbox_id, decision_reason FROM qq_official_proactive_observations ORDER BY inbox_id')
+            with patch.dict(os.environ, AI_POSTGRES_DSN=os.environ['TEST_POSTGRES_DSN'], AI_POSTGRES_SCHEMA=self.database.schema), self.assertRaisesRegex(RuntimeError, 'requires?_backup_restore'):
+                command.downgrade(Config('alembic.ini'), '0120_retire_context_feedback')
+            self.assertEqual(self.query('SELECT inbox_id, decision_reason FROM qq_official_proactive_observations ORDER BY inbox_id'), saved)
 
     async def test_burst_multi_author_scopes_last_twenty_and_keeps_trailing_non_candidate(self):
         async with verified_ready_platform() as fake:

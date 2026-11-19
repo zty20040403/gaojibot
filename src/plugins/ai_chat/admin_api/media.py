@@ -64,18 +64,12 @@ def create_router(context: AdminRouteContext) -> APIRouter:
                 "counts": {},
                 "items": [],
                 "jobs": [],
-                "vision": {"counts": {}, "jobs": []},
                 "configured": False,
                 "available": False,
             }
         try:
             snapshot = services.media_library.admin_snapshot(limit=limit)
             captions = CaptionSettings(services.media_library.database).versioned_snapshot(int(time.time()))
-            vision = (
-                services.vision_worker.admin_snapshot(limit=limit)
-                if services.vision_worker is not None
-                else {"counts": {}, "jobs": []}
-            )
             cleanup = (
                 services.media_cleanup.preview()
                 if services.media_cleanup is not None
@@ -92,14 +86,12 @@ def create_router(context: AdminRouteContext) -> APIRouter:
                 "counts": {},
                 "items": [],
                 "jobs": [],
-                "vision": {"counts": {}, "jobs": []},
                 "configured": True,
                 "available": False,
                 "error": str(exc)[:500],
             }
         return {
             **snapshot,
-            "vision": vision,
             "cleanup": cleanup,
             "caption_settings": captions['items'],
             "caption_resource_version": captions['resource_version'],

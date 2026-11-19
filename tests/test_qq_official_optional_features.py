@@ -20,7 +20,7 @@ class OptionalFeatureTests(unittest.IsolatedAsyncioTestCase):
         app=self.application()
         runtime=self.runtime(loaded=loaded_config(self.fake.app_id,base=self.fake.base_url),application=app,
             ledger=app.message_ledger,journal=app.turn_journal,file_services_factory=unavailable,
-            media_factory=unavailable,background_factory=unavailable,approval_factory=unavailable)
+            media_factory=unavailable,background_factory=unavailable)
         try:
             self.assertTrue(await runtime.start())
             await self.fake.wait_ready()

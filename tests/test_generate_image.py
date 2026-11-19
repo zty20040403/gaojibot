@@ -1,6 +1,7 @@
 """Acceptance tests for §8E generate_image tool (gemini-3.1-flash-image primary, gpt-image-2.5 fallback)."""
 from __future__ import annotations
 
+import asyncio
 import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -49,23 +50,18 @@ class GenerateImageTests(unittest.IsolatedAsyncioTestCase):
                         "choices": [{"message": {"images": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png_b64}"}}]}}],
                         "usage": {"prompt_tokens": 12, "completion_tokens": 800},
                     }).encode()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return
-                if self.path.endswith("/images/generations"):
+                elif self.path.endswith("/images/generations"):
                     body = json.dumps({
                         "data": [{"b64_json": png_b64}],
                         "usage": {"input_tokens": 20, "output_tokens": 1000},
                     }).encode()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(body)
+                else:
+                    self.send_error(404)
                     return
-                self.send_response(404)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
+                self.wfile.write(body)
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), FakeCliproxy)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -207,23 +203,32 @@ class GenerateImageTests(unittest.IsolatedAsyncioTestCase):
             ([{"message": "high demand"}, {"code": "copyright_violation", "message": "copyright"}],
              2, "code=copyright_violation"),
             ([None, None], 2, "images_api_error"),
+            (["stalled"], 1, "结果未知"),
+            ([httpx.ReadError("TEST_SECRET")], 1, "结果未知"),
+            ([{"message": "bad gateway"}], 1, "结果未知"),
         ]
         for errors, count, expected in cases:
             paths = []
-            def respond(request):
+            async def respond(request):
                 paths.append(request.url.path)
                 error = errors[len(paths) - 1]
+                if error == "stalled":
+                    await asyncio.Event().wait()
+                if isinstance(error, Exception):
+                    raise error
                 if error is None:
                     raise httpx.ConnectError("TEST_KEY TEST_PRIVATE_PROMPT https://TEST_HOST/?sig=TEST_SIG")
                 return httpx.Response(503 if len(paths) == 1 else 429, json={"error": error})
             client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
             turn = SimpleNamespace(context=SimpleNamespace(platform=None))
             profile = SimpleNamespace(base_url="https://TEST_HOST", api_key="TEST_KEY")
-            with self.subTest(errors=errors), patch.object(image_gen, "enabled", return_value=True), \
+            with self.subTest(errors=errors), patch.object(image_gen, "REQUEST_SECONDS", .1), patch.object(image_gen, "enabled", return_value=True), \
                     patch.object(image_gen, "_cliproxy_profile", return_value=profile), \
                     patch.object(image_gen.httpx, "AsyncClient", return_value=client):
                 result = json.loads(await image_gen.execute(turn, {"prompt": "TEST_PRIVATE_PROMPT"}))
             self.assertEqual(len(paths), count)
+            if expected == "结果未知":
+                self.assertEqual(result["code"], "generation_unknown")
             self.assertIn(expected, result["error"])
             self.assertNotIn("TEST_KEY", result["error"])
             self.assertNotIn("TEST_PRIVATE_PROMPT", result["error"])

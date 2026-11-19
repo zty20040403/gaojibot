@@ -1095,6 +1095,9 @@ async def ask_deepseek_with_tools(
             finally:
                 active_tool_step.reset(step_token)
                 active_tool_call_id.reset(invocation)
+            if name == 'generate_image' and (completion_state == 'timed-out' or
+                    isinstance(tool_result, str) and _result_fields(tool_result).get('code') == 'generation_unknown'):
+                completion_state, budget_exhausted, stop_reason = 'outcome-unknown', True, unknown_stop_reason
             if name == SAY_TOOL_NAME:
                 receipt = _result_fields(tool_result)
                 if receipt.get('ok') is True and receipt.get('status') in {'enqueued', 'already_reported'}:

@@ -76,7 +76,6 @@ def register_http_surfaces(
                 mobile_authorization=context.mobile_authorization,
                 official_observability=lambda: getattr(context,'official_observability',None),
                 official_runtime=lambda: getattr(context,'official_runtime',None),
-                official_identity_service=lambda: getattr(getattr(context,'official_runtime',None),'admin_identity_service',None),
                 official_file_service=lambda: getattr(getattr(context, "official_runtime", None), "file_service", None),
             ),
             path=settings.admin_path,
