@@ -44,18 +44,6 @@ class AdminSnapshot:
             raise Denied()
 
 
-def two_distinct_official_admins(first: AdminSnapshot, second: AdminSnapshot) -> bool:
-    """Identity distinctness only. The real quorum store checks current votes.
-
-    Do not use snapshots as approval evidence. Existing confirmations, code
-    generation, task scope, lifetime and revision checks still apply.
-    """
-    return (isinstance(first, AdminSnapshot) and isinstance(second, AdminSnapshot)
-            and first.c2c_endpoint.account == second.c2c_endpoint.account
-            and first.admin_account_id != second.admin_account_id
-            and first.c2c_actor.key != second.c2c_actor.key)
-
-
 class AdminBindingStore:
     def __init__(self, *, owners: OwnerAuthority, control_guard=_deny, clock=time.time):
         self.control_guard = control_guard

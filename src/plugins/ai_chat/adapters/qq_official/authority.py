@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import secrets
 import time
@@ -71,20 +70,6 @@ class OwnerAuthority:
     def lock_account(self, cursor, account: AccountKey) -> bool:
         return cursor.execute("SELECT account_key FROM qq_official_accounts WHERE account_key=? FOR UPDATE",
                               (account.key,)).fetchone() is not None
-
-    def authenticate_console(self, cursor, *, session_token: str,
-                             csrf_token: str) -> ConsoleAuthorization | None:
-        if not session_token or not csrf_token or len(session_token) > 256 or len(csrf_token) > 256:
-            return None
-        session_hash = hashlib.sha256(session_token.encode()).hexdigest()
-        row = cursor.execute("""SELECT a.account_id,a.version,s.csrf_hash FROM admin_sessions s
-            JOIN admin_accounts a ON a.account_id=s.account_id
-            WHERE s.session_hash=? AND s.expires_at>? AND a.enabled=1
-              AND a.role='admin' AND a.version=s.account_version FOR SHARE OF a,s""",
-            (session_hash, int(self.clock()))).fetchone()
-        if row is None or not hmac.compare_digest(row["csrf_hash"], hashlib.sha256(csrf_token.encode()).hexdigest()):
-            return None
-        return ConsoleAuthorization(row["account_id"], int(row["version"]), session_hash)
 
     def console_current(self, cursor, authorization: ConsoleAuthorization) -> bool:
         if not isinstance(authorization, ConsoleAuthorization):
