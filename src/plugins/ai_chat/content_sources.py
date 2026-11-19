@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
-import weakref
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -13,7 +10,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from src.bot_storage import PostgresDatabase
 
 from .conversation_scope import ConversationScope
-from .media_tools import BilibiliClient, BilibiliError, find_bilibili_ref
+from .media_tools import find_bilibili_ref
 from .message_ir import CardNode, MessageBody, TextNode
 from .card_summary import extract_card_summary
 
@@ -34,9 +31,6 @@ TRACKING_QUERY_KEYS = {
 
 class ContentSourceError(RuntimeError):
     pass
-
-
-BrowserFetch = Callable[[str], Awaitable[dict[str, object]]]
 
 
 @dataclass(frozen=True)
@@ -63,39 +57,11 @@ class ContentSource:
     def handle(self) -> str:
         return f"source#{self.source_id}"
 
-    def as_tool_payload(self, *, cached: bool) -> dict[str, object]:
-        return {
-            "handle": self.handle,
-            "platform": self.platform,
-            "kind": self.content_kind,
-            "url": self.canonical_url,
-            "remote_id": self.remote_id,
-            "title": self.title,
-            "author": self.author,
-            "summary": self.summary,
-            "body_text": self.body_text[:12000],
-            "comments": list(self.comments[:20]),
-            "metadata": self.metadata,
-            "status": self.status,
-            "fetched_at": self.fetched_at,
-            "cached": cached,
-        }
-
-
 class ContentSourceStore:
     """Globally deduplicated public sources with conversation-scoped handles."""
 
-    def __init__(
-        self,
-        database: PostgresDatabase,
-        *,
-        cache_seconds: int = 6 * 60 * 60,
-    ) -> None:
+    def __init__(self, database: PostgresDatabase) -> None:
         self.database = database
-        self.cache_seconds = max(int(cache_seconds), 60)
-        self._inspect_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = (
-            weakref.WeakValueDictionary()
-        )
 
     def ingest_message(
         self,
@@ -162,62 +128,6 @@ class ContentSourceStore:
             connection.close()
         return added
 
-    async def inspect(
-        self,
-        scope: ConversationScope,
-        target: str,
-        *,
-        browser_fetch: BrowserFetch | None = None,
-        force_refresh: bool = False,
-        comment_count: int = 10,
-    ) -> tuple[ContentSource, bool]:
-        source = self.resolve_target(scope, target)
-        lock = self._inspect_locks.setdefault(source.source_id, asyncio.Lock())
-        async with lock:
-            source = self._get_by_id(source.source_id)
-            now = int(time.time())
-            if (
-                not force_refresh
-                and source.status == "ready"
-                and source.expires_at is not None
-                and source.expires_at > now
-            ):
-                return source, True
-            self._mark_fetching(source.source_id, now)
-            try:
-                if source.platform == "bilibili":
-                    payload = await self._inspect_bilibili(
-                        source.canonical_url,
-                        comment_count=comment_count,
-                    )
-                else:
-                    if browser_fetch is None:
-                        raise ContentSourceError("网页读取器没有开启。")
-                    page = await browser_fetch(source.canonical_url)
-                    payload = self._page_payload(source, page)
-                refreshed = self._save_success(
-                    source.source_id,
-                    payload,
-                    int(time.time()),
-                )
-            except asyncio.CancelledError:
-                self._save_failure(
-                    source.source_id,
-                    "读取已取消。",
-                    int(time.time()),
-                )
-                raise
-            except Exception as exc:
-                self._save_failure(
-                    source.source_id,
-                    str(exc),
-                    int(time.time()),
-                )
-                if isinstance(exc, (ContentSourceError, BilibiliError)):
-                    raise
-                raise ContentSourceError("分享内容读取失败。") from exc
-            return refreshed, False
-
     def get_cached(
         self,
         scope: ConversationScope,
@@ -233,63 +143,6 @@ class ContentSourceStore:
 
     def refresh_source(self, source_id: int) -> ContentSource:
         return self._get_by_id(int(source_id))
-
-    def cached_deep_analysis(
-        self,
-        source: ContentSource,
-        *,
-        max_age_seconds: int = 24 * 60 * 60,
-    ) -> dict[str, object] | None:
-        cached = source.metadata.get("deep_video_analysis_v1")
-        if not isinstance(cached, dict):
-            return None
-        created_at = _safe_int(cached.get("created_at"))
-        result = cached.get("result")
-        if (
-            created_at <= 0
-            or created_at + max(int(max_age_seconds), 60) <= int(time.time())
-            or not isinstance(result, dict)
-        ):
-            return None
-        return dict(result)
-
-    def save_deep_analysis(
-        self,
-        source_id: int,
-        result: dict[str, object],
-    ) -> ContentSource:
-        now = int(time.time())
-        connection = self.database.store_connection()
-        cursor = connection.cursor()
-        try:
-            row = cursor.execute(
-                "SELECT metadata_json FROM content_sources WHERE source_id = ? FOR UPDATE",
-                (int(source_id),),
-            ).fetchone()
-            if row is None:
-                raise ContentSourceError("分享来源不存在。")
-            metadata = _json_load(row["metadata_json"], {})
-            if not isinstance(metadata, dict):
-                metadata = {}
-            metadata["deep_video_analysis_v1"] = {
-                "created_at": now,
-                "result": result,
-            }
-            cursor.execute(
-                """
-                UPDATE content_sources
-                SET metadata_json = ?, updated_at = ?
-                WHERE source_id = ?
-                """,
-                (_json_dump(metadata, {}), now, int(source_id)),
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-        return self._get_by_id(source_id)
 
     def resolve_target(
         self,
@@ -499,70 +352,6 @@ class ContentSourceStore:
             "items": [dict(row) for row in rows],
         }
 
-    async def _inspect_bilibili(
-        self,
-        url: str,
-        *,
-        comment_count: int,
-    ) -> dict[str, object]:
-        client = BilibiliClient()
-        try:
-            result = await client.inspect(
-                url,
-                comment_count=min(max(int(comment_count), 0), 20),
-            )
-        finally:
-            await client.close()
-        comments = result.get("top_comments")
-        metadata = {
-            key: result.get(key)
-            for key in (
-                "aid",
-                "bvid",
-                "cid",
-                "duration_seconds",
-                "published_at",
-                "parts",
-                "stats",
-                "url",
-            )
-        }
-        return {
-            "remote_id": str(result.get("bvid") or result.get("aid") or ""),
-            "title": str(result.get("title") or "")[:2000],
-            "author": str(result.get("uploader") or "")[:500],
-            "summary": str(result.get("description") or "")[:2000],
-            "body_text": str(result.get("description") or "")[:12000],
-            "comments": comments if isinstance(comments, list) else [],
-            "metadata": metadata,
-        }
-
-    def _page_payload(
-        self,
-        source: ContentSource,
-        page: dict[str, object],
-    ) -> dict[str, object]:
-        text = _compact_text(str(page.get("text") or ""), 12000)
-        title = _compact_text(str(page.get("title") or source.title), 2000)
-        resolved_url = str(page.get("url") or source.canonical_url)[:4000]
-        if not title and not text:
-            raise ContentSourceError(
-                "页面没有返回可读标题或正文，可能需要登录。"
-            )
-        return {
-            "remote_id": source.remote_id,
-            "title": title,
-            "author": "",
-            "summary": _compact_text(text, 1000),
-            "body_text": text,
-            "comments": [],
-            "metadata": {
-                "resolved_url": resolved_url,
-                "http_status": page.get("status"),
-                "captured_by": "playwright",
-            },
-        }
-
     def _upsert_source(
         self,
         cursor: Any,
@@ -662,89 +451,6 @@ class ContentSourceStore:
             raise ContentSourceError("来源不存在。")
         return _row_to_source(row)
 
-    def _mark_fetching(self, source_id: int, now: int) -> None:
-        connection = self.database.store_connection()
-        try:
-            connection.execute(
-                """
-                UPDATE content_sources
-                SET status = 'fetching', last_error = '', updated_at = ?
-                WHERE source_id = ?
-                """,
-                (now, int(source_id)),
-            )
-            connection.commit()
-        finally:
-            connection.close()
-
-    def _save_success(
-        self,
-        source_id: int,
-        payload: dict[str, object],
-        now: int,
-    ) -> ContentSource:
-        connection = self.database.store_connection()
-        try:
-            row = connection.execute(
-                "SELECT metadata_json FROM content_sources WHERE source_id = ? FOR UPDATE",
-                (int(source_id),),
-            ).fetchone()
-            existing_metadata = (
-                _json_load(row["metadata_json"], {}) if row is not None else {}
-            )
-            incoming_metadata = payload.get("metadata")
-            merged_metadata = (
-                dict(incoming_metadata) if isinstance(incoming_metadata, dict) else {}
-            )
-            if isinstance(existing_metadata, dict):
-                deep_analysis = existing_metadata.get("deep_video_analysis_v1")
-                if isinstance(deep_analysis, dict):
-                    merged_metadata["deep_video_analysis_v1"] = deep_analysis
-            connection.execute(
-                """
-                UPDATE content_sources
-                SET remote_id = ?, title = ?, author = ?, summary = ?,
-                    body_text = ?, comments_json = ?, metadata_json = ?,
-                    status = 'ready', last_error = '', fetched_at = ?,
-                    expires_at = ?, updated_at = ?
-                WHERE source_id = ?
-                """,
-                (
-                    str(payload.get("remote_id") or "")[:1000],
-                    str(payload.get("title") or "")[:2000],
-                    str(payload.get("author") or "")[:500],
-                    str(payload.get("summary") or "")[:2000],
-                    str(payload.get("body_text") or "")[:12000],
-                    _json_dump(payload.get("comments"), []),
-                    _json_dump(merged_metadata, {}),
-                    now,
-                    now + self.cache_seconds,
-                    now,
-                    int(source_id),
-                ),
-            )
-            connection.commit()
-        finally:
-            connection.close()
-        return self._get_by_id(source_id)
-
-    def _save_failure(self, source_id: int, error: str, now: int) -> None:
-        connection = self.database.store_connection()
-        try:
-            connection.execute(
-                """
-                UPDATE content_sources
-                SET status = 'failed', last_error = ?, fetched_at = ?,
-                    expires_at = NULL, updated_at = ?
-                WHERE source_id = ?
-                """,
-                (str(error)[:500], now, now, int(source_id)),
-            )
-            connection.commit()
-        finally:
-            connection.close()
-
-
 def extract_shared_urls(
     body: MessageBody,
 ) -> tuple[tuple[int, str, str], ...]:
@@ -837,13 +543,6 @@ def _parse_handle(pattern: re.Pattern[str], value: str) -> int | None:
     return int(matched.group(1)) if matched is not None else None
 
 
-def _safe_int(value: object, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return int(default)
-
-
 def _row_to_source(row: Any) -> ContentSource:
     comments = _json_load(row["comments_json"], [])
     metadata = _json_load(row["metadata_json"], {})
@@ -887,18 +586,8 @@ def _source_terms(value: str) -> set[str]:
     return terms
 
 
-def _compact_text(value: str, limit: int) -> str:
-    lines = [" ".join(line.split()) for line in str(value).splitlines()]
-    return "\n".join(line for line in lines if line).strip()[: max(int(limit), 0)]
-
-
 def _json_load(value: object, default: object) -> object:
     try:
         return json.loads(str(value))
     except (TypeError, ValueError):
         return default
-
-
-def _json_dump(value: object, default: object) -> str:
-    candidate = value if isinstance(value, (dict, list)) else default
-    return json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
