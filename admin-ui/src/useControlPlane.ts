@@ -11,7 +11,6 @@ import {
 const INITIAL_RESOURCES: ResourceName[] = [
   'qqOfficial',
   'accounts',
-  'approvals',
   'securityAudit',
   'overview',
   'deliveries',
@@ -38,7 +37,6 @@ const INITIAL_RESOURCES: ResourceName[] = [
 export function useControlPlane(runtime: GaojiAdminRuntime) {
   const [user, setUser] = useState<JsonObject | null>(null)
   const [checkingSession, setCheckingSession] = useState(true)
-  const [pendingApproval, setPendingApproval] = useState<JsonObject | null>(null)
   const [data, setData] = useState<Partial<Record<ResourceName, JsonObject>>>({})
   const [versions, setVersions] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState<Set<ResourceName>>(new Set())
@@ -66,7 +64,7 @@ export function useControlPlane(runtime: GaojiAdminRuntime) {
 
   const logout = useCallback(async () => {
     try { await client.logout() } finally {
-      setUser(null); setData({}); setVersions({}); setOnline(false); setPendingApproval(null)
+      setUser(null); setData({}); setVersions({}); setOnline(false)
     }
   }, [client])
 
@@ -190,7 +188,7 @@ export function useControlPlane(runtime: GaojiAdminRuntime) {
   useEffect(() => {
     if (!authenticated) return
     const timer = window.setInterval(() => {
-      void refreshMany(isAdmin ? ['qqOfficial', 'overview', 'usage', 'backgroundAgents', 'commands', 'localModel', 'approvals', 'accounts', 'securityAudit', 'conversations', 'budgets'] : ['status'])
+      void refreshMany(isAdmin ? ['qqOfficial', 'overview', 'usage', 'backgroundAgents', 'commands', 'localModel', 'accounts', 'securityAudit', 'conversations', 'budgets'] : ['status'])
     }, 30000)
     return () => window.clearInterval(timer)
   }, [authenticated, refreshMany, initialResources])
@@ -205,7 +203,7 @@ export function useControlPlane(runtime: GaojiAdminRuntime) {
       expectedVersion?: number,
     ) => {
       try {
-        const payload = await client.mutate(path, method, body, expectedVersion ?? versions[resource], setPendingApproval)
+        const payload = await client.mutate(path, method, body, expectedVersion ?? versions[resource])
         if (typeof payload.resource_version === 'number') {
           setVersions((current) => ({ ...current, [resource]: payload.resource_version }))
         }
@@ -231,13 +229,8 @@ export function useControlPlane(runtime: GaojiAdminRuntime) {
     user,
     isAdmin,
     checkingSession,
-    pendingApproval,
     login,
     logout,
-    approvalAction: async (id: string, action: 'resend' | 'cancel') => {
-      await client.approvalAction(id, action)
-      await refreshMany(['approvals'])
-    },
     authenticated,
     data,
     versions,

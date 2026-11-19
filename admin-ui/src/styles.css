@@ -39,21 +39,13 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; fo
 .account-form .account-checkbox { display: flex; align-items: center; }
 .account-checkbox input { width: auto; }
 .account-actions { display: flex; align-items: center; gap: 15px; flex-wrap: wrap; }
-.approval-list { display: grid; gap: 12px; padding: 16px; }
-.approval-list article { padding: 16px; border: 1px solid var(--border); border-radius: 8px; }
-.approval-list article header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
-.approval-list small { margin-left: auto; color: var(--muted); }
-.approval-list details { margin-bottom: 12px; }
-.approval-list pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
-.approval-notice { display: flex; gap: 10px; align-items: center; padding: 14px 28px; background: var(--amber-soft); color: var(--amber); }
-.approval-notice div { display: grid; gap: 5px; font-size: 12px; }
 .member-shell { max-width: 1100px; margin: auto; }
 .member-header, .member-header > div { display: flex; align-items: center; gap: 14px; }
 .member-header { justify-content: space-between; padding: 24px; flex-wrap: wrap; }
 .member-header span { font-size: 12px; color: var(--muted); }
 .member-shell main { padding: 24px; }
 .account-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; padding: 20px; }
-@media (max-width: 640px) { .account-form { grid-template-columns: 1fr; margin: 12px; } .account-metrics { grid-template-columns: repeat(2, 1fr); } .approval-notice { padding: 14px; } }
+@media (max-width: 640px) { .account-form { grid-template-columns: 1fr; margin: 12px; } .account-metrics { grid-template-columns: repeat(2, 1fr); } }
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 252px minmax(0, 1fr); }
 .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 18px 14px 14px; background: #fbfbfc; color: var(--foreground); border-right: 1px solid var(--border); z-index: 30; }
 .brand { min-height: 48px; display: flex; align-items: center; gap: 11px; padding: 0 6px 12px; }

@@ -100,7 +100,6 @@ def secure_route(mobile: MobileAuthorization | None, *, prefix: str, origin: str
                         handled_security_action = (
                             (request.method == "POST" and suffix in {"/auth/login", "/auth/logout", "/accounts"})
                             or (request.method == "PUT" and re.fullmatch(r"/accounts/[^/]+", suffix))
-                            or (request.method == "POST" and re.fullmatch(r"/approvals/[^/]+/(resend|cancel)", suffix))
                         )
                         if request.method not in SAFE_METHODS and not handled_security_action:
                             body_bytes = await request.body()
@@ -220,28 +219,6 @@ def register_security_routes(router: APIRouter, mobile: MobileAuthorization | No
         result = await asyncio.to_thread(configured().store.apply_account_change, account,
             {"action": "update", "account_id": account_id, "expected_version": body.expected_version, "changes": changes})
         return {"ok": True, "account": result}
-
-    @router.get("/api/approvals")
-    async def approvals():
-        return {"items": await asyncio.to_thread(configured().store.pending, require_admin()["account_id"])}
-
-    @router.get("/api/approvals/{approval_id}")
-    async def approval(approval_id: str):
-        return await asyncio.to_thread(configured().store.get, approval_id, require_admin()["account_id"])
-
-    @router.post("/api/approvals/{approval_id}/resend")
-    async def resend(approval_id: str):
-        account = require_admin()
-        await asyncio.to_thread(configured().store.get, approval_id, account["account_id"])
-        pending, code = await asyncio.to_thread(configured().store.resend, approval_id, account["qq_id"], configured().bot_selector())
-        await configured()._send_code(pending, code)
-        return await asyncio.to_thread(configured().store.get, approval_id, account["account_id"])
-
-    @router.post("/api/approvals/{approval_id}/cancel")
-    async def cancel(approval_id: str):
-        account = require_admin()
-        await asyncio.to_thread(configured().store.cancel, approval_id, account["qq_id"], configured().bot_selector())
-        return {"ok": True}
 
     @router.get("/api/security-audit")
     async def audit():

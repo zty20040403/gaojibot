@@ -66,14 +66,6 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         self.client.headers["X-CSRF-Token"] = self.client.cookies.get("gaoji_csrf")
         return response
 
-    async def approve(self, response):
-        self.assertEqual(response.status_code, 202, response.text)
-        identifier = response.json()["approval_id"]
-        code = re.search(r"一次性口令：([0-9]{6})", self.sent[-1][2])[1]
-        self.store.confirm(identifier, QQ, BOT, code)
-        self.assertTrue(await self.mobile.run_once())
-        return await self.client.get(f"/bot-admin/api/v1/approvals/{identifier}")
-
     async def test_old_bearer_and_empty_configuration_never_grant_access(self):
         for prefix in ("/bot-admin/api", "/bot-admin/api/v1"):
             response = await self.client.get(prefix + "/overview", headers={"Authorization": "Bearer obsolete-token"})
@@ -91,7 +83,7 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
             status = await self.client.get(prefix + "/status")
             self.assertEqual(status.status_code, 200)
             self.assertEqual(set(status.json()), {"version", "uptime_seconds", "process", "qq_connected"})
-            for resource in ("overview", "traces", "accounts", "audit", "events", "security-audit", "approvals"):
+            for resource in ("overview", "traces", "accounts", "audit", "events", "security-audit"):
                 self.assertEqual((await self.client.get(prefix + "/" + resource)).status_code, 403, resource)
             response = await self.client.post(prefix + "/sandboxes/s123abc/action", json={"action": "destroy"})
             self.assertEqual(response.status_code, 403)
@@ -164,10 +156,13 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get(identifier, self.account["account_id"])["status"], "cancelled")
         self.assertEqual((await self.client.get("/bot-admin/api/v1/me")).status_code, 401)
 
-    async def test_no_web_code_confirmation_endpoint_exists(self):
+    async def test_no_web_approval_route_or_code_delivery(self):
         await self.login()
-        response = await self.client.post("/bot-admin/api/v1/approvals/AP-123456789ABC/confirm", json={"code": "123456"})
-        self.assertEqual(response.status_code, 404)
+        for prefix in ('/bot-admin/api', '/bot-admin/api/v1'):
+            for method, tail in (('GET',''), ('GET','/TEST_ID'), ('POST','/TEST_ID/resend'),
+                                 ('POST','/TEST_ID/confirm'), ('POST','/TEST_ID/cancel')):
+                self.assertEqual((await self.client.request(method, prefix + '/approvals' + tail)).status_code, 404)
+        self.assertEqual(self.sent, [])
 
 
 if __name__ == "__main__":
