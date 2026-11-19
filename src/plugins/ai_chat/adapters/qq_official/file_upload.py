@@ -131,33 +131,40 @@ class FileUploader:
             if key in self.cache:
                 return self.cache[key]
             started = time.monotonic()
+            deadline = asyncio.timeout(300)
             try:
-                if size <= SMALL_FILE_BYTES:
-                    response = await self._request(path + "/files", {
-                        "file_type": metadata["file_type"],
-                        "file_name": filename,
-                        "file_data": base64.b64encode(content).decode("ascii"),
-                        "srv_send_msg": False,
-                    }, current)
-                else:
-                    response = await self._multipart(path, content, metadata, current)
-            except QQAPIError as error:
-                if error.code == 50015014:
+                async with deadline:
                     try:
-                        await self._request(path + "/upload_prepare", metadata, current)
-                    except QQAPIError as diagnostic:
-                        error = diagnostic
-                logger.warning("QQ upload bytes=%d elapsed=%.2f result=rejected code=%s",
-                               size, time.monotonic() - started, error.code)
-                detail = _UPLOAD_REASONS.get(error.code, f"腾讯未接受文件上传（{error.category}）。")
-                raise FileUploadError(f"{detail}（错误码：{error.code or error.status}）") from None
-            except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
-                logger.warning("QQ upload bytes=%d elapsed=%.2f result=failed error=%s",
-                               size, time.monotonic() - started, type(error).__name__)
-                raise FileUploadError("上传未完成，文件还没有发送，可以重试。") from None
-            info = response.get("file_info")
-            if not isinstance(info, str) or not info:
-                raise FileUploadError("腾讯没有返回文件信息，文件还没有发送，可以重试。")
+                        if size <= SMALL_FILE_BYTES:
+                            response = await self._request(path + "/files", {
+                                "file_type": metadata["file_type"],
+                                "file_name": filename,
+                                "file_data": base64.b64encode(content).decode("ascii"),
+                                "srv_send_msg": False,
+                            }, current)
+                        else:
+                            response = await self._multipart(path, content, metadata, current)
+                    except QQAPIError as error:
+                        if error.code == 50015014:
+                            try:
+                                await self._request(path + "/upload_prepare", metadata, current)
+                            except QQAPIError as diagnostic:
+                                error = diagnostic
+                        logger.warning("QQ upload bytes=%d elapsed=%.2f result=rejected code=%s",
+                                       size, time.monotonic() - started, error.code)
+                        detail = _UPLOAD_REASONS.get(error.code, f"腾讯未接受文件上传（{error.category}）。")
+                        raise FileUploadError(f"{detail}（错误码：{error.code or error.status}）") from None
+                    except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+                        logger.warning("QQ upload bytes=%d elapsed=%.2f result=failed error=%s",
+                                       size, time.monotonic() - started, type(error).__name__)
+                        raise FileUploadError("上传未确认，远端结果未知，请先核实，不要直接重复上传。") from None
+                    info = response.get("file_info")
+                    if not isinstance(info, str) or not info:
+                        raise FileUploadError("腾讯没有返回文件信息，远端上传结果未知，请先核实，不要直接重复上传。")
+            except TimeoutError as error:
+                if not deadline.expired():
+                    raise
+                raise FileUploadError("上传超时，远端结果未知，请先核实，不要直接重复上传。") from error
             result = UploadedFile(info, int(self.clock()) + min(86400, int(response.get("ttl", 86400))))
             self.cache[key] = result
             logger.info("QQ upload bytes=%d elapsed=%.2f result=uploaded", size, time.monotonic() - started)
