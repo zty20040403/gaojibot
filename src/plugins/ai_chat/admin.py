@@ -17,7 +17,6 @@ from .admin_api import (
     models,
     official_files,
     official_observability,
-    official_identity,
     overview,
     sandboxes,
     background_agents,
@@ -61,7 +60,6 @@ _PAGE_ROUTERS = (
     audit,
     official_files,
     official_observability,
-    official_identity,
     events,
 )
 
