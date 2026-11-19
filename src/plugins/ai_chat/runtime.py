@@ -462,7 +462,6 @@ def _build_app_context(
                 model_catalog=model_catalog,
                 llm_gateway=llm_gateway,
                 vision_profile=settings.vision_profile,
-                max_source_bytes=settings.media_max_source_bytes,
                 max_vision_bytes=settings.media_max_vision_bytes,
                 prepare_threshold_bytes=settings.media_prepare_threshold_bytes,
                 max_edge_pixels=settings.media_max_edge_pixels,
