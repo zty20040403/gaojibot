@@ -55,7 +55,6 @@ class AdminConversationTests(unittest.IsolatedAsyncioTestCase):
         self.notify.side_effect = None
         self.assertEqual((await self.send('start',1)).status_code,200)
         self.assertFalse((await self.client.get(self.path)).json()['items'][0]['stopped'])
-        self.assertEqual(self.app.state.auth_messages,[])  # No old global QQ OTP flow.
 
     async def test_parallel_same_version_has_exactly_one_winner(self):
         await self.login()
@@ -97,7 +96,6 @@ class AdminConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale.json()['detail']['resource'],'conversations')
         self.assertEqual(len(self.query('SELECT * FROM admin_audit_log')),2)
         self.notify.assert_not_called()  # Do not interrupt ordinary foreground work.
-        self.assertEqual(self.app.state.auth_messages,[])
 
     async def test_proactive_requires_strict_bool_and_existing_endpoint_and_rolls_back_errors(self):
         await self.login()

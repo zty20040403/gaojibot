@@ -44,8 +44,9 @@ class AdminBillingTests(BackgroundJobFixture,unittest.IsolatedAsyncioTestCase):
     async def test_anonymous_and_member_cannot_read_any_scope(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://test') as client:
             self.assertEqual((await client.get(self.path)).status_code,401)
-            store = self.app.state.mobile.store
-            store.apply_account_change(store.account_for_qq('123456789'),{'action':'create','username':'test_member',
+            store = self.app.state.console_store
+            admin = store.login('kenneth', PASSWORD, 'test')['account']
+            store.apply_account_change(admin,{'action':'create','username':'test_member',
                 'password_hash':hash_password(PASSWORD),'role':'member','qq_id':None})
             response = await client.post('/bot-admin/api/v1/auth/login',headers={'Origin':'https://test'},
                 json={'username':'test_member','password':PASSWORD})
@@ -81,7 +82,7 @@ class AdminBillingTests(BackgroundJobFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(Decimal(row['cost_usd']) for row in jobs['items']),Decimal('0.00264'))
         for row in actors['items']:
             self.assertFalse({'actor_key','pricing_json','source_metadata_json','call_id'} & row.keys())
-        self.assertNotIn('TEST_PRIVATE_KEY',str(actors)); self.assertEqual(self.app.state.auth_messages,[])
+        self.assertNotIn('TEST_PRIVATE_KEY',str(actors))
 
     async def test_unknown_usage_missing_price_pending_and_bigint_totals_stay_explicit(self):
         self.call(); self.call(usage=TokenUsage(1000,50,None,0))

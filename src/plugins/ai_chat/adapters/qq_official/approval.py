@@ -9,7 +9,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 
-from src.bot_security.store import SecurityError, SecurityStore, canonical, digest, public_account
+from src.bot_security.store import SecurityError, canonical, digest, public_account
 from ...conversation_scope import ConversationScope
 from ...message_ir import MessageBody, TextNode
 from ...platform_types import ActorKey, EndpointKey
@@ -287,9 +287,14 @@ class OfficialApprovalTransport:
 
     @staticmethod
     def render_code(request,code):
-        from src.bot_security.service import MobileAuthorization
+        review = (f"\n高风险操作须两位不同管理员批准。另一位请私聊：复核 {request['approval_id']}\n"
+                  if request['quorum'] > 1 else f"\n复核原操作：{request['parent_approval_id']}；记一票，不单独执行命令。\n" if request.get('parent_approval_id') else '')
+        text = (f"待确认操作：{request['approval_id']}\n{request['summary']}\n\n"
+                f"一次性口令：{code}\n3 分钟有效，仅本人可用，成功一次立即失效。\n"
+                f"直接回复 {code} 记录本人的批准；达到所需人数才会执行。{review}\n"
+                f"取消请回复：取消 {request['approval_id']}\n重发请回复：重发 {request['approval_id']}")
         endpoint = EndpointKey.parse(request['official_endpoint_key'])
-        return render_plan(MessageBody((TextNode(0,MobileAuthorization.code_text(request,code)),)),
+        return render_plan(MessageBody((TextNode(0,text),)),
                            endpoint,markdown=False,max_parts=1)
 
     def body_commitment(self, source_id, request, rendered):
@@ -344,114 +349,3 @@ class OfficialApprovalTransport:
         cursor.execute('''UPDATE admin_approvals SET status='cancelled',code_hash='',updated_at=?
             WHERE identity_transport='qq_official' AND official_account_key=? AND status='sending' ''',
             (self.now(),self.token.account_key))
-
-    def _source(self, cursor, source_id, *, now):
-        if not isinstance(source_id, str) or re.fullmatch('[a-f0-9]{32}', source_id) is None:
-            denied()
-        row = cursor.execute('''SELECT * FROM qq_official_admin_otp_sources
-            WHERE source_id=? AND account_key=? FOR UPDATE''', (source_id,self.token.account_key)).fetchone()
-        if (row is None or row['cancelled_at'] is not None or row['expires_at']<=now
-                or row['account_epoch']!=self.token.epoch):
-            denied()
-        request = cursor.execute('SELECT * FROM admin_approvals WHERE approval_id=? FOR UPDATE',
-                                 (row['approval_id'],)).fetchone()
-        if (request is None or request['status']!='sending' or request['code_generation']!=row['code_generation']
-                or request['expires_at']!=row['approval_expires_at'] or not self.current(cursor,dict(request))):
-            denied()
-        return dict(row),dict(request)
-
-    def validate_plan(self,cursor,*,token,source_id,rendered,requester,logical_key,
-                      source_scope_key,source_native_message_id,expires_at,now):
-        if token != self.token:
-            denied()
-        source, request = self._source(cursor,source_id,now=now)
-        endpoint = EndpointKey.parse(source['endpoint_key'])
-        if (rendered.endpoint != endpoint or requester.key != source['actor_key']
-                or logical_key != 'approval_otp:'+source_id or source_scope_key != endpoint.scope.key
-                or expires_at != source['expires_at']
-                or not hmac.compare_digest(self.body_commitment(source_id,request,rendered),source['body_commitment'])):
-            denied()
-        return source
-
-    def bind_plan(self,cursor,*,source_id,plan_id,delivery_id):
-        source,_ = self._source(cursor,source_id,now=self.now())
-        if source['plan_id'] is not None:
-            if source['plan_id']!=plan_id or source['delivery_id']!=delivery_id:
-                denied()
-            return
-        cursor.execute('''UPDATE qq_official_admin_otp_sources SET plan_id=?,delivery_id=?
-            WHERE source_id=? AND plan_id IS NULL AND attempt_id IS NULL''',(plan_id,delivery_id,source_id))
-        if cursor.rowcount!=1:
-            denied()
-
-    def delivery_current(self,cursor,*,token,delivery,now):
-        try:
-            if token!=self.token or delivery['purpose']!='approval_otp' or delivery['payload_mode']!='ephemeral':
-                return False
-            plan = cursor.execute('SELECT * FROM delivery_plans WHERE plan_id=?',(delivery['plan_id'],)).fetchone()
-            if plan is None:
-                return False
-            source, _ = self._source(cursor,plan['approval_source_id'],now=now)
-            return (source['plan_id']==delivery['plan_id'] and source['delivery_id']==delivery['delivery_id']
-                and source['account_key']==delivery['account_key'] and source['endpoint_key']==delivery['endpoint_key']
-                and source['actor_key']==delivery['requester_actor_key']
-                and source['expires_at']==delivery['expires_at']==plan['approval_source_expires_at'])
-        except (SecurityError,PermissionError,ValueError,TypeError):
-            return False
-
-    def bind_attempt(self,cursor,*,token,delivery,attempt_id,now):
-        if not self.delivery_current(cursor,token=token,delivery=delivery,now=now):
-            denied()
-        cursor.execute('''UPDATE qq_official_admin_otp_sources SET attempt_id=?
-            WHERE delivery_id=? AND plan_id=? AND attempt_id IS NULL''',
-            (attempt_id,delivery['delivery_id'],delivery['plan_id']))
-        if cursor.rowcount!=1:
-            denied()
-
-
-class ApprovalOtpSender:
-    """Host-only bridge into the existing M3 sender; code is RAM-only.
-
-    The callback cannot authorize itself: persisted approval generation, current
-    admin/source, exact window, HMAC body and M3 plan are checked in one TX.
-    """
-    def __init__(self, *, sender, transport, store):
-        self.sender,self.transport,self.store=sender,transport,store
-
-    def _prepare(self, request, code, text):
-        with self.sender.outbox.deliveries.transaction() as cursor:
-            self.transport.begin(cursor)
-            row = cursor.execute('''SELECT * FROM qq_official_admin_otp_sources
-                WHERE approval_id=? AND code_generation=? AND account_key=?''',
-                (request['approval_id'],request['code_generation'],self.transport.token.account_key)).fetchone()
-            if row is None:
-                return None
-            source,current = self.transport._source(cursor,row['source_id'],now=self.transport.now())
-            if (not isinstance(code,str) or re.fullmatch('[0-9]{6}',code) is None
-                    or not hmac.compare_digest(current['code_hash'],self.store._code_hash(current,code))):
-                denied()
-            rendered = self.transport.render_code(current,code)
-            from src.bot_security.service import MobileAuthorization
-            if text!=MobileAuthorization.code_text(current,code):
-                denied()
-            window=cursor.execute('SELECT * FROM qq_official_reply_windows WHERE window_id=?',
-                                  (source['window_id'],)).fetchone()
-            return self.sender.outbox.enqueue(self.transport.token,rendered=rendered,
-                requester=ActorKey.parse(source['actor_key']),logical_key='approval_otp:'+source['source_id'],
-                source_scope_key=rendered.endpoint.scope.key,expires_at=source['expires_at'],purpose='approval_otp',
-                source_native_message_id=window['credential_value'] if window else '',transaction_cursor=cursor,
-                approval_source_id=source['source_id'])
-
-    async def send_code(self,request,code,text):
-        return await self.sender.emit_ephemeral(self._prepare,request,code,text)
-
-    async def send_receipt(self,request):
-        # Typed control receipt integration is intentionally not connected by
-        # this source: never replay an OTP or grant general notification rights.
-        return 'failed'
-
-
-class OwnerApprovalStore(SecurityStore):
-    @staticmethod
-    def required_quorum(kind, requested=1):
-        return 1

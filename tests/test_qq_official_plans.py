@@ -23,6 +23,11 @@ class PlanTests(OutboxFixture):
         with self.tx() as cursor:
             return enqueue_plan(cursor, **args)
 
+    def test_retired_approval_cannot_create_a_plan(self):
+        with self.assertRaisesRegex(OutboxInvariantError, 'invalid_delivery_plan'):
+            self.enqueue(purpose='approval_otp')
+        self.assertFalse(self.query('SELECT * FROM delivery_plans'))
+
     def test_same_logical_plan_reuses_original_parts(self):
         first = self.enqueue()
         duplicate = self.enqueue()

@@ -20,7 +20,6 @@ PURPOSE_PRIORITIES = {
     "final": 0,
     "requested_artifact": 0,
     "binding_otp": 0,
-    "approval_otp": 0,
     "background_result": 10,
     "progress": 20,
     "unsolicited": 30,
@@ -64,7 +63,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
                  admission=None, challenge_id: str | None = None, pepper: bytes | None = None,
                  digest_key_id: str = "v1", binding_preview=None, control_reply_id=None, epoch_guard=assert_epoch,
                  max_wait_seconds: int = DEFAULT_MAX_WAIT_SECONDS,
-                 approval_source_id=None, approval_authority=None, source_guard=None, source_proof=None,
+                 source_guard=None, source_proof=None,
                  source_generation=None, vm_request=None) -> PlanRef:
     epoch_guard(cursor, token)
 
@@ -88,7 +87,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             or type(now) is not int or type(expires_at) is not int
             or not 0 <= now < expires_at <= 2**63 - 1):
         raise OutboxInvariantError("invalid_delivery_plan")
-    wait_limit = min(max_wait_seconds, SHORT_WAIT_SECONDS) if purpose in {"binding_otp", "approval_otp"} else max_wait_seconds
+    wait_limit = min(max_wait_seconds, SHORT_WAIT_SECONDS) if purpose == "binding_otp" else max_wait_seconds
     if expires_at - now > wait_limit:
         raise OutboxInvariantError("delivery_wait_limit_exceeded")
     endpoint = rendered.endpoint
@@ -115,22 +114,12 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     control_view = control_reply_id is not None and control_authorized(cursor, control_reply_id, endpoint, requester)
     if control_reply_id is not None and not control_view:
         raise OutboxInvariantError("control_source_unavailable")
-    ephemeral = purpose in {"binding_otp", "approval_otp"}
-    if ((purpose == "binding_otp") != (challenge_id is not None)
-            or (purpose == "approval_otp") != (approval_source_id is not None)
-            or (ephemeral and pepper is None) or (not ephemeral and pepper is not None)
+    ephemeral = purpose == "binding_otp"
+    if (ephemeral != (challenge_id is not None) or ephemeral != (pepper is not None)
             or (not control_view and not vm_action and not admission(cursor, endpoint, requester))):
         raise OutboxInvariantError("delivery_not_authorized")
-    challenge_expires = approval_expires = None
-    ephemeral_ref = challenge_id or approval_source_id
-    if purpose == "approval_otp":
-        if approval_authority is None or turn_id is not None or source_canonical_message_id is not None or binding_preview is not None:
-            raise OutboxInvariantError("approval_source_unavailable")
-        proof = approval_authority.validate_plan(cursor, token=token, source_id=approval_source_id,
-            rendered=rendered, requester=requester, logical_key=logical_key, source_scope_key=source_scope_key,
-            source_native_message_id=source_native_message_id, expires_at=expires_at, now=now)
-        approval_expires = proof["expires_at"]
-    elif purpose == "binding_otp":
+    challenge_expires = None
+    if ephemeral:
         challenge = cursor.execute("""SELECT c.* FROM qq_official_binding_challenges c
             JOIN qq_official_owner_grants g ON g.grant_id=c.owner_grant_id
             WHERE c.challenge_id=? AND c.account_key=? AND c.issuer_endpoint_key=?
@@ -158,7 +147,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     identity = ["qq-plan-v1", token.account_key, endpoint.key, logical_key]
     idem = "qqp1:" + digest(stable_json(identity))
     contents = [content_payload(rendered, i) for i in range(len(rendered.parts))]
-    manifest_digest = (keyed_digest(pepper, "content", [identity, requester.key, ephemeral_ref, contents])
+    manifest_digest = (keyed_digest(pepper, "content", [identity, requester.key, challenge_id, contents])
                        if ephemeral else digest(manifest))
     mode, scheme, key_id = ("ephemeral", "hmac_sha256_v1", digest_key_id) if ephemeral else ("persistent", "sha256", None)
     from .conversation_control import permitted, state
@@ -177,25 +166,19 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         capability_revision=endpoint_row["capability_revision"], purpose=purpose, payload_mode=mode,
         manifest_json=manifest, manifest_digest=manifest_digest, digest_scheme=scheme, digest_key_id=key_id,
         part_count=len(rendered.parts), expires_at=expires_at, priority=PURPOSE_PRIORITIES[purpose],
-        challenge_id=challenge_id, challenge_expires_at=challenge_expires,
-        approval_source_id=approval_source_id, approval_source_expires_at=approval_expires)
+        challenge_id=challenge_id, challenge_expires_at=challenge_expires)
     existing = cursor.execute("SELECT * FROM delivery_plans WHERE idempotency_key=?", (idem,)).fetchone()
     if existing is not None:
         rows = cursor.execute("SELECT delivery_id FROM deliveries WHERE plan_id=? ORDER BY part_index", (existing["plan_id"],)).fetchall()
-        if approval_source_id is not None:
-            approval_authority.bind_plan(cursor, source_id=approval_source_id, plan_id=existing["plan_id"], delivery_id=rows[0]["delivery_id"])
         require_source(existing["plan_id"])
         return PlanRef(existing["plan_id"], tuple(r["delivery_id"] for r in rows), False)
     plan_id = secrets.token_hex(16)
     fields = {"plan_id": plan_id, "idempotency_key": idem, **immutable, "created_at": now}
-    if approval_source_id is None:
-        fields.pop("approval_source_id")
-        fields.pop("approval_source_expires_at")
     cursor.execute("INSERT INTO delivery_plans (" + ",".join(fields) + ") VALUES (" + ",".join("?" for _ in fields) + ")", tuple(fields.values()))
     delivery_ids = []
     for i, part in enumerate(rendered.parts):
         part_idem = "qqd1:" + digest(stable_json([*identity, i]))
-        payload_digest = (keyed_digest(pepper, "part", [identity, plan_id, i, requester.key, ephemeral_ref, contents[i]])
+        payload_digest = (keyed_digest(pepper, "part", [identity, plan_id, i, requester.key, challenge_id, contents[i]])
                           if ephemeral else digest(stable_json(contents[i])))
         fields = dict(idempotency_key=part_idem, source_scope_key=source_scope_key,
             source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
@@ -211,7 +194,5 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             digest_scheme=scheme, digest_key_id=key_id, priority=PURPOSE_PRIORITIES[purpose], expires_at=expires_at)
         row = cursor.execute("INSERT INTO deliveries (" + ",".join(fields) + ") VALUES (" + ",".join("?" for _ in fields) + ") RETURNING delivery_id", tuple(fields.values())).fetchone()
         delivery_ids.append(row["delivery_id"])
-    if approval_source_id is not None:
-        approval_authority.bind_plan(cursor, source_id=approval_source_id, plan_id=plan_id, delivery_id=delivery_ids[0])
     require_source(plan_id)
     return PlanRef(plan_id, tuple(delivery_ids), True)

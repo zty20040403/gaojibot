@@ -28,8 +28,8 @@ from src.bot_storage.media_cleanup import LegacyMediaCleanup
 from .model_catalog import ModelCatalog
 from .model_billing import ModelBilling
 from .model_preferences import ModelPreferenceStore
-from .application_security import build_console_authorization
-from src.bot_security.service import MobileAuthorization
+from .application_security import build_console_store
+from src.bot_security.store import SecurityStore
 from .quota import UsageStore
 from src.sandbox_runtime.factory import manager_from_settings
 from .container_sandbox import ContainerSandboxManager
@@ -95,7 +95,7 @@ class AppContext:
     media_cleanup: LegacyMediaCleanup | None = None
     vision_worker: VisionWorker | None = None
     cold_archive: ColdArchiveService | None = None
-    mobile_authorization: MobileAuthorization | None = None
+    console_store: SecurityStore | None = None
     self_files: SelfFilesStore | None = None
     official_runtime: OfficialRuntime | None = field(default=None, repr=False)
     db_call: DatabaseCalls = field(default_factory=DatabaseCalls, repr=False)
@@ -206,7 +206,7 @@ class AppContext:
             ("durable job store", self.job_store),
             ("usage store", self.usage_store),
             ("turn journal", self.turn_journal),
-            ("account authorization", self.mobile_authorization.store if self.mobile_authorization else None),
+            ("account authorization", self.console_store),
         ):
             if resource is None:
                 continue
@@ -340,9 +340,9 @@ def _build_app_context(
             logger.error(f"Canonical message ledger could not be opened: {exc}")
 
     conversations = _construction.own(ConversationStore(database)) if message_ledger is not None else None
-    mobile_authorization = build_console_authorization(settings, database)
-    if mobile_authorization is not None:
-        _construction.own(mobile_authorization.store)
+    console_store = build_console_store(settings, database)
+    if console_store is not None:
+        _construction.own(console_store)
     delivery_store: DeliveryStore | None = None
     if settings.outbox_enabled:
         try:
@@ -561,6 +561,6 @@ def _build_app_context(
         media_cleanup=media_cleanup,
         vision_worker=vision_worker,
         cold_archive=cold_archive,
-        mobile_authorization=mobile_authorization,
+        console_store=console_store,
         self_files=SelfFilesStore(state_dir, logger=logger),
     )

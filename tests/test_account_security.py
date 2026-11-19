@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from src.bot_security.passwords import hash_password
-from src.bot_security.service import MobileAuthorization, approval_command
 from src.bot_security.store import SecurityError, SecurityStore
 
 PASSWORD = "local-test-password-only"
@@ -232,56 +231,6 @@ class AccountStoreTests(unittest.TestCase):
         self.now += 61
         self.assertIsNone(self.store.claim("new-worker"))
         self.assertEqual(self.store.get(request["approval_id"], self.admin["account_id"])["status"], "needs_attention")
-
-
-class MobileAuthorizationTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.store = SecurityStore(postgres_for_test(self), b"z" * 32)
-        self.addCleanup(self.store.close)
-        self.account = self.store.bootstrap("kenneth", PASSWORD, QQ)
-        self.sent = []
-        async def sender(bot, qq, text):
-            self.sent.append((bot, qq, text))
-        self.mobile = MobileAuthorization(self.store, sender=sender, bot_selector=lambda: BOT)
-
-    async def test_phone_confirmation_executes_after_browser_disappears(self):
-        import re
-        result = await self.mobile.propose(self.account, kind="test", payload={"action": "restart"}, summary="重启示例")
-        self.assertNotIn("code", result)
-        code = re.search(r"一次性口令：([0-9]{6})", self.sent[-1][2])[1]
-        calls = []
-        async def execute(request):
-            calls.append(request["payload"])
-            return {"ok": True}
-        self.mobile.executors["test"] = execute
-        self.assertFalse(await self.mobile.run_once())
-        group = await self.mobile.handle_message(qq_id=QQ, bot_id=BOT, private=False, text=f"确认 {result['approval_id']} {code}")
-        self.assertIn("只接受", group)
-        self.assertFalse(await self.mobile.run_once())
-        response = await self.mobile.handle_message(qq_id=QQ, bot_id=BOT, private=True, text=code)
-        self.assertIn("已授权", response)
-        self.assertTrue(self.mobile.wake.is_set())
-        self.assertTrue(await self.mobile.run_once())
-        self.assertFalse(await self.mobile.run_once())
-        self.assertEqual(calls, [{"action": "restart"}])
-        self.assertNotIn(code, self.sent[-1][2])
-
-    async def test_delivery_failure_cannot_be_approved_or_executed(self):
-        async def failed(*_args):
-            raise OSError("transport failure")
-        self.mobile.sender = failed
-        with self.assertRaisesRegex(SecurityError, "发送失败"):
-            await self.mobile.propose(self.account, kind="test", payload={}, summary="测试")
-        self.assertFalse(await self.mobile.run_once())
-        self.assertEqual(self.store.pending(self.account["account_id"])[0]["status"], "delivery_failed")
-
-    def test_confirmation_command_recognizes_group_and_private_syntax(self):
-        self.assertTrue(approval_command("确认 AP-123456789ABC 000042"))
-        self.assertTrue(approval_command("/confirm AP-123456789ABC wrong"))
-        self.assertFalse(approval_command("普通聊天"))
-        self.assertTrue(approval_command(" 000042 ", private=True))
-        self.assertFalse(approval_command("000042"))
-        self.assertFalse(approval_command("金额 000042", private=True))
 
 
 if __name__ == "__main__":
