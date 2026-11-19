@@ -44,7 +44,6 @@ class AdminServices:
     telemetry: Any = None
     mobile_authorization: MobileAuthorization | None = None
     official_file_service: Any = None  # Live host getter; never a request-supplied route.
-    official_identity_service: Any = None  # Exact live account host getter.
     official_observability: Any = None  # Live host getter; read-only aggregate diagnostics.
     official_runtime: Any = None  # Live host getter for committed control notifications.
 
