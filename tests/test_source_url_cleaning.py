@@ -11,6 +11,7 @@ class SourceURLCleaningTests(unittest.TestCase):
             with self.subTest(host=host):
                 url = f'https://{host}:8443/video/TEST?buvid=TEST&mid=TEST&share_id=TEST&p=2&t=3#TEST'
                 self.assertEqual(clean_source_url(url), f'https://{host}:8443/video/TEST?p=2&t=3#TEST')
+        self.assertEqual(clean_source_url('https://b23.tv/TEST123?share_medium=android&buvid=TEST'), 'https://b23.tv/TEST123')
         self.assertEqual(clean_source_url('https://bilibili.com.evil.test/?buvid=TEST'),
                          'https://bilibili.com.evil.test/?buvid=TEST')
 
