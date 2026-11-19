@@ -28,7 +28,6 @@ def _disabled(now,enabled=False,reason='disabled'):
         gateway={'state':'closed','message_gap':False,'queue_depth':0,'queue_limit':0},
         sender={'running':False,'active':0,'unrecorded':0},
         execution={},delivery={},inbox={},migration={},capabilities=[],
-        windows={'active':0,'expired':0},
         cleanup={'scope':'process_cleanup_items','last_at':None,'deleted':0,'failed':0})
 
 
@@ -136,10 +135,6 @@ class OfficialObservability:
                 rows=c.execute(f'SELECT {column} AS state,COUNT(*) AS n FROM {table} WHERE account_key=? GROUP BY {column}',
                                (token.account_key,)).fetchall()
                 value[domain]={r['state']:_count(r['n']) for r in rows if r['state'] in SAFE_STATES[domain]}
-            windows=c.execute('''SELECT COUNT(*) FILTER(WHERE state='active' AND expires_at>?) AS active,
-                COUNT(*) FILTER(WHERE state='expired' OR expires_at<=?) AS expired
-                FROM qq_official_reply_windows WHERE account_key=?''',(now,now,token.account_key)).fetchone()
-            value['windows']={k:_count(windows[k]) for k in ('active','expired')}
             value['cleanup']={'scope':'process_cleanup_items',**deepcopy(self.metrics.cleanup)}
             verified=lease['bot_identity_verified_at'] if lease else None
             value['capabilities']=[{'kind':'bot_identity','status':'verified' if verified is not None else 'unknown',
