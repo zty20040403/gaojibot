@@ -13,7 +13,7 @@ from src.plugins.ai_chat.model_budget import (
     ModelBudgetExceeded, ModelCallBudget, active_model_budget, model_budget_scope,
 )
 from src.plugins.ai_chat.model_catalog import ModelCapabilities, ModelCatalog
-from src.plugins.ai_chat.vision_worker import VisionJob, VisionWorker
+from src.plugins.ai_chat.vision_worker import VisionWorker
 
 
 class BudgetedVisionTests(unittest.IsolatedAsyncioTestCase):
@@ -32,10 +32,9 @@ class BudgetedVisionTests(unittest.IsolatedAsyncioTestCase):
             llm_gateway=LLMGateway({"openai-chat": self.provider}), vision_profile=selected.name)
         self.guard = AsyncMock()
         self.budget = ModelCallBudget(5000, before_request=self.guard)
-        self.job = VisionJob(0, '', 0, '', 'detail', '', 0)
 
     def recognize(self):
-        return self.worker._request_analysis(self.job, b'TEST_IMAGE', 'image/png')
+        return self.worker._request_analysis(b'TEST_IMAGE', 'image/png', mode='detail', question='')
 
     async def test_gateway_receipt_is_charged_to_parent(self):
         with model_budget_scope(self.budget):
@@ -74,7 +73,6 @@ class BudgetedVisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stopped.is_set())
         self.assertFalse(self.budget.summary()["usage_known"])
         self.assertEqual(self.budget.charged_tokens, 2100)
-        self.assertFalse(self.worker._analysis_inflight)
 
 if __name__ == "__main__":
     unittest.main()

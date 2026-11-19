@@ -61,7 +61,6 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.library = MediaLibrary(self.database,root=Path(self.temp.name),model_catalog=catalog,llm_gateway=gateway,vision_profile='testvision')
         self.addAsyncCleanup(self.library.close)
         self.vision = VisionWorker(model_catalog=catalog,llm_gateway=gateway,vision_profile='testvision')
-        self.addAsyncCleanup(self.vision.close)
         self.usage = UsageStore(self.database)
         self.addCleanup(self.usage.close)
         self.app = SimpleNamespace(database=self.database,media_library=self.library,vision_worker=self.vision,usage_store=self.usage,

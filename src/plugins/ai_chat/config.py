@@ -159,8 +159,6 @@ class Settings:
     media_root: str
     vision_profile: str
     vision_auto_describe: bool
-    vision_cache_seconds: int
-    vision_cache_entries: int
     media_max_source_bytes: int
     media_max_vision_bytes: int
     media_prepare_threshold_bytes: int
@@ -368,14 +366,6 @@ class Settings:
             vision_auto_describe=boolean(
                 "AI_VISION_AUTO_DESCRIBE",
                 False,
-            ),
-            vision_cache_seconds=max(
-                integer("AI_VISION_CACHE_SECONDS", 600),
-                0,
-            ),
-            vision_cache_entries=min(
-                max(integer("AI_VISION_CACHE_ENTRIES", 256), 1),
-                2048,
             ),
             media_max_source_bytes=max(
                 integer("AI_MEDIA_MAX_SOURCE_MB", 100), 1

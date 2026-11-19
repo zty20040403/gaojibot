@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import shutil
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-
-
 from .llm_gateway import LLMGateway
 from .model_catalog import ModelCatalog, ModelProfile
-from .model_budget import active_model_budget
 
 
 VISION_SYSTEM_PROMPT = """你是 QQ 机器人的一次性图片理解 Worker。
@@ -29,17 +24,6 @@ VISION_SYSTEM_PROMPT = """你是 QQ 机器人的一次性图片理解 Worker。
 
 class VisionJobError(RuntimeError):
     pass
-
-
-@dataclass(frozen=True)
-class VisionJob:
-    job_id: int
-    native_message_id: str
-    segment_index: int
-    source_url: str
-    mode: str
-    question: str
-    attempts: int
 
 
 @dataclass(frozen=True)
@@ -75,8 +59,6 @@ class VisionWorker:
         prepare_threshold_bytes: int = 1024 * 1024,
         max_edge_pixels: int = 1568,
         timeout_seconds: int = 180,
-        cache_seconds: int = 600,
-        cache_entries: int = 256,
         ffmpeg_path: str = "ffmpeg",
     ) -> None:
         self.model_catalog = model_catalog
@@ -86,12 +68,7 @@ class VisionWorker:
         self.prepare_threshold_bytes = max(int(prepare_threshold_bytes), 0)
         self.max_edge_pixels = max(int(max_edge_pixels), 256)
         self.timeout_seconds = max(int(timeout_seconds), 5)
-        self.cache_seconds = max(int(cache_seconds), 0)
-        self.cache_entries = min(max(int(cache_entries), 1), 2048)
         self.ffmpeg_path = ffmpeg_path.strip() or "ffmpeg"
-        self._analysis_cache: dict[str, tuple[float, VisionResult]] = {}
-        self._analysis_inflight: dict[str, asyncio.Task[VisionResult]] = {}
-        self._cache_lock = asyncio.Lock()
 
         profile = self._vision_profile()
         if not profile.capabilities.vision:
@@ -105,19 +82,21 @@ class VisionWorker:
 
     async def _request_analysis(
         self,
-        job: VisionJob,
         content: bytes,
         mime_type: str,
+        *,
+        mode: str,
+        question: str,
     ) -> VisionResult:
         payload = base64.b64encode(content).decode("ascii")
         profile = self._vision_profile()
         instruction = (
             "请仔细检查图片中的主体、文字、关系和容易忽略的细节"
-            if job.mode == "detail"
+            if mode == "detail"
             else "请给这张图片生成简短介绍"
         )
-        if job.question:
-            instruction += f"，并重点回答：{job.question}"
+        if question:
+            instruction += f"，并重点回答：{question}"
         response = await self.llm_gateway.create_completion(
             profile,
             model=profile.model,
@@ -141,73 +120,7 @@ class VisionWorker:
             ),
         )
         raw = str(response.choices[0].message.content or "").strip()
-        return self.parse_result(raw, mode=job.mode)
-
-    async def _analyze_cached(
-        self,
-        cache_key: str,
-        job: VisionJob,
-        content: bytes,
-        mime_type: str,
-    ) -> VisionResult:
-        now = time.monotonic()
-        owned = active_model_budget() is not None
-        async with self._cache_lock:
-            cached = self._analysis_cache.get(cache_key)
-            if cached is not None and cached[0] > now:
-                return cached[1]
-            if cached is not None:
-                self._analysis_cache.pop(cache_key, None)
-            task = self._analysis_inflight.get(cache_key) if not owned else None
-            if not owned and task is None:
-                task = asyncio.create_task(
-                    self._request_analysis(job, content, mime_type),
-                    name=f"vision-analysis:{cache_key[:12]}",
-                )
-                self._analysis_inflight[cache_key] = task
-                task.add_done_callback(
-                    lambda completed, key=cache_key: asyncio.create_task(
-                        self._finalize_analysis_task(key, completed)
-                    )
-                )
-        if owned:
-            result = await self._request_analysis(job, content, mime_type)
-            async with self._cache_lock:
-                if self.cache_seconds > 0:
-                    self._analysis_cache[cache_key] = (time.monotonic() + self.cache_seconds, result)
-                    self._trim_analysis_cache()
-            return result
-        return await asyncio.shield(task)
-
-    async def _finalize_analysis_task(
-        self,
-        cache_key: str,
-        task: asyncio.Task[VisionResult],
-    ) -> None:
-        try:
-            result = task.result()
-        except (asyncio.CancelledError, Exception):
-            result = None
-        async with self._cache_lock:
-            if self._analysis_inflight.get(cache_key) is task:
-                self._analysis_inflight.pop(cache_key, None)
-            if result is not None and self.cache_seconds > 0:
-                self._analysis_cache[cache_key] = (
-                    time.monotonic() + self.cache_seconds,
-                    result,
-                )
-                self._trim_analysis_cache()
-
-    def _trim_analysis_cache(self) -> None:
-        overflow = len(self._analysis_cache) - self.cache_entries
-        if overflow <= 0:
-            return
-        oldest = sorted(
-            self._analysis_cache,
-            key=lambda key: self._analysis_cache[key][0],
-        )[:overflow]
-        for key in oldest:
-            self._analysis_cache.pop(key, None)
+        return self.parse_result(raw, mode=mode)
 
     def _prepare_for_vision(
         self,
@@ -277,15 +190,6 @@ class VisionWorker:
         if not strict and len(content) <= max_vision_bytes:
             return content, mime_type
         raise VisionJobError("ffmpeg could not prepare image")
-
-    async def close(self) -> None:
-        tasks = tuple(self._analysis_inflight.values())
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._analysis_inflight.clear()
-        self._analysis_cache.clear()
 
     def _vision_profile(self) -> ModelProfile:
         return self.model_catalog.resolve(self.vision_profile_name)

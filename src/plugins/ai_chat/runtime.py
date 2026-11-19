@@ -190,7 +190,6 @@ class AppContext:
             ("LLM gateway", self.llm_gateway),
             ("local model health", self.local_model),
             ("media library", self.media_library),
-            ("vision worker", self.vision_worker),
             ("cold archive", self.cold_archive),
         ):
             if resource is None:
@@ -458,7 +457,7 @@ def _build_app_context(
                 worker_concurrency=settings.media_worker_concurrency,
                 archive_root=archive_root,
             ))
-            vision_worker = _construction.own(VisionWorker(
+            vision_worker = VisionWorker(
                 model_catalog=model_catalog,
                 llm_gateway=llm_gateway,
                 vision_profile=settings.vision_profile,
@@ -466,9 +465,7 @@ def _build_app_context(
                 prepare_threshold_bytes=settings.media_prepare_threshold_bytes,
                 max_edge_pixels=settings.media_max_edge_pixels,
                 timeout_seconds=settings.media_timeout_seconds,
-                cache_seconds=settings.vision_cache_seconds,
-                cache_entries=settings.vision_cache_entries,
-            ))
+            )
             media_cleanup = _construction.own(LegacyMediaCleanup(
                 database,
                 media_root=media_root,

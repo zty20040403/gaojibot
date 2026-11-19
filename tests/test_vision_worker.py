@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-
-import asyncio
 import json
 import unittest
-from unittest.mock import AsyncMock
 
-
-
-from src.plugins.ai_chat.vision_worker import (
-    VisionJob,
-    VisionJobError,
-    VisionResult,
-    VisionWorker,
-)
+from src.plugins.ai_chat.vision_worker import VisionJobError, VisionWorker
 
 
 class VisionWorkerParsingTests(unittest.TestCase):
@@ -52,38 +42,6 @@ class VisionWorkerParsingTests(unittest.TestCase):
         with self.assertRaises(VisionJobError):
             VisionWorker.parse_result("not-json", mode="summary")
 
-class VisionWorkerCacheTests(unittest.IsolatedAsyncioTestCase):
-    async def test_duplicate_analysis_uses_one_model_call_then_cache(self) -> None:
-        worker = VisionWorker.__new__(VisionWorker)
-        worker.cache_seconds = 600
-        worker.cache_entries = 32
-        worker._analysis_cache = {}
-        worker._analysis_inflight = {}
-        worker._cache_lock = asyncio.Lock()
-        result = VisionResult(
-            summary="终端报错截图",
-            description="终端显示连接超时。",
-            extracted_text="timeout",
-            observations=(),
-            safety="safe",
-            mode="summary",
-        )
-
-        async def analyze(*_args):
-            await asyncio.sleep(0.01)
-            return result
-
-        worker._request_analysis = AsyncMock(side_effect=analyze)
-        job = VisionJob(1, "99", 0, "https://gchat.qpic.cn/a", "summary", "", 1)
-        first, second = await asyncio.gather(
-            worker._analyze_cached("same", job, b"image", "image/png"),
-            worker._analyze_cached("same", job, b"image", "image/png"),
-        )
-        await asyncio.sleep(0)
-        third = await worker._analyze_cached("same", job, b"image", "image/png")
-
-        self.assertEqual((first, second, third), (result, result, result))
-        self.assertEqual(worker._request_analysis.await_count, 1)
 
 if __name__ == "__main__":
     unittest.main()
