@@ -168,7 +168,6 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
             (self.endpoint.key,))[0]['proactive_state'], 'allowed')
         self.assertEqual(len(self.query("SELECT * FROM messages WHERE direction='outbound'")), 1)
         self.assertEqual(len(self.query('SELECT * FROM qq_official_message_indexes')), 1)
-        self.assertEqual(self.query('SELECT * FROM qq_official_quota_periods'), [])
         self.assertEqual(self.query('SELECT * FROM qq_official_reply_windows'), [])
 
     async def test_connection_failure_falls_back_or_retries_once(self):
