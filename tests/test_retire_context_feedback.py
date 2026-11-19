@@ -119,3 +119,17 @@ class RetireContextFeedbackTests(unittest.TestCase):
             self.assertEqual(rows(db, kept), before)
         with self.assertRaisesRegex(RuntimeError, 'pre-0127 full database backup'):
             migration.migrate(schema, '0126_retire_turn_edges', downgrade=True)
+        with migration.connect(schema) as db:
+            db.execute("""INSERT INTO vision_jobs(scope_key,native_message_id,segment_index,requester_native_user_id,
+                created_at,updated_at,next_attempt_at) VALUES('TEST_SCOPE','TEST_MESSAGE',0,'TEST_SENDER',1,1,1)""")
+        with self.assertRaisesRegex(RuntimeError, 'preserve existing vision jobs'):
+            migration.migrate(schema, '0128_retire_vision_jobs')
+        with migration.connect(schema) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM vision_jobs').fetchone(), (1,))
+            db.execute('DELETE FROM vision_jobs')
+            kept.remove('vision_jobs')
+            before = rows(db, kept)
+        migration.migrate(schema, '0128_retire_vision_jobs')
+        with migration.connect(schema) as db:
+            self.assertEqual(_schema_snapshot(db, schema)[0], kept | {'alembic_version'})
+            self.assertEqual(rows(db, kept), before)

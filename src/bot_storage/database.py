@@ -101,7 +101,6 @@ _IDENTITY_COLUMNS = {
     "media_blobs": "media_id",
     "message_media": "message_media_id",
     "media_jobs": "job_id",
-    "vision_jobs": "vision_job_id",
     "media_cleanup_runs": "cleanup_id",
     "durable_jobs": "job_id",
 }
