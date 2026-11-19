@@ -1,7 +1,32 @@
 import unittest
 
+import psycopg
+
 from tests import test_qq_official_outbox_migration as migration
 from tests.test_drop_dead_tables_migration import _schema_snapshot
+
+
+class AttentionReasonMigrationTests(unittest.TestCase):
+    def test_existing_observation_stays_null_and_reason_is_bounded_and_immutable(self):
+        schema = migration.owned_schema()
+        self.addCleanup(migration.drop, schema)
+        migration.migrate(schema, '0120_retire_context_feedback')
+        with migration.connect(schema) as conn:
+            conn.execute('SET session_replication_role=replica')
+            conn.execute('''INSERT INTO qq_official_proactive_observations
+                (inbox_id,account_key,endpoint_key,actor_key,canonical_message_id,source_native_message_id,
+                 source_received_at,deadline_at,worker_owner,worker_generation,account_epoch,endpoint_generation,
+                 endpoint_route_epoch,state,created_at)
+                VALUES ('TEST_OLD','TEST_ACCOUNT','TEST_EP','TEST_ACTOR',1,'TEST_MESSAGE',1,31,
+                        'TEST_WORKER',1,1,1,1,'discarded',1)''')
+            conn.execute('SET session_replication_role=origin')
+        migration.migrate(schema, '0121_attention_reason')
+        with migration.connect(schema) as conn:
+            self.assertEqual(conn.execute('SELECT state,decision_reason FROM qq_official_proactive_observations').fetchone(), ('discarded', None))
+            for reason in ('TEST_MODIFIED', 'x' * 41):
+                with self.assertRaises(psycopg.Error), conn.transaction():
+                    conn.execute('UPDATE qq_official_proactive_observations SET decision_reason=%s', (reason,))
+            self.assertEqual(conn.execute('SELECT decision_reason FROM qq_official_proactive_observations').fetchone(), (None,))
 
 
 class AttentionCursorMigrationTests(unittest.TestCase):

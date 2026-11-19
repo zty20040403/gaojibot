@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock,patch
 from tests import test_qq_official_turn_endtoend as base
 from tests import test_qq_official_runtime as fixture
 from tests.test_qq_official_runtime_sender import verified_ready_platform
+from src.plugins.ai_chat.conversation_config import change
 from src.plugins.ai_chat.platform_types import EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.native_background_factory import background_factory,ProactiveConfiguration
 from src.plugins.ai_chat.adapters.qq_official.proactive_ingress import ProactiveIngress,record_group_activity
@@ -14,13 +15,7 @@ from src.plugins.ai_chat.adapters.qq_official.migration_types import MigrationDe
 from src.plugins.ai_chat.proactive import ProactiveDecision
 
 
-class AttentionSchedulerTests(unittest.IsolatedAsyncioTestCase):
-    setUp=base.OfficialTurnEndToEndTests.setUp
-    runtime=base.OfficialTurnEndToEndTests.runtime
-    query=base.OfficialTurnEndToEndTests.query
-    wait_db=base.OfficialTurnEndToEndTests.wait_db
-    application=base.OfficialTurnEndToEndTests.application
-
+class AttentionSchedulerTests(base.OfficialTurnFixture, unittest.IsolatedAsyncioTestCase):
     async def setup_group(self,fake):
         app=self.application()
         runtime=self.runtime(loaded=fixture.loaded_config(fake.app_id,base=fake.base_url),
@@ -56,6 +51,50 @@ class AttentionSchedulerTests(unittest.IsolatedAsyncioTestCase):
     def fresh_ingress(p,now,scorer):
         return ProactiveIngress(token=p.token,transaction=p.tx,admission=p.admission,outbox=p.outbox,
             scorer=scorer,clock=lambda:now[0],database_calls=p.calls)
+
+    async def test_model_reasons_and_failures_reach_real_observation_transitions(self):
+        async with verified_ready_platform() as fake:
+            runtime,p,manual,ep,now=await self.setup_group(fake)
+            p.wake_turn=AsyncMock()
+            p.media=None
+            cases = [
+                ({'action':'silent','classification_reason':'群友之间的对话'}, 'discarded', '群友之间的对话'),
+                ({'action':'speak','reason':'TEST wake','classification_reason':'可以提供具体帮助'}, 'queued', '可以提供具体帮助'),
+                ({'action':'sticker','reason':'TEST search','classification_reason':'表情足以回应喜讯'}, 'discarded', '表情足以回应喜讯'),
+                ({'action':'speak','reason':'TEST wake','classification_reason':'可以纠正错误'}, 'discarded', '可以纠正错误'),
+                ({'action':'silent','classification_reason':'没有具体帮助可提供'}, 'discarded', '没有具体帮助可提供'),
+                (ValueError('TEST_PRIVATE_FAILURE'), 'discarded', None),
+                ({'action':'silent','classification_reason':'TEST_PRIVATE_NAME' * 100}, 'discarded', None),
+            ]
+            verdicts=iter(x[0] for x in cases)
+            async def classify(*args,**kwargs):
+                value=next(verdicts)
+                if isinstance(value,Exception):raise value
+                if value.get('classification_reason')=='没有具体帮助可提供':
+                    with runtime.store.transaction() as c:
+                        change(c,ep,'proactive_enabled',False,actor='TEST_ADMIN',now=now[0])
+                        change(c,ep,'proactive_enabled',True,actor='TEST_ADMIN',now=now[0])
+                return value
+            with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json', side_effect=classify) as model:
+                for i,(_,state,reason) in enumerate(cases):
+                    now[0]=int(runtime.store.clock())
+                    event=await self.emit(fake,f'TEST_REASON_{i}','TEST group conversation question')
+                    now[0]+=4
+                    with runtime.store.transaction() as c:
+                        c.execute('UPDATE qq_official_endpoints SET attention_next_at=? WHERE endpoint_key=?',(now[0],ep.key))
+                    if i == 3:
+                        with patch.object(p, 'send_policy', AsyncMock(side_effect=PermissionError('TEST_PRIVATE_FAILURE'))):
+                            await manual()
+                    else:
+                        await manual()
+                    row=self.query('SELECT state,decision_reason FROM qq_official_proactive_observations WHERE inbox_id=?',(event['inbox_id'],))[0]
+                    self.assertEqual((row['state'],row['decision_reason']),(state,reason))
+            self.assertEqual(model.await_count,len(cases))
+            self.assertIn('不抄聊天原文、人名、ID，也不输出思维链',model.await_args_list[0].args[0])
+            p.wake_turn.assert_awaited_once()
+            self.assertEqual(p.wake_turn.await_args.kwargs['reason'],'TEST wake')
+            self.assertFalse(fake.received)
+            await runtime.stop()
 
     async def test_burst_multi_author_scopes_last_twenty_and_keeps_trailing_non_candidate(self):
         async with verified_ready_platform() as fake:
