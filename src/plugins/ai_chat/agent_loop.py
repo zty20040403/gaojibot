@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Literal
 
-from .ai_tools import ToolChoice, ToolDefinition
+from .ai_tools import SAY_TOOL_NAME, ToolChoice, ToolDefinition
 from .config import settings
 from .llm_gateway import (
     LLMConfigError,
@@ -574,6 +574,7 @@ async def ask_deepseek_with_tools(
     checkpoint_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     idempotency_key_prefix: str = "",
     checkpoint_replay_safe_tools: frozenset[str] = frozenset(),
+    quiet_call_limit: int | None = None,
 ) -> str:
     """Run one loop. Checkpoint sink commits fenced snapshots or raises.
 
@@ -669,6 +670,7 @@ async def ask_deepseek_with_tools(
     next_index = 0
     batch_images = False
     budget_exhausted = False
+    last_progress_call = 0
     if saved is not None:
         phase = saved["phase"]
         tool_round = saved["tool_round"]
@@ -682,6 +684,7 @@ async def ask_deepseek_with_tools(
         next_index = saved["next_index"]
         batch_images = saved["batch_images"]
         budget_exhausted = saved["budget_exhausted"]
+        last_progress_call = saved.get("last_progress_call", total_tool_calls)
 
     async def save(phase_name: str, index: int = 0) -> None:
         if checkpoint_sink is None:
@@ -695,6 +698,7 @@ async def ask_deepseek_with_tools(
             "stop_reason": stop_reason, "fingerprint_history": list(fingerprint_history),
             "fingerprint_counts": dict(fingerprint_counts), "next_index": index,
             "batch_images": batch_images, "budget_exhausted": budget_exhausted,
+            "last_progress_call": last_progress_call,
         })
 
     while phase != "stop" and (
@@ -1041,14 +1045,15 @@ async def ask_deepseek_with_tools(
             finally:
                 active_tool_step.reset(step_token)
                 active_tool_call_id.reset(invocation)
+            if name == SAY_TOOL_NAME:
+                receipt = _result_fields(tool_result)
+                if receipt.get('ok') is True and receipt.get('status') in {'enqueued', 'already_reported'}:
+                    last_progress_call = total_tool_calls
             # A failed local file read cannot have sent a message. Permit its
             # next attempt; successful/uncertain deliveries still cannot replay.
             if name in {'send_file_from_sandbox', 'send_file', 'send_image'}:
-                try:
-                    result = json.loads(str(tool_result))
-                except (TypeError, ValueError):
-                    result = {}
-                if isinstance(result, dict) and result.get('retryable') is True and result.get('message_accepted') is False:
+                result = _result_fields(tool_result)
+                if result.get('retryable') is True and result.get('message_accepted') is False:
                     fingerprint_history.pop()
                     fingerprint_counts[fingerprint] -= 1
             remaining_context = max(
@@ -1138,6 +1143,21 @@ async def ask_deepseek_with_tools(
                 trace.messages.append(dict(tool_message))
             phase = "batch"
             await save(phase, index + 1)
+        if quiet_call_limit and not budget_exhausted and total_tool_calls - last_progress_call >= quiet_call_limit:
+            reminder = "\n\n[进度提醒] 请先用 say 说明当前进度、预计还要多久；如果剩余工作较多，交给后台 agent。"
+            tool_message = messages[-1]
+            previous = str(tool_message["content"])
+            available = min(
+                settings.tool_max_result_chars,
+                settings.tool_max_context_chars - tool_context_chars + len(previous),
+            )
+            if available > len(reminder):
+                tool_message["content"] = _bounded_tool_result(previous, available - len(reminder)) + reminder
+                tool_context_chars += len(tool_message["content"]) - len(previous)
+                if trace is not None:
+                    trace.messages[-1]["content"] = tool_message["content"]
+                last_progress_call = total_tool_calls
+                budget_exhausted = tool_context_chars >= settings.tool_max_context_chars
         if lost_batch_images:
             messages.append({'role': 'user', 'content': '[恢复时部分图片未保存，无法查看原图片。]'})
         if tool_images:
@@ -1529,15 +1549,11 @@ def _feedback_message(notes: list[str]) -> ChatMessage:
 
 def _tool_completion_state(tool_name: str, result: str) -> str:
     if tool_name.startswith("mcp__"):
-        try:
-            payload = json.loads(result)
-        except (TypeError, ValueError):
-            payload = None
-        if isinstance(payload, dict):
-            if payload.get("status") in {"awaiting_approval", "waiting", "ready", "connecting", "dispatched"}:
-                return "waiting"
-            if payload.get("needs_attention") is True:
-                return "outcome-unknown"
+        payload = _result_fields(result)
+        if payload.get("status") in {"awaiting_approval", "waiting", "ready", "connecting", "dispatched"}:
+            return "waiting"
+        if payload.get("needs_attention") is True:
+            return "outcome-unknown"
     if not _tool_result_succeeded(result):
         return "failed"
     if any(
@@ -1548,12 +1564,16 @@ def _tool_completion_state(tool_name: str, result: str) -> str:
     return "succeeded"
 
 
-def _tool_result_succeeded(result: object) -> bool:
+def _result_fields(result: object) -> dict:
     try:
         payload = json.loads(str(result))
-    except (TypeError, json.JSONDecodeError):
-        payload = None
-    return not (isinstance(payload, dict) and payload.get("ok") is False)
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _tool_result_succeeded(result: object) -> bool:
+    return _result_fields(result).get('ok') is not False
 
 
 def _tool_call_fingerprint(name: str, arguments: dict[str, Any]) -> str:

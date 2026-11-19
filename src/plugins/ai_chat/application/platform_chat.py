@@ -337,7 +337,7 @@ class PlatformChatService:
                     trace=turn_trace, feedback_provider=feedback_provider,
                     checkpoint_state=checkpoint_state, checkpoint_sink=checkpoint.save if checkpoint else None,
                     idempotency_key_prefix=idempotency_key_prefix,
-                    checkpoint_replay_safe_tools=frozenset({'say'}),
+                    checkpoint_replay_safe_tools=frozenset({'say'}), quiet_call_limit=12,
                     event_sink=(
                         lambda event: record_loop_event(self.context, journal_turn_id, event)
                     ) if journal_turn_id is not None else None,

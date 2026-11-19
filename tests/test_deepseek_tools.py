@@ -17,6 +17,7 @@ from src.plugins.ai_chat.agent_loop import (
 )
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.tool_invocation import active_tool_call_id
+from tests.tool_loop_fixture import batch, final, tool
 
 
 class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
@@ -479,27 +480,8 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_unlimited_tool_rounds_finish_when_model_answers(self) -> None:
-        tool_call = SimpleNamespace(
-            id="call-1",
-            function=SimpleNamespace(name="sandbox_list", arguments="{}"),
-        )
-        tool_response = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="", tool_calls=[tool_call])
-                )
-            ]
-        )
-        final_response = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content="任务完成。",
-                        tool_calls=[],
-                    )
-                )
-            ]
-        )
+        tool_response = batch('sandbox_list', start=1)
+        final_response = final('任务完成。')
         async def execute_tool(name, arguments):
             self.assertEqual(active_tool_call_id.get(), "call-1")
             return '{"ok": true}'
@@ -513,19 +495,7 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
             answer = await ask_deepseek_with_tools(
                 "完成任务",
                 [],
-                [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "sandbox_list",
-                            "description": "列出沙箱",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {},
-                            },
-                        },
-                    }
-                ],
+                [tool('sandbox_list')],
                 execute_tool,
                 max_tool_rounds=None,
             )
@@ -535,30 +505,8 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(active_tool_call_id.get())
 
     async def test_tool_limit_requests_a_final_answer_without_tools(self) -> None:
-        tool_call = SimpleNamespace(
-            id="call-1",
-            function=SimpleNamespace(name="sandbox_list", arguments="{}"),
-        )
-        tool_response = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content="",
-                        tool_calls=[tool_call],
-                    )
-                )
-            ]
-        )
-        final_response = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content="任务还没完成，需要继续处理。",
-                        tool_calls=[],
-                    )
-                )
-            ]
-        )
+        tool_response = batch('sandbox_list', start=1)
+        final_response = final('任务还没完成，需要继续处理。')
         execute_tool = AsyncMock(
             return_value=json.dumps({"ok": True, "sandboxes": []})
         )
@@ -570,19 +518,7 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
             answer = await ask_deepseek_with_tools(
                 "完成任务",
                 [],
-                [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "sandbox_list",
-                            "description": "列出沙箱",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {},
-                            },
-                        },
-                    }
-                ],
+                [tool('sandbox_list')],
                 execute_tool,
                 max_tool_rounds=1,
             )
@@ -592,24 +528,8 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tools", create_completion.await_args_list[-1].kwargs)
 
     async def test_long_tool_result_is_bounded_before_next_round(self) -> None:
-        tool_call = SimpleNamespace(
-            id="call-long",
-            function=SimpleNamespace(name="sandbox_exec", arguments="{}"),
-        )
-        tool_response = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="", tool_calls=[tool_call])
-                )
-            ]
-        )
-        final_response = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="完成。", tool_calls=[])
-                )
-            ]
-        )
+        tool_response = batch('sandbox_exec')
+        final_response = final('完成。')
         oversized_result = "x" * (settings.tool_max_result_chars + 100)
 
         with patch(
@@ -619,16 +539,7 @@ class DeepSeekToolLoopTests(unittest.IsolatedAsyncioTestCase):
             answer = await ask_deepseek_with_tools(
                 "运行命令",
                 [],
-                [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "sandbox_exec",
-                            "description": "执行命令",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
+                [tool('sandbox_exec')],
                 AsyncMock(return_value=oversized_result),
                 memory_context="[#1] 用户偏好简短回答",
                 max_tool_rounds=2,
