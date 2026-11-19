@@ -17,7 +17,7 @@ from typing import Callable
 
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 
-from .authority import ConsoleAuthorization, OwnerAuthority, audit
+from .authority import OwnerAuthority, audit
 
 
 _CHALLENGE = re.compile(r"BC-[0-9a-f]{32}\Z")
@@ -131,15 +131,88 @@ class BindingReducer:
         if getattr(token, "account_key", None) != account.key:
             raise BindingEpochLost("Binding account lease does not match")
 
+    def _owner_code_hash(self, account: AccountKey, actor_key: str,
+                         epoch: int, expires_at: int, code: str) -> str:
+        fields = ["qq-owner-link:v1", account.key, actor_key, epoch, expires_at]
+        return hmac.new(self._pepper, (json.dumps(fields, separators=(",", ":")) + ":" + code).encode(),
+                        hashlib.sha256).hexdigest()
+
+    def issue_owner_code(self, cursor, *, context: BindingContext, lease_token) -> BindingDecision:
+        self._guard(cursor, lease_token, context.endpoint.account)
+        if context.endpoint.kind != "private" or self.authority.configured_owner(context.actor) is None:
+            return BindingDecision("denied", "只有已配置的 owner 可以申请群绑定码。")
+        now = int(self.clock())
+        expires_at = now + 300
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        code_hmac = self._owner_code_hash(context.endpoint.account, context.actor.key,
+                                          lease_token.epoch, expires_at, code)
+        cursor.execute("""UPDATE qq_official_accounts SET owner_link_actor_key=?,owner_link_code_hmac=?,
+            owner_link_expires_at=?,owner_link_epoch=?,updated_at=? WHERE account_key=?""",
+            (context.actor.key, code_hmac, expires_at, lease_token.epoch, now, context.endpoint.account.key))
+        audit(cursor, account=context.endpoint.account, action="owner-code.issued",
+              actor=context.actor.key, target="owner-link-code", outcome="issued", now=now)
+        return BindingDecision("owner_code_issued", "群绑定码已创建，5 分钟内有效。",
+            effect=BindingEffect("owner_link_code", context.endpoint, expires_at=expires_at, code=code))
+
+    def consume_owner_code(self, cursor, *, context: BindingContext,
+                           code: str, lease_token) -> BindingDecision:
+        self._guard(cursor, lease_token, context.endpoint.account)
+        if context.endpoint.kind != "group" or _CODE.fullmatch(code) is None:
+            return BindingDecision("invalid", "群绑定码无效或已失效。")
+        account = context.endpoint.account
+        row = cursor.execute("""SELECT owner_link_actor_key,owner_link_code_hmac,
+            owner_link_expires_at,owner_link_epoch FROM qq_official_accounts
+            WHERE account_key=? FOR UPDATE""", (account.key,)).fetchone()
+        if row["owner_link_code_hmac"] is None:
+            return BindingDecision("invalid", "群绑定码无效或已失效。")
+        now = int(self.clock())
+        cursor.execute("""UPDATE qq_official_accounts SET owner_link_actor_key=NULL,
+            owner_link_code_hmac=NULL,owner_link_expires_at=NULL,owner_link_epoch=NULL,updated_at=?
+            WHERE account_key=? AND owner_link_code_hmac=? AND owner_link_epoch=?""",
+            (now, account.key, row["owner_link_code_hmac"], row["owner_link_epoch"]))
+        owner = ActorKey.parse(row["owner_link_actor_key"])
+        expected = self._owner_code_hash(account, owner.key, row["owner_link_epoch"],
+                                         row["owner_link_expires_at"], code)
+        if (row["owner_link_epoch"] != lease_token.epoch or row["owner_link_expires_at"] <= now
+                or self.authority.configured_owner(owner) is None
+                or not hmac.compare_digest(row["owner_link_code_hmac"], expected)):
+            return BindingDecision("invalid", "群绑定码无效或已失效。")
+        endpoint = cursor.execute("""SELECT * FROM qq_official_endpoints
+            WHERE endpoint_key=? AND account_key=? FOR UPDATE""",
+            (context.endpoint.key, account.key)).fetchone()
+        if endpoint is None or endpoint["membership_state"] != "present":
+            return BindingDecision("invalid", "群绑定码无效或已失效。")
+        conflict = cursor.execute("""SELECT 1 FROM qq_official_owner_actor_links l
+            LEFT JOIN qq_official_owner_grants g ON g.grant_id=l.owner_grant_id AND g.account_key=l.account_key
+                AND g.state='active' AND g.revision=l.owner_revision
+            WHERE l.endpoint_key=? AND l.endpoint_generation=? AND l.state='active'
+              AND coalesce(l.configured_owner_actor_key,g.c2c_actor_key)=ANY(?)
+              AND (l.actor_key<>? OR coalesce(l.configured_owner_actor_key,g.c2c_actor_key)<>?) LIMIT 1""",
+            (context.endpoint.key, endpoint["generation"], list(self.authority.owner_actor_keys), context.actor.key, owner.key)).fetchone()
+        if conflict:
+            return BindingDecision("conflict", "这个群已绑定其他 owner。")
+        cursor.execute("""UPDATE qq_official_endpoints SET binding_state='active',
+            route_epoch=route_epoch+1,updated_at=? WHERE endpoint_key=?""", (now, context.endpoint.key))
+        cursor.execute("""INSERT INTO qq_official_owner_actor_links
+            (endpoint_key,account_key,actor_key,configured_owner_actor_key,endpoint_generation,
+             revision,state,created_at,updated_at) VALUES (?,?,?,?,?,1,'active',?,?)
+            ON CONFLICT(endpoint_key,actor_key) DO UPDATE SET configured_owner_actor_key=excluded.configured_owner_actor_key,
+            owner_grant_id=NULL,owner_revision=NULL,candidate_id=NULL,
+            endpoint_generation=excluded.endpoint_generation,revision=qq_official_owner_actor_links.revision+1,
+            state='active',updated_at=excluded.updated_at""",
+            (context.endpoint.key, account.key, context.actor.key, owner.key,
+             endpoint["generation"], now, now))
+        audit(cursor, account=account, action="owner-code.consumed", actor=context.actor.key,
+              target="owner-link-code", outcome="bound", now=now)
+        return BindingDecision("confirmed", "群 owner 已绑定。")
+
     def apply(self, cursor, *, context: BindingContext, command: BindingCommand,
               lease_token) -> BindingDecision:
         self._guard(cursor, lease_token, context.endpoint.account)
         now = int(self.clock())
-        valid = self._valid_command(command)
-        limited_command = command if valid else BindingCommand("invalid", valid=False)
-        if not self._admit_attempt(cursor, context, limited_command, now):
+        if not self._admit_attempt(cursor, context, command, now):
             return BindingDecision("limited", "绑定请求过于频繁，请稍后重试。")
-        if not valid:
+        if not command.valid:
             return BindingDecision("syntax", "绑定命令参数无效。")
         if command.action == "whoami":
             return BindingDecision("identity", "当前身份：" + context.actor.native_user_id
@@ -155,7 +228,7 @@ class BindingReducer:
             return self._status_or_cancel(cursor, context, command, now)
         if command.action in {"confirm", "reject"}:
             return self._decide_candidate(cursor, context.endpoint.account, command,
-                                          context=context, authorization=None, now=now)
+                                          context=context, now=now)
         return BindingDecision("syntax", "绑定命令参数无效。")
 
     def mark_issued(self, cursor, *, account: AccountKey, challenge_id: str,
@@ -189,32 +262,6 @@ class BindingReducer:
                   target=row["challenge_id"], outcome="cancelled", now=now)
         return len(rows)
 
-    def confirm_console(self, cursor, *, account: AccountKey, authorization: ConsoleAuthorization,
-                        candidate_id: str, candidate_version: int,
-                        grant_submitter_owner: bool) -> BindingDecision:
-        if (not self.authority.lock_account(cursor, account)
-                or not self.authority.console_current(cursor, authorization)):
-            return BindingDecision("denied", "需要有效的管理控制台登录。")
-        if (type(grant_submitter_owner) is not bool or not isinstance(candidate_id, str) or not _CANDIDATE.fullmatch(candidate_id)
-                or type(candidate_version) is not int or candidate_version < 1):
-            return BindingDecision("syntax", "候选确认参数无效。")
-        command = BindingCommand("confirm", candidate_id=candidate_id, candidate_version=candidate_version,
-                                 grant_submitter_owner=grant_submitter_owner)
-        return self._decide_candidate(cursor, account, command, context=None,
-                                      authorization=authorization, now=int(self.clock()))
-
-    def reject_console(self, cursor, *, account: AccountKey, authorization: ConsoleAuthorization,
-                       candidate_id: str, candidate_version: int) -> BindingDecision:
-        if (not self.authority.lock_account(cursor, account)
-                or not self.authority.console_current(cursor, authorization)):
-            return BindingDecision("denied", "需要有效的管理控制台登录。")
-        if (not isinstance(candidate_id, str) or not _CANDIDATE.fullmatch(candidate_id) or type(candidate_version) is not int
-                or candidate_version < 1):
-            return BindingDecision("syntax", "候选确认参数无效。")
-        command = BindingCommand("reject", candidate_id=candidate_id, candidate_version=candidate_version)
-        return self._decide_candidate(cursor, account, command, context=None,
-                                      authorization=authorization, now=int(self.clock()))
-
     def _rate(self, cursor, name: tuple, *, maximum: int, seconds: int, now: int) -> bool:
         bucket = hashlib.sha256(json.dumps(name, separators=(",", ":")).encode()).hexdigest()
         cursor.execute("""INSERT INTO qq_official_binding_rate_limits(bucket,window_start,hits)
@@ -226,23 +273,6 @@ class BindingReducer:
         cursor.execute("UPDATE qq_official_binding_rate_limits SET window_start=?,hits=? WHERE bucket=?",
                        (now if reset else row["window_start"], hits, bucket))
         return hits <= maximum
-
-    @staticmethod
-    def _valid_command(command) -> bool:
-        if (not isinstance(command, BindingCommand) or not command.valid
-                or type(command.grant_submitter_owner) is not bool):
-            return False
-        if command.action in {"create", "whoami"}:
-            return True
-        if command.action in {"status", "cancel", "submit"}:
-            if not isinstance(command.challenge_id, str) or not _CHALLENGE.fullmatch(command.challenge_id):
-                return False
-            return command.action != "submit" or (isinstance(command.code, str) and _CODE.fullmatch(command.code) is not None)
-        if command.action in {"confirm", "reject"}:
-            return (isinstance(command.candidate_id, str) and _CANDIDATE.fullmatch(command.candidate_id) is not None
-                    and type(command.candidate_version) is int and 1 <= command.candidate_version < 1_000_000_000
-                    and (command.action == "confirm" or not command.grant_submitter_owner))
-        return False
 
     def _admit_attempt(self, cursor, context, command, now) -> bool:
         account = context.endpoint.account.key
@@ -362,7 +392,7 @@ class BindingReducer:
             context.receipt_id, context.received_at)
         return self._decide_candidate(cursor, context.endpoint.account,
             BindingCommand('confirm', candidate_id=candidate_id, candidate_version=1, grant_submitter_owner=True),
-            context=owner, authorization=None, now=now)
+            context=owner, now=now)
 
     def _status_or_cancel(self, cursor, context, command, now):
         if context.endpoint.kind != "private":
@@ -395,7 +425,7 @@ class BindingReducer:
         return BindingDecision(row["state"], "绑定状态已读取；群身份授予 owner 默认关闭。", row["challenge_id"],
                                candidate["candidate_id"] if candidate else "", effect=effect)
 
-    def _decide_candidate(self, cursor, account, command, *, context, authorization, now):
+    def _decide_candidate(self, cursor, account, command, *, context, now):
         candidate = cursor.execute("SELECT * FROM qq_official_binding_candidates WHERE account_key=? AND candidate_id=?",
                                    (account.key, command.candidate_id)).fetchone()
         if candidate is None:
@@ -408,15 +438,10 @@ class BindingReducer:
                              (row["challenge_id"],)).fetchone()
         candidate = cursor.execute("SELECT * FROM qq_official_binding_candidates WHERE candidate_id=? FOR UPDATE",
                                    (candidate["candidate_id"],)).fetchone()
-        if context is not None:
-            if (context.endpoint.kind != "private" or context.endpoint.key != row["issuer_endpoint_key"]
-                    or context.actor.key != row["issuer_actor_key"]):
-                return self._invalid()
-            confirmer = context.actor.key
-        else:
-            if authorization is None or not self.authority.console_current(cursor, authorization):
-                return self._invalid()
-            confirmer = "admin-account:" + authorization.account_id
+        if (context.endpoint.kind != "private" or context.endpoint.key != row["issuer_endpoint_key"]
+                or context.actor.key != row["issuer_actor_key"]):
+            return self._invalid()
+        confirmer = context.actor.key
         if not self._valid_grant(grant, row):
             self._terminal(cursor, row, "cancelled", now)
             return self._invalid()

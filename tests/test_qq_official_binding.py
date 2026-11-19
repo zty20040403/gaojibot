@@ -1,182 +1,147 @@
-"""Transactional binding and owner isolation against real isolated PostgreSQL."""
+"""Transactional binding and owner isolation against real PostgreSQL."""
 from __future__ import annotations
-
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from types import SimpleNamespace
-
+from unittest.mock import patch
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
-from src.plugins.ai_chat.adapters.qq_official.binding import (
-    BindingContext, BindingEpochLost, BindingReducer, parse_binding_command,
-)
+from src.plugins.ai_chat.adapters.qq_official.binding import BindingContext, BindingEpochLost, BindingReducer
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from tests.postgres_fixture import postgres_for_test
 
-
 class OfficialBindingTests(unittest.TestCase):
     def setUp(self):
-        self.database = postgres_for_test(self)
-        self.now = 1_800_000_000
+        self.database, self.now = postgres_for_test(self), 1_800_000_000
         self.account = AccountKey('qq-official', 'TEST_APP_' + uuid.uuid4().hex[:12], 'test')
-        self.private = EndpointKey(self.account, 'private', 'owner-c2c-sensitive')
-        self.owner = ActorKey(self.account, 'c2c_user', '', self.private.native_conversation_id)
-        self.group = EndpointKey(self.account, 'group', 'group-sensitive')
-        self.member = ActorKey(self.account, 'group_member', self.group.native_conversation_id, 'member-sensitive')
-        self.attacker = ActorKey(self.account, 'group_member', self.group.native_conversation_id, 'attacker-sensitive')
-        self.authority = OwnerAuthority(account=self.account,
-                                        owner_c2c_ids=(self.owner.native_user_id,), clock=lambda: self.now)
+        self.private, self.group = EndpointKey(self.account, 'private', 'TEST_OWNER'), EndpointKey(self.account, 'group', 'TEST_GROUP')
+        self.owner = ActorKey(self.account, 'c2c_user', '', 'TEST_OWNER')
+        self.member = ActorKey(self.account, 'group_member', 'TEST_GROUP', 'TEST_MEMBER')
+        self.attacker = ActorKey(self.account, 'group_member', 'TEST_GROUP', 'TEST_ATTACKER')
+        self.authority = OwnerAuthority(account=self.account, owner_c2c_ids=('TEST_OWNER',), clock=lambda: self.now)
         self.token = SimpleNamespace(account_key=self.account.key, epoch=1)
         self.reducer = BindingReducer(b'FAKE-PEPPER-LOCAL-TEST-ONLY-123456789', epoch_guard=self.guard,
                                       authority=self.authority, clock=lambda: self.now)
         with self.tx() as cursor:
-            cursor.execute('''INSERT INTO qq_official_accounts(account_key,fencing_epoch,created_at,updated_at)
-                VALUES (?,1,?,?)''', (self.account.key, self.now, self.now))
+            cursor.execute('INSERT INTO qq_official_accounts(account_key,fencing_epoch,created_at,updated_at) VALUES (?,1,?,?)',
+                           (self.account.key, self.now, self.now))
             self.seed_endpoint(cursor, self.private)
             self.seed_endpoint(cursor, self.group)
-
     @contextmanager
     def tx(self):
         connection = self.database.store_connection()
-        cursor = connection.cursor()
         try:
-            yield cursor
+            yield connection.cursor()
             connection.commit()
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
-
     @staticmethod
     def guard(cursor, token):
-        row = cursor.execute('SELECT fencing_epoch FROM qq_official_accounts WHERE account_key=? FOR UPDATE',
-                             (token.account_key,)).fetchone()
+        row = cursor.execute('SELECT fencing_epoch FROM qq_official_accounts WHERE account_key=? FOR UPDATE', (token.account_key,)).fetchone()
         if row is None or row['fencing_epoch'] != token.epoch:
             raise BindingEpochLost('Lost test lease')
-
     def seed_endpoint(self, cursor, endpoint):
         cursor.execute('''INSERT INTO qq_official_endpoints
-            (endpoint_key,account_key,kind,native_conversation_id,canonical_scope_key,binding_state,
-             membership_state,generation,route_epoch,capability_revision,created_at,updated_at)
-            VALUES (?,?,?,?,?,'unbound','present',1,1,1,?,?)''',
-            (endpoint.key, endpoint.account.key, endpoint.kind, endpoint.native_conversation_id,
-             endpoint.scope.key, self.now, self.now))
-
+            (endpoint_key,account_key,kind,native_conversation_id,canonical_scope_key,binding_state,membership_state,
+             generation,route_epoch,capability_revision,created_at,updated_at) VALUES (?,?,?,?,?,'unbound','present',1,1,1,?,?)''',
+            (endpoint.key, endpoint.account.key, endpoint.kind, endpoint.native_conversation_id, endpoint.scope.key, self.now, self.now))
     def context(self, endpoint=None, actor=None):
         return BindingContext(endpoint or self.private, actor or self.owner, uuid.uuid4().hex, self.now)
-
-    def apply(self, text, *, endpoint=None, actor=None):
+    def issue(self):
+        with self.tx() as cursor: return self.reducer.issue_owner_code(cursor, context=self.context(), lease_token=self.token)
+    def consume(self, code, endpoint=None, actor=None, token=None):
         with self.tx() as cursor:
-            return self.reducer.apply(cursor, context=self.context(endpoint, actor),
-                                      command=parse_binding_command(text), lease_token=self.token)
-
-    def configure(self, *owner_ids):
-        authority = OwnerAuthority(account=self.account, owner_c2c_ids=owner_ids, clock=lambda: self.now)
-        with self.tx() as cursor:
-            result = authority.apply_trusted_config(cursor, self.account, owner_ids, 'test-config-revision')
+            return self.reducer.consume_owner_code(cursor, context=self.context(endpoint or self.group, actor or self.member),
+                                                    code=code, lease_token=token or self.token)
+    def configure(self, *ids):
+        authority = OwnerAuthority(account=self.account, owner_c2c_ids=ids, clock=lambda: self.now)
+        with self.tx() as cursor: result = authority.apply_trusted_config(cursor, self.account, ids, 'TEST_REVISION')
         self.authority = self.reducer.authority = authority
         return result
-
-    def bootstrap(self):
-        return self.configure(self.owner.native_user_id)
-
-    def issue(self):
-        self.bootstrap()
-        decision = self.apply('/bind create')
-        self.assertEqual(decision.status, 'sending')
+    def test_code_binds_exact_actor_without_plaintext_or_history_alias(self):
+        with patch('src.plugins.ai_chat.adapters.qq_official.binding.secrets.randbelow', return_value=42): issued = self.issue()
+        self.assertEqual((issued.effect.code, issued.effect.expires_at), ('000042', self.now + 300))
+        self.assertNotIn('000042', repr(issued))
+        self.assertEqual(self.consume('000042').status, 'confirmed')
+        self.assertEqual(self.consume('000042').status, 'invalid')
         with self.tx() as cursor:
-            marked = self.reducer.mark_issued(cursor, account=self.account, challenge_id=decision.challenge_id,
-                                              outcome='success', lease_token=self.token)
-        self.assertEqual(marked.status, 'issued')
-        return decision
-
-    def challenge(self, challenge_id):
-        with self.tx() as cursor:
-            row = cursor.execute('SELECT * FROM qq_official_binding_challenges WHERE challenge_id=?',
-                                 (challenge_id,)).fetchone()
-            return dict(row) if row else None
-
-    def test_first_contact_does_not_enroll_owner_and_config_is_idempotent(self):
-        self.assertEqual(self.apply('/bind create').status, 'denied')
-        self.assertEqual(self.apply('/bind whoami').status, 'identity')
-        self.assertEqual(self.apply('/bind create').status, 'denied')
-        self.assertEqual(self.bootstrap()[0].status, 'created')
-        self.assertEqual(self.bootstrap()[0].status, 'already_active')
-
-    def test_configured_private_owner_and_current_group_link_are_distinct(self):
-        issued = self.issue()
-        bound = self.apply(f'/bind submit {issued.challenge_id} {issued.effect.code}',
-                           endpoint=self.group, actor=self.member)
-        self.assertEqual(bound.status, 'confirmed')
-        other_group = EndpointKey(self.account, 'group', 'TEST_UNLINKED_GROUP')
-        other_member = ActorKey(self.account, 'group_member', 'TEST_UNLINKED_GROUP', self.member.native_user_id)
-        foreign = AccountKey('qq-official', self.account.app_id, 'sandbox')
-        with self.tx() as cursor:
-            self.seed_endpoint(cursor, other_group)
-            self.assertIsNotNone(self.authority.owner_for_actor(cursor, self.private, self.owner))
+            account = cursor.execute('SELECT * FROM qq_official_accounts WHERE account_key=?', (self.account.key,)).fetchone()
+            endpoint = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,)).fetchone()
+            link = cursor.execute('SELECT * FROM qq_official_owner_actor_links').fetchone()
+            self.assertNotIn('000042', repr((dict(account), dict(link), cursor.execute('SELECT * FROM admin_security_audit').fetchall())))
+            self.assertEqual((endpoint['canonical_scope_key'], link['configured_owner_actor_key'], link['actor_key']),
+                             (self.group.scope.key, self.owner.key, self.member.key))
+            self.assertIsNone(link['owner_grant_id'])
             self.assertIsNotNone(self.authority.owner_for_actor(cursor, self.group, self.member))
-            self.assertIsNone(self.authority.owner_for_actor(cursor, other_group, other_member))
-            self.assertIsNone(self.authority.owner_for_actor(cursor,
-                EndpointKey(foreign, 'private', self.owner.native_user_id),
-                ActorKey(foreign, 'c2c_user', '', self.owner.native_user_id)))
-            cursor.execute('UPDATE qq_official_endpoints SET generation=generation+1 WHERE endpoint_key=?',
-                           (self.group.key,))
+            cursor.execute('UPDATE qq_official_endpoints SET generation=2 WHERE endpoint_key=?', (self.group.key,))
             self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, self.member))
-            cursor.execute("UPDATE qq_official_endpoints SET generation=generation-1,membership_state='absent' WHERE endpoint_key=?",
-                           (self.group.key,))
-            self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, self.member))
-            cursor.execute("UPDATE qq_official_endpoints SET membership_state='present' WHERE endpoint_key=?",
-                           (self.group.key,))
-            route = cursor.execute('SELECT canonical_scope_key FROM qq_official_endpoints WHERE endpoint_key=?',
-                                   (self.group.key,)).fetchone()['canonical_scope_key']
-            cursor.execute('UPDATE qq_official_owner_grants SET revision=revision+1')
-            self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, self.member))
-            self.assertIsNotNone(self.authority.owner_for_actor(cursor, self.private, self.owner))
-            cursor.execute("UPDATE qq_official_owner_grants SET source='console',revision=revision-1")
+        self.assertEqual(self.consume(self.issue().effect.code, actor=self.attacker).status, 'confirmed')
+        with self.tx() as cursor:
+            self.assertIsNotNone(self.authority.owner_for_actor(cursor, self.group, self.attacker))
         self.configure()
-        self.assertEqual(self.configure(self.owner.native_user_id)[0].status, 'already_active')
+        self.configure('TEST_OWNER')
         with self.tx() as cursor:
-            self.assertIsNotNone(self.authority.owner_for_actor(cursor, self.private, self.owner))
-            self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, self.member))
-            current = cursor.execute('SELECT canonical_scope_key FROM qq_official_endpoints WHERE endpoint_key=?',
-                                     (self.group.key,)).fetchone()['canonical_scope_key']
-        self.assertEqual(current, route)
-
-    def test_wrong_codes_and_unknown_challenges_persist_attempt_limits(self):
-        issued = self.issue()
-        wrong = '000000' if issued.effect.code != '000000' else '000001'
-        for _ in range(5):
-            self.assertEqual(self.apply(f'/bind submit {issued.challenge_id} {wrong}', endpoint=self.group,
-                                        actor=self.member).status, 'invalid')
-        row = self.challenge(issued.challenge_id)
-        self.assertEqual((row['state'], row['attempts'], row['code_hmac']), ('locked', 5, ''))
-        missing = 'BC-' + 'f' * 32
-        for _ in range(5):
-            self.assertEqual(self.apply(f'/bind submit {missing} 123456', endpoint=self.group, actor=self.attacker).status, 'invalid')
-        self.assertEqual(self.apply(f'/bind submit {missing} 123456', endpoint=self.group, actor=self.attacker).status, 'limited')
-
-    def test_send_failure_unknown_expiry_and_restart_cancel_without_reemit(self):
-        self.bootstrap()
-        for outcome in ('failed', 'unknown'):
-            decision = self.apply('/bind create')
-            with self.tx() as cursor:
-                self.assertEqual(self.reducer.mark_issued(cursor, account=self.account, challenge_id=decision.challenge_id,
-                    outcome=outcome, lease_token=self.token).status, 'cancelled')
-        decision = self.apply('/bind create')
+            self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, self.attacker))
+    def test_wrong_expired_reconfigured_epoch_and_membership_codes_fail_once(self):
+        with patch('src.plugins.ai_chat.adapters.qq_official.binding.secrets.randbelow', side_effect=(1, 2)):
+            first, second = self.issue().effect.code, self.issue().effect.code
+        self.assertEqual((self.consume(first).status, self.consume(second).status), ('invalid', 'invalid'))
+        code = self.issue().effect.code
+        self.now += 300
+        self.assertEqual(self.consume(code).status, 'invalid')
+        self.now -= 300
+        code = self.issue().effect.code
+        self.configure()
+        self.configure('TEST_OWNER')
+        self.assertEqual(self.consume(code).status, 'invalid')
+        code = self.issue().effect.code
+        with self.tx() as cursor: cursor.execute('UPDATE qq_official_accounts SET fencing_epoch=2 WHERE account_key=?', (self.account.key,))
+        self.token.epoch = 2
+        self.assertEqual(self.consume(code).status, 'invalid')
+        code = self.issue().effect.code
+        with self.tx() as cursor: cursor.execute("UPDATE qq_official_endpoints SET membership_state='absent' WHERE endpoint_key=?", (self.group.key,))
+        self.assertEqual(self.consume(code).status, 'invalid')
+    def test_consumption_is_atomic_across_groups_and_accounts(self):
+        other = EndpointKey(self.account, 'group', 'TEST_OTHER_GROUP')
+        other_actor = ActorKey(self.account, 'group_member', 'TEST_OTHER_GROUP', 'TEST_OTHER_MEMBER')
+        with self.tx() as cursor: self.seed_endpoint(cursor, other)
+        code = self.issue().effect.code
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda pair: self.consume(code, *pair).status, ((self.group, self.member), (other, other_actor))))
+        self.assertEqual(sorted(outcomes), ['confirmed', 'invalid'])
+        foreign = AccountKey('qq-official', self.account.app_id, 'sandbox')
+        group = EndpointKey(foreign, 'group', 'TEST_FOREIGN')
+        actor = ActorKey(foreign, 'group_member', 'TEST_FOREIGN', 'TEST_MEMBER')
+        code = self.issue().effect.code
         with self.tx() as cursor:
-            self.assertEqual(self.reducer.recover_sending(cursor, account=self.account, lease_token=self.token), 1)
-        self.assertEqual(self.challenge(decision.challenge_id)['code_hmac'], '')
-        self.now += 601
-        decision = self.apply('/bind create')
-        self.now += 601
+            cursor.execute('INSERT INTO qq_official_accounts(account_key,fencing_epoch,created_at,updated_at) VALUES (?,1,?,?)',
+                           (foreign.key, self.now, self.now))
+            self.seed_endpoint(cursor, group)
+        token = SimpleNamespace(account_key=foreign.key, epoch=1)
+        self.assertEqual(self.consume(code, group, actor, token).status, 'invalid')
         with self.tx() as cursor:
-            self.assertEqual(self.reducer.mark_issued(cursor, account=self.account, challenge_id=decision.challenge_id,
-                outcome='success', lease_token=self.token).status, 'cancelled')
-
-    def test_trusted_config_rejects_control_format_surrogates_and_oversized_ids(self):
-        for value in ('bad\x00id', 'bad\nidentity', 'bad\u200bidentity', 'bad\ud800identity', '😀' * 65):
-            with self.subTest(value=ascii(value)), self.tx() as cursor:
-                result = self.authority.apply_trusted_config(cursor, self.account, (value,), 'revision')
-                self.assertEqual(result[0].status, 'unavailable')
-        self.assertEqual(self.apply('/bind create').status, 'denied')
+            self.assertIsNotNone(cursor.execute('SELECT owner_link_code_hmac FROM qq_official_accounts WHERE account_key=?', (self.account.key,)).fetchone()[0])
+    def test_current_legacy_link_blocks_rebinding_but_stale_revision_does_not(self):
+        grant = self.configure('TEST_OWNER')[0].grant
+        with self.tx() as cursor:
+            cursor.execute("""INSERT INTO qq_official_binding_challenges
+                (challenge_id,account_key,issuer_actor_key,issuer_endpoint_key,owner_grant_id,owner_revision,code_hmac,expires_at,
+                 state,attempts,created_at,updated_at,consumed_at,delivery_epoch) VALUES ('TEST_C',?,?,?,?,?,'',?,'confirmed',0,?,?,?,1)""",
+                (self.account.key, self.owner.key, self.private.key, grant.grant_id, 1, self.now + 300, self.now, self.now, self.now))
+            cursor.execute("""INSERT INTO qq_official_binding_candidates
+                (candidate_id,challenge_id,account_key,endpoint_key,actor_key,endpoint_generation,version,state,expires_at,
+                 created_at,updated_at,grant_submitter_owner,consumed_at) VALUES ('TEST_N','TEST_C',?,?,?,?,1,'confirmed',?,?,?,TRUE,?)""",
+                (self.account.key, self.group.key, self.member.key, 1, self.now + 300, self.now, self.now, self.now))
+            cursor.execute("""INSERT INTO qq_official_owner_actor_links
+                (endpoint_key,actor_key,account_key,owner_grant_id,owner_revision,endpoint_generation,revision,state,candidate_id,created_at,updated_at)
+                VALUES (?,?,?,?,?,1,1,'active','TEST_N',?,?)""", (self.group.key, self.member.key, self.account.key, grant.grant_id, 1, self.now, self.now))
+        self.assertEqual(self.consume(self.issue().effect.code, actor=self.attacker).status, 'conflict')
+        with self.tx() as cursor: cursor.execute('UPDATE qq_official_owner_grants SET revision=2 WHERE grant_id=?', (grant.grant_id,))
+        self.assertEqual(self.consume(self.issue().effect.code, actor=self.attacker).status, 'confirmed')
+    def test_only_configured_private_owner_can_issue(self):
+        self.configure()
+        self.assertEqual(self.issue().status, 'denied')

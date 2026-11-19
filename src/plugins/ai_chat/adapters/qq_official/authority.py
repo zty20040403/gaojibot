@@ -96,16 +96,24 @@ class OwnerAuthority:
             return None
         if endpoint.kind == "private":
             return self.configured_owner(actor)
-        row = cursor.execute("""SELECT g.* FROM qq_official_owner_actor_links l
-            JOIN qq_official_owner_grants g ON g.grant_id=l.owner_grant_id
+        row = cursor.execute("""SELECT l.configured_owner_actor_key,g.*
+            FROM qq_official_owner_actor_links l
+            LEFT JOIN qq_official_owner_grants g ON g.grant_id=l.owner_grant_id
             JOIN qq_official_endpoints e ON e.endpoint_key=l.endpoint_key
             WHERE l.endpoint_key=? AND l.actor_key=? AND l.state='active'
-              AND g.account_key=? AND g.state='active' AND g.revision=l.owner_revision AND e.account_key=g.account_key
+              AND l.account_key=? AND e.account_key=l.account_key
+              AND (l.configured_owner_actor_key IS NOT NULL OR
+                   (g.account_key=l.account_key AND g.state='active' AND g.revision=l.owner_revision))
               AND e.generation=l.endpoint_generation AND e.binding_state='active'
               AND e.membership_state='present'""",
             (endpoint.key, actor.key, endpoint.account.key)).fetchone()
-        if row is None or row["c2c_actor_key"] not in self.owner_actor_keys:
+        if row is None:
             return None
+        owner_key = row["configured_owner_actor_key"] or row["c2c_actor_key"]
+        if owner_key not in self.owner_actor_keys:
+            return None
+        if row["configured_owner_actor_key"]:
+            return ConfiguredOwner(endpoint.account.key, owner_key)
         return _grant(row)
 
     def apply_trusted_config(self, cursor, account: AccountKey, owner_c2c_ids: tuple[str, ...], source_revision: str) -> tuple[AuthorityDecision, ...]:
@@ -126,6 +134,12 @@ class OwnerAuthority:
             updated_at=? FROM qq_official_owner_grants g WHERE g.grant_id=l.owner_grant_id
             AND l.account_key=? AND l.state='active' AND g.c2c_actor_key<>ALL(?)""",
             (now, account.key, list(self.owner_actor_keys)))
+        cursor.execute("""UPDATE qq_official_owner_actor_links SET state='revoked',revision=revision+1,
+            updated_at=? WHERE account_key=? AND state='active'
+            AND configured_owner_actor_key<>ALL(?)""", (now, account.key, list(self.owner_actor_keys)))
+        cursor.execute("""UPDATE qq_official_accounts SET owner_link_actor_key=NULL,
+            owner_link_code_hmac=NULL,owner_link_expires_at=NULL,owner_link_epoch=NULL
+            WHERE account_key=?""", (account.key,))
         decisions = []
         for actor in self.actors:
             row = cursor.execute("SELECT * FROM qq_official_owner_grants WHERE account_key=? AND c2c_actor_key=? FOR UPDATE",
