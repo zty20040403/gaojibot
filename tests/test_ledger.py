@@ -104,7 +104,7 @@ class MessageLedgerTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            self.ledger.search_in_scope(self.group_b, "secret"),
+            self.ledger.history(self.group_b, terms=("secret",)),
             [],
         )
 
@@ -139,7 +139,7 @@ class MessageLedgerTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            self.ledger.search_in_scope(self.group_a, "old"),
+            self.ledger.history(self.group_a, terms=("old",)),
             [],
         )
 
@@ -281,7 +281,7 @@ class MessageLedgerTests(unittest.TestCase):
         self.assertNotIn("/clear", rendered)
         self.assertNotIn("!feedback", rendered)
         self.assertIn("改成方案 B", rendered)
-        self.assertEqual(self.ledger.search_in_scope(self.group_a, "clear"), [])
+        self.assertEqual(self.ledger.history(self.group_a, terms=("clear",)), [])
 
     def test_global_index_projection_respects_visibility_and_command_kind(self) -> None:
         hidden = self.record_text(self.group_a, "1", "hidden")

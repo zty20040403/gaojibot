@@ -22,6 +22,11 @@ def embedding_identity(client):
     return hashlib.sha256((client.base_url+'\n'+client.model+'\n'+str(client.dimensions)).encode()).hexdigest()
 
 
+def valid_history_scope(scope, endpoint):
+    return scope.kind == endpoint.kind and (scope.account == endpoint.account or
+        (endpoint.kind == 'group' and scope.platform == 'onebot-v11' and scope.account is None))
+
+
 class MessageVectorJobs:
     def __init__(self,database,jobs,token,backend,embedder,*,admission,clock=time.time):
         self.database,self.jobs,self.token,self.backend,self.embedder = database,jobs,token,backend,embedder
@@ -56,7 +61,7 @@ class MessageVectorJobs:
         if endpoint.kind=='private' and not self.admission(cursor,endpoint,ActorKey(endpoint.account,'c2c_user','',endpoint.native_conversation_id)):
             raise PermissionError('semantic_endpoint_unavailable')
         scope = ConversationScope.from_key(row['canonical_scope_key'])
-        if scope.account!=endpoint.account:raise PermissionError('semantic_history_account_mismatch')
+        if not valid_history_scope(scope,endpoint):raise PermissionError('semantic_history_account_mismatch')
         return dict(row)
 
     def endpoints(self,*,after='',limit=64):
