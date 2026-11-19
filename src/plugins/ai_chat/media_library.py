@@ -794,68 +794,6 @@ class MediaLibrary:
             self._notify_worker()
         return added
 
-    def find_media(
-        self,
-        scope: ConversationScope,
-        query: str,
-        *,
-        stickers_only: bool = False,
-        limit: int = 5,
-    ) -> list[MediaRecord]:
-        cleaned = " ".join(str(query).split()).strip()
-        bounded = min(max(int(limit), 1), 20)
-        wildcard = f"%{cleaned}%"
-        connection = self.database.store_connection()
-        try:
-            rows = connection.execute(
-                """
-                SELECT DISTINCT ON (blob.media_id)
-                    blob.media_id, blob.storage_path, blob.mime_type,
-                    blob.sha256, blob.byte_size, blob.archive_path,
-                    analysis.summary, analysis.description,
-                    analysis.extracted_text, analysis.subjects_json,
-                    analysis.actions_json, analysis.emotions_json,
-                    analysis.usage_json, analysis.is_sticker, analysis.safety
-                FROM message_media AS link
-                JOIN media_blobs AS blob ON blob.media_id = link.media_id
-                JOIN media_analysis AS analysis ON analysis.media_id = blob.media_id
-                LEFT JOIN sticker_library AS stickers ON stickers.media_id = blob.media_id
-                WHERE link.scope_key = ?
-                  AND analysis.safety = 'safe'
-                  AND (? = 0 OR (
-                      stickers.enabled = 1 AND stickers.banned = 0
-                      AND analysis.is_sticker = 1
-                  ))
-                  AND (
-                      ? = '' OR analysis.summary ILIKE ?
-                      OR analysis.description ILIKE ?
-                      OR analysis.extracted_text ILIKE ?
-                      OR analysis.subjects_json ILIKE ?
-                      OR analysis.actions_json ILIKE ?
-                      OR analysis.emotions_json ILIKE ?
-                      OR analysis.usage_json ILIKE ?
-                  )
-                ORDER BY blob.media_id, link.created_at DESC
-                LIMIT ?
-                """,
-                (
-                    scope.key,
-                    int(stickers_only),
-                    cleaned,
-                    wildcard,
-                    wildcard,
-                    wildcard,
-                    wildcard,
-                    wildcard,
-                    wildcard,
-                    wildcard,
-                    bounded,
-                ),
-            ).fetchall()
-        finally:
-            connection.close()
-        return [self._record_from_row(row) for row in rows]
-
     def find_stickers(
         self,
         query: str,
@@ -1012,137 +950,6 @@ class MediaLibrary:
         finally:
             connection.close()
         return self._record_from_row(row) if row is not None else None
-
-    def get_media(
-        self,
-        scope: ConversationScope,
-        media_id: int,
-        *,
-        sendable_sticker_only: bool = False,
-    ) -> MediaRecord | None:
-        sticker_filter = ""
-        if sendable_sticker_only:
-            sticker_filter = """
-                AND analysis.is_sticker = 1
-                AND EXISTS (
-                    SELECT 1 FROM sticker_library AS sticker
-                    WHERE sticker.media_id = blob.media_id
-                      AND sticker.enabled = 1 AND sticker.banned = 0
-                )
-            """
-        connection = self.database.store_connection()
-        try:
-            row = connection.execute(
-                f"""
-                SELECT blob.media_id, blob.storage_path, blob.mime_type,
-                       blob.sha256, blob.byte_size, blob.archive_path,
-                       analysis.summary, analysis.description,
-                       analysis.extracted_text, analysis.subjects_json,
-                       analysis.actions_json, analysis.emotions_json,
-                       analysis.usage_json, analysis.is_sticker, analysis.safety
-                FROM media_blobs AS blob
-                JOIN media_analysis AS analysis ON analysis.media_id = blob.media_id
-                WHERE blob.media_id = ? AND EXISTS (
-                    SELECT 1 FROM message_media AS link
-                    WHERE link.media_id = blob.media_id AND link.scope_key = ?
-                )
-                {sticker_filter}
-                """,
-                (int(media_id), scope.key),
-            ).fetchone()
-        finally:
-            connection.close()
-        return self._record_from_row(row) if row is not None else None
-
-    def latest_for_message(
-        self,
-        scope: ConversationScope,
-        native_message_id: str | int,
-        *,
-        segment_index: int | None = None,
-    ) -> MediaRecord | None:
-        parameters: list[object] = [scope.key, str(native_message_id)]
-        segment_sql = ""
-        if segment_index is not None:
-            segment_sql = " AND link.segment_index = ?"
-            parameters.append(int(segment_index))
-        connection = self.database.store_connection()
-        try:
-            row = connection.execute(
-                f"""
-                SELECT blob.media_id, blob.storage_path, blob.mime_type,
-                       blob.sha256, blob.byte_size, blob.archive_path,
-                       analysis.summary, analysis.description,
-                       analysis.extracted_text, analysis.subjects_json,
-                       analysis.actions_json, analysis.emotions_json,
-                       analysis.usage_json, analysis.is_sticker, analysis.safety
-                FROM message_media AS link
-                JOIN media_blobs AS blob ON blob.media_id = link.media_id
-                JOIN media_analysis AS analysis ON analysis.media_id = blob.media_id
-                WHERE link.scope_key = ? AND link.native_message_id = ?
-                {segment_sql}
-                ORDER BY link.segment_index
-                LIMIT 1
-                """,
-                parameters,
-            ).fetchone()
-        finally:
-            connection.close()
-        return self._record_from_row(row) if row is not None else None
-
-    def has_message_media(
-        self,
-        scope: ConversationScope,
-        native_message_id: str | int,
-        *,
-        segment_index: int | None = None,
-    ) -> bool:
-        parameters: list[object] = [scope.key, str(native_message_id)]
-        segment_sql = ""
-        if segment_index is not None:
-            segment_sql = " AND segment_index = ?"
-            parameters.append(int(segment_index))
-        connection = self.database.store_connection()
-        try:
-            row = connection.execute(
-                f"""
-                SELECT 1 FROM message_media
-                WHERE scope_key = ? AND native_message_id = ?
-                {segment_sql}
-                LIMIT 1
-                """,
-                parameters,
-            ).fetchone()
-        finally:
-            connection.close()
-        return row is not None
-
-    def latest_message_for_sender(
-        self,
-        scope: ConversationScope,
-        sender_native_user_id: str | int,
-        *,
-        max_age_seconds: int = 300,
-    ) -> tuple[str, int] | None:
-        cutoff = int(time.time()) - max(int(max_age_seconds), 1)
-        connection = self.database.store_connection()
-        try:
-            row = connection.execute(
-                """
-                SELECT native_message_id, segment_index
-                FROM message_media
-                WHERE scope_key = ? AND sender_native_user_id = ?
-                  AND created_at >= ?
-                ORDER BY created_at DESC, message_media_id DESC
-                LIMIT 1
-                """,
-                (scope.key, str(sender_native_user_id), cutoff),
-            ).fetchone()
-        finally:
-            connection.close()
-        if row is None:
-            return None
-        return str(row["native_message_id"]), int(row["segment_index"])
 
     def recent_sticker_sends(self, scope_key: str, since: int) -> dict[int, int]:
         """Stickers this conversation was sent since a time: media_id -> last send."""
@@ -1372,39 +1179,6 @@ class MediaLibrary:
         self._closed = True
         self._wake.set()
 
-    async def wait_for_message(
-        self,
-        scope: ConversationScope,
-        native_message_id: str | int,
-        *,
-        segment_index: int | None = None,
-        timeout_seconds: int | None = None,
-    ) -> MediaRecord | None:
-        deadline = time.monotonic() + max(
-            int(timeout_seconds or self.timeout_seconds),
-            1,
-        )
-        while True:
-            try:
-                record = await asyncio.to_thread(
-                    self.latest_for_message,
-                    scope,
-                    native_message_id,
-                    segment_index=segment_index,
-                )
-            except MediaLibraryError:
-                record = None
-            if record is not None:
-                return record
-            if time.monotonic() >= deadline or self._message_fetch_failed(
-                scope,
-                native_message_id,
-                segment_index,
-            ):
-                return None
-            self._wake.set()
-            await asyncio.sleep(0.5)
-
     async def _download(self, source_url: str) -> tuple[bytes, str]:
         from src.storage_admission import CapacityError, require_capacity
         try:
@@ -1460,31 +1234,6 @@ class MediaLibrary:
         if mime_type not in SUPPORTED_MIME_TYPES:
             raise MediaLibraryError("downloaded file is not a supported image")
         return content, mime_type
-
-    def _message_fetch_failed(
-        self,
-        scope: ConversationScope,
-        native_message_id: str | int,
-        segment_index: int | None,
-    ) -> bool:
-        parameters: list[object] = [scope.key, str(native_message_id)]
-        extra = ""
-        if segment_index is not None:
-            extra = " AND segment_index = ?"
-            parameters.append(int(segment_index))
-        connection = self.database.store_connection()
-        try:
-            row = connection.execute(
-                f"""
-                SELECT fetch_status FROM message_media
-                WHERE scope_key = ? AND native_message_id = ? {extra}
-                ORDER BY segment_index LIMIT 1
-                """,
-                parameters,
-            ).fetchone()
-        finally:
-            connection.close()
-        return row is not None and str(row["fetch_status"]) == "failed"
 
     def _prepare_for_vision(
         self,
@@ -1542,42 +1291,6 @@ class MediaLibrary:
             prepared.unlink(missing_ok=True)
             return source, mime_type
         return prepared, "image/jpeg"
-
-    def _analysis_scopes(self, media_id: int) -> list[tuple[str, str, bool]]:
-        connection = self.database.store_connection()
-        try:
-            rows = connection.execute(
-                """
-                SELECT DISTINCT link.scope_key, analysis.summary,
-                       analysis.description, analysis.extracted_text,
-                       analysis.subjects_json, analysis.actions_json,
-                       analysis.emotions_json, analysis.usage_json,
-                       analysis.is_sticker
-                FROM message_media AS link
-                JOIN media_analysis AS analysis ON analysis.media_id = link.media_id
-                WHERE link.media_id = ?
-                """,
-                (media_id,),
-            ).fetchall()
-        finally:
-            connection.close()
-        result: list[tuple[str, str, bool]] = []
-        for row in rows:
-            content = "\n".join(
-                part
-                for part in (
-                    str(row["summary"]),
-                    str(row["description"]),
-                    str(row["extracted_text"]),
-                    str(row["subjects_json"]),
-                    str(row["actions_json"]),
-                    str(row["emotions_json"]),
-                    str(row["usage_json"]),
-                )
-                if part and part not in {"[]", ""}
-            )
-            result.append((str(row["scope_key"]), content, bool(row["is_sticker"])))
-        return result
 
     def _record_from_row(
         self,
