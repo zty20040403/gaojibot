@@ -215,18 +215,6 @@ class TurnJournalTests(unittest.TestCase):
         self.assertEqual(item["topic_query"], "这个部署方案")
         self.assertEqual(item["topic_message_ids"], [10, 11])
         self.assertTrue(item["recall_candidates"][0]["selected"])
-        feedback = self.journal.set_context_feedback(
-            turn.turn_id,
-            verdict="off_topic",
-            note="应该关联 msg#11",
-            actor="Kenneth",
-            resource_version=3,
-            updated_at=130,
-        )
-        self.assertEqual(feedback["verdict"], "off_topic")
-        refreshed = self.journal.recent_context_plans()[0]
-        self.assertEqual(refreshed["feedback"]["note"], "应该关联 msg#11")
-        self.assertEqual(refreshed["feedback"]["resource_version"], 3)
         with self.assertRaises(ValueError):
             self.journal.record_context_plan(
                 turn.turn_id,

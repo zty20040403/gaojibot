@@ -277,37 +277,27 @@ class TurnJournal:
                 ),
             )
 
-    def recent_context_plans(self, *, limit: int = 100, turn_id: int | None = None,
-                             negative_only: bool = False) -> list[dict[str, Any]]:
+    def recent_context_plans(self, *, limit: int = 100, turn_id: int | None = None) -> list[dict[str, Any]]:
         bounded = min(max(int(limit), 1), 500)
         with self._lock:
             rows = self._connection.execute(
                 """
                 SELECT plan.*, turn.turn_ordinal, turn.objective,
-                       turn.status, turn.model, turn.profile,
-                       feedback.verdict AS feedback_verdict,
-                       feedback.note AS feedback_note,
-                       feedback.resource_version AS feedback_resource_version,
-                       feedback.actor AS feedback_actor,
-                       feedback.updated_at AS feedback_updated_at
+                       turn.status, turn.model, turn.profile
                 FROM turn_context_plans AS plan
                 JOIN agent_turns AS turn ON turn.turn_id = plan.turn_id
                 JOIN turn_visibility AS visibility
                   ON visibility.scope_key = turn.scope_key
-                LEFT JOIN turn_context_feedback AS feedback
-                  ON feedback.turn_id = plan.turn_id
                 WHERE turn.turn_ordinal >= visibility.min_turn_ordinal
                   AND (? = 0 OR turn.turn_id = ?)
-                  AND (? = 0 OR feedback.verdict = 'off_topic')
                 ORDER BY plan.created_at DESC, plan.turn_id DESC
                 LIMIT ?
                 """,
-                (int(turn_id is not None), int(turn_id or 0), int(negative_only), bounded),
+                (int(turn_id is not None), int(turn_id or 0), bounded),
             ).fetchall()
         return [
             {
                 "turn_id": int(row["turn_id"]),
-                "votes": {"asker": None, "others_up": 0, "others_down": 0},
                 "turn_handle": f"t#{int(row['turn_ordinal'])}",
                 "scope_key": str(row["scope_key"]),
                 "current_message_id": int(row["current_message_id"]),
@@ -346,88 +336,10 @@ class TurnJournal:
                 "status": str(row["status"]),
                 "model": str(row["model"]),
                 "profile": str(row["profile"]),
-                "feedback": (
-                    {
-                        "verdict": str(row["feedback_verdict"]),
-                        "note": str(row["feedback_note"]),
-                        "resource_version": int(
-                            row["feedback_resource_version"]
-                        ),
-                        "actor": str(row["feedback_actor"]),
-                        "updated_at": int(row["feedback_updated_at"]),
-                    }
-                    if row["feedback_verdict"] is not None
-                    else None
-                ),
                 "created_at": int(row["created_at"]),
             }
             for row in rows
         ]
-
-    def set_context_feedback(
-        self,
-        turn_id: int,
-        *,
-        verdict: str,
-        note: str,
-        actor: str,
-        resource_version: int,
-        updated_at: int | None = None,
-    ) -> dict[str, object]:
-        normalized_verdict = str(verdict).strip().casefold()
-        if normalized_verdict not in {"correct", "off_topic"}:
-            raise ValueError("context feedback verdict is invalid")
-        normalized_actor = _safe_text(" ".join(str(actor).split()), 160)
-        if not normalized_actor:
-            normalized_actor = "admin-console"
-        normalized_note = _safe_text(str(note), 1000)
-        now = int(updated_at or time.time())
-        with self._transaction() as cursor:
-            visible = cursor.execute(
-                """
-                SELECT 1
-                FROM turn_context_plans AS plan
-                JOIN agent_turns AS turn ON turn.turn_id = plan.turn_id
-                JOIN turn_visibility AS visibility
-                  ON visibility.scope_key = turn.scope_key
-                WHERE plan.turn_id = ?
-                  AND turn.turn_ordinal >= visibility.min_turn_ordinal
-                """,
-                (int(turn_id),),
-            ).fetchone()
-            if visible is None:
-                raise ValueError("context plan is not visible")
-            cursor.execute(
-                """
-                INSERT INTO turn_context_feedback (
-                    turn_id, verdict, note, resource_version, actor,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(turn_id) DO UPDATE SET
-                    verdict = excluded.verdict,
-                    note = excluded.note,
-                    resource_version = excluded.resource_version,
-                    actor = excluded.actor,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    int(turn_id),
-                    normalized_verdict,
-                    normalized_note,
-                    int(resource_version),
-                    normalized_actor,
-                    now,
-                    now,
-                ),
-            )
-        return {
-            "turn_id": int(turn_id),
-            "verdict": normalized_verdict,
-            "note": normalized_note,
-            "resource_version": int(resource_version),
-            "actor": normalized_actor,
-            "updated_at": now,
-        }
 
     def recent_trace_summaries(self, *, limit: int = 50) -> list[dict[str, object]]:
         """Return recent operational trace metadata without conversation content."""
