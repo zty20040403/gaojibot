@@ -103,8 +103,6 @@ _IDENTITY_COLUMNS = {
     "media_jobs": "job_id",
     "vision_jobs": "vision_job_id",
     "media_cleanup_runs": "cleanup_id",
-    "content_sources": "source_id",
-    "message_sources": "message_source_id",
     "durable_jobs": "job_id",
 }
 
