@@ -1,4 +1,5 @@
 """Independent M4 regression checks at the real runtime/FakePlatform boundary."""
+import asyncio
 from datetime import datetime, timezone
 import json
 import re
@@ -22,20 +23,15 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
     complete = fixture.OfficialTurnEndToEndTests.complete
 
     async def bound_group(self, fake, runtime, *, grant_owner=False):
-        await self.emit(fake, native="TEST_REVIEW_CREATE", content="/bind create")
-        challenge = (await self.wait_db("SELECT challenge_id FROM qq_official_binding_challenges WHERE state='issued'"))[0]
-        # Binding can use any live private reply window for this endpoint;
-        # same-second windows need not select the create command's message.
-        delivery = (await self.wait_db(
-            "SELECT d.native_message_id FROM deliveries d "
-            "JOIN delivery_plans p ON p.plan_id=d.plan_id "
-            "WHERE p.challenge_id=? AND d.purpose='binding_otp' AND d.status='committed'",
-            (challenge["challenge_id"],),
-        ))[0]
-        sent = next(item for item in fake.received if item["receipt"]["id"] == delivery["native_message_id"])
-        code = re.search(r"/bind (\d{6})", sent["payload"]["content"]).group(1)
-        await self.group_message(fake, "TEST_REVIEW_SUBMIT", f"/bind submit {challenge['challenge_id']} {code}")
-        await self.wait_db("SELECT candidate_id FROM qq_official_binding_candidates WHERE state='confirmed'")
+        await self.emit(fake, native='TEST_REVIEW_CREATE', content='/绑定群')
+        await self.wait_db('SELECT owner_link_code_hmac FROM qq_official_accounts WHERE owner_link_code_hmac IS NOT NULL')
+        async with asyncio.timeout(5):
+            while not any('群绑定码：' in item['payload'].get('content', '') for item in fake.received):
+                await asyncio.sleep(0.01)
+        sent = next(item for item in fake.received if '群绑定码：' in item['payload'].get('content', ''))
+        code = re.search(r'群绑定码：([0-9]{6})', sent['payload']['content']).group(1)
+        await self.group_message(fake, 'TEST_REVIEW_SUBMIT', '/绑定群 ' + code)
+        await self.wait_db("SELECT control_decision_code FROM qq_official_inbound_events WHERE native_message_id='TEST_REVIEW_SUBMIT' AND control_decision_code='confirmed'")
         await self.wait_db("SELECT delivery_id FROM deliveries WHERE reply_to_native_message_id='TEST_REVIEW_SUBMIT' AND status='committed'")
         endpoint = EndpointKey(runtime.loaded.account, "group", "TEST_GROUP")
         row = self.query("SELECT binding_state FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,))[0]

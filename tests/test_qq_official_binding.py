@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
-from src.plugins.ai_chat.adapters.qq_official.binding import BindingContext, BindingEpochLost, BindingReducer
+from src.plugins.ai_chat.adapters.qq_official.binding import BindingContext, BindingEpochLost, BindingReducer, parse_binding_command
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from tests.postgres_fixture import postgres_for_test
 
@@ -79,6 +79,9 @@ class OfficialBindingTests(unittest.TestCase):
             self.assertIsNotNone(self.authority.owner_for_actor(cursor, self.group, self.member))
             cursor.execute('UPDATE qq_official_endpoints SET generation=2 WHERE endpoint_key=?', (self.group.key,))
             self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, self.member))
+        self.assertEqual(self.consume(self.issue().effect.code, actor=self.attacker).status, 'conflict')
+        with self.tx() as cursor:
+            cursor.execute("UPDATE qq_official_endpoints SET binding_state='unbound' WHERE endpoint_key=?", (self.group.key,))
         self.assertEqual(self.consume(self.issue().effect.code, actor=self.attacker).status, 'confirmed')
         with self.tx() as cursor:
             self.assertIsNotNone(self.authority.owner_for_actor(cursor, self.group, self.attacker))
@@ -142,6 +145,18 @@ class OfficialBindingTests(unittest.TestCase):
         self.assertEqual(self.consume(self.issue().effect.code, actor=self.attacker).status, 'conflict')
         with self.tx() as cursor: cursor.execute('UPDATE qq_official_owner_grants SET revision=2 WHERE grant_id=?', (grant.grant_id,))
         self.assertEqual(self.consume(self.issue().effect.code, actor=self.attacker).status, 'confirmed')
-    def test_only_configured_private_owner_can_issue(self):
+    def test_active_group_rejects_extra_link_even_when_matching_link_exists(self):
+        self.assertEqual(self.consume(self.issue().effect.code).status, 'confirmed')
+        with self.tx() as cursor:
+            cursor.execute("""INSERT INTO qq_official_owner_actor_links
+                (endpoint_key,account_key,actor_key,configured_owner_actor_key,endpoint_generation,revision,state,created_at,updated_at)
+                VALUES (?,?,?,?,1,1,'active',?,?)""",
+                (self.group.key, self.account.key, self.attacker.key, self.owner.key, self.now, self.now))
+        self.assertEqual(self.consume(self.issue().effect.code).status, 'conflict')
+
+    def test_entries_are_sensitive_and_only_configured_private_owner_can_issue(self):
+        with self.tx() as cursor:
+            for text, status in (('/bind create', 'retired'), ('/bind whoami', 'identity'), ('/绑定群', 'owner_code_issued')):
+                self.assertEqual(self.reducer.apply(cursor, context=self.context(), command=parse_binding_command(text), lease_token=self.token).status, status)
         self.configure()
         self.assertEqual(self.issue().status, 'denied')

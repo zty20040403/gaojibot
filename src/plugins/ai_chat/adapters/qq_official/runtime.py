@@ -761,6 +761,10 @@ class OfficialRuntime:
 
     async def _deliver_binding(self, token, effect):
         outcome = "failed"
+        def finish_owner():
+            with self.store.transaction() as cursor:
+                self.store.binding.finish_owner_code(cursor, account=self.loaded.account,
+                    code_hmac=effect.code_hmac, outcome=outcome, lease_token=token)
         try:
             await self._ensure_current(token)
             if effect.expires_at and effect.expires_at <= int(self.store.clock()):
@@ -774,14 +778,15 @@ class OfficialRuntime:
                     outcome = await target(effect)
                 if outcome not in {"success", "failed", "unknown"}:
                     outcome = "unknown"
-        except asyncio.CancelledError:
-            raise
-        except LeaseLost:
+        except (asyncio.CancelledError, LeaseLost):
             raise
         except Exception as error:
             frames = [(f.name,f.lineno) for f in traceback.extract_tb(error.__traceback__)[-4:]]
             self.logger.warning(f'QQ binding send error={type(error).__name__} frames={frames}')
             outcome = "unknown"
+        finally:
+            if effect.kind == 'owner_link_code':
+                await asyncio.shield(self._calls(finish_owner))
         if effect.kind == "issue_code":
             def mark():
                 with self.store.transaction() as cursor:

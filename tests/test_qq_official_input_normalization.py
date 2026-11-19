@@ -127,16 +127,16 @@ class IngressNormalizationTests(OfficialInboxTests):
     def test_prefixed_bind_pipeline_deduplicates_and_never_stores_secret(self):
         issued = self.issue()
         secret = issued.effect.code
-        content = '<@!TEST_BOT> /bind submit ' + issued.challenge_id + ' ' + secret
+        content = '<@!TEST_BOT> /绑定群 ' + secret
         result = self.accept(content=content, mentions=[{'id': 'TEST_BOT', 'is_you': True}])
         self.assertEqual((result.disposition, result.binding.status), ('control', 'confirmed'))
         row = self.query('SELECT * FROM qq_official_inbound_events WHERE inbox_id=?', (result.inbox_id,))[0]
         self.assertIsNone(row['payload_json'])
         self.assertIsNone(row['turn_text'])
-        self.assertEqual((row['control_action'], row['control_decision_code']), ('submit', 'confirmed'))
+        self.assertEqual((row['control_action'], row['control_decision_code']), ('owner_entry', 'confirmed'))
         repeat = self.accept(content=content, native=row['native_message_id'], mentions=[{'id': 'TEST_BOT', 'is_you': True}])
         self.assertEqual(repeat.disposition, 'duplicate')
-        self.assertEqual(self.count('qq_official_binding_candidates'), 1)
+        self.assertEqual(self.count('qq_official_binding_candidates'), 0)
         self.assertNotIn(secret, self.persisted_text())
         self.assertEqual(self.count('messages'), 0)
 

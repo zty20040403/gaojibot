@@ -23,7 +23,7 @@ from src.qq_official.gateway import GatewayCheckpoint
 from . import peer_bots
 from .admin_identity import command_commitment, prepare_identity_input
 from .authority import OwnerAuthority
-from .binding import BindingContext, BindingDecision, BindingReducer
+from .binding import BindingCommand, BindingContext, BindingDecision, BindingReducer
 from .codec import DecodedMessage, RejectedMessage, decode_message
 from .conversation_control import ingest as ingest_control
 from .input_normalization import normalize_input, retired_approval_input
@@ -601,6 +601,11 @@ class OfficialInboxStore:
                 (account.key, endpoint.key, native_id)).fetchone()
             prepared_input = normalize_input(dispatch)
             command = prepared_input.command
+            if (command is None and endpoint.kind == 'group' and prepared_input.kind == 'message'
+                    and re.fullmatch(r'[0-9]{6}', prepared_input.input_text.strip())
+                    and cursor.execute('SELECT 1 FROM qq_official_accounts WHERE account_key=? AND owner_link_code_hmac IS NOT NULL',
+                                       (account.key,)).fetchone() is not None):
+                command = BindingCommand('owner_entry', code=prepared_input.input_text.strip())
             identity_command = prepare_identity_input(dispatch)
             if sent is not None:
                 reason, echo = "self_echo", "confirmed_self"
@@ -616,7 +621,8 @@ class OfficialInboxStore:
                 decision = self.binding.apply(
                     cursor,
                     context=BindingContext(endpoint, decoded.actor,
-                        durable_key("binding-receipt", account.key, str(dispatch.seq), event_id or "", native_id), now),
+                        durable_key("binding-receipt", account.key, str(dispatch.seq), event_id or "", native_id),
+                        now, native_id),
                     command=command, lease_token=token,
                 )
                 status, reason = "processed", "binding_control"

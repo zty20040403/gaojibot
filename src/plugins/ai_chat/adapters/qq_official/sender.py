@@ -389,6 +389,19 @@ class OfficialSender:
                 (int(self.wall_clock()), delivery_id, self.account.key))
 
     async def emit_binding(self, effect):
+        if effect.kind == 'owner_link_code':
+            await self._fence()
+            await self.rate_gate.acquire(effect.endpoint)
+            await self._fence()
+            prepared = await self.rest.prepare_send('private', effect.endpoint.native_conversation_id)
+            await self._fence()
+            try:
+                await self.rest.send_message('private', effect.endpoint.native_conversation_id,
+                    {'msg_type': 0, 'content': f'群绑定码：{effect.code}。5 分钟内在目标群发送此码，使用后即失效。',
+                     'msg_id': effect.source_native_message_id, 'msg_seq': 1}, prepared=prepared)
+            except QQAPIError as error:
+                return 'failed' if error.accepted is False else 'unknown'
+            return 'success'
         return await self.emit_ephemeral(self._binding_plan, effect)
 
     async def emit_ephemeral(self, prepare, *args):
