@@ -129,9 +129,8 @@ _RUN_CODE_TOOL = {
     "function": {
         "name": "run_code",
         "description": (
-            "在本会话容器里运行一段异步 JavaScript 函数体（参数 tools、gaoji、args）："
-            "支持 Promise.all 并发调用多个工具（tools.web_search / tools.web_fetch / tools.history / tools.say / tools.send_image / tools.send_file / tools.show / tools.video），"
-            "以及通过 gaoji.page() / gaoji.snapshot(page) 操作本会话常驻 Chromium 浏览器（标签页跨轮保留，严格遵守 skills/browser.md 登录规则）。"
+            "在本会话容器里运行异步 JavaScript 函数体（参数 tools、gaoji、args；require 不可用），支持 Promise.all 并发调用 tools.<name>。"
+            "gaoji.page() 返回常驻 Chromium 的 Playwright Page，不是 Puppeteer；浏览器 API、导航超时及登录规则见 skills/browser.md。"
         ),
         "parameters": {
             "type": "object",
