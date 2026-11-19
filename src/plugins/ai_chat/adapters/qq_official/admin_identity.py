@@ -10,7 +10,7 @@ import secrets
 from src.bot_security.store import lock_admin_security
 from src.plugins.ai_chat.platform_types import AccountKey,ActorKey,EndpointKey
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
-from src.plugins.ai_chat.adapters.qq_official.authority import ConsoleAuthorization,OwnerAuthority,audit
+from src.plugins.ai_chat.adapters.qq_official.authority import ConsoleAuthorization,audit
 from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 
 
@@ -57,7 +57,7 @@ class AdminIdentityBinding:
         self.clock=runtime.store.clock
         self._pepper=runtime.loaded.binding_pepper
         if not isinstance(self._pepper,bytes) or len(self._pepper)<32:raise IdentityBindingDenied()
-        self.owners=OwnerAuthority(clock=self.clock)
+        self.owners=runtime.store.authority
 
     def _now(self):
         value=self.clock()
@@ -208,7 +208,7 @@ class AdminIdentityBinding:
                     return False
                 self._console(c,authorization);self._evidence(c,row,self._now())
                 return True
-            binding=AdminBindingStore(control_guard=control,clock=self.clock).bind_existing(c,
+            binding=AdminBindingStore(owners=self.owners,control_guard=control,clock=self.clock).bind_existing(c,
                 admin_account_id=authorization.account_id,admin_version=authorization.account_version,
                 endpoint=endpoint,actor=actor,owner_revision=owner.revision,authorization=authorization)
             if self._now()>=row['expires_at']:raise IdentityBindingDenied()

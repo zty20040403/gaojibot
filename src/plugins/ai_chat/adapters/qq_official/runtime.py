@@ -22,13 +22,14 @@ from src.qq_official.http import RestClient
 from src.qq_official.errors import QQAPIError
 from src.qq_official.token import TokenManager
 
+from .authority import OwnerAuthority
 from .binding import BindingReducer
 from .config import OfficialConfig
 from .inbox import OfficialInboxStore
 from .keys import account_job_kind
 from .lease import (
     DedicatedAccountLease, LeaseLost, LeaseRetryable, LeaseUnavailable,
-    advisory_key_for, transient_database_error,
+    advisory_key_for, assert_epoch, transient_database_error,
 )
 from .identity_store import observe_ready, observe_self_api, snapshot
 from .send_store import OfficialSendStore
@@ -192,8 +193,8 @@ class OfficialRuntime:
             self.deliveries = await self._calls(DeliveryStore, self.database, recover_interrupted=False)
             if self.journal is None:
                 self.journal = await self._calls(TurnJournal, self.database)
-            from .lease import assert_epoch
-            binding = BindingReducer(self.loaded.binding_pepper, epoch_guard=assert_epoch)
+            authority = OwnerAuthority(account=self.loaded.account, owner_c2c_ids=self.loaded.owner_openids)
+            binding = BindingReducer(self.loaded.binding_pepper, epoch_guard=assert_epoch, authority=authority)
             self.store = await self._calls(OfficialInboxStore, self.database, binding=binding,
                 private_policy=self.loaded.private_policy, private_allowed_openids=self.loaded.private_allowed_openids,
                 payload_retention_hours=self.loaded.payload_retention_hours, ledger=self.ledger)

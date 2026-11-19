@@ -323,7 +323,7 @@ class OfficialInboxStore:
             return row["binding_state"] == "active" and row["membership_state"] == "present"
         if self.private_policy == "public":
             return True
-        if self.authority.c2c_grant(cursor, actor) is not None:
+        if self.authority.owner_for_actor(cursor, endpoint, actor) is not None:
             return True
         return self.private_policy == "allowlist" and actor.native_user_id in self.private_allowed_openids
 

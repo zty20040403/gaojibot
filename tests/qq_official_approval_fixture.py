@@ -38,10 +38,10 @@ class ApprovalFixture(ExecutionFixture):
   self.other=EndpointKey(self.account,'private','TEST_ADMIN_B')
   self.other_actor=ActorKey(self.account,'c2c_user','','TEST_ADMIN_B')
   self.provision(self.other)
-  self.owners=OwnerAuthority(clock=lambda:self.now)
+  self.owners=OwnerAuthority(account=self.account,owner_c2c_ids=('TEST_ADMIN_A','TEST_ADMIN_B'),clock=lambda:self.now)
   with self.tx() as c:
    owners=self.owners.apply_trusted_config(c,self.account,('TEST_ADMIN_A','TEST_ADMIN_B'),'TEST_CONFIG')
-   self.admins=AdminBindingStore(clock=lambda:self.now,control_guard=lambda c,**kw:kw['authorization'] is self)
+   self.admins=AdminBindingStore(owners=self.owners,clock=lambda:self.now,control_guard=lambda c,**kw:kw['authorization'] is self)
    self.admin_a=self.admins.create_official_admin(c,username='test_admin_a',password_hash=self.password,
     endpoint=self.endpoint,actor=self.actor,owner_revision=owners[0].grant.revision,authorization=self,bootstrap=True)
    self.admin_b=self.admins.create_official_admin(c,username='test_admin_b',password_hash=self.password,
@@ -53,7 +53,8 @@ class ApprovalFixture(ExecutionFixture):
   self.source=FrozenSource(self.endpoint,self.actor,self.endpoint.scope,execution_id=self.handle.execution_id,
    revision=self.handle.execution_revision,route_epoch=0,endpoint_route_epoch=self.handle.route_epoch,deadline_at=self.now+180)
   self.source_live=self.route_live=True
-  self.transport=OfficialApprovalTransport(token=self.token,secret=SECRET,clock=lambda:self.now,source_port=SourcePort(self))
+  self.transport=OfficialApprovalTransport(token=self.token,secret=SECRET,owners=self.owners,
+   clock=lambda:self.now,source_port=SourcePort(self))
   self.store=SecurityStore(self.database,SECRET,clock=lambda:self.now,transport=self.transport)
   self.addCleanup(self.store.close)
   self.recipient=Recipient(self.endpoint,self.actor)

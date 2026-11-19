@@ -118,9 +118,10 @@ class IdentityTests(IdentityFixture,unittest.TestCase):
   actor=ActorKey(self.account,'c2c_user','',self.owner)
   with self.security.transaction(),self.assertRaises(Unavailable),self.tx() as c:
    c.execute("SET LOCAL lock_timeout = '150ms'")
-   AdminBindingStore().resolve_admin(c,endpoint=endpoint,actor=actor)
+   AdminBindingStore(owners=self.owners).resolve_admin(c,endpoint=endpoint,actor=actor)
   with self.tx() as c:
-   self.assertEqual(AdminBindingStore().resolve_admin(c,endpoint=endpoint,actor=actor).admin_account_id,self.auth.account_id)
+   resolved=AdminBindingStore(owners=self.owners).resolve_admin(c,endpoint=endpoint,actor=actor)
+   self.assertEqual(resolved.admin_account_id,self.auth.account_id)
 
 
  def test_issued_c2c_actor_receipt_cannot_be_reused_with_a_forged_code_dto(self):

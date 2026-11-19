@@ -27,8 +27,10 @@ class OfficialInboxTests(unittest.TestCase):
         self.session = 'TEST_INBOX_SESSION'
         self.seq = 0
         self.owner = 'TEST_OWNER_C2C'
+        self.other_owner = 'SECOND_OWNER'
         self.group = EndpointKey(self.account, 'group', 'TEST_GROUP')
-        self.authority = OwnerAuthority(clock=lambda: self.now)
+        self.authority = OwnerAuthority(account=self.account,
+                                        owner_c2c_ids=(self.owner, self.other_owner), clock=lambda: self.now)
         self.binding = BindingReducer(b'FAKE-INBOX-PEPPER-LOCAL-TEST-ONLY-12345', epoch_guard=assert_epoch,
                                       authority=self.authority, clock=lambda: self.now)
         self.jobs = DurableJobStore(self.database)
@@ -40,7 +42,7 @@ class OfficialInboxTests(unittest.TestCase):
         self.addCleanup(self.lease.close)
         self.token = self.lease.acquire()
         self.assertIsNotNone(self.token)
-        self.store.apply_configuration(self.token, (self.owner,))
+        self.store.apply_configuration(self.token, (self.owner, self.other_owner))
         self.assertEqual(self.store.accept({'op': 0, 's': 0, 't': 'READY',
             'd': {'session_id': self.session}}, token=self.token, session_id=self.session).disposition, 'control')
 
@@ -359,10 +361,8 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertEqual(self.count('durable_jobs'), 0)
 
     def test_lifecycle_removal_atomically_revokes_owner_link_and_other_candidate(self):
-        other_owner = 'SECOND_OWNER'
-        self.store.apply_configuration(self.token, (self.owner, other_owner))
         self.submit(self.issue())
-        self.issue(other_owner)
+        self.issue(self.other_owner)
         endpoint = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0]
         member = ActorKey(self.account, 'group_member', self.group.native_conversation_id, 'TEST_MEMBER')
         with self.tx() as cursor:

@@ -18,9 +18,10 @@ class IdentityFixture:
   self.schema=self.database.schema;self.dsn=self.database.dsn
   self.now=1800000000;self.account=AccountKey('qq-official','TEST_OBS_'+secrets.token_hex(4),'test');self.seq=0;self.session='TEST_SESSION'
   self.owner='TEST_C2C_OWNER';self.pepper=b'TEST_OBSERVABILITY_BINDING_PEPPER_123456789'
-  self.owners=OwnerAuthority(clock=lambda:self.now)
+  self.owners=OwnerAuthority(account=self.account,owner_c2c_ids=(self.owner,),clock=lambda:self.now)
   self.jobs=DurableJobStore(self.database);self.addCleanup(self.jobs.close)
-  self.store=OfficialInboxStore(self.database,jobs=self.jobs,binding=BindingReducer(self.pepper,clock=lambda:self.now,epoch_guard=assert_epoch),clock=lambda:self.now)
+  binding=BindingReducer(self.pepper,authority=self.owners,clock=lambda:self.now,epoch_guard=assert_epoch)
+  self.store=OfficialInboxStore(self.database,jobs=self.jobs,binding=binding,clock=lambda:self.now)
   self.addCleanup(self.store.close);self.store.ensure_account(self.account)
   self.lease=DedicatedAccountLease(self.dsn,self.account,schema=self.schema,clock=lambda:self.now);self.addCleanup(self.lease.close)
   self.token=self.lease.acquire();self.store.apply_configuration(self.token,(self.owner,))

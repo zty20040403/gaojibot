@@ -113,13 +113,13 @@ def parse_binding_command(text: str) -> BindingCommand | None:
 
 class BindingReducer:
     def __init__(self, pepper: bytes, *, epoch_guard: Callable,
-                 authority: OwnerAuthority | None = None, clock: Callable[[], float] = time.time):
+                 authority: OwnerAuthority, clock: Callable[[], float] = time.time):
         if not isinstance(pepper, bytes) or len(pepper) < 32 or not callable(epoch_guard):
             raise ValueError("Binding requires a protected pepper and epoch guard")
         self._pepper = pepper
         self._epoch_guard = epoch_guard
         self.clock = clock
-        self.authority = authority or OwnerAuthority(clock=clock)
+        self.authority = authority
 
     def __repr__(self):
         return "BindingReducer(<protected pepper>)"
