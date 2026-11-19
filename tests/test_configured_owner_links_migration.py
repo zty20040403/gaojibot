@@ -7,7 +7,7 @@ class ConfiguredOwnerMigrationTests(unittest.TestCase):
     def test_downgrade_preserves_receipt_with_new_decision_on_legacy_action(self):
         schema = migration.owned_schema()
         self.addCleanup(migration.drop, schema)
-        before, after = '0128_retire_vision_jobs', '0129_configured_owner_links'
+        before, after = '0128b_verify_share_history', '0129_configured_owner_links'
         migration.migrate(schema, after)
         with migration.connect(schema) as db:
             fixture = migration.OfficialOutboxMigrationTests()

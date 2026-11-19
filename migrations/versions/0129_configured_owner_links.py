@@ -2,7 +2,7 @@
 from alembic import op
 
 revision = '0129_configured_owner_links'
-down_revision = '0128_retire_vision_jobs'
+down_revision = '0128b_verify_share_history'
 branch_labels = depends_on = None
 
 
