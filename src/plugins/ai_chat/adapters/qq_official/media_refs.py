@@ -8,12 +8,16 @@ from dataclasses import dataclass, field
 import hashlib
 import re
 
-from src.plugins.ai_chat.message_ir import CardNode, ForwardNode, MediaNode, TextNode, body_to_json
+from src.plugins.ai_chat.message_ir import CardNode, ForwardNode, MediaNode, TextNode, body_from_json, body_to_json
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 
 
 class MediaDenied(ValueError):
     """Fixed safe reasons only; no URL, ASR, identifiers or provider exception."""
+
+    def __init__(self, reason, *, http_status=None):
+        super().__init__(reason)
+        self.http_status = http_status
 
 
 @dataclass(frozen=True)
@@ -57,16 +61,12 @@ class LedgerMediaResolver:
                 or row.source_endpoint_key != self.endpoint.key
                 or row.message_kind != 'chat' or row.direction != 'inbound'):
             raise MediaDenied('media_reference_unavailable')
-        matches = [n for n in row.body.nodes if n.segment_index == ref.segment_index]
+        # Freeze nested DTOs; the digest is integrity evidence, never permission.
+        raw = body_to_json(row.body)
+        matches = [n for n in body_from_json(raw).nodes if n.segment_index == ref.segment_index]
         if len(matches) != 1 or not isinstance(matches[0], (MediaNode, CardNode, ForwardNode, TextNode)):
             raise MediaDenied('media_reference_unavailable')
-        node = matches[0]
-        # Freeze nested transport evidence: downstream calls never trust mutated
-        # DTO dictionaries. The digest is integrity evidence, never permission.
-        from src.plugins.ai_chat.message_ir import body_from_json
-        raw = body_to_json(row.body)
-        node = next(n for n in body_from_json(raw).nodes if n.segment_index == ref.segment_index)
-        return MediaSource(ref, self.endpoint, self.requester, node, hashlib.sha256(raw.encode()).hexdigest())
+        return MediaSource(ref, self.endpoint, self.requester, matches[0], hashlib.sha256(raw.encode()).hexdigest())
 
     async def require(self, source):
         if (not isinstance(source, MediaSource) or source.endpoint != self.endpoint
@@ -126,10 +126,5 @@ def text_link(node):
     """
     if not isinstance(node, TextNode):
         return None
-    found = []
-    for match in re.finditer(r'https://[^\s<>"\']+', node.text):
-        value = match.group(0)
-        if len(value) > 8192 or found:
-            return None
-        found.append(value)
-    return found[0] if found else None
+    links = re.findall(r'https://[^\s<>"\']+', node.text)
+    return links[0] if len(links) == 1 and len(links[0]) <= 8192 else None

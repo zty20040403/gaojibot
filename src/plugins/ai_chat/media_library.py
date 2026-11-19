@@ -856,48 +856,6 @@ class MediaLibrary:
             connection.close()
         return [self._record_from_row(row) for row in rows]
 
-    async def search_media(
-        self,
-        scope: ConversationScope,
-        query: str,
-        *,
-        stickers_only: bool = False,
-        limit: int = 5,
-    ) -> list[MediaRecord]:
-        lexical = self.find_media(
-            scope,
-            query,
-            stickers_only=stickers_only,
-            limit=limit,
-        )
-        if self.semantic_recall is None or not query.strip():
-            return lexical
-        try:
-            hits = await self.semantic_recall.search([scope.key], query, limit=limit * 3)
-        except (OSError, RuntimeError, ValueError, httpx.HTTPError):
-            return lexical
-        by_id = {item.media_id: item for item in lexical}
-        for hit in hits:
-            if hit.source_type != "media":
-                continue
-            try:
-                media_id = int(hit.source_handle.removeprefix("media#"))
-            except ValueError:
-                continue
-            record = self.get_media(
-                scope,
-                media_id,
-                sendable_sticker_only=stickers_only,
-            )
-            if record is None:
-                continue
-            by_id[media_id] = MediaRecord(**{**record.__dict__, "score": hit.score})
-        return sorted(
-            by_id.values(),
-            key=lambda item: (item.score, item.media_id),
-            reverse=True,
-        )[: min(max(int(limit), 1), 20)]
-
     def find_stickers(
         self,
         query: str,

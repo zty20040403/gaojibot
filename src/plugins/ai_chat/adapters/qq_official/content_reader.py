@@ -69,12 +69,14 @@ class PinnedContentReader:
         elif isinstance(node, MediaNode):
             url = node.raw_data.get('voice_wav_url') if audio else None
             url = url or node.source
-            declared_size = node.raw_data.get('size')
-            if declared_size is not None and (type(declared_size) is not int
-                    or not 0 <= declared_size <= self.max_bytes):
-                raise MediaDenied('download_size_limit')
         else:
             raise MediaDenied('media_reference_unavailable')
+        if not url:
+            raise MediaDenied('media_download_url_missing')
+        declared_size = node.raw_data.get('size') if isinstance(node, MediaNode) else None
+        if declared_size is not None and (type(declared_size) is not int
+                or not 0 <= declared_size <= self.max_bytes):
+            raise MediaDenied('download_size_limit')
         response, transport = None, None
         try:
             async with asyncio.timeout(self.timeout):
@@ -85,7 +87,7 @@ class PinnedContentReader:
                 response = await transport.handle_async_request(httpx2.Request(
                     'GET', url, headers={'Accept-Encoding': 'identity'}))
                 if response.status_code != 200:
-                    raise MediaDenied('download_http_rejected')
+                    raise MediaDenied('download_http_rejected', http_status=response.status_code)
                 encoding = response.headers.get('content-encoding', 'identity').lower()
                 if encoding != 'identity':
                     raise MediaDenied('download_encoding_rejected')

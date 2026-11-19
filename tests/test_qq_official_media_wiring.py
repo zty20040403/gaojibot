@@ -24,6 +24,9 @@ from src.plugins.ai_chat.tools import neutral_registry_for
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.adapters.qq_official.content_reader import PinnedContentReader, PinnedMediaTransport
+from src.plugins.ai_chat.adapters.qq_official.codec import decode_message
+from src.qq_official.events import parse_dispatch
+from tests.test_qq_official_image_formats import png
 
 
 class WiringTests(unittest.IsolatedAsyncioTestCase):
@@ -106,11 +109,9 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         session=await self.session(stickers=True)
         with self.assertRaises(MediaDenied):await session.sticker({'media_handle':'media#1'},frozenset())
 
-    async def test_bound_conversation_imports_large_attachment_into_its_vm(self):
+    async def test_bound_conversation_reads_and_imports_official_attachment_forms(self):
         scope=ConversationScope('onebot-v11','group','TEST_OLD_GROUP')
-        self.source=replace(self.source,scope_key=scope.key,body=MessageBody((MediaNode(
-            0,'video',source='https://example.invalid/video',name='clip.mp4'),)))
-        self.inbound=replace(self.inbound,canonical_scope=scope,body=self.source.body)
+        self.inbound=replace(self.inbound,canonical_scope=scope)
         self.platform.inbound=self.inbound
         def get(actual,canonical):
             self.assertEqual(actual,scope)
@@ -118,16 +119,62 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         self.app.message_ledger.get_in_scope=get
         manager=SimpleNamespace(ensure_default=AsyncMock(return_value={'sandbox_id':'TEST_VM'}),write_file=AsyncMock())
         self.app.sandbox_manager=manager
-        session=await self.session(documents=True)
-        content=b'TEST_VIDEO'*(300*1024)
+        session=await self.session(documents=True,ocr=True)
+        session.frontend_vision=True
+        turn=TurnState(ToolContext(SimpleNamespace(context=self.app),inbound=self.inbound,platform=self.platform))
+        query='appid=TEST_APP&fileid=TEST_FILE%2FTEST%2B%3D&rkey=TEST_KEY&spec=0'
+        urls=[(prefix+'multimedia.example.invalid/download?'+query,200,'inbound') for prefix in ('https://','//','')]
+        urls.extend([('https://gchat.example.invalid/gchatpic_new/TEST_APP/TEST_FILE/0?term=2',200,'inbound'),
+                     ('',200,'inbound'),(urls[0][0],403,'inbound'),('',200,'outbound')])
         async def dns(host,port):return ('93.184.216.34',)
-        session.service.file_fetcher=PinnedContentReader(max_bytes=100*1024*1024,transport_factory=lambda url:
-            PinnedMediaTransport(url,resolver=dns,max_response_bytes=100*1024*1024,max_session_bytes=100*1024*1024,
-                transport=httpx2.MockTransport(lambda request:httpx2.Response(200,content=content,headers={'content-type':'video/mp4'}))))
-        result=await session.import_file({})
-        self.assertEqual(result['path'],'/work/chat/3-0-clip.mp4')
-        self.assertEqual(manager.write_file.call_args.args[3],content)
-        self.assertTrue(manager.write_file.call_args.kwargs['allow_large'])
+        for mime,name,content in (('text/plain','TEST.txt',b'TEST text'),
+                                  ('application/pdf','TEST.pdf',b'%PDF-1.7\nTEST_OPAQUE_PDF\n%%EOF'),
+                                  ('image/png','TEST.png',png()),
+                                  ('video/mp4','clip.mp4',b'TEST_VIDEO'*(300*1024))):
+            for form,(url,status,direction) in enumerate(urls):
+                with self.subTest(mime=mime,form=form):
+                    decoded=decode_message(parse_dispatch({'op':0,'s':1,'t':'C2C_MESSAGE_CREATE','d':{
+                        'id':'TEST_SOURCE','author':{'user_openid':'TEST_MEMBER'},'content':'',
+                        'attachments':[{'url':url,'filename':name,'content_type':mime,'size':len(content) if url else 100*1024*1024+1}]}}),self.account,100)
+                    self.source=replace(self.source,scope_key=scope.key,body=decoded.body,direction=direction)
+                    if not url:self.assertNotIn('unsafe_media_url',decoded.evidence.warnings)
+                    requests=[]
+                    session.images.clear()
+                    manager.write_file.reset_mock()
+                    async def fetch(request):
+                        requests.append(request)
+                        return httpx2.Response(status,content=content if status==200 else b'TEST_RESPONSE_SECRET',headers={'content-type':mime})
+                    reader=PinnedContentReader(max_bytes=100*1024*1024,transport_factory=lambda url:
+                        PinnedMediaTransport(url,resolver=dns,max_response_bytes=100*1024*1024,
+                            max_session_bytes=100*1024*1024,transport=httpx2.MockTransport(fetch)))
+                    session.service.fetcher=session.service.file_fetcher=session.service.image_fetcher=reader
+                    if not url or status!=200:
+                        tools=('import_file_to_sandbox',) if mime=='video/mp4' else (
+                            'import_file_to_sandbox','view_image' if mime=='image/png' else 'read_attachment')
+                        for tool in tools:
+                            result=json.loads(await neutral_registry_for(turn.context).execute(turn,tool,{'message_handle':'msg#3'}))
+                            self.assertFalse(result['ok'])
+                            expected=('media_reference_unavailable' if direction=='outbound' else
+                                      'download_http_rejected' if url else 'media_download_url_missing')
+                            self.assertEqual(result['code'],expected)
+                            if url:self.assertEqual(result['http_status'],403);self.assertIn('不能确定是否过期',result['message'])
+                            else:
+                                self.assertIn('入站' if direction=='outbound' else '仍无法读取',result['message'])
+                                self.assertFalse(requests)
+                            self.assertNotIn('TEST_KEY',str(result));self.assertNotIn('TEST_RESPONSE_SECRET',str(result))
+                        manager.write_file.assert_not_called()
+                        continue
+                    if mime=='text/plain':
+                        self.assertEqual(json.loads(await neutral_registry_for(turn.context).execute(turn,'read_attachment',{}))['text'],'TEST text')
+                    elif mime=='image/png':
+                        self.assertTrue((await neutral_registry_for(turn.context).execute(turn,'view_image',{})).data_url.startswith('data:image/'))
+                    result=json.loads(await neutral_registry_for(turn.context).execute(turn,'import_file_to_sandbox',{}))
+                    self.assertEqual(result['path'],f'/work/chat/3-0-{name}')
+                    self.assertEqual(manager.write_file.call_args.args[3],content)
+                    self.assertTrue(manager.write_file.call_args.kwargs['allow_large'])
+                    self.assertTrue(all(req.url.query==httpx2.URL(
+                        'https://'+url.removeprefix('https://').removeprefix('//')).query for req in requests))
+                    self.assertNotIn('TEST_KEY',str(result))
 
     def test_configuration_strict_and_local_fallback_dependency_gate(self):
         for bad in ({'asr':1},{'local_asr':True},{'url':'https://x'},{'max_download_bytes':2097153}):

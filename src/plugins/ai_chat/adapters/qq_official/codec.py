@@ -146,12 +146,18 @@ def _contains_nul(value: Any) -> bool:
     return False
 
 
-def _url(value: Any) -> str:
+def _url(value: Any, *, attachment: bool = False) -> str:
     if not isinstance(value, str) or len(value) > MAX_URL_CHARS or any(ord(c) <= 32 or unicodedata.category(c) in {"Cc", "Cf"} for c in value):
         return ""
     try:
         parsed = urlsplit(value)
-        if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
+        # QQ attachments may omit the scheme; cards must still be absolute URLs.
+        if attachment and value and not parsed.scheme:
+            value = "https:" + value if value.startswith("//") else "https://" + value
+            parsed = urlsplit(value)
+            if not parsed.hostname or '.' not in parsed.hostname:
+                return ""
+        if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username is not None or parsed.password is not None:
             return ""
         _ = parsed.port  # Reject invalid ports as well as malformed bracketed hosts.
         return value
@@ -262,7 +268,7 @@ def _text_nodes(body: _Body, text: str, mentions: tuple[MentionEvidence, ...]):
 def _media_nodes(body: _Body, attachments, *, sticker: bool = False):
     for item in attachments:
         mime = _label(item.content_type, 128).lower().split(";", 1)[0].strip()
-        primary, wav = _url(item.url), _url(item.voice_wav_url)
+        primary, wav = _url(item.url, attachment=True), _url(item.voice_wav_url, attachment=True)
         if mime.startswith("image/"):
             kind = "sticker" if sticker else "image"
         elif mime.startswith("video/"):

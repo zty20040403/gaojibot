@@ -144,20 +144,18 @@ class DownloadTests(Fixtures):
                 await reader.fetch(source, resolver=self.resolver)
             self.assertFalse(self.requests)
 
-    async def test_redirect_never_followed(self):
-        reader = self.reader(lambda req: httpx2.Response(302, headers={'location': 'http://127.0.0.1/private'}))
-        with self.assertRaises(MediaDenied):
-            await reader.fetch(await self.source(), resolver=self.resolver)
-        self.assertEqual(len(self.requests), 1)
-
-    async def test_compression_status_empty_and_over_budget(self):
-        cases = [httpx2.Response(200, content=b'x', headers={'content-encoding': 'gzip'}),
+    async def test_redirect_compression_status_empty_and_over_budget(self):
+        cases = [httpx2.Response(302, headers={'location': 'http://127.0.0.1/private'}),
+                 httpx2.Response(403), httpx2.Response(200, content=b'x', headers={'content-encoding': 'gzip'}),
                  httpx2.Response(204), httpx2.Response(200, content=b''),
                  httpx2.Response(200, content=b'x' * 65)]
         for response in cases:
             reader = self.reader(lambda req, r=response: r, max_bytes=64)
-            with self.subTest(response=response.status_code), self.assertRaises(MediaDenied):
+            with self.subTest(response=response.status_code), self.assertRaises(MediaDenied) as error:
                 await reader.fetch(await self.source(), resolver=self.resolver)
+            self.assertEqual(len(self.requests), 1)
+            if response.status_code == 403:
+                self.assertEqual((str(error.exception), error.exception.http_status), ('download_http_rejected', 403))
 
     async def test_size_hint_rejects_before_http(self):
         source = await self.source(MediaNode(0, 'file', source=URL, raw_data={'size': 9999}))
