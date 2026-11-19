@@ -9,30 +9,30 @@ from .contracts import AdminServices
 
 
 class AdminEventBroker:
-    def __init__(
-        self,
-        version_provider: Callable[[], dict[str, int]] | None = None,
-    ) -> None:
-        self._sequence = 0
-        self._subscribers: dict[
-            asyncio.Queue[dict[str, object]], asyncio.AbstractEventLoop | None
-        ] = {}
+    def __init__(self, version_provider: Callable[[], dict[str, int]] | None = None) -> None:
+        self._sequence = self._timestamp = 0
+        self._subscribers: dict[asyncio.Event, tuple[asyncio.AbstractEventLoop, set[str], dict[str, int]]] = {}
         self._version_provider = version_provider
         self._lock = threading.Lock()
 
-    def subscribe(self) -> asyncio.Queue[dict[str, object]]:
-        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=32)
-        try:
-            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
+    def subscribe(self) -> asyncio.Event:
+        signal = asyncio.Event()
         with self._lock:
-            self._subscribers[queue] = loop
-        return queue
+            self._subscribers[signal] = asyncio.get_running_loop(), set(), {}
+        return signal
 
-    def unsubscribe(self, queue: asyncio.Queue[dict[str, object]]) -> None:
+    async def receive(self, signal: asyncio.Event) -> dict:
+        await signal.wait()
         with self._lock:
-            self._subscribers.pop(queue, None)
+            loop, resources, versions = self._subscribers[signal]
+            self._subscribers[signal] = loop, set(), {}
+            signal.clear()
+            return {"type": "resources.changed", "sequence": self._sequence, "timestamp": self._timestamp,
+                    "resources": sorted(resources), **({"versions": versions} if versions else {})}
+
+    def unsubscribe(self, signal: asyncio.Event) -> None:
+        with self._lock:
+            self._subscribers.pop(signal, None)
 
     @property
     def has_subscribers(self) -> bool:
@@ -45,49 +45,22 @@ class AdminEventBroker:
     def publish_runtime(self, *resources: str) -> None:
         self._publish(resources, include_versions=False)
 
-    def _publish(
-        self,
-        resources: tuple[str, ...],
-        *,
-        include_versions: bool,
-    ) -> None:
-        normalized = sorted({str(item).strip() for item in resources if item})
-        if not normalized:
+    def _publish(self, resources: tuple[str, ...], *, include_versions: bool) -> None:
+        changed = {item.strip() for item in resources if item.strip()}
+        if not changed:
             return
         with self._lock:
-            self._sequence += 1
-            payload: dict[str, object] = {
-                "sequence": self._sequence,
-                "type": "resources.changed",
-                "resources": normalized,
-                "timestamp": int(time.time()),
-            }
+            versions = {}
             if include_versions and self._version_provider is not None:
-                versions = self._version_provider()
-                payload["versions"] = {
-                    resource: versions.get(resource, 0) for resource in normalized
-                }
-            subscribers = tuple(self._subscribers.items())
-        for queue, loop in subscribers:
-            if loop is None:
-                self._offer(queue, payload)
-            elif not loop.is_closed():
-                loop.call_soon_threadsafe(self._offer, queue, payload)
-
-    @staticmethod
-    def _offer(
-        queue: asyncio.Queue[dict[str, object]],
-        payload: dict[str, object],
-    ) -> None:
-        if queue.full():
-            try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        try:
-            queue.put_nowait(payload)
-        except asyncio.QueueFull:
-            return
+                current = self._version_provider()
+                versions = {key: current.get(key, 0) for key in changed}
+            self._sequence += 1
+            self._timestamp = int(time.time())
+            for signal, (loop, pending, latest) in self._subscribers.items():
+                if not pending and not loop.is_closed():
+                    loop.call_soon_threadsafe(signal.set)
+                pending.update(changed)
+                latest.update(versions)
 
 
 _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
