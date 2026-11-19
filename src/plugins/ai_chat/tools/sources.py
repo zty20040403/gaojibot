@@ -15,7 +15,7 @@ from jsonschema import Draft202012Validator
 
 from ..ai_tools import INSPECT_SOURCE_TOOL, USE_SKILL_TOOL, WEB_FETCH_TOOL, WEB_SEARCH_TOOL
 from ..web_fetch import BLOCKED_STATUSES, BROWSER_HEADERS, FetchError, fetch_page
-from ..web_search import SearchError, SearchResult, clean_source_url, search_web
+from ..web_search import SearchError, SearchResult, clean_search_query, clean_source_url, search_web
 from .registry import FunctionTool
 from .state import ToolContext, TurnState, structured_tool_source
 
@@ -163,7 +163,9 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
     schema = WEB_SEARCH_TOOL["function"]["parameters"]
     if not Draft202012Validator(schema).is_valid(arguments):
         return json.dumps({"ok": False, "error": "搜索参数不合法。"}, ensure_ascii=False)
-    queries = [query.strip()[:settings.max_input_chars] for query in arguments["queries"]]
+    queries = [clean_search_query(query.strip()[:settings.max_input_chars]) for query in arguments["queries"]]
+    if not all(queries):
+        return json.dumps({"ok": False, "error": "搜索词不能为空。"}, ensure_ascii=False)
     max_results = min(int(arguments.get("max_results", 10)), settings.search_max_results)
     source = structured_tool_source(turn.context)
     browser = None

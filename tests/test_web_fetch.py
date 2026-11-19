@@ -93,13 +93,15 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
             requests.append(request)
             text = block("first", "x" * 900) + "\n\n---\n\n" + block("second", "Title: nested\nURL: https://nested.test\n---")
             return exa_response(request, text.replace("\n", "\r\n"))
-        results = await search_web(["TEST_query"], max_results=2, transport=httpx.MockTransport(handler))
+        query = '“TEST_query”「C++」 OR (-SITE:example.test)，ORACLE OR-Tools or don’t?'
+        results = await search_web([query], max_results=2, transport=httpx.MockTransport(handler))
         self.assertEqual([json.loads(r.content)["method"] for r in requests], ["initialize", "notifications/initialized", "tools/call"])
         self.assertEqual(requests[0].headers["accept"], "application/json, text/event-stream")
         self.assertEqual(json.loads(requests[0].content)["params"]["protocolVersion"], "2025-03-26")
         self.assertEqual(requests[2].headers["mcp-session-id"], "TEST_SESSION")
         self.assertEqual(json.loads(requests[2].content)["params"], {"name": "web_search_exa", "arguments": {
-            "query": "TEST_query", "objective": "TEST_query", "numResults": 2}})
+            "query": "TEST_query C++ ，ORACLE OR-Tools or don’t?",
+            "objective": "TEST_query C++ ，ORACLE OR-Tools or don’t?", "numResults": 2}})
         self.assertEqual(results[0], SearchResult("first", "https://example.test/first", "x" * 800, "2026-11-19", "exa"))
         self.assertEqual((results[1].title, results[1].url), ("second", "https://example.test/second"))
         self.assertIn("Title: nested", results[1].snippet)
@@ -113,7 +115,9 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
                 web_search_module._bocha_exhausted = False
                 calls = []
                 def handler(request):
+                    body = json.loads(request.content)
                     if request.url.host == "api.bochaai.com":
+                        self.assertEqual(body["query"], "TEST_query")
                         calls.append(request)
                         data = {"code": 200, "data": {"webPages": {"value": [{"name": "B", "url": "https://example.test/b",
                                 "summary": "摘要", "datePublished": "2026-11-19"}]}}}
@@ -122,15 +126,17 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
                         return httpx.Response(int(exa), text="TEST_SECRET TEST_query")
                     if exa == "schema":
                         return httpx.Response(200, text="TEST_SECRET")
+                    if body["method"] == "tools/call":
+                        self.assertEqual(body["params"]["arguments"]["query"], "TEST_query")
                     return exa_response(request, "No results found.")
                 with self.assertLogs(web_search_module._logger, level="INFO") as logs:
                     for _ in range(2):
                         if exa in {"empty", "429", "schema"}:
-                            results = await search_web(["TEST_query"], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
+                            results = await search_web(['"TEST_query" OR site:example.test'], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
                             self.assertEqual(results[0], SearchResult("B", "https://example.test/b", "摘要", "2026-11-19", "bocha"))
                         else:
                             with self.assertRaises(SearchError):
-                                await search_web(["TEST_query"], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
+                                await search_web(['"TEST_query" OR site:example.test'], api_key="TEST_SECRET", transport=httpx.MockTransport(handler))
                 self.assertEqual(len(calls), 1 if exhausted else 2)
                 self.assertEqual(sum("disabled=true" in line for line in logs.output), int(exhausted))
                 self.assertNotIn("TEST_SECRET", " ".join(logs.output))
@@ -171,6 +177,13 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.title for r in first], ["one", "two", "shared"])
         self.assertEqual([r.title for r in second], ["three", "four", "shared"])
         self.assertEqual(logs.records[0].outcome, "http_error")
+
+    async def test_empty_cleaned_queries_never_contact_providers(self) -> None:
+        def handler(request):
+            self.fail("empty queries must not contact providers")
+        for queries in ([], ['"“”「」『』" OR site:example.test'], ['(-site:example.test)'], ['TEST', 'OR']):
+            with self.subTest(queries=queries), self.assertRaises(SearchError):
+                await search_web(queries, api_key="TEST_KEY", transport=httpx.MockTransport(handler))
 
     async def test_unexpected_internal_exception_propagates(self) -> None:
         def handler(request):

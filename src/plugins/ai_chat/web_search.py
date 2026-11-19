@@ -55,11 +55,20 @@ def _log_attempt(provider: str, outcome: str, count: int = 0, fallback_reason: s
     )
 
 
+def clean_search_query(query: str) -> str:
+    query = re.sub(r'["“”「」『』]', ' ', query)
+    query = re.sub(r'(?<![\w:/.-])([(（]\s*)?-?(?i:site):\s*[^\s,，;；!?！？()（）\[\]{}<>。]*(?(1)\s*[)）])', '', query)
+    return _clean_text(re.sub(r'(?<![\w./:+-])OR(?![\w./:+-])', '', query))
+
+
 async def search_web(
     queries: list[str], *, max_results: int = 10, timeout_seconds: int = 10,
     api_key: str = "", transport: httpx.AsyncBaseTransport | None = None,
     all_results: list[SearchResult] | None = None, browser=None,
 ) -> list[SearchResult]:
+    queries = [clean_search_query(query) for query in queries]
+    if not queries or not all(queries):
+        raise SearchError("搜索词不能为空。")
     async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
         batches = await asyncio.gather(*(
             _search_query(client, query, max_results, timeout_seconds, api_key, browser) for query in queries

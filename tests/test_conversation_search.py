@@ -24,16 +24,18 @@ class ConversationSearchTests(unittest.IsolatedAsyncioTestCase):
             calls.append(request.url.host)
             if request.url.host == 'mcp.exa.ai':
                 return httpx.Response(429)
+            self.assertEqual(json.loads(request.content)['query'], 'TEST query')
             return httpx.Response(200, json={'data': {'webPages': {'value': []}}})
         options = dict(browser=partial(search_browser, manager, 'TEST_OWNER'), api_key='TEST_KEY',
                        transport=httpx.MockTransport(post))
-        hits = await search_web(['TEST query'], **options)
+        hits = await search_web(['“TEST query” OR site:example.test'], **options)
         self.assertEqual([(r.title, r.provider) for r in hits], [('TEST', 'browser')])
         self.assertEqual(calls, ['mcp.exa.ai'])
         manager._metadata.assert_awaited_once_with('TEST_OWNER', 'TEST_SID')
-        self.assertEqual([json.loads(call.args[2][-1])[0] for call in manager._guest_exec.await_args_list], ['bing', 'baidu'])
+        self.assertEqual([json.loads(call.args[2][-1]) for call in manager._guest_exec.await_args_list],
+                         [['bing', 'TEST query'], ['baidu', 'TEST query']])
         manager.list.return_value[0]['status'] = 'Exited'
-        self.assertEqual(await search_web(['TEST query'], **options), [])
+        self.assertEqual(await search_web(['「TEST query」 OR site:example.test'], **options), [])
         self.assertEqual(calls[-2:], ['mcp.exa.ai', 'api.bochaai.com'])
         self.assertEqual(manager._guest_exec.await_count, 2)
         manager.start_owned.assert_not_called()
