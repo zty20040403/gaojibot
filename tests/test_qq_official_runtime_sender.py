@@ -23,7 +23,7 @@ from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.plugins.ai_chat.turn_journal import TurnJournal
-from src.qq_official.testing.fake_platform import FakePlatform
+from tests.fake_platform import FakePlatform
 
 
 @asynccontextmanager

@@ -6,8 +6,8 @@ import os
 import unittest
 
 from src.bot_storage import PostgresDatabase
-from src.bot_storage.disposable import IsolatedPostgres as _SchemaFixture
-from src.bot_storage.disposable import validate_test_database as validate_test_database
+from tests.disposable_postgres import IsolatedPostgres as _SchemaFixture
+from tests.disposable_postgres import validate_test_database as validate_test_database
 
 
 def isolated_postgres_for_test(case: unittest.TestCase) -> PostgresDatabase:

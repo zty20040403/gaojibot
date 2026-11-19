@@ -21,7 +21,7 @@ from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBinding
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.validation import Denied
 from src.plugins.ai_chat.adapters.qq_official.runtime import OfficialRuntime, open_official_protocol
-from src.qq_official.testing.fake_platform import FakePlatform
+from tests.fake_platform import FakePlatform
 from tests.postgres_fixture import isolated_postgres_for_test
 
 

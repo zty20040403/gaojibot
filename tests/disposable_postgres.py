@@ -15,8 +15,8 @@ import psycopg
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
-from .database import PostgresDatabase
-from .schema import HEAD_REVISION
+from src.bot_storage.database import PostgresDatabase
+from src.bot_storage.schema import HEAD_REVISION
 
 _MIGRATION_LOCK = threading.Lock()
 _ROOT = Path(__file__).resolve().parents[2]

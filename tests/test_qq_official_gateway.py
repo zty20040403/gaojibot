@@ -12,7 +12,7 @@ from src.qq_official.gateway import (
     GatewayError, IdentifyBudget, classify_close_code,
 )
 from src.qq_official.http import RestClient
-from src.qq_official.testing.fake_platform import (
+from tests.fake_platform import (
     FAKE_DUPLICATE_SEQUENCE, FAKE_UNKNOWN_WINDOW, FakePlatform,
 )
 from src.qq_official.token import TokenManager

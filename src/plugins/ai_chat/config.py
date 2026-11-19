@@ -122,8 +122,6 @@ class Settings:
     local_model_profile: str
     local_model_probe_interval_seconds: int
     local_model_probe_timeout_seconds: int
-    qwen_control_url: str
-    qwen_control_token: str
     model_profiles_json: str
     model_fallback_enabled: bool
     model_circuit_failure_threshold: int
@@ -277,8 +275,6 @@ class Settings:
             local_model_profile=environment.get("AI_LOCAL_MODEL_PROFILE", "qwen-local").strip(),
             local_model_probe_interval_seconds=max(integer("AI_LOCAL_MODEL_PROBE_INTERVAL_SECONDS", 15), 1),
             local_model_probe_timeout_seconds=min(max(integer("AI_LOCAL_MODEL_PROBE_TIMEOUT_SECONDS", 2), 1), 10),
-            qwen_control_url=environment.get("AI_QWEN_CONTROL_URL", "").strip(),
-            qwen_control_token=environment.get("AI_QWEN_CONTROL_TOKEN", "").strip(),
             model_fallback_enabled=boolean("AI_MODEL_FALLBACK_ENABLED", True),
             model_circuit_failure_threshold=min(
                 max(integer("AI_MODEL_CIRCUIT_FAILURE_THRESHOLD", 2), 1),

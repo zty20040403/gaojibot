@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -55,12 +54,6 @@ class AdminMutationContext:
 
 class ModelSelectionRequest(BaseModel):
     profile: str | None = None
-
-
-class LocalModelControlRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    action: Literal["start", "stop"]
-    request_id: UUID
 
 
 class ReasoningEffortRequest(BaseModel):

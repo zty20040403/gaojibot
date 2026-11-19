@@ -68,14 +68,10 @@
           )
           ./migrations)
         (lib.fileset.fileFilter (file: file.hasExt "py") ./tests)
-        ./tests/fixtures/context_accuracy_cases.json
-        (lib.fileset.fileFilter (file: file.hasExt "js") ./tools)
-        ./tools/qwen_control.py
         (lib.fileset.fileFilter (
             file:
               file.hasExt "py"
               || file.hasExt "ts"
-              || file.hasExt "swift"
               || file.hasExt "png"
               || file.hasExt "svg"
           )
@@ -247,7 +243,6 @@
     nixosModules = {
       default = import ./nix/module.nix {inherit self;};
       gaoji = self.nixosModules.default;
-      qwen-control = import ./nix/qwen-control.nix;
     };
   };
 }

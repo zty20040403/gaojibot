@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import unittest
-import uuid
 from dataclasses import replace
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
 from fastapi import FastAPI
 
 
-from src.plugins.ai_chat.admin import AdminServices, register_admin as locked_register_admin
+from src.plugins.ai_chat.admin import AdminServices
 from tests.admin_session_fixture import ApprovedClient, register_admin
 from src.plugins.ai_chat.agent_loop import AgentTrace, _invoke_completion
 from src.plugins.ai_chat.llm_gateway import (
@@ -29,7 +26,6 @@ DEEPSEEK = replace(QWEN, name="deepseek", provider="deepseek", model="deepseek-t
 
 class LocalModelTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.service_state = "stopped"
         self.model_status = 200
         self.models = []
         self.requests = []
@@ -37,11 +33,9 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
 
         async def respond(request):
             self.requests.append(str(request.url))
-            if request.url.path == "/status":
-                return httpx.Response(200, json={"state": self.service_state, "gpu": None})
             return httpx.Response(self.model_status, json={"data": self.models})
 
-        self.local = LocalModelRuntime(QWEN, client=httpx.AsyncClient(transport=httpx.MockTransport(respond)), control_url="http://control.test", control_token="x" * 32)
+        self.local = LocalModelRuntime(QWEN, client=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
         self.addAsyncCleanup(self.local.close)
         self.catalog = ModelCatalog({QWEN.name: QWEN, DEEPSEEK.name: DEEPSEEK}, default_profile="deepseek")
         self.provider = Mock()
@@ -58,13 +52,12 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
         calls = len(self.requests)
         result = await self.gateway.create_completion_with_profile(QWEN, messages=[])
         self.assertEqual(result.profile.name, "deepseek")
-        self.assertEqual(result.routing["reason_code"], "service_stopped")
+        self.assertEqual(result.routing["reason_code"], "model_not_loaded")
         self.assertEqual(result.routing["requested_profile"], "qwen-local")
         self.assertEqual(result.routing["actual_profile"], "deepseek")
         self.assertTrue(result.routing["fallback"])
         self.assertEqual(len(self.requests), calls, "chat must not perform health I/O")
         self.assertEqual([item[0] for item in self.control_requests], ["deepseek"])
-        self.service_state = "running"
         self.models = [{"id": QWEN.model}]
         await self.local.probe_once()
         result = await self.gateway.create_completion_with_profile(QWEN, messages=[])
@@ -77,7 +70,6 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
     async def test_initial_stale_missing_model_and_stopping_are_not_ready(self):
         self.assertEqual(self.local.unavailable_reason(QWEN.name)[0], "health_pending")
         self.assertIsNone(self.local.unavailable_reason(DEEPSEEK.name))
-        self.service_state = "running"
         self.models = [{"id": "different-model"}]
         await self.local.probe_once()
         self.assertEqual(self.local.snapshot()["state"], "loading")
@@ -85,7 +77,7 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
         await self.local.probe_once()
         self.local._checked_monotonic = time.monotonic() - 100
         self.assertEqual(self.local.unavailable_reason(QWEN.name)[0], "health_stale")
-        self.service_state = "stopping"
+        self.models = []
         await self.local.probe_once()
         self.assertFalse(self.local.snapshot()["ready"])
 
@@ -94,7 +86,6 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(local.close)
         await local.probe_once()
         self.assertEqual(local.snapshot()["state"], "unavailable")
-        self.assertFalse(local.snapshot()["control_configured"])
 
     async def test_background_worker_probes_without_console_subscribers(self):
         task = asyncio.create_task(self.local.run_forever())
@@ -111,7 +102,6 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ready_cache_does_not_clear_inference_circuit_on_every_request(self):
         self.models = [{"id": QWEN.model}]
-        self.service_state = "running"
         await self.local.probe_once()
 
         async def fail_qwen(profile, **kwargs):
@@ -137,7 +127,6 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
         qwen = replace(QWEN, circuit_breaker_enabled=False)
         self.local.profile = qwen
         self.models = [{"id": qwen.model}]
-        self.service_state = "running"
         await self.local.probe_once()
         catalog = ModelCatalog(
             {qwen.name: qwen, DEEPSEEK.name: DEEPSEEK},
@@ -228,66 +217,3 @@ class LocalModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(decisions), 1)
         self.assertEqual(decisions[0]["actual_profile"], "")
         self.assertEqual([item["status"] for item in decisions[0]["outcomes"]], ["skipped", "failed"])
-
-    async def test_control_gate_ignores_probe_started_before_command(self):
-        entered = asyncio.Event()
-        release = asyncio.Event()
-
-        async def respond(_request):
-            entered.set()
-            await release.wait()
-            return httpx.Response(200, json={"data": [{"id": QWEN.model}]})
-
-        local = LocalModelRuntime(QWEN, client=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
-        self.addAsyncCleanup(local.close)
-        task = asyncio.create_task(local.probe_once())
-        await entered.wait()
-        with local._lock:
-            local._revision += 1
-            local._pending_action = "stop"
-        release.set()
-        await task
-        self.assertFalse(local.snapshot()["ready"])
-        self.assertEqual(local.snapshot()["state"], "stopping")
-
-    async def test_admin_control_auth_version_schema_and_audit(self):
-        app = FastAPI()
-        register_admin(
-            app,
-            AdminServices(
-                version="test",
-                started_at=123,
-                local_model=self.local,
-                llm_gateway=self.gateway,
-                settings=SimpleNamespace(model_simple_chat_profile=QWEN.name),
-            ),
-            test_case=self,
-            token="admin-secret",
-        )
-        async with ApprovedClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            url = "/bot-admin/api/v1/local-model"
-            headers = {"X-Test-Login": "admin"}
-            self.assertEqual((await client.get(url)).status_code, 401)
-            status = (await client.get(url, headers=headers)).json()
-            self.assertTrue(status["can_control"])
-            self.assertNotIn("x" * 32, json.dumps(status))
-            body = {"action": "start", "request_id": str(uuid.uuid4())}
-            self.assertEqual((await client.post(url + "/control", headers=headers, json=body)).status_code, 428)
-            headers["If-Match"] = '"0"'
-            for change in ({"command": "rm"}, {"action": "restart"}, {"request_id": "bad"}):
-                self.assertEqual((await client.post(url + "/control", headers=headers, json={**body, **change})).status_code, 422)
-            with patch.object(self.local, "control", return_value={"accepted": True, "request_id": body["request_id"]}) as control:
-                self.assertEqual((await client.post(url + "/control", headers=headers, json=body)).status_code, 200)
-                self.assertEqual((await client.post(url + "/control", headers=headers, json=body)).status_code, 409)
-                control.assert_called_once()
-            audit = (await client.get("/bot-admin/api/v1/audit", headers=headers)).json()
-            self.assertIn("local_model.start", json.dumps(audit))
-
-    async def test_power_control_is_closed_when_accounts_uninitialized(self):
-        app = FastAPI()
-        locked_register_admin(app, AdminServices(version="test", started_at=1, local_model=self.local))
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post("/bot-admin/api/v1/local-model/control", headers={"If-Match": "0"}, json={"action": "stop", "request_id": str(uuid.uuid4())})
-            self.assertEqual(response.status_code, 503)

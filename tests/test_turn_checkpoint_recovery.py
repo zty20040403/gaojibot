@@ -17,7 +17,7 @@ from unittest.mock import patch
 from aiohttp import web
 
 from src.bot_storage import PostgresDatabase
-from src.bot_storage.disposable import validate_test_database
+from tests.disposable_postgres import validate_test_database
 from tests import test_qq_official_runtime as runtime_fixture
 from tests import test_qq_official_turn_endtoend as turn_fixture
 from tests.test_qq_official_runtime_sender import verified_ready_platform

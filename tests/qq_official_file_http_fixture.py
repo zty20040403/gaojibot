@@ -3,7 +3,7 @@ import asyncio
 import base64
 import hashlib
 from aiohttp import web
-from src.qq_official.testing.fake_platform import FakePlatform
+from tests.fake_platform import FakePlatform
 
 class MediaFake(FakePlatform):
     """TEST-only additive fixture; never proxies a supplied URL."""

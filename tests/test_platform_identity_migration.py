@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from alembic import command
 from alembic.config import Config
-from src.bot_storage.disposable import IsolatedPostgres
+from tests.disposable_postgres import IsolatedPostgres
 from tests.test_platform_identity_storage import inbound, record
 from src.bot_storage.schema import HEAD_REVISION
 from src.plugins.ai_chat.ledger import MessageLedger

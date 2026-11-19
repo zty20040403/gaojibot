@@ -95,11 +95,6 @@ in {
         example = "https://bot.example.com";
         description = "Public HTTPS origin of the account console, without a path.";
       };
-      botId = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        description = "QQ bot account receiving private six-digit confirmations; required if multiple bots connect.";
-      };
     };
 
     environment = lib.mkOption {
@@ -186,48 +181,6 @@ in {
         type = lib.types.bool;
         default = true;
         description = "Enable Markdown rendering when the endpoint contract supports it; explicit unaccepted format rejection may downgrade.";
-      };
-
-      maxTextChars = lib.mkOption {
-        type = lib.types.ints.between 1 20000;
-        default = 2000;
-        description = "Maximum Unicode characters per rendered part; UTF-8 bytes are checked independently.";
-      };
-
-      maxTextParts = lib.mkOption {
-        type = lib.types.ints.between 1 16;
-        default = 4;
-        description = "Maximum rendered message parts; each part uses its own authorized window charge.";
-      };
-
-      maxTextBytes = lib.mkOption {
-        type = lib.types.nullOr (lib.types.ints.between 1 1048576);
-        default = null;
-        description = "Optional UTF-8 byte cap per rendered part.";
-      };
-
-      deferMaxHours = lib.mkOption {
-        type = lib.types.ints.between 1 24;
-        default = 24;
-        description = "Maximum original result waiting deadline in hours; never refresh on reconnect or apply to expired proactive speech/OTP.";
-      };
-
-      fileLinkTtlSeconds = lib.mkOption {
-        type = lib.types.ints.between 60 3600;
-        default = 3600;
-        description = "Maximum new download publication lifetime in seconds, also bounded by the original artifact retention and result deadline. Existing publications are never renewed.";
-      };
-
-      allowNewerWindows = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "When proactive sending is unavailable, let a pending result use a newer inbound reply window in the same conversation.";
-      };
-
-      certification = lib.mkOption {
-        type = lib.types.enum ["unknown" "unverified" "certified"];
-        default = "unknown";
-        description = "Trusted operator observation of Tencent account certification; unknown uses unverified limits and grants no target API permissions.";
       };
 
       inboxPayloadTtlHours = lib.mkOption {
@@ -520,7 +473,6 @@ in {
         // lib.optionalAttrs (cfg.admin.secretFile != null) {
           AI_ADMIN_SECRET_FILE = "/run/credentials/${serviceName}.service/admin-authorization-key";
           AI_ADMIN_ORIGIN = cfg.admin.origin;
-          AI_ADMIN_BOT_ID = cfg.admin.botId;
         }
         // lib.optionalAttrs (cfg.qqOfficial.enable && cfg.qqOfficial.hostConfigFile != null) {
           AI_QQ_OFFICIAL_HOST_CONFIG_FILE = "/run/credentials/${serviceName}.service/qq-official-host-config";
@@ -539,13 +491,6 @@ in {
           AI_QQ_OFFICIAL_GROUP_ADMISSION = cfg.qqOfficial.groupAdmission;
           AI_QQ_OFFICIAL_INBOX_PAYLOAD_TTL_HOURS = toString cfg.qqOfficial.inboxPayloadTtlHours;
           AI_QQ_OFFICIAL_MARKDOWN = boolString cfg.qqOfficial.markdown;
-          AI_QQ_OFFICIAL_MAX_TEXT_CHARS = toString cfg.qqOfficial.maxTextChars;
-          AI_QQ_OFFICIAL_MAX_TEXT_PARTS = toString cfg.qqOfficial.maxTextParts;
-          AI_QQ_OFFICIAL_MAX_TEXT_BYTES = (if cfg.qqOfficial.maxTextBytes == null then "" else toString cfg.qqOfficial.maxTextBytes);
-          AI_QQ_OFFICIAL_DEFER_MAX_HOURS = toString cfg.qqOfficial.deferMaxHours;
-          AI_QQ_OFFICIAL_FILE_LINK_TTL_SECONDS = toString cfg.qqOfficial.fileLinkTtlSeconds;
-          AI_QQ_OFFICIAL_ALLOW_NEWER_WINDOWS = boolString cfg.qqOfficial.allowNewerWindows;
-          AI_QQ_OFFICIAL_CERTIFICATION = cfg.qqOfficial.certification;
         }
         // lib.optionalAttrs cfg.voiceAsr.enable {
           AI_VIDEO_WHISPER_MODEL_PATH = toString cfg.voiceAsr.model;

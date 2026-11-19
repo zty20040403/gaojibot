@@ -10,7 +10,7 @@ from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.qq_official.credentials import Credentials
 from src.qq_official.http import RestClient
 from src.qq_official.token import TokenManager
-from src.qq_official.testing.fake_platform import FakePlatform
+from tests.fake_platform import FakePlatform
 
 
 class OfficialProgressIntegrationTests(unittest.IsolatedAsyncioTestCase):

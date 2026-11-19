@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
 from src.bot_storage import PostgresDatabase
-from src.bot_storage.disposable import IsolatedPostgres
+from tests.disposable_postgres import IsolatedPostgres
 from src.bot_security.store import SecurityError
 from src.plugins.ai_chat.application_runtime import OfficialApplicationRuntime, create_application
 from src.plugins.ai_chat.config import Settings, settings

@@ -318,8 +318,6 @@ def _build_app_context(
         local_profile,
         interval_seconds=settings.local_model_probe_interval_seconds,
         timeout_seconds=settings.local_model_probe_timeout_seconds,
-        control_url=settings.qwen_control_url,
-        control_token=settings.qwen_control_token,
     )) if local_profile is not None else None
     llm_gateway = _construction.own(LLMGateway(
         local_model=local_model,

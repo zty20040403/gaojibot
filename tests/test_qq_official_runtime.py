@@ -26,7 +26,7 @@ from src.plugins.ai_chat.platform_types import AccountKey
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.qq_official.credentials import Credentials
 from src.qq_official.gateway import GatewayCheckpoint
-from src.qq_official.testing.fake_platform import FakePlatform
+from tests.fake_platform import FakePlatform
 from tests.postgres_fixture import postgres_for_test
 
 

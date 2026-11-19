@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
-from ..local_model import LocalModelControlError
 from .context import AdminRouteContext, authorize, mutation_context, mutation_payload
 from .contracts import (
     AdminMutationContext,
     GroupEnabledRequest,
-    LocalModelControlRequest,
     ModelSelectionRequest,
     ReasoningEffortRequest,
 )
@@ -35,14 +32,12 @@ def create_router(context: AdminRouteContext) -> APIRouter:
         authorize(authorization)
         runtime = services.local_model
         if runtime is None:
-            return versioned("local-model", {"configured": False, "can_control": False})
+            return versioned("local-model", {"configured": False})
         snapshot = runtime.snapshot()
         health = services.llm_gateway.health_snapshot().get(runtime.profile.name, {}) if services.llm_gateway else {}
         selected = getattr(services.settings, "model_simple_chat_profile", "") == runtime.profile.name
-        can_control = bool(context.services.console_store and snapshot["control_configured"])
         return versioned("local-model", {
-            **snapshot, "configured": True, "can_control": can_control,
-            "control_reason": "" if can_control else "启停需要管理员账户、QQ 口令授权和 WSL 管理接口凭据",
+            **snapshot, "configured": True,
             "simple_chat_selected": selected,
             "serving_simple_chat": bool(selected and snapshot["ready"] and health.get("status") != "open"),
             "circuit_state": health.get("status", "unknown"),
@@ -51,31 +46,6 @@ def create_router(context: AdminRouteContext) -> APIRouter:
             "average_latency_ms": health.get("average_latency_ms"),
             "metrics_since": services.started_at,
         })
-
-    @router.post("/api/local-model/control")
-    async def local_model_control(
-        body: LocalModelControlRequest,
-        authorization: Optional[str] = Header(default=None),
-        context: AdminMutationContext = Depends(mutation_context),
-    ) -> dict[str, object]:
-        authorize(authorization)
-        if context.expected_version is None:
-            raise HTTPException(status_code=428, detail="启停操作必须携带 If-Match 资源版本")
-        runtime = services.local_model
-        if runtime is None or not runtime.control_configured:
-            raise HTTPException(status_code=503, detail="尚未配置 WSL 千问管理接口")
-        try:
-            result = await asyncio.to_thread(
-                mutate, context, "local-model",
-                action="local_model." + body.action, target=runtime.profile.name,
-                before={"state": runtime.snapshot()["state"]},
-                operation=lambda _version: runtime.control(body.action, str(body.request_id)),
-            )
-        except LocalModelControlError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from None
-        finally:
-            event_broker.publish("local-model", "overview", "audit")
-        return mutation_payload(result, **result.value)
 
     @router.get("/api/usage")
     def usage(
