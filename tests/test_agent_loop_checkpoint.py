@@ -9,19 +9,7 @@ from unittest.mock import AsyncMock, patch
 from src.plugins.ai_chat.agent_loop import ask_deepseek_with_tools
 from src.plugins.ai_chat.adapters.qq_official.progress import ProgressEmitter
 from src.plugins.ai_chat.tool_invocation import active_tool_step
-
-
-def tool(name):
-    return {'type': 'function', 'function': {'name': name, 'parameters': {'type': 'object'}}}
-
-
-def batch(*names):
-    calls = [NS(id=f'call-{i}', function=NS(name=name, arguments='{}')) for i, name in enumerate(names)]
-    return NS(choices=[NS(message=NS(content='', tool_calls=calls))])
-
-
-def final(text='done'):
-    return NS(choices=[NS(message=NS(content=text, tool_calls=[]))])
+from tests.tool_loop_fixture import batch, final, tool
 
 
 class Stop(Exception):
@@ -81,9 +69,10 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         async def interrupted(*_):
             raise asyncio.CancelledError()
         args = dict(user_text='x', history=[], tools=[tool('shell'), tool('other')],
-                    execute_tool=interrupted, checkpoint_sink=store.save, idempotency_key_prefix='turn-2')
+                    execute_tool=interrupted, checkpoint_sink=store.save, idempotency_key_prefix='turn-2', quiet_call_limit=1)
         await self.interrupted(args, batch('shell', 'other'), asyncio.CancelledError)
         self.assertEqual(store.state['phase'], 'inflight')
+        del store.state['last_progress_call']  # In-flight snapshot from before the quiet reminder.
         execute = AsyncMock()
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=AsyncMock(return_value=final('unknown'))) as model:
             answer = await ask_deepseek_with_tools(**{**args, 'execute_tool': execute}, checkpoint_state=store.state)
@@ -99,7 +88,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         feedback = AsyncMock(side_effect=[['remember this'], []])
         execute = AsyncMock(return_value='ok')
         args = dict(user_text='x', history=[], tools=[tool('one'), tool('two')], execute_tool=execute,
-                    max_total_calls=1, feedback_provider=feedback, checkpoint_sink=store.save, idempotency_key_prefix='turn-3')
+                    max_total_calls=1, feedback_provider=feedback, checkpoint_sink=store.save, idempotency_key_prefix='turn-3', quiet_call_limit=2)
         await self.interrupted(args, batch('one', 'two'))
         store.stop = None
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=AsyncMock(return_value=final())) as model:
@@ -152,6 +141,41 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         execute.assert_awaited_once()
         self.assertIn('重复', str(model.await_args.kwargs['messages']))
         self.assertNotIn('tools', model.await_args.kwargs)
+
+    async def test_parallel_quiet_calls_remind_once_after_resume(self):
+        names = tuple(f'tool-{index}' for index in range(13))
+        store = Store(lambda state: state['phase'] == 'batch' and state['next_index'] == 11)
+        execute = AsyncMock(side_effect=['ok'] * 12 + ['<&' * 12_000])
+        args = dict(user_text='x', history=[], tools=[tool(name) for name in names],
+                    execute_tool=execute, max_calls_per_round=24, quiet_call_limit=12,
+                    checkpoint_sink=store.save, idempotency_key_prefix='turn-quiet')
+        await self.interrupted(args, batch(*names))
+        self.assertEqual(store.state['total_tool_calls'], 11)
+        store.stop = lambda state: state['phase'] == 'between'
+        with self.assertRaises(Stop):
+            await ask_deepseek_with_tools(**args, checkpoint_state=store.state)
+        self.assertEqual(sum(msg.get('quiet_notice', False) for msg in store.state['messages']), 1)
+        store.stop = None
+        with patch('src.plugins.ai_chat.agent_loop._create_completion',
+                   new=AsyncMock(return_value=final())) as model:
+            await ask_deepseek_with_tools(**args, checkpoint_state=store.state)
+        tool_results = [message['content'] for message in model.await_args.kwargs['messages']
+                        if message['role'] == 'tool']
+        self.assertEqual(execute.await_count, 13)
+        self.assertEqual(sum('[进度提醒]' in result for result in tool_results), 1)
+        self.assertIn('[进度提醒]', tool_results[-1].split('</untrusted id=', 1)[1])
+
+    async def test_only_successful_say_resets_quiet_calls(self):
+        names = [f'tool-{index}' for index in range(11)]
+        for status in ('enqueued', 'already_reported', 'suppressed'):
+            ok = status != 'suppressed'
+            execute = AsyncMock(side_effect=['ok'] * 11 + [json.dumps({'ok': ok, 'status': status})])
+            replies = [batch(*names), batch('say', start=11), final()]
+            with self.subTest(status=status), patch('src.plugins.ai_chat.agent_loop._create_completion',
+                    new=AsyncMock(side_effect=replies)) as model:
+                await ask_deepseek_with_tools('x', [], [tool(n) for n in [*names, 'say']], execute,
+                                              max_calls_per_round=24, quiet_call_limit=12)
+                self.assertEqual(str(model.await_args.kwargs['messages']).count('[进度提醒]'), int(not ok))
 
     async def test_unsafe_assistant_and_final_are_not_resumable(self):
         store = Store(lambda s: s['phase'] == 'batch')
