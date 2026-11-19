@@ -8,14 +8,12 @@ import math
 import re
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator, Protocol, Sequence
+from typing import Any, Protocol, Sequence
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import httpx
-from src.bot_storage import DatabaseSource, open_store_connection, StoreCursor
 
 from src.plugins.ai_chat.billing_context import active_billing
 from src.plugins.ai_chat.model_usage import TokenUsage
@@ -409,72 +407,6 @@ class SemanticRecallService:
         return await asyncio.to_thread(self.backend.stats)
 
 
-class SemanticIndexState:
-    """Local checkpoint for derived vectors; source data remains authoritative."""
-
-    def __init__(self, path: DatabaseSource) -> None:
-        self.path, self._connection = open_store_connection(path)
-        self._lock = threading.RLock()
-
-    def close(self) -> None:
-        with self._lock:
-            self._connection.close()
-
-    def changed(
-        self,
-        documents: Sequence[SemanticDocument],
-    ) -> list[SemanticDocument]:
-        if not documents:
-            return []
-        keys = [_document_key(document) for document in documents]
-        placeholders = ",".join("?" for _ in keys)
-        with self._lock:
-            rows = self._connection.execute(
-                f"""
-                SELECT source_key, content_hash FROM semantic_index_state
-                WHERE source_key IN ({placeholders})
-                """,
-                keys,
-            ).fetchall()
-        known = {str(row["source_key"]): str(row["content_hash"]) for row in rows}
-        return [
-            document
-            for document in documents
-            if known.get(_document_key(document)) != document.content_hash
-        ]
-
-    def mark(self, documents: Sequence[SemanticDocument]) -> None:
-        now = int(time.time())
-        with self._transaction() as cursor:
-            for document in documents:
-                cursor.execute(
-                    """
-                    INSERT INTO semantic_index_state (
-                        source_key, content_hash, indexed_at
-                    ) VALUES (?, ?, ?)
-                    ON CONFLICT(source_key) DO UPDATE SET
-                        content_hash = excluded.content_hash,
-                        indexed_at = excluded.indexed_at
-                    """,
-                    (_document_key(document), document.content_hash, now),
-                )
-
-    @contextmanager
-    def _transaction(self) -> Iterator[StoreCursor]:
-        with self._lock:
-            cursor = self._connection.cursor()
-            try:
-                cursor.execute("BEGIN")
-                yield cursor
-            except Exception:
-                self._connection.rollback()
-                raise
-            else:
-                self._connection.commit()
-            finally:
-                cursor.close()
-
-
 def _validate_vector(vector: Sequence[float], dimensions: int) -> None:
     if len(vector) != int(dimensions):
         raise ValueError(
@@ -487,11 +419,3 @@ def _validate_vector(vector: Sequence[float], dimensions: int) -> None:
 
 def _vector_literal(vector: Sequence[float]) -> str:
     return "[" + ",".join(format(float(value), ".10g") for value in vector) + "]"
-
-
-def _document_key(document: SemanticDocument) -> str:
-    return json.dumps(
-        [document.scope_key, document.source_type, document.source_handle],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from tests.postgres_fixture import postgres_for_test
-
 import asyncio
 import importlib.util
 from pathlib import Path
@@ -17,7 +15,6 @@ _spec.loader.exec_module(_module)
 EmbeddingClient = _module.EmbeddingClient
 SemanticDocument = _module.SemanticDocument
 SemanticHit = _module.SemanticHit
-SemanticIndexState = _module.SemanticIndexState
 SemanticRecallService = _module.SemanticRecallService
 
 
@@ -119,28 +116,6 @@ class SemanticRecallTests(unittest.TestCase):
         self.assertNotIn("authorization", captured[0].headers)
         self.assertEqual(__import__("json").loads(captured[0].content),
             {"model": "bge-m3", "input": ["connection check"], "dimensions": 1024})
-
-    def test_index_state_only_returns_changed_documents(self) -> None:
-        state = SemanticIndexState(postgres_for_test(self))
-        self.addCleanup(state.close)
-        first = SemanticDocument(
-            scope_key="onebot-v11:group:1",
-            source_type="message",
-            source_handle="msg#1",
-            content="first",
-            metadata={},
-        )
-        self.assertEqual(state.changed([first]), [first])
-        state.mark([first])
-        self.assertEqual(state.changed([first]), [])
-        updated = SemanticDocument(
-            scope_key=first.scope_key,
-            source_type=first.source_type,
-            source_handle=first.source_handle,
-            content="second",
-            metadata={},
-        )
-        self.assertEqual(state.changed([updated]), [updated])
 
 
 if __name__ == "__main__":

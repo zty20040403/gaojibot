@@ -19,7 +19,6 @@ from src.bot_storage.database import (
     _convert_qmark_placeholders,
     _translate_sql,
 )
-from src.plugins.ai_chat.semantic_recall import SemanticDocument, _document_key
 from tests.legacy_import_history import HistoricalImport
 
 
@@ -197,7 +196,6 @@ class LegacySnapshotTests(HistoricalImport, unittest.TestCase):
                 self.legacy.capture_legacy_snapshot(state_dir)
 
     def test_legacy_semantic_keys_are_normalized_for_postgres(self) -> None:
-        document = SemanticDocument("scope", "message", "msg#1", "body", {})
         with TemporaryDirectory() as temporary:
             state_dir = Path(temporary)
             connection = sqlite3.connect(
@@ -226,7 +224,7 @@ class LegacySnapshotTests(HistoricalImport, unittest.TestCase):
                 if item.spec.table == "semantic_index_state"
             )
 
-            self.assertEqual(table.rows[0][0], _document_key(document))
+            self.assertEqual(table.rows[0][0], '["scope","message","msg#1"]')
             self.assertNotIn("\0", str(table.rows[0][0]))
 
 
