@@ -165,12 +165,12 @@ class DenySourcePort:
 
 
 class OfficialApprovalTransport:
-    def __init__(self, *, token, secret: bytes, source_port=None, clock=time.time):
+    def __init__(self, *, token, secret: bytes, owners, source_port=None, clock=time.time):
         if not isinstance(secret, bytes) or len(secret)<32:
             denied()
         self.token, self.secret, self.clock = token, secret, clock
         self.source_port = source_port or DenySourcePort()
-        self.admins = AdminBindingStore(clock=clock)
+        self.admins = AdminBindingStore(owners=owners, clock=clock)
 
     def now(self):
         value = self.clock()

@@ -26,7 +26,7 @@ def _disabled(now,enabled=False,reason='disabled'):
     return dict(enabled=enabled,state='disabled' if not enabled else 'degraded',healthy=False,
         reason=reason,observed_at=now,lease={'current':False,'checked_at':None},
         gateway={'state':'closed','message_gap':False,'queue_depth':0,'queue_limit':0},
-        sender={'running':False,'active':0,'rate_waiters':0,'unrecorded':0},
+        sender={'running':False,'active':0,'unrecorded':0},
         execution={},delivery={},inbox={},migration={},capabilities=[],
         windows={'active':0,'expired':0},
         cleanup={'scope':'process_cleanup_items','last_at':None,'deleted':0,'failed':0})
@@ -158,13 +158,12 @@ class OfficialObservability:
             'queue_depth':_count(health.get('dispatch_queue_depth')),
             'queue_limit':_count(health.get('dispatch_queue_limit'))}
         sender=getattr(runtime,'sender',None)
-        value['sender']={'running':getattr(sender,'_running',False) is True and not getattr(sender,'_stopping',False),
-            'active':len(getattr(sender,'_workers',())), 'rate_waiters':len(getattr(sender,'_rate_waiters',())),
+        value['sender']={'running':getattr(sender,'_running',False) is True,
+            'active':len(getattr(sender,'_tasks',())),
             'unrecorded':len(getattr(sender,'_unrecorded',()))}
         # A historical gap is retained as a warning, not a claim that a new
         # READY session is offline (nor that missing messages were replayed).
-        healthy=(current and health.get('state')=='ready'
-            and value['sender']['running'] and getattr(sender,'reason',None)=='ready'
+        healthy=(current and health.get('state')=='ready' and value['sender']['running']
             and not getattr(runtime,'_stopping',False))
         value['healthy']=bool(healthy);value['state']='ready' if healthy else 'degraded'
         value['reason']=(('ready_with_message_gap' if value['gateway']['message_gap'] else 'ready')

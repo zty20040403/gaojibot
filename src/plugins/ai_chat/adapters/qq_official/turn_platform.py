@@ -10,7 +10,6 @@ from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost, assert_epo
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.execution_control import LeaseLost as ToolLeaseLost
 from src.plugins.ai_chat.message_ir import MessageBody
-from src.plugins.ai_chat.message_lowering import OutboundCapabilities
 from src.plugins.ai_chat.platform_types import (
     AccountKey, ActorKey, EffectiveCapabilities, EndpointKey, InboundMessage,
     PlatformFeatures, SendOutcome, SendRequest,
@@ -122,7 +121,6 @@ class ExecutionBinding:
 
 
 class OfficialTurnPlatform:
-    capabilities = OutboundCapabilities(text=True, mention="native", max_native_media=0)
     features = PlatformFeatures(markdown=True)
     stream_enabled = True
     progress_enabled = True

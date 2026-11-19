@@ -61,7 +61,10 @@ class OfficialRuntimeSenderIntegrationTests(unittest.IsolatedAsyncioTestCase):
         loaded = runtime_fixture.loaded_config(fake.app_id, base=fake.base_url)
         runtime = self.runtime(loaded=loaded, **kwargs)
         self.assertTrue(await runtime.start())
-        await asyncio.wait_for(fake.wait_ready(), 5)
+        try:
+            await asyncio.wait_for(fake.wait_ready(), 5)
+        except TimeoutError:
+            self.fail(f'gateway not ready: {runtime.status()} {self.logger.mock_calls}')
         await self.wait_db("SELECT bot_native_id FROM qq_official_accounts WHERE bot_identity_source='ready'")
         self.assertIsNotNone(runtime.sender)
         return runtime
@@ -124,23 +127,76 @@ class OfficialRuntimeSenderIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(contender.close)
             self.assertIsNotNone(await asyncio.to_thread(contender.acquire))
 
-    async def test_real_binding_control_sends_ephemeral_code_and_marks_issued(self):
+    async def test_real_binding_control_sends_ephemeral_code_without_storing_body(self):
         async with verified_ready_platform() as fake:
             runtime = await self.open_runtime(fake)
-            await self.incoming(fake, "TEST_BIND_CREATE", "/bind create")
-            challenge = (await self.wait_db("SELECT * FROM qq_official_binding_challenges WHERE state='issued'"))[0]
-            self.assertEqual(len(fake.received), 1)
+            await self.incoming(fake, 'TEST_BIND_CREATE', '/绑定群')
+            await self.eventually(lambda: len(fake.received) == 1)
             sent = fake.received[0]
-            self.assertEqual((sent["kind"], sent["target"]), ("user", "TEST_RUNTIME_OWNER"))
-            self.assertEqual(sent["payload"]["msg_id"], "TEST_BIND_CREATE")
-            code = re.search(r"/bind ([0-9]{6})", sent["payload"]["content"]).group(1)
-            self.assertTrue(challenge["code_hmac"])
-            for table in ("delivery_plans", "deliveries", "delivery_attempts", "delivery_receipts", "messages", "qq_official_inbound_events"):
-                rows = await asyncio.to_thread(self.query, "SELECT * FROM " + table)
+            self.assertEqual((sent['kind'], sent['target']), ('user', 'TEST_RUNTIME_OWNER'))
+            self.assertEqual(sent['payload']['msg_id'], 'TEST_BIND_CREATE')
+            code = re.search(r'群绑定码：([0-9]{6})', sent['payload']['content']).group(1)
+            self.assertTrue((await asyncio.to_thread(self.query,
+                'SELECT owner_link_code_hmac FROM qq_official_accounts WHERE owner_link_code_hmac IS NOT NULL'))[0]['owner_link_code_hmac'])
+            for table in ('delivery_plans', 'deliveries', 'delivery_attempts', 'delivery_receipts',
+                          'messages', 'qq_official_inbound_events'):
+                rows = await asyncio.to_thread(self.query, 'SELECT * FROM ' + table)
                 self.assertNotIn(code, json.dumps(rows, default=str), table)
-            outbound = (await asyncio.to_thread(self.query, "SELECT body_json,message_kind FROM messages WHERE direction='outbound'"))[0]
-            self.assertEqual(outbound, {"body_json": '{"v":1,"nodes":[]}', "message_kind": "command"})
             self.assertNotIn(code, repr(self.logger.mock_calls) + repr(runtime.status()))
+            await fake.emit('GROUP_AT_MESSAGE_CREATE', {
+                'id': 'TEST_GROUP_BIND', 'group_openid': 'TEST_BIND_GROUP',
+                'author': {'member_openid': 'TEST_BIND_MEMBER'}, 'content': code,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            })
+            bound = (await self.wait_db("SELECT control_decision_code FROM qq_official_inbound_events WHERE native_message_id='TEST_GROUP_BIND'"))[0]
+            self.assertEqual(bound['control_decision_code'], 'confirmed')
+            endpoint = EndpointKey(runtime.loaded.account, 'group', 'TEST_BIND_GROUP')
+            member = ActorKey(runtime.loaded.account, 'group_member', 'TEST_BIND_GROUP', 'TEST_BIND_MEMBER')
+            def authorized():
+                with runtime.store.transaction() as cursor:
+                    return runtime.store.authority.owner_for_actor(cursor, endpoint, member) is not None
+            self.assertTrue(await runtime._calls(authorized))
+            await fake.emit('GROUP_AT_MESSAGE_CREATE', {
+                'id': 'TEST_BIND_REPLAY', 'group_openid': 'TEST_BIND_GROUP',
+                'author': {'member_openid': 'TEST_BIND_MEMBER'}, 'content': '/绑定群 ' + code,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            })
+            replay = (await self.wait_db("SELECT control_decision_code FROM qq_official_inbound_events WHERE native_message_id='TEST_BIND_REPLAY'"))[0]
+            self.assertEqual(replay['control_decision_code'], 'invalid')
+            self.assertNotIn(code, json.dumps(await asyncio.to_thread(self.query,
+                'SELECT * FROM qq_official_inbound_events'), default=str))
+            await runtime.stop()
+
+    async def test_owner_code_never_bypasses_the_process_send_limit(self):
+        slots = threading.BoundedSemaphore(1)
+        self.enterContext(patch('src.plugins.ai_chat.adapters.qq_official.sender._SEND_SLOTS', slots))
+        async with verified_ready_platform() as fake:
+            runtime = await self.open_runtime(fake)
+            with slots:
+                await self.incoming(fake, 'TEST_FULL', '/绑定群')
+                await self.wait_db("""SELECT 1 FROM qq_official_inbound_events e JOIN qq_official_accounts a USING(account_key)
+                    WHERE e.native_message_id='TEST_FULL' AND e.control_decision_code='owner_code_issued'
+                      AND a.owner_link_code_hmac IS NULL""")
+                self.assertFalse(fake.received)
+            await self.incoming(fake, 'TEST_FREE', '/绑定群')
+            await self.eventually(lambda: len(fake.received) == 1)
+            self.assertEqual(fake.received[0]['payload']['msg_id'], 'TEST_FREE')
+            await runtime.stop()
+
+    async def test_unbound_group_guidance_never_sends_a_code(self):
+        async with verified_ready_platform() as fake:
+            runtime = await self.open_runtime(fake)
+            await fake.emit('GROUP_AT_MESSAGE_CREATE', {
+                'id': 'TEST_BIND_GUIDE', 'group_openid': 'TEST_BIND_GROUP',
+                'author': {'member_openid': 'TEST_MEMBER'}, 'content': '/绑定群',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            })
+            receipt = (await self.wait_db("SELECT control_decision_code,payload_json FROM qq_official_inbound_events WHERE native_message_id='TEST_BIND_GUIDE'"))[0]
+            self.assertEqual(receipt, {'control_decision_code': 'guide', 'payload_json': None})
+            await self.eventually(lambda: any(item['kind'] == 'group' for item in fake.received))
+            text = next(item['payload']['content'] for item in fake.received if item['kind'] == 'group')
+            self.assertIn('私聊', text)
+            self.assertIsNone(re.search(r'(?<!\d)\d{6}(?!\d)', text))
             await runtime.stop()
 
     async def test_shutdown_during_second_part_receipt_recovers_without_resending_prefix(self):

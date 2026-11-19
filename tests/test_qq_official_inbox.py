@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
-from src.plugins.ai_chat.adapters.qq_official.binding import BindingReducer
+from src.plugins.ai_chat.adapters.qq_official.binding import BindingContext, BindingReducer
 from src.plugins.ai_chat.adapters.qq_official.inbox import IngressError, OfficialInboxStore, record_pending_inbox
 from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease, assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
@@ -27,8 +27,10 @@ class OfficialInboxTests(unittest.TestCase):
         self.session = 'TEST_INBOX_SESSION'
         self.seq = 0
         self.owner = 'TEST_OWNER_C2C'
+        self.other_owner = 'SECOND_OWNER'
         self.group = EndpointKey(self.account, 'group', 'TEST_GROUP')
-        self.authority = OwnerAuthority(clock=lambda: self.now)
+        self.authority = OwnerAuthority(account=self.account,
+                                        owner_c2c_ids=(self.owner, self.other_owner), clock=lambda: self.now)
         self.binding = BindingReducer(b'FAKE-INBOX-PEPPER-LOCAL-TEST-ONLY-12345', epoch_guard=assert_epoch,
                                       authority=self.authority, clock=lambda: self.now)
         self.jobs = DurableJobStore(self.database)
@@ -40,7 +42,7 @@ class OfficialInboxTests(unittest.TestCase):
         self.addCleanup(self.lease.close)
         self.token = self.lease.acquire()
         self.assertIsNotNone(self.token)
-        self.store.apply_configuration(self.token, (self.owner,))
+        self.store.apply_configuration(self.token, (self.owner, self.other_owner))
         self.assertEqual(self.store.accept({'op': 0, 's': 0, 't': 'READY',
             'd': {'session_id': self.session}}, token=self.token, session_id=self.session).disposition, 'control')
 
@@ -120,18 +122,23 @@ class OfficialInboxTests(unittest.TestCase):
                 tuple((table, self.count(table)) for table in self.persisted_tables()))
 
     def issue(self, owner=None):
-        result = self.accept(private=True, actor=owner or self.owner, content='/bind create')
-        self.assertEqual((result.disposition, result.binding.status), ('control', 'sending'))
+        owner_id = owner or self.owner
+        endpoint = EndpointKey(self.account, 'private', owner_id)
+        actor = ActorKey(self.account, 'c2c_user', '', owner_id)
         with self.store.transaction() as cursor:
-            marked = self.binding.mark_issued(cursor, account=self.account, challenge_id=result.binding.challenge_id,
-                outcome='success', lease_token=self.token)
-            self.assertEqual(marked.status, 'issued')
-        return result.binding
+            self.store._endpoint(cursor, endpoint, self.now)
+            return self.binding.issue_owner_code(cursor, context=BindingContext(
+                endpoint, actor, f'TEST_ISSUE_{self.seq}', self.now), lease_token=self.token)
 
     def submit(self, issued, *, actor='TEST_MEMBER'):
-        result = self.accept(content=f'/bind submit {issued.challenge_id} {issued.effect.code}', actor=actor)
-        self.assertEqual((result.disposition, result.binding.status), ('control', 'confirmed'))
-        return result.binding
+        member = ActorKey(self.account, 'group_member', self.group.native_conversation_id, actor)
+        with self.store.transaction() as cursor:
+            self.store._endpoint(cursor, self.group, self.now)
+            decision = self.binding.consume_owner_code(cursor, context=BindingContext(
+                self.group, member, f'TEST_SUBMIT_{self.seq}', self.now),
+                code=issued.effect.code, lease_token=self.token)
+        self.assertEqual(decision.status, 'confirmed')
+        return decision
 
     def gap_evidence(self):
         self.submit(self.issue())
@@ -257,49 +264,30 @@ class OfficialInboxTests(unittest.TestCase):
                                (binding, membership, self.group.key))
             self.assertEqual(self.accept().disposition, 'skipped')
 
-    def test_binding_code_is_transient_and_replayed_command_returns_no_effect(self):
-        create_frame = self.frame(private=True, content=' ' * 64 + '/bind create')
-        with patch('src.plugins.ai_chat.adapters.qq_official.binding.secrets.randbelow', return_value=483729):
-            created = self.accept(create_frame)
-        self.assertEqual(created.binding.effect.code, '483729')
-        self.assertEqual(self.accept(create_frame).binding, None)
-        with self.store.transaction() as cursor:
-            self.binding.mark_issued(cursor, account=self.account, challenge_id=created.binding.challenge_id,
-                                     outcome='success', lease_token=self.token)
-        submitted = self.submit(created.binding)
-        padded_private_submit = self.accept(private=True, content=' ' * 64 +
-            f'/bind submit {created.binding.challenge_id} {created.binding.effect.code}')
-        self.assertEqual(padded_private_submit.disposition, 'control')
-        self.assertIsNotNone(padded_private_submit.binding)
-        self.assertNotIn('483729', self.persisted_text())
-        self.assertNotIn('483729', repr(created))
-        self.assertEqual(len(self.query('SELECT job_id FROM durable_jobs WHERE kind IN (?,?)',
-            (account_job_kind('ingest', self.account.key), account_job_kind('turn', self.account.key)))), 0)
-        rows = self.query('SELECT payload_json,ingest_job_id,reason_code FROM qq_official_inbound_events')
-        self.assertTrue(all(row == {'payload_json': None, 'ingest_job_id': None, 'reason_code': 'binding_control'} for row in rows))
-        preview = self.accept(private=True, content=f'/bind status {created.binding.challenge_id}')
-        self.assertEqual(preview.binding.effect.candidate_id, submitted.candidate_id)
-        self.assertEqual(preview.binding.effect.actual_group, self.group)
-
-    def test_binding_challenge_and_rate_changes_rollback_with_failed_checkpoint(self):
-        before = self.snapshot()
-        with self.tx() as cursor:
-            cursor_type = type(cursor)
-        original = cursor_type.execute
-
-        def fail_checkpoint(cursor, query, values=()):
-            if ' '.join(query.split()).startswith('UPDATE qq_official_accounts SET session_id='):
-                raise RuntimeError('injected binding checkpoint failure')
-            return original(cursor, query, values)
-
-        frame = self.frame(private=True, content='/bind create')
-        with patch.object(cursor_type, 'execute', new=fail_checkpoint), self.assertRaisesRegex(RuntimeError, 'checkpoint'):
-            self.accept(frame)
-        self.assertEqual(self.snapshot(), before)
-        result = self.accept(frame)
-        self.assertEqual(result.binding.status, 'sending')
-        self.assertEqual(self.count('qq_official_binding_challenges'), 1)
+    def test_owner_binding_entries_are_body_free_and_unbound_group_gets_no_code(self):
+        hint = self.accept(content='/绑定群')
+        self.assertEqual((hint.disposition, hint.binding.status), ('control', 'guide'))
+        self.assertNotIn('000042', hint.binding.message)
+        self.assertEqual(self.accept(content='000042').disposition, 'quarantined')
+        with patch('src.plugins.ai_chat.adapters.qq_official.binding.secrets.randbelow', return_value=42):
+            private = self.frame(private=True, content=' ' * 64 + '/绑定群')
+            created = self.accept(private)
+        self.assertEqual((created.disposition, created.binding.status), ('control', 'owner_code_issued'))
+        self.assertEqual(created.binding.effect.code, '000042')
+        self.assertIsNone(self.accept(private).binding)
+        submitted = self.accept(content='000042')
+        self.assertEqual((submitted.disposition, submitted.binding.status), ('control', 'confirmed'))
+        self.assertIsNone(self.accept(content='/绑定群 000042').binding.effect)
+        self.assertEqual(self.accept(content='000042').disposition, 'quarantined')
+        self.assertNotIn('000042', self.persisted_text())
+        self.assertEqual(self.count('qq_official_binding_challenges'), 0)
+        self.assertEqual(self.count('qq_official_binding_candidates'), 0)
         self.assertEqual(self.count('durable_jobs'), 0)
+        ordinary = self.accept(content='一共有 123456 件')
+        self.assertEqual(ordinary.disposition, 'inbox')
+        self.assertIsNone(ordinary.binding)
+        rows = self.query('SELECT payload_json,ingest_job_id,reason_code FROM qq_official_inbound_events')
+        self.assertTrue(all(row['payload_json'] is None and row['ingest_job_id'] is None for row in rows[:-1]))
 
     def test_invalid_payload_and_missing_ids_are_terminal_without_public_empty_dedup(self):
         oversized = self.frame(content='SECRET_TOO_LARGE_' * 20_000)
@@ -358,11 +346,8 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertEqual(conflict.disposition, 'inbox')
         self.assertEqual(self.count('durable_jobs'), 0)
 
-    def test_lifecycle_removal_atomically_revokes_owner_link_and_other_candidate(self):
-        other_owner = 'SECOND_OWNER'
-        self.store.apply_configuration(self.token, (self.owner, other_owner))
+    def test_lifecycle_removal_atomically_revokes_owner_link(self):
         self.submit(self.issue())
-        self.issue(other_owner)
         endpoint = self.query('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,))[0]
         member = ActorKey(self.account, 'group_member', self.group.native_conversation_id, 'TEST_MEMBER')
         with self.tx() as cursor:

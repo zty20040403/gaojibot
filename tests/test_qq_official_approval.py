@@ -4,8 +4,8 @@ import json
 import unittest
 
 from src.bot_security.store import SecurityStore, SecurityError
-from src.plugins.ai_chat.adapters.qq_official.approval import (
- OfficialApprovalTransport)
+from src.plugins.ai_chat.adapters.qq_official.approval import OfficialApprovalTransport
+from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.validation import Denied
 from src.qq_official.events import parse_dispatch
 from src.plugins.ai_chat.adapters.qq_official.input_normalization import normalize_input, retired_approval_input
@@ -24,7 +24,7 @@ class ApprovalStoreTests(ApprovalFixture):
   self.assertNotIn(code,json.dumps([dict(row) for row in self.query('SELECT * FROM admin_approvals')]))
   self.assertEqual(self.propose()[1],None)
  def test_default_source_port_denies(self):
-  self.transport.source_port=OfficialApprovalTransport(token=self.token,secret=SECRET).source_port
+  self.transport.source_port=OfficialApprovalTransport(token=self.token,secret=SECRET,owners=self.owners).source_port
   with self.assertRaises(SecurityError): self.propose()
   self.assertFalse(self.query('SELECT * FROM admin_approvals'))
  def test_wrong_source_actor_endpoint_scope_or_epoch_does_not_authorize(self):
@@ -37,7 +37,9 @@ class ApprovalStoreTests(ApprovalFixture):
   self.source_live=False
   with self.assertRaises(SecurityError): self.propose()
   self.source_live=True
-  with self.tx() as c: self.owners.apply_trusted_config(c,self.account,('TEST_ADMIN_B',),'TEST_REVOKED')
+  owners=OwnerAuthority(account=self.account,owner_c2c_ids=('TEST_ADMIN_B',),clock=lambda:self.now)
+  with self.tx() as c: owners.apply_trusted_config(c,self.account,('TEST_ADMIN_B',),'TEST_REVOKED')
+  self.transport.admins.owners=owners
   with self.assertRaises(Denied): self.propose()
  def test_delivery_callback_cannot_claim_success_without_real_receipt(self):
   request,_=self.propose();self.store.delivered(request['approval_id'],1,True)

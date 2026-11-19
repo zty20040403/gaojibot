@@ -62,6 +62,10 @@ class LLMConnectionError(LLMError):
     pass
 
 
+class LLMOutcomeUnknownError(LLMError):
+    pass
+
+
 class LLMProviderError(LLMError):
     def __init__(self, provider: str, status_code: int, detail: str = "") -> None:
         self.provider = provider
@@ -685,22 +689,26 @@ class LLMGateway:
             try:
                 request = _request_for_profile(candidate, kwargs)
                 with telemetry.stage("model.connect" if request.get("stream") else "model.request"):
-                    try:
-                        response = await self._create_single(candidate, **request)
-                    except LLMProviderError as exc:
-                        if not _should_retry_tool_choice_as_auto(request, exc):
-                            raise
-                        request["tool_choice"] = "auto"
-                        tool_choice_compatibility_applied = True
-                        _logger.warning(
-                            "Model profile %s rejected forced tool_choice; retrying once with auto",
-                            candidate.name,
-                        )
-                        response = await self._create_single(candidate, **request)
                     if request.get("stream"):
+                        response, tool_choice_compatibility_applied = (
+                            await self._create_with_tool_choice_compatibility(candidate, request)
+                        )
                         raw_stream = response
                         response = _CompletionStream(raw_stream, candidate, finish_stream)
                         await response.prime()
+                    else:
+                        deadline = asyncio.timeout(candidate.timeout_seconds)
+                        try:
+                            async with deadline:
+                                response, tool_choice_compatibility_applied = (
+                                    await self._create_with_tool_choice_compatibility(candidate, request)
+                                )
+                        except TimeoutError as exc:
+                            if not deadline.expired():
+                                raise
+                            raise LLMOutcomeUnknownError(
+                                "model completion deadline exceeded; outcome unknown"
+                            ) from exc
                 if request.get("stream"):
                     outcomes.append(
                         {
@@ -816,6 +824,21 @@ class LLMGateway:
         raise LLMUnavailableError(
             f"all compatible fallback profiles for {profile.name!r} are cooling down"
         )
+
+    async def _create_with_tool_choice_compatibility(
+        self, profile: ModelProfile, request: dict[str, Any]
+    ) -> tuple[Any, bool]:
+        try:
+            return await self._create_single(profile, **request), False
+        except LLMProviderError as exc:
+            if not _should_retry_tool_choice_as_auto(request, exc):
+                raise
+            request["tool_choice"] = "auto"
+            _logger.warning(
+                "Model profile %s rejected forced tool_choice; retrying once with auto",
+                profile.name,
+            )
+            return await self._create_single(profile, **request), True
 
     async def _create_single(
         self,
@@ -951,6 +974,8 @@ class LLMGateway:
 
 
 def classify_llm_failure(exc: BaseException) -> ClassifiedFailure:
+    if isinstance(exc, LLMOutcomeUnknownError):
+        return ClassifiedFailure(LLMFailureKind.NETWORK, retryable=False)
     if isinstance(exc, LLMRateLimitError):
         return ClassifiedFailure(
             LLMFailureKind.RATE_LIMIT,

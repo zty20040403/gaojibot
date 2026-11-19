@@ -101,16 +101,27 @@ def render_promises(items: list[PromiseItem]) -> str:
 
 
 _CONTAINER_SYNC_SCRIPT = """
-import base64, json, os, subprocess, sys
+import base64, json, os, subprocess, sys, time
 from pathlib import Path
 
 payload = json.loads(sys.stdin.read())
 root = Path('/work/.gaoji/self')
+deadline = time.monotonic() + 25
+
+def git(*args, allowed=(0,)):
+    try:
+        rc = subprocess.run(['git', '-C', str(root), *args], timeout=max(0, deadline - time.monotonic())).returncode
+    except subprocess.TimeoutExpired:
+        sys.exit('git ' + args[0] + ' timed out')
+    if rc not in allowed:
+        sys.exit('git ' + args[0] + ' failed')
+    return rc
+
 (root / 'people').mkdir(parents=True, exist_ok=True)
 if not (root / '.git').exists():
-    subprocess.run(['git', '-C', str(root), 'init', '-q'], check=False)
-    subprocess.run(['git', '-C', str(root), 'config', 'user.name', 'gaoji'], check=False)
-    subprocess.run(['git', '-C', str(root), 'config', 'user.email', 'gaoji@localhost'], check=False)
+    git('init', '-q')
+    git('config', 'user.name', 'gaoji')
+    git('config', 'user.email', 'gaoji@localhost')
 
 for rel, b64 in (payload.get('writes') or {}).items():
     p = (root / rel).resolve()
@@ -129,10 +140,9 @@ for rel in (payload.get('deletes') or []):
         p.unlink()
 
 msg = payload.get('message') or 'update self'
-subprocess.run(['git', '-C', str(root), 'add', '-A'], check=False)
-diff = subprocess.run(['git', '-C', str(root), 'diff', '--cached', '--quiet'], check=False)
-if diff.returncode != 0:
-    subprocess.run(['git', '-C', str(root), 'commit', '-q', '-m', msg], check=False)
+git('add', '-A')
+if git('diff', '--cached', '--quiet', allowed=(0, 1)) == 1:
+    git('commit', '-q', '-m', msg)
 """
 
 

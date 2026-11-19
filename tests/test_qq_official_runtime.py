@@ -748,10 +748,9 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.start()
         gateway = await protocol.next_ready()
         for number in range(3):
-            await gateway.emit("/bind create", native_id=f"TEST_BIND_{number}")
-            rows = await asyncio.to_thread(self.query, "SELECT state,code_hmac FROM qq_official_binding_challenges")
-            self.assertEqual(len(rows), number + 1)
-            self.assertTrue(all(row == {"state": "cancelled", "code_hmac": ""} for row in rows))
+            await gateway.emit('/绑定群', native_id=f'TEST_BIND_{number}')
+            rows = await asyncio.to_thread(self.query, 'SELECT owner_link_code_hmac FROM qq_official_accounts')
+            self.assertEqual(rows, [{'owner_link_code_hmac': None}])
         self.assertEqual(sender.await_count, 3)
         self.assertNotIn("SECRET_SEND_ERROR", json.dumps(runtime.status()) + repr(self.logger.mock_calls))
 
@@ -766,11 +765,11 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         first = self.runtime(protocol=protocol, binding_sender=sender)
         await first.start()
         gateway = await protocol.next_ready()
-        incoming = asyncio.create_task(gateway.emit("/bind create", native_id="TEST_UNCERTAIN_BIND"))
+        incoming = asyncio.create_task(gateway.emit('/绑定群', native_id='TEST_UNCERTAIN_BIND'))
         await asyncio.wait_for(entered.wait(), 5)
-        before = (await asyncio.to_thread(self.query, "SELECT state,code_hmac,expires_at FROM qq_official_binding_challenges"))[0]
-        self.assertEqual(before["state"], "sending")
-        self.assertTrue(before["code_hmac"])
+        before = (await asyncio.to_thread(self.query,
+            'SELECT owner_link_code_hmac,owner_link_expires_at FROM qq_official_accounts'))[0]
+        self.assertTrue(before['owner_link_code_hmac'])
         await first.stop()
         await asyncio.gather(incoming, return_exceptions=True)
         replacement_sender = AsyncMock(return_value="success")
@@ -778,8 +777,9 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         second = self.runtime(protocol=second_protocol, binding_sender=replacement_sender)
         await second.start()
         await second_protocol.next_ready()
-        after = (await asyncio.to_thread(self.query, "SELECT state,code_hmac,expires_at FROM qq_official_binding_challenges"))[0]
-        self.assertEqual(after, {"state": "cancelled", "code_hmac": "", "expires_at": before["expires_at"]})
+        after = (await asyncio.to_thread(self.query,
+            'SELECT owner_link_code_hmac,owner_link_expires_at FROM qq_official_accounts'))[0]
+        self.assertEqual(after, {'owner_link_code_hmac': None, 'owner_link_expires_at': None})
         replacement_sender.assert_not_awaited()
 
     async def test_configuration_failure_is_sanitized_and_never_opens_protocol(self):

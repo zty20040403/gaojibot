@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import threading
@@ -166,37 +165,6 @@ class TurnJournal:
         if stored is None:
             raise RuntimeError("turn was not stored")
         return self._row_to_turn(stored)
-
-    def update_environment(
-        self,
-        turn_id: int,
-        *,
-        model: str,
-        prompt_version: str,
-        tool_catalog_version: str,
-        provider: str | None = None,
-        profile: str | None = None,
-    ) -> None:
-        with self._transaction() as cursor:
-            cursor.execute(
-                """
-                UPDATE agent_turns
-                SET provider = COALESCE(?, provider),
-                    model = ?,
-                    profile = COALESCE(?, profile),
-                    prompt_version = ?,
-                    tool_catalog_version = ?
-                WHERE turn_id = ? AND status = 'running'
-                """,
-                (
-                    provider,
-                    model,
-                    profile,
-                    prompt_version,
-                    tool_catalog_version,
-                    int(turn_id),
-                ),
-            )
 
     def recent_trace_summaries(self, *, limit: int = 50) -> list[dict[str, object]]:
         """Return recent operational trace metadata without conversation content."""
@@ -561,36 +529,6 @@ class TurnJournal:
                 (int(turn_id),),
             ).fetchone()
         return self._row_to_turn(row) if row is not None else None
-
-    def usage_summary(
-        self,
-        scope: ConversationScope,
-        *,
-        since_timestamp: int = 0,
-    ) -> dict[str, int]:
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT
-                    COUNT(*) AS turns,
-                    COALESCE(SUM(t.input_tokens), 0) AS input_tokens,
-                    COALESCE(SUM(t.output_tokens), 0) AS output_tokens,
-                    COALESCE(SUM(t.total_tokens), 0) AS total_tokens
-                FROM agent_turns AS t
-                JOIN turn_visibility AS v ON v.scope_key = t.scope_key
-                WHERE t.scope_key = ?
-                  AND t.turn_ordinal >= v.min_turn_ordinal
-                  AND t.status != 'running'
-                  AND t.started_at >= ?
-                """,
-                (scope.key, max(int(since_timestamp), 0)),
-            ).fetchone()
-        return {
-            "turns": int(row["turns"] if row is not None else 0),
-            "input_tokens": int(row["input_tokens"] if row is not None else 0),
-            "output_tokens": int(row["output_tokens"] if row is not None else 0),
-            "total_tokens": int(row["total_tokens"] if row is not None else 0),
-        }
 
     def events_for_turn(self, turn_id: int) -> list[TurnEventRecord]:
         with self._lock:
@@ -1087,19 +1025,6 @@ class TurnJournal:
             effect_labels=labels,
             occurred_at=int(row["occurred_at"]),
         )
-
-def tool_catalog_fingerprint(tools: list[dict[str, Any]]) -> str:
-    from .tool_policy import policy_manifest_for_tools
-
-    encoded = json.dumps(
-        {"tools": tools, "policies": policy_manifest_for_tools(tools)},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
-
 
 def tool_effect_labels(tool_name: str) -> tuple[str, ...]:
     from .tool_policy import policy_for_tool

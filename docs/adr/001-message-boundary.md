@@ -24,7 +24,7 @@ QQ、Matrix 和 iMessage 的消息编号、引用、图片和用户身份并不�
 - `message_ir.py`：内部消息节点及规范编码。
 - `onebot_codec.py`、`bridges.py`：平台解码、来源去重与桥接。
 - `ledger.py`、`conversation_scope.py`：消息事实和真实会话范围。
-- `message_lowering.py`、`onebot_delivery.py`：能力降级和实际发送。
+- `adapters/qq_official/turn_platform.py`、`adapters/qq_official/sender.py`：QQ 端点能力查询和实际发送。
 
 以上 Python 文件位于 `src/plugins/ai_chat/`。
 

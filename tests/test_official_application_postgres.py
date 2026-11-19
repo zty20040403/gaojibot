@@ -18,6 +18,7 @@ from src.plugins.ai_chat.application_runtime import OfficialApplicationRuntime
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey, ActorKey
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
+from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.validation import Denied
 from src.plugins.ai_chat.adapters.qq_official.runtime import OfficialRuntime, open_official_protocol
 from src.qq_official.testing.fake_platform import FakePlatform
@@ -45,7 +46,8 @@ class NativeConsoleTests(unittest.TestCase):
             self.assertEqual(cursor.execute('SELECT identity_mode FROM admin_accounts').fetchone()[0],'local_admin')
             self.assertEqual(cursor.execute('SELECT count(*) FROM qq_official_admin_bindings').fetchone()[0],0)
             self.assertEqual(cursor.execute('SELECT count(*) FROM qq_official_owner_grants').fetchone()[0],0)
-            with self.assertRaises(Denied):AdminBindingStore().resolve_admin(cursor,endpoint=endpoint,actor=actor)
+            with self.assertRaises(Denied):
+                AdminBindingStore(owners=OwnerAuthority(account=account)).resolve_admin(cursor,endpoint=endpoint,actor=actor)
         with self.assertRaises(SecurityError):self.store.bootstrap_local_admin('overwrite','TEST safe password 12345')
         with self.assertRaises(SecurityError):self.store.bootstrap('overwrite','TEST safe password 12345','100001')
 

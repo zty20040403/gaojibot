@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from src.bot_security.store import lock_admin_security
 from .validation import Denied, _deny, _positive, _safe_database_errors, _text
-from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
+from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority, OwnerGrant
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 
 
@@ -44,23 +44,11 @@ class AdminSnapshot:
             raise Denied()
 
 
-def two_distinct_official_admins(first: AdminSnapshot, second: AdminSnapshot) -> bool:
-    """Identity distinctness only. The real quorum store checks current votes.
-
-    Do not use snapshots as approval evidence. Existing confirmations, code
-    generation, task scope, lifetime and revision checks still apply.
-    """
-    return (isinstance(first, AdminSnapshot) and isinstance(second, AdminSnapshot)
-            and first.c2c_endpoint.account == second.c2c_endpoint.account
-            and first.admin_account_id != second.admin_account_id
-            and first.c2c_actor.key != second.c2c_actor.key)
-
-
 class AdminBindingStore:
-    def __init__(self, *, control_guard=_deny, clock=time.time):
+    def __init__(self, *, owners: OwnerAuthority, control_guard=_deny, clock=time.time):
         self.control_guard = control_guard
         self.clock = clock
-        self.owners = OwnerAuthority(clock=clock)
+        self.owners = owners
 
     def _now(self):
         value = self.clock()
@@ -162,8 +150,8 @@ class AdminBindingStore:
         account. It never turns an unrelated owner's native ID into a local QQ.
         """
         self._lock(cursor, endpoint, actor)
-        owner = self.owners.owner_for_actor(cursor, endpoint, actor)
-        if owner is None:
+        owner = self.owners.c2c_grant(cursor, actor) if endpoint.kind == 'private' else self.owners.owner_for_actor(cursor, endpoint, actor)
+        if not isinstance(owner, OwnerGrant):
             raise Denied()
         row = cursor.execute('''SELECT b.*,a.version AS live_admin_version,a.enabled,a.role
             FROM qq_official_admin_bindings b JOIN admin_accounts a ON a.account_id=b.admin_account_id
