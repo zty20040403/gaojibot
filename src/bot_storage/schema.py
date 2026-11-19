@@ -1,4 +1,4 @@
 from __future__ import annotations
 
 
-HEAD_REVISION = "0118_retire_semantic_state"
+HEAD_REVISION = "0119_retire_import_residue"

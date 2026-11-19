@@ -13,6 +13,7 @@ from tests.test_drop_dead_tables_migration import _schema_snapshot
 
 BASE = "0113_group_attention_scheduler"
 TABLES = ("maintenance_state", "embeddings")
+RESIDUE = {"storage_migration_runs", "message_topic_edges", "delivery_attempt_quotas"}
 
 
 class RetireLegacyImportTests(HistoricalImport, unittest.TestCase):
@@ -51,7 +52,6 @@ class RetireLegacyImportTests(HistoricalImport, unittest.TestCase):
         self.assertIn(HEAD_REVISION, self.cli(ROOT, schema, "check"))
         with migration.connect(schema) as connection:
             self.assertEqual(connection.execute("SELECT conversation_id,scope_key FROM conversations").fetchall(), [(42, "TEST_SCOPE")])
-            self.assertEqual(connection.execute("SELECT status FROM storage_migration_runs").fetchall(), [("verified",)])
             self.assertEqual(json.loads(connection.execute("SELECT payload_json FROM state_blobs WHERE namespace='model_preferences'").fetchone()[0]), {"TEST_SCOPE": "TEST_MODEL"})
             self.assertGreater(connection.execute("INSERT INTO conversations(scope_key,platform,kind,native_conversation_id,created_at,updated_at) VALUES ('TEST_NEXT','TEST_PLATFORM','group','TEST_NEXT',2,2) RETURNING conversation_id").fetchone()[0], 42)
         self.assertEqual(original, {p.name: p.read_bytes() for p in state.iterdir()})
@@ -89,7 +89,7 @@ class RetireLegacyImportTests(HistoricalImport, unittest.TestCase):
         with migration.connect(schema) as connection:
             tables = _schema_snapshot(connection, schema)[0]
             self.assertTrue(set(TABLES).isdisjoint(tables))
-            self.assertTrue({"storage_migration_runs", "message_topic_edges", "delivery_attempt_quotas"} <= tables)
+            self.assertTrue(RESIDUE.isdisjoint(tables))
         for entry in ("inspect-legacy", "migrate-legacy", "verify-legacy"):
             self.assertIn("invalid choice", self.cli(ROOT, schema, entry, expected=2))
 
@@ -142,8 +142,7 @@ class RetireLegacyImportTests(HistoricalImport, unittest.TestCase):
                 endpoint_key=endpoint.key, quota_endpoint_key=endpoint.key,
                 units=1, charge_state="reserved", created_at=110, updated_at=110,
             ))
-            kept = {name: connection.execute(f'SELECT * FROM {name}').fetchall() for name in
-                    ("storage_migration_runs", "message_topic_edges", "delivery_attempt_quotas")}
+            kept = {name: connection.execute(f'SELECT * FROM {name}').fetchall() for name in RESIDUE}
         migration.migrate(schema, "0114_retire_legacy_import")
         with migration.connect(schema) as connection:
             self.assertEqual(tables - _schema_snapshot(connection, schema)[0], set(TABLES))
@@ -154,7 +153,24 @@ class RetireLegacyImportTests(HistoricalImport, unittest.TestCase):
             self.assertEqual(catalog(connection), before)
             self.assertEqual(connection.execute("INSERT INTO embeddings(scope_key,source_type,source_id,model,dimensions,content_hash,vector,created_at) VALUES ('TEST_SCOPE','TEST_TYPE','TEST_ID','TEST_MODEL',1,'TEST_HASH',decode('0001','hex'),1) RETURNING embedding_id").fetchone()[0], 1)
             connection.execute("DELETE FROM embeddings")
-        migration.migrate(schema, "head")
+        migration.migrate(schema, "0118_retire_semantic_state")
+        parents = ('deliveries', 'delivery_attempts', 'qq_official_quota_periods')
+        with migration.connect(schema) as connection:
+            before = _schema_snapshot(connection, schema)[0]
+            retained = {name: connection.execute(f'SELECT * FROM {name}').fetchall() for name in parents}
+            connection.execute('CREATE VIEW test_import_audit AS SELECT * FROM storage_migration_runs')
+        self.assertIn('depend', self.cli(ROOT, schema, 'upgrade', expected=1))
+        with migration.connect(schema) as connection:
+            for name, rows in kept.items():
+                self.assertEqual(connection.execute(f'SELECT * FROM {name}').fetchall(), rows)
+            connection.execute('DROP VIEW test_import_audit')
+        migration.migrate(schema, '0119_retire_import_residue')
+        with migration.connect(schema) as connection:
+            self.assertEqual(_schema_snapshot(connection, schema)[0], before - RESIDUE)
+            for name, rows in retained.items():
+                self.assertEqual(connection.execute(f'SELECT * FROM {name}').fetchall(), rows)
+        with self.assertRaisesRegex(RuntimeError, 'pre-0119 full database backup'):
+            migration.migrate(schema, '0118_retire_semantic_state', downgrade=True)
 
     def test_uncommitted_writer_blocks_migration_then_committed_data_refuses(self):
         schema = self.schema()
