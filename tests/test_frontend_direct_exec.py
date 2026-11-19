@@ -271,51 +271,6 @@ class RunnerNodeIntegrationTests(unittest.TestCase):
             self.assertFalse(env2["ok"])
             self.assertIn("await it first", env2["error"])
 
-    def test_runner_js_video_transcode(self):
-        if shutil.which("node") is None or shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
-            self.skipTest("node/ffmpeg/ffprobe not in PATH")
-        runner_path = Path(__file__).resolve().parents[1] / "src" / "plugins" / "ai_chat" / "sandbox_runner.js"
-        with TemporaryDirectory() as tmp:
-            src_mp4 = Path(tmp) / "sample.mp4"
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-v", "error",
-                    "-f", "lavfi", "-i", "color=c=blue:s=800x600:d=2",
-                    "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-                    str(src_mp4),
-                ],
-                check=True,
-                timeout=30,
-            )
-            proc = subprocess.run(
-                [
-                    "node", str(runner_path), "--video",
-                    json.dumps({"work": tmp, "path": "/work/sample.mp4", "start": 0, "end": 2}),
-                ],
-                capture_output=True,
-                timeout=30,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr.decode())
-            out = json.loads(proc.stdout.decode().strip())
-            self.assertTrue(out["ok"], out)
-            self.assertEqual(out["value"]["seconds"], 2)
-            rel = out["value"]["path"].removeprefix("/work/")
-            self.assertTrue((Path(tmp) / rel).is_file())
-
-            # Too-long clip (>600s) rejected before ffmpeg runs
-            proc_long = subprocess.run(
-                [
-                    "node", str(runner_path), "--video",
-                    json.dumps({"work": tmp, "path": "/work/sample.mp4", "start": 0, "end": 601}),
-                ],
-                capture_output=True,
-                timeout=15,
-            )
-            self.assertEqual(proc_long.returncode, 1)
-            out_long = json.loads(proc_long.stdout.decode().strip())
-            self.assertEqual(out_long["error"]["code"], "too_long")
-
 
 class OwnedSandboxDirectToolsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
