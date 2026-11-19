@@ -44,7 +44,7 @@ class ChatPorts:
     group_default_profile: Callable[[InboundMessage], str | None]
     reply_target_turn: Callable[[InboundMessage], Any | None]
     record_trigger: Callable[[InboundMessage, ConversationScope], int | None]
-    current_turn_context: Callable[[InboundMessage, int], Any]
+    current_turn_context: Callable[[InboundMessage], Any]
     drain_feedback: Callable[[str], Any]
     ask_agent: Callable[..., Any]
     is_silence_reply: Callable[[Any], bool]
@@ -215,7 +215,7 @@ class ChatOrchestrator:
                 kwargs["journal_turn_id"] = journal_turn_id
                 kwargs["turn_trace"] = trace
                 kwargs["turn_context"] = await self.db_call(
-                    self.ports.current_turn_context, inbound, journal_turn_id)
+                    self.ports.current_turn_context, inbound)
             elif (
                 self.turn_journal is not None
                 and self.message_ledger is not None
@@ -265,7 +265,7 @@ class ChatOrchestrator:
                         "turn_context",
                         (
                             await self.db_call(
-                                self.ports.current_turn_context, inbound, journal_turn_id
+                                self.ports.current_turn_context, inbound
                             )
                         ),
                     )

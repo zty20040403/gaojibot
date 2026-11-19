@@ -98,7 +98,6 @@ _IDENTITY_COLUMNS = {
     "usage_events": "usage_id",
     "agent_turns": "turn_id",
     "turn_journal_events": "event_id",
-    "turn_edges": "edge_id",
     "media_blobs": "media_id",
     "message_media": "message_media_id",
     "media_jobs": "job_id",
