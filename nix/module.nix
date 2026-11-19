@@ -673,8 +673,8 @@ in {
       wantedBy = ["sockets.target"];
       socketConfig = {
         ListenStream = "/run/${searchName}/search.sock";
-        SocketGroup = cfg.group;
-        SocketMode = "0660";
+        SocketUser = cfg.user;
+        SocketMode = "0600";
         DirectoryMode = "0755";
       };
     };

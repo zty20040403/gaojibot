@@ -7,7 +7,8 @@
     networking.nftables.enable = true;
     security.unprivilegedUsernsClone = true;
     boot.kernelParams = ["lsm=landlock,lockdown,yama,bpf"];
-    services.gaoji = {enable = true; package = pkgs.hello; searchBrowser.enable = true;
+    users.users.test-peer = {isSystemUser = true; group = "users";};
+    services.gaoji = {enable = true; group = "users"; package = pkgs.hello; searchBrowser.enable = true;
       qqOfficial = {enable = true; appIdFile = "/run/TEST-app-id"; appSecretFile = "/run/TEST-secret"; bindPepperFile = "/run/TEST-pepper";};};
     systemd.services.gaoji.wantedBy = lib.mkForce [];
     systemd.timers.gaoji-interest.wantedBy = lib.mkForce [];
@@ -19,8 +20,8 @@
     sock = "/run/gaoji-search-browser/search.sock"
     request = f"curl -sS --max-time 15 --unix-socket {sock} --data-binary @/dev/null -o /dev/null -w '%{{http_code}}' http://localhost/search"
     machine.wait_until_succeeds(f"test $(runuser -u gaoji -- {request}) = 400", timeout=90)
-    machine.fail(f"runuser -u nobody -- {request}")
-    machine.succeed(f"test $(stat -c '%G:%a' {sock}) = gaoji:660")
+    machine.fail(f"runuser -u test-peer -- {request}")
+    machine.succeed(f"test $(stat -c '%U:%a' {sock}) = gaoji:600")
     pid = machine.succeed(f"systemctl show -p MainPID --value {unit}").strip()
     machine.succeed("touch /srv/TEST-other-workspace /run/TEST-secret")
     machine.succeed(f"test ! -e /proc/{pid}/root/srv/TEST-other-workspace && test ! -e /proc/{pid}/root/run/TEST-secret")
