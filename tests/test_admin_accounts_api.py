@@ -12,7 +12,6 @@ from fastapi import FastAPI
 
 
 from src.bot_security.passwords import hash_password
-from src.bot_security.service import MobileAuthorization
 from src.bot_security.store import SecurityStore
 from src.plugins.ai_chat.admin import AdminServices, register_admin
 from tests.test_account_security import PASSWORD, QQ, BOT
@@ -40,10 +39,6 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.store.close)
         self.account = self.store.bootstrap("kenneth", PASSWORD, QQ)
         self.store.apply_account_change(self.account, {"action": "create", "username": "viewer", "password_hash": hash_password(PASSWORD), "role": "member", "qq_id": None})
-        self.sent = []
-        async def send(bot, qq, message):
-            self.sent.append((bot, qq, message))
-        self.mobile = MobileAuthorization(self.store, sender=send, bot_selector=lambda: BOT)
         self.preferences = Preferences()
         self.sandbox = SimpleNamespace(
             admin_snapshot=AsyncMock(return_value={"items": [{"sandbox_id": "s123abc",
@@ -88,7 +83,6 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post(prefix + "/sandboxes/s123abc/action", json={"action": "destroy"})
             self.assertEqual(response.status_code, 403)
         self.sandbox.destroy.assert_not_awaited()
-        self.assertFalse(self.sent)
 
     async def test_status_tracks_official_account_health(self):
         await self.login('viewer')
@@ -116,7 +110,6 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["resource_version"], version + 1)
         self.sandbox.destroy.assert_awaited_once_with("group:another:user:7", "s123abc")
-        self.assertFalse(self.sent)
         audit = (await self.client.get("/bot-admin/api/v1/audit")).json()["items"]
         self.assertEqual({item["action"] for item in audit}, {"sandbox.start", "sandbox.stop", "sandbox.destroy"})
         response = await self.client.post(path, json={"action": "destroy"}, headers={"If-Match": "0"})
@@ -134,7 +127,6 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post(path, json={"action": "destroy"})
         self.assertEqual(response.status_code, 428)
         self.sandbox.destroy.assert_not_awaited()
-        self.assertFalse(self.sent)
 
     async def test_account_creation_is_direct_without_disclosing_password(self):
         await self.login()
@@ -142,7 +134,6 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(PASSWORD, response.text)
         self.assertNotIn("argon2", response.text)
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertFalse(self.sent)
         self.assertIsNotNone(self.store.account_for_qq("333333333"))
 
     async def test_logout_invalidates_pending_approval(self):
@@ -150,20 +141,18 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         await self.client.post("/bot-admin/api/v1/accounts", json={"username": "reviewer", "password": PASSWORD,
             "role": "admin", "qq_id": "333333333"})
         account = self.store.session(self.client.cookies.get("gaoji_session"))
-        request = await self.mobile.propose(account, kind="server_task", payload={"id": 1}, summary="test task")
+        request, _ = self.store.propose(account, bot_id=BOT, kind="server_task", payload={"id": 1}, summary="test task")
         identifier = request["approval_id"]
         await self.client.post("/bot-admin/api/v1/auth/logout")
         self.assertEqual(self.store.get(identifier, self.account["account_id"])["status"], "cancelled")
         self.assertEqual((await self.client.get("/bot-admin/api/v1/me")).status_code, 401)
 
-    async def test_no_web_approval_route_or_code_delivery(self):
-        self.assertNotIn('http', self.mobile.executors)
+    async def test_no_web_approval_route(self):
         await self.login()
         for prefix in ('/bot-admin/api', '/bot-admin/api/v1'):
             for method, tail in (('GET',''), ('GET','/TEST_ID'), ('POST','/TEST_ID/resend'),
                                  ('POST','/TEST_ID/confirm'), ('POST','/TEST_ID/cancel')):
                 self.assertEqual((await self.client.request(method, prefix + '/approvals' + tail)).status_code, 404)
-        self.assertEqual(self.sent, [])
 
 
 if __name__ == "__main__":

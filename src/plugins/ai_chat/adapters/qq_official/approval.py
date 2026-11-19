@@ -287,9 +287,14 @@ class OfficialApprovalTransport:
 
     @staticmethod
     def render_code(request,code):
-        from src.bot_security.service import MobileAuthorization
+        review = (f"\n高风险操作须两位不同管理员批准。另一位请私聊：复核 {request['approval_id']}\n"
+                  if request['quorum'] > 1 else f"\n复核原操作：{request['parent_approval_id']}；记一票，不单独执行命令。\n" if request.get('parent_approval_id') else '')
+        text = (f"待确认操作：{request['approval_id']}\n{request['summary']}\n\n"
+                f"一次性口令：{code}\n3 分钟有效，仅本人可用，成功一次立即失效。\n"
+                f"直接回复 {code} 记录本人的批准；达到所需人数才会执行。{review}\n"
+                f"取消请回复：取消 {request['approval_id']}\n重发请回复：重发 {request['approval_id']}")
         endpoint = EndpointKey.parse(request['official_endpoint_key'])
-        return render_plan(MessageBody((TextNode(0,MobileAuthorization.code_text(request,code)),)),
+        return render_plan(MessageBody((TextNode(0,text),)),
                            endpoint,markdown=False,max_parts=1)
 
     def body_commitment(self, source_id, request, rendered):
