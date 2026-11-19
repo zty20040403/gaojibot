@@ -34,7 +34,7 @@ class BillingViewsTests(unittest.TestCase):
         self.assertEqual(totals[604800]['input_tokens'],4000)
         self.assertTrue(totals[86400]['cost_complete'])
         self.assertEqual(totals[86400]['cache_percent'],Decimal('60.0'))
-        self.assertNotIn('≥',status_lines(totals))
+        self.assertEqual(status_lines(totals),'24 小时：输入 2,000 · 输出 100 Token\n7 天：输入 4,000 · 输出 200 Token')
         with self.store.transaction() as cursor:
             self.assertEqual(windows(cursor,self.history,now=self.now)[604800]['calls'],0)
 
@@ -52,8 +52,7 @@ class BillingViewsTests(unittest.TestCase):
         self.assertEqual(row['cost_usd'],Decimal('0.00145'))
         text = status_lines(self.totals())
         self.assertIn('输入 ≥2,100',text); self.assertIn('输出 ≥105',text)
-        self.assertIn('缓存命中 未知',text); self.assertIn('≥ $0.00145',text)
-        self.assertIn('4 次费用不完整，其中 1 次未收尾',text)
+        self.assertEqual(text,'24 小时：输入 ≥2,100 · 输出 ≥105 Token\n7 天：输入 ≥2,100 · 输出 ≥105 Token')
 
     def test_cache_hit_rate_is_token_weighted_not_mean_of_calls(self):
         self.receipt()
@@ -63,7 +62,7 @@ class BillingViewsTests(unittest.TestCase):
     def test_zero_and_empty_are_distinct_and_large_sums_do_not_overflow_bigint(self):
         self.assertIn('暂无已记录',status_lines(self.totals()))
         self.receipt(usage=TokenUsage(0,0,0,0))
-        self.assertIn('缓存命中 无输入 · $0',status_lines(self.totals()))
+        self.assertEqual(status_lines(self.totals()),'24 小时：输入 0 · 输出 0 Token\n7 天：输入 0 · 输出 0 Token')
         for _ in range(2):self.receipt(usage=TokenUsage(2**63-1,0,0,0))
         self.assertEqual(self.totals()[86400]['input_tokens'],2*(2**63-1))
         self.assertEqual(usd(Decimal('0.000000000001')),'0.000000000001')

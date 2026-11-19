@@ -19,7 +19,7 @@ def command(runtime,life,app):
                 totals = windows(cursor,inbound.endpoint,now=now)
                 budget = project(cursor,(inbound.endpoint,),now=now)[0]
                 return CommandResult('ok',f'版本：{version}\n'+('本会话状态：已停止' if stopped else '本会话状态：未停止')+
-                    '\n宿主账单（物理入口，不跟随历史别名）：\n'+status_lines(totals)+'\n'+budget_lines(budget)+
-                    '\n按请求当时声明的美元单价计价，不是供应商结算账单；≥ 表示缺价或缺用量。接线前旧用量不追算。')
+                    '\n本会话模型用量（物理入口，不跟随历史别名）：\n'+status_lines(totals)+'\n'+budget_lines(budget)+
+                    '\n仅统计已记录的模型请求；≥ 表示缺少用量。接线前旧用量不追算。')
         return await runtime._calls(read)
     return invoke

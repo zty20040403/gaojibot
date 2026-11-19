@@ -35,11 +35,9 @@ def project(cursor,endpoints,*,now):
 
 def status_lines(view):
     limit = '关闭' if view['daily_budget_usd'] is None else '$'+view['daily_budget_usd']
-    expense = ('≥ ' if view['cost_is_lower_bound'] else '')+'$'+view['spent_usd']
-    incomplete = f"；{view['incomplete_calls']}次费用不完整（{view['pending_calls']}次未收尾）" if view['cost_is_lower_bound'] else ''
     reset = datetime.fromtimestamp(view['day_end'],daily_budgets.ZONE).strftime('%m-%d %H:%M')
     direct = '群内仅响应 @' if view['kind']=='group' else '仍可直接私聊提问'
-    return (f"北京时间今日预算：{limit}；已记录费用 {expense}{incomplete}。\n"
+    return (f"北京时间今日预算：{limit}。\n"
         f"自动动作：{'预算限制中' if view['blocked'] else '未被预算限制'}；超额通知：{NOTICE_LABELS[view['notice_state']]}。\n"
         f"北京时间 {reset} 恢复新自动动作，不补跑旧请求，不清除 /stop。\n"
         f"超额停止主动接话，{direct}仍计费；未知/在途费用可能超出，不是供应商硬限额。")

@@ -14,7 +14,7 @@ from tests import qq_official_turn_fixture as base
 from tests.test_llm_gateway import profile
 
 
-class NativeStatusTests(unittest.IsolatedAsyncioTestCase):
+class StatusFixture(unittest.IsolatedAsyncioTestCase):
     setUp = base.ConsumerTests.setUp
     asyncSetUp = base.ConsumerTests.asyncSetUp
     asyncTearDown = base.ConsumerTests.asyncTearDown
@@ -49,35 +49,38 @@ class NativeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.query('SELECT * FROM agent_turns'),[])
         return consumer,self.reply_text()
 
-    async def test_any_admitted_member_sees_only_physical_totals_and_duplicate_uses_saved_reply(self):
-        self.bill()
-        other = EndpointKey(self.f.account,'group','TEST_OTHER_COST')
+    def foreign_bill(self,kind='group'):
+        other = EndpointKey(self.f.account,kind,'TEST_OTHER_COST')
         with self.f.tx() as cursor:
             cursor.execute('''INSERT INTO qq_official_endpoints(endpoint_key,account_key,kind,native_conversation_id,canonical_scope_key,
-                binding_state,membership_state,created_at,updated_at) VALUES (?,?,'group',?,?,'revoked','absent',1,1)''',
-                (other.key,self.f.account.key,other.native_conversation_id,other.scope.key))
-            # Point this physical endpoint at a foreign history. Billing does
-            # not join that alias and may not leak foreign counts or prices.
+                binding_state,membership_state,created_at,updated_at) VALUES (?,?,?,?,?,'revoked','absent',1,1)''',
+                (other.key,self.f.account.key,kind,other.native_conversation_id,other.scope.key))
+            # A history alias must not import another endpoint's usage.
             cursor.execute('UPDATE qq_official_endpoints SET canonical_scope_key=? WHERE endpoint_key=?',
                 (other.scope.key,self.f.endpoint.key))
         self.bill(endpoint=other,usage=TokenUsage(12345678,0,0,0))
+
+
+class NativeStatusTests(StatusFixture):
+    async def test_any_admitted_member_sees_only_physical_totals_and_duplicate_uses_saved_reply(self):
+        self.bill(); self.foreign_bill()
         consumer,text = await self.run_status()
         self.assertIn('24 小时',text); self.assertIn('7 天',text)
-        self.assertIn('输入 1,000',text); self.assertIn('缓存命中 60.0%',text)
-        self.assertIn('$0.00132',text); self.assertNotIn('12,345,678',text)
+        self.assertIn('输入 1,000',text); self.assertNotIn('缓存命中',text)
+        self.assertNotIn('$',text); self.assertNotIn('12,345,678',text)
         self.assertNotIn('TEST_SECRET',text); self.assertNotIn(self.f.actor.native_user_id,text)
         self.bill()
         self.assertEqual((await consumer(self.f.job))['status'],'handed_off')
         self.assertEqual(self.reply_text(),text)
 
     async def test_stopped_status_still_reads_without_resetting_control_or_sending_old_work(self):
-        self.bill(priced=False)
+        for _ in range(200):self.bill(priced=False)
         self.bill(usage=None)
         self.f.query('''INSERT INTO conversation_settings(scope_key,stopped,stop_generation,command_generation)
             VALUES (?,TRUE,4,7)''',(self.f.endpoint.scope.key,))
         _,text = await self.run_status()
-        self.assertIn('已停止',text); self.assertIn('≥ $0',text)
-        self.assertIn('2 次费用不完整',text)
+        self.assertIn('已停止',text); self.assertNotIn('$0',text)
+        self.assertNotIn('费用不完整',text)
         self.assertEqual(tuple(self.f.query('SELECT stopped,stop_generation,command_generation FROM conversation_settings')[0].values()),(True,4,7))
 
     async def test_daily_budget_is_physical_and_unknowns_and_queued_notice_do_not_claim_delivery(self):
@@ -87,13 +90,15 @@ class NativeStatusTests(unittest.IsolatedAsyncioTestCase):
             change(cursor,self.f.endpoint,'daily_budget_usd','0.001',actor='TEST_ADMIN',now=self.f.now)
             cursor.execute("UPDATE conversation_budget_days SET notice_state='sending' WHERE scope_key=?",(self.f.endpoint.scope.key,))
         before = self.f.query('SELECT * FROM conversation_settings')
+        receipts = self.f.query('SELECT * FROM model_usage_calls ORDER BY call_id')
         _,text = await self.run_status()
-        self.assertIn('今日预算：$0.001',text); self.assertIn('已记录费用 ≥ $0.00132',text)
+        self.assertIn('今日预算：$0.001',text); self.assertNotIn('已记录费用',text)
         self.assertIn('预算限制中',text); self.assertIn('已排队，尚未确认',text)
-        self.assertIn('2次费用不完整（1次未收尾）',text)
+        self.assertNotIn('费用不完整',text)
         self.assertNotIn('已确认送达',text); self.assertIn('不是供应商硬限额',text)
         self.assertEqual([dict(row) for row in self.f.query('SELECT * FROM conversation_settings')],[dict(row) for row in before])
         self.assertEqual(len(self.f.query('SELECT * FROM conversation_budget_days')),1)
+        self.assertEqual(self.f.query('SELECT * FROM model_usage_calls ORDER BY call_id'),receipts)
 
     async def test_foreign_target_argument_has_no_query_or_write(self):
         _,text = await self.run_status(text='/status TEST_FOREIGN')
@@ -126,7 +131,7 @@ class NativeStatusTests(unittest.IsolatedAsyncioTestCase):
             await consumer(self.f.job)
             read.assert_not_called()
         for plan in self.f.query('SELECT manifest_json FROM delivery_plans'):
-            self.assertNotIn('宿主账单',plan['manifest_json'])
+            self.assertNotIn('本会话模型用量',plan['manifest_json'])
             self.assertNotIn('$',plan['manifest_json'])
 
 
@@ -134,20 +139,13 @@ class PrivateFixture(base.fixture.ExecutionFixture):
     endpoint_kind = 'private'
 
 
-class PrivateStatusTests(unittest.IsolatedAsyncioTestCase):
-    asyncSetUp = NativeStatusTests.asyncSetUp
-    asyncTearDown = NativeStatusTests.asyncTearDown
-    bill = NativeStatusTests.bill
-    build = NativeStatusTests.build
-    run_status = NativeStatusTests.run_status
-    reply_text = NativeStatusTests.reply_text
-
+class PrivateStatusTests(StatusFixture):
     def setUp(self):
         with patch.object(base.fixture,'ExecutionFixture',PrivateFixture):base.ConsumerTests.setUp(self)
 
     async def test_admitted_private_peer_can_read_own_bill_without_owner_grant(self):
-        self.bill()
+        self.bill(); self.foreign_bill('private')
         _,text = await self.run_status()
-        self.assertIn('$0.00132',text)
+        self.assertIn('输入 1,000',text); self.assertNotIn('12,345,678',text)
         self.assertIn('24 小时',text)
         self.assertNotIn(self.f.actor.native_user_id,text)
