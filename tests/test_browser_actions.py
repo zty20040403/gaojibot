@@ -86,6 +86,16 @@ class BrowserActionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BrowserProcessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_service_stop_timeout_does_not_proceed_to_profile_processes(self):
+        with patch.object(actions.os,'geteuid',return_value=0), patch.object(Path,'is_dir',return_value=True), \
+                patch.object(actions.shutil,'which',return_value='systemctl'), \
+                patch.object(actions.subprocess,'run',side_effect=actions.subprocess.TimeoutExpired('systemctl',20)) as run, \
+                patch.object(actions,'processes') as processes:
+            with self.assertRaises(actions.subprocess.TimeoutExpired):
+                await actions.stop_browser(actions.PROFILE)
+        self.assertEqual(run.call_args.kwargs['timeout'],20)
+        processes.assert_not_called()
+
     async def test_pidfd_and_second_profile_check_prevent_signalling_reused_pid(self):
         for still_owned in (False,True):
             with patch.object(actions,'processes',side_effect=[[12345],[]]), \
