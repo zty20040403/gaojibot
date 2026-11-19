@@ -27,8 +27,8 @@ def _disabled(now,enabled=False,reason='disabled'):
         reason=reason,observed_at=now,lease={'current':False,'checked_at':None},
         gateway={'state':'closed','message_gap':False,'queue_depth':0,'queue_limit':0},
         sender={'running':False,'active':0,'rate_waiters':0,'unrecorded':0},
-        execution={},delivery={},inbox={},files={},migration={},capabilities=[],
-        windows={'active':0,'expired':0},quota={'reserved':0,'spent':0},
+        execution={},delivery={},inbox={},migration={},capabilities=[],
+        windows={'active':0,'expired':0},
         cleanup={'scope':'process_cleanup_items','last_at':None,'deleted':0,'failed':0})
 
 
@@ -131,24 +131,16 @@ class OfficialObservability:
             current=(lease is not None and lease['current'] is True and lease['enabled'] is True
                 and lease['gateway_state']!='paused' and _locally_current(token))
             value['lease']={'current':current,'checked_at':now}
-            for domain,table,column,filter_sql,args in (
-                ('inbox','qq_official_inbound_events','status','account_key=?',(token.account_key,)),
-                ('execution','qq_official_turn_executions','state','account_key=?',(token.account_key,)),
-                ('delivery','deliveries','status','account_key=?',(token.account_key,)),
-                ('files','qq_official_file_deliveries d JOIN qq_official_file_artifacts a USING(artifact_id)','d.state','a.account_key=?',(token.account_key,))):
-                rows=c.execute(f'SELECT {column} AS state,COUNT(*) AS n FROM {table} WHERE {filter_sql} GROUP BY {column}',args).fetchall()
+            for domain,table,column in (('inbox','qq_official_inbound_events','status'),
+                    ('execution','qq_official_turn_executions','state'), ('delivery','deliveries','status')):
+                rows=c.execute(f'SELECT {column} AS state,COUNT(*) AS n FROM {table} WHERE account_key=? GROUP BY {column}',
+                               (token.account_key,)).fetchall()
                 value[domain]={r['state']:_count(r['n']) for r in rows if r['state'] in SAFE_STATES[domain]}
             windows=c.execute('''SELECT COUNT(*) FILTER(WHERE state='active' AND expires_at>?) AS active,
                 COUNT(*) FILTER(WHERE state='expired' OR expires_at<=?) AS expired
                 FROM qq_official_reply_windows WHERE account_key=?''',(now,now,token.account_key)).fetchone()
             value['windows']={k:_count(windows[k]) for k in ('active','expired')}
-            quotas=c.execute('''SELECT COALESCE(SUM(reserved_count),0)::bigint AS reserved,
-                COALESCE(SUM(used_count),0)::bigint AS spent FROM qq_official_quota_periods
-                WHERE account_key=? AND (period_end_at IS NULL OR period_end_at>?)''',(token.account_key,now)).fetchone()
-            value['quota']={k:_count(quotas[k]) for k in ('reserved','spent')}
             value['cleanup']={'scope':'process_cleanup_items',**deepcopy(self.metrics.cleanup)}
-            pending=c.execute('SELECT COUNT(*) AS n FROM qq_official_file_artifacts WHERE account_key=? AND cleanup_pending=TRUE',(token.account_key,)).fetchone()
-            value['cleanup']['pending_blobs']=_count(pending['n'])
             verified=lease['bot_identity_verified_at'] if lease else None
             value['capabilities']=[{'kind':'bot_identity','status':'verified' if verified is not None else 'unknown',
                 'verified_at':verified,'expires_at':None}]

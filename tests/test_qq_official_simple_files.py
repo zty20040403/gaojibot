@@ -188,4 +188,3 @@ class FileDeliveryTests(ExecutionFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake.received[-1]["payload"]["msg_type"], 7)
         self.assertEqual(len(self.query("SELECT * FROM turn_send_links")), 1)
         self.assertIn("notes.txt", self.query("SELECT body_json FROM messages WHERE direction='outbound'")[0]["body_json"])
-        self.assertEqual(self.query("SELECT * FROM qq_official_file_artifacts"), [])

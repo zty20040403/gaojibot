@@ -75,7 +75,6 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "admin_accounts": ("qq-official",),
     "qq_official_inbound_events": ("qq-official",),
     "qq_official_turn_executions": ("qq-official",),
-    "qq_official_file_deliveries": ("qq-official",),
     "qq_official_reply_windows": ("qq-official",),
     "qq_official_admin_identity_challenges": ("qq-official",),
     "conversations": ("groups",),
