@@ -74,7 +74,7 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_delivery_empty_answer_raises_empty_response(self) -> None:
         async def llm(*_args, **kwargs) -> str:
-            self.assertEqual(kwargs["quiet_call_limit"], 12)
+            self.assertEqual((kwargs['max_tool_rounds'], kwargs['foreground_quiet_calls']), (40, 12))
             return ""
 
         service = self._service(llm=llm)

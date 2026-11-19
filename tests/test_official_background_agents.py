@@ -12,6 +12,7 @@ from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.background_agents import OfficialBackgroundAgents
 from src.plugins.ai_chat.adapters.qq_official.background_delivery import present
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
+from src.plugins.ai_chat.agent_loop import ask_deepseek_with_tools
 from src.plugins.ai_chat.pi_engine import PiEngine
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.conversation_window import ConversationStore
@@ -26,11 +27,13 @@ from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker
 from tests.qq_official_turn_fixture import ExecutionFixture
 from tests.test_pi_engine import FakePiRpcServer
 from tests.test_background_reports import REPORT
+from tests.tool_loop_fixture import batch, final, tool
+from src.plugins.ai_chat.tools.background import DEFINITIONS
 
 
 class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
-    async def test_source_to_background_to_foreground_outbox(self):
-        await self.exercise_background()
+    async def test_context_warning_hands_evidence_to_durable_job_and_foreground_outbox(self):
+        await self.exercise_background(wrap_up=True)
 
     async def test_rejected_steer_is_saved_as_failure_and_sent_to_foreground(self):
         await self.exercise_background(steer_error='TEST steering rejected')
@@ -50,7 +53,7 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
     async def test_question_can_still_steer_running_job(self):
         await self.exercise_background(question=True)
 
-    async def exercise_background(self, *, steer_error=None,semantic=False,cancelled=False,structured=False,question=False):
+    async def exercise_background(self, *, steer_error=None,semantic=False,cancelled=False,structured=False,question=False,wrap_up=False):
         f = ExecutionFixture('runTest')
         f.setUp()
         self.addCleanup(f.doCleanups)
@@ -103,8 +106,33 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         turn.search_terms = ['TEST question']
         turn.search_found = ['https://example.test/found?token=TEST_SECRET']
         turn.search_read = ['https://example.test/read?key=TEST_SECRET']
-        submitted = await service.control(turn, 'agent', {'task': 'TEST paraphrase research',
-            'acceptance': 'TEST cite the original wording and source', 'title': 'TEST research'})
+        brief = {'task': 'TEST paraphrase research', 'acceptance': 'TEST cite the original wording and source', 'title': 'TEST research'}
+        if wrap_up:
+            receipts = []
+            async def execute(name, args):
+                if name == 'lookup':
+                    return '资料' * 4500 + 'TEST known finding'
+                self.assertEqual(name, 'agent')
+                receipts.append(await service.control(turn, name, args))
+                return json.dumps(receipts[-1])
+            handoff = batch('agent', 'agent')  # Even a model asking twice can only enqueue one job.
+            brief['task'] += ': TEST known finding'
+            for call in handoff.choices[0].message.tool_calls:
+                call.function.arguments = json.dumps(brief)
+            with patch('src.plugins.ai_chat.agent_loop._create_completion',
+                       new=AsyncMock(side_effect=[batch('lookup'), handoff, final()])) as model:
+                await ask_deepseek_with_tools('TEST request', [], [tool('lookup'), DEFINITIONS[0]], execute,
+                    system_prompt='TEST', profile=replace(profile, max_input_tokens=20_000, max_output_tokens=1000),
+                    max_tool_rounds=40, foreground_quiet_calls=12)
+            closing = model.await_args_list[1].kwargs
+            self.assertIn('TEST known finding', str(closing['messages']))
+            self.assertEqual([t['function']['name'] for t in closing['tools']], ['agent'])
+            self.assertEqual(str(model.await_args.kwargs['messages']).count('[前台收尾]'), 1)
+            self.assertNotIn('tools', model.await_args.kwargs)
+            submitted, = receipts
+            self.assertIn('TEST known finding', service.store.get(int(submitted['job'][4:]))['task'])
+        else:
+            submitted = await service.control(turn, 'agent', brief)
         number = int(submitted['job'][4:])
         stored = service.store.get(number)
         self.assertEqual(stored['title'], 'TEST research')
@@ -120,8 +148,7 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"read_urls": ["https://example.test/read"]', stored['task'])
         self.assertNotIn('TEST_SECRET', stored['task'])
         turn.search_terms.append('TEST evidence gathered since submission')
-        self.assertEqual((await service.control(turn, 'agent', {'task': 'TEST paraphrase research',
-            'acceptance': 'TEST cite the original wording and source', 'title': 'TEST research'}))['job'], submitted['job'])
+        self.assertEqual((await service.control(turn, 'agent', brief))['job'], submitted['job'])
         self.assertEqual(service.store.get(number)['deadline_at'],f.now+3600)
         await service.control(turn, 'agent_steer', {'job': submitted['job'], 'message': 'TEST extra detail'})
         from datetime import datetime, timezone

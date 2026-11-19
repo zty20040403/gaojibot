@@ -328,16 +328,12 @@ class PlatformChatService:
                         'video': replace(policy_for_tool('video'), timeout_seconds=250),
                         'generate_image': replace(policy_for_tool('generate_image'), timeout_seconds=150),
                     }),
-                    max_calls_per_round=24, max_total_calls=160,
-                    max_tool_rounds=(
-                        max(48, self.context.settings.tool_max_rounds) if file_session is not None
-                        else max(16, self.context.settings.tool_simple_max_rounds)
-                    ),
+                    max_calls_per_round=24, max_total_calls=160, max_tool_rounds=40,
                     tool_context="\n\n".join(context_parts), system_prompt=system,
                     trace=turn_trace, feedback_provider=feedback_provider,
                     checkpoint_state=checkpoint_state, checkpoint_sink=checkpoint.save if checkpoint else None,
                     idempotency_key_prefix=idempotency_key_prefix,
-                    checkpoint_replay_safe_tools=frozenset({'say'}), quiet_call_limit=12,
+                    checkpoint_replay_safe_tools=frozenset({'say'}), foreground_quiet_calls=12,
                     event_sink=(
                         lambda event: record_loop_event(self.context, journal_turn_id, event)
                     ) if journal_turn_id is not None else None,
