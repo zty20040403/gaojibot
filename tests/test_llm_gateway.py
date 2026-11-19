@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import importlib
 import json
 import time
@@ -16,11 +17,13 @@ from src.plugins.ai_chat.llm_gateway import (
     LLMConfigError,
     LLMConnectionError,
     LLMGateway,
+    LLMOutcomeUnknownError,
     LLMProviderError,
     LLMRateLimitError,
     ModelCircuit,
     OpenAIChatProvider,
     _anthropic_request,
+    classify_llm_failure,
     _anthropic_response,
     _request_for_profile,
 )
@@ -101,6 +104,71 @@ class FakeStream:
 
 
 class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_nonstream_deadline_has_unknown_outcome_and_does_not_fallback(self):
+        primary = replace(
+            profile("primary"), timeout_seconds=0.02, fallback_profiles=("backup",)
+        )
+        backup = profile("backup")
+        catalog = ModelCatalog(
+            {item.name: item for item in (primary, backup)},
+            default_profile=primary.name,
+        )
+        provider = RecordingProvider()
+        cancelled = asyncio.Event()
+
+        async def blocked(selected, **kwargs):
+            provider.calls.append((selected, kwargs))
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        provider.create_completion = blocked
+        gateway = LLMGateway({"openai-chat": provider}, catalog=catalog)
+
+        with self.assertRaisesRegex(LLMOutcomeUnknownError, "outcome unknown") as caught:
+            await gateway.create_completion_with_profile(primary, messages=[])
+
+        self.assertFalse(classify_llm_failure(caught.exception).retryable)
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual([call[0].name for call in provider.calls], ["primary"])
+
+    async def test_upstream_timeout_can_fallback(self):
+        primary = replace(profile("primary"), fallback_profiles=("backup",))
+        backup = profile("backup")
+        catalog = ModelCatalog(
+            {item.name: item for item in (primary, backup)},
+            default_profile=primary.name,
+        )
+        provider = RecordingProvider()
+        provider.create_completion = AsyncMock(side_effect=[TimeoutError("upstream"), "ok"])
+        gateway = LLMGateway({"openai-chat": provider}, catalog=catalog)
+
+        result = await gateway.create_completion_with_profile(primary, messages=[])
+
+        self.assertEqual(result.response, "ok")
+        self.assertEqual(result.profile.name, "backup")
+
+    async def test_stream_connection_is_not_bounded_by_nonstream_deadline(self):
+        selected = replace(profile("primary"), timeout_seconds=0.01)
+        raw = FakeStream(stream_chunk("hello"), stream_chunk(finish="stop"))
+        provider = RecordingProvider()
+
+        async def delayed(*_args, **_kwargs):
+            await asyncio.sleep(0.02)
+            return raw
+
+        provider.create_completion = delayed
+        gateway = LLMGateway({"openai-chat": provider})
+
+        result = await gateway.create_completion_with_profile(
+            selected, messages=[], stream=True
+        )
+        chunks = [chunk async for chunk in result.response]
+
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(raw.close_count, 1)
+
     async def test_forced_tool_choice_rejection_retries_same_profile_with_auto(self):
         selected = profile("primary")
         provider = RecordingProvider()

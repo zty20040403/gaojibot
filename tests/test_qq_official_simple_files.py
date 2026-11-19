@@ -1,11 +1,12 @@
 """File upload and direct msg_type=7 delivery tests; all HTTP is mocked or loopback."""
+import asyncio
 import base64
 import hashlib
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -33,6 +34,59 @@ ENDPOINT = EndpointKey(AccountKey("qq-official", "TEST_FILES", "test"), "group",
 
 
 class UploadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_total_upload_deadline_reports_unknown_without_retry_or_cache(self):
+        cancelled = asyncio.Event()
+        rest = SimpleNamespace(request=AsyncMock())
+
+        async def blocked(*_args):
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        rest.request.side_effect = blocked
+        uploader = FileUploader(rest, client=SimpleNamespace())
+        timeout_context = asyncio.timeout
+        with patch(
+            "src.plugins.ai_chat.adapters.qq_official.file_upload.asyncio.timeout",
+            side_effect=lambda _: timeout_context(0.01),
+        ) as timeout:
+            with self.assertRaisesRegex(FileUploadError, "远端结果未知"):
+                await uploader.upload(ENDPOINT, b"TEST_DATA", "test.txt")
+
+        timeout.assert_called_once_with(300)
+        self.assertTrue(cancelled.is_set())
+        self.assertFalse(uploader.cache)
+        rest.request.assert_awaited_once()
+
+    async def test_upstream_timeout_is_not_mislabeled_as_total_deadline(self):
+        rest = SimpleNamespace(request=AsyncMock(side_effect=TimeoutError("upstream")))
+        uploader = FileUploader(rest, client=SimpleNamespace())
+
+        with self.assertRaisesRegex(TimeoutError, "upstream"):
+            await uploader.upload(ENDPOINT, b"TEST_DATA", "test.txt")
+
+        self.assertFalse(uploader.cache)
+        rest.request.assert_awaited_once()
+
+    async def test_unconfirmed_transport_or_response_reports_unknown(self):
+        request = httpx.Request("POST", "https://example.test/files")
+        for response in (httpx.ReadError("TEST_READ", request=request), {}):
+            with self.subTest(response=type(response).__name__):
+                mocked = AsyncMock()
+                if isinstance(response, BaseException):
+                    mocked.side_effect = response
+                else:
+                    mocked.return_value = response
+                rest = SimpleNamespace(request=mocked)
+                uploader = FileUploader(rest, client=SimpleNamespace())
+
+                with self.assertRaisesRegex(FileUploadError, "远端.*结果未知"):
+                    await uploader.upload(ENDPOINT, b"TEST_DATA", "test.txt")
+
+                self.assertFalse(uploader.cache)
+                rest.request.assert_awaited_once()
+
     async def test_named_files_and_gif_use_small_upload_and_session_content_name_cache(self):
         rest = SimpleNamespace(request=AsyncMock(return_value={"file_info": "TEST_INFO", "ttl": 86400}))
         uploader = FileUploader(rest, client=SimpleNamespace())
