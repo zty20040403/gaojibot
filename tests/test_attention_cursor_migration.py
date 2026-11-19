@@ -2,6 +2,7 @@ import unittest
 
 import psycopg
 
+from src.bot_storage.schema import HEAD_REVISION
 from tests import test_qq_official_outbox_migration as migration
 from tests.test_drop_dead_tables_migration import _schema_snapshot
 
@@ -20,13 +21,24 @@ class AttentionReasonMigrationTests(unittest.TestCase):
                 VALUES ('TEST_OLD','TEST_ACCOUNT','TEST_EP','TEST_ACTOR',1,'TEST_MESSAGE',1,31,
                         'TEST_WORKER',1,1,1,1,'discarded',1)''')
             conn.execute('SET session_replication_role=origin')
-        migration.migrate(schema, '0121_attention_reason')
+        migration.migrate(schema, HEAD_REVISION)
         with migration.connect(schema) as conn:
             self.assertEqual(conn.execute('SELECT state,decision_reason FROM qq_official_proactive_observations').fetchone(), ('discarded', None))
             for reason in ('TEST_MODIFIED', 'x' * 41):
                 with self.assertRaises(psycopg.Error), conn.transaction():
                     conn.execute('UPDATE qq_official_proactive_observations SET decision_reason=%s', (reason,))
             self.assertEqual(conn.execute('SELECT decision_reason FROM qq_official_proactive_observations').fetchone(), (None,))
+        for reason in (None, 'TEST_VALID_REASON'):
+            if reason is not None:
+                with migration.connect(schema) as conn:
+                    conn.execute('SET session_replication_role=replica')
+                    conn.execute('UPDATE qq_official_proactive_observations SET decision_reason=%s', (reason,))
+                    conn.execute('SET session_replication_role=origin')
+            with self.assertRaisesRegex(RuntimeError, 'attention_reasons_require_backup_restore_before_downgrade'):
+                migration.migrate(schema, '0120_retire_context_feedback', downgrade=True)
+            with migration.connect(schema) as conn:
+                self.assertEqual(conn.execute('SELECT version_num FROM alembic_version').fetchone(), (HEAD_REVISION,))
+                self.assertEqual(conn.execute('SELECT decision_reason FROM qq_official_proactive_observations').fetchone(), (reason,))
 
 
 class AttentionCursorMigrationTests(unittest.TestCase):

@@ -53,9 +53,19 @@ class PlatformIdentityMigrationTests(unittest.TestCase):
         self.assertEqual(self.ledger.canonical_id_for_native(scope, "old"), old.canonical_message_id)
 
     def test_downgrade_refuses_to_discard_live_namespaces(self):
-        self.migrate(command.upgrade, HEAD_REVISION)
-        message = record(self.ledger, inbound())
+        scope = inbound().scope
+        with self.ledger._transaction() as cursor:
+            row = cursor.execute('''INSERT INTO conversations
+                (scope_key,platform,kind,native_conversation_id,created_at,updated_at)
+                VALUES (?,?,?,?,1,1) RETURNING conversation_id''',
+                (scope.key,scope.platform,scope.kind,scope.native_conversation_id)).fetchone()
+            cursor.execute('INSERT INTO conversation_visibility(conversation_id) VALUES (?)', (row[0],))
+        with patch("src.plugins.ai_chat.ledger.lock_scope"):
+            message = record(self.ledger, inbound())
+        self.migrate(command.upgrade, "0077_retired_features")
         with self.assertRaisesRegex(RuntimeError, "retired_feature_data_requires_backup_restore"):
-            self.migrate(command.downgrade, "0072_qq_simple_binding")
-        self.db.require_revision(HEAD_REVISION)
-        self.assertEqual(self.ledger.get_in_scope(inbound().scope, message.canonical_message_id), message)
+            self.migrate(command.downgrade, "0076_schedules")
+        self.db.require_revision("0077_retired_features")
+        with self.ledger._transaction() as cursor:
+            self.assertEqual(cursor.execute('SELECT canonical_message_id FROM messages WHERE canonical_message_id=?',
+                                            (message.canonical_message_id,)).fetchone()[0], message.canonical_message_id)
