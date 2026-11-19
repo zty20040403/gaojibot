@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import io
 import json
+from pathlib import Path
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from src.plugins.ai_chat.application.turn_context import turn_window
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey, InboundMessage
-from src.plugins.ai_chat.self_files import SelfFilesStore
+from src.plugins.ai_chat.self_files import _CONTAINER_SYNC_SCRIPT, SelfFilesStore
 from src.plugins.ai_chat.tools.promises import build_promise_units, parse_when, promise
 from src.plugins.ai_chat.tools.state import ToolContext, TurnState
 
@@ -66,6 +69,18 @@ class PromiseTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_git_sync_shares_a_deadline_and_does_not_commit_after_an_unknown_diff(self):
+        (Path(self.tmp.name) / '.git').mkdir()
+        script = _CONTAINER_SYNC_SCRIPT.replace('/work/.gaoji/self', self.tmp.name)
+        for failure, message in ((SimpleNamespace(returncode=128), 'git diff failed'),
+                                 (subprocess.TimeoutExpired('git', 5), 'git diff timed out')):
+            with self.subTest(message=message), patch('sys.stdin', io.StringIO('{}')), \
+                    patch('time.monotonic', side_effect=(100, 102, 120)), \
+                    patch('subprocess.run', side_effect=(SimpleNamespace(returncode=0), failure)) as run:
+                with self.assertRaisesRegex(SystemExit, message):
+                    exec(script, {})
+                self.assertEqual([(c.args[0][3], c.kwargs['timeout']) for c in run.call_args_list], [('add', 23), ('diff', 5)])
 
     def test_parse_when_and_units(self):
         ts1, iso1 = parse_when("10m", now=1000)

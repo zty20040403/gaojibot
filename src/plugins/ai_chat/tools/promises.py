@@ -133,7 +133,7 @@ async def _install_container_timer(sandbox_manager, owner: str, unit_name: str, 
             "u, t_b64, s_b64 = sys.argv[1:4]\n"
             "(d / (u + '.timer')).write_bytes(base64.b64decode(t_b64))\n"
             "(d / (u + '.service')).write_bytes(base64.b64decode(s_b64))\n"
-            "r = subprocess.run(['/run/current-system/sw/bin/gaoji', 'units', 'apply'], capture_output=True, text=True)\n"
+            "r = subprocess.run(['/run/current-system/sw/bin/gaoji', 'units', 'apply'], capture_output=True, text=True, timeout=30)\n"
             "sys.exit(r.returncode)\n"
         )
         t_b64 = base64.b64encode(timer_text.encode("utf-8")).decode("ascii")
