@@ -8,12 +8,11 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import Any
 
-from .store import SecurityError, SecurityStore, canonical, digest
+from .store import SecurityError, SecurityStore, canonical
 
 Executor = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 Sender = Callable[[str, str, str], Awaitable[None]]
 current_principal: ContextVar[dict[str, Any] | None] = ContextVar("admin_principal", default=None)
-approved_request: ContextVar[dict[str, Any] | None] = ContextVar("approved_request", default=None)
 
 
 def principal() -> dict[str, Any]:
@@ -176,7 +175,6 @@ class MobileAuthorization:
 
         renewal = asyncio.create_task(heartbeat())
         identity = current_principal.set(request["account"])
-        authorization = approved_request.set(request)
         try:
             executor = self.executors.get(request["kind"])
             if executor is None:
@@ -193,7 +191,6 @@ class MobileAuthorization:
             result, status = {"ok": False, "error": "执行回执不确定，请检查操作记录；不会自动重放"}, "needs_attention"
         finally:
             current_principal.reset(identity)
-            approved_request.reset(authorization)
             renewal.cancel()
             await asyncio.gather(renewal, return_exceptions=True)
         await asyncio.to_thread(self.store.finish, approval_id, self.owner, result, status=status)
@@ -239,9 +236,3 @@ class MobileAuthorization:
                 await asyncio.wait_for(self.wake.wait(), timeout=2)
             except asyncio.TimeoutError:
                 pass
-
-
-def assert_approved(kind: str, payload: dict[str, Any]) -> None:
-    request = approved_request.get()
-    if not request or request["kind"] != kind or request["payload_hash"] != digest(canonical(payload)):
-        raise SecurityError("这项操作尚未通过手机口令确认")

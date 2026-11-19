@@ -35,11 +35,7 @@ from .admin_api.realtime import (
     _changed_database_resources as _changed_database_resources,
 )
 from .admin_control import AdminControlStore
-from .admin_security import (
-    register_http_executor,
-    register_security_routes,
-    secure_route,
-)
+from .admin_security import register_security_routes, secure_route
 from .tool_policy import configure_tool_overrides
 
 __all__ = ["AdminServices", "AdminEventBroker", "AdminRealtimeMonitor", "register_admin"]
@@ -112,5 +108,3 @@ def register_admin(
         router.include_router(page_router)
 
     app.include_router(router)
-    if mobile is not None:
-        register_http_executor(app, mobile, prefix)
