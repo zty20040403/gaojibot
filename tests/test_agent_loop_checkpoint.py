@@ -84,6 +84,15 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('outcome', str(request['messages']))
         self.assertIn('停止后续', str(request['messages']))
 
+    async def test_unconfirmed_image_blocks_a_second_generation(self):
+        execute = AsyncMock(return_value='{"ok":false,"code":"generation_unknown"}')
+        model = AsyncMock(side_effect=[batch('generate_image', 'generate_image'), final('unknown')])
+        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=model):
+            answer = await ask_deepseek_with_tools(user_text='test', history=[], tools=[tool('generate_image')], execute_tool=execute)
+        self.assertEqual(answer, 'unknown')
+        execute.assert_awaited_once()
+        self.assertNotIn('tools', model.await_args.kwargs)
+
     async def test_feedback_and_budget_survive_resume(self):
         store = Store(lambda s: s['phase'] == 'batch' and s['next_index'] == 1)
         feedback = AsyncMock(side_effect=[['remember this'], []])
