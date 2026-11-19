@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 from src.plugins.ai_chat.agent_loop import ask_deepseek_with_tools
 from src.plugins.ai_chat.adapters.qq_official.progress import ProgressEmitter
 from src.plugins.ai_chat.tool_invocation import active_tool_step
+from src.plugins.ai_chat.model_catalog import ModelProfile
 from tests.tool_loop_fixture import batch, final, tool
 
 
@@ -69,7 +70,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         async def interrupted(*_):
             raise asyncio.CancelledError()
         args = dict(user_text='x', history=[], tools=[tool('shell'), tool('other')],
-                    execute_tool=interrupted, checkpoint_sink=store.save, idempotency_key_prefix='turn-2', quiet_call_limit=1)
+                    execute_tool=interrupted, checkpoint_sink=store.save, idempotency_key_prefix='turn-2', foreground_quiet_calls=1)
         await self.interrupted(args, batch('shell', 'other'), asyncio.CancelledError)
         self.assertEqual(store.state['phase'], 'inflight')
         del store.state['last_progress_call']  # In-flight snapshot from before the quiet reminder.
@@ -88,7 +89,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         feedback = AsyncMock(side_effect=[['remember this'], []])
         execute = AsyncMock(return_value='ok')
         args = dict(user_text='x', history=[], tools=[tool('one'), tool('two')], execute_tool=execute,
-                    max_total_calls=1, feedback_provider=feedback, checkpoint_sink=store.save, idempotency_key_prefix='turn-3', quiet_call_limit=2)
+                    max_total_calls=1, feedback_provider=feedback, checkpoint_sink=store.save, idempotency_key_prefix='turn-3', foreground_quiet_calls=2)
         await self.interrupted(args, batch('one', 'two'))
         store.stop = None
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=AsyncMock(return_value=final())) as model:
@@ -147,7 +148,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         store = Store(lambda state: state['phase'] == 'batch' and state['next_index'] == 11)
         execute = AsyncMock(side_effect=['ok'] * 12 + ['<&' * 12_000])
         args = dict(user_text='x', history=[], tools=[tool(name) for name in names],
-                    execute_tool=execute, max_calls_per_round=24, quiet_call_limit=12,
+                    execute_tool=execute, max_calls_per_round=24, foreground_quiet_calls=12,
                     checkpoint_sink=store.save, idempotency_key_prefix='turn-quiet')
         await self.interrupted(args, batch(*names))
         self.assertEqual(store.state['total_tool_calls'], 11)
@@ -165,6 +166,45 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum('[进度提醒]' in result for result in tool_results), 1)
         self.assertIn('[进度提醒]', tool_results[-1].split('</untrusted id=', 1)[1])
 
+    async def test_receipt_warns_once_across_restart_and_unoffered_tool_cannot_run(self):
+        profile = ModelProfile('TEST', 'test', 'openai-chat', 'TEST', '', max_input_tokens=20_000, max_output_tokens=10_000)
+        store = Store(lambda s: s['phase'] == 'model' and s['tool_round'] == 2)
+        execute = AsyncMock(return_value='ok')
+        args = dict(user_text='x', history=[], system_prompt='TEST', profile=profile, execute_tool=execute,
+                    tools=[tool('lookup'), tool('say')], foreground_quiet_calls=12, max_tool_rounds=40,
+                    checkpoint_sink=store.save, idempotency_key_prefix='TEST_WRAP')
+        response = batch('lookup')
+        response.usage = {'prompt_tokens': 8100}  # 90% of (20k - 10k output - 1k margin).
+        await self.interrupted(args, response)
+        self.assertEqual(str(store.state['messages']).count('[前台收尾]'), 1)
+        store.stop = None
+        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=AsyncMock(side_effect=[batch('lookup'), final()])) as model:
+            await ask_deepseek_with_tools(**args, checkpoint_state=store.state)
+        execute.assert_awaited_once()
+        self.assertEqual(model.await_args_list[0].kwargs['tools'], [tool('say')])
+        self.assertEqual(str(model.await_args.kwargs['messages']).count('[前台收尾]'), 1)
+        self.assertNotIn('tools', model.await_args.kwargs)
+
+    async def test_excess_input_never_dispatches_tools_or_an_oversized_final(self):
+        profile = ModelProfile('TEST', 'test', 'openai-chat', 'TEST', '', max_input_tokens=8000, max_output_tokens=1000)
+        for size, expected_calls in ((4300, 1), (7000, 0)):
+            with self.subTest(size=size), patch('src.plugins.ai_chat.agent_loop._create_completion', new=AsyncMock(return_value=final())) as model:
+                execute = AsyncMock()
+                await ask_deepseek_with_tools('测' * size, [], [tool('say')], execute, system_prompt='TEST', profile=profile,
+                                              foreground_quiet_calls=12, max_tool_rounds=40)
+                execute.assert_not_called()
+                self.assertEqual(model.await_count, expected_calls)
+                if expected_calls:
+                    self.assertNotIn('tools', model.await_args.kwargs)
+
+    async def test_small_results_continue_past_sixteen_rounds(self):
+        names = [f'tool-{i}' for i in range(18)]
+        execute = AsyncMock(return_value='ok')
+        with patch('src.plugins.ai_chat.agent_loop._create_completion', new=AsyncMock(side_effect=[*(batch(n) for n in names), final()])) as model:
+            await ask_deepseek_with_tools('x', [], [tool(n) for n in names], execute, foreground_quiet_calls=12, max_tool_rounds=40)
+        self.assertEqual(execute.await_count, 18)
+        self.assertNotIn('[前台收尾]', str(model.await_args.kwargs['messages']))
+
     async def test_only_successful_say_resets_quiet_calls(self):
         names = [f'tool-{index}' for index in range(11)]
         for status in ('enqueued', 'already_reported', 'suppressed'):
@@ -174,7 +214,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(status=status), patch('src.plugins.ai_chat.agent_loop._create_completion',
                     new=AsyncMock(side_effect=replies)) as model:
                 await ask_deepseek_with_tools('x', [], [tool(n) for n in [*names, 'say']], execute,
-                                              max_calls_per_round=24, quiet_call_limit=12)
+                                              max_calls_per_round=24, foreground_quiet_calls=12)
                 self.assertEqual(str(model.await_args.kwargs['messages']).count('[进度提醒]'), int(not ok))
 
     async def test_unsafe_assistant_and_final_are_not_resumable(self):

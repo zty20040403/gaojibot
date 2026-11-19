@@ -1,8 +1,8 @@
 from types import SimpleNamespace as NS
 
 
-def tool(name):
-    return {'type': 'function', 'function': {'name': name, 'parameters': {'type': 'object'}}}
+def tool(name, **schema):
+    return {'type': 'function', 'function': {'name': name, 'parameters': {'type': 'object', **schema}}}
 
 
 def batch(*names, start=0):

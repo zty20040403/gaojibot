@@ -25,7 +25,8 @@ from .llm_gateway import (
     thinking_extra_body,
 )
 from .model_catalog import ModelCatalog, ModelProfile
-from .model_budget import ModelBudgetExceeded
+from .model_budget import ModelBudgetExceeded, text_envelope
+from .timeline import estimate_tokens
 from .observability import current_trace_id, telemetry
 from .runtime_clock import runtime_clock_prompt
 from .tool_invocation import active_tool_call_id, active_tool_step
@@ -345,14 +346,31 @@ async def _invoke_completion(
 
 _QUIET_REMINDER = "\n\n[进度提醒] 请先用 say 说明当前进度、预计还要多久；如果剩余工作较多，交给后台 agent。"
 
+_WRAP_UP = ('[前台收尾] 请在群里说明已经做到哪、查到了什么、还剩什么。可再用一次 agent 或 say；'
+            '把已知结果、证据、剩余工作和验收条件写进交接任务。只有拿到回执才能说已启动。')
+_CLOSING_TOOLS = {'agent', SAY_TOOL_NAME}
+
+
+def _context_limits(profile):
+    window = profile.max_input_tokens or 128_000
+    input_room = window * 95 // 100 - (profile.max_output_tokens or 4096)
+    return min(window // 2, input_room), input_room
+
+
+def _request_tokens(request, tools):
+    # Binary transport bytes aren't model text. A prompt receipt calibrates the next estimate.
+    text = json.dumps([text_envelope(request['messages']), tools], ensure_ascii=False, separators=(',', ':'))
+    return estimate_tokens(text)
+
 
 def _completion_kwargs(
     messages: list[ChatMessage],
     profile: ModelProfile,
+    evidence_chars: int | None = None,
 ) -> dict[str, Any]:
     # Account for escaping and boundary overhead on the wire. If a restored
     # transcript exceeds today's budget, retain the newest tool evidence first.
-    remaining = settings.tool_max_context_chars
+    remaining = settings.tool_max_context_chars if evidence_chars is None else evidence_chars
     wire_messages = []
     for message in reversed(messages):
         item = dict(message)
@@ -579,7 +597,7 @@ async def ask_deepseek_with_tools(
     checkpoint_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     idempotency_key_prefix: str = "",
     checkpoint_replay_safe_tools: frozenset[str] = frozenset(),
-    quiet_call_limit: int | None = None,
+    foreground_quiet_calls: int = 0,
 ) -> str:
     """Run one loop. Checkpoint sink commits fenced snapshots or raises.
 
@@ -676,6 +694,10 @@ async def ask_deepseek_with_tools(
     batch_images = False
     budget_exhausted = False
     last_progress_call = 0
+    closing = (saved or {}).get('closing', False)
+    prompt_overhead = (saved or {}).get('prompt_overhead', 0)
+    tool_chars = (max(0, 4 * _context_limits(selected_profile)[0]) if foreground_quiet_calls
+                  else settings.tool_max_context_chars)
     if saved is not None:
         phase = saved["phase"]
         tool_round = saved["tool_round"]
@@ -703,7 +725,7 @@ async def ask_deepseek_with_tools(
             "stop_reason": stop_reason, "fingerprint_history": list(fingerprint_history),
             "fingerprint_counts": dict(fingerprint_counts), "next_index": index,
             "batch_images": batch_images, "budget_exhausted": budget_exhausted,
-            "last_progress_call": last_progress_call,
+            "last_progress_call": last_progress_call, "prompt_overhead": prompt_overhead, "closing": closing,
         })
 
     while phase != "stop" and (
@@ -723,16 +745,37 @@ async def ask_deepseek_with_tools(
             if phase != "model":
                 tool_round += 1
                 await _append_pending_feedback(messages, trace, feedback_provider)
-                await save("model")
+            request = _completion_kwargs(messages, selected_profile, tool_chars)
+            offered = tools
+            if foreground_quiet_calls:
+                limit, _ = _context_limits(_actual_profile(selected_profile))
+                estimated = _request_tokens(request, tools)
+                used = estimated + prompt_overhead
+                if not closing and (10 * used >= 9 * limit or tool_round == max_tool_rounds):
+                    closing = True
+                    warning = {'role': 'system', 'content': _WRAP_UP}
+                    messages.append(warning)
+                    request['messages'].append(warning)
+                    if trace is not None:
+                        trace.messages.append(dict(warning))
+                if closing:
+                    offered = [t for t in tools if t['function']['name'] in _CLOSING_TOOLS]
+                    estimated = _request_tokens(request, offered)
+                    if not offered or estimated + prompt_overhead > limit:
+                        stop_reason = '前台已到收尾边界。'
+                        break
+            if phase != 'model':
+                await save('model')
             await publish_transcript(messages)
             response, emitted = await _completion_with_optional_stream(
-                final_text_sink,
-                selected_profile,
-                trace=trace,
-                **_completion_kwargs(messages, selected_profile),
-                tools=tools,
-                tool_choice=next_tool_choice,
+                final_text_sink, selected_profile, trace=trace, **request,
+                tools=offered, tool_choice='auto' if closing else next_tool_choice,
             )
+            if foreground_quiet_calls:
+                usage = _model_dump(getattr(response, 'usage', None))
+                actual = _safe_usage_int(usage.get('prompt_tokens') or usage.get('input_tokens'))
+                if actual:
+                    prompt_overhead = max(0, actual - estimated)
             if trace is not None:
                 _configure_trace(trace, _actual_profile(selected_profile))
                 trace.add_usage(response)
@@ -801,7 +844,7 @@ async def ask_deepseek_with_tools(
             batch_images = False
             budget_exhausted = False
             await save("batch", 0)
-        max_calls = max_calls_per_round or settings.tool_max_calls_per_round
+        max_calls = 1 if closing else (max_calls_per_round or settings.tool_max_calls_per_round)
         for index, call in enumerate(tool_calls[:max_calls]):
             if index < next_index:
                 continue
@@ -856,6 +899,8 @@ async def ask_deepseek_with_tools(
                 validation_error = "本回合工具调用总数已达到系统预算。"
                 budget_exhausted = True
                 stop_reason = validation_error
+            elif closing and name not in _CLOSING_TOOLS:
+                validation_error = '前台收尾只允许调用一次 agent 或 say。'
             elif not validation.ok:
                 validation_error = validation.message
             elif not resumed_inflight and _is_repeated_tool_call(
@@ -1062,7 +1107,7 @@ async def ask_deepseek_with_tools(
                     fingerprint_history.pop()
                     fingerprint_counts[fingerprint] -= 1
             remaining_context = max(
-                settings.tool_max_context_chars - tool_context_chars,
+                tool_chars - tool_context_chars,
                 0,
             )
             if isinstance(tool_result, ToolImage):
@@ -1097,7 +1142,7 @@ async def ask_deepseek_with_tools(
                     **event_fields,
                 ),
             )
-            if tool_context_chars >= settings.tool_max_context_chars:
+            if tool_context_chars >= tool_chars:
                 budget_exhausted = True
             phase = "batch"
             await save(phase, index + 1)
@@ -1148,8 +1193,9 @@ async def ask_deepseek_with_tools(
                 trace.messages.append(dict(tool_message))
             phase = "batch"
             await save(phase, index + 1)
-        if (quiet_call_limit and not budget_exhausted and total_tool_calls - last_progress_call >= quiet_call_limit
-                and tool_context_chars + len(_QUIET_REMINDER) < settings.tool_max_context_chars):
+        if (foreground_quiet_calls and not closing and not budget_exhausted
+                and total_tool_calls - last_progress_call >= foreground_quiet_calls
+                and tool_context_chars + len(_QUIET_REMINDER) < tool_chars):
             # Mark the host decision, not the tool's text: escaping/truncation happens when building the request.
             messages[-1]['quiet_notice'] = True
             if trace is not None:
@@ -1163,8 +1209,10 @@ async def ask_deepseek_with_tools(
         await publish_transcript(messages)
         if after_tool_round is not None:
             after_tool_round()
-        if budget_exhausted:
-            if tool_context_chars >= settings.tool_max_context_chars and stop_reason != unknown_stop_reason:
+        if closing or budget_exhausted:
+            if closing and not budget_exhausted:
+                stop_reason = '前台收尾工具机会已使用。'
+            if tool_context_chars >= tool_chars and stop_reason != unknown_stop_reason:
                 stop_reason = "工具结果累计内容已达到系统预算。"
             phase = "stop"
             await save(phase)
@@ -1186,12 +1234,16 @@ async def ask_deepseek_with_tools(
     messages.append(stop_message)
     if trace is not None:
         trace.messages.append(dict(stop_message))
-    response, emitted = await _completion_with_optional_stream(
-        final_text_sink,
-        selected_profile,
-        trace=trace,
-        **_completion_kwargs(messages, selected_profile),
-    )
+    request = _completion_kwargs(messages, selected_profile, tool_chars)
+    if foreground_quiet_calls and _request_tokens(request, []) + prompt_overhead > _context_limits(_actual_profile(selected_profile))[1]:
+        answer = '前台上下文已满，无法继续核实或整理结果。请不要把未确认的步骤当作已完成。'
+        final_message = {'role': 'assistant', 'content': answer}
+        await publish_transcript([*messages, final_message])
+        if trace is not None:
+            trace.messages.append(final_message)
+        await save_final(answer)
+        return answer
+    response, emitted = await _completion_with_optional_stream(final_text_sink, selected_profile, trace=trace, **request)
     if trace is not None:
         _configure_trace(trace, _actual_profile(selected_profile))
         trace.add_usage(response)

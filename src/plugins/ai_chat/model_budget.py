@@ -95,14 +95,14 @@ def _opaque_media(value: object) -> bool:
     return False
 
 
-def _text_envelope(value: object) -> object:
+def text_envelope(value: object) -> object:
     """Inline media bytes are transport encoding, not literal model text."""
     if isinstance(value, dict):
         if _opaque_media({'type': value.get('type')}):
             return {'type': value['type']}
-        return {key: _text_envelope(item) for key,item in value.items()}
+        return {key: text_envelope(item) for key,item in value.items()}
     if isinstance(value, (list,tuple)):
-        return [_text_envelope(item) for item in value]
+        return [text_envelope(item) for item in value]
     return value
 
 
@@ -173,7 +173,7 @@ class ModelCallBudget:
                 "Extra request body cannot override budgeted fields"
             )
         content = {
-            key: _text_envelope(request[key]) if key == 'messages' else request[key]
+            key: text_envelope(request[key]) if key == 'messages' else request[key]
             for key in ("messages", "tools", "response_format")
             if key in request
         }

@@ -142,8 +142,6 @@ class Settings:
     max_input_chars: int
     max_reply_chars: int
     stream_enabled: bool
-    tool_max_rounds: int
-    tool_simple_max_rounds: int
     tool_max_calls_per_round: int
     tool_max_total_calls: int
     tool_max_result_chars: int
@@ -336,12 +334,6 @@ class Settings:
             max_input_chars=integer("AI_MAX_INPUT_CHARS", 1500),
             max_reply_chars=integer("AI_MAX_REPLY_CHARS", 3000),
             stream_enabled=boolean("AI_STREAM_ENABLED", True),
-            tool_max_rounds=min(
-                max(integer("AI_TOOL_MAX_ROUNDS", 30), 1), 100
-            ),
-            tool_simple_max_rounds=min(
-                max(integer("AI_TOOL_SIMPLE_MAX_ROUNDS", 5), 1), 20
-            ),
             tool_max_calls_per_round=min(
                 max(integer("AI_TOOL_MAX_CALLS_PER_ROUND", 4), 1), 20
             ),
