@@ -94,8 +94,7 @@ class OfficialMediaService:
         session = MediaSession(self, inbound, platform)
         row = await session.current()
         session.deadline = row['deadline_at']
-        session.image_available = await runtime_call(session, session._route_ready, 'image/png')
-        session.file_available = await runtime_call(session, session._route_ready, 'application/zip')
+        session.image_available = session.file_available = await self.runtime._calls(session._route_ready)
         return session
 
 
@@ -151,7 +150,7 @@ class MediaSession:
             'import_file_to_sandbox': getattr(self.service.app, 'sandbox_manager', None) is not None,
         }.get(name, False))
 
-    def _route_ready(self, mime):
+    def _route_ready(self):
         files = self.service.runtime.file_service
         if files is None:
             return False
@@ -159,65 +158,47 @@ class MediaSession:
             self.platform.execution.current(cursor, int(files.clock()))
             return files._route(cursor, self.inbound.endpoint, self.inbound.actor, 1) is True
 
-    async def source(self, arguments, kind):
+    async def source(self, arguments, kind, *, recent=False):
         row = await self.current()
         handle = arguments.get('message_handle')
-        if handle is None:
-            canonical = row['canonical_message_id']
-        elif isinstance(handle, str) and re.fullmatch(r'msg#[1-9][0-9]{0,18}', handle):
-            canonical = int(handle[4:])
-        else:
-            raise MediaDenied('invalid_media_reference')
-        index = arguments.get('segment_index')
-        message = await self.service.runtime._calls(self.service.app.message_ledger.get_in_scope,
-                                                   self.inbound.scope, canonical)
-        if message is None:
-            raise MediaDenied('media_reference_unavailable')
-        if index is None:
-            candidates = [n.segment_index for n in message.body.nodes if (
-                isinstance(n,MediaNode) and n.media_kind in kind or
-                isinstance(n,ForwardNode) and 'forward' in kind or
-                isinstance(n,CardNode) and 'card' in kind or
-                isinstance(n,TextNode) and 'link' in kind and text_link(n) is not None)]
-            if not candidates:
+        ids = (row['canonical_message_id'],)
+        if handle is not None:
+            if not isinstance(handle, str) or not re.fullmatch(r'msg#[1-9][0-9]{0,18}', handle):
+                raise MediaDenied('invalid_media_reference')
+            ids, recent = (int(handle[4:]),), False
+        elif recent:
+            ids = getattr(self.inbound, 'batch_message_ids', ()) or ids
+        ledger, calls = self.service.app.message_ledger, self.service.runtime._calls
+        def accepts(node):
+            return (isinstance(node, MediaNode) and node.media_kind in kind or
+                    isinstance(node, ForwardNode) and 'forward' in kind or
+                    isinstance(node, CardNode) and 'card' in kind or
+                    isinstance(node, TextNode) and 'link' in kind and text_link(node) is not None)
+        async def candidates():
+            for canonical in ids:
+                yield canonical, await calls(ledger.get_in_scope, self.inbound.scope, canonical)
+            if recent:
+                for filters in ({'actor_key': self.inbound.actor.key, 'limit': 10}, {'limit': 100}):
+                    messages = await calls(ledger.history, self.inbound.scope,
+                        before_id=max(ids) + 1, newest=True, **filters)
+                    for message in reversed(messages):
+                        yield message.canonical_message_id, message
+        async for canonical, message in candidates():
+            if message is None or recent and (message.direction != 'inbound'
+                    or message.source_endpoint_key != self.inbound.endpoint.key):
+                continue
+            indexes = [node.segment_index for node in message.body.nodes if accepts(node)]
+            if not indexes:
+                continue
+            index = arguments.get('segment_index')
+            source = await self.resolver.resolve(MediaRef(canonical, indexes[0] if index is None else index))
+            if not accepts(source.node):
                 raise MediaDenied('media_reference_unavailable')
-            index = candidates[0]
-        source = await self.resolver.resolve(MediaRef(canonical, index))
-        node = source.node
-        if not (isinstance(node,MediaNode) and node.media_kind in kind or
-                isinstance(node,ForwardNode) and 'forward' in kind or
-                isinstance(node,CardNode) and 'card' in kind or
-                isinstance(node,TextNode) and 'link' in kind and text_link(node) is not None):
-            raise MediaDenied('media_reference_unavailable')
-        return source
+            return source
+        raise MediaDenied('image_not_found_use_message_handle_msg#' if recent else 'media_reference_unavailable')
 
     async def image_source(self, arguments):
-        if arguments.get('message_handle') is not None:
-            return await self.source(arguments, {'image', 'sticker'})
-        row = await self.current()
-        ledger, calls = self.service.app.message_ledger, self.service.runtime._calls
-        ids = getattr(self.inbound, 'batch_message_ids', ()) or (row['canonical_message_id'],)
-        def has_image(message):
-            return (message is not None and message.direction == 'inbound'
-                    and message.source_endpoint_key == self.inbound.endpoint.key
-                    and any(isinstance(node, MediaNode) and node.media_kind in {'image', 'sticker'}
-                            for node in message.body.nodes))
-        selected = None
-        for canonical in ids:
-            message = await calls(ledger.get_in_scope, self.inbound.scope, canonical)
-            if has_image(message):
-                selected = message
-                break
-        for filters in ({'actor_key': self.inbound.actor.key, 'limit': 10}, {'limit': 100}):
-            if selected is not None:
-                break
-            recent = await calls(ledger.history, self.inbound.scope,
-                before_id=max(ids) + 1, newest=True, **filters)
-            selected = next((message for message in reversed(recent) if has_image(message)), None)
-        if selected is not None:
-            return await self.source({**arguments,
-                'message_handle': f'msg#{selected.canonical_message_id}'}, {'image', 'sticker'})
-        raise MediaDenied('image_not_found_use_message_handle_msg#')
+        return await self.source(arguments, {'image', 'sticker'}, recent=True)
 
     async def view_image(self, arguments):
         if self.frontend_vision:
@@ -437,7 +418,3 @@ def _read_library_bytes(root,path,size,digest):
         raise MediaDenied('sticker_bytes_unavailable') from None
     finally:
         for fd in reversed(descriptors):os.close(fd)
-
-
-async def runtime_call(session, function, *args):
-    return await session.service.runtime._calls(function,*args)

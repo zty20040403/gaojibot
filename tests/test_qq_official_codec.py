@@ -176,7 +176,8 @@ class QQOfficialCodecTests(unittest.TestCase):
 
     def test_unsafe_media_urls_are_not_fetchable_sources(self):
         for url in ("file:///etc/passwd", "data:image/png;base64,YQ==", "javascript:alert(1)",
-                    "https://name:pass@example.invalid/a", "https://example.invalid:bad/a", "https://example.invalid/a\n"):
+                    "https://name:pass@example.invalid/a", "//name:pass@example.invalid/a", "name:pass@example.invalid/a",
+                    "https://example.invalid:bad/a", "https://example.invalid/a\n", "/TEST/path"):
             with self.subTest(url=url):
                 result = decode(event(attachments=[{"url": url, "content_type": "image/png"}]))
                 media = next(node for node in result.body.nodes if isinstance(node, MediaNode))
@@ -245,7 +246,8 @@ class QQOfficialCodecTests(unittest.TestCase):
         card = next(node for node in result.body.nodes if isinstance(node, CardNode))
         self.assertEqual(card.url, "")
         self.assertEqual(card.raw_data["ark_data"], ark)
-        for url, expected in (("https://example.invalid/post", "https://example.invalid/post"), ("javascript:alert(1)", "")):
+        for url, expected in (("https://example.invalid/post", "https://example.invalid/post"),
+                              ("//example.invalid/post", ""), ("example.invalid/post", ""), ("javascript:alert(1)", "")):
             result = decode(event(message_type=3, ark_data={**ark, "jump_url": url}))
             self.assertEqual(next(node for node in result.body.nodes if isinstance(node, CardNode)).url, expected)
 
