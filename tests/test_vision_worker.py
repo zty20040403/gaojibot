@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.postgres_fixture import postgres_for_test
 
 import asyncio
 import json
@@ -9,7 +8,6 @@ from unittest.mock import AsyncMock
 
 
 
-from src.plugins.ai_chat.delivery import DeliveryStore
 from src.plugins.ai_chat.vision_worker import (
     VisionJob,
     VisionJobError,
@@ -61,52 +59,6 @@ class VisionWorkerParsingTests(unittest.TestCase):
         self.assertFalse(
             VisionWorker._supported_source("http://127.0.0.1/private.png")
         )
-
-    def test_completed_auto_job_is_handed_to_durable_outbox_once(self) -> None:
-        database = postgres_for_test(self)
-        connection = database.store_connection()
-        try:
-            connection.execute(
-                """
-                INSERT INTO vision_jobs (
-                    vision_job_id, scope_key, native_message_id, target_platform,
-                    target_kind, target_native_conversation_id, reply_to_native_message_id,
-                    result_json, auto_deliver, status, segment_index, requester_native_user_id,
-                    next_attempt_at, created_at, updated_at
-                ) VALUES (
-                    7, 'onebot-v11:group:123', '99', 'onebot-v11',
-                    'group', '123', '99', ?, TRUE, 'succeeded',
-                    0, '456', 1, 1, 1
-                )
-                """,
-                (
-                    json.dumps(
-                        {
-                            "summary": "终端报错截图",
-                            "description": "终端显示连接超时。",
-                            "text": "timeout",
-                            "observations": [],
-                            "safety": "safe",
-                            "mode": "summary",
-                        },
-                        ensure_ascii=False,
-                    ),
-                ),
-            )
-        finally:
-            connection.close()
-        deliveries = DeliveryStore(database)
-        self.addCleanup(deliveries.close)
-        worker = VisionWorker.__new__(VisionWorker)
-        worker.database = database
-        worker.delivery_store = deliveries
-
-        self.assertEqual(worker.flush_completed_deliveries(), 1)
-        self.assertEqual(worker.flush_completed_deliveries(), 0)
-        stored = deliveries.recent_summaries(limit=5)
-        self.assertEqual(len(stored), 1)
-        self.assertEqual(stored[0].reply_to_native_message_id, "99")
-
 
 class VisionWorkerCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_analysis_uses_one_model_call_then_cache(self) -> None:

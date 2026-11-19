@@ -4,9 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
-import os
 import shutil
-import socket
 import subprocess
 import time
 from collections.abc import Awaitable, Callable
@@ -22,7 +20,6 @@ from src.bot_storage import PostgresDatabase
 from .conversation_scope import ConversationScope
 from .delivery import DeliveryStore
 from .llm_gateway import LLMGateway
-from .message_ir import MessageBody, TextNode
 from .model_catalog import ModelCatalog, ModelProfile
 from .model_budget import active_model_budget
 
@@ -107,9 +104,6 @@ class VisionWorker:
         prepare_threshold_bytes: int = 1024 * 1024,
         max_edge_pixels: int = 1568,
         timeout_seconds: int = 180,
-        max_attempts: int = 3,
-        lease_seconds: int = 240,
-        batch_size: int = 4,
         worker_concurrency: int = 2,
         cache_seconds: int = 600,
         cache_entries: int = 256,
@@ -125,20 +119,10 @@ class VisionWorker:
         self.prepare_threshold_bytes = max(int(prepare_threshold_bytes), 0)
         self.max_edge_pixels = max(int(max_edge_pixels), 256)
         self.timeout_seconds = max(int(timeout_seconds), 5)
-        self.max_attempts = max(int(max_attempts), 1)
-        self.lease_seconds = max(
-            int(lease_seconds),
-            self.timeout_seconds * 2 + 60,
-            30,
-        )
-        self.batch_size = min(max(int(batch_size), 1), 20)
         self.worker_concurrency = min(max(int(worker_concurrency), 1), 8)
         self.cache_seconds = max(int(cache_seconds), 0)
         self.cache_entries = min(max(int(cache_entries), 1), 2048)
         self.ffmpeg_path = ffmpeg_path.strip() or "ffmpeg"
-        self.worker_id = f"{socket.gethostname()}:{os.getpid()}"
-        self._wake = asyncio.Event()
-        self._closed = False
         self._source_resolver: Callable[[str, int], Awaitable[str | None]] | None = None
         self._analysis_cache: dict[str, tuple[float, VisionResult]] = {}
         self._analysis_inflight: dict[str, asyncio.Task[VisionResult]] = {}
@@ -223,7 +207,6 @@ class VisionWorker:
             raise
         finally:
             connection.close()
-        self._wake.set()
         return job_id
 
     async def submit_and_wait(
@@ -273,100 +256,9 @@ class VisionWorker:
                 return result
             if terminal:
                 return None
-            self._wake.set()
             await asyncio.sleep(0.35)
         await asyncio.to_thread(self.expire, job_id, "request wait timed out")
         return None
-
-    async def run_forever(self) -> None:
-        last_cleanup = 0.0
-        while not self._closed:
-            now = time.monotonic()
-            if now - last_cleanup >= 60:
-                await asyncio.to_thread(self.cleanup)
-                await self._prune_analysis_cache()
-                last_cleanup = now
-            await asyncio.to_thread(self.flush_completed_deliveries)
-            jobs = await asyncio.to_thread(self.claim_jobs)
-            if not jobs:
-                self._wake.clear()
-                try:
-                    await asyncio.wait_for(self._wake.wait(), timeout=10)
-                except TimeoutError:
-                    pass
-                continue
-
-            async def run(job: VisionJob) -> None:
-                async with self._execution_slots:
-                    try:
-                        result = await self._analyze(job)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        await asyncio.to_thread(self.fail_job, job, exc)
-                    else:
-                        await asyncio.to_thread(self.complete_job, job.job_id, result)
-
-            await asyncio.gather(*(run(job) for job in jobs))
-            await asyncio.to_thread(self.flush_completed_deliveries)
-
-    def claim_jobs(self) -> list[VisionJob]:
-        now = int(time.time())
-        connection = self.database.store_connection()
-        cursor = connection.cursor()
-        try:
-            cursor.execute(
-                """
-                WITH due AS (
-                    SELECT vision_job_id
-                    FROM vision_jobs
-                    WHERE (
-                        status = 'pending' AND next_attempt_at <= ?
-                    ) OR (
-                        status = 'running' AND lease_until IS NOT NULL
-                        AND lease_until <= ?
-                    )
-                    ORDER BY next_attempt_at, vision_job_id
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT ?
-                )
-                UPDATE vision_jobs AS jobs
-                SET status = 'running', attempts = jobs.attempts + 1,
-                    lease_until = ?, worker_id = ?, updated_at = ?
-                FROM due
-                WHERE jobs.vision_job_id = due.vision_job_id
-                RETURNING jobs.vision_job_id, jobs.source_url, jobs.mode,
-                          jobs.native_message_id, jobs.segment_index,
-                          jobs.question, jobs.attempts
-                """,
-                (
-                    now,
-                    now,
-                    self.batch_size,
-                    now + self.lease_seconds,
-                    self.worker_id,
-                    now,
-                ),
-            )
-            rows = cursor.fetchall()
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-        return [
-            VisionJob(
-                job_id=int(row["vision_job_id"]),
-                native_message_id=str(row["native_message_id"]),
-                segment_index=int(row["segment_index"]),
-                source_url=str(row["source_url"]),
-                mode=str(row["mode"]),
-                question=str(row["question"]),
-                attempts=int(row["attempts"]),
-            )
-            for row in rows
-        ]
 
     async def _analyze(self, job: VisionJob) -> VisionResult:
         try:
@@ -484,16 +376,6 @@ class VisionWorker:
                     result,
                 )
                 self._trim_analysis_cache()
-
-    async def _prune_analysis_cache(self) -> None:
-        now = time.monotonic()
-        async with self._cache_lock:
-            self._analysis_cache = {
-                key: value
-                for key, value in self._analysis_cache.items()
-                if value[0] > now
-            }
-            self._trim_analysis_cache()
 
     def _trim_analysis_cache(self) -> None:
         overflow = len(self._analysis_cache) - self.cache_entries
@@ -728,122 +610,6 @@ class VisionWorker:
             return content, mime_type
         raise VisionJobError("ffmpeg could not prepare image")
 
-    def complete_job(self, job_id: int, result: VisionResult) -> None:
-        now = int(time.time())
-        connection = self.database.store_connection()
-        try:
-            connection.execute(
-                """
-                UPDATE vision_jobs
-                SET status = 'succeeded', source_url = '', result_json = ?,
-                    lease_until = NULL, worker_id = '', last_error = '',
-                    updated_at = ?, finished_at = ?, expires_at = ?
-                WHERE vision_job_id = ? AND status = 'running'
-                """,
-                (
-                    json.dumps(result.as_dict(), ensure_ascii=False),
-                    now,
-                    now,
-                    now + 600,
-                    int(job_id),
-                ),
-            )
-        finally:
-            connection.close()
-
-    def flush_completed_deliveries(self, *, limit: int = 20) -> int:
-        if self.delivery_store is None:
-            return 0
-        connection = self.database.store_connection()
-        try:
-            rows = connection.execute(
-                """
-                SELECT vision_job_id, scope_key, native_message_id,
-                       target_platform, target_kind,
-                       target_native_conversation_id,
-                       reply_to_native_message_id, result_json
-                FROM vision_jobs
-                WHERE auto_deliver = TRUE AND status = 'succeeded'
-                  AND delivery_enqueued_at IS NULL AND result_json <> ''
-                ORDER BY vision_job_id
-                LIMIT ?
-                """,
-                (min(max(int(limit), 1), 100),),
-            ).fetchall()
-        finally:
-            connection.close()
-
-        delivered = 0
-        for row in rows:
-            result = self.parse_result(str(row["result_json"]), mode="summary")
-            target = ConversationScope(
-                str(row["target_platform"]),
-                str(row["target_kind"]),  # type: ignore[arg-type]
-                str(row["target_native_conversation_id"]),
-            )
-            delivery, _created = self.delivery_store.enqueue(
-                idempotency_key=f"vision:{int(row['vision_job_id'])}:summary",
-                source_scope_key=str(row["scope_key"]),
-                target_scope=target,
-                body=MessageBody((TextNode(0, result.summary),)),
-                reply_to_native_message_id=str(
-                    row["reply_to_native_message_id"]
-                    or row["native_message_id"]
-                ),
-            )
-            now = int(time.time())
-            update_connection = self.database.store_connection()
-            try:
-                update_connection.execute(
-                    """
-                    UPDATE vision_jobs
-                    SET status = 'delivered', result_json = '', source_url = '',
-                        delivery_id = ?, delivery_enqueued_at = ?,
-                        updated_at = ?, expires_at = ?
-                    WHERE vision_job_id = ? AND status = 'succeeded'
-                      AND delivery_enqueued_at IS NULL
-                    """,
-                    (
-                        delivery.delivery_id,
-                        now,
-                        now,
-                        now + 86400,
-                        int(row["vision_job_id"]),
-                    ),
-                )
-            finally:
-                update_connection.close()
-            delivered += 1
-        return delivered
-
-    def fail_job(self, job: VisionJob, error: Exception) -> None:
-        now = int(time.time())
-        final = job.attempts >= self.max_attempts
-        delay = min(10 * (2 ** max(job.attempts - 1, 0)), 120)
-        connection = self.database.store_connection()
-        try:
-            connection.execute(
-                """
-                UPDATE vision_jobs
-                SET status = ?, source_url = CASE WHEN ? THEN '' ELSE source_url END,
-                    next_attempt_at = ?, lease_until = NULL, worker_id = '',
-                    last_error = ?, updated_at = ?, finished_at = ?, expires_at = ?
-                WHERE vision_job_id = ? AND status = 'running'
-                """,
-                (
-                    "failed" if final else "pending",
-                    final,
-                    now + delay,
-                    self._safe_error(error),
-                    now,
-                    now if final else None,
-                    now + 86400 if final else None,
-                    job.job_id,
-                ),
-            )
-        finally:
-            connection.close()
-
     def expire(self, job_id: int, reason: str = "expired") -> None:
         now = int(time.time())
         connection = self.database.store_connection()
@@ -895,35 +661,7 @@ class VisionWorker:
         finally:
             connection.close()
 
-    def cleanup(self) -> None:
-        now = int(time.time())
-        connection = self.database.store_connection()
-        try:
-            connection.execute(
-                """
-                UPDATE vision_jobs
-                SET status = 'expired', source_url = '', result_json = '',
-                    lease_until = NULL, worker_id = '', updated_at = ?,
-                    finished_at = COALESCE(finished_at, ?), expires_at = ?
-                WHERE status = 'succeeded' AND expires_at IS NOT NULL
-                  AND expires_at <= ?
-                """,
-                (now, now, now + 86400, now),
-            )
-            connection.execute(
-                """
-                DELETE FROM vision_jobs
-                WHERE status IN ('delivered', 'expired', 'failed')
-                  AND expires_at IS NOT NULL AND expires_at <= ?
-                """,
-                (now,),
-            )
-        finally:
-            connection.close()
-
     async def close(self) -> None:
-        self._closed = True
-        self._wake.set()
         tasks = tuple(self._analysis_inflight.values())
         for task in tasks:
             task.cancel()
@@ -934,10 +672,6 @@ class VisionWorker:
 
     def _vision_profile(self) -> ModelProfile:
         return self.model_catalog.resolve(self.vision_profile_name)
-
-    @staticmethod
-    def _safe_error(error: Exception) -> str:
-        return f"{type(error).__name__}: {error}"[:1000]
 
     @staticmethod
     def _supported_source(source_url: str) -> bool:
