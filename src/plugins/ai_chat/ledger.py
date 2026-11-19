@@ -402,32 +402,6 @@ class MessageLedger:
             ).fetchall()
         return [self._row_to_message(row) for row in rows]
 
-    def visible_messages_after(
-        self,
-        scope: ConversationScope,
-        canonical_message_id: int = 0,
-        *,
-        limit: int = 500,
-    ) -> list[CanonicalMessage]:
-        """Read visible source messages in immutable ingest order."""
-        limit = min(max(int(limit), 1), 5000)
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT m.*, c.scope_key
-                FROM messages_with_captions AS m
-                JOIN conversations AS c
-                  ON c.conversation_id = m.conversation_id
-                WHERE c.scope_key = ?
-                  AND m.canonical_message_id > ?
-                  AND m.canonical_message_id >= c.min_canonical_message_id
-                ORDER BY m.canonical_message_id ASC
-                LIMIT ?
-                """,
-                (scope.key, max(int(canonical_message_id), 0), limit),
-            ).fetchall()
-        return [self._row_to_message(row) for row in rows]
-
     def visible_message_count_after(
         self,
         scope: ConversationScope,
@@ -484,40 +458,6 @@ class MessageLedger:
                 [scope.key, *ids],
             ).fetchall()
         return [self._row_to_message(row) for row in rows]
-
-    def search_in_scope(
-        self,
-        scope: ConversationScope,
-        query: str,
-        limit: int = 10,
-    ) -> list[CanonicalMessage]:
-        query = query.strip()
-        if not query:
-            return []
-        limit = min(max(int(limit), 1), 100)
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT m.*, c.scope_key
-                FROM messages_with_captions AS m
-                JOIN conversations AS c
-                  ON c.conversation_id = m.conversation_id
-                WHERE c.scope_key = ?
-                  AND m.canonical_message_id >= c.min_canonical_message_id
-                ORDER BY m.occurred_at DESC, m.canonical_message_id DESC
-                LIMIT 2000
-                """,
-                (scope.key,),
-            ).fetchall()
-        folded_query = query.casefold()
-        messages = [self._row_to_message(row) for row in rows]
-        matches = [
-            message
-            for message in messages
-            if message.message_kind != "command"
-            and folded_query in message.prompt_text.casefold()
-        ]
-        return matches[:limit]
 
     def history(
         self,

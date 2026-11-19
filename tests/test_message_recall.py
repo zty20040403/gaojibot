@@ -24,16 +24,16 @@ class MessageRecallTests(OutboxFixture):
             admission=lambda *_:True,clock=lambda:self.now)
         self.count = 0
 
-    def index(self,text,vector,*,endpoint=None,who='TEST_PERSON'):
+    def index(self,text,vector,*,endpoint=None,who='TEST_PERSON',scope=None):
         self.count += 1; endpoint = endpoint or self.endpoint
-        message = self.message(endpoint=endpoint,label='TEST_RECALL_'+str(self.count),body=MessageBody((TextNode(0,text),)))
+        message = self.message(endpoint=endpoint,scope=scope,label='TEST_RECALL_'+str(self.count),body=MessageBody((TextNode(0,text),)))
         self.query('UPDATE messages SET sender_display=? WHERE canonical_message_id=?',(who,message.canonical_message_id))
         self.catalog.enqueue(endpoint)
         jobs = self.jobs.claim_due('TEST_RECALL_WORKER',kinds=(self.catalog.kind,),now=self.now)
         self.assertEqual(len(jobs),1); job = jobs[0]
         _,document = self.catalog.current(job); self.catalog.save(job,document,vector)
         self.assertTrue(self.jobs.mark_succeeded(job.job_id,job.lease_owner,now=self.now,lease_generation=job.lease_generation))
-        return self.ledger.visible_messages_by_ids(endpoint.scope,[message.canonical_message_id])[0]
+        return self.ledger.visible_messages_by_ids(scope or endpoint.scope,[message.canonical_message_id])[0]
 
     def search(self,vector=None,**kwargs):
         with self.tx() as cursor:

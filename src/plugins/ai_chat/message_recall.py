@@ -1,7 +1,7 @@
 """Message-only vector candidates: cache ranks, canonical history supplies evidence."""
 from .billing_context import active_billing
 from .ledger import MessageLedger
-from .message_vectors import REVISION,embedding_identity
+from .message_vectors import REVISION,embedding_identity,valid_history_scope
 from .semantic_recall import _validate_vector,_vector_literal
 from .timeline import is_noise
 
@@ -42,16 +42,31 @@ def merge_hits(keyword,semantic,*,limit):
     return [messages[key] for key in sorted(scores,key=lambda key:(-scores[key],-key))[:limit]]
 
 
+async def keyword_hits(app,scope,*,terms,limit,**filters):
+    rows = await app.db_call(app.message_ledger.history,scope,terms=terms,limit=limit*3,newest=True,**filters)
+    terms = tuple(term.casefold() for term in terms)
+    ranked = [(sum(term in item.prompt_text.casefold() for term in terms),item) for item in rows if not is_noise(item)]
+    return [item for score,item in sorted(ranked,key=lambda pair:(-pair[0],-pair[1].canonical_message_id)) if score]
+
+
 async def search_messages(app,source,query,*,terms,who,after_id,before_id,limit):
     from .adapters.qq_official.vision_adapter import guarded_wait
     billing,service = active_billing(),getattr(app,'semantic_recall',None)
-    if (billing is None or not callable(billing.current) or service is None
-        or billing.store is not getattr(app,'model_billing',None)
-        or billing.source.endpoint!=source.endpoint or billing.source.actor!=getattr(source,'actor',None)
-        or source.scope.account!=source.endpoint.account or service.embedder.dimensions!=1024
-        or service.backend.dimensions!=1024 or service.backend.schema!=billing.store.database.schema):
-        raise RuntimeError('semantic_source_or_provider_unavailable')
-    current,identity = billing.current,embedding_identity(service.embedder)
+    if (billing is None or not callable(billing.current) or billing.store is not app.model_billing
+        or billing.source.endpoint!=source.endpoint or billing.source.actor!=source.actor):
+        raise PermissionError('semantic_source_unavailable')
+    if service is None or service.embedder.dimensions!=1024 or service.backend.dimensions!=1024 or service.backend.schema!=billing.store.database.schema:
+        raise RuntimeError('semantic_provider_unavailable')
+    def check_alias():
+        with billing.store.transaction() as cursor:
+            row = cursor.execute('''SELECT 1 FROM qq_official_endpoints WHERE account_key=? AND endpoint_key=?
+                AND binding_state='active' AND membership_state='present' AND canonical_scope_key=? AND route_epoch=?''',
+                (source.endpoint.account.key,source.endpoint.key,source.scope.key,source.route_epoch)).fetchone()
+            if not row or not valid_history_scope(source.scope,source.endpoint):raise PermissionError('semantic_route_changed')
+    async def current():
+        await billing.current()
+        if source.scope != source.endpoint.scope:await app.db_call(check_alias)
+    identity = embedding_identity(service.embedder)
     await current()
     vector = (await guarded_wait(service.embedder.embed([query]),current,
         timeout=service.embedder.timeout_seconds+5))[0]
@@ -61,10 +76,7 @@ async def search_messages(app,source,query,*,terms,who,after_id,before_id,limit)
             return message_hits(cursor,source.scope,vector,model=service.embedder.model,identity=identity,
                 after_id=after_id,before_id=before_id,who=who,limit=min(limit*3,90))
     semantic = await app.db_call(candidates)
-    keyword = await app.db_call(app.message_ledger.history,source.scope,terms=terms,who=who,
-        after_id=after_id,before_id=before_id,limit=limit*3,newest=True)
-    keyword = [item for item in keyword if not is_noise(item) and any(term.casefold() in item.prompt_text.casefold() for term in terms)]
-    keyword.sort(key=lambda item:(-sum(term.casefold() in item.prompt_text.casefold() for term in terms),-item.canonical_message_id))
+    keyword = await keyword_hits(app,source.scope,terms=terms,who=who,after_id=after_id,before_id=before_id,limit=limit)
     merged = merge_hits(keyword,semantic,limit=limit)
     # Rehydrate after both candidate reads: clear/content changes must not leak
     # old cache or a stale projection merely because it was ranked earlier.

@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 import json
 from types import SimpleNamespace
 import unittest
@@ -8,6 +9,7 @@ import httpx
 from src.bot_storage import DatabaseCalls
 from src.plugins.ai_chat.adapters.qq_official.billing import scoped
 from src.plugins.ai_chat.billing_context import billing_scope
+from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody,TextNode
 from src.plugins.ai_chat.model_billing import ModelBilling
@@ -67,6 +69,21 @@ class HistorySemanticTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.assertEqual((receipt['purpose'],receipt['actor_key'],receipt['input_tokens'],receipt['output_tokens']),('turn',self.actor.key,9,0))
         self.assertIsNotNone(receipt['finished_at']); self.assertFalse(receipt['cost_complete'])
 
+    async def test_bound_group_indexes_and_searches_its_legacy_history_until_rebound(self):
+        scope = ConversationScope('onebot-v11','group','TEST_OLD_GROUP')
+        self.inbound = replace(self.inbound,canonical_scope=scope,route_epoch=2)
+        self.query('UPDATE qq_official_endpoints SET canonical_scope_key=?,route_epoch=2 WHERE endpoint_key=?',(scope.key,self.endpoint.key))
+        target = self.index('TEST SlidesForge builds presentations',[1]+[0]*1023,scope=scope)
+        result = await self.call(query='怎么排版幻灯片')
+        self.assertIn('#'+str(target.canonical_message_id),result['results'][0])
+        async def rebind():
+            self.query('UPDATE qq_official_endpoints SET canonical_scope_key=?,route_epoch=3 WHERE endpoint_key=?',(self.endpoint.scope.key,self.endpoint.key))
+        self.action = rebind
+        for _ in range(2):
+            result = await self.call(query='怎么排版幻灯片')
+            self.assertFalse(result['ok']); self.assertNotIn('results',result)
+        self.assertEqual(len(self.requests),2)
+
     async def test_disabled_keeps_keyword_path_and_read_modes_never_embed(self):
         target = self.index('TEST SlidesForge builds presentations',[1]+[0]*1023)
         self.app.settings.semantic_enabled = False
@@ -87,7 +104,9 @@ class HistorySemanticTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         self.index('TEST SlidesForge builds presentations',[1]+[0]*1023)
         async def fail():raise httpx.ConnectError('TEST_PROVIDER_FAILURE')
         self.action = fail
-        result = await self.call(query='SlidesForge')
+        with self.assertLogs('src.plugins.ai_chat.tools.history',level='WARNING') as logs:
+            result = await self.call(query='SlidesForge')
+        self.assertIn('embedding_transport_ambiguous',logs.output[0]); self.assertNotIn('SlidesForge',logs.output[0])
         self.assertFalse(result['ok']); self.assertNotIn('results',result)
         self.assertNotIn('embedding.example.invalid',result['error']); self.assertEqual(len(self.requests),1)
         self.assertIsNotNone(self.query('SELECT finished_at FROM model_usage_calls')[0]['finished_at'])

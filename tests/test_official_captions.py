@@ -175,8 +175,7 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.ledger.history(self.endpoint.scope,terms=('猫',))),1)
         for messages in (self.ledger.history(self.endpoint.scope,terms=('猫',)),
                          self.ledger.recent_in_scope(self.endpoint.scope),
-                         self.ledger.visible_messages_by_ids(self.endpoint.scope,[canonical]),
-                         self.ledger.search_in_scope(self.endpoint.scope,'猫')):
+                         self.ledger.visible_messages_by_ids(self.endpoint.scope,[canonical])):
             self.assertIn('猫坐在窗边',messages[0].prompt_text)
         self.assertEqual(self.query('SELECT * FROM sticker_library'),[])
         self.assertNotIn('TEST_SECRET',str(self.model_calls))

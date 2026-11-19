@@ -4,15 +4,22 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 import re
+from types import SimpleNamespace
 
 from ..ai_tools import HISTORY_TOOL
+from ..message_recall import keyword_hits, search_messages
 from ..timeline import is_noise, render_line
 from .registry import FunctionTool
 from .state import ToolContext, TurnState, structured_tool_source
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$")
 _ID = re.compile(r"^#?([1-9][0-9]{0,18})$")
+_SEARCH_ERRORS = frozenset('semantic_source_unavailable semantic_provider_unavailable semantic_route_changed '
+                           'semantic_space_changed embedding_provider_rejected embedding_transport_ambiguous '
+                           'invalid_embedding_response embedding_response_too_large embedding_indices_or_count_invalid '
+                           'embedding_vector_invalid embedding_vector_zero'.split())
 
 
 def enabled(context: ToolContext) -> bool:
@@ -42,7 +49,6 @@ async def history(turn: TurnState, arguments: dict[str, object]) -> str:
     source = structured_tool_source(turn.context)
     endpoint = getattr(turn.context.platform, "endpoint", None)
     if source is None and endpoint is not None:
-        from types import SimpleNamespace
         source = SimpleNamespace(endpoint=endpoint, scope=endpoint.scope, actor=None)
     if source is None:
         return _error("当前没有可查询的会话。")
@@ -72,19 +78,17 @@ async def history(turn: TurnState, arguments: dict[str, object]) -> str:
     after_id = (start - 1) if start is not None else 0
     if query:
         terms = tuple(dict.fromkeys(term[:50] for term in query.split()))[:8]
+        filters = dict(terms=terms, who=who, after_id=after_id, before_id=end, limit=limit)
         if getattr(getattr(app,'settings',None),'semantic_enabled',False):
-            from ..message_recall import search_messages
             try:
-                found = await search_messages(app,source,query,terms=terms,who=who,after_id=after_id,before_id=end,limit=limit)
-            except (RuntimeError,ValueError,PermissionError):
-                return _error('语义检索不可用：宿主来源、配置或服务检查未通过；没有静默退回字面结果。')
+                found = await search_messages(app, source, query, **filters)
+            except (RuntimeError, ValueError, PermissionError, TimeoutError) as exc:
+                # Database/provider exception text may include SQL, URLs or user input.
+                reason = str(exc) if str(exc) in _SEARCH_ERRORS else type(exc).__name__
+                logging.getLogger(__name__).warning('history_semantic_failed reason=%s', reason)
+                return _error(f'语义检索不可用：{reason}。')
         else:
-            found = await app.db_call(ledger.history, scope, terms=terms, who=who, after_id=after_id,
-                                      before_id=end, limit=limit * 3, newest=True)
-            found = [message for message in found if not is_noise(message)
-                     and any(term.casefold() in message.prompt_text.casefold() for term in terms)]
-            found.sort(key=lambda message: (-sum(term.lower() in message.prompt_text.lower() for term in terms),
-                                            -message.canonical_message_id))
+            found = await keyword_hits(app, scope, **filters)
         lines = [render_line(message, max_chars=300) for message in found[:limit]]
         return json.dumps({"ok": True, "results": lines or ["（没有搜到）"],
                            "hint": "用 around=#编号 读某条前后的原文"}, ensure_ascii=False)
