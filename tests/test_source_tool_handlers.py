@@ -46,7 +46,7 @@ class SourceToolTests(unittest.IsolatedAsyncioTestCase):
                               date="2026-11-19", provider="TEST_PROVIDER")
         with self.mock_source("search_web", return_value=[result]) as search:
             response = await self.execute("web_search", queries=[' “x” OR site:example.test ', "y" * 80], max_results=9)
-            search.assert_awaited_once_with(["x", "y" * 40], max_results=4, timeout_seconds=12, api_key="TEST_KEY", all_results=[], browser=None)
+            search.assert_awaited_once_with(["x", "y" * 40], max_results=4, timeout_seconds=12, api_key="TEST_KEY", all_results=[])
             hit = response["results"][0]
             self.assertEqual(response["queries"], ["x", "y" * 40])
             self.assertEqual((hit["id"], hit["url"]), (1, "https://example.test/evidence"))

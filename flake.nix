@@ -59,6 +59,7 @@
         ./THIRD_PARTY_NOTICES.md
         (lib.fileset.fileFilter (file: file.hasExt "md" || file.hasExt "html") ./docs)
         (lib.fileset.fileFilter (file: file.hasExt "nix") ./nix)
+        ./nix/search-browser.py
         (lib.fileset.fileFilter (file: file.hasExt "md") ./skills)
         (lib.fileset.fileFilter (
             file:

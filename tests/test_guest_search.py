@@ -34,7 +34,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('x%26y', page.goto.call_args.args[0])
                 journal.assert_called_with(search.syslog.LOG_INFO, f'gaoji_search engine={engine} status=ok')
             self.assertEqual((journal.call_count, context.close.await_count), (5, 5))
-            browser.new_context.assert_called_with(service_workers='block')
+            browser.new_context.assert_called_with(service_workers='block', java_script_enabled=True, accept_downloads=False)
             page.url = 'https://www.bing.com/search?q=TEST'
             for data, status in (([], 'empty'), (None, 'captcha')):
                 page.evaluate.return_value = data
@@ -52,14 +52,18 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
                 result = await search.search('bing', 'TEST_SECRET', connect)
             self.assertEqual((result['status'], len(result['results'])), ('ok', 10))
             self.assertNotIn('TEST_SECRET', str(logs.output))
-            handler = context.route.await_args.args[1]
-            for url, nav, method, allowed in [('https://cdn.example.org/a', False, 'GET', True),
-                                              ('https://example.org/a', True, 'GET', False),
-                                              ('https://www.bing.com/search', False, 'POST', False)]:
-                route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
-                route.request = MagicMock(url=url, method=method, is_navigation_request=lambda: nav)
-                await handler(route)
-                (route.continue_ if allowed else route.abort).assert_awaited_once()
+            for public in (False, True):
+                await search.search('bing', 'TEST', connect, documents_only=public)
+                browser.new_context.assert_called_with(service_workers='block', java_script_enabled=not public, accept_downloads=False)
+                handler = context.route.await_args.args[1]
+                for url, nav, method, allowed in [('https://cdn.example.org/a', False, 'GET', not public),
+                                                  (page.url, True, 'GET', True), ('https://example.org/a', True, 'GET', False),
+                                                  (page.url, False, 'POST', False)]:
+                    route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
+                    route.request = MagicMock(url=url, method=method, is_navigation_request=lambda: nav,
+                                              resource_type='document' if nav else 'image')
+                    await handler(route)
+                    (route.continue_ if allowed else route.abort).assert_awaited_once()
 
     def test_result_urls(self):
         base = 'https://www.bing.com/search?q=TEST'

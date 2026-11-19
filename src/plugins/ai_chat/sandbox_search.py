@@ -52,10 +52,10 @@ def error(code):
     return {'status': 'error', 'error': code, 'results': []}
 
 
-async def search(engine, query, connect):
+async def search(engine, query, connect, *, documents_only=False):
     status = 'error'
     try:
-        result = await _search(engine, query, connect)
+        result = await _search(engine, query, connect, documents_only)
         status = result['status']
         return result
     except TimeoutError:
@@ -70,15 +70,16 @@ async def search(engine, query, connect):
             logging.warning('gaoji_search syslog unavailable')
 
 
-async def _search(engine, query, connect):
+async def _search(engine, query, connect, documents_only):
     if (not isinstance(engine, str) or engine not in ENGINES or not isinstance(query, str)
-            or not query.strip() or len(query) > 512 or '\x00' in query):
+            or not query.strip() or len(query) > (1500 if documents_only else 512) or '\x00' in query):
         return error('invalid_arguments')
     host, path, param, card, link, title, snippet = ENGINES[engine]
     url = f'https://{host}{path}?' + urlencode({param: query})
     captcha_redirect = False
     async with asyncio.timeout(20):
-        context = await (await connect()).new_context(service_workers='block')
+        context = await (await connect()).new_context(service_workers='block', java_script_enabled=not documents_only,
+                                                      accept_downloads=False)
         try:
             async def route_request(route):
                 nonlocal captcha_redirect
@@ -87,11 +88,10 @@ async def _search(engine, query, connect):
                 if request.is_navigation_request() and not allowed_url(request.url, engine):
                     if target.hostname == host and re.search(r'captcha|verify|/sorry', target.path, re.I):
                         captcha_redirect = True
-                    await route.abort()
-                elif request.method != 'GET' or target.scheme not in ('http', 'https'):
-                    await route.abort()
-                else:
-                    await route.continue_()
+                elif (request.method == 'GET' and target.scheme in ('http', 'https') and
+                      (not documents_only or (request.resource_type == 'document' and allowed_url(request.url, engine)))):
+                    return await route.continue_()
+                await route.abort()
             await context.route('**/*', route_request)
             async def close_socket(socket):
                 await socket.close()
@@ -105,13 +105,14 @@ async def _search(engine, query, connect):
                 return {'status': 'captcha', 'results': []}
             if not allowed_url(page.url, engine):
                 return error('unexpected_url')
-            deadline = asyncio.timeout(3)
-            try:
-                async with deadline:
-                    await page.locator(f'{card}, {CAPTCHA}').first.wait_for(timeout=0)
-            except TimeoutError:
-                if not deadline.expired():
-                    raise
+            if not documents_only:
+                deadline = asyncio.timeout(3)
+                try:
+                    async with deadline:
+                        await page.locator(f'{card}, {CAPTCHA}').first.wait_for(timeout=0)
+                except TimeoutError:
+                    if not deadline.expired():
+                        raise
             if not allowed_url(page.url, engine):
                 return error('unexpected_url')
             data = await page.evaluate(EXTRACT, [card, link, title, snippet, CAPTCHA])

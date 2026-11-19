@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from unittest.mock import patch
 
 import httpx
 
@@ -82,10 +83,9 @@ def block(name: str, snippet: str = "snippet") -> str:
 
 class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        web_search_module._QUERY_SLOTS = asyncio.Semaphore(4)
-        web_search_module._bocha_exhausted = False
-        self.addCleanup(setattr, web_search_module, "_QUERY_SLOTS", asyncio.Semaphore(4))
-        self.addCleanup(setattr, web_search_module, "_bocha_exhausted", False)
+        self.enterContext(patch.object(web_search_module, '_QUERY_SLOTS', asyncio.Semaphore(4)))
+        self.enterContext(patch.object(web_search_module, '_bocha_exhausted', False))
+        self.enterContext(patch.object(web_search_module, '_BROWSER_SOCKET', '/tmp/TEST_ABSENT_SEARCH/socket'))
 
     async def test_mcp_handshake_and_header_parsing(self) -> None:
         requests = []
@@ -142,7 +142,7 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("TEST_SECRET", " ".join(logs.output))
                 self.assertNotIn("TEST_query", " ".join(logs.output))
                 if exa == "schema":
-                    self.assertTrue(any(r.provider == "bocha" and r.fallback_reason == "schema_error" for r in logs.records))
+                    self.assertTrue(any(r.provider == 'browser' and r.fallback_reason == 'schema_error' for r in logs.records))
 
     async def test_concurrency_interleaving_and_partial_failure(self) -> None:
         active = peak = 0

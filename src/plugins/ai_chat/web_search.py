@@ -12,6 +12,7 @@ import httpx
 
 _logger = logging.getLogger(__name__)
 _QUERY_SLOTS = asyncio.Semaphore(4)
+_BROWSER_SOCKET = '/run/gaoji-search-browser/search.sock'
 _bocha_exhausted = False
 _STRICT_QUERY_DOMAINS = (
     "bilibili.com",
@@ -64,14 +65,14 @@ def clean_search_query(query: str) -> str:
 async def search_web(
     queries: list[str], *, max_results: int = 10, timeout_seconds: int = 10,
     api_key: str = "", transport: httpx.AsyncBaseTransport | None = None,
-    all_results: list[SearchResult] | None = None, browser=None,
+    all_results: list[SearchResult] | None = None,
 ) -> list[SearchResult]:
     queries = [clean_search_query(query) for query in queries]
     if not queries or not all(queries):
         raise SearchError("搜索词不能为空。")
     async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
         batches = await asyncio.gather(*(
-            _search_query(client, query, max_results, timeout_seconds, api_key, browser) for query in queries
+            _search_query(client, query, max_results, timeout_seconds, api_key) for query in queries
         ))
     unique = {}
     for group in zip_longest(*(batch for batch in batches if batch)):
@@ -86,19 +87,17 @@ async def search_web(
 
 
 async def _search_query(client: httpx.AsyncClient, query: str, limit: int,
-                        timeout: int, api_key: str, browser) -> list[SearchResult] | None:
+                        timeout: int, api_key: str) -> list[SearchResult] | None:
     previous = "none"
     async with _QUERY_SLOTS:
         for provider in ("exa", "browser", "bocha"):
-            if provider == 'browser' and browser is None:
-                continue
             if provider == "bocha" and (not api_key or _bocha_exhausted):
                 break
             results = []
             try:
                 async with asyncio.timeout(min(10, timeout) if provider == 'browser' else timeout):
                     if provider == 'browser':
-                        results = await browser(query, limit)
+                        results = await _search_browser(query, limit)
                     elif provider == 'exa':
                         results = await _search_exa(client, query, limit)
                     else:
@@ -113,6 +112,21 @@ async def _search_query(client: httpx.AsyncClient, query: str, limit: int,
                 return results
             previous = outcome
     return [] if previous == "empty" else None
+
+
+async def _search_browser(query, limit):
+    transport = httpx.AsyncHTTPTransport(uds=_BROWSER_SOCKET, trust_env=False)
+    async with httpx.AsyncClient(transport=transport, trust_env=False, timeout=9.5) as local:
+        response = await _post(local, 'http://localhost/search', content=query.encode())
+    if not response.is_success:
+        raise _ProviderError('busy' if response.status_code == 503 else 'browser_error')
+    try:
+        rows = response.json()
+        if not isinstance(rows, list) or len(rows) > 10:
+            raise ValueError
+        return [_result(r['title'], r['url'], r['snippet'], '', 'browser') for r in rows[:limit]]
+    except (KeyError, TypeError, ValueError):
+        raise _ProviderError('schema_error') from None
 
 
 async def _post(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Response:

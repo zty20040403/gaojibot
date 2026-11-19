@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import partial
 import hashlib
 import json
 import logging
@@ -17,7 +16,7 @@ from ..ai_tools import INSPECT_SOURCE_TOOL, USE_SKILL_TOOL, WEB_FETCH_TOOL, WEB_
 from ..web_fetch import BLOCKED_STATUSES, BROWSER_HEADERS, FetchError, fetch_page
 from ..web_search import SearchError, SearchResult, clean_search_query, clean_source_url, search_web
 from .registry import FunctionTool
-from .state import ToolContext, TurnState, structured_tool_source
+from .state import ToolContext, TurnState
 
 PAGE_CHARS = 8000
 STOP_SEARCH = "没有新信息了。用已知的回答，或者问用户要背景（哪个圈子、做什么的）。"
@@ -167,12 +166,6 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
     if not all(queries):
         return json.dumps({"ok": False, "error": "搜索词不能为空。"}, ensure_ascii=False)
     max_results = min(int(arguments.get("max_results", 10)), settings.search_max_results)
-    source = structured_tool_source(turn.context)
-    browser = None
-    if source is not None:
-        from ..background_tools import workspace_owner
-        from ..conversation_search import search_browser
-        browser = partial(search_browser, turn.context.app.sandbox_manager, workspace_owner(source.endpoint))
     async with turn.search_lock:
         if turn.search_budget:
             def reserve(budget):
@@ -195,7 +188,7 @@ async def web_search(turn: TurnState, arguments: dict[str, object]) -> str:
         try:
             results = await search_web(
                 queries, max_results=max_results, timeout_seconds=settings.search_timeout_seconds,
-                api_key=settings.search_api_key, all_results=all_results, browser=browser,
+                api_key=settings.search_api_key, all_results=all_results,
             )
             failed = False
         except SearchError:
