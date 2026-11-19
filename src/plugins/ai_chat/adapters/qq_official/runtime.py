@@ -104,7 +104,8 @@ class OfficialRuntime:
                  protocol_factory=open_official_protocol, binding_sender=None,
                  lease_factory=DedicatedAccountLease, probe_seconds: float = 1,
                  retry_seconds: float = 2, allow_test_server: bool = False,
-                 application=None, turn_consumer_factory=None, file_services_factory=None, approval_factory=None, migration_factory=None, media_factory=None, background_factory=None):
+                 application=None, turn_consumer_factory=None, file_services_factory=None,
+                 migration_factory=None, media_factory=None, background_factory=None):
         self.config, self.database, self.logger = config, database, logger
         self.observer = None
         if config.enabled:
@@ -120,10 +121,8 @@ class OfficialRuntime:
         self.migration_factory, self.migration_service = migration_factory, None
         self.background_factory, self.background_service = background_factory, None
         self.admin_identity_service = None
-        self.approval_factory = approval_factory
         self.media_factory = media_factory
         self.media_service = None
-        self.approval_service = None
         self.file_services_factory = file_services_factory
         self.file_service = None
         self.turn_consumer = None
@@ -220,8 +219,7 @@ class OfficialRuntime:
                 "turn_execution_connected": self.turn_consumer is not None,
                 "background_agent_connected": self.agent_service is not None,
                 "binding_transport_connected": self.binding_sender is not None or self.sender is not None,
-                "durable_sender_connected": self.sender is not None,
-                "approval_transport_connected": self.approval_service is not None}
+                "durable_sender_connected": self.sender is not None}
 
     async def _ensure_current(self, token):
         if self._stopping or self._token is not token:
@@ -369,8 +367,6 @@ class OfficialRuntime:
                 await run_inbox(accepted.inbox_id, accepted.ingested)
             if self.sender is not None:
                 self.sender.wake()
-            if accepted.approval is not None and self.approval_service is not None:
-                await self.approval_service.consume(accepted.approval)
             if accepted.binding is not None and accepted.binding.effect is None and self.sender is not None:
                 from ...message_ir import MessageBody, TextNode
                 from ...platform_types import EndpointKey, ActorKey
@@ -598,30 +594,6 @@ class OfficialRuntime:
                     ensure_current=lambda: self._ensure_current(token))
                 await self.sender.recover()
                 await self.sender.refresh_bound_groups()
-            if self.approval_factory is not None and self.sender is not None:
-                from .approval import OfficialApprovalService
-                async def reset_approval_bindings():
-                    self.approval_service = None
-                    self.store.approval_store = None
-                    self.outbox.approval_authority = None
-                # A host factory must clean up construction failures of its own
-                # resources; partially installed authority never reaches next epoch.
-                resources.push_async_callback(reset_approval_bindings)
-                service = await self._optional_feature('approval', self.approval_factory, self, token)
-                if service is not None:
-                    if not isinstance(service, OfficialApprovalService):
-                        raise RuntimeError('official_approval_service_invalid')
-                    # Capture this service, not the later file-factory variable.
-                    async def cleanup_approval(current=service):
-                        try:
-                            await current.close()
-                        finally:
-                            self.approval_service = None
-                            self.store.approval_store = None
-                            self.outbox.approval_authority = None
-                    resources.push_async_callback(cleanup_approval)
-                    await self._calls(service.attach, self, token)
-                    self.approval_service = service
             if self.file_services_factory is not None and isinstance(rest, RestClient):
                 service = await self._optional_feature('files', self.file_services_factory, self, token, rest)
                 if service is not None:
@@ -682,8 +654,6 @@ class OfficialRuntime:
                 tasks.append(asyncio.create_task(attention_worker()))
             if self.sender is not None:
                 tasks.append(asyncio.create_task(self.sender.run()))
-            if self.approval_service is not None:
-                tasks.append(asyncio.create_task(self.approval_service.run()))
             if agent_worker is not None:
                 tasks.append(asyncio.create_task(agent_worker.run_forever()))
             if vector_worker is not None:

@@ -403,7 +403,8 @@ class OfficialSendStore:
             authorized = vm_ok if vm_ok is not None else (
                 control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor))
             if row["purpose"] == "approval_otp":
-                authorized = authorized and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now)
+                authorized = (authorized and self.approval_authority is not None
+                              and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now))
             if not authorized or route["membership_state"] != "present" or route["binding_state"] == "revoked":
                 return self._finish(cursor, token, row, "failed", vm_error or "delivery_not_authorized", now)
             if now >= row["expires_at"]:
