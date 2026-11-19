@@ -14,6 +14,7 @@ class SimpleBindingTests(unittest.TestCase):
     context = fixture.OfficialBindingTests.context
     apply = fixture.OfficialBindingTests.apply
     bootstrap = fixture.OfficialBindingTests.bootstrap
+    configure = fixture.OfficialBindingTests.configure
 
     def test_owner_private_code_links_old_history_and_grants_group_identity(self):
         self.bootstrap()
