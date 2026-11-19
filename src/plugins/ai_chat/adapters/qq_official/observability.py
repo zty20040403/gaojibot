@@ -144,7 +144,10 @@ class OfficialObservability:
             verified=lease['bot_identity_verified_at'] if lease else None
             value['capabilities']=[{'kind':'bot_identity','status':'verified' if verified is not None else 'unknown',
                 'verified_at':verified,'expires_at':None}]
-            value['capabilities'] += self._file_evidence(c,runtime,token,now)
+            files=getattr(runtime,'file_service',None)
+            value['capabilities'] += [{'kind':kind,'status':'available' if files is not None else 'disabled',
+                'verified_at':None,'expires_at':None,'max_bytes':files.config.max_file_bytes if files is not None else 0}
+                for kind in ('native_image','native_file')]
             # No verified physical contracts for these capabilities are implied.
             value['capabilities'] += [{'kind':kind,'status':'unknown','verified_at':None,'expires_at':None}
                 for kind in ('recall','moderation','member_events','reactions','voice_output')]
@@ -168,14 +171,6 @@ class OfficialObservability:
             if healthy else 'lease_unavailable' if not current else 'gateway_unavailable'
             if health.get('state')!='ready' else 'sender_unavailable')
         return value
-
-
-    @staticmethod
-    def _file_evidence(cursor,runtime,token,now):
-        service=getattr(runtime,'file_service',None)
-        return [{'kind':kind,'status':'available' if service is not None else 'disabled',
-                 'verified_at':None,'expires_at':None,'max_bytes':service.config.max_file_bytes if service else 0}
-                for kind in ('native_image','native_file')]
 
 
 def register_official_http(app,context):

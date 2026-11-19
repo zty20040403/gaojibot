@@ -185,6 +185,8 @@ class RetireLegacyImportTests(HistoricalImport, unittest.TestCase):
                              {'qq_official_file_artifacts','qq_official_file_deliveries','qq_official_quota_periods'})
             for name in ('deliveries', 'delivery_attempts'):
                 self.assertEqual(connection.execute(f'SELECT * FROM {name}').fetchall(), retained[name])
+        with self.assertRaisesRegex(RuntimeError, 'pre-0123 full database backup'):
+            migration.migrate(schema, '0122_retire_security_lock', downgrade=True)
 
     def test_uncommitted_writer_blocks_migration_then_committed_data_refuses(self):
         schema = self.schema()
