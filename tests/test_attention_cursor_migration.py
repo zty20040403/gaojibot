@@ -1,7 +1,19 @@
 import unittest
 
+from src.bot_storage.schema import HEAD_REVISION
 from tests import test_qq_official_outbox_migration as migration
 from tests.test_drop_dead_tables_migration import _schema_snapshot
+
+
+class AttentionReasonMigrationTests(unittest.TestCase):
+    def test_empty_head_refuses_to_drop_reason_column(self):
+        schema = migration.owned_schema()
+        self.addCleanup(migration.drop, schema)
+        migration.migrate(schema, HEAD_REVISION)
+        with self.assertRaisesRegex(RuntimeError, 'attention_reasons_require_backup_restore_before_downgrade'):
+            migration.migrate(schema, '0120_retire_context_feedback', downgrade=True)
+        with migration.connect(schema) as conn:
+            self.assertEqual(conn.execute('SELECT version_num FROM alembic_version').fetchone(), (HEAD_REVISION,))
 
 
 class AttentionCursorMigrationTests(unittest.TestCase):

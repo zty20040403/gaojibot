@@ -112,6 +112,7 @@ class SharingTests(unittest.TestCase):
     def test_default_on_glance_uses_only_local_reader_and_fixed_text(self):
         source = self.cold()
         self.assertTrue(self.p.sharing.share(source))
+        self.assertIsNone(self.query('SELECT decision_reason FROM qq_official_proactive_observations')[0]['decision_reason'])
         self.wake.assert_not_called()
         self.reader.assert_called_with(Path('/tmp/TEST_INTEREST_STATE'), now=self.now)
         row = self.query('SELECT * FROM delivery_plans')[0]

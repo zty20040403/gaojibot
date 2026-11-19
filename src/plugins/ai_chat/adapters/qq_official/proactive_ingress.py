@@ -220,13 +220,15 @@ class ProactiveIngress:
                 tuple(dict(body_json=r['body_json'],sender_display=r['sender_display'],direction=r['direction'])
                       for r in reversed(recent)),ep,actor)
 
-    async def score(self,source):
+    async def score(self,source,record_decision):
         from .vision_adapter import guarded_wait
         text,history,endpoint,actor=await self.calls(self._text,source)
         async def invoke():
             await self.current(source)
             with self.billing(endpoint,actor,lambda:self.current(source)) if self.billing else nullcontext():
-                return await self.scorer(text=text,history=history,endpoint=endpoint,actor=actor)
+                decision = await self.scorer(text=text,history=history,endpoint=endpoint,actor=actor)
+                record_decision(decision)
+                return decision
         return await guarded_wait(invoke(),lambda:self.current(source),timeout=30)
 
     def _send_policy(self,source,*,purpose,deadline):
@@ -237,7 +239,7 @@ class ProactiveIngress:
 
     async def send_policy(self,*args,**kwargs):return await self.calls(self._send_policy,*args,**kwargs)
 
-    def _mark_woken(self, source, enqueue=None):
+    def _mark_woken(self, source, decision, enqueue=None):
         with self.tx() as c:
             row, (inbox, ep, _, message, _) = self._candidate(c, source)
             now=self._now()
@@ -251,8 +253,8 @@ class ProactiveIngress:
             if enqueue is not None:
                 plan_id = c.execute('SELECT plan_id FROM deliveries WHERE delivery_id=?',
                                     (enqueue(c),)).fetchone()['plan_id']
-            c.execute("UPDATE qq_official_proactive_observations SET state='queued',plan_id=? WHERE inbox_id=?",
-                      (plan_id, source.inbox_id))
+            c.execute("UPDATE qq_official_proactive_observations SET state='queued',plan_id=?,decision_reason=? WHERE inbox_id=?",
+                      (plan_id, decision.classification_reason, source.inbox_id))
             return inbox['inbox_id'], ep.key, conv_gen, message['canonical_message_id']
 
     def _sticker_source(self, source):
@@ -262,26 +264,26 @@ class ProactiveIngress:
                         source_native_message_id=inbox['native_message_id'], source_canonical_message_id=message['canonical_message_id'],
                         expires_at=row['deadline_at'], source_generation=control_state(c,ep)['stop_generation'])
 
-    async def _wake_sticker(self,source,query):
+    async def _wake_sticker(self,source,decision):
         if self.media is None:
             return False
         route = await self.calls(self._sticker_source, source)
         try:
-            content, filename, _ = await self.media.unsolicited_sticker(query, route['endpoint'], route['requester'])
+            content, filename, _ = await self.media.unsolicited_sticker(decision.reason, route['endpoint'], route['requester'])
         except MediaDenied:
             return False
         enqueue = await self.media.runtime.file_service.send_bytes(**route, content=content, filename=filename,
             logical_key='official-media:proactive:' + source.inbox_id, current=lambda:self.current(source),
             defer=True, purpose='unsolicited', source_proof=source)
-        await self.calls(self._mark_woken, source, enqueue)
+        await self.calls(self._mark_woken, source, decision, enqueue)
         self.media.runtime.sender.wake()
         return True
 
     async def wake(self, source, decision):
         if decision.action=='sticker':
-            return await self._wake_sticker(source,decision.reason)
+            return await self._wake_sticker(source,decision)
         if self.wake_turn is None:return False
-        inbox_id, ep_key, conv_gen, canonical_id = await self.calls(self._mark_woken, source)
+        inbox_id, ep_key, conv_gen, canonical_id = await self.calls(self._mark_woken, source, decision)
         await self.wake_turn(
             inbox_id=inbox_id,
             endpoint=ep_key,
@@ -291,11 +293,11 @@ class ProactiveIngress:
         )
         return True
 
-    def _discard(self,source):
+    def _discard(self,source,decision):
         with self.tx() as c:
             assert_epoch(c,self.token)
-            c.execute("UPDATE qq_official_proactive_observations SET state='discarded' WHERE inbox_id=? AND account_epoch=? AND state='scoring'",
-                (source.inbox_id,self.token.epoch))
+            c.execute("UPDATE qq_official_proactive_observations SET state='discarded',decision_reason=? WHERE inbox_id=? AND account_epoch=? AND state='scoring'",
+                (decision.classification_reason if decision is not None else None,source.inbox_id,self.token.epoch))
 
     async def glance(self):
         # claim_due is the only consumer of pending work, including after a
@@ -306,27 +308,31 @@ class ProactiveIngress:
             try:return self._now()<self._current(source).deadline_at
             except MigrationDenied:return False
         marker=active_job_fence.set(JobFence(None,self.token.holder_id,1,check,self.token.epoch))
+        decision = None
+        def record_decision(value):
+            nonlocal decision
+            decision = value
         try:
             lifetime=await self.current(source)
             if self.sharing is not None and await self.calls(self.sharing.share,source):
                 self.sharing.wake()
                 return None
             async with asyncio.timeout(max(0,lifetime.deadline_at-self._now())):
-                result=await score_and_deliver(source=source,scorer=self.score,current=self.current,
+                result=await score_and_deliver(source=source,scorer=lambda source:self.score(source,record_decision),current=self.current,
                     send_policy=self.send_policy,wake=self.wake,now=self._now)
-            if result.status=='discarded':await self.calls(self._discard,source)
+            if result.status=='discarded':await self.calls(self._discard,source,decision)
             return result
         except (AccountLeaseLost,DatabaseError,psycopg.Error):
             raise
         except asyncio.CancelledError:
-            await self.calls(self._discard,source)
+            await self.calls(self._discard,source,decision)
             raise
         except (MigrationDenied,LeaseLost):
-            await self.calls(self._discard,source)
+            await self.calls(self._discard,source,decision)
             return None
         except Exception as error:
             logger.warning('QQ attention glance failed: %s',type(error).__name__)
-            await self.calls(self._discard,source)
+            await self.calls(self._discard,source,decision)
             return None
         finally:active_job_fence.reset(marker)
 

@@ -8,16 +8,7 @@ from tests.test_qq_official_runtime_sender import verified_ready_platform
 from src.plugins.ai_chat.adapters.qq_official.live_conversations import ConversationTasks
 
 
-class LiveControlTests(unittest.IsolatedAsyncioTestCase):
-    setUp = base.OfficialTurnEndToEndTests.setUp
-    runtime = base.OfficialTurnEndToEndTests.runtime
-    query = base.OfficialTurnEndToEndTests.query
-    wait_db = base.OfficialTurnEndToEndTests.wait_db
-    application = base.OfficialTurnEndToEndTests.application
-    open_runtime = base.OfficialTurnEndToEndTests.open_runtime
-    emit = base.OfficialTurnEndToEndTests.emit
-    complete = base.OfficialTurnEndToEndTests.complete
-
+class LiveControlTests(base.OfficialTurnFixture, unittest.IsolatedAsyncioTestCase):
     async def test_stop_bypasses_busy_turn_and_start_only_runs_new_input(self):
         app = self.application()
         entered,cancelled = asyncio.Event(),asyncio.Event()
