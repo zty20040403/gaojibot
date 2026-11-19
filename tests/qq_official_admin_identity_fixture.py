@@ -41,4 +41,3 @@ class IdentityFixture:
   self.seq+=1;d={'id':f'TEST_NATIVE_{self.seq}','content':command,'author':{'member_openid' if group else 'user_openid':actor or self.owner},'timestamp':timestamp}
   if group:d['group_openid']='TEST_GROUP'
   return self.store.accept({'op':0,'s':self.seq,'id':f'TEST_EVENT_{self.seq}','t':'GROUP_MESSAGE_CREATE' if group else 'C2C_MESSAGE_CREATE','d':d},token=self.token,session_id=self.session)
- def challenge(self):return self.service.create(self.auth)
