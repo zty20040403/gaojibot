@@ -187,3 +187,5 @@ Optional host-keyed APIs let background jobs use a GitHub bot account for public
   <strong>Keep the conversation human. Let the agent do the work.</strong><br />
   <sub>Built by Kenneth · <a href="LICENSE">MIT License</a> · <a href="https://github.com/zty20040403/gaojibot/issues">Feedback and suggestions</a></sub>
 </p>
+
+本仓库的 QQ 机器人叫 gaoji
