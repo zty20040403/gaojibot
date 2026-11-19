@@ -107,7 +107,6 @@ _IDENTITY_COLUMNS = {
     "content_sources": "source_id",
     "message_sources": "message_source_id",
     "durable_jobs": "job_id",
-    "message_topic_edges": "edge_id",
 }
 
 

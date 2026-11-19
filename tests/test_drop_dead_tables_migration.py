@@ -12,39 +12,15 @@ DEAD_TABLES = frozenset(drop_migration.DEAD_TABLES)
 
 
 def _schema_snapshot(connection, schema: str) -> tuple[set[str], set[tuple], set[tuple], set[str]]:
-    tables = {
-        row[0]
-        for row in connection.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = %s AND table_type = 'BASE TABLE'",
-            (schema,),
-        )
-    }
-    columns = {
-        tuple(row)
-        for row in connection.execute(
-            "SELECT table_name, column_name, data_type, is_nullable "
-            "FROM information_schema.columns WHERE table_schema = %s",
-            (schema,),
-        )
-    }
-    constraints = {
-        tuple(row)
-        for row in connection.execute(
-            "SELECT table_name, constraint_name, constraint_type "
-            "FROM information_schema.table_constraints "
-            "WHERE table_schema = %s AND constraint_name NOT LIKE '%%_not_null'",
-            (schema,),
-        )
-    }
-    indexes = {
-        row[0]
-        for row in connection.execute(
-            "SELECT indexname FROM pg_indexes WHERE schemaname = %s",
-            (schema,),
-        )
-    }
-    return tables, columns, constraints, indexes
+    def rows(query):
+        return set(connection.execute(query, (schema,)))
+
+    tables = rows("SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type='BASE TABLE'")
+    columns = rows("SELECT table_name,column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=%s")
+    constraints = rows("SELECT table_name,constraint_name,constraint_type FROM information_schema.table_constraints "
+                       "WHERE table_schema=%s AND constraint_name NOT LIKE '%%_not_null'")
+    indexes = rows("SELECT indexname FROM pg_indexes WHERE schemaname=%s")
+    return {name for name, in tables}, columns, constraints, {name for name, in indexes}
 
 
 class DropDeadTablesMigrationTests(unittest.TestCase):
