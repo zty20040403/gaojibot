@@ -10,13 +10,14 @@ class HealthTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
  async def asyncSetUp(self):
   self.calls=DatabaseCalls();self.runtime._calls=self.calls;self.runtime.config=SimpleNamespace(enabled=True)
   self.runtime._gateway=SimpleNamespace(health={'state':'ready','message_gap':False,'dispatch_queue_depth':2,'dispatch_queue_limit':64,'rest_error':'TEST_SECRET_URL'})
-  self.runtime.sender=SimpleNamespace(_running=True,_stopping=False,reason='ready',_active=set(),_rate_waiters=set(),_unrecorded={})
+  self.runtime.sender=SimpleNamespace(_running=True,_tasks={1: object()},_unrecorded={})
   self.context=SimpleNamespace(official_runtime=self.runtime);self.registry=CollectorRegistry()
   self.service=OfficialObservability(self.context,registry=self.registry,clock=lambda:self.now)
  async def asyncTearDown(self):await self.service.close();await self.calls.close()
  async def test_real_lease_required_ready_sender_not_process_state(self):
   self.runtime.state='active'
-  self.assertTrue((await self.service.sample())['healthy'])
+  value=await self.service.sample()
+  self.assertTrue(value['healthy']);self.assertEqual(value['sender']['active'],1)
   self.runtime.sender._running=False
   self.assertEqual((await self.service.sample())['reason'],'sender_unavailable')
   self.runtime.sender._running=True;self.runtime._gateway.health['state']='connecting'
