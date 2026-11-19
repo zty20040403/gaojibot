@@ -16,16 +16,14 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.observer=OfficialObservability(self.context,registry=CollectorRegistry(),clock=lambda:self.now)
   self.reader=OfficialDetails(self.runtime,clock=lambda:self.now)
  async def asyncTearDown(self):await self.observer.close();await self.calls.close()
- async def test_actual_checkpoint_and_current_binding_without_raw_identity_or_code(self):
-  challenge=self.challenge();self.receive(challenge['command']);self.service.confirm(challenge['challenge_id'],self.auth)
+ async def test_actual_checkpoint_and_endpoint_without_console_identity(self):
+  self.receive('TEST_MESSAGE')
   value=await self.observer.details(section='bindings')
   self.assertEqual(value['checkpoint']['durable_seq'],1);self.assertTrue(value['checkpoint']['session_present'])
   self.assertEqual(value['checkpoint']['fencing_epoch'],self.token.epoch)
-  item=value['items'][0];self.assertTrue(item['admin_binding']['current']);self.assertTrue(item['admin_binding']['owner_current'])
-  with self.tx() as c:c.execute("UPDATE qq_official_owner_grants SET state='revoked' WHERE account_key=?",(self.account.key,))
-  self.assertFalse((await self.observer.details(section='bindings'))['items'][0]['admin_binding']['current'])
+  item=value['items'][0];self.assertEqual(item['kind'],'private');self.assertNotIn('admin_binding',item)
   encoded=json.dumps(value)
-  for secret in (self.account.key,self.owner,self.session,self.auth.account_id,self.auth.session_hash,challenge['command'],'TEST_NATIVE_1'):
+  for secret in (self.account.key,self.owner,self.session,self.auth.account_id,self.auth.session_hash,'TEST_MESSAGE','TEST_NATIVE_1'):
    self.assertNotIn(secret,encoded)
  async def test_bound_pagination_tamper_account_and_expiry(self):
   for i in range(3):
@@ -106,6 +104,6 @@ class DetailReceiptTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
 class DetailsSSETests(unittest.TestCase):
  def test_existing_sse_database_counters_invalidate_details_without_body_or_ids(self):
   from src.plugins.ai_chat.admin_api.realtime import _changed_database_resources
-  for table in ('delivery_receipts','delivery_attempts','qq_official_admin_bindings','qq_official_endpoints','qq_official_owner_grants','admin_accounts','background_jobs'):
+  for table in ('delivery_receipts','delivery_attempts','qq_official_endpoints','background_jobs'):
    before={table:(0,0,0)};after={table:(1,0,0)}
    self.assertIn('qq-official',_changed_database_resources(before,after))

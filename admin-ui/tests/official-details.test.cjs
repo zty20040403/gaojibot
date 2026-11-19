@@ -39,9 +39,9 @@ test('execution preserves original result deadline and nullable pending result',
   assert.equal(value.items[0].result_deadline_at, null); assert.equal(value.items[1].result_deadline_at, 200);
 });
 
-test('binding status preserves revoked evidence instead of inferring permission', () => {
-  const value = checkedPage(page({ section:'bindings',items:[{ref:'endpoint_a',kind:'group',state:'active',admin_binding:null},{ref:'endpoint_b',kind:'private',state:'unbound',admin_binding:{ref:'binding_a',revision:2,state:'revoked',current:false,owner_current:false}}] }), 'bindings');
-  assert.equal(value.items[0].admin_binding,null); assert.equal(value.items[1].admin_binding.current,false);
+test('endpoint state does not convey console authority', () => {
+  const value = checkedPage(page({ section:'bindings',items:[{ref:'endpoint_a',kind:'group',state:'active',admin_binding:{current:true}}] }), 'bindings');
+  assert.equal(value.items[0].state, 'active'); assert.ok(!('admin_binding' in value.items[0]));
 });
 
 test('pagination and truncation remain explicit facts', () => {
