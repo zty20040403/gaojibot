@@ -162,7 +162,7 @@ resume_id = meta.get('resume_job_id')
 fork_path = ''
 
 if meta.get('fork_project'):
-    subprocess.run(['gaoji-project-fork', meta['fork_project'], str(meta['job_id'])], check=True)
+    subprocess.run(['gaoji-project-fork', meta['fork_project'], str(meta['job_id'])], check=True, timeout=120)
     workdir = str(out_dir / 'project')
 
 if resume_id is not None:

@@ -37,9 +37,10 @@ class ProjectForkTests(unittest.TestCase):
         (conf / 'meta.json').write_text(json.dumps({'job_id': 1, 'fork_project': self.source.name}))
         out = self.work / '.gaoji/jobs/job-1'
 
-        def clone(args, *, check):
+        def clone(args, *, check, timeout):
             self.assertEqual(args, ['gaoji-project-fork', self.source.name, '1'])
             self.assertTrue(check)
+            self.assertEqual(timeout, 120)
             forks.fork_project(self.work, args[1], int(args[2]))
 
         with patch.object(sys, 'argv', ['prepare.py', str(conf), str(out)]), patch('subprocess.run', side_effect=clone):
