@@ -19,7 +19,7 @@ from src.bot_storage.database import PostgresDatabase
 from src.bot_storage.schema import HEAD_REVISION
 
 _MIGRATION_LOCK = threading.Lock()
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 def validate_test_database(dsn: str) -> None:
