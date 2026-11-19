@@ -29,20 +29,18 @@ class RetireContextFeedbackTests(unittest.TestCase):
             for verdict in ('correct', 'off_topic'):
                 turn = journal.start_turn(scope, trigger_canonical_message_id=1,
                                           objective='TEST_OBJECTIVE', provider='TEST_PROVIDER', model='TEST_MODEL')
-                journal.record_context_plan(turn.turn_id, {'scope_key': scope.key, 'current_message_id': 1,
-                                                          'context_hash': 'TEST_HASH', 'resolver_version': 'TEST_RESOLVER'})
                 journal.record_tool_started(turn.turn_id, 1, 'TEST_TOOL', {'text': 'TEST_INPUT'}, ())
                 journal.record_tool_finished(turn.turn_id, 1, 'TEST_TOOL', 'succeeded', 'TEST_RESULT', ())
                 trace = AgentTrace(trace_id='a' * 32, provider='TEST_PROVIDER', model='TEST_MODEL')
                 journal.finish_turn(turn.turn_id, status='succeeded', final_text='TEST_ANSWER', trace_payload=trace.to_payload())
                 with migration.connect(schema) as db:
+                    db.execute('''INSERT INTO turn_context_plans(turn_id,scope_key,current_message_id,resolver_version,
+                               context_hash,created_at) VALUES (%s,%s,1,'TEST_RESOLVER','TEST_HASH',10)''', (turn.turn_id, scope.key))
                     db.execute('INSERT INTO turn_context_feedback VALUES (%s,%s,%s,1,%s,10,20)',
                                (turn.turn_id, verdict, 'TEST_NOTE', 'TEST_ADMIN'))
                 if verdict == 'correct':
                     journal.hide_history(scope)
-            plans = journal.recent_context_plans()
             traces = journal.recent_trace_summaries()
-            self.assertEqual([plan['turn_id'] for plan in plans], [turn.turn_id])
             self.assertEqual(len(traces), 2)
             self.assertEqual(traces[0]['trace_id'], 'a' * 32)
             self.assertEqual(traces[0]['tools'], ['TEST_TOOL'])
@@ -77,15 +75,22 @@ class RetireContextFeedbackTests(unittest.TestCase):
                 self.assertEqual(rows(db, before[0] - {TABLE, 'alembic_version'}),
                                  {table: data for table, data in original.items() if table not in {TABLE, 'alembic_version'}})
                 self.assertEqual(db.execute('SELECT version_num FROM alembic_version').fetchone(), (HEAD,))
-            self.assertEqual(journal.recent_context_plans(), plans)
-            self.assertEqual(journal.recent_context_plans(turn_id=turn.turn_id), plans)
             self.assertEqual(journal.recent_trace_summaries(), traces)
-            journal.record_context_plan(turn.turn_id, {'scope_key': scope.key, 'current_message_id': 2})
-            self.assertEqual(journal.recent_context_plans()[0]['current_message_id'], 2)
-            journal.hide_history(scope)
-            self.assertEqual(journal.recent_context_plans(), [])
         with self.assertRaisesRegex(RuntimeError, 'pre-0120 full database backup'):
             migration.migrate(schema, BASE, downgrade=True)
         with migration.connect(schema) as db:
             self.assertEqual(_schema_snapshot(db, schema), expected)
             self.assertEqual(db.execute('SELECT version_num FROM alembic_version').fetchone(), (HEAD,))
+
+        migration.migrate(schema, '0124_retire_approval_receipts')
+        with migration.connect(schema) as db:
+            tables = _schema_snapshot(db, schema)[0]
+            self.assertEqual(db.execute('SELECT count(*) FROM turn_context_plans').fetchone(), (2,))
+            kept = tables - {'turn_context_plans', 'alembic_version'}
+            before = rows(db, kept)
+        migration.migrate(schema, '0125_retire_turn_context_plans')
+        with migration.connect(schema) as db:
+            self.assertEqual(tables - _schema_snapshot(db, schema)[0], {'turn_context_plans'})
+            self.assertEqual(rows(db, kept), before)
+        with self.assertRaisesRegex(RuntimeError, 'pre-0125 full database backup'):
+            migration.migrate(schema, '0124_retire_approval_receipts', downgrade=True)

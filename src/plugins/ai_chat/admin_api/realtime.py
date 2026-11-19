@@ -83,7 +83,6 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "usage_events": ("usage", "overview"),
     "agent_turns": ("traces",),
     "turn_journal_events": ("traces",),
-    "turn_context_plans": ("traces",),
     "turn_edges": ("traces",),
     "durable_jobs": ("jobs", "media", "overview"),
     "media_blobs": ("media", "stickers"),
