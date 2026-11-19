@@ -22,12 +22,11 @@ from src.qq_official.gateway import GatewayCheckpoint
 
 from . import peer_bots
 from .admin_identity import command_commitment, prepare_identity_input
-from .approval import prepare_approval_input
 from .authority import OwnerAuthority
 from .binding import BindingContext, BindingDecision, BindingReducer
 from .codec import DecodedMessage, RejectedMessage, decode_message
 from .conversation_control import ingest as ingest_control
-from .input_normalization import normalize_input
+from .input_normalization import normalize_input, retired_approval_input
 from .lease import LeaseToken, assert_epoch
 from .proactive_ingress import record_group_activity
 
@@ -243,7 +242,8 @@ def record_pending_inbox(
     if existing is not None:
         return finish(reason="duplicate_message", canonical=existing["canonical_message_id"])
     prepared_input = normalize_input(dispatch)
-    if prepared_input.kind != "message" or prepare_approval_input(dispatch, endpoint).kind != "none":
+    if prepared_input.kind != "message" or retired_approval_input(
+            prepared_input, dispatch.message.content, private=endpoint.kind == "private"):
         cursor.execute("UPDATE qq_official_inbound_events SET payload_json=NULL WHERE inbox_id=?", (inbox_id,))
         return finish("quarantined", "input_sensitive_control")
     return _write_to_ledger(
@@ -601,7 +601,6 @@ class OfficialInboxStore:
                 (account.key, endpoint.key, native_id)).fetchone()
             prepared_input = normalize_input(dispatch)
             command = prepared_input.command
-            admin_input = prepare_approval_input(dispatch, endpoint)
             identity_command = prepare_identity_input(dispatch)
             if sent is not None:
                 reason, echo = "self_echo", "confirmed_self"
@@ -623,10 +622,10 @@ class OfficialInboxStore:
                 status, reason = "processed", "binding_control"
                 endpoint_row = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?",
                                               (endpoint.key,)).fetchone()
-            elif admin_input.kind == "quarantine":
-                status, reason = "quarantined", "input_sensitive_approval"
-            elif admin_input.kind == "control":
-                status, reason = "processed", "admin_control_unavailable"
+            elif admin_input := retired_approval_input(prepared_input, dispatch.message.content,
+                                                       private=endpoint.kind == 'private'):
+                status, reason = (('processed', 'admin_control_unavailable') if admin_input == 'control'
+                                  else ('quarantined', 'input_sensitive_approval'))
             elif self.admitted(cursor, endpoint, decoded.actor):
                 payload = json.dumps({"op": 0, "t": dispatch.event_type, "s": dispatch.seq,
                                       "id": dispatch.event_id, "d": dispatch.data},

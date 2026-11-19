@@ -20,6 +20,10 @@ MAX_INPUT_BYTES = 262144
 MAX_PREFIX_MENTIONS = 16
 _PREFIX = re.compile(r"<@([^<>\r\n]{1,257})>")
 _BINDING_MARKER = re.compile(r"(?:^|[\s>])[/!](?:bind|绑定)(?=$|\s)", re.IGNORECASE)
+_APPROVAL = re.compile(r"/?(?:确认|取消|重发|审批状态|复核|撤销复核|confirm|cancel|resend|review)\s+AP-", re.I)
+_EMBEDDED_APPROVAL = re.compile(r"(?:^|[\s>])" + _APPROVAL.pattern, re.I)
+_OTP = re.compile(r"[0-9]{6}")
+_MENTIONED_OTP = re.compile(r"(?:\s*<@[^>]{1,257}>){1,16}\s*[0-9]{6}\s*")
 _WHOAMI = re.compile(r"^[/!]whoami(?=$|\s)", re.IGNORECASE)
 
 
@@ -31,6 +35,17 @@ class NormalizedInput:
     version: int = NORMALIZATION_VERSION
     stripped_mentions: int = 0
     reason: str = ""
+
+
+def retired_approval_input(normalized: NormalizedInput, raw: str, *, private: bool) -> str | None:
+    if normalized.kind != 'message':
+        return None
+    text = normalized.input_text.strip()
+    if private and (_APPROVAL.match(text) or _OTP.fullmatch(text)):
+        return 'control'
+    if _EMBEDDED_APPROVAL.search(raw) or _OTP.fullmatch(raw.strip()) or _MENTIONED_OTP.fullmatch(raw):
+        return 'quarantine'
+    return None
 
 
 def _native(value):

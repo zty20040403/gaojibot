@@ -11,8 +11,7 @@ from src.plugins.ai_chat.adapters.qq_official.approval import (
 from src.plugins.ai_chat.adapters.qq_official.validation import Denied
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost
 from src.qq_official.events import parse_dispatch
-from src.plugins.ai_chat.adapters.qq_official.approval import prepare_approval_input,apply_control
-from src.plugins.ai_chat.adapters.qq_official.approval import task_effect_scope
+from src.plugins.ai_chat.adapters.qq_official.input_normalization import normalize_input, retired_approval_input
 
 from tests.qq_official_approval_fixture import ApprovalFixture, ApprovalLoopbackFixture, SourcePort, SECRET
 
@@ -140,74 +139,17 @@ class ApprovalAdditionalTests(ApprovalFixture,unittest.IsolatedAsyncioTestCase):
                    '{"v":1,"ephemeral":true}')
   self.assertFalse(self.fake.received)
 
-class ApprovalControlTests(ApprovalFixture,unittest.IsolatedAsyncioTestCase):
- asyncSetUp=ApprovalLoopbackTests.asyncSetUp
- asyncTearDown=ApprovalLoopbackTests.asyncTearDown
- delivered=ApprovalLoopbackTests.delivered
- approved=ApprovalLoopbackTests.approved
- async def test_real_receipt_confirmation_and_replay_never_votes_twice(self):
-  request,code=self.propose();await self.delivered(request,code)
-  command=self.control_command(code);source=self.source_receipt(command)
-  result=self.apply_control(command,source)
-  self.assertEqual(result.decision,'accepted')
-  self.assertTrue(self.apply_control(command,source).duplicate)
-  self.assertEqual(self.query('SELECT status FROM admin_approvals')[0]['status'],'awaiting_quorum')
-  self.assertEqual(len(self.query('SELECT * FROM qq_official_admin_control_receipts')),1)
-  self.assertFalse(self.query('SELECT * FROM qq_official_inbound_events WHERE payload_json IS NOT NULL OR turn_text LIKE ?',('%'+code+'%',)))
- async def test_fake_source_or_modified_command_cannot_confirm(self):
-  request,code=self.propose();await self.delivered(request,code)
-  command=self.control_command(code)
-  with self.assertRaises(SecurityError):self.apply_control(command,'TEST_NOT_RECEIVED')
-  wrong=self.control_command('999999' if code!='999999' else '888888');source=self.source_receipt(wrong)
-  self.assertEqual(self.apply_control(wrong,source).decision,'denied')
-  self.assertEqual(self.query('SELECT attempts FROM admin_approvals')[0]['attempts'],1)
- async def test_tx_a_rollback_does_not_consume_vote(self):
-  request,code=self.propose();await self.delivered(request,code)
-  command=self.control_command(code);source=self.source_receipt(command)
-  with self.assertRaisesRegex(RuntimeError,'TEST_ROLLBACK'):
-   with self.tx() as c:
-    apply_control(c,store=self.store,inbox_id=source,session_id='TEST_CONTROL_SESSION',seq=10,command=command,now=self.now)
-    raise RuntimeError('TEST_ROLLBACK')
-  self.assertEqual(self.query('SELECT status FROM admin_approvals')[0]['status'],'pending')
-  self.assertFalse(self.query('SELECT * FROM qq_official_admin_control_receipts'))
- async def test_same_shared_review_state_machine_issues_ram_only_code(self):
-  request,code=self.propose();await self.delivered(request,code)
-  self.store.confirm(request['approval_id'],None,None,code,recipient=self.recipient)
-  command=self.control_command('review '+request['approval_id'],self.recipient_b)
-  source=self.source_receipt(command,self.recipient_b)
-  result=self.apply_control(command,source)
-  self.assertEqual(result.decision,'sending');self.assertIsNotNone(result.code)
-  await self.delivered(result.request,result.code)
-  self.assertIsNone(self.apply_control(command,source).code)
- async def test_task_effect_scope_exact_policy_and_revocation(self):
-  await self.approved()
-  async def execute(row):return {'ok':True}
-  self.mobile.executors['server_task']=execute;await self.mobile.run_once()
-  kwargs=dict(context=self.context,operation='fleet.job.create',target_id='TEST_HOST',arguments=self.arguments)
-  with task_effect_scope(self.store,**kwargs) as c:
-   self.assertIsNotNone(c.execute('SELECT 1').fetchone())
-  with self.assertRaises(SecurityError):
-   with task_effect_scope(self.store,**(kwargs|{'target_id':'TEST_OTHER'})):pass
-  self.route_live=False
-  with self.assertRaises(SecurityError):
-   with task_effect_scope(self.store,**kwargs):pass
-
 class InputPrivacyTests(unittest.TestCase):
  def test_trusted_mentions_and_embedded_approval_privacy(self):
-  from src.plugins.ai_chat.platform_types import AccountKey
-  account=AccountKey('qq-official','TEST_APP','test')
-  endpoint=EndpointKey(account,'private','TEST_OWNER')
   cases=[('123456',[],'control'),('<@!TEST_FAKE> 123456',[],'quarantine'),('/confirm AP-ABCDEF123456 123456',[],'control'),
    ('<@!TEST_BOT> /confirm AP-ABCDEF123456 123456',[{'id':'TEST_BOT','is_you':True}],'control'),
    ('<@!TEST_BOT> /confirm AP-ABCDEF123456 123456',[],'quarantine'),
-   ('quoted /confirm AP-ABCDEF123456 123456',[],'quarantine'),('ordinary chat',[],'none')]
+   ('quoted /confirm AP-ABCDEF123456 123456',[],'quarantine'),('ordinary chat',[],None)]
   for text,mentions,kind in cases:
    with self.subTest(kind=kind):
     dispatch=parse_dispatch({'op':0,'t':'C2C_MESSAGE_CREATE','s':1,'d':{'id':'TEST_MESSAGE','content':text,
        'author':{'user_openid':'TEST_OWNER'},'mentions':mentions}})
-    result=prepare_approval_input(dispatch,endpoint);self.assertEqual(result.kind,kind)
-    self.assertNotIn('123456',repr(result))
-  group=EndpointKey(account,'group','TEST_GROUP')
+    self.assertEqual(retired_approval_input(normalize_input(dispatch),text,private=True),kind)
   dispatch=parse_dispatch({'op':0,'t':'GROUP_AT_MESSAGE_CREATE','s':1,'d':{'id':'TEST_MESSAGE',
     'group_openid':'TEST_GROUP','content':'/confirm AP-ABCDEF123456 123456','author':{'member_openid':'TEST_MEMBER'}}})
-  self.assertEqual(prepare_approval_input(dispatch,group).kind,'quarantine')
+  self.assertEqual(retired_approval_input(normalize_input(dispatch),dispatch.message.content,private=False),'quarantine')

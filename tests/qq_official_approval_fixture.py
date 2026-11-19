@@ -16,8 +16,6 @@ from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
 from src.plugins.ai_chat.delivery import DeliveryStore
-from src.qq_official.events import parse_dispatch
-from src.plugins.ai_chat.adapters.qq_official.approval import prepare_approval_input,control_commitment,apply_control
 from src.qq_official.credentials import Credentials
 from src.qq_official.http import RestClient
 from src.qq_official.token import TokenManager
@@ -78,27 +76,6 @@ class ApprovalFixture(ExecutionFixture):
    observe_ready(c,self.token,{'op':0,'t':'READY','d':{'session_id':'TEST_SESSION','user':{'id':'TEST_BOT','bot':True}}},self.now)
   self.window_a=self.window()
   self.window_b=self.window(endpoint=self.other)
- def control_command(self,text,recipient=None):
-  recipient=recipient or self.recipient
-  dispatch=parse_dispatch({'op':0,'t':'C2C_MESSAGE_CREATE','s':10,'id':'TEST_EVENT',
-    'd':{'id':'TEST_CONTROL','content':text,'author':{'user_openid':recipient.actor.native_user_id}}})
-  return prepare_approval_input(dispatch,recipient.endpoint)
- def source_receipt(self,command,recipient=None,number=10):
-  recipient=recipient or self.recipient
-  identifier='TEST_CONTROL_'+str(number)
-  with self.tx() as c:
-   c.execute("""INSERT INTO qq_official_inbound_events(inbox_id,account_key,endpoint_key,endpoint_generation,route_epoch,
-     event_type,native_message_id,status,reason_code,echo_state,received_at,created_at,updated_at,
-     admin_control_actor_key,admin_control_commitment) VALUES (?,?,?,1,1,'C2C_MESSAGE_CREATE',?,'processed',
-      'admin_control','not_echo',?,?,?,?,?)""",(identifier,self.account.key,recipient.endpoint.key,identifier,
-      self.now,self.now,self.now,recipient.actor.key,control_commitment(SECRET,inbox_id=identifier,
-       endpoint=recipient.endpoint,actor=recipient.actor,command=command)))
-   c.execute("""INSERT INTO qq_official_gateway_receipts(account_key,session_id,seq,event_type,disposition,inbox_id,received_at)
-      VALUES (?,'TEST_CONTROL_SESSION',?,'C2C_MESSAGE_CREATE','control',?,?)""",(self.account.key,number,identifier,self.now))
-  return identifier
- def apply_control(self,command,identifier,number=10):
-  with self.tx() as c:return apply_control(c,store=self.store,inbox_id=identifier,session_id='TEST_CONTROL_SESSION',
-      seq=number,command=command,now=self.now)
  def propose(self,**changes):
   return self.store.propose(self.account_a,**(dict(bot_id=None,kind='server_task',payload=self.context.payload(),
    summary='TEST exact approved task',transport_context=self.context)|changes))
