@@ -9,7 +9,7 @@ from tools.dev.table_writers import writer_tables
 READ_ONLY = {
     'content_sources': 'historical share text and comments may have no corresponding message',
     'message_sources': 'historical associations between shares and messages',
-    'qq_official_reply_windows': 'historical windows still read by approval and gateway health',
+    'qq_official_reply_windows': 'historical reply windows referenced by legacy approval records',
 }
 
 
