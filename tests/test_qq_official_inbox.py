@@ -264,6 +264,16 @@ class OfficialInboxTests(unittest.TestCase):
                                (binding, membership, self.group.key))
             self.assertEqual(self.accept().disposition, 'skipped')
 
+    def test_retired_console_identity_text_creates_no_binding_or_chat(self):
+        text = '/admin-bind ' + 'a' * 32 + '.' + 'b' * 32
+        for private in (True, False):
+            received = self.accept(content=text, private=private)
+            row, = self.query('SELECT payload_json,ingest_job_id FROM qq_official_inbound_events WHERE inbox_id=?', (received.inbox_id,))
+            self.assertEqual(row, {'payload_json': None, 'ingest_job_id': None})
+        for table in ('qq_official_admin_bindings', 'qq_official_admin_identity_challenges', 'messages'):
+            self.assertEqual(self.query('SELECT count(*) AS n FROM ' + table), [{'n': 0}])
+        self.assertNotIn('b' * 32, self.persisted_text())
+
     def test_owner_binding_entries_are_body_free_and_unbound_group_gets_no_code(self):
         hint = self.accept(content='/绑定群')
         self.assertEqual((hint.disposition, hint.binding.status), ('control', 'guide'))
