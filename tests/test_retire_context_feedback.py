@@ -111,7 +111,9 @@ class RetireContextFeedbackTests(unittest.TestCase):
                 RETURNING source_id""").fetchone()
             db.execute("""INSERT INTO message_sources(source_id,scope_key,native_message_id,sender_native_user_id,
                 segment_index,created_at) VALUES(%s,'TEST_SCOPE','TEST_MESSAGE','TEST_SENDER',0,1)""", (source,))
-            kept -= {'message_sources', 'content_sources'}
+            db.execute("""INSERT INTO content_sources(platform,canonical_url,content_kind,body_text,comments_json,
+                first_seen_at,last_seen_at,created_at,updated_at) VALUES('web','https://example.test/unlinked',
+                'article','TEST_ORPHAN_BODY','["TEST_COMMENT"]',1,1,1,1)""")
             before = rows(db, kept)
         migration.migrate(schema, '0127_retire_legacy_shares')
         with migration.connect(schema) as db:
@@ -129,7 +131,14 @@ class RetireContextFeedbackTests(unittest.TestCase):
             db.execute('DELETE FROM vision_jobs')
             kept.remove('vision_jobs')
             before = rows(db, kept)
-        migration.migrate(schema, '0128_retire_vision_jobs')
+        migration.migrate(schema, '0128b_verify_share_history')
         with migration.connect(schema) as db:
             self.assertEqual(_schema_snapshot(db, schema)[0], kept | {'alembic_version'})
             self.assertEqual(rows(db, kept), before)
+        migration.migrate(schema, '0128_retire_vision_jobs', downgrade=True)
+        with migration.connect(schema) as db:
+            db.execute('DROP TABLE message_sources, content_sources')
+        with self.assertRaisesRegex(RuntimeError, 'recover the original tables'):
+            migration.migrate(schema, '0128b_verify_share_history')
+        with migration.connect(schema) as db:
+            self.assertEqual(db.execute('SELECT version_num FROM alembic_version').fetchone(), ('0128_retire_vision_jobs',))
