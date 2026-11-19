@@ -9,7 +9,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 
-from src.bot_security.store import SecurityError, canonical, digest, public_account
+from src.bot_security.store import SecurityError, SecurityStore, canonical, digest, public_account
 from ...conversation_scope import ConversationScope
 from ...message_ir import MessageBody, TextNode
 from ...platform_types import ActorKey, EndpointKey
@@ -579,104 +579,6 @@ def apply_control(cursor,*,store,inbox_id,session_id,seq,command,now):
    VALUES (?,?,?,?,?,?,?,?,?,?)''',(inbox_id,transport.token.account_key,recipient.endpoint.key,recipient.actor.key,
     session_id,seq,command.action,result.decision,associated,now))
  return result
-
-
-import asyncio
-import inspect
-
-
-
-class OfficialApprovalService:
-    # Host operations were removed; task composition still asks for these ports.
-    host_admission = host_session_factory = None
-
-    def __init__(self, *, token, mobile, close=None):
-        transport = mobile.store.transport
-        if (not isinstance(transport, OfficialApprovalTransport) or transport.token != token
-                or not isinstance(mobile.official_sender, ApprovalOtpSender)
-                or mobile.official_sender.transport is not transport
-                or mobile.official_sender.store is not mobile.store
-                or close is not None and not callable(close)):
-            raise SecurityError('official_approval_service_invalid')
-        self.token, self.mobile, self.transport = token, mobile, transport
-        self._close, self._closed = close, False
-
-    def attach(self, runtime, token):
-        if (self._closed or token != self.token or runtime.sender is not self.mobile.official_sender.sender
-                or runtime.outbox is not runtime.sender.outbox
-                or runtime.outbox.approval_authority not in (None, self.transport)):
-            raise SecurityError('official_approval_service_mismatch')
-        runtime.outbox.approval_authority = self.transport
-        runtime.store.approval_store = self.mobile.store
-        # Restart never reconstructs an OTP. Only fresh commands can create a
-        # new approved source; old sending codes are cancelled under the epoch.
-        with runtime.store.transaction() as cursor:
-            self.transport.recover(cursor)
-
-    async def consume(self, result):
-        if self._closed or not isinstance(result, ControlResult) or result.duplicate:
-            return
-        if result.decision == 'sending' and result.request is not None and result.code is not None:
-            try:
-                await self.mobile._send_code(result.request, result.code)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # _send_code settles failed/unknown; neither event nor exception
-                # is logged, persisted or retried with the raw code.
-                pass
-        self.mobile.wake.set()
-
-    async def run(self):
-        if self._closed:
-            raise SecurityError('official_approval_service_closed')
-        await self.mobile.run_forever()
-
-    async def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            if self._close is not None:
-                result = self._close()
-                if inspect.isawaitable(result):
-                    await result
-        finally:
-            await asyncio.to_thread(self.mobile.store.close)
-
-
-
-from src.bot_security.service import MobileAuthorization
-from src.bot_security.store import SecurityStore
-
-
-def approval_services_factory(*,security=None):
-    """Return OfficialRuntime.approval_factory; None is zero-work disabled.
-
-    security is the existing trusted console SecurityStore. The new store is a
-    transport-scoped view of that SAME database/secret, never a new approval queue.
-    """
-    if security is None:
-        return lambda runtime,token:None
-    if not isinstance(security,SecurityStore):raise SecurityError('official_security_unavailable')
-
-    def create(runtime,token):
-        session=getattr(runtime,'migration_service',None)
-        if (runtime.database is not security._database or runtime.sender is None
-                or session is None or session.token is not token):
-            raise SecurityError('official_approval_source_unavailable')
-        transport=OfficialApprovalTransport(token=token,secret=security.secret,
-            clock=runtime.store.clock)
-        store=OwnerApprovalStore(runtime.database,security.secret,transport=transport,clock=runtime.store.clock)
-        try:
-            otp=ApprovalOtpSender(sender=runtime.sender,transport=transport,store=store)
-            async def no_legacy(*args,**kwargs):raise SecurityError('official_legacy_transport_denied')
-            mobile=MobileAuthorization(store,sender=no_legacy,bot_selector=lambda:None,official_sender=otp)
-            return OfficialApprovalService(token=token,mobile=mobile)
-        except BaseException:
-            store.close()
-            raise
-    return create
 
 
 class OwnerApprovalStore(SecurityStore):

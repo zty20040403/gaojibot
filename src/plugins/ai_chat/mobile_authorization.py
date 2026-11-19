@@ -85,21 +85,3 @@ async def handle_approval_event(mobile: MobileAuthorization | None, bot: Any, ev
         # Never let a transport traceback serialize the original code-bearing event.
         pass
     return True
-
-
-def build_official_mobile_authorization(*, database, transport, sender):
-    """Explicit SDK-free host composition; default deployment remains unchanged.
-
-    `sender` is the configured existing M3 sender. Credentials/source identity
-    were already loaded/verified by the host; this never reads model paths.
-    """
-    from .adapters.qq_official.approval import ApprovalOtpSender
-    if (getattr(sender, 'token', None) != transport.token
-            or getattr(getattr(sender, 'account', None), 'key', None) != transport.token.account_key
-            or getattr(getattr(sender, 'outbox', None), 'approval_authority', None) is not transport):
-        raise SecurityError('official_approval_sender_mismatch')
-    store = SecurityStore(database, transport.secret, clock=transport.clock, transport=transport)
-    async def denied(*args):
-        raise SecurityError('official_legacy_transport_forbidden')
-    otp = ApprovalOtpSender(sender=sender, transport=transport, store=store)
-    return MobileAuthorization(store, sender=denied, bot_selector=lambda: None, official_sender=otp)
