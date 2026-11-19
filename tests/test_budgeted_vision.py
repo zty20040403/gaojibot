@@ -107,7 +107,7 @@ class BudgetedVisionTests(unittest.IsolatedAsyncioTestCase):
             second = await self.worker.submit_and_wait(**self.arguments)
         self.assertEqual(first, second)
         self.assertEqual(self.budget.summary()["requests"], 1)
-        self.assertEqual(self.worker._cache_hits, 1)
+        self.provider.create_completion.assert_awaited_once()
 
     async def test_scoped_refresh_does_not_update_an_unrelated_queue_record(self):
         self.worker._download.side_effect = [VisionJobError("expired"), (b"image", "image/png")]

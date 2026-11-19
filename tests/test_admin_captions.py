@@ -22,7 +22,7 @@ class AdminCaptionTests(unittest.IsolatedAsyncioTestCase):
         self.app = FastAPI()
         register_admin(self.app, AdminServices(version='TEST',started_at=1,database=self.database,
             media_library=SimpleNamespace(database=self.database,admin_snapshot=lambda **kwargs: {'items':[], 'jobs':[], 'counts':{}}),
-            vision_worker=SimpleNamespace(admin_snapshot=lambda **kwargs: {'items':[], 'counts':{}}),
+            vision_worker=object(),
             settings=SimpleNamespace(admin_origin='https://test',alert_notify_enabled=False)),test_case=self)
         self.client = ApprovedClient(transport=httpx.ASGITransport(app=self.app),base_url='https://test')
         self.addAsyncCleanup(self.client.aclose)
@@ -31,6 +31,8 @@ class AdminCaptionTests(unittest.IsolatedAsyncioTestCase):
         path = '/bot-admin/api/v1/media'
         response = await self.client.get(path,headers={'X-Test-Login':'yes'})
         self.assertEqual(response.status_code,200,response.text)
+        self.assertTrue(response.json()['captions_available'])
+        self.assertNotIn('vision', response.json())
         row = response.json()['caption_settings'][0]
         self.assertFalse(row['image_captions'])
         self.assertEqual(row['image_daily_limit'],200)

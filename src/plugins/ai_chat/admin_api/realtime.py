@@ -89,7 +89,6 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "media_blobs": ("media", "stickers"),
     "message_media": ("media", "stickers"),
     "media_jobs": ("media",),
-    "vision_jobs": ("media",),
     "media_cleanup_runs": ("media",),
     "content_sources": ("sources",),
     "message_sources": ("sources",),
