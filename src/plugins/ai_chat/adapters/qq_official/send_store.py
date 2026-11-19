@@ -20,6 +20,12 @@ from .renderer import content_payload, render_plan, restore_plan
 from .send_types import OfficialAttemptContext, OutboxInvariantError, SendOutcome, SendReservation, digest, stable_json
 
 
+_ENDPOINT_HEAD = """NOT EXISTS (
+    SELECT 1 FROM deliveries prior WHERE prior.account_key=d.account_key
+    AND prior.endpoint_key=d.endpoint_key AND prior.delivery_id<d.delivery_id
+    AND (prior.status='sending' OR (prior.status='pending' AND prior.expires_at>?)))"""
+
+
 def quote_needed(cursor, row):
     """Quote only on the first message of a reply when another inbound arrived later."""
     if not row["reply_to_native_message_id"] or row["source_canonical_message_id"] is None:
@@ -288,9 +294,9 @@ class OfficialSendStore:
             assert_epoch(cursor, token)
             cursor.execute("""UPDATE deliveries SET status='failed',wait_reason='delivery_expired',updated_at=?
                 WHERE account_key=? AND status='pending' AND expires_at<=?""", (now, token.account_key, now))
-            rows = cursor.execute("""SELECT delivery_id FROM deliveries WHERE account_key=?
-                AND status='pending' AND next_attempt_at<=? ORDER BY delivery_id LIMIT ?""",
-                (token.account_key, now, limit)).fetchall()
+            rows = cursor.execute(f"""SELECT d.delivery_id FROM deliveries d WHERE d.account_key=?
+                AND d.status='pending' AND d.next_attempt_at<=? AND {_ENDPOINT_HEAD}
+                ORDER BY d.delivery_id LIMIT ?""", (token.account_key, now, now, limit)).fetchall()
             cursor.execute("""UPDATE qq_official_control_decisions c SET state='terminal',updated_at=?
                 FROM deliveries d WHERE c.delivery_id=d.delivery_id AND c.account_key=d.account_key
                 AND c.account_key=? AND c.state<>'terminal'
@@ -301,6 +307,15 @@ class OfficialSendStore:
         with self.deliveries.transaction() as cursor:
             return cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? AND account_key=?",
                 (delivery_id, token.account_key)).fetchone()
+
+    def dispatch_row(self, token, delivery_id):
+        now = int(self.clock())
+        with self.deliveries.transaction() as cursor:
+            assert_epoch(cursor, token)
+            return cursor.execute(f"""SELECT d.*, (d.expires_at<=? OR
+                (d.next_attempt_at<=? AND {_ENDPOINT_HEAD})) AS dispatchable
+                FROM deliveries d WHERE d.delivery_id=? AND d.account_key=?""",
+                (now, now, now, delivery_id, token.account_key)).fetchone()
 
     def latest_inbound(self, endpoint):
         with self.deliveries.transaction() as cursor:
@@ -461,6 +476,23 @@ class OfficialSendStore:
             if plain:
                 cursor.execute("UPDATE deliveries SET variant='plain_fallback',format_fallback_used=TRUE WHERE delivery_id=?", (delivery_id,))
             return self._finish(cursor, token, row, "ambiguous" if unknown else "pending" if retry else "failed", reason, now)
+
+    def settle_send_error(self, token, delivery_id):
+        now = int(self.clock())
+        with self.deliveries.transaction() as cursor:
+            assert_epoch(cursor, token)
+            row = cursor.execute("SELECT * FROM deliveries WHERE delivery_id=? AND account_key=? FOR UPDATE",
+                (delivery_id, token.account_key)).fetchone()
+            if row['status'] == 'pending':
+                self._finish(cursor, token, row, 'failed', 'sender_error', now)
+            elif row['status'] == 'sending':
+                cursor.execute("""UPDATE delivery_attempts a SET state='ambiguous',acceptance='unknown',
+                    finished_at=?,failure_category='sender_error' WHERE a.attempt_id=?
+                    AND a.state IN ('reserved','dispatched') AND NOT EXISTS (
+                        SELECT 1 FROM delivery_receipts r WHERE r.attempt_id=a.attempt_id)""",
+                    (now, row['current_attempt_id']))
+                if cursor.rowcount:
+                    self._finish(cursor, token, row, 'ambiguous', 'possibly_not_sent', now)
 
     def capture_receipt(self, reservation, body):
         with self.deliveries.transaction() as cursor:
