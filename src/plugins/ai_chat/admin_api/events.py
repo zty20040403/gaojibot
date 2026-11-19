@@ -30,7 +30,7 @@ def create_router(context: AdminRouteContext) -> APIRouter:
         authorize(authorization)
 
         async def stream() -> AsyncIterator[str]:
-            queue = event_broker.subscribe()
+            signal = event_broker.subscribe()
             realtime_monitor.start()
             ready = {
                 "sequence": 0,
@@ -52,17 +52,14 @@ def create_router(context: AdminRouteContext) -> APIRouter:
                     except SecurityError:
                         break
                     try:
-                        payload = await asyncio.wait_for(
-                            queue.get(),
-                            timeout=15.0,
-                        )
+                        payload = await asyncio.wait_for(event_broker.receive(signal), timeout=15.0)
                     except TimeoutError:
                         yield ": heartbeat\n\n"
                         continue
                     encoded = json.dumps(payload, separators=(",", ":"))
                     yield f"data: {encoded}\n\n"
             finally:
-                event_broker.unsubscribe(queue)
+                event_broker.unsubscribe(signal)
 
         return StreamingResponse(
             stream(),
