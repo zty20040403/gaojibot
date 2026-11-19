@@ -17,7 +17,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
-import { LoginGate, MemberStatus, AccountsView, ApprovalNotice } from './AccountViews'
+import { LoginGate, MemberStatus, AccountsView } from './AccountViews'
 import { StatusBadge } from './components'
 import { RequestsView } from './RequestsView'
 import { OfficialQQView } from './OfficialQQView'
@@ -156,7 +156,6 @@ export function App() {
           <div className="topbar-status"><StatusBadge value={plane.online ? 'online' : 'offline'} label={plane.online ? '实时' : '断开'} /><span>{plane.updatedAt ? `更新于 ${new Date(plane.updatedAt).toLocaleTimeString('zh-CN', { hour12: false })}` : '正在加载'}</span><div className="live-clock" title="当前北京时间"><Clock3 size={14} /><time dateTime={clock.toISOString()}><span className="clock-date">{clock.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit' })}</span>{clock.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</time></div><button className="icon-button topbar-refresh" title="刷新全部数据" onClick={() => void plane.refreshAll()}><RefreshCw className={plane.loading.size ? 'spin' : ''} size={16} /></button><span>{plane.user?.username} · 管理员</span><button className="text-button" onClick={() => void plane.logout()}>退出</button></div>
         </header>
         {plane.error && <div className="error-banner"><span>{plane.error}</span><button title="关闭错误提示" onClick={plane.clearError}><X size={16} /></button></div>}
-        <ApprovalNotice plane={plane} />
         <main>
           {route.detail ? (
             <DetailView detail={route.detail} plane={plane} onBack={() => openView(DETAIL_META[route.detail!].parent)} />
