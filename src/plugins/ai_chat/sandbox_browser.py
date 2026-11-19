@@ -29,15 +29,11 @@ async def _connect_browser():
             _browser = await _driver.chromium.connect_over_cdp('http://127.0.0.1:9222', timeout=2000)
         except Exception:
             if os.geteuid() == 0 and Path('/run/systemd/system').is_dir() and shutil.which('systemctl'):
-                proc = await asyncio.create_subprocess_exec(
-                    'systemctl', 'start', 'gaoji-browser.service',
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-                )
-                _, err = await proc.communicate()
-                if proc.returncode == 0:
-                    _browser = await _driver.chromium.connect_over_cdp('http://127.0.0.1:9222', timeout=5000)
-                else:
-                    raise RuntimeError('Chromium 服务启动失败：' + err.decode(errors='replace').strip()) from None
+                result = await asyncio.to_thread(subprocess.run, ['systemctl', 'start', 'gaoji-browser.service'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
+                if result.returncode:
+                    raise RuntimeError('Chromium 服务启动失败：' + result.stderr.decode(errors='replace').strip()) from None
+                _browser = await _driver.chromium.connect_over_cdp('http://127.0.0.1:9222', timeout=5000)
             else:
                 profile = Path('/work/.gaoji/chromium')
                 profile.mkdir(parents=True, exist_ok=True)

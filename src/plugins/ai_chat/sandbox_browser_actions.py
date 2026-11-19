@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import subprocess
 import time
 from uuid import UUID
 
@@ -84,11 +85,8 @@ def processes(profile):
 
 async def stop_browser(profile):
     if profile == PROFILE and os.geteuid() == 0 and Path('/run/systemd/system').is_dir() and shutil.which('systemctl'):
-        proc = await asyncio.create_subprocess_exec(
-            'systemctl', 'stop', 'gaoji-browser.service',
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
+        await asyncio.to_thread(subprocess.run, ['systemctl', 'stop', 'gaoji-browser.service'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=True)
     for pid in processes(profile):
         try:
             descriptor = os.pidfd_open(pid)

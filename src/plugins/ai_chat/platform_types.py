@@ -13,7 +13,6 @@ from typing import Any, Literal, Mapping, Protocol
 
 from .conversation_scope import ConversationKind, ConversationScope, _decode_key, _encode_key
 from .message_ir import MessageBody
-from .message_lowering import OutboundCapabilities
 
 
 Environment = Literal["production", "sandbox", "test"]
@@ -389,7 +388,6 @@ class SendOutcome:
 
 class TurnPlatform(Protocol):
     account: AccountKey
-    capabilities: OutboundCapabilities
     features: PlatformFeatures
 
     async def ready(self, endpoint: EndpointKey) -> str | None: ...

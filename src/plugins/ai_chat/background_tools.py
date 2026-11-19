@@ -10,7 +10,6 @@ import httpx
 from jsonschema import Draft202012Validator
 
 from .message_ir import MessageBody
-from .message_lowering import OutboundCapabilities
 from .platform_types import ActorKey, InboundMessage, PlatformFeatures
 from .tools import neutral_registry_for
 from .tools.background import definition
@@ -25,7 +24,6 @@ def workspace_owner(endpoint):
 
 class BackgroundPlatform:
     features = PlatformFeatures()
-    capabilities = OutboundCapabilities(text=False)
     progress_enabled = stream_enabled = False
 
     def __init__(self, endpoint):

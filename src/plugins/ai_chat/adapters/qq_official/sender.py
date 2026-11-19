@@ -1,11 +1,15 @@
 """Ordered per-conversation sending with in-memory limits and explicit outcomes."""
 from __future__ import annotations
 import asyncio
+from functools import partial
 import logging
 import re
+from threading import BoundedSemaphore
 import time
 import traceback
+from weakref import WeakValueDictionary
 
+from src.plugins.ai_chat.billing_context import drain
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
 from src.plugins.ai_chat.platform_types import ActorKey, EndpointKey
 from src.qq_official.errors import QQAPIError
@@ -18,10 +22,19 @@ from .official_metrics import observe
 
 log = logging.getLogger(__name__)
 PASSIVE_UNAVAILABLE = 'proactive_disabled_no_reply_window'
+MAX_IN_FLIGHT = 32
+_SEND_SLOTS = BoundedSemaphore(MAX_IN_FLIGHT)
+_WAIT_SLOTS = BoundedSemaphore(64)
 
 
 class SenderUnavailable(RuntimeError):
-    pass
+    """Local wait budget exhausted, not a durable delivery failure."""
+
+
+def _stored_outcome(row, delivery_id):
+    if row is None:
+        return SendOutcome('failed', 'delivery_not_found', delivery_id)
+    return SendOutcome(row['status'], row['wait_reason'] or '', delivery_id)
 
 
 class OfficialSender:
@@ -34,12 +47,11 @@ class OfficialSender:
         self.clock, self.wall_clock, self.sleep = clock, wall_clock, sleep
         self.rate_gate = rate_gate or RateLimiter(clock=clock, sleep=sleep)
         self.poll_seconds, self.request_timeout, self.observer = poll_seconds, request_timeout, observer
-        self._queues, self._workers, self._futures, self._passive = {}, {}, {}, {}
+        self._tasks, self._passive = {}, {}
+        self._endpoints = WeakValueDictionary()
         self._receipts, self._unrecorded = set(), {}
-        self._wake, self._recover_lock = asyncio.Event(), asyncio.Lock()
-        self._stopping = self._recovered = False
-        self._running = False
-        self.reason = 'ready'
+        self._wake, self._stopped, self._recover_lock = asyncio.Event(), asyncio.Event(), asyncio.Lock()
+        self._recovered = self._running = False
 
     def wake(self):
         self._wake.set()
@@ -61,6 +73,7 @@ class OfficialSender:
             await self._calls(save)
             self.wake()
         except LeaseLost:
+            self._halt()
             raise
         except Exception as error:
             frames = traceback.extract_tb(error.__traceback__)[-4:]
@@ -77,12 +90,13 @@ class OfficialSender:
             await self.refresh_group_state(EndpointKey.parse(row['endpoint_key']))
 
     async def _fence(self):
-        if self._stopping:
+        if self._stopped.is_set():
             raise LeaseLost("Official sender stopped")
         try:
             await self.ensure_current()
         except LeaseLost:
-            raise LeaseLost("Official sender account lease lost") from None
+            self._halt()
+            raise
 
     async def recover(self):
         async with self._recover_lock:
@@ -107,60 +121,71 @@ class OfficialSender:
         self._receipts.discard(receipt)
         return result
 
-    async def _submit(self, delivery_id):
-        if delivery_id in self._futures:
-            return self._futures[delivery_id]
-        row = await self._calls(self.outbox.get, self.token, delivery_id)
-        if delivery_id in self._futures:
-            return self._futures[delivery_id]
-        future = asyncio.get_running_loop().create_future()
-        if row is None or row['status'] != 'pending':
-            future.set_result(SendOutcome(row['status'] if row else 'failed',
-                (row['wait_reason'] or '') if row else 'delivery_not_found', delivery_id))
-            return future
-        key = row['endpoint_key']
-        self._futures[delivery_id] = future
-        queue = self._queues.setdefault(key, asyncio.Queue())
-        queue.put_nowait((delivery_id, future))
-        if key not in self._workers:
-            self._workers[key] = asyncio.create_task(self._worker(key, queue))
-        return future
+    def _submit(self, delivery_id):
+        if self._stopped.is_set():
+            raise LeaseLost("Official sender stopped")
+        if delivery_id in self._tasks:
+            return self._tasks[delivery_id]
+        if not _SEND_SLOTS.acquire(blocking=False):
+            return None
+        task = self._tasks[delivery_id] = asyncio.create_task(self._deliver(delivery_id))
+        task.add_done_callback(partial(self._finished, delivery_id))
+        return task
 
-    async def _worker(self, key, queue):
+    def _finished(self, delivery_id, task):
+        del self._tasks[delivery_id]
+        _SEND_SLOTS.release()
+        if not task.cancelled() and (error := task.exception()) and not isinstance(error, LeaseLost):
+            log.error('QQ send failed delivery=%s: %s %s', delivery_id, type(error).__name__,
+                ' > '.join(f'{f.name}:{f.lineno}' for f in traceback.extract_tb(error.__traceback__)[-4:]))
+
+    async def _deliver(self, delivery_id):
         try:
-            while not queue.empty() and not self._stopping:
-                delivery_id, future = queue.get_nowait()
-                try:
-                    result = await self._send(delivery_id)
-                except asyncio.CancelledError:
-                    future.cancel()
+            if not self._recovered or self._unrecorded or self._receipts:
+                await self.recover()
+            row = await self._calls(self.outbox.dispatch_row, self.token, delivery_id)
+        except Exception:
+            self._halt()
+            raise
+        if row is None or row['status'] != 'pending':
+            return _stored_outcome(row, delivery_id)
+        if not row['dispatchable']:
+            return None
+        async with self._endpoints.setdefault(row['endpoint_key'], asyncio.Lock()):
+            try:
+                return await self._send(delivery_id)
+            except LeaseLost:
+                self._halt()
+                raise
+            except Exception as error:
+                # A platform response awaiting capture is evidence, not an unknown send.
+                if delivery_id in self._unrecorded:
                     raise
-                except LeaseLost:
-                    future.cancel()
-                    self._stopping = True
-                    self.wake()
-                    return
-                except Exception as error:
-                    log.error('QQ send failed delivery=%s: %s %s', delivery_id, type(error).__name__,
-                        ' > '.join(f'{f.name}:{f.lineno}' for f in traceback.extract_tb(error.__traceback__)[-4:]))
-                    row = await self._calls(self.outbox.get, self.token, delivery_id)
-                    if row['status'] == 'pending':
-                        result = await self._calls(self.outbox.fail, self.token, delivery_id, 'sender_unavailable')
-                    else:
-                        result = SendOutcome('ambiguous', 'sender_unavailable', delivery_id)
-                if not future.done():
-                    future.set_result(result)
-                self._futures.pop(delivery_id, None)
-                queue.task_done()
-        finally:
-            self._workers.pop(key, None)
-            self._queues.pop(key, None)
+                try:
+                    await drain(asyncio.create_task(self._calls(self.outbox.settle_send_error, self.token, delivery_id)))
+                except Exception as settlement:
+                    self._halt()
+                    log.error('QQ send settlement failed delivery=%s: %s', delivery_id, type(settlement).__name__)
+                    raise error from settlement
+                raise
 
     async def send_delivery(self, delivery_id):
-        if not self._recovered:
-            await self.recover()
-        await self._fence()
-        return await asyncio.shield(await self._submit(delivery_id))
+        if not _WAIT_SLOTS.acquire(blocking=False):
+            self.wake()
+            raise SenderUnavailable('QQ outbox wait capacity exhausted')
+        try:
+            while True:
+                task = self._submit(delivery_id)
+                if task is not None and (result := await asyncio.shield(task)) is not None:
+                    return result
+                await self._fence()
+                try:
+                    async with asyncio.timeout(self.poll_seconds):
+                        await self._stopped.wait()
+                except TimeoutError:
+                    pass
+        finally:
+            _WAIT_SLOTS.release()
 
     async def _credential(self, endpoint, route, *, proactive_only=False):
         if route['proactive_state'] != 'denied':
@@ -187,8 +212,7 @@ class OfficialSender:
             await self._fence()
             row = await self._calls(self.outbox.get, self.token, delivery_id)
             if row is None or row['status'] != 'pending':
-                return SendOutcome(row['status'] if row else 'failed',
-                    (row['wait_reason'] or '') if row else 'delivery_not_found', delivery_id)
+                return _stored_outcome(row, delivery_id)
             endpoint = EndpointKey.parse(row['endpoint_key'])
             await self.rate_gate.acquire(endpoint)
             await self._fence()
@@ -228,8 +252,8 @@ class OfficialSender:
             except (TimeoutError, asyncio.CancelledError) as caught:
                 log.info('QQ send mode=%s seconds=%.2f result=unknown code=timeout', mode, self.clock() - started)
                 error = QQAPIError('transport_ambiguous', stage='send')
-                await asyncio.shield(self._calls(self.outbox.fail, self.token, delivery_id,
-                    'possibly_not_sent', reservation=reservation, error=error))
+                await drain(asyncio.create_task(self._calls(self.outbox.fail, self.token, delivery_id,
+                    'possibly_not_sent', reservation=reservation, error=error)))
                 if isinstance(caught, asyncio.CancelledError):
                     raise
                 return SendOutcome('ambiguous', 'possibly_not_sent', delivery_id)
@@ -239,17 +263,7 @@ class OfficialSender:
             log.info('QQ send mode=%s seconds=%.2f result=%s code=%s', mode, elapsed,
                 error.category if error else 'accepted', error.code if error else 0)
             if error is None:
-                task = asyncio.create_task(self._record(reservation, response))
-                try:
-                    return await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    while not task.done():
-                        try:
-                            await asyncio.shield(task)
-                        except asyncio.CancelledError:
-                            continue
-                    task.result()
-                    raise
+                return await drain(asyncio.create_task(self._record(reservation, response)))
             if error.accepted is not False:
                 return await self._calls(self.outbox.fail, self.token, delivery_id,
                     'possibly_not_sent', reservation=reservation, error=error)
@@ -287,35 +301,35 @@ class OfficialSender:
                 await self.sleep(delay)
 
     async def run(self):
-        await self.recover()
-        self._running = True
         try:
-            while not self._stopping:
+            while not self._stopped.is_set():
                 self._wake.clear()
                 await self._fence()
                 await self.recover()
-                for delivery_id in await self._calls(self.outbox.list_due, self.token):
-                    await self._submit(delivery_id)
+                self._running = not self._stopped.is_set()
+                due = await self._calls(self.outbox.list_due, self.token, limit=MAX_IN_FLIGHT)
+                for delivery_id in due:
+                    if self._stopped.is_set() or self._submit(delivery_id) is None:
+                        break
                 try:
-                    await asyncio.wait_for(self._wake.wait(), self.poll_seconds)
+                    async with asyncio.timeout(self.poll_seconds):
+                        await self._wake.wait()
                 except TimeoutError:
                     pass
         finally:
-            self._running = False
             await self.stop()
 
-    async def stop(self):
-        self._stopping = True
+    def _halt(self):
+        self._running = False
+        self._stopped.set()
         self.wake()
-        workers = tuple(self._workers.values())
-        for worker in workers:
-            if not worker.cancelling():
-                worker.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
-        for future in self._futures.values():
-            if not future.done():
-                future.cancel()
-        self._futures.clear()
+        for task in self._tasks.values():
+            if task is not asyncio.current_task() and not task.cancelling():
+                task.cancel()
+
+    async def stop(self):
+        self._halt()
+        await drain(asyncio.gather(*self._tasks.values(), return_exceptions=True))
 
     def _binding_plan(self, effect):
         now = int(self.wall_clock())

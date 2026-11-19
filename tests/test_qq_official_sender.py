@@ -8,8 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.bot_storage import DatabaseCalls
+from src.plugins.ai_chat.adapters.qq_official import sender as sender_module
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
-from src.plugins.ai_chat.adapters.qq_official.lease import assert_epoch
+from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost, assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
@@ -137,7 +138,7 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
             pending = asyncio.create_task(self.sender.send_delivery(delivery))
             try:
                 self.assertTrue(await asyncio.to_thread(entered.wait,3))
-                worker = self.sender._workers[self.endpoint.key]
+                worker = self.sender._tasks[delivery]
                 worker.cancel()
                 await asyncio.sleep(0)  # First cancellation enters the receipt drain.
                 worker.cancel()  # Runtime shutdown can cancel that drain again.
@@ -286,3 +287,129 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
             gate.set()
             self.assertEqual([r.status for r in await asyncio.gather(first,second)],['committed','committed'])
         self.assertEqual(order,['TEST_GROUP','TEST_OTHER','TEST_GROUP'])
+
+    async def test_full_sender_cannot_overtake_an_earlier_durable_row(self):
+        self.enterContext(patch.object(sender_module, '_SEND_SLOTS', threading.BoundedSemaphore(1)))
+        self.enterContext(patch.object(sender_module, '_WAIT_SLOTS', threading.BoundedSemaphore(3)))
+        peer = self.make_sender()
+        self.addAsyncCleanup(peer.stop)
+        await peer.recover()
+        active, earlier, later = (self.enqueue(key) for key in ('TEST_ACTIVE', 'TEST_EARLY', 'TEST_LATE'))
+        entered, release = asyncio.Event(), asyncio.Event()
+        send = self.rest.send_message
+
+        async def held(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await send(*args, **kwargs)
+
+        with (
+            patch.object(self.rest, 'send_message', side_effect=held),
+            patch.object(peer, '_submit', wraps=peer._submit) as submit,
+            patch.object(peer, '_deliver', wraps=peer._deliver) as deliver,
+        ):
+            first, duplicate = (asyncio.create_task(self.sender.send_delivery(active)) for _ in range(2))
+            await asyncio.wait_for(entered.wait(), 5)
+            late = asyncio.create_task(peer.send_delivery(later))
+            await self.eventually(lambda: submit.called)
+            with self.assertRaises(sender_module.SenderUnavailable):
+                await peer.send_delivery(earlier)
+            self.assertFalse(peer._tasks)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            release.set()
+            self.assertEqual((await asyncio.wait_for(duplicate, 5)).status, 'committed')
+            await self.eventually(lambda: deliver.await_count and not peer._tasks)
+            self.assertFalse(late.done())
+            self.assertEqual([row['delivery_id'] for row in self.attempts()], [active])
+            self.query('UPDATE deliveries SET next_attempt_at=? WHERE delivery_id=?', (self.now + 1, earlier))
+            self.assertEqual(self.outbox.list_due(self.token), ())
+            self.now += 1
+            runner = asyncio.create_task(peer.run())
+            self.assertEqual((await asyncio.wait_for(late, 5)).status, 'committed')
+        await peer.stop()
+        await asyncio.wait_for(runner, 5)
+        self.assertEqual([row['delivery_id'] for row in self.attempts()], [active, earlier, later])
+        self.assertEqual(len(self.fake.received), 3)
+
+    async def test_lease_loss_wakes_waiters_and_recovery_never_replays_unknown(self):
+        self.enterContext(patch.object(sender_module, '_SEND_SLOTS', threading.BoundedSemaphore(1)))
+        active, spill = self.enqueue('TEST_ACTIVE'), self.enqueue('TEST_SPILL')
+        entered = asyncio.Event()
+
+        async def interrupted(*args, **kwargs):
+            entered.set()
+            await asyncio.Future()
+
+        self.sender.poll_seconds = 60
+        with patch.object(self.rest, 'send_message', side_effect=interrupted), patch.object(
+            self.sender._stopped, 'wait', wraps=self.sender._stopped.wait,
+        ) as parked:
+            caller = asyncio.create_task(self.sender.send_delivery(active))
+            await asyncio.wait_for(entered.wait(), 5)
+            blocked = asyncio.create_task(self.sender.send_delivery(spill))
+            await self.eventually(lambda: parked.await_count)
+            await self.calls(self.account_lease.close)
+            with self.assertRaises(LeaseLost):
+                await self.sender._fence()
+            with self.assertRaises(LeaseLost):
+                await asyncio.wait_for(blocked, 5)
+            await self.sender.stop()
+            self.assertIsInstance((await asyncio.gather(caller, return_exceptions=True))[0], (LeaseLost, asyncio.CancelledError))
+        self.assertFalse(self.sender._tasks)
+        self.assertEqual(self.outbox.get(self.token, spill)['status'], 'pending')
+        self.token = self.lease().acquire()
+        self.sender = self.make_sender()
+        self.assertEqual((await self.sender.send_delivery(active)).status, 'ambiguous')
+        self.assertEqual((await self.sender.send_delivery(spill)).status, 'committed')
+        self.assertEqual(len(self.fake.received), 1)
+
+    async def test_unexpected_errors_are_visible_and_do_not_repeat_a_send(self):
+        before = self.enqueue('TEST_BEFORE_SEND')
+        with patch.object(self.rest, 'prepare_send', side_effect=RuntimeError('TEST_PREPARE')):
+            with self.assertRaisesRegex(RuntimeError, 'TEST_PREPARE'):
+                await self.sender.send_delivery(before)
+        self.assertEqual((await self.sender.send_delivery(before)).status, 'failed')
+        self.assertFalse(self.attempts())
+
+        send = self.rest.send_message
+
+        async def lost_result(*args, **kwargs):
+            await send(*args, **kwargs)
+            raise RuntimeError('TEST_POST')
+
+        during = self.enqueue('TEST_DURING_SEND')
+        with patch.object(self.rest, 'send_message', side_effect=lost_result):
+            with self.assertRaisesRegex(RuntimeError, 'TEST_POST'):
+                await self.sender.send_delivery(during)
+        self.assertEqual((await self.sender.send_delivery(during)).status, 'ambiguous')
+        self.assertEqual(self.attempts()[0]['acceptance'], 'unknown')
+        self.assertFalse(self.query('SELECT * FROM delivery_receipts'))
+
+        for stage in ('capture_receipt', 'finalize'):
+            with self.subTest(stage=stage):
+                after = self.enqueue(stage)
+                with patch.object(self.outbox, stage, side_effect=RuntimeError('TEST_RECEIPT')):
+                    with self.assertRaisesRegex(RuntimeError, 'TEST_RECEIPT'):
+                        await self.sender.send_delivery(after)
+                self.assertEqual(self.outbox.get(self.token, after)['status'], 'sending')
+                self.assertEqual(len(self.query('SELECT 1 FROM delivery_receipts WHERE applied_at IS NULL')), stage == 'finalize')
+                self.assertEqual(self.outbox.list_due(self.token), ())
+                self.assertEqual((await self.sender.send_delivery(after)).status, 'committed')
+        self.assertEqual((len(self.attempts()), len(self.fake.received)), (3, 3))
+
+    async def test_pump_stops_if_error_settlement_cannot_be_persisted(self):
+        delivery = self.enqueue()
+        with (
+            patch.object(self.rest, 'prepare_send', side_effect=RuntimeError('TEST_SEND')) as prepare,
+            patch.object(self.outbox, 'settle_send_error', side_effect=OSError('TEST_STORAGE')),
+            self.assertLogs(sender_module.__name__, 'ERROR') as logs,
+        ):
+            await asyncio.wait_for(self.sender.run(), 5)
+            await self.eventually(lambda: not self.sender._tasks)
+        prepare.assert_awaited_once()
+        self.assertIn('settlement failed', logs.output[0])
+        self.assertIn('RuntimeError', logs.output[1])
+        self.assertEqual(self.outbox.get(self.token, delivery)['status'], 'pending')
+        self.assertFalse(self.attempts())

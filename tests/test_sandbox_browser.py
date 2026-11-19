@@ -6,12 +6,26 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from src.plugins.ai_chat import sandbox_browser as browser
 
 
 class BrowserLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_timeout_does_not_retry_cdp_or_spawn_a_second_browser(self):
+        driver = AsyncMock()
+        driver.chromium.connect_over_cdp.side_effect = OSError('not ready')
+        api = SimpleNamespace(async_playwright=lambda: SimpleNamespace(start=AsyncMock(return_value=driver)))
+        with patch.dict(sys.modules, {'playwright.async_api':api}), patch.object(browser,'_browser',None), \
+                patch.object(browser,'_driver',None), patch.object(Path,'touch'), patch.object(Path,'is_dir',return_value=True), \
+                patch.object(browser.os,'geteuid',return_value=0), patch.object(browser.shutil,'which',return_value='systemctl'), \
+                patch.object(subprocess,'run',side_effect=subprocess.TimeoutExpired('systemctl',30)) as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                await browser._connect_browser()
+        self.assertEqual(run.call_args.kwargs['timeout'],30)
+        driver.chromium.connect_over_cdp.assert_awaited_once()
+
     async def test_success_requires_boolean_site_evidence(self):
         check = AsyncMock(side_effect=[False,False,True])
         self.assertTrue(await browser.wait_for_login(check,timeout=1,interval=.001))

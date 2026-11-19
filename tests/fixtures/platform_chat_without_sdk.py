@@ -33,7 +33,6 @@ from src.plugins.ai_chat.conversation_keys import conversation_key
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.message_ir import MessageBody, TextNode
-from src.plugins.ai_chat.message_lowering import OutboundCapabilities
 from src.plugins.ai_chat.model_catalog import ModelCatalog
 from src.plugins.ai_chat.model_preferences import ModelPreferenceStore
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey, InboundMessage, PlatformFeatures, ReplyCredential
@@ -57,7 +56,7 @@ async def main():
         ReplyCredential(endpoint, "msg_id", "TEST_SENSITIVE_REPLY_CREDENTIAL", 90, 100, 120, 5),
         canonical_scope=ConversationScope("onebot-v11", "group", "900001"),
     )
-    platform = SimpleNamespace(account=account, features=PlatformFeatures(), capabilities=OutboundCapabilities())
+    platform = SimpleNamespace(account=account, features=PlatformFeatures())
     preferences = ModelPreferenceStore(None)
     preferences.set_scope_enabled(endpoint.scope, True)
     preferences.set_scope_default(endpoint.scope, "actual_endpoint")
