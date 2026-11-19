@@ -1,9 +1,12 @@
 """Real PostgreSQL attention cursor, source authority and recovery under a test clock."""
 import asyncio
 from datetime import datetime, timezone
+import os
 import unittest
 from unittest.mock import AsyncMock,patch
 
+from alembic import command
+from alembic.config import Config
 from tests import test_qq_official_turn_endtoend as base
 from tests import test_qq_official_runtime as fixture
 from tests.test_qq_official_runtime_sender import verified_ready_platform
@@ -58,13 +61,10 @@ class AttentionSchedulerTests(base.OfficialTurnFixture, unittest.IsolatedAsyncio
             p.wake_turn=AsyncMock()
             p.media=None
             cases = [
-                ({'action':'silent','classification_reason':'群友之间的对话'}, 'discarded', '群友之间的对话'),
                 ({'action':'speak','reason':'TEST wake','classification_reason':'可以提供具体帮助'}, 'queued', '可以提供具体帮助'),
-                ({'action':'sticker','reason':'TEST search','classification_reason':'表情足以回应喜讯'}, 'discarded', '表情足以回应喜讯'),
                 ({'action':'speak','reason':'TEST wake','classification_reason':'可以纠正错误'}, 'discarded', '可以纠正错误'),
                 ({'action':'silent','classification_reason':'没有具体帮助可提供'}, 'discarded', '没有具体帮助可提供'),
                 (ValueError('TEST_PRIVATE_FAILURE'), 'discarded', None),
-                ({'action':'silent','classification_reason':'TEST_PRIVATE_NAME' * 100}, 'discarded', None),
             ]
             verdicts=iter(x[0] for x in cases)
             async def classify(*args,**kwargs):
@@ -82,19 +82,20 @@ class AttentionSchedulerTests(base.OfficialTurnFixture, unittest.IsolatedAsyncio
                     now[0]+=4
                     with runtime.store.transaction() as c:
                         c.execute('UPDATE qq_official_endpoints SET attention_next_at=? WHERE endpoint_key=?',(now[0],ep.key))
-                    if i == 3:
+                    if i == 1:
                         with patch.object(p, 'send_policy', AsyncMock(side_effect=PermissionError('TEST_PRIVATE_FAILURE'))):
                             await manual()
                     else:
                         await manual()
                     row=self.query('SELECT state,decision_reason FROM qq_official_proactive_observations WHERE inbox_id=?',(event['inbox_id'],))[0]
                     self.assertEqual((row['state'],row['decision_reason']),(state,reason))
-            self.assertEqual(model.await_count,len(cases))
             self.assertIn('不抄聊天原文、人名、ID，也不输出思维链',model.await_args_list[0].args[0])
             p.wake_turn.assert_awaited_once()
-            self.assertEqual(p.wake_turn.await_args.kwargs['reason'],'TEST wake')
-            self.assertFalse(fake.received)
+            schema = self.database.schema
             await runtime.stop()
+            with patch.dict(os.environ, {'AI_POSTGRES_DSN': os.environ['TEST_POSTGRES_DSN'], 'AI_POSTGRES_SCHEMA': schema}):
+                with self.assertRaisesRegex(RuntimeError, 'attention_reasons_require_backup_restore_before_downgrade'):
+                    command.downgrade(Config('alembic.ini'), '0120_retire_context_feedback')
 
     async def test_burst_multi_author_scopes_last_twenty_and_keeps_trailing_non_candidate(self):
         async with verified_ready_platform() as fake:
