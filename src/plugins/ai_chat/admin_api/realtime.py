@@ -109,7 +109,6 @@ _DATABASE_RESOURCE_MAP: dict[str, tuple[str, ...]] = {
     "principals": ("groups",),
     "principal_identities": ("groups",),
     "messages": ("groups",),
-    "conversation_visibility": ("groups",),
     "background_jobs": ("qq-official", "backgroundAgents", "tasks", "overview"),
     "deliveries": ("qq-official", "deliveries", "backgroundAgents", "commands", "overview"),
     "delivery_attempts": ("qq-official", "deliveries", "backgroundAgents", "overview"),

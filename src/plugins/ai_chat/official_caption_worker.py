@@ -40,16 +40,15 @@ class OfficialCaptionWorker:
             FROM media_jobs j JOIN message_media mm USING(message_media_id)
             JOIN messages m ON m.canonical_message_id=mm.canonical_message_id
             JOIN conversations c ON c.conversation_id=m.conversation_id AND c.scope_key=mm.scope_key
-            JOIN conversation_visibility v ON v.conversation_id=c.conversation_id
             JOIN qq_official_endpoints e ON e.endpoint_key=m.source_endpoint_key AND e.canonical_scope_key=mm.scope_key
             JOIN qq_official_accounts a ON a.account_key=e.account_key
             LEFT JOIN conversation_settings s ON s.scope_key=regexp_replace(e.endpoint_key,'^endpoint:','scope:')
             WHERE j.job_id=? AND j.status='running' AND j.worker_id=? AND j.attempts=? AND j.lease_until>?
               AND a.enabled AND a.gateway_state<>'paused'
               AND (COALESCE(s.image_captions,false) OR (mm.media_kind='sticker' AND ?))
-              AND m.direction='inbound' AND m.message_kind='chat' AND m.canonical_message_id>=v.min_canonical_message_id
+              AND m.direction='inbound' AND m.message_kind='chat' AND m.canonical_message_id>=c.min_canonical_message_id
               AND e.binding_state<>'revoked' AND (e.kind='private' OR (e.binding_state='active' AND e.membership_state='present'))
-            FOR UPDATE OF j FOR SHARE OF e,a,v''',
+            FOR UPDATE OF j FOR SHARE OF e,a,c''',
             (job.job_id,self.library.worker_id,job.attempts,int(time.time()),
              sticker_collection())).fetchone()
         if row is None:

@@ -153,7 +153,7 @@ class HistorySemanticTests(OutboxFixture,unittest.IsolatedAsyncioTestCase):
         target = self.index('TEST SlidesForge builds presentations',[1]+[0]*1023)
         async def calls(function,*args,**kwargs):
             if function==self.ledger.visible_messages_by_ids:
-                self.query('UPDATE conversation_visibility SET min_canonical_message_id=?',(target.canonical_message_id+1,))
+                self.query('UPDATE conversations SET min_canonical_message_id=?',(target.canonical_message_id+1,))
             return await self.calls(function,*args,**kwargs)
         self.app.db_call = calls
         result = await self.call(query='怎么排版幻灯片')

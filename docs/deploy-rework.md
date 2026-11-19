@@ -32,7 +32,6 @@
 BEGIN;
 -- 绑定前官方群自己的聊天记录并入绑定后的会话；编号顺序本来就接得上。
 UPDATE messages SET conversation_id = <BOUND_CONV> WHERE conversation_id = <OLD_CONV>;
-DELETE FROM conversation_visibility WHERE conversation_id = <OLD_CONV>;
 DELETE FROM conversations WHERE conversation_id = <OLD_CONV>;
 
 -- 窗口从官方群开始的地方起算，更早的记录用 history 查。

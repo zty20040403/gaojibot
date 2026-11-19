@@ -100,7 +100,7 @@ class ProactiveIngress:
         inbox=c.execute('SELECT * FROM qq_official_inbound_events WHERE inbox_id=? AND account_key=?',(inbox_id,self.token.account_key)).fetchone()
         if inbox is None:raise MigrationDenied('proactive_source_unavailable')
         ep=EndpointKey.parse(inbox['endpoint_key'])
-        message=c.execute('SELECT m.*,co.scope_key FROM messages m JOIN conversations co USING(conversation_id) JOIN conversation_visibility v USING(conversation_id) WHERE canonical_message_id=? AND m.canonical_message_id>=v.min_canonical_message_id',
+        message=c.execute('SELECT m.*,co.scope_key FROM messages m JOIN conversations co USING(conversation_id) WHERE canonical_message_id=? AND m.canonical_message_id>=co.min_canonical_message_id',
             (inbox['canonical_message_id'],)).fetchone()
         if message is None:raise MigrationDenied('proactive_source_unavailable')
         from .conversation_control import permitted
@@ -150,10 +150,10 @@ class ProactiveIngress:
             rows=c.execute('''SELECT i.inbox_id,i.canonical_message_id,i.received_at,i.turn_text,
                     i.trigger_requested,m.sender_display,m.reply_to_native_message_id
                 FROM qq_official_inbound_events i JOIN messages m USING(canonical_message_id)
-                JOIN conversation_visibility v USING(conversation_id)
+                JOIN conversations c USING(conversation_id)
                 WHERE i.account_key=? AND i.endpoint_key=? AND i.status='processed'
                     AND i.echo_state='not_echo' AND i.canonical_message_id>?
-                    AND i.canonical_message_id<=? AND i.canonical_message_id>=v.min_canonical_message_id
+                    AND i.canonical_message_id<=? AND i.canonical_message_id>=c.min_canonical_message_id
                 ORDER BY i.canonical_message_id DESC LIMIT ?''',
                 (self.token.account_key,physical['endpoint_key'],start,end,ATTENTION_BATCH)).fetchall()
             batch=tuple(reversed(rows))
@@ -211,8 +211,8 @@ class ProactiveIngress:
         with self.tx() as c:
             _,(inbox,ep,actor,message,_)=self._candidate(c,source)
             recent=c.execute('''SELECT m.body_json,m.sender_display,m.direction FROM messages m
-                JOIN conversation_visibility v USING(conversation_id)
-                WHERE m.source_endpoint_key=? AND m.canonical_message_id>=v.min_canonical_message_id
+                JOIN conversations c USING(conversation_id)
+                WHERE m.source_endpoint_key=? AND m.canonical_message_id>=c.min_canonical_message_id
                     AND m.canonical_message_id<? ORDER BY m.canonical_message_id DESC LIMIT ?''',
                 (ep.key,source.first_canonical,ATTENTION_BATCH)).fetchall()
             text='\n'.join(f"[{r['sender_display'] or '群友'}]: {r['turn_text']}" for r in source.batch)

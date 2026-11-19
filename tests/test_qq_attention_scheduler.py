@@ -156,6 +156,17 @@ class AttentionSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(p.scorer.await_count,1)
             await runtime.stop()
 
+    async def test_missing_history_floor_never_releases_imported_source(self):
+        async with verified_ready_platform() as fake:
+            runtime,p,manual,ep,now=await self.setup_group(fake)
+            await self.emit(fake,'TEST_MISSING_FLOOR','private imported topic')
+            self.assertEqual(len(self.query('UPDATE conversations SET min_canonical_message_id=NULL WHERE scope_key=? RETURNING conversation_id',
+                (ep.scope.key,))), 1)
+            now[0]+=4
+            self.assertIsNone(p.claim_due())
+            self.assertEqual(self.query('SELECT * FROM qq_official_proactive_observations'),[])
+            await runtime.stop()
+
     async def test_unverified_identity_does_not_consume_recovered_range(self):
         async with verified_ready_platform() as fake:
             runtime,p,manual,ep,now=await self.setup_group(fake)

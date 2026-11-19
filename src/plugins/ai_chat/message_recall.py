@@ -11,7 +11,7 @@ def message_hits(cursor,scope,vector,*,model,identity,after_id=0,before_id=None,
     if not any(vector):raise ValueError('semantic_query_vector_zero')
     clauses = ["c.scope_key=?","d.source_type='message'","d.embedding_model=?",
         "d.metadata_json->>'embedding_identity'=?",f"d.metadata_json->>'source_revision'={REVISION}",
-        "m.canonical_message_id>=v.min_canonical_message_id","m.canonical_message_id>?",
+        "m.canonical_message_id>=c.min_canonical_message_id","m.canonical_message_id>?",
         "m.message_kind='chat'","m.direction IN ('inbound','outbound')"]
     args = [scope.key,model,identity,max(int(after_id),0)]
     if before_id is not None:
@@ -24,7 +24,6 @@ def message_hits(cursor,scope,vector,*,model,identity,after_id=0,before_id=None,
         JOIN conversations c ON c.scope_key=d.scope_key
         JOIN messages_with_captions m ON m.conversation_id=c.conversation_id
           AND d.source_handle='msg#' || m.canonical_message_id::text
-        JOIN conversation_visibility v ON v.conversation_id=m.conversation_id
         WHERE {' AND '.join(clauses)}
         ORDER BY d.embedding <=> ?::vector,m.canonical_message_id DESC LIMIT ?''',args).fetchall()
     return [message for row in rows if not is_noise(message:=MessageLedger._row_to_message(row))]

@@ -20,9 +20,9 @@ def endpoint_mention_roster(cursor, endpoint: EndpointKey) -> dict[int, tuple[Ac
         """
         SELECT m.sender_principal_id, m.sender_actor_key, m.sender_display
         FROM messages m
-        JOIN conversation_visibility v USING (conversation_id)
+        JOIN conversations c USING (conversation_id)
         WHERE m.source_endpoint_key = ?
-          AND m.canonical_message_id >= v.min_canonical_message_id
+          AND m.canonical_message_id >= c.min_canonical_message_id
           AND m.direction = 'inbound'
           AND m.sender_principal_id IS NOT NULL
           AND m.sender_actor_key <> ''

@@ -80,7 +80,7 @@ class ImageInputTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await read_image(self.session, source), image)
         self.assertEqual(len(self.requests), 1)
         with self.ledger._transaction() as cursor:
-            cursor.execute('UPDATE conversation_visibility SET min_canonical_message_id=?', (canonical + 1,))
+            cursor.execute('UPDATE conversations SET min_canonical_message_id=?', (canonical + 1,))
         with self.assertRaises(MediaDenied):
             await read_image(self.session, source)
 
