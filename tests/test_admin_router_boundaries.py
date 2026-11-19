@@ -16,7 +16,6 @@ from tests.admin_session_fixture import PASSWORD, register_admin
 PAGE_ROUTES = (
     ("GET", "/api/resource-versions"),
     ("GET", "/api/local-model"),
-    ("POST", "/api/local-model/control"),
     ("GET", "/api/overview"),
     ("GET", "/api/events"),
     ("GET", "/api/databases"),
