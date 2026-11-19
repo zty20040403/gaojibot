@@ -167,6 +167,22 @@ class OfficialRuntimeSenderIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 'SELECT * FROM qq_official_inbound_events'), default=str))
             await runtime.stop()
 
+    async def test_owner_code_never_bypasses_the_process_send_limit(self):
+        slots = threading.BoundedSemaphore(1)
+        self.enterContext(patch('src.plugins.ai_chat.adapters.qq_official.sender._SEND_SLOTS', slots))
+        async with verified_ready_platform() as fake:
+            runtime = await self.open_runtime(fake)
+            with slots:
+                await self.incoming(fake, 'TEST_FULL', '/绑定群')
+                await self.wait_db("""SELECT 1 FROM qq_official_inbound_events e JOIN qq_official_accounts a USING(account_key)
+                    WHERE e.native_message_id='TEST_FULL' AND e.control_decision_code='owner_code_issued'
+                      AND a.owner_link_code_hmac IS NULL""")
+                self.assertFalse(fake.received)
+            await self.incoming(fake, 'TEST_FREE', '/绑定群')
+            await self.eventually(lambda: len(fake.received) == 1)
+            self.assertEqual(fake.received[0]['payload']['msg_id'], 'TEST_FREE')
+            await runtime.stop()
+
     async def test_unbound_group_guidance_never_sends_a_code(self):
         async with verified_ready_platform() as fake:
             runtime = await self.open_runtime(fake)

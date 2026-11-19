@@ -52,25 +52,17 @@ class BindingCommand:
 class BindingEffect:
     """Transient output only. Never serialize this object into inbox or audit."""
 
-    kind: str
     endpoint: EndpointKey = field(repr=False)
-    challenge_id: str = ""
-    candidate_id: str = ""
-    candidate_version: int = 0
-    expires_at: int = 0
-    code: str = field(default="", repr=False)
-    code_hmac: str = field(default="", repr=False)
-    source_native_message_id: str = field(default="", repr=False)
-    actual_group: EndpointKey | None = field(default=None, repr=False)
-    actual_submitter: ActorKey | None = field(default=None, repr=False)
+    expires_at: int
+    code: str = field(repr=False)
+    code_hmac: str = field(repr=False)
+    source_native_message_id: str = field(repr=False)
 
 
 @dataclass(frozen=True)
 class BindingDecision:
     status: str
     message: str
-    challenge_id: str = ""
-    candidate_id: str = ""
     effect: BindingEffect | None = field(default=None, repr=False)
 
 
@@ -142,7 +134,7 @@ class BindingReducer:
         audit(cursor, account=context.endpoint.account, action="owner-code.issued",
               actor=context.actor.key, target="owner-link-code", outcome="issued", now=now)
         return BindingDecision("owner_code_issued", "群绑定码已创建，5 分钟内有效。",
-            effect=BindingEffect("owner_link_code", context.endpoint, expires_at=expires_at,
+            effect=BindingEffect(context.endpoint, expires_at=expires_at,
                                  code=code, code_hmac=code_hmac,
                                  source_native_message_id=context.source_native_message_id))
 
@@ -217,33 +209,11 @@ class BindingReducer:
             return self.consume_owner_code(cursor, context=context, code=command.code, lease_token=lease_token)
         return BindingDecision("retired", "旧绑定入口已停用。")
 
-    def finish_owner_code(self, cursor, *, account: AccountKey, code_hmac: str,
-                          outcome: str, lease_token) -> None:
+    def cancel_owner_code(self, cursor, *, account: AccountKey, code_hmac: str, lease_token) -> None:
         self._guard(cursor, lease_token, account)
-        if outcome != 'success':
-            cursor.execute("""UPDATE qq_official_accounts SET owner_link_actor_key=NULL,
-                owner_link_code_hmac=NULL,owner_link_expires_at=NULL,owner_link_epoch=NULL
-                WHERE account_key=? AND owner_link_code_hmac=?""", (account.key, code_hmac))
-
-    def mark_issued(self, cursor, *, account: AccountKey, challenge_id: str,
-                    outcome: str, lease_token) -> BindingDecision:
-        self._guard(cursor, lease_token, account)
-        row = cursor.execute("""SELECT * FROM qq_official_binding_challenges
-            WHERE account_key=? AND challenge_id=? FOR UPDATE""", (account.key, challenge_id)).fetchone()
-        if row is None or row["state"] != "sending":
-            return BindingDecision("stale", "挑战发送状态已变化。")
-        now = int(self.clock())
-        grant = self.authority.c2c_grant(cursor, ActorKey.parse(row["issuer_actor_key"]))
-        success = (outcome == "success" and row["expires_at"] > now and grant is not None
-                   and grant.grant_id == row["owner_grant_id"] and grant.revision == row["owner_revision"]
-                   and row["delivery_epoch"] == lease_token.epoch)
-        state = "issued" if success else "cancelled"
-        cursor.execute("""UPDATE qq_official_binding_challenges SET state=?,updated_at=?,
-            code_hmac=CASE WHEN ? THEN code_hmac ELSE '' END WHERE challenge_id=?""",
-            (state, now, success, challenge_id))
-        audit(cursor, account=account, action="challenge.delivery", actor=row["issuer_actor_key"],
-              target=challenge_id, outcome=state, now=now)
-        return BindingDecision(state, "挑战已发出。" if success else "挑战已撤销，请重新申请。", challenge_id)
+        cursor.execute("""UPDATE qq_official_accounts SET owner_link_actor_key=NULL,
+            owner_link_code_hmac=NULL,owner_link_expires_at=NULL,owner_link_epoch=NULL
+            WHERE account_key=? AND owner_link_code_hmac=?""", (account.key, code_hmac))
 
     def recover_sending(self, cursor, *, account: AccountKey, lease_token) -> int:
         """Cancel every pre-crash issue effect; never reconstruct/send its code."""

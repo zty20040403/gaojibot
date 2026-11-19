@@ -761,10 +761,10 @@ class OfficialRuntime:
 
     async def _deliver_binding(self, token, effect):
         outcome = "failed"
-        def finish_owner():
+        def cancel_code():
             with self.store.transaction() as cursor:
-                self.store.binding.finish_owner_code(cursor, account=self.loaded.account,
-                    code_hmac=effect.code_hmac, outcome=outcome, lease_token=token)
+                self.store.binding.cancel_owner_code(cursor, account=self.loaded.account,
+                    code_hmac=effect.code_hmac, lease_token=token)
         try:
             await self._ensure_current(token)
             if effect.expires_at and effect.expires_at <= int(self.store.clock()):
@@ -785,14 +785,8 @@ class OfficialRuntime:
             self.logger.warning(f'QQ binding send error={type(error).__name__} frames={frames}')
             outcome = "unknown"
         finally:
-            if effect.kind == 'owner_link_code':
-                await asyncio.shield(self._calls(finish_owner))
-        if effect.kind == "issue_code":
-            def mark():
-                with self.store.transaction() as cursor:
-                    self.store.binding.mark_issued(cursor, account=self.loaded.account,
-                        challenge_id=effect.challenge_id, outcome=outcome, lease_token=token)
-            await self._calls(mark)
+            if outcome != 'success':
+                await asyncio.shield(self._calls(cancel_code))
 
     async def resume(self):
         """Explicit trusted local control action; never exposed as a chat tool."""
