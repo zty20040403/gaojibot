@@ -1,0 +1,112 @@
+name: Site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+  pull_request:
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Astro site
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    env:
+      SITE_URL: ${{ vars.SITE_URL || 'https://gaoji.pages.dev' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build static site
+        run: npm run build
+
+      - name: Verify required v1 routes and sitemap exist
+        run: |
+          for page in \
+            dist/index.html \
+            dist/404.html \
+            dist/guide/index.html \
+            dist/guide/basics/index.html \
+            dist/guide/commands/index.html \
+            dist/guide/features/index.html \
+            dist/guide/faq/index.html \
+            dist/privacy/index.html \
+            dist/about/index.html \
+            dist/sitemap-index.xml \
+            dist/og-image.png; do
+            test -f "$page" || { echo "Missing expected build output: $page" >&2; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-dist
+          path: site/dist
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Cloudflare Pages
+    needs: build
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    env:
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'gaoji-site' }}
+    steps:
+      - name: Check Cloudflare credentials
+        id: check_cf
+        run: |
+          if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Cloudflare Pages deployment skipped"
+              echo "Set \`CLOUDFLARE_API_TOKEN\` and \`CLOUDFLARE_ACCOUNT_ID\` repository secrets to enable automatic deployment."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.check_cf.outputs.enabled == 'true'
+        with:
+          name: site-dist
+          path: site/dist
+
+      - name: Publish to Cloudflare Pages
+        if: steps.check_cf.outputs.enabled == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy site/dist
+            --project-name=${{ env.CF_PROJECT }}
+            --branch=${{ github.event_name == 'pull_request' && github.head_ref || 'main' }}

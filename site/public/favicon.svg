@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="gaoji logo">
+  <defs>
+    <linearGradient id="ti" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2c2c2e" />
+      <stop offset="100%" stop-color="#141416" />
+    </linearGradient>
+    <linearGradient id="visor" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f5f5f7" />
+      <stop offset="100%" stop-color="#a1a1a6" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#ti)" />
+  <rect x="4.75" y="4.75" width="54.5" height="54.5" rx="13.25" fill="none" stroke="#ffffff" stroke-opacity="0.16" stroke-width="1.2" />
+  <path
+    d="M17.5 19.5h29a4.5 4.5 0 0 1 4.5 4.5v13.5a4.5 4.5 0 0 1-4.5 4.5H28l-7.2 5.2V42h-3.3a4.5 4.5 0 0 1-4.5-4.5V24a4.5 4.5 0 0 1 4.5-4.5Z"
+    fill="none"
+    stroke="url(#visor)"
+    stroke-width="2"
+    stroke-linejoin="round"
+  />
+  <rect x="23" y="27.5" width="4.5" height="6.2" rx="2" fill="#f5f5f7" />
+  <rect x="36.5" y="27.5" width="4.5" height="6.2" rx="2" fill="#f5f5f7" />
+  <circle cx="49" cy="15" r="2.8" fill="#2997ff" />
+</svg>

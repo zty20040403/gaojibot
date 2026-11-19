@@ -1,0 +1,189 @@
+/* ==========================================================================
+   gaoji Design System — Cupertino Pro (Space Black · Silver Aluminum · #0071e3)
+   SF Pro / PingFang SC · Light Primary (#fff / #f5f5f7) · OLED Dark (#000 / #161617)
+   ========================================================================== */
+
+:root {
+  --gj-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
+  --gj-font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Apple Light Palette — Pure White & Anodized Silver (#f5f5f7) */
+  --gj-bg: #ffffff;
+  --gj-bg-alt: #f5f5f7;
+  --gj-surface: #f5f5f7;
+  --gj-surface-card: #ffffff;
+  --gj-border: rgba(0, 0, 0, 0.08);
+  --gj-border-strong: rgba(0, 0, 0, 0.14);
+
+  --gj-text: #1d1d1f;
+  --gj-text-secondary: #515154;
+  --gj-text-muted: #6e6e73;
+
+  /* Cupertino Optical Blue (zero purple) */
+  --gj-blue: #0071e3;
+  --gj-blue-hover: #0077ed;
+  --gj-link: #0066cc;
+  --gj-blue-soft: rgba(0, 113, 227, 0.08);
+
+  --gj-nav-bg: rgba(251, 251, 253, 0.8);
+  --gj-title-grad: linear-gradient(180deg, #1d1d1f 0%, #434347 100%);
+
+  /* Pro Dark Capsule (used inside Hero even in Light mode for sleek contrast) */
+  --gj-pro-bg: #161617;
+  --gj-pro-border: rgba(255, 255, 255, 0.1);
+  --gj-pro-text: #f5f5f7;
+  --gj-pro-muted: #a1a1a6;
+
+  /* Chat Tokens */
+  --gj-chat-bg: #f5f5f7;
+  --gj-chat-user-bg: #0071e3;
+  --gj-chat-user-text: #ffffff;
+  --gj-chat-bot-bg: #ffffff;
+  --gj-chat-bot-text: #1d1d1f;
+
+  /* Starlight Overrides (Light) */
+  --sl-font: var(--gj-font-sans);
+  --sl-font-mono: var(--gj-font-mono);
+  --sl-color-accent-low: #e5f1fc;
+  --sl-color-accent: #0066cc;
+  --sl-color-accent-high: #003d7a;
+  --sl-color-blue-low: #edf5fd;
+  --sl-color-blue: #0071e3;
+  --sl-color-blue-high: #003d7a;
+  --sl-color-white: #1d1d1f;
+  --sl-color-gray-1: #333336;
+  --sl-color-gray-2: #515154;
+  --sl-color-gray-3: #6e6e73;
+  --sl-color-gray-4: #86868b;
+  --sl-color-gray-5: #d2d2d7;
+  --sl-color-gray-6: #f5f5f7;
+  --sl-color-gray-7: #fbfbfd;
+  --sl-color-black: #ffffff;
+  --sl-color-bg: #ffffff;
+  --sl-color-bg-nav: rgba(251, 251, 253, 0.82);
+  --sl-color-bg-sidebar: #f5f5f7;
+  --sl-color-hairline-light: rgba(0, 0, 0, 0.06);
+  --sl-color-hairline: rgba(0, 0, 0, 0.09);
+}
+
+:root[data-theme="dark"] {
+  /* Apple Pro Dark Palette — True OLED Black (#000000) & Space Black (#161617) */
+  --gj-bg: #000000;
+  --gj-bg-alt: #0b0b0c;
+  --gj-surface: #161617;
+  --gj-surface-card: #161617;
+  --gj-border: rgba(255, 255, 255, 0.1);
+  --gj-border-strong: rgba(255, 255, 255, 0.18);
+
+  --gj-text: #f5f5f7;
+  --gj-text-secondary: #a1a1a6;
+  --gj-text-muted: #86868b;
+
+  --gj-blue: #0071e3;
+  --gj-blue-hover: #0077ed;
+  --gj-link: #2997ff;
+  --gj-blue-soft: rgba(41, 151, 255, 0.14);
+
+  --gj-nav-bg: rgba(22, 22, 23, 0.8);
+  --gj-title-grad: linear-gradient(180deg, #ffffff 15%, #98989d 100%);
+
+  --gj-pro-bg: #161617;
+  --gj-pro-border: rgba(255, 255, 255, 0.11);
+  --gj-pro-text: #f5f5f7;
+  --gj-pro-muted: #a1a1a6;
+
+  /* Chat Tokens (Dark) */
+  --gj-chat-bg: #101012;
+  --gj-chat-user-bg: #0071e3;
+  --gj-chat-user-text: #ffffff;
+  --gj-chat-bot-bg: #1d1d1f;
+  --gj-chat-bot-text: #f5f5f7;
+
+  /* Starlight Overrides (Dark) */
+  --sl-color-accent-low: #0a2540;
+  --sl-color-accent: #2997ff;
+  --sl-color-accent-high: #b8dfff;
+  --sl-color-blue-low: #0a2239;
+  --sl-color-blue: #2997ff;
+  --sl-color-blue-high: #cce6ff;
+  --sl-color-white: #f5f5f7;
+  --sl-color-gray-1: #e8e8ed;
+  --sl-color-gray-2: #a1a1a6;
+  --sl-color-gray-3: #86868b;
+  --sl-color-gray-4: #515154;
+  --sl-color-gray-5: #2c2c2e;
+  --sl-color-gray-6: #161617;
+  --sl-color-black: #000000;
+  --sl-color-bg: #000000;
+  --sl-color-bg-nav: rgba(22, 22, 23, 0.82);
+  --sl-color-bg-sidebar: #0d0d0f;
+  --sl-color-hairline-light: rgba(255, 255, 255, 0.07);
+  --sl-color-hairline: rgba(255, 255, 255, 0.1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --gj-bg: #000000;
+    --gj-bg-alt: #0b0b0c;
+    --gj-surface: #161617;
+    --gj-surface-card: #161617;
+    --gj-border: rgba(255, 255, 255, 0.1);
+    --gj-border-strong: rgba(255, 255, 255, 0.18);
+
+    --gj-text: #f5f5f7;
+    --gj-text-secondary: #a1a1a6;
+    --gj-text-muted: #86868b;
+
+    --gj-blue: #0071e3;
+    --gj-blue-hover: #0077ed;
+    --gj-link: #2997ff;
+    --gj-blue-soft: rgba(41, 151, 255, 0.14);
+
+    --gj-nav-bg: rgba(22, 22, 23, 0.8);
+    --gj-title-grad: linear-gradient(180deg, #ffffff 15%, #98989d 100%);
+
+    --gj-chat-bg: #101012;
+    --gj-chat-user-bg: #0071e3;
+    --gj-chat-user-text: #ffffff;
+    --gj-chat-bot-bg: #1d1d1f;
+    --gj-chat-bot-text: #f5f5f7;
+  }
+}
+
+/* Starlight docs refinements */
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+  font-weight: 600;
+  letter-spacing: -0.022em;
+}
+
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.sl-markdown-content th {
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .sl-markdown-content table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+.sl-markdown-content code:not(pre code) {
+  border-radius: 5px;
+  padding: 0.12em 0.4em;
+  font-size: 0.87em;
+}
+
+.site-title {
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
