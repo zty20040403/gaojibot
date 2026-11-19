@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from tests.postgres_fixture import postgres_for_test
 
-import time
 import unittest
 from unittest.mock import patch
 
@@ -70,14 +69,13 @@ class TurnJournalTests(unittest.TestCase):
         self.assertIn("[REDACTED]", rendered)
         self.assertNotIn("do-not-store", rendered)
         self.assertNotIn("hidden-credential", rendered)
-        self.assertIn("t#1", self.journal.render_recent_turns(self.group_a))
         replay = self.journal.replay_steps(self.group_a, turn.turn_ordinal)
         self.assertEqual(replay[1]["tool_name"], "sandbox_exec")
         self.assertEqual(replay[1]["metadata"]["fingerprint"], "abc123")
         self.assertEqual(replay[1]["arguments"]["password"], "[REDACTED]")
         self.assertEqual(self.journal.replay_steps(self.group_b, 1), ())
 
-    def test_chat_only_turn_is_not_in_recent_worked_lines(self) -> None:
+    def test_chat_only_turn_is_visible_by_handle(self) -> None:
         turn = self.start(self.group_a, "hello")
         self.journal.finish_turn(
             turn.turn_id,
@@ -85,7 +83,6 @@ class TurnJournalTests(unittest.TestCase):
             final_text="hi",
         )
 
-        self.assertEqual(self.journal.render_recent_turns(self.group_a), "")
         self.assertIsNotNone(
             self.journal.render_turn(self.group_a, turn.turn_ordinal)
         )
@@ -226,40 +223,6 @@ class TurnJournalTests(unittest.TestCase):
                 },
             )
 
-    def test_recent_work_labels_the_member_who_started_it(self) -> None:
-        turn = self.start(self.group_a, "部署项目")
-        self.journal.record_context_plan(
-            turn.turn_id,
-            {
-                "scope_key": self.group_a.key,
-                "current_message_id": 12,
-                "current_principal_id": 7,
-                "focus_message_id": None,
-                "resolver_version": "reference-rules-v1",
-                "context_hash": "abc123",
-            },
-        )
-        self.journal.record_tool_started(
-            turn.turn_id,
-            1,
-            "sandbox_exec",
-            {"command": "pytest"},
-            ("write:sandbox",),
-        )
-        self.journal.record_tool_finished(
-            turn.turn_id,
-            1,
-            "sandbox_exec",
-            "succeeded",
-            '{"ok":true}',
-            ("write:sandbox",),
-        )
-        self.journal.finish_turn(turn.turn_id, status="succeeded")
-
-        rendered = self.journal.render_recent_turns(self.group_a)
-        self.assertIn("发起人 mention#7", rendered)
-        self.assertIn("只能归属给标注的发起人", rendered)
-
     def test_usage_summary_is_scoped_and_respects_clear(self) -> None:
         first = self.start(self.group_a, "one")
         self.journal.finish_turn(
@@ -306,7 +269,6 @@ class TurnJournalTests(unittest.TestCase):
 
         self.assertEqual(finished.tool_call_count, 1)  # type: ignore[union-attr]
         self.assertIn("REJECTED web_search", self.journal.render_turn(self.group_a, 1))
-        self.assertIn("t#1", self.journal.render_recent_turns(self.group_a))
 
     def test_turn_handles_are_scoped_and_cannot_be_guessed_cross_group(self) -> None:
         turn = self.start(self.group_a)
@@ -530,30 +492,6 @@ class TurnJournalTests(unittest.TestCase):
         rendered = reopened.render_turn(self.group_a, turn.turn_ordinal)
         self.assertIn("OUTCOME-UNKNOWN", rendered)
         self.assertIn("服务在完成事件写入前中断", rendered)
-
-    def test_recent_window_excludes_old_work(self) -> None:
-        turn = self.journal.start_turn(
-            self.group_a,
-            trigger_canonical_message_id=1,
-            objective="old",
-            provider="deepseek-openai-compatible",
-            model="deepseek-chat",
-            started_at=int(time.time()) - 48 * 3600,
-        )
-        self.journal.record_tool_started(
-            turn.turn_id,
-            1,
-            "web_search",
-            {"query": "old"},
-            ("read",),
-        )
-        self.journal.finish_turn(turn.turn_id, status="succeeded")
-
-        self.assertEqual(
-            self.journal.render_recent_turns(self.group_a, hours=24),
-            "",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

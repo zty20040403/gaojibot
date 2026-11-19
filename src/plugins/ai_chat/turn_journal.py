@@ -736,60 +736,6 @@ class TurnJournal:
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
-    def render_recent_turns(
-        self,
-        scope: ConversationScope,
-        *,
-        hours: int = 24,
-        limit: int = 5,
-        exclude_turn_id: int | None = None,
-    ) -> str:
-        limit = min(max(int(limit), 1), 20)
-        cutoff = int(time.time()) - max(int(hours), 1) * 3600
-        parameters: list[Any] = [scope.key, cutoff]
-        exclusion = ""
-        if exclude_turn_id is not None:
-            exclusion = "AND t.turn_id != ?"
-            parameters.append(int(exclude_turn_id))
-        parameters.append(limit)
-        with self._lock:
-            rows = self._connection.execute(
-                f"""
-                SELECT {_turn_projection("t")},
-                       plan.current_principal_id AS context_principal_id
-                FROM agent_turns AS t
-                JOIN turn_visibility AS v ON v.scope_key = t.scope_key
-                LEFT JOIN turn_context_plans AS plan ON plan.turn_id = t.turn_id
-                WHERE t.scope_key = ?
-                  AND t.started_at >= ?
-                  AND t.turn_ordinal >= v.min_turn_ordinal
-                  AND t.tool_call_count > 0
-                  AND t.status != 'running'
-                  {exclusion}
-                ORDER BY t.turn_ordinal DESC
-                LIMIT ?
-                """,
-                parameters,
-            ).fetchall()
-        if not rows:
-            return ""
-        lines = [
-            "[recent turns - 当前群共享工作记录，需要细节时调用 "
-            "context_expand；只能归属给标注的发起人，未标注时发起人未知]"
-        ]
-        lines.extend(
-            self._render_standing_line(
-                self._row_to_turn(row),
-                principal_id=(
-                    int(row["context_principal_id"])
-                    if row["context_principal_id"] is not None
-                    else None
-                ),
-            )
-            for row in rows
-        )
-        return "\n".join(lines)
-
     def render_turn(
         self,
         scope: ConversationScope,
@@ -1335,33 +1281,6 @@ class TurnJournal:
             effect_labels=labels,
             occurred_at=int(row["occurred_at"]),
         )
-
-    @staticmethod
-    def _render_standing_line(
-        turn: TurnRecord,
-        *,
-        principal_id: int | None = None,
-    ) -> str:
-        stamp = datetime.fromtimestamp(turn.started_at).strftime("%H:%M")
-        status = {
-            "succeeded": "OK",
-            "silence": "SILENT",
-            "aborted": "ABORTED",
-            "crashed": "CRASHED",
-        }.get(turn.status, turn.status.upper())
-        summary = _first_line(turn.objective, 80)
-        final = _first_line(turn.final_text, 80)
-        suffix = f" -> {final}" if final else ""
-        actor = (
-            f" [发起人 mention#{principal_id}]"
-            if principal_id is not None
-            else " [发起人未知]"
-        )
-        return (
-            f"{turn.handle} {stamp} {status}{actor} \"{summary}\""
-            f" · {turn.tool_call_count} tools{suffix}"
-        )
-
 
 def tool_catalog_fingerprint(tools: list[dict[str, Any]]) -> str:
     from .tool_policy import policy_manifest_for_tools
