@@ -44,7 +44,7 @@ class NormalizationTests(unittest.TestCase):
                 with self.subTest(key=key, token=token):
                     result = normalize(token + ' /bind submit BC-' + 'a' * 32 + ' 723891',
                         ({key: 'TEST_BOT', 'is_you': True},))
-                    self.assertEqual((result.kind, result.command.action, result.command.code), ('control', 'submit', '723891'))
+                    self.assertEqual((result.kind, result.command.action, result.command.code), ('control', 'retired', ''))
                     self.assertIsNone(result.input_text)
                     self.assertNotIn('723891', repr(result))
 
