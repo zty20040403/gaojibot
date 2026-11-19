@@ -33,8 +33,7 @@ async def score_and_deliver(*, source, scorer, current, send_policy, wake, now):
         raise PermissionError("proactive_source_changed")
     if decision.action == "silent":
         return ProactiveOutcome("discarded", "silent")
-    observed = now()
-    if observed >= lifetime.deadline_at:
+    if now() >= lifetime.deadline_at:
         return ProactiveOutcome("discarded", "source_expired")
     choice = await send_policy(source, purpose="unsolicited", deadline=lifetime.deadline_at)
     if not choice:

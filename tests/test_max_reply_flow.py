@@ -9,34 +9,25 @@ import re
 import unittest
 from unittest.mock import patch
 
-from src.plugins.ai_chat.adapters.qq_official.native_background_factory import (
-    ProactiveConfiguration,
-    background_factory,
-)
 from src.plugins.ai_chat.platform_types import EndpointKey
 from src.plugins.ai_chat.proactive import parse_proactive_decision
-from tests import test_qq_official_runtime as runtime_fixture
 from tests import test_qq_official_turn_endtoend as base
 from tests.test_qq_official_runtime_sender import verified_ready_platform
 
 
-class MaxReplyFlowTests(unittest.IsolatedAsyncioTestCase):
-    setUp = base.OfficialTurnEndToEndTests.setUp
-    runtime = base.OfficialTurnEndToEndTests.runtime
-    query = base.OfficialTurnEndToEndTests.query
-    wait_db = base.OfficialTurnEndToEndTests.wait_db
-    application = base.OfficialTurnEndToEndTests.application
-    open_runtime = base.OfficialTurnEndToEndTests.open_runtime
-    emit = base.OfficialTurnEndToEndTests.emit
-    complete = base.OfficialTurnEndToEndTests.complete
-
+class MaxReplyFlowTests(base.OfficialTurnFixture, unittest.IsolatedAsyncioTestCase):
     def test_classifier_requires_one_action_and_bounds_its_note(self):
         for action in ('speak', 'sticker'):
             decision = parse_proactive_decision({'action': action, 'reason': ' 庆祝' * 40})
             self.assertEqual(decision.action, action)
             self.assertEqual(len(decision.reason), 40)
-        self.assertEqual(parse_proactive_decision({'action': 'silent', 'reason': '闲聊'}).reason, '')
-        for payload in ({'reply': '旧格式'}, {'action': 'sticker', 'reason': ''}, {'action': 'unknown'}):
+        silent = parse_proactive_decision({'action': 'silent', 'classification_reason': '群友之间的对话'})
+        self.assertEqual((silent.reason, silent.classification_reason), ('', '群友之间的对话'))
+        for action in ('speak', 'sticker', 'silent'):
+            for basis in ('TEST_MEMBER 原文', '群友之间的对话\nTEST_INJECTION', '长' * 5000, None):
+                decision = parse_proactive_decision({'action': action, 'reason': 'TEST', 'classification_reason': basis})
+                self.assertIsNone(decision.classification_reason)
+        for payload in ({'reply': '旧格式'}, {'action': 'sticker', 'reason': ''}, {'action': 'unknown'}, {'action': []}):
             with self.assertRaisesRegex(ValueError, 'invalid proactive decision'):
                 parse_proactive_decision(payload)
 
@@ -155,65 +146,5 @@ class MaxReplyFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(calls), 2)
                 second_blob = json.dumps(calls[1]["messages"], ensure_ascii=False)
                 self.assertIn("顺便举个例子", second_blob)
-                self.assertEqual(len(fake.received), 1)
-                await runtime.stop()
-
-    async def test_silent_skips_main_model_and_speak_wakes_it(self):
-        app = self.application()
-        main_calls = []
-
-        async def main_completion(**kwargs):
-            main_calls.append(kwargs)
-            return base.model_response("来劲了，这题我会", [], kwargs)
-
-        verdicts = [{"action": "silent", "reason": ""}, {"action": "speak", "reason": "在问内核调度问题"}]
-
-        async def classify(*args, **kwargs):
-            return verdicts.pop(0)
-
-        with patch("src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json", new=classify), \
-                patch("src.plugins.ai_chat.agent_loop._create_completion", new=main_completion):
-            async with verified_ready_platform() as fake:
-                runtime = self.runtime(
-                    loaded=runtime_fixture.loaded_config(fake.app_id, base=fake.base_url),
-                    application=app,
-                    ledger=app.message_ledger,
-                    journal=app.turn_journal,
-                    background_factory=background_factory(
-                        proactive_configuration=ProactiveConfiguration(enabled=True),
-                        proactive_profile="test",
-                    ),
-                )
-                self.assertTrue(await runtime.start())
-                await asyncio.wait_for(fake.wait_ready(), 5)
-                await self.wait_db("SELECT bot_native_id FROM qq_official_accounts WHERE bot_identity_source='ready'")
-                await self.emit(fake, native="TEST_P_INIT", content="init", group=True)
-                await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id='TEST_P_INIT'")
-                endpoint = EndpointKey(runtime.loaded.account, "group", "TEST_GROUP")
-                with runtime.store.transaction() as cursor:
-                    cursor.execute("UPDATE qq_official_endpoints SET binding_state='active' WHERE endpoint_key=?", (endpoint.key,))
-                fake.proactive_allowed[("group", "TEST_GROUP")] = True
-                await runtime.sender.refresh_bound_groups()
-
-                await fake.emit("GROUP_MESSAGE_CREATE", {
-                    "id": "TEST_P_FALSE",
-                    "content": "今天中午吃什么面条比较好呢",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "group_openid": "TEST_GROUP",
-                    "author": {"member_openid": "TEST_MEM1", "username": "Mem1"},
-                })
-                await self.wait_db("SELECT state FROM qq_official_proactive_observations WHERE state='discarded'")
-                self.assertEqual(len(main_calls), 0)
-
-                await fake.emit("GROUP_MESSAGE_CREATE", {
-                    "id": "TEST_P_TRUE",
-                    "content": "Linux CFS 和 EEVDF 调度器差别到底在哪",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "group_openid": "TEST_GROUP",
-                    "author": {"member_openid": "TEST_MEM1", "username": "Mem1"},
-                })
-                await self.complete("TEST_P_TRUE")
-                self.assertEqual(len(main_calls), 1)
-                self.assertIn("[判定：在问内核调度问题]", json.dumps(main_calls[0]["messages"], ensure_ascii=False))
                 self.assertEqual(len(fake.received), 1)
                 await runtime.stop()

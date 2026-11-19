@@ -35,7 +35,7 @@ def model_response(content, tool_calls, kwargs):
     return SimpleNamespace(choices=[SimpleNamespace(message=message)],usage=None)
 
 
-class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
+class OfficialTurnFixture:
     setUp = runtime_fixture.OfficialRuntimeTests.setUp
     runtime = runtime_fixture.OfficialRuntimeTests.runtime
     query = runtime_fixture.OfficialRuntimeTests.query
@@ -91,6 +91,8 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
             JOIN deliveries d ON d.plan_id=x.plan_id
             WHERE i.native_message_id=? AND d.status='committed'""", (native,), timeout=timeout)
 
+
+class OfficialTurnEndToEndTests(OfficialTurnFixture, unittest.IsolatedAsyncioTestCase):
     async def test_mid_turn_messages_merge_into_running_turn_without_queueing(self):
         app=self.application()
         calls=[]
@@ -140,8 +142,10 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
         async def main_completion(**kwargs):
             main_calls.append(kwargs)
             return model_response('TEST main proactive answer', [], kwargs)
+        verdicts = iter([{'action': 'silent', 'classification_reason': '群友之间的对话'}] +
+                        [{'action': 'speak', 'reason': '在讨论算法问题', 'classification_reason': '可以提供具体帮助'}] * 8)
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json',
-                   return_value={'action': 'speak', 'reason': '在讨论算法问题'}) as model, \
+                   side_effect=lambda *args, **kwargs: next(verdicts)) as model, \
                 patch('src.plugins.ai_chat.agent_loop._create_completion', new=main_completion), \
                 patch('src.plugins.ai_chat.adapters.qq_official.proactive_ingress.HOT_LOOK_SECONDS',1):
             async with verified_ready_platform() as fake:
@@ -163,6 +167,10 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                         'id':f'TEST_PASSIVE_{index}','content':f'TEST conversation topic {index}',
                         'timestamp':datetime.now(timezone.utc).isoformat(),
                         'group_openid':'TEST_GROUP','author':{'member_openid':'TEST_MEMBER'}})
+                await emit('silent')
+                await self.wait_db("SELECT inbox_id FROM qq_official_proactive_observations WHERE state='discarded' AND decision_reason='群友之间的对话'")
+                self.assertEqual(main_calls, [])
+                self.assertFalse(fake.received)
                 for index in ('burst1','burst2','0'):
                     await emit(index)
                 for index in range(8):
@@ -172,8 +180,8 @@ class OfficialTurnEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 await emit(8)
                 await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id='TEST_PASSIVE_8'")
                 await asyncio.sleep(.4)
-                self.assertEqual(model.call_count,8)
-                self.assertEqual(len(self.query("SELECT inbox_id FROM qq_official_proactive_observations WHERE state='queued'")),8)
+                self.assertEqual(model.call_count,9)
+                self.assertEqual(len(self.query("SELECT inbox_id FROM qq_official_proactive_observations WHERE state='queued' AND decision_reason='可以提供具体帮助'")),8)
                 self.assertGreaterEqual(len(main_calls), 1)
                 self.assertIn('[判定：在讨论算法问题]', json.dumps(main_calls[0]['messages'], ensure_ascii=False))
                 await runtime.stop()

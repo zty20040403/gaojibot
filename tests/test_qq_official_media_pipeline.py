@@ -58,14 +58,7 @@ async def platform():
         async with PipelineFake() as fake:yield fake
 
 
-class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
-    setUp=runtime_fixture.OfficialRuntimeTests.setUp
-    runtime=runtime_fixture.OfficialRuntimeTests.runtime
-    query=runtime_fixture.OfficialRuntimeTests.query
-    wait_db=runtime_fixture.OfficialRuntimeTests.wait_db
-    application=turn_fixture.OfficialTurnEndToEndTests.application
-    complete=turn_fixture.OfficialTurnEndToEndTests.complete
-
+class MediaPipelineTests(turn_fixture.OfficialTurnFixture, unittest.IsolatedAsyncioTestCase):
     async def start(self,fake,*,flags,images=False,unknown_vision=False,frontend_vision=False,background=None):
         self.app=self.application()
         profile = self.app.model_catalog.resolve('test')
@@ -287,7 +280,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
         return media
 
     async def test_group_attention_sends_one_curated_image_without_a_chat_turn(self):
-        decision = {'action': 'sticker', 'reason': 'TEST'}
+        decision = {'action': 'sticker', 'reason': 'TEST', 'classification_reason': '表情足以回应喜讯'}
         with patch('src.plugins.ai_chat.application.shared_proactive.ask_deepseek_json', return_value=decision) as scorer, \
                 patch('src.plugins.ai_chat.agent_loop._create_completion') as chat:
             async with platform() as fake:
@@ -307,7 +300,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                 fake.proactive_allowed[('group', 'TEST_GROUP')] = True
                 await runtime.sender.refresh_bound_groups()
                 await emit('TEST_MISSING', 'TEST 有个好消息！')
-                await self.wait_db("SELECT inbox_id FROM qq_official_proactive_observations WHERE state='discarded'")
+                await self.wait_db("SELECT inbox_id FROM qq_official_proactive_observations WHERE state='discarded' AND decision_reason='表情足以回应喜讯'")
                 self.assertFalse(fake.received)
                 await self.seed_sticker()
                 fake.files_release = asyncio.Event()
@@ -323,7 +316,7 @@ class MediaPipelineTests(unittest.IsolatedAsyncioTestCase):
                     change(cursor, endpoint, 'proactive_enabled', True, actor='TEST_ADMIN', now=int(time.time()))
                 await emit('TEST_CELEBRATE', 'TEST 项目验收通过啦！')
                 await self.wait_db("""SELECT d.delivery_id FROM deliveries d JOIN qq_official_proactive_observations o USING(plan_id)
-                    WHERE d.purpose='unsolicited' AND d.status='committed' AND o.state='queued'""")
+                    WHERE d.purpose='unsolicited' AND d.status='committed' AND o.state='queued' AND o.decision_reason='表情足以回应喜讯'""")
                 self.assertEqual(fake.uploaded['groups', 'TEST_GROUP'], png())
                 self.assertTrue(all(x[3]['file_type'] == 1 for x in fake.media_calls))
                 self.assertEqual([x['payload']['msg_type'] for x in fake.received], [7])
