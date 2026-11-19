@@ -343,6 +343,9 @@ async def _invoke_completion(
         _active_profile.reset(token)
 
 
+_QUIET_REMINDER = "\n\n[进度提醒] 请先用 say 说明当前进度、预计还要多久；如果剩余工作较多，交给后台 agent。"
+
+
 def _completion_kwargs(
     messages: list[ChatMessage],
     profile: ModelProfile,
@@ -354,8 +357,10 @@ def _completion_kwargs(
     for message in reversed(messages):
         item = dict(message)
         if item.get("role") == "tool":
+            limit = min(settings.tool_max_result_chars, remaining)
+            note = _QUIET_REMINDER if item.pop('quiet_notice', False) and limit > len(_QUIET_REMINDER) else ''
             item["content"] = quote_evidence(str(item.get("content") or ""), "tool_result",
-                stable=True, max_chars=min(settings.tool_max_result_chars, remaining))
+                stable=True, max_chars=limit - len(note)) + note
             remaining -= len(item["content"])
         wire_messages.append(item)
     wire_messages.reverse()
@@ -1143,21 +1148,14 @@ async def ask_deepseek_with_tools(
                 trace.messages.append(dict(tool_message))
             phase = "batch"
             await save(phase, index + 1)
-        if quiet_call_limit and not budget_exhausted and total_tool_calls - last_progress_call >= quiet_call_limit:
-            reminder = "\n\n[进度提醒] 请先用 say 说明当前进度、预计还要多久；如果剩余工作较多，交给后台 agent。"
-            tool_message = messages[-1]
-            previous = str(tool_message["content"])
-            available = min(
-                settings.tool_max_result_chars,
-                settings.tool_max_context_chars - tool_context_chars + len(previous),
-            )
-            if available > len(reminder):
-                tool_message["content"] = _bounded_tool_result(previous, available - len(reminder)) + reminder
-                tool_context_chars += len(tool_message["content"]) - len(previous)
-                if trace is not None:
-                    trace.messages[-1]["content"] = tool_message["content"]
-                last_progress_call = total_tool_calls
-                budget_exhausted = tool_context_chars >= settings.tool_max_context_chars
+        if (quiet_call_limit and not budget_exhausted and total_tool_calls - last_progress_call >= quiet_call_limit
+                and tool_context_chars + len(_QUIET_REMINDER) < settings.tool_max_context_chars):
+            # Mark the host decision, not the tool's text: escaping/truncation happens when building the request.
+            messages[-1]['quiet_notice'] = True
+            if trace is not None:
+                trace.messages[-1]['quiet_notice'] = True
+            last_progress_call = total_tool_calls
+            tool_context_chars += len(_QUIET_REMINDER)
         if lost_batch_images:
             messages.append({'role': 'user', 'content': '[恢复时部分图片未保存，无法查看原图片。]'})
         if tool_images:

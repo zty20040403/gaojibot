@@ -145,7 +145,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_parallel_quiet_calls_remind_once_after_resume(self):
         names = tuple(f'tool-{index}' for index in range(13))
         store = Store(lambda state: state['phase'] == 'batch' and state['next_index'] == 11)
-        execute = AsyncMock(return_value='ok')
+        execute = AsyncMock(side_effect=['ok'] * 12 + ['<&' * 12_000])
         args = dict(user_text='x', history=[], tools=[tool(name) for name in names],
                     execute_tool=execute, max_calls_per_round=24, quiet_call_limit=12,
                     checkpoint_sink=store.save, idempotency_key_prefix='turn-quiet')
@@ -154,7 +154,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         store.stop = lambda state: state['phase'] == 'between'
         with self.assertRaises(Stop):
             await ask_deepseek_with_tools(**args, checkpoint_state=store.state)
-        self.assertEqual(str(store.state['messages']).count('[进度提醒]'), 1)
+        self.assertEqual(sum(msg.get('quiet_notice', False) for msg in store.state['messages']), 1)
         store.stop = None
         with patch('src.plugins.ai_chat.agent_loop._create_completion',
                    new=AsyncMock(return_value=final())) as model:
@@ -163,7 +163,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
                         if message['role'] == 'tool']
         self.assertEqual(execute.await_count, 13)
         self.assertEqual(sum('[进度提醒]' in result for result in tool_results), 1)
-        self.assertIn('[进度提醒]', tool_results[-1])
+        self.assertIn('[进度提醒]', tool_results[-1].split('</untrusted id=', 1)[1])
 
     async def test_only_successful_say_resets_quiet_calls(self):
         names = [f'tool-{index}' for index in range(11)]
