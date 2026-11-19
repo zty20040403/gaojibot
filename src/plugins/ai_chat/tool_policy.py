@@ -294,21 +294,6 @@ def admin_tool_manifest() -> list[dict[str, Any]]:
     ]
 
 
-def policy_manifest_for_tools(tools: list[dict[str, Any]]) -> dict[str, Any]:
-    names = []
-    for tool in tools:
-        function = tool.get("function")
-        if isinstance(function, dict) and isinstance(function.get("name"), str):
-            names.append(str(function["name"]))
-    return {
-        name: {
-            **policy_for_tool(name).as_manifest(),
-            "enabled": tool_enabled(name),
-        }
-        for name in sorted(set(names))
-    }
-
-
 _EXPLICIT_APPROVAL_TERMS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "job_cancel": (("取消", "停止", "终止", "cancel"), ("任务", "job", "后台")),
 }

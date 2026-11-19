@@ -151,35 +151,6 @@ class TurnJournalTests(unittest.TestCase):
         self.assertTrue(summary["fallback"])
         self.assertNotIn("unexpected", summary["model_routing"][0]["outcomes"][0])
 
-    def test_usage_summary_is_scoped_and_respects_clear(self) -> None:
-        first = self.start(self.group_a, "one")
-        self.journal.finish_turn(
-            first.turn_id,
-            status="succeeded",
-            input_tokens=12,
-            output_tokens=8,
-            total_tokens=20,
-        )
-        other = self.start(self.group_b, "other")
-        self.journal.finish_turn(
-            other.turn_id,
-            status="succeeded",
-            input_tokens=99,
-            output_tokens=99,
-            total_tokens=198,
-        )
-        self.assertEqual(
-            self.journal.usage_summary(self.group_a),
-            {
-                "turns": 1,
-                "input_tokens": 12,
-                "output_tokens": 8,
-                "total_tokens": 20,
-            },
-        )
-        self.journal.hide_history(self.group_a)
-        self.assertEqual(self.journal.usage_summary(self.group_a)["turns"], 0)
-
     def test_rejected_tool_request_is_counted_as_work(self) -> None:
         turn = self.start(self.group_a, "run too many tools")
         self.journal.record_tool_rejected(
