@@ -6,7 +6,6 @@ import hashlib
 import json
 import mimetypes
 import os
-import random
 import re
 import shutil
 import socket
@@ -111,22 +110,6 @@ STICKER_QUERY_FILLERS = (
     "另一张",
     "别的",
 )
-STICKER_VARIATION_MARKERS = (
-    "换一个",
-    "换一张",
-    "换个",
-    "换张",
-    "再来一个",
-    "再来一张",
-    "再发一个",
-    "再发一张",
-    "另一个",
-    "另一张",
-    "来个别的",
-    "来张别的",
-    "不一样的",
-    "不要这个",
-)
 
 
 class MediaLibraryError(RuntimeError):
@@ -163,48 +146,6 @@ class MediaRecord:
     score: float = 0.0
     subjects: tuple[str, ...] = ()
     actions: tuple[str, ...] = ()
-    times_sent: int = 0
-    last_sent_at: int | None = None
-
-
-def choose_sticker_candidate(
-    candidates: Sequence[MediaRecord],
-    *,
-    now: int | None = None,
-    allow_recent_fallback: bool = True,
-) -> MediaRecord | None:
-    if not candidates:
-        return None
-
-    current_time = int(time.time()) if now is None else int(now)
-    recent_cutoff = current_time - 300
-    not_recent = [
-        candidate
-        for candidate in candidates
-        if candidate.last_sent_at is None
-        or candidate.last_sent_at < recent_cutoff
-    ]
-    if not_recent:
-        pool = not_recent
-    elif allow_recent_fallback:
-        pool = list(candidates)
-    else:
-        return None
-    minimum_sent = min(max(candidate.times_sent, 0) for candidate in pool)
-    weights = [
-        max(candidate.score, 0.25)
-        / (1.0 + max(candidate.times_sent - minimum_sent, 0)) ** 0.5
-        for candidate in pool
-    ]
-    return random.choices(pool, weights=weights, k=1)[0]
-
-
-def requests_sticker_variation(text: str) -> bool:
-    normalized = MediaLibrary._normalize_sticker_text(text)
-    return any(
-        MediaLibrary._normalize_sticker_text(marker) in normalized
-        for marker in STICKER_VARIATION_MARKERS
-    )
 
 
 class MediaLibrary:
@@ -830,8 +771,7 @@ class MediaLibrary:
                        analysis.summary, analysis.description,
                        analysis.extracted_text, analysis.subjects_json,
                        analysis.actions_json, analysis.emotions_json,
-                       analysis.usage_json, analysis.is_sticker, analysis.safety,
-                       stickers.times_sent, stickers.last_sent_at
+                       analysis.usage_json, analysis.is_sticker, analysis.safety
                 FROM media_blobs AS blob
                 JOIN media_analysis AS analysis ON analysis.media_id = blob.media_id
                 JOIN sticker_library AS stickers ON stickers.media_id = blob.media_id
@@ -936,8 +876,7 @@ class MediaLibrary:
                        analysis.summary, analysis.description,
                        analysis.extracted_text, analysis.subjects_json,
                        analysis.actions_json, analysis.emotions_json,
-                       analysis.usage_json, analysis.is_sticker, analysis.safety,
-                       stickers.times_sent, stickers.last_sent_at
+                       analysis.usage_json, analysis.is_sticker, analysis.safety
                 FROM media_blobs AS blob
                 JOIN media_analysis AS analysis ON analysis.media_id = blob.media_id
                 JOIN sticker_library AS stickers ON stickers.media_id = blob.media_id
@@ -1321,12 +1260,6 @@ class MediaLibrary:
             mime_type=str(row["mime_type"] or "application/octet-stream"),
             subjects=tuple(self._string_list(row.get("subjects_json"))),
             actions=tuple(self._string_list(row.get("actions_json"))),
-            times_sent=int(row.get("times_sent") or 0),
-            last_sent_at=(
-                int(row["last_sent_at"])
-                if row.get("last_sent_at") is not None
-                else None
-            ),
         )
 
     @staticmethod
