@@ -12,14 +12,7 @@ from tests import test_qq_official_turn_endtoend as base
 from tests.test_qq_official_runtime_sender import verified_ready_platform
 
 
-class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
-    setUp = base.OfficialTurnEndToEndTests.setUp
-    runtime = base.OfficialTurnEndToEndTests.runtime
-    query = base.OfficialTurnEndToEndTests.query
-    wait_db = base.OfficialTurnEndToEndTests.wait_db
-    application = base.OfficialTurnEndToEndTests.application
-    emit = base.OfficialTurnEndToEndTests.emit
-
+class ProactiveConfigTests(base.OfficialTurnFixture, unittest.IsolatedAsyncioTestCase):
     async def exercise(self,*,budget=False,attention=False,quiet=False):
         app = self.application()
         entered,release,cancelled = asyncio.Event(),asyncio.Event(),asyncio.Event()
@@ -79,7 +72,7 @@ class ProactiveConfigTests(unittest.IsolatedAsyncioTestCase):
                 configure(False); configure(True)
                 await asyncio.wait_for(cancelled.wait(),10)
                 release.set()
-                await self.wait_db("SELECT inbox_id FROM qq_official_proactive_observations WHERE inbox_id=? AND state='discarded'",(pending,),timeout=20)
+                await self.wait_db("SELECT inbox_id FROM qq_official_proactive_observations WHERE inbox_id=? AND state='discarded' AND decision_reason IS NULL",(pending,),timeout=20)
                 self.assertFalse(fake.received)
                 fresh = await topic('TEST_FRESH')
                 await self.wait_db("SELECT d.status FROM deliveries d JOIN qq_official_turn_executions x USING(plan_id) JOIN qq_official_proactive_observations o USING(inbox_id) WHERE o.inbox_id=? AND d.status='committed'",(fresh,),timeout=20)
