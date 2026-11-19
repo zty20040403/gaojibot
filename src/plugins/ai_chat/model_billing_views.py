@@ -55,8 +55,5 @@ def status_lines(totals):
             continue
         incoming = ('≥' if row['missing_input_calls'] else '')+f"{row['input_tokens']:,}"
         outgoing = ('≥' if row['missing_output_calls'] else '')+f"{row['output_tokens']:,}"
-        cache = f"{row['cache_percent']}%" if row['cache_percent'] is not None else '未知' if row['missing_cache_calls'] else '无输入'
-        cost = ('≥ ' if not row['cost_complete'] else '')+'$'+usd(row['cost_usd'])
-        note = f"（{row['incomplete_cost_calls']} 次费用不完整，其中 {row['pending_calls']} 次未收尾）" if not row['cost_complete'] else ''
-        lines.append(f'{label}：输入 {incoming} · 输出 {outgoing} Token · 缓存命中 {cache} · {cost}{note}')
+        lines.append(f'{label}：输入 {incoming} · 输出 {outgoing} Token')
     return '\n'.join(lines)
