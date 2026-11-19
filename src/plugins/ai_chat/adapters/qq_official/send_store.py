@@ -198,18 +198,18 @@ def _finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
 class OfficialSendStore:
     def __init__(self, deliveries, *, admission, pepper, clock=time.time,
                  mention_authority=None, max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS,
-                 approval_authority=None, source_guard=None):
+                 source_guard=None):
         self.deliveries, self.admission, self.pepper, self.clock = deliveries, admission, pepper, clock
         self.mention_authority = mention_authority or (lambda cursor, endpoint: frozenset())
         self.max_wait_seconds = max_wait_seconds
-        self.approval_authority, self.source_guard = approval_authority, source_guard
+        self.source_guard = source_guard
         self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
                 source_canonical_message_id=None, turn_id=None, challenge_id=None,
                 transaction_cursor=None, binding_preview=None, control_reply_id=None,
-                approval_source_id=None, source_proof=None):
+                source_proof=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
@@ -217,13 +217,12 @@ class OfficialSendStore:
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
                 admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if (challenge_id is not None or approval_source_id is not None) else None,
+                pepper=self.pepper if challenge_id is not None else None,
                 binding_preview=binding_preview, control_reply_id=control_reply_id,
-                max_wait_seconds=self.max_wait_seconds, approval_source_id=approval_source_id,
-                approval_authority=self.approval_authority,
+                max_wait_seconds=self.max_wait_seconds,
                 source_guard=None if purpose == "progress" else self.source_guard,
                 source_proof=source_proof)
-        if purpose in {"binding_otp", "approval_otp"} and ref.created:
+        if purpose == "binding_otp" and ref.created:
             for delivery_id in ref.delivery_ids:
                 self._ephemeral[delivery_id] = rendered
         return ref
@@ -348,7 +347,7 @@ class OfficialSendStore:
                     return False
             except MigrationDenied:
                 return False
-        if row["purpose"] in {"binding_otp", "approval_otp"} or control_for_delivery(cursor, row):
+        if row["purpose"] == "binding_otp" or control_for_delivery(cursor, row):
             return True
         plan = cursor.execute("SELECT conversation_generation,manifest_json,manifest_digest FROM delivery_plans WHERE plan_id=?", (row["plan_id"],)).fetchone()
         if plan is not None and row['purpose'] == 'requested_artifact':
@@ -403,8 +402,7 @@ class OfficialSendStore:
             authorized = vm_ok if vm_ok is not None else (
                 control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor))
             if row["purpose"] == "approval_otp":
-                authorized = (authorized and self.approval_authority is not None
-                              and self.approval_authority.delivery_current(cursor, token=token, delivery=row, now=now))
+                return self._finish(cursor, token, row, "cancelled", "retired_approval", now)
             if not authorized or route["membership_state"] != "present" or route["binding_state"] == "revoked":
                 return self._finish(cursor, token, row, "failed", vm_error or "delivery_not_authorized", now)
             if now >= row["expires_at"]:
@@ -434,9 +432,6 @@ class OfficialSendStore:
                 official_context=OfficialAttemptContext(token, row["attempts"], tuple(fields.items())))
             if claimed is None:
                 return SendOutcome("sending", "", delivery_id)
-            if row["purpose"] == "approval_otp" and row["attempts"] == 0:
-                self.approval_authority.bind_attempt(cursor, token=token, delivery=row,
-                    attempt_id=claimed.current_attempt_id, now=now)
             return SendReservation(delivery_id, claimed.current_attempt_id, claimed.attempts, token.epoch,
                 endpoint, wire, wire_digest, now + 30, row["payload_mode"])
 

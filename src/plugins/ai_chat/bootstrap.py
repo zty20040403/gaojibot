@@ -72,14 +72,14 @@ def register_http_surfaces(
                 turn_journal=context.turn_journal,
                 database=context.database,
                 telemetry=telemetry,
-                mobile_authorization=context.mobile_authorization,
+                console_store=context.console_store,
                 official_observability=lambda: getattr(context,'official_observability',None),
                 official_runtime=lambda: getattr(context,'official_runtime',None),
                 official_file_service=lambda: getattr(getattr(context, "official_runtime", None), "file_service", None),
             ),
             path=settings.admin_path,
         )
-        if context.mobile_authorization is None:
+        if context.console_store is None:
             logger.warning(
                 "Admin dashboard is locked until account authentication is initialized."
             )

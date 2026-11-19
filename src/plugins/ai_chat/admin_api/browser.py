@@ -64,7 +64,7 @@ def create_router(context):
         cookie = request.cookies.get(SESSION_COOKIE,'')
         def checked(cursor):
             try:
-                live = services.mobile_authorization.store.session(cookie)
+                live = services.console_store.session(cookie)
             except SecurityError:
                 raise PermissionError('browser_admin_session_revoked') from None
             if (live['role']!='admin' or live['account_id']!=account['account_id'] or live['version']!=account['version']

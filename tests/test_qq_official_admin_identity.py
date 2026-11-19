@@ -136,7 +136,6 @@ class IdentityHTTPTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   import httpx
   from fastapi import FastAPI
   from src.bot_storage import DatabaseCalls
-  from src.bot_security.service import MobileAuthorization
   from src.plugins.ai_chat.admin import AdminServices,register_admin
   self.calls=DatabaseCalls();self.runtime._calls=self.calls
   from src.plugins.ai_chat.adapters.qq_official.observability import OfficialObservability
@@ -145,7 +144,7 @@ class IdentityHTTPTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.runtime._gateway=None;self.runtime.sender=None
   self.diagnostics=OfficialObservability(SimpleNamespace(official_runtime=self.runtime),registry=CollectorRegistry(),clock=lambda:self.now)
   self.app=FastAPI();register_admin(self.app,AdminServices(version='test',started_at=1,database=self.database,
-   settings=SimpleNamespace(admin_origin='https://test'),mobile_authorization=MobileAuthorization(self.security,sender=None,bot_selector=lambda:None),
+   settings=SimpleNamespace(admin_origin='https://test'),console_store=self.security,
    official_observability=lambda:self.diagnostics))
   self.client=httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://test',headers={'Origin':'https://test'})
  async def asyncTearDown(self):await self.client.aclose();await self.diagnostics.close();await self.calls.close()

@@ -15,7 +15,6 @@ from unittest.mock import patch
 
 from aiohttp import web
 import httpx2
-from src.bot_security.store import SecurityStore
 from src.plugins.ai_chat.adapters.qq_official.host_config import HostConfiguration
 from src.plugins.ai_chat.adapters.qq_official.content_reader import PinnedContentReader, PinnedMediaTransport
 from src.plugins.ai_chat.adapters.qq_official.media_runtime import MediaSession
@@ -71,9 +70,6 @@ class MediaPipelineTests(turn_fixture.OfficialTurnFixture, unittest.IsolatedAsyn
         self.app.project_runtime=None;self.app.sandbox_manager=None
         self.app.delivery_store=DeliveryStore(self.database,recover_interrupted=False)
         self.addCleanup(self.app.delivery_store.close)
-        self.security=SecurityStore(self.database,b'TEST_M7_SECURITY_'*3)
-        self.addCleanup(self.security.close)
-        self.app.mobile_authorization=SimpleNamespace(store=self.security)
         self.app.media_library=None
         self.vision_calls=[]
         fixture=self

@@ -61,7 +61,6 @@ class AdminBudgetTests(unittest.IsolatedAsyncioTestCase):
         stale = await self.set_budget('0',1)
         self.assertEqual(stale.status_code,409); self.assertEqual(stale.json()['detail']['resource'],'budgets')
         self.assertEqual(len(self.query('SELECT * FROM admin_audit_log')),2)
-        self.assertEqual(self.app.state.auth_messages,[])
 
     async def test_actual_unknown_receipts_lower_bound_stop_and_notification_are_projected_atomically(self):
         self.bill(); self.bill(priced=False); self.bill(usage=None)

@@ -26,7 +26,6 @@ from .model_views import (
 def create_router(context: AdminRouteContext) -> APIRouter:
     router = context.new_router()
     services = context.services
-    mobile = context.services.mobile_authorization
     event_broker = context.event_broker
     mutate = context.mutate
     versioned = context.versioned
@@ -40,7 +39,7 @@ def create_router(context: AdminRouteContext) -> APIRouter:
         snapshot = runtime.snapshot()
         health = services.llm_gateway.health_snapshot().get(runtime.profile.name, {}) if services.llm_gateway else {}
         selected = getattr(services.settings, "model_simple_chat_profile", "") == runtime.profile.name
-        can_control = bool(mobile and snapshot["control_configured"])
+        can_control = bool(context.services.console_store and snapshot["control_configured"])
         return versioned("local-model", {
             **snapshot, "configured": True, "can_control": can_control,
             "control_reason": "" if can_control else "启停需要管理员账户、QQ 口令授权和 WSL 管理接口凭据",

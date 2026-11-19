@@ -15,7 +15,6 @@ import httpx
 from fastapi import FastAPI
 from src.bot_security.store import SecurityStore, SecurityError
 from src.plugins.ai_chat.application_runtime import OfficialApplicationRuntime
-from src.plugins.ai_chat.application_security import ConsoleAuthorization
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey, ActorKey
 from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
@@ -139,13 +138,12 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                             response=await client.get('/health/qq-official')
                         self.assertEqual(response.status_code,200)
                         self.assertNotIn('TEST_',response.text)
-                        self.assertIsInstance(context.mobile_authorization,ConsoleAuthorization)
+                        self.assertIsInstance(context.console_store,SecurityStore)
                         self.assertEqual(context.migration_service.baselines,{})
                         self.assertNotIn('approval_transport_connected',official.status())
                         self.assertIs(official.file_service.token,token)
                         self.assertNotIn('agent.sandbox_exec',context.job_worker.registered_kinds)
-                        context.mobile_authorization.store.bootstrap_local_admin('consoleadmin','TEST safe password 12345')
-                        with self.assertRaises(SecurityError):await context.mobile_authorization.propose({},kind='account',payload={},summary='test')
+                        context.console_store.bootstrap_local_admin('consoleadmin','TEST safe password 12345')
                         await fake.emit('C2C_MESSAGE_CREATE',{'id':'TEST_STARTUP_CONTROL','author':{'user_openid':'TEST_OWNER'},
                             'content':'/whoami','timestamp':datetime.now(timezone.utc).isoformat()})
                         async with asyncio.timeout(10):
