@@ -15,4 +15,4 @@ def upgrade():
 
 
 def downgrade():
-    raise RuntimeError('Restore the verified pre-0119 full database backup to recover historical records')
+    raise RuntimeError('retired_feature_data_requires_backup_restore: restore the verified pre-0119 full database backup')
