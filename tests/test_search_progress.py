@@ -24,12 +24,14 @@ class SearchProgressTests(unittest.IsolatedAsyncioTestCase):
         for bg, cap in ((False, 15), (True, 40)):
             state = turn(bg)
             async def unique(queries, *, all_results, **kwargs):
+                self.assertTrue(queries[0].isdigit())
                 hit = SearchResult('TEST', f'https://example.test/{queries[0]}', 'TEST', '2026-01-01', 'exa')
                 all_results.append(hit)
                 return [hit]
             with patch.object(sources, 'search_web', side_effect=unique) as provider:
-                replies = await asyncio.gather(*(call(state, str(i)) for i in range(cap+2)))
+                replies = await asyncio.gather(*(call(state, f'“{i}” OR site:example.test') for i in range(cap+2)))
             self.assertEqual(provider.await_count, cap)
+            self.assertEqual(state.search_terms, [str(i) for i in range(cap)])
             self.assertEqual(sum(r['ok'] for r in replies), cap)
             self.assertEqual(replies[-1]['note'], sources.STOP_SEARCH)
             self.assertIn('新链接 1 条', replies[cap-1]['progress'])
