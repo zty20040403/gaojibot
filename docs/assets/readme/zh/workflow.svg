@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-labelledby="t d">
+  <title id="t">gaoji 怎么运作</title>
+  <desc id="d">QQ 消息进入前台 agent，前台通过持久化发件箱回复并记录平台回执。长任务交给会话自己沙箱里的后台任务，沙箱没有宿主密钥，也进不了内网。</desc>
+  <rect width="1200" height="470" rx="22" fill="#0B0D10"/>
+  <g transform="rotate(0 172 106)">
+  <rect x="59" y="47" width="240" height="132" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="52" y="40" width="240" height="132" rx="18" fill="#232933" stroke="#323A46" stroke-width="2"/>
+  <text x="74" y="94" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#F4F4F0" font-weight="800">QQ 消息</text>
+  <text x="74" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#8A919C" font-weight="500">群聊或私聊</text>
+  <text x="74" y="154" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#8A919C" font-weight="500">@ 或普通聊天</text>
+  </g>
+  <g transform="rotate(0 458 106)">
+  <rect x="345" y="47" width="240" height="132" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="338" y="40" width="240" height="132" rx="18" fill="#12B7F5"/>
+  <text x="360" y="94" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#04141B" font-weight="800">前台</text>
+  <text x="360" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#05303F" font-weight="500">人设、记忆</text>
+  <text x="360" y="154" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#05303F" font-weight="500">工具、模型</text>
+  </g>
+  <g transform="rotate(0 744 106)">
+  <rect x="631" y="47" width="240" height="132" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="624" y="40" width="240" height="132" rx="18" fill="#232933" stroke="#323A46" stroke-width="2"/>
+  <text x="646" y="94" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#F4F4F0" font-weight="800">发件箱</text>
+  <text x="646" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#8A919C" font-weight="500">持久化、可重试</text>
+  <text x="646" y="154" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#8A919C" font-weight="500">唯一发送路径</text>
+  </g>
+  <g transform="rotate(0 1030 106)">
+  <rect x="917" y="47" width="240" height="132" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="910" y="40" width="240" height="132" rx="18" fill="#5FD3B4"/>
+  <text x="932" y="94" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#062A21" font-weight="800">已送达</text>
+  <text x="932" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#0B3B30" font-weight="500">平台回执</text>
+  <text x="932" y="154" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#0B3B30" font-weight="500">不只是“发出”</text>
+  </g>
+  <path d="M300 106 H330" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round"/>
+  <path d="M322 98 l9 8 l-9 8" fill="none" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M586 106 H616" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round"/>
+  <path d="M608 98 l9 8 l-9 8" fill="none" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M872 106 H902" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round"/>
+  <path d="M894 98 l9 8 l-9 8" fill="none" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="300" y="226" width="848" height="210" rx="20" fill="none" stroke="#FF7A59" stroke-width="2" stroke-dasharray="8 8"/>
+  <text x="624" y="270" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#FF7A59" font-weight="600" letter-spacing="1.6">会话专属沙箱  ·  /work 持久保留</text>
+  <g transform="rotate(0 458 348)">
+  <rect x="345" y="291" width="240" height="128" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="338" y="284" width="240" height="128" rx="18" fill="#FBFAF7"/>
+  <text x="360" y="336" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#14161A" font-weight="800">后台任务</text>
+  <text x="360" y="368" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#6B6F76" font-weight="500">可追加、可提问、可取消</text>
+  <text x="360" y="394" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#6B6F76" font-weight="500">重启不丢</text>
+  </g>
+  <path d="M458 184 V278" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round"/>
+  <path d="M450 268 l8 10 l8 -10 M450 194 l8 -10 l8 10" fill="none" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="474" y="206" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#8A919C" font-weight="500">委派 / 汇报</text>
+  <text x="624" y="320" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="20" fill="#8A919C" font-weight="600">✕  没有宿主密钥</text>
+  <text x="624" y="354" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="20" fill="#8A919C" font-weight="600">✕  进不了内网</text>
+  <text x="624" y="388" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="20" fill="#F4F4F0" font-weight="600">✓  只能上公网</text>
+</svg>

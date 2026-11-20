@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="t d">
+  <title id="t">gaoji 能力</title>
+  <desc id="d">六项能力：@ 它一定回，没事不插嘴；记得住整个群；在自己的沙箱里真干活；能看能听还能画；到点提醒、答应的会跟进；密钥不出宿主。</desc>
+  <defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#000" stroke-opacity="0.045"/></pattern><clipPath id="frame"><rect width="1200" height="700" rx="22"/></clipPath></defs><g clip-path="url(#frame)"><rect width="1200" height="700" fill="#F4F1EA"/><rect width="1200" height="700" fill="url(#grid)"/></g>
+  <text x="60" y="64" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="18" fill="#6B6F76" font-weight="500" letter-spacing="2.5">六件实事</text>
+  <rect x="60" y="80" width="48" height="5" rx="2.5" fill="#FF7A59"/>
+  <text x="58" y="136" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="44" fill="#14161A" font-weight="800" letter-spacing="0">一个群成员，六件真本事</text>
+  <g transform="rotate(-2.2 228 290)">
+  <rect x="68" y="188" width="336" height="220" rx="18" fill="#CFC9BD" fill-opacity="1"/>
+  <rect x="60" y="180" width="336" height="220" rx="18" fill="#0B0D10"/>
+  <text x="86" y="224" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#12B7F5" font-weight="700" letter-spacing="1.6">对话</text>
+  <text x="86" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#F4F4F0" font-weight="800" letter-spacing="0">@ 它一定回，</text>
+  <text x="86" y="304" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#F4F4F0" font-weight="800" letter-spacing="0">没事不插嘴。</text>
+  <rect x="86" y="332" width="112" height="38" rx="19" fill="#12B7F5"/>
+  <text x="142" y="358" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="18" fill="#04141B" font-weight="700" text-anchor="middle">@gaoji</text>
+  <rect x="212" y="332" width="146" height="38" rx="10" fill="none" stroke="#F4F4F0" stroke-opacity=".35" stroke-width="2" stroke-dasharray="5 5"/>
+  <text x="285" y="358" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="18" fill="#F4F4F0" font-weight="600" text-anchor="middle" fill-opacity="0.7">[silence]</text>
+  </g>
+  <g transform="rotate(1.6 600 290)">
+  <rect x="440" y="188" width="336" height="220" rx="18" fill="#CFC9BD" fill-opacity="1"/>
+  <rect x="432" y="180" width="336" height="220" rx="18" fill="#12B7F5"/>
+  <text x="458" y="224" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#05303F" font-weight="700" letter-spacing="1.6">记忆</text>
+  <text x="458" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#04141B" font-weight="800" letter-spacing="0">记得住</text>
+  <text x="458" y="304" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#04141B" font-weight="800" letter-spacing="0">整个群。</text>
+  <rect x="458" y="332" width="210" height="7" rx="3.5" fill="#04141B" fill-opacity="0.75"/>
+  <rect x="458" y="346" width="160" height="7" rx="3.5" fill="#04141B" fill-opacity="0.55"/>
+  <rect x="458" y="360" width="236" height="7" rx="3.5" fill="#04141B" fill-opacity="0.35"/>
+  </g>
+  <g transform="rotate(-1.2 972 290)">
+  <rect x="812" y="188" width="336" height="220" rx="18" fill="#CFC9BD" fill-opacity="1"/>
+  <rect x="804" y="180" width="336" height="220" rx="18" fill="#FBFAF7"/>
+  <text x="830" y="224" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#1B7FA6" font-weight="700" letter-spacing="1.6">执行</text>
+  <text x="830" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#14161A" font-weight="800" letter-spacing="0">在自己的沙箱里</text>
+  <text x="830" y="304" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#14161A" font-weight="800" letter-spacing="0">真干活。</text>
+  <rect x="830" y="328" width="282" height="46" rx="10" fill="#14161A"/>
+  <text x="846" y="358" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="18" fill="#5FD3B4" font-weight="600">$ make test</text>
+  <rect x="972" y="342" width="10" height="20" fill="#5FD3B4"/>
+  </g>
+  <g transform="rotate(1.8 228 550)">
+  <rect x="68" y="448" width="336" height="220" rx="18" fill="#CFC9BD" fill-opacity="1"/>
+  <rect x="60" y="440" width="336" height="220" rx="18" fill="#FF7A59"/>
+  <text x="86" y="484" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#5A1A0B" font-weight="700" letter-spacing="1.6">多模态</text>
+  <text x="86" y="530" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#2A0B04" font-weight="800" letter-spacing="0">能看、能听、</text>
+  <text x="86" y="564" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#2A0B04" font-weight="800" letter-spacing="0">还能画。</text>
+  <path d="M86 610 q24 -22 48 0 q-24 22 -48 0z" fill="none" stroke="#2A0B04" stroke-width="3"/>
+  <circle cx="110" cy="610" r="7" fill="#2A0B04"/>
+  <path d="M158 610 q12 -26 24 0 t24 0 t24 0 t24 0 t24 0 t24 0 t24 0" fill="none" stroke="#2A0B04" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <g transform="rotate(-1.6 600 550)">
+  <rect x="440" y="448" width="336" height="220" rx="18" fill="#CFC9BD" fill-opacity="1"/>
+  <rect x="432" y="440" width="336" height="220" rx="18" fill="#5FD3B4"/>
+  <text x="458" y="484" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#0B3B30" font-weight="700" letter-spacing="1.6">定时</text>
+  <text x="458" y="530" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#062A21" font-weight="800" letter-spacing="0">到点提醒，</text>
+  <text x="458" y="564" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#062A21" font-weight="800" letter-spacing="0">答应的会跟进。</text>
+  <path d="M458 610 H730" stroke="#062A21" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="468" cy="610" r="6" fill="#062A21" stroke="#062A21" stroke-width="3"/>
+  <circle cx="578" cy="610" r="9" fill="#5FD3B4" stroke="#062A21" stroke-width="3"/>
+  <circle cx="720" cy="610" r="6" fill="#062A21" stroke="#062A21" stroke-width="3"/>
+  </g>
+  <g transform="rotate(1.2 972 550)">
+  <rect x="812" y="448" width="336" height="220" rx="18" fill="#CFC9BD" fill-opacity="1"/>
+  <rect x="804" y="440" width="336" height="220" rx="18" fill="#FFD166"/>
+  <text x="830" y="484" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#6B4A00" font-weight="700" letter-spacing="1.6">安全</text>
+  <text x="830" y="530" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#2A1E00" font-weight="800" letter-spacing="0">密钥不出宿主，</text>
+  <text x="830" y="564" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="27" fill="#2A1E00" font-weight="800" letter-spacing="0">沙箱进不了内网。</text>
+  <path d="M848 588 l18 7 v12 c0 11 -8 18 -18 21 c-10 -3 -18 -10 -18 -21 v-12z" fill="#2A1E00"/>
+  <rect x="886" y="594" width="96" height="34" rx="9" fill="none" stroke="#2A1E00" stroke-width="2.5"/>
+  <text x="934" y="617" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#2A1E00" font-weight="700" text-anchor="middle">LAN</text>
+  <path d="M882 632 L986 590" stroke="#2A1E00" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-labelledby="t d">
+  <title id="t">How gaoji works</title>
+  <desc id="d">A QQ message reaches the foreground agent, which replies through a durable outbox and records the platform receipt. Long tasks go to a background job inside the chat's own sandbox, which has no host keys and no LAN access.</desc>
+  <rect width="1200" height="470" rx="22" fill="#0B0D10"/>
+  <g transform="rotate(0 172 106)">
+  <rect x="59" y="47" width="240" height="132" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="52" y="40" width="240" height="132" rx="18" fill="#232933" stroke="#323A46" stroke-width="2"/>
+  <text x="74" y="94" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#F4F4F0" font-weight="800">QQ message</text>
+  <text x="74" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#8A919C" font-weight="500">group or DM</text>
+  <text x="74" y="154" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#8A919C" font-weight="500">@ or plain chat</text>
+  </g>
+  <g transform="rotate(0 458 106)">
+  <rect x="345" y="47" width="240" height="132" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="338" y="40" width="240" height="132" rx="18" fill="#12B7F5"/>
+  <text x="360" y="94" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#04141B" font-weight="800">Foreground</text>
+  <text x="360" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#05303F" font-weight="500">persona, memory</text>
+  <text x="360" y="154" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#05303F" font-weight="500">tools, models</text>
+  </g>
+  <g transform="rotate(0 744 106)">
+  <rect x="631" y="47" width="240" height="132" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="624" y="40" width="240" height="132" rx="18" fill="#232933" stroke="#323A46" stroke-width="2"/>
+  <text x="646" y="94" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#F4F4F0" font-weight="800">Outbox</text>
+  <text x="646" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#8A919C" font-weight="500">durable, retried</text>
+  <text x="646" y="154" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#8A919C" font-weight="500">one send path</text>
+  </g>
+  <g transform="rotate(0 1030 106)">
+  <rect x="917" y="47" width="240" height="132" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="910" y="40" width="240" height="132" rx="18" fill="#5FD3B4"/>
+  <text x="932" y="94" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#062A21" font-weight="800">Delivered</text>
+  <text x="932" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#0B3B30" font-weight="500">platform receipt</text>
+  <text x="932" y="154" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#0B3B30" font-weight="500">not just 'sent'</text>
+  </g>
+  <path d="M300 106 H330" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round"/>
+  <path d="M322 98 l9 8 l-9 8" fill="none" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M586 106 H616" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round"/>
+  <path d="M608 98 l9 8 l-9 8" fill="none" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M872 106 H902" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round"/>
+  <path d="M894 98 l9 8 l-9 8" fill="none" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="300" y="226" width="848" height="210" rx="20" fill="none" stroke="#FF7A59" stroke-width="2" stroke-dasharray="8 8"/>
+  <text x="624" y="270" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#FF7A59" font-weight="600" letter-spacing="1.6">PER-CHAT SANDBOX  ·  PERSISTENT /work</text>
+  <g transform="rotate(0 458 348)">
+  <rect x="345" y="291" width="240" height="128" rx="18" fill="#000" fill-opacity="0.55"/>
+  <rect x="338" y="284" width="240" height="128" rx="18" fill="#FBFAF7"/>
+  <text x="360" y="336" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="24" fill="#14161A" font-weight="800">Background job</text>
+  <text x="360" y="368" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#6B6F76" font-weight="500">steer, ask, cancel</text>
+  <text x="360" y="394" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="18" fill="#6B6F76" font-weight="500">survives restarts</text>
+  </g>
+  <path d="M458 184 V278" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round"/>
+  <path d="M450 268 l8 10 l8 -10 M450 194 l8 -10 l8 10" fill="none" stroke="#F4F4F0" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="474" y="206" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#8A919C" font-weight="500">delegate / report</text>
+  <text x="624" y="320" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="20" fill="#8A919C" font-weight="600">✕  no host keys</text>
+  <text x="624" y="354" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="20" fill="#8A919C" font-weight="600">✕  no LAN access</text>
+  <text x="624" y="388" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="20" fill="#F4F4F0" font-weight="600">✓  public internet only</text>
+</svg>

@@ -1,54 +1,34 @@
-<p align="center">
-  <img src="docs/assets/gaoji-banner.en.svg" alt="gaoji — chats like a friend, works like an agent. An open-source, multi-model AI member for official QQ groups with memory, tools and a sandboxed background agent." width="100%" />
+<p align="right">
+  <strong>English</strong> · <a href="./README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
-  <strong>English</strong> &nbsp;·&nbsp; <a href="README.zh-CN.md">简体中文</a>
+  <img src="./docs/assets/readme/en/hero.gif" width="100%" alt="gaoji — chats like a friend, works like an agent. An open-source AI member for official QQ groups that answers @-mentions, stays quiet otherwise, runs background jobs and delivers with a platform receipt.">
 </p>
 
 <p align="center">
-  <a href="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/zty20040403/gaojibot/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=0A0D12&amp;color=34D399" alt="CI status" /></a>
-  <img src="https://img.shields.io/badge/Python-3.12%2B-38BDF8?style=flat-square&amp;logo=python&amp;logoColor=EEF2F7&amp;labelColor=0A0D12" alt="Python 3.12+" />
-  <img src="https://img.shields.io/badge/PostgreSQL-17-38BDF8?style=flat-square&amp;logo=postgresql&amp;logoColor=EEF2F7&amp;labelColor=0A0D12" alt="PostgreSQL 17" />
-  <img src="https://img.shields.io/badge/Deploy-NixOS-38BDF8?style=flat-square&amp;logo=nixos&amp;logoColor=EEF2F7&amp;labelColor=0A0D12" alt="Deploy with NixOS" />
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-38BDF8?style=flat-square&amp;labelColor=0A0D12" alt="MIT License" /></a>
-  <a href="https://github.com/zty20040403/gaojibot/stargazers"><img src="https://img.shields.io/github/stars/zty20040403/gaojibot?style=flat-square&amp;logo=github&amp;logoColor=EEF2F7&amp;label=Stars&amp;labelColor=0A0D12&amp;color=38BDF8" alt="GitHub stars" /></a>
+  <a href="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/zty20040403/gaojibot/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=0B0D10&amp;color=5FD3B4" alt="CI status"></a>
+  <img src="https://img.shields.io/badge/Python-3.12%2B-12B7F5?style=flat-square&amp;logo=python&amp;logoColor=F4F4F0&amp;labelColor=0B0D10" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/PostgreSQL-17-12B7F5?style=flat-square&amp;logo=postgresql&amp;logoColor=F4F4F0&amp;labelColor=0B0D10" alt="PostgreSQL 17">
+  <img src="https://img.shields.io/badge/Deploy-NixOS-12B7F5?style=flat-square&amp;logo=nixos&amp;logoColor=F4F4F0&amp;labelColor=0B0D10" alt="Deploy with NixOS">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-FF7A59?style=flat-square&amp;labelColor=0B0D10" alt="MIT License"></a>
+  <a href="https://github.com/zty20040403/gaojibot/stargazers"><img src="https://img.shields.io/github/stars/zty20040403/gaojibot?style=flat-square&amp;logo=github&amp;logoColor=F4F4F0&amp;label=Stars&amp;labelColor=0B0D10&amp;color=FFD166" alt="GitHub stars"></a>
 </p>
 
 <p align="center">
-  <b>gaoji</b> is an AI member for your QQ group that talks like a person and works like an agent.<br />
-  It answers when you @ it, stays quiet when it has nothing to add, remembers the group,<br />
-  and hands real work to a coding agent in the chat's own sandboxed container.
+  <a href="#what-it-does">What it does</a> · <a href="#how-it-works">How it works</a> · <a href="#get-started">Get started</a> · <a href="#security">Security</a> · <a href="#documentation">Docs</a>
+</p>
+
+<a id="what-it-does"></a>
+<p align="center">
+  <img src="./docs/assets/readme/en/section-what.svg" width="100%" alt="01 · What it does">
 </p>
 
 <p align="center">
-  <a href="#highlights">Highlights</a> &nbsp;·&nbsp;
-  <a href="#how-it-works">How it works</a> &nbsp;·&nbsp;
-  <a href="#quick-start">Quick start</a> &nbsp;·&nbsp;
-  <a href="#deploy-with-nixos">NixOS</a> &nbsp;·&nbsp;
-  <a href="#security">Security</a> &nbsp;·&nbsp;
-  <a href="#documentation">Docs</a>
+  <img src="./docs/assets/readme/en/capabilities.svg" width="100%" alt="Six capabilities: always answers @ and stays quiet otherwise; remembers the whole group; does real work in its own sandbox; sees, hears and draws; reminds and follows up; keys never leave the host.">
 </p>
 
-<br />
-
-<a id="highlights"></a>
-<p align="center">
-  <img src="docs/assets/gaoji-highlights.en.svg" alt="Highlights: knows when to speak; remembers; does real work in a sandbox; sees, hears and draws; runs on a schedule; safe by design." width="100%" />
-</p>
-
-### Why gaoji
-
-|  | A typical chat bot | **gaoji** |
-| :--- | :--- | :--- |
-| **When it talks** | Replies to everything, or only to commands | Always answers @-mentions and DMs; otherwise speaks only when it has something useful |
-| **Memory** | The last few messages | Per-chat memory, full history search, a card for each regular, tidied regularly |
-| **Long tasks** | Blocks the chat or times out | Durable background jobs you can check on, steer or cancel while you keep chatting |
-| **Where code runs** | On the bot's host, or nowhere | In the chat's own NixOS container with a persistent `/work`, no host keys, no LAN |
-| **Delivery** | Fire and forget | A durable outbox with real platform receipts — *generated* is never counted as *delivered* |
-| **Models** | One provider | Multiple providers, chosen per conversation |
-
-### What it looks like in practice
+**gaoji** is an AI member for your QQ group. It answers whenever you @ it or DM it, keeps out of conversations that aren't for it, remembers the group, and hands long work — research, code, files, video — to a coding agent in that chat's own sandbox. You keep chatting while it works; the result comes back in the same voice.
 
 | You say | gaoji does |
 | :--- | :--- |
@@ -57,23 +37,37 @@
 | *"Also add the other model to that."* | Finds the running job and steers it instead of starting a second one. |
 | *"Remind me about the meeting at 3 pm tomorrow."* | Creates a one-off reminder and delivers it on time. |
 
-<sub>Examples of flows, not screenshots. Real results depend on the model, host configuration and the permissions QQ grants.</sub>
+<sub>Examples of real flows, not screenshots. Results depend on the model, the host configuration and the permissions QQ grants.</sub>
+
+**Why it's different**
+
+|  | A typical chat bot | gaoji |
+| :--- | :--- | :--- |
+| **When it talks** | Replies to everything, or only to commands | Always answers @ and DMs; otherwise speaks only when it has something useful |
+| **Memory** | The last few messages | Per-chat memory, full history search, a card for each regular |
+| **Long tasks** | Blocks the chat or times out | Durable jobs you can check on, steer or cancel while you keep chatting |
+| **Where code runs** | On the bot's host, or nowhere | In the chat's own NixOS container with a persistent `/work` |
+| **Delivery** | Fire and forget | Durable outbox with real platform receipts |
 
 <a id="how-it-works"></a>
-## How it works
-
 <p align="center">
-  <img src="docs/assets/gaoji-architecture.en.svg" alt="Architecture: official QQ events reach the foreground agent, which calls multiple models and replies through a durable outbox. Long tasks become durable background jobs that run an agent inside the chat's own container. PostgreSQL keeps the ledger." width="100%" />
+  <img src="./docs/assets/readme/en/section-how.svg" width="100%" alt="02 · How it works">
 </p>
 
-- **Foreground** — official QQ events → timeline and memory → multi-model agent → one durable delivery path.
-- **Background** — durable jobs → the host drives a coding agent → `/work` in the chat's container → the report wakes the foreground, which delivers it in the same voice.
+<p align="center">
+  <img src="./docs/assets/readme/en/workflow.svg" width="100%" alt="A QQ message reaches the foreground agent, which replies through a durable outbox and records the platform receipt. Long tasks go to a background job inside the chat's own sandbox, which has no host keys and no LAN access.">
+</p>
+
+- **Foreground** — official QQ events → timeline and memory → multi-model agent → one durable send path.
+- **Background** — durable jobs drive a coding agent in the chat's container; `/work` persists, and the report wakes the foreground to deliver it.
 - **State** — PostgreSQL holds the message ledger, memory, jobs, schedules and delivery receipts.
 
-<a id="quick-start"></a>
-## Quick start
+<a id="get-started"></a>
+<p align="center">
+  <img src="./docs/assets/readme/en/section-start.svg" width="100%" alt="03 · Get started">
+</p>
 
-**Requirements:** Python 3.12+, [uv](https://docs.astral.sh/uv/), PostgreSQL 17 with pgvector, official QQ bot credentials and a model API. For files, browser and video, use a Linux host with KVM.
+You need Python 3.12+, [uv](https://docs.astral.sh/uv/), PostgreSQL 17 with pgvector, official QQ bot credentials and a model API. Files, browser and video need a Linux host with KVM.
 
 ```sh
 git clone https://github.com/zty20040403/gaojibot.git
@@ -90,11 +84,8 @@ uv run python bot.py
 | Connecting and binding the official QQ bot | [Official QQ integration](docs/qq-official.md) |
 | Files, media and proactive replies | [Host configuration](docs/qq-official-host-config.md) |
 
-> [!IMPORTANT]
-> The AppID, AppSecret and binding pepper are read from `0600` files on the host. Never commit secrets, real QQ numbers, openids or group numbers, and never copy credentials into the sandbox.
-
-<a id="deploy-with-nixos"></a>
-## Deploy with NixOS
+<details>
+<summary><strong>Deploy with NixOS</strong></summary>
 
 The flake ships the package and `nixosModules.default`.
 
@@ -112,17 +103,22 @@ services.gaoji = {
 };
 ```
 
-Per-chat workspaces run as NixOS containers (`systemd-nspawn`) and need `sandbox.enable = true`, `sandbox.vmRoot`, `systemd.network.enable = true` and `networking.nftables.enable = true`. Container root filesystems are rebuilt from the module on restart; `/work` persists. Read [Container sandbox](docs/container-sandbox.md) before going live.
+Per-chat workspaces run as NixOS containers (`systemd-nspawn`) and need `sandbox.enable = true`, `sandbox.vmRoot`, `systemd.network.enable = true` and `networking.nftables.enable = true`. Container root filesystems are rebuilt on restart; `/work` persists. Read [Container sandbox](docs/container-sandbox.md) before going live.
+
+</details>
 
 <a id="security"></a>
-## Security
+<p align="center">
+  <img src="./docs/assets/readme/en/section-security.svg" width="100%" alt="04 · Security">
+</p>
 
 - **Keys stay on the host.** QQ credentials, model keys and operations credentials never enter the sandbox; it only gets revocable, conversation-scoped tokens.
-- **The sandbox can't reach your network.** Only the public internet, DNS and the relay ports are allowed — not the host, not the LAN.
+- **The sandbox can't reach your network.** Only the public internet, DNS and the relay ports — not the host, not the LAN.
 - **People stay in charge.** Group owners and admins can `/stop`, `/start` and `/kill` the bot in their chat; the admin console shows chats, usage, jobs and audits.
-- **Generated is not delivered.** A finished job, an uploaded file, a queued message and a platform receipt are tracked as separate stages.
+- **Generated is not delivered.** A finished job, an uploaded file, a queued message and a platform receipt are tracked separately.
 
-More in [Sandbox security](docs/sandbox-security.md).
+> [!IMPORTANT]
+> The AppID, AppSecret and binding pepper are read from `0600` files on the host. Never commit secrets, real QQ numbers, openids or group numbers, and never copy credentials into the sandbox. More in [Sandbox security](docs/sandbox-security.md).
 
 <a id="documentation"></a>
 ## Documentation
@@ -153,23 +149,16 @@ Tests use a separate local database and never production credentials. Read [AGEN
 
 </details>
 
-## Star history
-
 <p align="center">
   <a href="https://star-history.com/#zty20040403/gaojibot&amp;Date">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zty20040403/gaojibot&amp;type=Date&amp;theme=dark" />
-      <img src="https://api.star-history.com/svg?repos=zty20040403/gaojibot&amp;type=Date" alt="Star history" width="640" />
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zty20040403/gaojibot&amp;type=Date&amp;theme=dark">
+      <img src="https://api.star-history.com/svg?repos=zty20040403/gaojibot&amp;type=Date" alt="Star history" width="600">
     </picture>
   </a>
 </p>
 
 <p align="center">
-  If gaoji made your group chat a little smarter, a ⭐ helps others find it.
-</p>
-
----
-
-<p align="center">
+  If gaoji made your group chat a little smarter, a ⭐ helps others find it.<br>
   <sub>Built by Kenneth · <a href="LICENSE">MIT License</a> · <a href="https://github.com/zty20040403/gaojibot/issues">Issues &amp; ideas</a></sub>
 </p>
