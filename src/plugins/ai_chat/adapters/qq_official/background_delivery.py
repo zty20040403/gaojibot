@@ -177,7 +177,7 @@ async def present_wake(service, endpoint, text: str, *, unit: str = ''):
         )
         file_service = getattr(runtime, 'file_service', None)
         if file_service is not None:
-            files = await file_service.generation.bound_session(inbound)
+            files = await file_service.generation.wake(inbound, unit=unit)
             if files is not None:
                 context = files.context(context)
         turn = TurnState(context, model_profile=profile)
@@ -220,7 +220,9 @@ async def present_wake(service, endpoint, text: str, *, unit: str = ''):
             answer = '[silence]' if turn.delivered else ''
     except Exception:
         app.logger.exception('Container wake foreground response failed')
-        answer = text[:1500]
+        # Never post the raw wake text: a scheduled task's instructions are not a reply.
+        answer = f'{unit or "后台唤醒"} 这次没跑成，内部出错了，已记日志。'
+
     finally:
         if files is not None:
             await files.close()

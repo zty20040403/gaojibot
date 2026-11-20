@@ -199,6 +199,24 @@ class HostResidentAndWakeTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0]['purpose'], 'background_result')
 
+    async def test_present_wake_opens_wake_session_and_never_posts_raw_task_text(self):
+        wake = AsyncMock(return_value=None)
+        self.service.runtime.file_service = SimpleNamespace(generation=SimpleNamespace(wake=wake))
+        with patch(
+            'src.plugins.ai_chat.adapters.qq_official.background_delivery.ask_deepseek_with_tools',
+            new=AsyncMock(side_effect=RuntimeError('TEST model down')),
+        ), patch(
+            'src.plugins.ai_chat.adapters.qq_official.background_delivery.turn_window',
+            return_value=([], '', None),
+        ):
+            await present_wake(self.service, self.endpoint, '[定时任务 #1 到点触发]\n任务要求：TEST_SECRET_TASK',
+                               unit='schedule-1')
+        self.assertEqual(wake.await_args.kwargs, {'unit': 'schedule-1'})
+        plans = self.query("SELECT manifest_json FROM delivery_plans WHERE account_key=?", (self.account.key,))
+        self.assertEqual(len(plans), 1)
+        self.assertNotIn('TEST_SECRET_TASK', plans[0]['manifest_json'])
+        self.assertIn('没跑成', plans[0]['manifest_json'])
+
 
 if __name__ == '__main__':
     unittest.main()

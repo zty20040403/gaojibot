@@ -65,7 +65,7 @@ class _SourceBinding:
                  source_key: str, source_scope_key: str, deadline_at: int,
                  source_native_message_id: str | None, source_canonical_message_id: int | None,
                  turn_id: int | None, generation: int | None, check, background: bool = False,
-                 job_request=None, check_transaction=None):
+                 job_request=None, check_transaction=None, reply_to_source: bool = True):
         self.service = service
         self.endpoint = endpoint
         self.actor = actor
@@ -80,6 +80,8 @@ class _SourceBinding:
         self._background = background
         self.job_request = job_request
         self.check_transaction = check_transaction
+        # A scheduled wake has no real QQ message to reply to; its files go out as proactive messages.
+        self.reply_to_source = reply_to_source
 
     def allows_missing_native_source(self) -> bool:
         return self._background
@@ -116,7 +118,7 @@ class _DirectDelivery:
                          if binding.job_request else f"{binding.source_key}:{logical_request_key}"),
             source_scope_key=binding.source_scope_key,
             expires_at=binding.deadline_at,
-            source_native_message_id=binding.source_native_message_id or "",
+            source_native_message_id=(binding.source_native_message_id if binding.reply_to_source else "") or "",
             source_canonical_message_id=binding.source_canonical_message_id,
             turn_id=binding.turn_id,
             source_generation=binding.generation,
@@ -226,6 +228,33 @@ class OfficialFileRuntime:
             background=True,
             job_request=job_request,
             check_transaction=check_transaction,
+        )
+        return await self._open_session(binding)
+
+    async def wake(self, inbound, *, unit: str):
+        """Sandbox session for a timer or container wake, which has no source message."""
+        service = self.service
+        if not service.config.generation_enabled or service.config.manager is None:
+            return None
+
+        def read_generation():
+            with service.transaction() as cursor:
+                service._account(cursor)
+                return state(cursor, inbound.endpoint)["stop_generation"]
+
+        binding = _SourceBinding(
+            service=service,
+            endpoint=inbound.endpoint,
+            actor=inbound.actor,
+            source_key=f"wake:{unit or 'container'}:{inbound.occurred_at}",
+            source_scope_key=inbound.scope.key,
+            deadline_at=int(service.clock()) + min(service.runtime.outbox.max_wait_seconds, 3600),
+            source_native_message_id=inbound.native_message_id,
+            source_canonical_message_id=None,
+            turn_id=None,
+            generation=await service.calls(read_generation),
+            check=service._fence,
+            reply_to_source=False,
         )
         return await self._open_session(binding)
 

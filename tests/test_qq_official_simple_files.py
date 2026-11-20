@@ -242,3 +242,36 @@ class FileDeliveryTests(ExecutionFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake.received[-1]["payload"]["msg_type"], 7)
         self.assertEqual(len(self.query("SELECT * FROM turn_send_links")), 1)
         self.assertIn("notes.txt", self.query("SELECT body_json FROM messages WHERE direction='outbound'")[0]["body_json"])
+
+
+class WakeSessionTests(ExecutionFixture, unittest.IsolatedAsyncioTestCase):
+    """A timer wake gets a sandbox session on the conversation's own workspace."""
+
+    asyncSetUp = FileDeliveryTests.asyncSetUp
+
+    async def test_wake_session_binds_without_a_reply_target(self):
+        from dataclasses import replace
+        from src.plugins.ai_chat.message_ir import MessageBody, TextNode
+        from src.plugins.ai_chat.platform_types import ActorKey, InboundMessage
+        self.service.config = replace(self.service.config, manager=SimpleNamespace())
+        peer = ActorKey(self.endpoint.account, 'group_member', self.endpoint.native_conversation_id, 'container')
+        inbound = InboundMessage(
+            endpoint=self.endpoint, actor=peer, event_id=None, native_message_id='wake',
+            sender_display='system', platform_role='member', body=MessageBody((TextNode(0, 'TEST'),)),
+            mentions_bot=False, reply_to_native_message_id=None, occurred_at=self.now, reply_credential=None)
+        captured = {}
+
+        async def open_session(binding):
+            captured['binding'] = binding
+            return 'session'
+
+        with patch.object(self.service.generation, '_open_session', side_effect=open_session):
+            self.assertEqual(await self.service.generation.wake(inbound, unit='schedule-38'), 'session')
+        binding = captured['binding']
+        self.assertEqual((binding.endpoint, binding.actor, binding.source_native_message_id),
+                         (self.endpoint, peer, 'wake'))
+        self.assertTrue(binding.source_key.startswith('wake:schedule-38:'))
+        self.assertFalse(binding.reply_to_source)
+        from src.plugins.ai_chat.application.owned_sandbox import OwnedSandboxExecutor
+        executor = OwnedSandboxExecutor(manager=SimpleNamespace(), binding=binding, delivery=None)
+        self.assertTrue(executor.matches(inbound))
