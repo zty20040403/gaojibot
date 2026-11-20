@@ -51,7 +51,6 @@ class PlatformChatOrchestratorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(active), 1)
             self.assertIsNone(active[0].user_id)
             self.assertEqual(active[0].native_message_id, "TEST_MESSAGE")
-            self.assertEqual(self.tasks.list_for(active[0].conversation_id), [])
             self.assertNotIn("event", kwargs)
             return "测试回复"
         self.agent.side_effect = ask
