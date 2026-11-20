@@ -1,4 +1,4 @@
-"""Group member roster and [mention#id] -> MentionNode resolution (Max-style @mention)."""
+"""Group member roster and [mention#id] -> MentionNode resolution."""
 from __future__ import annotations
 
 import re

@@ -1,4 +1,4 @@
-"""Acceptance tests for §7 Max-style reply flow: mid-turn merge, hybrid proactive wakeup, and real @mention."""
+"""Acceptance tests for §7 reply flow: mid-turn merge, hybrid proactive wakeup, and real @mention."""
 from __future__ import annotations
 
 import asyncio
