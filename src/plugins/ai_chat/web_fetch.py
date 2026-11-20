@@ -148,7 +148,7 @@ async def fetch_page(
         current = httpx.URL(url.strip())
     except httpx.InvalidURL as exc:
         raise FetchError("网址格式不对。") from exc
-    async with httpx.AsyncClient(
+    async with asyncio.timeout(timeout_seconds), httpx.AsyncClient(
         timeout=timeout_seconds, follow_redirects=False, trust_env=False, headers=headers or _HEADERS,
         transport=transport,
     ) as client:

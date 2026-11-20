@@ -1,4 +1,5 @@
 """Inspect and stop background jobs, and choose their model, in the authenticated console."""
+import asyncio
 import time
 
 from fastapi import Depends, Header, HTTPException
@@ -28,7 +29,7 @@ def create_router(context):
             return listed['models']
         try:
             profile = upstream_profile(services.model_catalog, services.settings)
-            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+            async with asyncio.timeout(5), httpx.AsyncClient(timeout=5, trust_env=False) as client:
                 response = await client.get(profile.base_url.rstrip('/') + '/models',
                                             headers={'Authorization': 'Bearer ' + profile.api_key})
                 response.raise_for_status()

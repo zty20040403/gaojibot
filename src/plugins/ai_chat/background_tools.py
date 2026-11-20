@@ -1,6 +1,7 @@
 """Unified host tool session for container CLI, run_code, and background Pi jobs."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -180,14 +181,14 @@ async def execute_github_api(arguments: dict) -> str:
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'gaojibot-host-relay',
     }
-    async with httpx.AsyncClient(timeout=30.0, trust_env=False, follow_redirects=False) as client:
-        response = await client.request(
-            method,
-            'https://api.github.com' + path,
-            params=query or None,
-            json=body if method != 'GET' and body is not None else None,
-            headers=headers,
-        )
+    try:
+        async with asyncio.timeout(30), httpx.AsyncClient(timeout=30, trust_env=False, follow_redirects=False) as client:
+            response = await client.request(method, 'https://api.github.com' + path, params=query or None,
+                                            json=body if method != 'GET' else None, headers=headers)
+    except (TimeoutError, httpx.RequestError):
+        if method == 'GET':
+            raise
+        return json.dumps({'ok': False, 'outcome': 'unknown', 'error': 'GitHub 写入未确认，请查询远端状态，不要重试。'}, ensure_ascii=False)
     text = response.text.replace(token, '[REDACTED]')
     try:
         data = json.loads(text) if text else None
@@ -197,6 +198,8 @@ async def execute_github_api(arguments: dict) -> str:
         'ok': 200 <= response.status_code < 300,
         'status': response.status_code,
         'data': data,
+        **({'outcome': 'unknown', 'error': '请查询远端状态，不要重试。'}
+           if method != 'GET' and (response.status_code == 408 or response.status_code >= 500) else {}),
     }, ensure_ascii=False)
 
 

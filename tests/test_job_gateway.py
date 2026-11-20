@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
+from src.plugins.ai_chat.background_tools import execute_github_api
 from src.plugins.ai_chat.job_gateway import MAX_JOB_TOOL_BODY, JobGateway
 from src.plugins.ai_chat.tool_images import ToolImage
 from tests.test_llm_gateway import profile
@@ -795,6 +796,22 @@ class GitHubGitRelayTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(trust_env=False) as client:
             return await client.request(method, self.root + path,
                                         headers={'Authorization': 'Bearer ' + self.token}, **kwargs)
+
+    async def test_github_api_write_deadline_does_not_replay(self):
+        sent = []
+
+        async def upstream(request):
+            sent.append(request.method)
+            await asyncio.Future()
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        timeout = asyncio.timeout
+        with patch('src.plugins.ai_chat.background_tools.httpx.AsyncClient', return_value=client), \
+                patch('src.plugins.ai_chat.background_tools.asyncio.timeout', side_effect=lambda s: timeout(.02)):
+            result = json.loads(await execute_github_api({'method': 'POST', 'path': '/repos/TEST/issues'}))
+        self.assertEqual(result['outcome'], 'unknown')
+        self.assertEqual(sent, ['POST'])
+        self.assertTrue(client.is_closed)
 
     async def test_push_deadline_cancels_one_exchange_without_replay(self):
         calls = []

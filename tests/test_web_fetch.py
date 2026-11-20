@@ -47,6 +47,23 @@ class WebFetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.title, "显卡 报价")
         self.assertEqual(page.text, "RTX 5070\n到手价 4599 元")
 
+    async def test_continuously_active_body_hits_total_deadline_and_closes(self):
+        closed = asyncio.Event()
+
+        class Trickle(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                while True:
+                    yield b'.'
+                    await asyncio.sleep(0.002)
+
+            async def aclose(self):
+                closed.set()
+
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Trickle()))
+        with self.assertRaises(TimeoutError):
+            await fetch_page('https://shop.example/', timeout_seconds=.03, resolver=resolver, transport=transport)
+        self.assertTrue(closed.is_set())
+
     async def test_redirect_into_private_network_is_refused(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(302, headers={"location": "http://internal.example/admin"})

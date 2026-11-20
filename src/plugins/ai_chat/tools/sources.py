@@ -262,7 +262,7 @@ async def web_fetch(turn: TurnState, arguments: dict[str, object]) -> str:
                         "note": "网页拒绝访问，这里只有搜索摘要。",
                     }, ensure_ascii=False)
         return json.dumps({"ok": False, "url": url, "error": str(exc)}, ensure_ascii=False)
-    except httpx.HTTPError as exc:
+    except (TimeoutError, httpx.HTTPError) as exc:
         turn.context.app.logger.warning(f"Web fetch failed for {url}: {exc!r}")
         return json.dumps(
             {"ok": False, "url": url, "error": "网页读取失败：连接超时或被拒绝。"},

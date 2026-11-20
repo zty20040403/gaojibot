@@ -58,7 +58,8 @@ class LocalModelRuntime:
         state: dict[str, Any] = {"ready": False, "state": "unreachable", "reason_code": "health_unreachable", "reason": "千问推理接口不可达，服务可能未启动或网络异常"}
         try:
             headers = {"Authorization": f"Bearer {self.profile.api_key}"} if self.profile.api_key else {}
-            response = await self._client.get(self.profile.base_url.rstrip("/") + "/models", headers=headers, timeout=self.timeout)
+            async with asyncio.timeout(self.timeout):
+                response = await self._client.get(self.profile.base_url.rstrip("/") + "/models", headers=headers, timeout=self.timeout)
             response.raise_for_status()
             payload = response.json()
             items = payload.get("data", []) if isinstance(payload, dict) else []
@@ -70,7 +71,7 @@ class LocalModelRuntime:
                 state.update(state="loading", reason_code="model_not_loaded", reason="接口在线，但目标模型尚未加载")
         except httpx.HTTPStatusError as exc:
             state.update(state="unavailable", reason_code="health_http_error", reason=f"千问健康接口返回 HTTP {exc.response.status_code}")
-        except (httpx.HTTPError, ValueError, TypeError):
+        except (TimeoutError, httpx.HTTPError, ValueError, TypeError):
             pass
         state.update(checked_at=int(time.time()), latency_ms=round((time.monotonic() - started) * 1000, 1))
         with self._lock:

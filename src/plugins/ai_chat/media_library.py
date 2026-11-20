@@ -1034,7 +1034,7 @@ class MediaLibrary:
         if not self._supported_source(source_url):
             raise MediaLibraryError("unsupported media source URL")
         try:
-            async with httpx.AsyncClient(
+            async with asyncio.timeout(self.timeout_seconds), httpx.AsyncClient(
                 timeout=self.timeout_seconds,
                 follow_redirects=False,
             ) as client:
@@ -1071,7 +1071,7 @@ class MediaLibrary:
                         break
                 else:
                     raise MediaLibraryError("QQ image redirect limit exceeded")
-        except httpx.HTTPError as exc:
+        except (TimeoutError, httpx.HTTPError) as exc:
             raise MediaLibraryError("could not download QQ image") from exc
         content = b"".join(chunks)
         if not content:
