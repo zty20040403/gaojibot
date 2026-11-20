@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from src.plugins.ai_chat.agent_loop import AgentTrace
 from src.plugins.ai_chat.pi_engine import DEADLINE_NOTE
@@ -29,34 +29,33 @@ class StallGuest(pi_fixture.FakePiGuest):
 class PiDeadlineTests(unittest.IsolatedAsyncioTestCase):
     async def wait_event(self, event, message):
         try:
-            await asyncio.wait_for(event.wait(), 2)
+            await asyncio.wait_for(event.wait(), 10)
         except TimeoutError:
             self.fail(message)
 
     def make_engine(self, guest):
         fixture = pi_fixture.PiEngineTests()
         engine = fixture._engine(guest)
-        engine.clock = asyncio.get_running_loop().time
-        row = {'job_id': 77, 'task': 'TEST task', 'deadline_at': engine.clock() + 0.35}
+        loop = asyncio.get_running_loop()
+        now = loop.time
+        self.offset = 0
+        engine.clock = self.enterContext(patch.object(loop, 'time', lambda: now() + self.offset))
+        row = {'job_id': 77, 'task': 'TEST task', 'deadline_at': engine.clock() + 60}
         return fixture, engine, row
 
     async def test_stalled_steer_does_not_block_deadline_stop(self):
-        guest = StallGuest(stall='steer')
+        guest = StallGuest(stall='steer', partial_text='TEST previous report')
         fixture, engine, row = self.make_engine(guest)
-        task = asyncio.create_task(
-            engine(
-                row,
-                fixture._session(),
-                feedback=AsyncMock(return_value=['TEST steering']),
-                progress=AsyncMock(),
-                trace=AgentTrace(),
-            )
-        )
+        trace = AgentTrace()
+        task = asyncio.create_task(engine(row, fixture._session(), feedback=AsyncMock(return_value=['TEST steering']),
+                                          progress=AsyncMock(), trace=trace))
         try:
             await self.wait_event(guest.blocked, 'steer was not started')
+            self.offset = 61
             await self.wait_event(guest.stop_called, 'deadline did not stop a stalled steer')
             report = await asyncio.wait_for(task, 2)
-            self.assertEqual(report, DEADLINE_NOTE + '\nTEST partial pi report')
+            self.assertEqual(report, DEADLINE_NOTE + '\nTEST previous report')
+            self.assertEqual((trace.input_tokens, trace.output_tokens, trace.total_tokens), (11, 4, 15))
             fixture.gateway.revoke.assert_called_once_with('TEST_TOKEN')
         finally:
             if not task.done():
@@ -77,6 +76,7 @@ class PiDeadlineTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             await self.wait_event(guest.blocked, 'launch was not started')
+            self.offset = 61
             await self.wait_event(guest.stop_called, 'deadline did not stop a stalled launch')
             report = await asyncio.wait_for(task, 2)
             self.assertEqual(report, DEADLINE_NOTE + '\nTEST partial pi report')
@@ -104,6 +104,7 @@ class PiDeadlineTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             await self.wait_event(entered, 'feedback was not started')
+            self.offset = 61
             await self.wait_event(cleaning, 'deadline did not cancel feedback')
             await self.wait_event(guest.stop_called, 'deadline waited for feedback cleanup before stop')
             self.assertFalse(task.done(), 'feedback cleanup must be drained')
@@ -136,6 +137,7 @@ class PiDeadlineTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             await self.wait_event(entered, 'VM startup was not started')
+            self.offset = 61
             await self.wait_event(cleaning, 'deadline did not cancel VM startup')
             self.assertFalse(task.done(), 'startup cleanup must be drained')
             release.set()
@@ -180,6 +182,7 @@ class PiDeadlineTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             await self.wait_event(entered, 'feedback was not started')
+            self.offset = 61
             await self.wait_event(cancelled, 'deadline did not cancel feedback')
             await self.wait_event(guest.stop_called, 'deadline did not stop unit')
             release.set()
@@ -189,31 +192,6 @@ class PiDeadlineTests(unittest.IsolatedAsyncioTestCase):
             fixture.gateway.revoke.assert_called_once_with('TEST_TOKEN')
         finally:
             release.set()
-            if not task.done():
-                task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-
-    async def test_deadline_preserves_partial_text_and_usage(self):
-        guest = StallGuest(stall='steer', partial_text='TEST previous report')
-        fixture, engine, row = self.make_engine(guest)
-        trace = AgentTrace()
-        task = asyncio.create_task(
-            engine(
-                row,
-                fixture._session(),
-                feedback=AsyncMock(return_value=['TEST steering']),
-                progress=AsyncMock(),
-                trace=trace,
-            )
-        )
-        try:
-            await self.wait_event(guest.blocked, 'steer was not started')
-            await self.wait_event(guest.stop_called, 'deadline did not stop unit')
-            report = await asyncio.wait_for(task, 2)
-            self.assertEqual(report, DEADLINE_NOTE + '\nTEST previous report')
-            self.assertEqual((trace.input_tokens, trace.output_tokens, trace.total_tokens), (11, 4, 15))
-            fixture.gateway.revoke.assert_called_once_with('TEST_TOKEN')
-        finally:
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
