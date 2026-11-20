@@ -1,10 +1,11 @@
+import json
 import unittest
 
 from tests import test_qq_official_outbox_migration as migration
 
 
 class RetireApprovalTablesTests(unittest.TestCase):
-    def test_live_approval_and_unsent_receipt_block_retirement(self):
+    def test_preserves_unsent_onebot_success_without_retiring_unfinished_work(self):
         schema = migration.owned_schema()
         self.addCleanup(migration.drop, schema)
         migration.migrate(schema, '0131_merge_security_audit')
@@ -17,15 +18,14 @@ class RetireApprovalTablesTests(unittest.TestCase):
                 VALUES ('TEST_APPROVAL','TEST_ACCOUNT',1,'TEST_QQ','TEST_BOT','','test','{}',
                         'TEST_DIGEST','TEST_SUMMARY','',999,'pending',1,1)""")
         revision = '0132_retire_approval_tables'
-        for status in ('pending', 'succeeded'):
+        for status in ('pending', 'needs_attention'):
             with self.subTest(status=status):
+                with migration.connect(schema) as db:
+                    db.execute('UPDATE admin_approvals SET status=%s', (status,))
                 with self.assertRaisesRegex(RuntimeError, 'active approval or unsent receipt'):
                     migration.migrate(schema, revision)
-                with migration.connect(schema) as db:
-                    self.assertEqual(db.execute('SELECT status FROM admin_approvals').fetchone(), (status,))
-                    db.execute("UPDATE admin_approvals SET status='succeeded'")
         with migration.connect(schema) as db:
-            db.execute('UPDATE admin_approvals SET notice_sent=1')
+            db.execute("UPDATE admin_approvals SET status='succeeded'")
         migration.migrate(schema, revision)
         with migration.connect(schema) as db:
             self.assertIsNone(db.execute("SELECT to_regclass('admin_approvals')").fetchone()[0])
@@ -33,3 +33,7 @@ class RetireApprovalTablesTests(unittest.TestCase):
                 AND table_name='delivery_plans' AND column_name IN ('approval_source_id','approval_source_expires_at')""").fetchall()
             self.assertFalse(columns)
             self.assertEqual(db.execute('SELECT account_id FROM admin_accounts').fetchone(), ('TEST_ACCOUNT',))
+            row = db.execute("""SELECT actor,target,security_detail,created_at FROM admin_audit_log
+                WHERE security_audit_id='retired-onebot-notice:TEST_APPROVAL' AND action='approval.notice.retired_unsent'""").fetchone()
+            self.assertEqual((row[0], row[1], row[3]), ('TEST_ACCOUNT', 'TEST_APPROVAL', 1))
+            self.assertEqual(json.loads(row[2]), {'transport':'onebot','status':'succeeded','notice_sent':False})
