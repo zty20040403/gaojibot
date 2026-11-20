@@ -24,6 +24,7 @@ class PlanTests(OutboxFixture):
             return enqueue_plan(cursor, **args)
 
     def test_retired_approval_cannot_create_a_plan(self):
+        self.assertIsNone(self.query("SELECT to_regclass('qq_official_admin_otp_sources') AS source")[0]['source'])
         with self.assertRaisesRegex(OutboxInvariantError, 'invalid_delivery_plan'):
             self.enqueue(purpose='approval_otp')
         self.assertFalse(self.query('SELECT * FROM delivery_plans'))

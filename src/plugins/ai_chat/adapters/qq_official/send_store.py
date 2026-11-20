@@ -79,7 +79,7 @@ def _record_receipt(cursor, reservation, body, now):
 
 def _context_projection(cursor, delivery):
     if delivery["payload_mode"] == "ephemeral":
-        if delivery["purpose"] not in {"binding_otp", "approval_otp"} or delivery["body_json"] != '{"v":1,"nodes":[]}':
+        if delivery["purpose"] != "binding_otp" or delivery["body_json"] != '{"v":1,"nodes":[]}':
             raise OutboxInvariantError("invalid_ephemeral_body")
         return MessageBody(), {}
     try:
@@ -416,8 +416,6 @@ class OfficialSendStore:
             vm_ok, vm_error = self._vm_authorized(cursor, token, row)
             authorized = vm_ok if vm_ok is not None else (
                 control_authorized(cursor, control, endpoint, actor) if control else self.admission(cursor, endpoint, actor))
-            if row["purpose"] == "approval_otp":
-                return self._finish(cursor, token, row, "cancelled", "retired_approval", now)
             if not authorized or route["membership_state"] != "present" or route["binding_state"] == "revoked":
                 return self._finish(cursor, token, row, "failed", vm_error or "delivery_not_authorized", now)
             if now >= row["expires_at"]:
