@@ -92,8 +92,7 @@ class ConsumerTests(unittest.IsolatedAsyncioTestCase):
             observe_ready(cursor, self.f.token, {"op": 0, "t": "READY", "d": {
                 "session_id": "TEST_SESSION", "user": {"id": "TEST_BOT", "bot": True}}}, self.f.now)
         self.outbox = OfficialSendStore(
-            self.deliveries, admission=self.f.admission,
-            pepper=b"TEST_CONSUMER_PEPPER" * 3, clock=lambda: self.f.now,
+            self.deliveries, admission=self.f.admission, clock=lambda: self.f.now,
         )
         self.transport = TransportState(self.f.account, True, True)
         self.agent = AsyncMock(return_value="TEST final")

@@ -36,8 +36,7 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
         )
         self.mention_actors = frozenset()
         self.outbox = OfficialSendStore(
-            self.deliveries, admission=self.f.admission,
-            pepper=b"TEST_PLATFORM_PEPPER" * 3, clock=lambda: self.f.now,
+            self.deliveries, admission=self.f.admission, clock=lambda: self.f.now,
             mention_authority=lambda *_: self.mention_actors,
         )
         self.transport = TransportState(self.f.account, True, True)

@@ -1,5 +1,4 @@
 from dataclasses import replace
-import hashlib
 import json
 
 from tests.qq_official_outbox_fixture import OutboxFixture
@@ -23,10 +22,11 @@ class PlanTests(OutboxFixture):
         with self.tx() as cursor:
             return enqueue_plan(cursor, **args)
 
-    def test_retired_approval_cannot_create_a_plan(self):
+    def test_retired_otp_purposes_cannot_create_a_plan(self):
         self.assertIsNone(self.query("SELECT to_regclass('qq_official_admin_otp_sources') AS source")[0]['source'])
-        with self.assertRaisesRegex(OutboxInvariantError, 'invalid_delivery_plan'):
-            self.enqueue(purpose='approval_otp')
+        for purpose in ('approval_otp', 'binding_otp'):
+            with self.subTest(purpose=purpose), self.assertRaisesRegex(OutboxInvariantError, 'invalid_delivery_plan'):
+                self.enqueue(purpose=purpose)
         self.assertFalse(self.query('SELECT * FROM delivery_plans'))
 
     def test_same_logical_plan_reuses_original_parts(self):
@@ -103,39 +103,6 @@ class PlanTests(OutboxFixture):
         with self.assertRaises(LeaseLost):
             self.enqueue()
         self.assertFalse(self.query("SELECT * FROM deliveries"))
-
-    def test_ephemeral_code_and_public_hashes_never_persist(self):
-        endpoint = EndpointKey(self.account, "private", "TEST_OWNER")
-        self.provision(endpoint)
-        actor = ActorKey(self.account, "c2c_user", "", "TEST_OWNER")
-        challenge = "BC-" + "c" * 32
-        with self.tx() as cursor:
-            cursor.execute("""INSERT INTO qq_official_owner_grants
-                (grant_id,account_key,c2c_actor_key,source,source_ref,state,created_at,updated_at)
-                VALUES ('TEST_GRANT',?,?,'config','TEST_CONFIG','active',?,?)""", (self.account.key, actor.key, self.now, self.now))
-            cursor.execute("""INSERT INTO qq_official_binding_challenges
-                (challenge_id,account_key,issuer_actor_key,issuer_endpoint_key,owner_grant_id,owner_revision,
-                 code_hmac,expires_at,state,created_at,updated_at,delivery_epoch)
-                VALUES (?,?,?,?,'TEST_GRANT',1,?,?,'sending',?,?,?)""",
-                (challenge, self.account.key, actor.key, endpoint.key, "a" * 64, self.now + 600,
-                 self.now, self.now, self.token.epoch))
-        text = "TEST binding code 817263"
-        rendered = render_plan(MessageBody((TextNode(0, text),)), endpoint, markdown=False)
-        with self.assertRaisesRegex(OutboxInvariantError, "delivery_wait_limit_exceeded"):
-            self.enqueue(rendered=rendered, requester=actor, source_scope_key=endpoint.scope.key,
-                         purpose="binding_otp", challenge_id=challenge, pepper=b"test-pepper-" * 4,
-                         expires_at=self.now + 31)
-        ref = self.enqueue(rendered=rendered, requester=actor, source_scope_key=endpoint.scope.key,
-                           purpose="binding_otp", challenge_id=challenge, pepper=b"test-pepper-" * 4,
-                           expires_at=self.now + 30)
-        rows = self.query("SELECT * FROM deliveries") + self.query("SELECT * FROM delivery_plans")
-        stored = json.dumps([dict(row) for row in rows], default=str)
-        for value in (text, "817263", hashlib.sha256(text.encode()).hexdigest(), rendered.plan_hash,
-                      rendered.source_hash, rendered.parts[0].part_hash, rendered.parts[0].text_hash):
-            self.assertNotIn(value, stored)
-        self.assertEqual(len(ref.delivery_ids), 1)
-        self.assertEqual(rows[0]["content_fingerprint"], "")
-        self.assertIsNone(rows[0]["body_archive_path"])
 
     def test_bot_and_cross_endpoint_requesters_cannot_grant_authority(self):
         for actor in (ActorKey(self.account, "bot", "", "TEST_BOT"),

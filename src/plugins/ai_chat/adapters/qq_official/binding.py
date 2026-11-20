@@ -167,11 +167,9 @@ class BindingReducer:
         if (endpoint is None or endpoint["membership_state"] != "present"
                 or endpoint['binding_state'] == 'revoked'):
             return BindingDecision("invalid", "群绑定码无效或已失效。")
-        links = cursor.execute("""SELECT l.actor_key,coalesce(l.configured_owner_actor_key,g.c2c_actor_key) AS owner_key
-            FROM qq_official_owner_actor_links l LEFT JOIN qq_official_owner_grants g
-              ON g.grant_id=l.owner_grant_id AND g.account_key=l.account_key AND g.state='active' AND g.revision=l.owner_revision
-            WHERE l.endpoint_key=? AND l.endpoint_generation=? AND l.state='active'
-              AND coalesce(l.configured_owner_actor_key,g.c2c_actor_key)=ANY(?)""",
+        links = cursor.execute("""SELECT actor_key,configured_owner_actor_key AS owner_key
+            FROM qq_official_owner_actor_links WHERE endpoint_key=? AND endpoint_generation=?
+              AND state='active' AND configured_owner_actor_key=ANY(?)""",
             (context.endpoint.key, endpoint['generation'], list(self.authority.owner_actor_keys))).fetchall()
         if (endpoint['binding_state'] == 'active' and not links) or any(
                 (link['actor_key'], link['owner_key']) != (context.actor.key, owner.key) for link in links):
@@ -182,7 +180,6 @@ class BindingReducer:
             (endpoint_key,account_key,actor_key,configured_owner_actor_key,endpoint_generation,
              revision,state,created_at,updated_at) VALUES (?,?,?,?,?,1,'active',?,?)
             ON CONFLICT(endpoint_key,actor_key) DO UPDATE SET configured_owner_actor_key=excluded.configured_owner_actor_key,
-            owner_grant_id=NULL,owner_revision=NULL,candidate_id=NULL,
             endpoint_generation=excluded.endpoint_generation,revision=qq_official_owner_actor_links.revision+1,
             state='active',updated_at=excluded.updated_at""",
             (context.endpoint.key, account.key, context.actor.key, owner.key,
@@ -215,16 +212,6 @@ class BindingReducer:
             owner_link_code_hmac=NULL,owner_link_expires_at=NULL,owner_link_epoch=NULL
             WHERE account_key=? AND owner_link_code_hmac=?""", (account.key, code_hmac))
 
-    def recover_sending(self, cursor, *, account: AccountKey, lease_token) -> int:
-        """Cancel every pre-crash issue effect; never reconstruct/send its code."""
-        self._guard(cursor, lease_token, account)
-        now = int(self.clock())
-        rows = cursor.execute("""UPDATE qq_official_binding_challenges SET state='cancelled',code_hmac='',updated_at=?
-            WHERE account_key=? AND state='sending' RETURNING challenge_id,issuer_actor_key""", (now, account.key)).fetchall()
-        for row in rows:
-            audit(cursor, account=account, action="challenge.recovered", actor=row["issuer_actor_key"],
-                  target=row["challenge_id"], outcome="cancelled", now=now)
-        return len(rows)
 
 def control_authorized(cursor, inbox_id, endpoint, actor):
     row = cursor.execute("SELECT 1 FROM qq_official_inbound_events WHERE inbox_id=? AND endpoint_key=? AND control_actor_key=? AND reason_code='binding_control' AND status='processed'",

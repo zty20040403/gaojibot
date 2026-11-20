@@ -195,8 +195,7 @@ class FileDeliveryTests(ExecutionFixture, unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.calls.close)
         self.deliveries = DeliveryStore(self.database)
         self.addCleanup(self.deliveries.close)
-        self.outbox = OfficialSendStore(self.deliveries, admission=self.admission,
-            pepper=b"TEST_FILE_PEPPER" * 3, clock=lambda: self.now)
+        self.outbox = OfficialSendStore(self.deliveries, admission=self.admission, clock=lambda: self.now)
         with self.tx() as c:
             observe_ready(c, self.token, {"op": 0, "t": "READY", "d": {
                 "session_id": "TEST_SESSION", "user": {"id": "TEST_BOT", "bot": True}}}, self.now)

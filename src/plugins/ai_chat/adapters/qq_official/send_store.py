@@ -15,7 +15,7 @@ from .identity_store import snapshot
 from .job_actions import delivery_current
 from .lease import assert_epoch
 from .migration_types import MigrationDenied
-from .plans import DEFAULT_MAX_WAIT_SECONDS, enqueue_plan, keyed_digest
+from .plans import DEFAULT_MAX_WAIT_SECONDS, enqueue_plan
 from .renderer import content_payload, render_plan, restore_plan
 from .send_types import OfficialAttemptContext, OutboxInvariantError, SendOutcome, SendReservation, digest, stable_json
 
@@ -202,35 +202,28 @@ def _finalize_receipt(cursor, *, token, receipt_id, ledger, journal=None, now):
 
 
 class OfficialSendStore:
-    def __init__(self, deliveries, *, admission, pepper, clock=time.time,
+    def __init__(self, deliveries, *, admission, clock=time.time,
                  mention_authority=None, max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS,
                  source_guard=None):
-        self.deliveries, self.admission, self.pepper, self.clock = deliveries, admission, pepper, clock
+        self.deliveries, self.admission, self.clock = deliveries, admission, clock
         self.mention_authority = mention_authority or (lambda cursor, endpoint: frozenset())
         self.max_wait_seconds = max_wait_seconds
         self.source_guard = source_guard
-        self._ephemeral = {}
 
     def enqueue(self, token, *, rendered, requester, logical_key, source_scope_key,
                 expires_at, purpose="final", source_native_message_id="",
-                source_canonical_message_id=None, turn_id=None, challenge_id=None,
-                transaction_cursor=None, binding_preview=None, control_reply_id=None,
-                source_proof=None):
+                source_canonical_message_id=None, turn_id=None,
+                transaction_cursor=None, control_reply_id=None, source_proof=None):
         now = int(self.clock())
         with (nullcontext(transaction_cursor) if transaction_cursor is not None else self.deliveries.transaction()) as cursor:
             ref = enqueue_plan(cursor, token=token, rendered=rendered, requester=requester,
                 logical_key=logical_key, source_scope_key=source_scope_key, expires_at=expires_at, now=now,
                 purpose=purpose, source_native_message_id=source_native_message_id,
                 source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
-                admission=self.admission, challenge_id=challenge_id,
-                pepper=self.pepper if challenge_id is not None else None,
-                binding_preview=binding_preview, control_reply_id=control_reply_id,
+                admission=self.admission, control_reply_id=control_reply_id,
                 max_wait_seconds=self.max_wait_seconds,
                 source_guard=None if purpose == "progress" else self.source_guard,
                 source_proof=source_proof)
-        if purpose == "binding_otp" and ref.created:
-            for delivery_id in ref.delivery_ids:
-                self._ephemeral[delivery_id] = rendered
         return ref
 
     def enqueue_media(self, token, *, endpoint, requester, filename, sha256, byte_size, mime,
@@ -268,23 +261,21 @@ class OfficialSendStore:
                 cursor.execute("UPDATE deliveries SET body_json=? WHERE plan_id=?", (body, ref.plan_id))
             return ref
 
-    def _content(self, cursor, row, endpoint, *, token=None, now=None):
-        if row["payload_mode"] == "ephemeral":
-            rendered = self._ephemeral.get(row["delivery_id"])
-            if rendered is None:
-                raise OutboxInvariantError("ephemeral_payload_lost")
-        else:
-            plan = cursor.execute("SELECT * FROM delivery_plans WHERE plan_id=?", (row["plan_id"],)).fetchone()
-            if plan is None or digest(plan["manifest_json"]) != plan["manifest_digest"]:
-                raise OutboxInvariantError("delivery_manifest_corrupt")
-            manifest = json.loads(plan["manifest_json"])
-            if manifest.get("v") != 1 or manifest.get("source_native_message_id") != row["reply_to_native_message_id"]:
-                raise OutboxInvariantError("delivery_manifest_conflict")
-            if "media" in manifest:
-                return {"msg_type": 7, "media": manifest["media"]}
-            rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
-                allowed_mentions=self.mention_authority(cursor, endpoint) | frozenset({ActorKey.parse(row["requester_actor_key"])}),
-                max_chars=20000, max_parts=16)
+    def _content(self, cursor, row, endpoint):
+        plan = cursor.execute("SELECT * FROM delivery_plans WHERE plan_id=?", (row["plan_id"],)).fetchone()
+        if plan is None or digest(plan["manifest_json"]) != plan["manifest_digest"]:
+            raise OutboxInvariantError("delivery_manifest_corrupt")
+        manifest = json.loads(plan["manifest_json"])
+        if manifest.get("v") != 1 or manifest.get("source_native_message_id") != row["reply_to_native_message_id"]:
+            raise OutboxInvariantError("delivery_manifest_conflict")
+        control = manifest.get('control')
+        if isinstance(control, dict) and control.get('kind') == 'binding_preview':
+            return None
+        if "media" in manifest:
+            return {"msg_type": 7, "media": manifest["media"]}
+        rendered = restore_plan(manifest["rendered"], endpoint=endpoint,
+            allowed_mentions=self.mention_authority(cursor, endpoint) | frozenset({ActorKey.parse(row["requester_actor_key"])}),
+            max_chars=20000, max_parts=16)
         return content_payload(rendered, row["part_index"], plain_fallback=row["variant"] == "plain_fallback")
 
     def list_due(self, token, *, limit=100):
@@ -358,7 +349,7 @@ class OfficialSendStore:
                     return False
             except MigrationDenied:
                 return False
-        if row["purpose"] == "binding_otp" or control_for_delivery(cursor, row):
+        if control_for_delivery(cursor, row):
             return True
         plan = cursor.execute("SELECT conversation_generation,manifest_json,manifest_digest FROM delivery_plans WHERE plan_id=?", (row["plan_id"],)).fetchone()
         if plan is not None and row['purpose'] == 'requested_artifact':
@@ -403,6 +394,8 @@ class OfficialSendStore:
                 return SendOutcome("failed", "delivery_not_found", delivery_id)
             if row["status"] != "pending":
                 return SendOutcome(row["status"], row["wait_reason"] or "", delivery_id)
+            if row['payload_mode'] == 'ephemeral':
+                return self._finish(cursor, token, row, 'cancelled', 'retired_ephemeral_delivery', now)
             endpoint = EndpointKey.parse(row["endpoint_key"])
             actor = ActorKey.parse(row["requester_actor_key"])
             route = cursor.execute("SELECT * FROM qq_official_endpoints WHERE endpoint_key=?", (endpoint.key,)).fetchone()
@@ -416,9 +409,9 @@ class OfficialSendStore:
                 return self._finish(cursor, token, row, "failed", vm_error or "delivery_not_authorized", now)
             if now >= row["expires_at"]:
                 return self._finish(cursor, token, row, "failed", "delivery_expired", now)
-            if row["payload_mode"] == "ephemeral" and delivery_id not in self._ephemeral:
-                return self._finish(cursor, token, row, "failed", "ephemeral_payload_lost", now)
-            payload = self._content(cursor, row, endpoint, token=token, now=now)
+            payload = self._content(cursor, row, endpoint)
+            if payload is None:
+                return self._finish(cursor, token, row, 'cancelled', 'retired_binding_preview', now)
             if send_mode == "passive":
                 payload.update(msg_id=msg_id, msg_seq=msg_seq)
             indexes = cursor.execute("""SELECT index_value,ambiguous FROM qq_official_message_indexes
@@ -427,8 +420,7 @@ class OfficialSendStore:
             if indexes and not any(r["ambiguous"] for r in indexes) and len({r["index_value"] for r in indexes}) == 1:
                 payload["message_reference"] = {"message_id": indexes[0]["index_value"]}
             wire = stable_json(payload)
-            ephemeral = row["payload_mode"] == "ephemeral"
-            wire_digest = keyed_digest(self.pepper, "wire", [delivery_id, row["attempts"] + 1, wire]) if ephemeral else digest(wire)
+            wire_digest = digest(wire)
             author = snapshot(cursor, endpoint.account)
             fields = dict(account_key=token.account_key, endpoint_key=endpoint.key, fencing_epoch=token.epoch,
                 endpoint_generation=row["endpoint_generation"], route_epoch=row["route_epoch"],
@@ -436,7 +428,7 @@ class OfficialSendStore:
                 bot_identity_source=author.source, bot_identity_revision=author.revision, send_mode=send_mode,
                 window_id=None, msg_seq=msg_seq, window_charge_state="none", payload_mode=row["payload_mode"],
                 payload_digest=wire_digest, digest_scheme=row["digest_scheme"], digest_key_id=row["digest_key_id"],
-                wire_payload_json=None if ephemeral else wire, wire_storage_digest=None, send_by_at=now + 30)
+                wire_payload_json=wire, wire_storage_digest=None, send_by_at=now + 30)
             claimed = self.deliveries.begin_direct_attempt(delivery_id, now=now, transaction_cursor=cursor,
                 official_context=OfficialAttemptContext(token, row["attempts"], tuple(fields.items())))
             if claimed is None:
@@ -501,6 +493,3 @@ class OfficialSendStore:
                 WHERE account_key=? AND status='sending'""", (token.account_key,))
             return tuple(r["receipt_id"] for r in cursor.execute(
                 "SELECT receipt_id FROM delivery_receipts WHERE account_key=? AND applied_at IS NULL", (token.account_key,)).fetchall())
-
-    def forget_ephemeral(self, delivery_id):
-        self._ephemeral.pop(delivery_id, None)

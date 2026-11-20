@@ -1,9 +1,6 @@
 """Delivery manifests backed by the existing deliveries table."""
 from __future__ import annotations
 
-import hashlib
-import hmac
-import re
 import secrets
 
 from src.plugins.ai_chat.message_ir import body_to_json
@@ -14,19 +11,15 @@ from .lease import assert_epoch
 from .renderer import RenderedPlan, content_payload
 from .send_types import OutboxInvariantError, PlanRef, digest, stable_json
 
-EPHEMERAL_BODY = '{"v":1,"nodes":[]}'
-EPHEMERAL_MANIFEST = '{"v":1,"ephemeral":true}'
 PURPOSE_PRIORITIES = {
     "final": 0,
     "requested_artifact": 0,
-    "binding_otp": 0,
     "background_result": 10,
     "progress": 20,
     "unsolicited": 30,
 }
 DEFAULT_MAX_WAIT_SECONDS = 86400
 MAX_WAIT_SECONDS = 7 * 86400
-SHORT_WAIT_SECONDS = 30
 
 
 def validate_wait_limit(value: int) -> None:
@@ -34,34 +27,11 @@ def validate_wait_limit(value: int) -> None:
         raise OutboxInvariantError("invalid_wait_limit")
 
 
-def keyed_digest(pepper: bytes, domain: str, value) -> str:
-    if not isinstance(pepper, bytes) or len(pepper) < 32:
-        raise OutboxInvariantError("ephemeral_key_unavailable")
-    key = hmac.new(pepper, b"qq-official:ephemeral:v1:" + domain.encode("ascii"), hashlib.sha256).digest()
-    return hmac.new(key, stable_json(value).encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def binding_preview_deadline(cursor, endpoint, requester, preview, now):
-    if (not isinstance(preview, tuple) or len(preview) != 2
-            or not isinstance(preview[0], str) or not re.fullmatch(r"BN-[0-9a-f]{32}", preview[0])
-            or type(preview[1]) is not int or type(preview[1]) < 1):
-        return None
-    row = cursor.execute("""SELECT c.expires_at AS challenge_expiry,n.expires_at AS candidate_expiry
-        FROM qq_official_binding_candidates n JOIN qq_official_binding_challenges c ON c.challenge_id=n.challenge_id
-        JOIN qq_official_owner_grants g ON g.grant_id=c.owner_grant_id
-        WHERE n.candidate_id=? AND n.version=? AND n.account_key=? AND n.state='pending' AND n.expires_at>?
-          AND c.state='candidate' AND c.expires_at>? AND c.issuer_endpoint_key=? AND c.issuer_actor_key=?
-          AND g.state='active' AND g.revision=c.owner_revision""",
-        (preview[0], preview[1], endpoint.account.key, now, now, endpoint.key, requester.key)).fetchone()
-    return min(row["challenge_expiry"], row["candidate_expiry"]) if row else None
-
-
 def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
                  logical_key: str, source_scope_key: str, expires_at: int, now: int,
                  purpose: str = "final", source_native_message_id: str = "",
                  source_canonical_message_id: int | None = None, turn_id: int | None = None,
-                 admission=None, challenge_id: str | None = None, pepper: bytes | None = None,
-                 digest_key_id: str = "v1", binding_preview=None, control_reply_id=None, epoch_guard=assert_epoch,
+                 admission=None, control_reply_id=None, epoch_guard=assert_epoch,
                  max_wait_seconds: int = DEFAULT_MAX_WAIT_SECONDS,
                  source_guard=None, source_proof=None,
                  source_generation=None, vm_request=None) -> PlanRef:
@@ -87,8 +57,7 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
             or type(now) is not int or type(expires_at) is not int
             or not 0 <= now < expires_at <= 2**63 - 1):
         raise OutboxInvariantError("invalid_delivery_plan")
-    wait_limit = min(max_wait_seconds, SHORT_WAIT_SECONDS) if purpose == "binding_otp" else max_wait_seconds
-    if expires_at - now > wait_limit:
+    if expires_at - now > max_wait_seconds:
         raise OutboxInvariantError("delivery_wait_limit_exceeded")
     endpoint = rendered.endpoint
     if (len(endpoint.account.key.encode()) > 512 or len(endpoint.key.encode()) > 1000
@@ -114,47 +83,25 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     control_view = control_reply_id is not None and control_authorized(cursor, control_reply_id, endpoint, requester)
     if control_reply_id is not None and not control_view:
         raise OutboxInvariantError("control_source_unavailable")
-    ephemeral = purpose == "binding_otp"
-    if (ephemeral != (challenge_id is not None) or ephemeral != (pepper is not None)
-            or (not control_view and not vm_action and not admission(cursor, endpoint, requester))):
+    if not control_view and not vm_action and not admission(cursor, endpoint, requester):
         raise OutboxInvariantError("delivery_not_authorized")
-    challenge_expires = None
-    if ephemeral:
-        challenge = cursor.execute("""SELECT c.* FROM qq_official_binding_challenges c
-            JOIN qq_official_owner_grants g ON g.grant_id=c.owner_grant_id
-            WHERE c.challenge_id=? AND c.account_key=? AND c.issuer_endpoint_key=?
-              AND c.issuer_actor_key=? AND c.state='sending' AND c.expires_at>?
-              AND g.state='active' AND g.revision=c.owner_revision FOR UPDATE OF c,g""",
-            (challenge_id, token.account_key, endpoint.key, requester.key, now)).fetchone()
-        if (challenge is None or len(rendered.parts) != 1 or expires_at > challenge["expires_at"]
-                or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", digest_key_id)):
-            raise OutboxInvariantError("binding_delivery_unavailable")
-        challenge_expires = challenge["expires_at"]
-    elif not control_view and endpoint.kind == "group" and (endpoint_row["binding_state"] != "active"
-                                                             or endpoint_row["membership_state"] != "present"):
+    if not control_view and endpoint.kind == "group" and (endpoint_row["binding_state"] != "active"
+                                                            or endpoint_row["membership_state"] != "present"):
         raise OutboxInvariantError("delivery_endpoint_unavailable")
     control = {"kind": "authenticated_control", "control_id": control_reply_id} if control_view else None
-    if binding_preview is not None:
-        boundary = binding_preview_deadline(cursor, endpoint, requester, binding_preview, now)
-        if ephemeral or purpose != "final" or boundary is None or expires_at > min(boundary, now + 30):
-            raise OutboxInvariantError("binding_preview_unavailable")
-        control = {"kind": "binding_preview", "candidate_id": binding_preview[0], "version": binding_preview[1]}
     manifest_payload = {"v": 1, "rendered": rendered.to_json(), "control": control,
                         "source_native_message_id": source_native_message_id}
     if vm_action:
         manifest_payload["vm_request"] = vm_request
-    manifest = stable_json(manifest_payload) if not ephemeral else EPHEMERAL_MANIFEST
+    manifest = stable_json(manifest_payload)
     identity = ["qq-plan-v1", token.account_key, endpoint.key, logical_key]
     idem = "qqp1:" + digest(stable_json(identity))
     contents = [content_payload(rendered, i) for i in range(len(rendered.parts))]
-    manifest_digest = (keyed_digest(pepper, "content", [identity, requester.key, challenge_id, contents])
-                       if ephemeral else digest(manifest))
-    mode, scheme, key_id = ("ephemeral", "hmac_sha256_v1", digest_key_id) if ephemeral else ("persistent", "sha256", None)
     from .conversation_control import permitted, state
     command = cursor.execute("""SELECT 1 FROM qq_official_turn_executions WHERE endpoint_key=? AND requester_actor_key=?
         AND canonical_message_id=? AND execution_kind='command' AND state IN ('prepared','executing','result_ready','handed_off')""",
         (endpoint.key, requester.key, source_canonical_message_id)).fetchone() is not None
-    if not (control_view or ephemeral or binding_preview) and not permitted(cursor, endpoint,
+    if not control_view and not permitted(cursor, endpoint,
             canonical=source_canonical_message_id if purpose != "background_result" else None,
             generation=source_generation, commands=command):
         raise OutboxInvariantError("conversation_stopped_or_replaced")
@@ -163,10 +110,9 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
         requester_actor_key=requester.key, source_scope_key=source_scope_key,
         source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
         endpoint_generation=endpoint_row["generation"], route_epoch=endpoint_row["route_epoch"],
-        capability_revision=endpoint_row["capability_revision"], purpose=purpose, payload_mode=mode,
-        manifest_json=manifest, manifest_digest=manifest_digest, digest_scheme=scheme, digest_key_id=key_id,
-        part_count=len(rendered.parts), expires_at=expires_at, priority=PURPOSE_PRIORITIES[purpose],
-        challenge_id=challenge_id, challenge_expires_at=challenge_expires)
+        capability_revision=endpoint_row["capability_revision"], purpose=purpose, payload_mode="persistent",
+        manifest_json=manifest, manifest_digest=digest(manifest), digest_scheme="sha256", digest_key_id=None,
+        part_count=len(rendered.parts), expires_at=expires_at, priority=PURPOSE_PRIORITIES[purpose])
     existing = cursor.execute("SELECT * FROM delivery_plans WHERE idempotency_key=?", (idem,)).fetchone()
     if existing is not None:
         rows = cursor.execute("SELECT delivery_id FROM deliveries WHERE plan_id=? ORDER BY part_index", (existing["plan_id"],)).fetchall()
@@ -178,20 +124,19 @@ def enqueue_plan(cursor, *, token, rendered: RenderedPlan, requester: ActorKey,
     delivery_ids = []
     for i, part in enumerate(rendered.parts):
         part_idem = "qqd1:" + digest(stable_json([*identity, i]))
-        payload_digest = (keyed_digest(pepper, "part", [identity, plan_id, i, requester.key, challenge_id, contents[i]])
-                          if ephemeral else digest(stable_json(contents[i])))
+        payload_digest = digest(stable_json(contents[i]))
         fields = dict(idempotency_key=part_idem, source_scope_key=source_scope_key,
             source_canonical_message_id=source_canonical_message_id, turn_id=turn_id,
             target_platform="qq-official", target_kind=endpoint.kind,
             target_native_conversation_id=endpoint.native_conversation_id,
-            reply_to_native_message_id=source_native_message_id, body_json=EPHEMERAL_BODY if ephemeral else body_to_json(part.canonical_body),
-            content_fingerprint="" if ephemeral else payload_digest, status="pending", attempts=0,
+            reply_to_native_message_id=source_native_message_id, body_json=body_to_json(part.canonical_body),
+            content_fingerprint=payload_digest, status="pending", attempts=0,
             next_attempt_at=now, native_message_id="", last_error="", created_at=now, updated_at=now,
             plan_id=plan_id, part_index=i, account_key=token.account_key, endpoint_key=endpoint.key,
             requester_actor_key=requester.key, endpoint_generation=endpoint_row["generation"],
             route_epoch=endpoint_row["route_epoch"], capability_revision=endpoint_row["capability_revision"],
-            purpose=purpose, payload_mode=mode, variant="primary", payload_digest=payload_digest,
-            digest_scheme=scheme, digest_key_id=key_id, priority=PURPOSE_PRIORITIES[purpose], expires_at=expires_at)
+            purpose=purpose, payload_mode="persistent", variant="primary", payload_digest=payload_digest,
+            digest_scheme="sha256", digest_key_id=None, priority=PURPOSE_PRIORITIES[purpose], expires_at=expires_at)
         row = cursor.execute("INSERT INTO deliveries (" + ",".join(fields) + ") VALUES (" + ",".join("?" for _ in fields) + ") RETURNING delivery_id", tuple(fields.values())).fetchone()
         delivery_ids.append(row["delivery_id"])
     require_source(plan_id)

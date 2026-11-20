@@ -23,7 +23,7 @@ class IdentityFixture:
   self.store=OfficialInboxStore(self.database,jobs=self.jobs,binding=binding,clock=lambda:self.now)
   self.addCleanup(self.store.close);self.store.ensure_account(self.account)
   self.lease=DedicatedAccountLease(self.dsn,self.account,schema=self.schema,clock=lambda:self.now);self.addCleanup(self.lease.close)
-  self.token=self.lease.acquire();self.store.apply_configuration(self.token,(self.owner,))
+  self.token=self.lease.acquire();self.store.apply_configuration(self.token)
   self.store.accept({'op':0,'s':0,'t':'READY','d':{'session_id':self.session}},token=self.token,session_id=self.session)
   self.security=SecurityStore(self.database,b'TEST_SECURITY_PEPPER_12345678901234567',clock=lambda:self.now);self.addCleanup(self.security.close)
   self.admin=self.security.bootstrap_local_admin('test_admin',PASSWORD)

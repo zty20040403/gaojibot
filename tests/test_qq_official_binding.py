@@ -59,9 +59,8 @@ class OfficialBindingTests(unittest.TestCase):
                                                     code=code, lease_token=token or self.token)
     def configure(self, *ids):
         authority = OwnerAuthority(account=self.account, owner_c2c_ids=ids, clock=lambda: self.now)
-        with self.tx() as cursor: result = authority.apply_trusted_config(cursor, self.account, ids, 'TEST_REVISION')
+        with self.tx() as cursor: authority.apply_trusted_config(cursor)
         self.authority = self.reducer.authority = authority
-        return result
     def test_code_binds_exact_actor_without_plaintext_or_history_alias(self):
         with patch('src.plugins.ai_chat.adapters.qq_official.binding.secrets.randbelow', return_value=42): issued = self.issue()
         self.assertEqual((issued.effect.code, issued.effect.expires_at), ('000042', self.now + 300))
@@ -75,7 +74,6 @@ class OfficialBindingTests(unittest.TestCase):
             self.assertNotIn('000042', repr((dict(account), dict(link), [dict(row) for row in cursor.execute('SELECT * FROM admin_audit_log').fetchall()])))
             self.assertEqual((endpoint['canonical_scope_key'], link['configured_owner_actor_key'], link['actor_key']),
                              (self.group.scope.key, self.owner.key, self.member.key))
-            self.assertIsNone(link['owner_grant_id'])
             self.assertIsNotNone(self.authority.owner_for_actor(cursor, self.group, self.member))
             cursor.execute('UPDATE qq_official_endpoints SET generation=2 WHERE endpoint_key=?', (self.group.key,))
             self.assertIsNone(self.authority.owner_for_actor(cursor, self.group, self.member))
@@ -128,23 +126,6 @@ class OfficialBindingTests(unittest.TestCase):
         self.assertEqual(self.consume(code, group, actor, token).status, 'invalid')
         with self.tx() as cursor:
             self.assertIsNotNone(cursor.execute('SELECT owner_link_code_hmac FROM qq_official_accounts WHERE account_key=?', (self.account.key,)).fetchone()[0])
-    def test_current_legacy_link_blocks_rebinding_but_stale_revision_does_not(self):
-        grant = self.configure('TEST_OWNER')[0].grant
-        with self.tx() as cursor:
-            cursor.execute("""INSERT INTO qq_official_binding_challenges
-                (challenge_id,account_key,issuer_actor_key,issuer_endpoint_key,owner_grant_id,owner_revision,code_hmac,expires_at,
-                 state,attempts,created_at,updated_at,consumed_at,delivery_epoch) VALUES ('TEST_C',?,?,?,?,?,'',?,'confirmed',0,?,?,?,1)""",
-                (self.account.key, self.owner.key, self.private.key, grant.grant_id, 1, self.now + 300, self.now, self.now, self.now))
-            cursor.execute("""INSERT INTO qq_official_binding_candidates
-                (candidate_id,challenge_id,account_key,endpoint_key,actor_key,endpoint_generation,version,state,expires_at,
-                 created_at,updated_at,grant_submitter_owner,consumed_at) VALUES ('TEST_N','TEST_C',?,?,?,?,1,'confirmed',?,?,?,TRUE,?)""",
-                (self.account.key, self.group.key, self.member.key, 1, self.now + 300, self.now, self.now, self.now))
-            cursor.execute("""INSERT INTO qq_official_owner_actor_links
-                (endpoint_key,actor_key,account_key,owner_grant_id,owner_revision,endpoint_generation,revision,state,candidate_id,created_at,updated_at)
-                VALUES (?,?,?,?,?,1,1,'active','TEST_N',?,?)""", (self.group.key, self.member.key, self.account.key, grant.grant_id, 1, self.now, self.now))
-        self.assertEqual(self.consume(self.issue().effect.code, actor=self.attacker).status, 'conflict')
-        with self.tx() as cursor: cursor.execute('UPDATE qq_official_owner_grants SET revision=2 WHERE grant_id=?', (grant.grant_id,))
-        self.assertEqual(self.consume(self.issue().effect.code, actor=self.attacker).status, 'confirmed')
     def test_active_group_rejects_extra_link_even_when_matching_link_exists(self):
         self.assertEqual(self.consume(self.issue().effect.code).status, 'confirmed')
         with self.tx() as cursor:

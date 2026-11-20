@@ -475,17 +475,17 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         runtime = self.runtime(protocol=protocol)
         transient = DatabaseError("TEST_QUERY_ERROR")
         transient.__cause__ = psycopg.OperationalError("TEST_SECRET_DSN")
-        original = runtime._recover_binding
+        original = OfficialInboxStore.apply_configuration
         calls = 0
 
-        def recover(token):
+        def configure(store, token):
             nonlocal calls
             calls += 1
             if calls == 1:
                 raise transient
-            return original(token)
+            return original(store, token)
 
-        with patch.object(runtime, "_recover_binding", side_effect=recover):
+        with patch.object(OfficialInboxStore, "apply_configuration", configure):
             await runtime.start()
             await protocol.next_ready()
         self.assertEqual(calls, 2)
@@ -498,11 +498,11 @@ class OfficialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         runtime = self.runtime(protocol=protocol)
         permanent = DatabaseError("TEST_QUERY_ERROR")
         permanent.__cause__ = psycopg.errors.UndefinedColumn("TEST_SECRET_COLUMN")
-        with patch.object(runtime, "_recover_binding", side_effect=permanent) as recover:
+        with patch.object(OfficialInboxStore, "apply_configuration", side_effect=permanent) as configure:
             await runtime.start()
             await self.quiescent_pause(runtime)
             await asyncio.sleep(0.05)
-        recover.assert_called_once()
+        configure.assert_called_once()
         self.assertEqual(protocol.gateways, [])
         self.assertEqual(runtime.reason, "ingress_unavailable")
         self.assertNotIn("TEST_SECRET_COLUMN", repr(self.logger.mock_calls))

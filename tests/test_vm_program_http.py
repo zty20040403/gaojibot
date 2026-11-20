@@ -29,8 +29,7 @@ class VMProgramHTTPTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.deliveries.close)
         self.addCleanup(self.ledger.close)
         self.outbox = OfficialSendStore(
-            self.deliveries, admission=lambda *_: False,
-            pepper=b'TEST_PROGRAM_PEPPER' * 3, clock=lambda: self.now,
+            self.deliveries, admission=lambda *_: False, clock=lambda: self.now,
         )
         with self.tx() as cursor:
             observe_ready(cursor, self.token, {'op': 0, 't': 'READY', 'd': {'session_id': 'TEST_SESSION',

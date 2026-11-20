@@ -14,7 +14,7 @@ class TableWriterTests(unittest.TestCase):
         with migration.connect(schema) as db:
             tables = {name for name, in db.execute('SELECT tablename FROM pg_tables WHERE schemaname=%s', (schema,))}
         business_tables = tables - {'alembic_version'}
-        self.assertEqual(len(business_tables), 55)
+        self.assertEqual(len(business_tables), 52)
         self.assertFalse(business_tables - writer_tables(Path(__file__).resolve().parents[1] / 'src'))
 
     def test_only_executed_insert_and_update_targets_count(self):

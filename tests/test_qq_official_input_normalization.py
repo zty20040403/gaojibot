@@ -136,7 +136,6 @@ class IngressNormalizationTests(OfficialInboxTests):
         self.assertEqual((row['control_action'], row['control_decision_code']), ('owner_entry', 'confirmed'))
         repeat = self.accept(content=content, native=row['native_message_id'], mentions=[{'id': 'TEST_BOT', 'is_you': True}])
         self.assertEqual(repeat.disposition, 'duplicate')
-        self.assertEqual(self.count('qq_official_binding_candidates'), 0)
         self.assertNotIn(secret, self.persisted_text())
         self.assertEqual(self.count('messages'), 0)
 

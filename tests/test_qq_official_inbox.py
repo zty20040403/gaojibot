@@ -42,7 +42,7 @@ class OfficialInboxTests(unittest.TestCase):
         self.addCleanup(self.lease.close)
         self.token = self.lease.acquire()
         self.assertIsNotNone(self.token)
-        self.store.apply_configuration(self.token, (self.owner, self.other_owner))
+        self.store.apply_configuration(self.token)
         self.assertEqual(self.store.accept({'op': 0, 's': 0, 't': 'READY',
             'd': {'session_id': self.session}}, token=self.token, session_id=self.session).disposition, 'control')
 
@@ -77,8 +77,7 @@ class OfficialInboxTests(unittest.TestCase):
     @staticmethod
     def persisted_tables():
         return ('qq_official_inbound_events', 'qq_official_inbound_dedup', 'qq_official_gateway_receipts',
-                'qq_official_accounts', 'qq_official_endpoints', 'qq_official_binding_challenges',
-                'qq_official_binding_candidates', 'qq_official_owner_grants', 'qq_official_owner_actor_links',
+                'qq_official_accounts', 'qq_official_endpoints', 'qq_official_owner_actor_links',
                 'qq_official_messages', 'qq_official_message_indexes', 'admin_audit_log', 'durable_jobs', 'messages')
 
     def persisted_text(self):
@@ -289,8 +288,6 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertIsNone(self.accept(content='/绑定群 000042').binding.effect)
         self.assertEqual(self.accept(content='000042').disposition, 'quarantined')
         self.assertNotIn('000042', self.persisted_text())
-        self.assertEqual(self.count('qq_official_binding_challenges'), 0)
-        self.assertEqual(self.count('qq_official_binding_candidates'), 0)
         self.assertEqual(self.count('durable_jobs'), 0)
         ordinary = self.accept(content='一共有 123456 件')
         self.assertEqual(ordinary.disposition, 'inbox')
@@ -429,8 +426,7 @@ class OfficialInboxTests(unittest.TestCase):
     def test_repeated_none_checkpoint_callback_does_not_bump_generations_or_grant_revisions(self):
         self.gap_evidence()
         self.store.checkpoint_callback(self.token, None)
-        tables = ('qq_official_accounts', 'qq_official_endpoints', 'qq_official_owner_actor_links',
-                  'qq_official_binding_candidates', 'qq_official_binding_challenges')
+        tables = ('qq_official_accounts', 'qq_official_endpoints', 'qq_official_owner_actor_links')
         before = {table: self.query(f'SELECT * FROM {table} ORDER BY 1') for table in tables}
         self.now += 5
         self.store.checkpoint_callback(self.token, None)

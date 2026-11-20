@@ -151,7 +151,7 @@ class HostResidentAndWakeTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
         deliveries = DeliveryStore(self.database, recover_interrupted=False)
         self.addCleanup(deliveries.close)
         self.service.runtime.outbox = OfficialSendStore(
-            deliveries, admission=lambda *_: True, pepper=b'TEST_WAKE_PEPPER' * 3, clock=lambda: self.now
+            deliveries, admission=lambda *_: True, clock=lambda: self.now
         )
         self.service.app.message_ledger = None
         self.service.app.conversations = None

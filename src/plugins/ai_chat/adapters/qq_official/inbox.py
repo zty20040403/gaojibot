@@ -302,12 +302,12 @@ class OfficialInboxStore:
                 VALUES (?,TRUE,'idle',?,?) ON CONFLICT(account_key) DO NOTHING""",
                 (account.key, now, now))
 
-    def apply_configuration(self, token, owner_openids: tuple[str, ...]):
-        account = AccountKey.parse(token.account_key)
-        revision = durable_key("owner-config-v1", account.key, *sorted(owner_openids))
+    def apply_configuration(self, token):
+        if token.account_key != self.authority.account.key:
+            raise ValueError('Owner configuration does not match the leased account')
         with self.transaction() as cursor:
             self.epoch_guard(cursor, token)
-            return self.authority.apply_trusted_config(cursor, account, owner_openids, revision)
+            self.authority.apply_trusted_config(cursor)
 
     def admitted(self, cursor, endpoint: EndpointKey, actor: ActorKey) -> bool:
         if not actor.matches_endpoint(endpoint) or actor.identity_kind == "bot":
@@ -700,8 +700,3 @@ class OfficialInboxStore:
         params = (account_key, endpoint_key) if endpoint_key is not None else (account_key,)
         cursor.execute(f"""UPDATE qq_official_owner_actor_links SET state='revoked',revision=revision+1,updated_at=?
             WHERE {clause} AND state='active'""", (now, *params))
-        cursor.execute(f"""UPDATE qq_official_binding_challenges SET state='cancelled',code_hmac='',updated_at=?,consumed_at=?
-            WHERE challenge_id IN (SELECT challenge_id FROM qq_official_binding_candidates WHERE {clause} AND state='pending')""",
-            (now, now, *params))
-        cursor.execute(f"""UPDATE qq_official_binding_candidates SET state='cancelled',updated_at=?,consumed_at=?
-            WHERE {clause} AND state='pending'""", (now, now, *params))

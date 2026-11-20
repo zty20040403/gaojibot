@@ -200,7 +200,7 @@ class OfficialRuntime:
             await self._calls(self.store.ensure_account, self.loaded.account)
             from .mentions import endpoint_mention_authority
             self.outbox = OfficialSendStore(self.deliveries, admission=self.store.admitted,
-                pepper=self.loaded.binding_pepper, mention_authority=endpoint_mention_authority,
+                mention_authority=endpoint_mention_authority,
                 max_wait_seconds=self.loaded.delivery.max_wait_seconds)
         except Exception:
             await self._close_stores()
@@ -249,8 +249,7 @@ class OfficialRuntime:
                         self.state, self.reason = "waiting", "account_owned_by_another_instance"
                     else:
                         self._token = token
-                        await self._calls(self.store.apply_configuration, token, self.loaded.owner_openids)
-                        await self._calls(self._recover_binding, token)
+                        await self._calls(self.store.apply_configuration, token)
                         checkpoint = await self._calls(self.store.checkpoint, token)
                         serving_since = loop.time()
                         await self._serve(lease, token, checkpoint)
@@ -311,10 +310,6 @@ class OfficialRuntime:
         except Exception:
             # Supervisor logs its exception; only a fixed safe diagnostic leaves.
             raise RuntimeError("Official ingress lifecycle failed") from None
-
-    def _recover_binding(self, token):
-        with self.store.transaction() as cursor:
-            self.store.binding.recover_sending(cursor, account=self.loaded.account, lease_token=token)
 
     async def _serve(self, lease, token, checkpoint):
         session_id = checkpoint.session_id if checkpoint is not None else None

@@ -75,8 +75,7 @@ class SharingTests(unittest.TestCase):
         self.activate_group()
         with self.tx() as c:
             observe_ready(c, self.token, {'d': {'user': {'id': 'TEST_BOT', 'bot': True}}}, self.now)
-        self.outbox = OfficialSendStore(self.deliveries, admission=self.store.admitted,
-            pepper=b'TEST_LOCAL_INTEREST_PEPPER'*2, clock=lambda:self.now)
+        self.outbox = OfficialSendStore(self.deliveries, admission=self.store.admitted, clock=lambda:self.now)
         self.items = [headline(self.now)]
         self.reader = Mock(side_effect=lambda state_dir, *, now:self.items)
         self.wake = Mock()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import unittest
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from src.plugins.ai_chat.adapters.qq_official import sender as sender_module
 from src.plugins.ai_chat.adapters.qq_official.identity_store import observe_ready
 from src.plugins.ai_chat.adapters.qq_official.lease import LeaseLost, assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.send_store import OfficialSendStore
+from src.plugins.ai_chat.adapters.qq_official.send_types import digest, stable_json
 from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan
 from src.plugins.ai_chat.adapters.qq_official.sender import OfficialSender
 from src.plugins.ai_chat.delivery import DeliveryStore
@@ -34,7 +36,7 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.deliveries.close)
         self.addCleanup(self.ledger.close)
         self.outbox = OfficialSendStore(self.deliveries, admission=lambda c, e, a: True,
-            pepper=b"TEST_PROTECTED_PEPPER" * 3, clock=lambda: self.now)
+            clock=lambda: self.now)
         with self.tx() as cursor:
             observe_ready(cursor, self.token, {"op": 0, "t": "READY", "d": {
                 "session_id": "TEST_SESSION", "user": {"id": "TEST_REAL_BOT", "bot": True}}}, self.now)
@@ -76,6 +78,34 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
         args.update(kwargs)
         return self.outbox.enqueue(self.token, **args).delivery_ids[0]
 
+    def legacy_ephemeral(self):
+        endpoint = EndpointKey(self.account, 'private', 'TEST_LEGACY_OWNER')
+        actor = ActorKey(self.account, 'c2c_user', '', 'TEST_LEGACY_OWNER')
+        self.provision(endpoint)
+        plan_id, challenge_id = 'b' * 32, 'BC-' + 'c' * 32
+        with self.tx() as cursor:
+            cursor.execute("""INSERT INTO delivery_plans
+                (plan_id,idempotency_key,account_key,endpoint_key,requester_actor_key,source_scope_key,
+                 endpoint_generation,route_epoch,capability_revision,purpose,payload_mode,manifest_json,
+                 manifest_digest,digest_scheme,digest_key_id,part_count,expires_at,priority,
+                 challenge_id,challenge_expires_at,created_at)
+                VALUES (?,?,?,?,?,?,1,1,1,'binding_otp','ephemeral','{"v":1,"ephemeral":true}',
+                        ?,'hmac_sha256_v1','TEST_KEY_V1',1,?,0,?,?,?)""",
+                (plan_id, 'qqp1:' + digest(plan_id), self.account.key, endpoint.key, actor.key,
+                 endpoint.scope.key, 'd' * 64, self.now + 200, challenge_id, self.now + 300, self.now))
+            row = cursor.execute("""INSERT INTO deliveries
+                (idempotency_key,source_scope_key,target_platform,target_kind,target_native_conversation_id,
+                 reply_to_native_message_id,body_json,content_fingerprint,status,next_attempt_at,created_at,updated_at,
+                 plan_id,part_index,account_key,endpoint_key,requester_actor_key,endpoint_generation,route_epoch,
+                 capability_revision,purpose,payload_mode,variant,payload_digest,digest_scheme,digest_key_id,
+                 priority,expires_at)
+                VALUES (?,?,'qq-official','private','TEST_LEGACY_OWNER','TEST_LEGACY_SOURCE',
+                        '{"v":1,"nodes":[]}','','pending',?,?,?,?,0,?,?,?,1,1,1,'binding_otp','ephemeral',
+                        'primary',?,'hmac_sha256_v1','TEST_KEY_V1',0,?) RETURNING delivery_id""",
+                ('qqd1:' + digest(plan_id), endpoint.scope.key, self.now, self.now, self.now, plan_id,
+                 self.account.key, endpoint.key, actor.key, 'e' * 64, self.now + 200)).fetchone()
+        return endpoint, actor, row['delivery_id']
+
     async def eventually(self, predicate):
         async with asyncio.timeout(5):
             while not predicate():
@@ -98,6 +128,55 @@ class OfficialSenderTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
             (secrets.token_hex(16), self.account.key, endpoint.key,
              'GROUP_AT_MESSAGE_CREATE' if endpoint.kind=='group' else 'C2C_MESSAGE_CREATE', message,
              self.now,self.now,self.now))
+
+    def test_retired_binding_rows_fail_closed_without_sending_preview(self):
+        _, _, ephemeral = self.legacy_ephemeral()
+        preview = self.enqueue('TEST_LEGACY_PREVIEW')
+        plan = self.query("SELECT plan_id,manifest_json FROM delivery_plans WHERE plan_id=(SELECT plan_id FROM deliveries WHERE delivery_id=?)", (preview,))[0]
+        manifest = json.loads(plan['manifest_json'])
+        manifest['control'] = {'kind': 'binding_preview', 'candidate_id': 'BN-' + 'f' * 32, 'version': 1}
+        encoded = stable_json(manifest)
+        self.query("UPDATE delivery_plans SET manifest_json=?,manifest_digest=? WHERE plan_id=?",
+                   (encoded, digest(encoded), plan['plan_id']))
+
+        outcomes = [self.outbox.prepare(self.token, delivery, send_mode='proactive')
+                    for delivery in (ephemeral, preview)]
+
+        self.assertEqual([(item.status, item.reason) for item in outcomes], [
+            ('cancelled', 'retired_ephemeral_delivery'),
+            ('cancelled', 'retired_binding_preview'),
+        ])
+        self.assertFalse(self.fake.received)
+        self.assertFalse(self.attempts())
+
+    def test_legacy_ephemeral_receipt_records_only_empty_control_message(self):
+        endpoint, _, delivery = self.legacy_ephemeral()
+        bot = ActorKey(self.account, 'bot', '', 'TEST_REAL_BOT')
+        with self.tx() as cursor:
+            attempt = cursor.execute("""INSERT INTO delivery_attempts
+                (delivery_id,attempt,state,detail,started_at,dispatched_at,account_key,endpoint_key,fencing_epoch,
+                 endpoint_generation,route_epoch,capability_revision,bot_actor_key,bot_identity_source,
+                 bot_identity_revision,send_mode,window_charge_state,payload_mode,payload_digest,digest_scheme,
+                 digest_key_id,wire_payload_json,send_by_at,acceptance)
+                VALUES (?,1,'dispatched','',?,?,?,?,?,1,1,1,?,'ready',1,'proactive','none','ephemeral',
+                        ?,'hmac_sha256_v1','TEST_KEY_V1',NULL,?,'unknown') RETURNING attempt_id""",
+                (delivery, self.now, self.now, self.account.key, endpoint.key, self.token.epoch,
+                 bot.key, 'f' * 64, self.now + 30)).fetchone()
+            cursor.execute("""UPDATE deliveries SET status='sending',attempts=1,lease_until=?,claim_epoch=?,
+                current_attempt_id=? WHERE delivery_id=?""",
+                (self.now + 30, self.token.epoch, attempt['attempt_id'], delivery))
+            receipt_id = 'TEST_LEGACY_RECEIPT'
+            cursor.execute("""INSERT INTO delivery_receipts
+                (receipt_id,attempt_id,account_key,endpoint_key,kind,native_message_id,receipt_digest,observed_at)
+                VALUES (?,?,?,?,'response','TEST_LEGACY_ACK',?,?)""",
+                (receipt_id, attempt['attempt_id'], self.account.key, endpoint.key, 'a' * 64, self.now))
+
+        outcome = self.outbox.finalize(self.token, receipt_id, ledger=self.ledger)
+
+        self.assertEqual(outcome.status, 'committed')
+        message = self.query("SELECT message_kind,body_json,rendered_text FROM messages WHERE direction='outbound'")[0]
+        self.assertEqual((message['message_kind'], message['rendered_text']), ('command', ''))
+        self.assertEqual(message['body_json'], '{"v":1,"nodes":[]}')
 
     async def test_health_tracks_real_sender_start_delivery_and_shutdown(self):
         from prometheus_client import CollectorRegistry
