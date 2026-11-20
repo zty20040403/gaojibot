@@ -35,8 +35,24 @@ def check_mount(fd, expected):
         raise ValueError('mount boundary in workspace')
 
 
-def archive_tree(archive, directory, prefix, mount):
+def add_regular(archive, fd, meta, member):
+    member.size = meta.st_size
+    with open(f'/proc/self/fd/{fd}', 'rb') as source:
+        archive.addfile(member, source)
+    after = os.fstat(fd)
+    if after.st_ctime_ns != meta.st_ctime_ns or after.st_nlink != meta.st_nlink:
+        raise ValueError('file changed during snapshot')
+
+
+def pin(fd, stack):
+    pinned = os.dup(fd)
+    stack.callback(os.close, pinned)
+    return pinned
+
+
+def archive_tree(archive, directory, prefix, mount, stack, links, directories):
     before = os.fstat(directory).st_ctime_ns
+    entries = {}
     for name in os.listdir(directory):
         # O_PATH pins the inode without opening devices, FIFOs or symlink targets.
         with opened(name, os.O_PATH | os.O_NOFOLLOW, directory) as fd:
@@ -53,17 +69,51 @@ def archive_tree(archive, directory, prefix, mount):
                 member.type = tarfile.DIRTYPE
                 archive.addfile(member)
                 with opened('.', DIRECTORY, fd) as child:
-                    archive_tree(archive, child, member.name + '/', mount)
+                    if archive_tree(archive, child, member.name + '/', mount, stack, links, directories):
+                        entries[name] = meta.st_ino
             elif stat.S_ISREG(meta.st_mode):
-                if meta.st_nlink != 1:
-                    raise ValueError('cannot establish workspace ownership of a hard-linked file')
-                member.size = meta.st_size
-                with open(f'/proc/self/fd/{fd}', 'rb') as source:
-                    archive.addfile(member, source)
-                if os.fstat(fd).st_ctime_ns != meta.st_ctime_ns:
-                    raise ValueError('file changed during snapshot')
+                if meta.st_nlink == 1:
+                    add_regular(archive, fd, meta, member)
+                else:
+                    key = (meta.st_dev, meta.st_ino)
+                    if key not in links:
+                        links[key] = (pin(fd, stack), meta, [])
+                    links[key][2].append(member)
+                    entries[name] = meta.st_ino
     if os.fstat(directory).st_ctime_ns != before:
         raise ValueError('directory changed during snapshot')
+    if entries:
+        inode = os.fstat(directory).st_ino
+        if inode in directories:
+            raise ValueError('directory visited twice during snapshot')
+        directories[inode] = (pin(directory, stack), before, entries)
+    return bool(entries)
+
+
+def archive_scope(archive, work, mount):
+    links, directories = {}, {}
+    with ExitStack() as stack:
+        archive_tree(archive, work, '', mount, stack, links, directories)
+
+        # Renaming a parent can move a whole subtree without changing the file inode.
+        def check_directories():
+            for directory, before, entries in directories.values():
+                if os.fstat(directory).st_ctime_ns != before:
+                    raise ValueError('directory changed during snapshot')
+                for name, inode in entries.items():
+                    with opened(name, os.O_PATH | os.O_NOFOLLOW, directory) as fd:
+                        check_mount(fd, mount)
+                        if os.fstat(fd).st_ino != inode:
+                            raise ValueError('directory changed during snapshot')
+
+        check_directories()
+        for fd, meta, members in links.values():
+            current = os.fstat(fd)
+            if current.st_ctime_ns != meta.st_ctime_ns or not (len(members) == current.st_nlink == meta.st_nlink):
+                raise ValueError('cannot establish workspace ownership of a hard-linked file')
+            for member in members:
+                add_regular(archive, fd, meta, member)
+        check_directories()
 
 
 def enter_destination(destination):
@@ -95,7 +145,7 @@ def snapshot(source, day):
                         os.fchmod(out.fileno(), 0o600)
                         check_mount(work, mount)
                         with tarfile.open(fileobj=out, mode='w|') as archive:
-                            archive_tree(archive, work, '', mount)
+                            archive_scope(archive, work, mount)
                         out.flush()
                         os.fsync(out.fileno())
                 partial.replace(f'{scope}_{day}.tar')

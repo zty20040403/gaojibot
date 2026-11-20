@@ -7,6 +7,7 @@ from contextlib import chdir
 from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from nix import work_snapshot as snaps
 
@@ -55,6 +56,43 @@ class WorkSnapshotTests(unittest.TestCase):
             self.assertFalse(os.path.lexists(recovered / 'link'))
             self.assertEqual((work / 'file').read_text(), scope)
         self.assertTrue((self.dest.parent / 'restore-s000001/empty').is_dir())
+
+    def test_internal_links_restore_as_files_but_external_third_link_blocks_publication(self):
+        nested = self.a / 'nested'
+        nested.mkdir()
+        os.link(self.a / 'file', nested / 'alias')
+        bundle = self.dest / f's000001_{self.day}.tar'
+        snaps.snapshot(self.source, self.day)
+        recovered = self.dest.parent / 'restore'
+        with tarfile.open(bundle) as archive:
+            archive.extractall(recovered, members=[m for m in archive if m.isfile() or m.isdir()], filter='data')
+        for name in ['file', 'nested/alias']:
+            self.assertEqual((recovered / name).read_text(), 's000001')
+        original = bundle.read_bytes()
+        os.link(nested / 'alias', self.b.parent / 'outside')
+        (self.a / 'file').write_text('TEST_PRIVATE')
+        with self.assertRaises(ExceptionGroup) as caught:
+            snaps.snapshot(self.source, self.day)
+        self.assertIn('ownership', str(caught.exception.exceptions[0]))
+        self.assertEqual(bundle.read_bytes(), original)
+        self.assertFalse((self.dest / '.pending').exists())
+
+    def test_move_of_linked_subtree_during_deferred_read_blocks_publication(self):
+        nested = self.a / 'parent/child'
+        nested.mkdir(parents=True)
+        os.link(self.a / 'file', nested / 'alias')
+        add_regular = snaps.add_regular
+
+        def move_after_read(archive, fd, meta, member):
+            add_regular(archive, fd, meta, member)
+            if member.name == 'parent/child/alias':
+                nested.rename(self.b.parent / 'outside')
+                nested.mkdir()
+
+        with patch.object(snaps, 'add_regular', move_after_read), self.assertRaises(ExceptionGroup) as caught:
+            snaps.snapshot(self.source, self.day)
+        self.assertIn('directory changed', str(caught.exception.exceptions[0]))
+        self.assertFalse((self.dest / f's000001_{self.day}.tar').exists())
 
     def test_failed_scope_keeps_previous_complete_archive_and_rotates_by_utc_day(self):
         snaps.snapshot(self.source, self.day)
