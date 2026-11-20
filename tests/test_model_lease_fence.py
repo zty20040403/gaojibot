@@ -182,7 +182,7 @@ class ModelLeaseFenceTests(unittest.IsolatedAsyncioTestCase):
                     await provider.create_completion(self.primary, messages=[], stream=stream)
         client.chat.completions.create.assert_not_awaited()
 
-    async def test_openai_sdk_hidden_retries_disabled_only_for_owned_execution(self):
+    async def test_openai_sdk_hidden_retries_disabled_with_or_without_fence(self):
         client, provider = self.openai_client(), OpenAIChatProvider()
         with patch.object(provider, "_client", return_value=client):
             self.assertEqual(await provider.create_completion(self.primary, messages=[]), "ok")
@@ -193,7 +193,7 @@ class ModelLeaseFenceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await provider.create_completion(self.primary, messages=[]), "ok")
             finally:
                 active_job_fence.reset(token)
-            client.with_options.assert_not_called()
+            client.with_options.assert_called_once_with(max_retries=0)
         self.assertEqual(client.chat.completions.create.await_count, 2)
 
     async def test_route_only_fence_also_disables_sdk_hidden_retries(self):

@@ -133,7 +133,7 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cancelled.is_set())
         self.assertEqual([call[0].name for call in provider.calls], ["primary"])
 
-    async def test_upstream_timeout_can_fallback(self):
+    async def test_upstream_timeout_without_dispatch_evidence_is_unknown(self):
         primary = replace(profile("primary"), fallback_profiles=("backup",))
         backup = profile("backup")
         catalog = ModelCatalog(
@@ -144,26 +144,38 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
         provider.create_completion = AsyncMock(side_effect=[TimeoutError("upstream"), "ok"])
         gateway = LLMGateway({"openai-chat": provider}, catalog=catalog)
 
-        result = await gateway.create_completion_with_profile(primary, messages=[])
+        with self.assertRaises(LLMOutcomeUnknownError):
+            await gateway.create_completion_with_profile(primary, messages=[])
+        provider.create_completion.assert_awaited_once()
 
-        self.assertEqual(result.response, "ok")
-        self.assertEqual(result.profile.name, "backup")
+    async def test_first_content_deadline_closes_stream_and_does_not_replay(self):
+        class Stalled(FakeStream):
+            async def __anext__(self):
+                await asyncio.Future()
 
-    async def test_stream_connection_is_not_bounded_by_nonstream_deadline(self):
+        raw = Stalled()
+        provider = RecordingProvider()
+        provider.create_completion = AsyncMock(return_value=raw)
+        primary = replace(profile("primary"), timeout_seconds=0.02)
+        catalog = ModelCatalog({"primary": primary, "backup": profile("backup")}, default_profile="primary")
+        gateway = LLMGateway({"openai-chat": provider}, catalog=catalog)
+        with self.assertRaises(LLMOutcomeUnknownError):
+            await gateway.create_completion(primary, messages=[], stream=True)
+        self.assertEqual(raw.close_count, 1)
+        provider.create_completion.assert_awaited_once()
+
+    async def test_established_stream_outlives_first_content_deadline(self):
         selected = replace(profile("primary"), timeout_seconds=0.01)
         raw = FakeStream(stream_chunk("hello"), stream_chunk(finish="stop"))
         provider = RecordingProvider()
 
-        async def delayed(*_args, **_kwargs):
-            await asyncio.sleep(0.02)
-            return raw
-
-        provider.create_completion = delayed
+        provider.create_completion = AsyncMock(return_value=raw)
         gateway = LLMGateway({"openai-chat": provider})
 
         result = await gateway.create_completion_with_profile(
             selected, messages=[], stream=True
         )
+        await asyncio.sleep(0.02)
         chunks = [chunk async for chunk in result.response]
 
         self.assertEqual(len(chunks), 2)
@@ -268,20 +280,17 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
             observe.assert_called_once()
             self.assertEqual(observe.call_args.kwargs["status"], "succeeded")
 
-    async def test_stream_failure_before_first_chunk_uses_backup(self):
+    async def test_stream_failure_before_first_content_does_not_replay(self):
         primary, backup = profile("primary"), profile("backup")
         catalog = ModelCatalog({p.name: p for p in (primary, backup)}, default_profile=primary.name)
         broken = FakeStream(stream_chunk(), httpx.ReadError("disconnected"))
-        good = FakeStream(stream_chunk("answer", "stop"))
         provider = RecordingProvider()
-        provider.create_completion = AsyncMock(side_effect=[broken, good])
+        provider.create_completion = AsyncMock(return_value=broken)
         gateway = LLMGateway({"openai-chat": provider}, catalog=catalog, failure_threshold=1)
-        result = await gateway.create_completion_with_profile(primary, messages=[], stream=True)
-        self.assertEqual(result.profile.name, backup.name)
+        with self.assertRaises(LLMOutcomeUnknownError):
+            await gateway.create_completion_with_profile(primary, messages=[], stream=True)
         self.assertEqual(broken.close_count, 1)
-        self.assertEqual([c.choices[0].delta.content async for c in result.response], ["answer"])
-        self.assertEqual(gateway.health_snapshot()[primary.name]["total_failures"], 1)
-        self.assertEqual(gateway.health_snapshot()[backup.name]["fallback_uses"], 1)
+        provider.create_completion.assert_awaited_once()
 
     async def test_mid_stream_failure_is_not_retried_or_counted_successful(self):
         primary, backup = profile("primary"), profile("backup")
@@ -310,7 +319,7 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
         provider.create_completion = AsyncMock(return_value=FakeStream(stream_chunk("incomplete")))
         gateway = LLMGateway({"openai-chat": provider})
         stream = await gateway.create_completion(selected, messages=[], stream=True)
-        with self.assertRaises(LLMConnectionError):
+        with self.assertRaises(LLMOutcomeUnknownError):
             _ = [chunk async for chunk in stream]
         self.assertEqual(gateway.health._circuits[selected.name].total_successes, 0)
         self.assertEqual(gateway.health._circuits[selected.name].total_failures, 1)
@@ -364,7 +373,7 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
         catalog = ModelCatalog({p.name: p for p in (primary, backup)}, default_profile=primary.name)
         provider = RecordingProvider()
         provider.create_completion = AsyncMock(side_effect=[
-            FakeStream(stream_chunk(), httpx.ReadError("disconnected")),
+            LLMRateLimitError("TEST_REJECTED"),
             FakeStream(stream_chunk(), stream_chunk("answer\n\n", "stop")),
         ])
         gateway = LLMGateway({"openai-chat": provider}, catalog=catalog)

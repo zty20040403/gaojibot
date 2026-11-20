@@ -62,7 +62,7 @@ class LLMConnectionError(LLMError):
     pass
 
 
-class LLMOutcomeUnknownError(LLMError):
+class LLMOutcomeUnknownError(LLMConnectionError):
     pass
 
 
@@ -268,8 +268,11 @@ class ModelHealthRegistry:
 def _completion_error(profile: ModelProfile, exc: Exception) -> Exception:
     if isinstance(exc, RateLimitError):
         return LLMRateLimitError(f"{profile.provider} rate limit reached")
-    if isinstance(exc, (APIConnectionError, httpx.TransportError)):
-        return LLMConnectionError(f"could not read response from {profile.provider}")
+    if isinstance(exc, (APIConnectionError, httpx.TransportError, TimeoutError)):
+        cause = exc.__cause__ if isinstance(exc, APIConnectionError) else exc
+        if isinstance(cause, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+            return LLMConnectionError(f"could not connect to {profile.provider}")
+        return LLMOutcomeUnknownError(f"lost response from {profile.provider}; outcome unknown")
     if isinstance(exc, APIStatusError):
         return LLMProviderError(profile.provider, exc.status_code, _openai_error_detail(exc))
     if isinstance(exc, APIError):
@@ -305,7 +308,6 @@ class _CompletionStream:
         self._first: deque[Any] = deque()
 
     async def prime(self) -> None:
-        # Fail before handing any chunks to the caller so the gateway can fall back.
         try:
             while True:
                 chunk = await self._next()
@@ -318,7 +320,7 @@ class _CompletionStream:
                     ):
                         return
         except StopAsyncIteration:
-            raise LLMConnectionError("Model stream returned no chunks") from None
+            raise LLMOutcomeUnknownError("Model stream returned no chunks; outcome unknown") from None
 
     async def _next(self) -> Any:
         try:
@@ -351,7 +353,7 @@ class _CompletionStream:
             return await self._next()
         except StopAsyncIteration:
             if not self._saw_finish:
-                exc = LLMConnectionError("Model stream ended without a finish reason")
+                exc = LLMOutcomeUnknownError("Model stream ended without a finish reason; outcome unknown")
                 self._complete(exc)
                 await self.close()
                 raise exc from None
@@ -406,32 +408,15 @@ class OpenAIChatProvider:
         profile: ModelProfile,
         **kwargs: Any,
     ) -> Any:
-        from .execution_control import active_job_fence, active_route_fence
-
-        client = self._client(profile)
-        if active_model_budget() is not None or active_billing() is not None or active_job_fence.get() is not None or active_route_fence.get() is not None:
-            # SDK retries cannot revalidate authority or record each attempt.
-            client = client.with_options(max_retries=0)
+        client = self._client(profile).with_options(max_retries=0)
         request = {key: value for key, value in kwargs.items() if value is not None}
         if profile.max_output_tokens > 0 and not {"max_tokens", "max_completion_tokens"} & request.keys():
             request["max_tokens"] = profile.max_output_tokens
         try:
             _assert_model_job_owned()
             return await client.chat.completions.create(**request)
-        except RateLimitError as exc:
-            raise LLMRateLimitError(
-                f"{profile.provider} rate limit reached"
-            ) from exc
-        except APIConnectionError as exc:
-            raise LLMConnectionError(
-                f"could not connect to {profile.provider}"
-            ) from exc
-        except APIStatusError as exc:
-            raise LLMProviderError(
-                profile.provider,
-                exc.status_code,
-                _openai_error_detail(exc),
-            ) from exc
+        except APIError as exc:
+            raise _completion_error(profile, exc) from exc
 
     async def list_models(self, profile: ModelProfile) -> list[str]:
         from .execution_control import active_job_fence, active_route_fence
@@ -505,14 +490,8 @@ class AnthropicMessagesProvider:
                 headers=headers,
                 json=body,
             )
-        except httpx.TimeoutException as exc:
-            raise LLMConnectionError(
-                f"{profile.provider} request timed out"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise LLMConnectionError(
-                f"could not connect to {profile.provider}"
-            ) from exc
+        except httpx.TransportError as exc:
+            raise _completion_error(profile, exc) from exc
         _raise_for_anthropic_status(profile, response)
         try:
             payload = response.json()
@@ -689,26 +668,17 @@ class LLMGateway:
             try:
                 request = _request_for_profile(candidate, kwargs)
                 with telemetry.stage("model.connect" if request.get("stream") else "model.request"):
-                    if request.get("stream"):
-                        response, tool_choice_compatibility_applied = (
-                            await self._create_with_tool_choice_compatibility(candidate, request)
-                        )
-                        raw_stream = response
-                        response = _CompletionStream(raw_stream, candidate, finish_stream)
-                        await response.prime()
-                    else:
-                        deadline = asyncio.timeout(candidate.timeout_seconds)
-                        try:
-                            async with deadline:
-                                response, tool_choice_compatibility_applied = (
-                                    await self._create_with_tool_choice_compatibility(candidate, request)
-                                )
-                        except TimeoutError as exc:
-                            if not deadline.expired():
-                                raise
-                            raise LLMOutcomeUnknownError(
-                                "model completion deadline exceeded; outcome unknown"
-                            ) from exc
+                    try:
+                        async with asyncio.timeout(candidate.timeout_seconds):
+                            response, tool_choice_compatibility_applied = (
+                                await self._create_with_tool_choice_compatibility(candidate, request)
+                            )
+                            if request.get("stream"):
+                                raw_stream = response
+                                response = _CompletionStream(raw_stream, candidate, finish_stream)
+                                await response.prime()
+                    except TimeoutError as exc:
+                        raise LLMOutcomeUnknownError("model completion timed out; outcome unknown") from exc
                 if request.get("stream"):
                     outcomes.append(
                         {
@@ -758,6 +728,7 @@ class LLMGateway:
                 )
                 if not failure.retryable or not self._fallback_enabled:
                     finish_route(None)
+                    _assert_model_job_owned()
                     raise
                 continue
             except BaseException:
@@ -949,7 +920,8 @@ class LLMGateway:
                 f"model listing is not enabled for profile {profile.name!r}"
             )
         _assert_model_job_owned()
-        return await self._provider(profile).list_models(profile)
+        async with asyncio.timeout(profile.timeout_seconds):
+            return await self._provider(profile).list_models(profile)
 
     async def close(self) -> None:
         if self._closed:
@@ -974,7 +946,7 @@ class LLMGateway:
 
 
 def classify_llm_failure(exc: BaseException) -> ClassifiedFailure:
-    if isinstance(exc, LLMOutcomeUnknownError):
+    if isinstance(exc, (LLMOutcomeUnknownError, TimeoutError, httpx.ReadTimeout, httpx.WriteTimeout)):
         return ClassifiedFailure(LLMFailureKind.NETWORK, retryable=False)
     if isinstance(exc, LLMRateLimitError):
         return ClassifiedFailure(
@@ -984,7 +956,7 @@ def classify_llm_failure(exc: BaseException) -> ClassifiedFailure:
         )
     if isinstance(
         exc,
-        (LLMConnectionError, asyncio.TimeoutError, httpx.TimeoutException),
+        (LLMConnectionError, httpx.ConnectTimeout, httpx.PoolTimeout),
     ):
         return ClassifiedFailure(LLMFailureKind.NETWORK, retryable=True)
     if isinstance(exc, LLMConfigError):
@@ -1041,7 +1013,7 @@ def classify_llm_failure(exc: BaseException) -> ClassifiedFailure:
                 LLMFailureKind.INVALID_REQUEST,
                 retryable=False,
             )
-        if status in {408, 409, 425} or status >= 500:
+        if status in {409, 425}:
             return ClassifiedFailure(LLMFailureKind.PROVIDER, retryable=True)
         return ClassifiedFailure(LLMFailureKind.PROVIDER, retryable=False)
     return ClassifiedFailure(LLMFailureKind.PROVIDER, retryable=False)

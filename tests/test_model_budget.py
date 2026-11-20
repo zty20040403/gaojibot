@@ -269,14 +269,15 @@ class ModelBudgetTests(unittest.IsolatedAsyncioTestCase):
                 self.profile, {"messages": [], "extra_body": {"max_tokens": 100000}}
             )
 
-    async def test_openai_sdk_retries_disabled_only_for_budgeted_calls(self):
+    async def test_openai_sdk_retries_disabled_with_or_without_budget(self):
         provider = OpenAIChatProvider()
         client = Mock()
         client.chat.completions.create = AsyncMock(return_value=completion())
         client.with_options.return_value = client
         provider._client = Mock(return_value=client)
         await provider.create_completion(self.profile, messages=[])
-        client.with_options.assert_not_called()
+        client.with_options.assert_called_once_with(max_retries=0)
+        client.with_options.reset_mock()
         with model_budget_scope(ModelCallBudget(1000)):
             await provider.create_completion(self.profile, messages=[])
         client.with_options.assert_called_once_with(max_retries=0)
