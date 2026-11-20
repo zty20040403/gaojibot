@@ -67,9 +67,8 @@ class FileUploader:
         try:
             return await self.rest.request("POST", path, payload)
         except QQAPIError as error:
-            if error.status != 401:
+            if error.category != "authentication" or not error.confirmed_not_accepted or error.stage == "token":
                 raise
-            self.rest.token_manager.invalidate()
             if current is not None:
                 await current()
             return await self.rest.request("POST", path, payload)
@@ -145,11 +144,13 @@ class FileUploader:
                         else:
                             response = await self._multipart(path, content, metadata, current)
                     except QQAPIError as error:
-                        if error.code == 50015014:
+                        if error.category == "native_file_unavailable" and error.confirmed_not_accepted:
                             try:
                                 await self._request(path + "/upload_prepare", metadata, current)
                             except QQAPIError as diagnostic:
                                 error = diagnostic
+                        if not error.confirmed_not_accepted:
+                            raise FileUploadError("上传未确认，远端结果未知，请先核实，不要直接重复上传。") from None
                         logger.warning("QQ upload bytes=%d elapsed=%.2f result=rejected code=%s",
                                        size, time.monotonic() - started, error.code)
                         detail = _UPLOAD_REASONS.get(error.code, f"腾讯未接受文件上传（{error.category}）。")

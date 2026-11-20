@@ -71,7 +71,8 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unconfirmed_transport_or_response_reports_unknown(self):
         request = httpx.Request("POST", "https://example.test/files")
-        for response in (httpx.ReadError("TEST_READ", request=request), {}):
+        for response in (httpx.ReadError("TEST_READ", request=request), QQAPIError("transport_ambiguous"),
+                         QQAPIError("unexpected_upload_message_evidence", status=401, code=50015014), {}):
             with self.subTest(response=type(response).__name__):
                 mocked = AsyncMock()
                 if isinstance(response, BaseException):
@@ -135,8 +136,8 @@ class UploadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wrapped_platform_error_reports_prepare_cause_and_enforces_caps(self):
         rest = SimpleNamespace(request=AsyncMock(side_effect=[
-            QQAPIError("upload", status=400, code=50015014),
-            QQAPIError("upload", status=400, code=40093003),
+            QQAPIError("native_file_unavailable", accepted=False, status=400, code=50015014),
+            QQAPIError("platform_rejected", accepted=False, status=400, code=40093003),
             {"file_info": "TEST_RETRY"},
         ]))
         uploader = FileUploader(rest, client=SimpleNamespace())

@@ -399,6 +399,26 @@ class RestTests(unittest.IsolatedAsyncioTestCase):
             invalidate.assert_called_once_with("TEST_TOKEN")
         self.assertEqual(len(self.seen), 2)  # one token request, one send
 
+    async def test_send_deadline_closes_stalled_body_without_replay(self):
+        closed = asyncio.Event()
+
+        class Body(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'{'
+                await asyncio.Future()
+
+            async def aclose(self):
+                closed.set()
+
+        self.rest = RestClient(self.token, client=self.client, allow_test_server=True, timeout=0.02)
+        self.result = httpx.Response(200, stream=Body())
+        with self.assertRaises(QQAPIError) as caught:
+            await self.rest.send_message("group", "OPENID_TEST", text_payload("hello"))
+        self.assertIsNone(caught.exception.accepted)
+        self.assertEqual(caught.exception.category, "transport_ambiguous")
+        self.assertTrue(closed.is_set())
+        self.assertEqual(len(self.seen), 2)
+
     async def test_accepted_then_lost_response_is_ambiguous_and_not_retried(self):
         self.result = httpx.ReadTimeout("request body TEST_SECRET OPENID_TEST")
         with self.assertRaises(QQAPIError) as caught:

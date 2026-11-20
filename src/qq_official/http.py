@@ -1,6 +1,7 @@
 """Bounded QQ REST requests with explicit acceptance evidence and no send retry."""
 from __future__ import annotations
 
+import asyncio
 import json as json_module
 import math
 import re
@@ -127,8 +128,9 @@ async def request_json_response(
             if name in {"http11.send_request_headers.started", "http2.send_request_headers.started"}:
                 await guard(stage)
         options["extensions"] = {"trace": trace}
+    deadline = asyncio.timeout(timeout)
     try:
-        async with client.stream(
+        async with deadline, client.stream(
             method, url, headers=headers, json=json, timeout=timeout, follow_redirects=False,
             **options,
         ) as response:
@@ -149,8 +151,10 @@ async def request_json_response(
                 if len(content) + len(chunk) > _MAX_RESPONSE_BYTES:
                     raise QQAPIError("response_too_large", status=status, stage=stage)
                 content.extend(chunk)
-    except QQAPIError:
-        raise
+    except TimeoutError:
+        if not deadline.expired():
+            raise
+        raise QQAPIError("transport_ambiguous", stage=stage) from None
     except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
         raise QQAPIError("connection_failed", accepted=False, stage=stage) from None
     except httpx.HTTPError:
