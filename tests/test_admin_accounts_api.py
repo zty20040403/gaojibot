@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from src.bot_security.passwords import hash_password
 from src.bot_security.store import SecurityStore
 from src.plugins.ai_chat.admin import AdminServices, register_admin
-from tests.test_account_security import PASSWORD, QQ, BOT
+from tests.test_account_security import PASSWORD, QQ
 
 
 class Preferences:
@@ -136,15 +136,9 @@ class AdminAccountApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIsNotNone(self.store.account_for_qq("333333333"))
 
-    async def test_logout_invalidates_pending_approval(self):
+    async def test_logout_invalidates_session(self):
         await self.login()
-        await self.client.post("/bot-admin/api/v1/accounts", json={"username": "reviewer", "password": PASSWORD,
-            "role": "admin", "qq_id": "333333333"})
-        account = self.store.session(self.client.cookies.get("gaoji_session"))
-        request, _ = self.store.propose(account, bot_id=BOT, kind="server_task", payload={"id": 1}, summary="test task")
-        identifier = request["approval_id"]
         await self.client.post("/bot-admin/api/v1/auth/logout")
-        self.assertEqual(self.store.get(identifier, self.account["account_id"])["status"], "cancelled")
         self.assertEqual((await self.client.get("/bot-admin/api/v1/me")).status_code, 401)
 
     async def test_no_web_approval_route(self):

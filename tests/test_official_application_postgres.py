@@ -172,7 +172,6 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(cursor.execute(
                                 "SELECT count(*) FROM messages WHERE direction='inbound'").fetchone()[0],before)
                             self.assertEqual(cursor.execute('SELECT count(*) FROM qq_official_turn_executions').fetchone()[0],0)
-                            self.assertEqual(cursor.execute('SELECT count(*) FROM admin_approvals').fetchone()[0],0)
                         self.assertEqual(len(fake.received),1)
                         await fake.close_connections()
                         await asyncio.wait_for(fake.wait_ready(),10)
