@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="540" viewBox="0 0 1280 540" role="img" aria-labelledby="t d">
+  <title id="t">gaoji highlights</title>
+  <desc id="d">Six highlights: knows when to speak; remembers; does real work in a sandbox; sees, hears and draws; runs on a schedule; safe by design.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#131216"/><stop offset="1" stop-color="#0B0B0D"/></linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#F3E2BC"/><stop offset=".55" stop-color="#D2AE6D"/><stop offset="1" stop-color="#A9824A"/></linearGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#D2AE6D" stop-opacity="0"/><stop offset=".5" stop-color="#D2AE6D" stop-opacity=".55"/><stop offset="1" stop-color="#D2AE6D" stop-opacity="0"/></linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".5" r=".5"><stop stop-color="#D2AE6D" stop-opacity=".16"/><stop offset="1" stop-color="#D2AE6D" stop-opacity="0"/></radialGradient>
+    <radialGradient id="jglow" cx=".5" cy=".5" r=".5"><stop stop-color="#8CC2AE" stop-opacity=".10"/><stop offset="1" stop-color="#8CC2AE" stop-opacity="0"/></radialGradient>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#F4EFE6" fill-opacity=".045"/></pattern>
+    <clipPath id="card"><rect width="1280" height="540" rx="22"/></clipPath>
+    
+  </defs>
+  <g clip-path="url(#card)">
+    <rect width="1280" height="540" fill="url(#bg)"/>
+    <rect width="1280" height="540" fill="url(#dots)"/>
+    <ellipse cx="640" cy="0" rx="560" ry="200" fill="url(#glow)"/>
+    <text x="56" y="62" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="13" fill="#D2AE6D" font-weight="600" letter-spacing="3.2">WHAT IT DOES</text>
+    <text x="56" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="28" fill="#F4EFE6" font-weight="600" letter-spacing="-0.6">A group member that actually gets things done</text>
+    <rect x="56.0" y="130" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="80.0" y="130" width="44" height="2" fill="url(#gold)"/>
+    <text x="80.0" y="182" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">01</text>
+    <text x="80.0" y="222" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">Knows when to speak</text>
+    <text x="80.0" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">Always answers @-mentions and DMs.</text>
+    <text x="80.0" y="277" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">Stays quiet when it has nothing to add.</text>
+    <rect x="452.0" y="130" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="476.0" y="130" width="44" height="2" fill="url(#gold)"/>
+    <text x="476.0" y="182" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">02</text>
+    <text x="476.0" y="222" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">Remembers</text>
+    <text x="476.0" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">Per-chat memory, full history search,</text>
+    <text x="476.0" y="277" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">and a card for each regular in the group.</text>
+    <rect x="848.0" y="130" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="872.0" y="130" width="44" height="2" fill="url(#gold)"/>
+    <text x="872.0" y="182" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">03</text>
+    <text x="872.0" y="222" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">Does real work</text>
+    <text x="872.0" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">Research, code, files and video run in</text>
+    <text x="872.0" y="277" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">the chat's own sandboxed container.</text>
+    <rect x="56.0" y="322" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="80.0" y="322" width="44" height="2" fill="url(#gold)"/>
+    <text x="80.0" y="374" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">04</text>
+    <text x="80.0" y="414" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">Sees, hears, draws</text>
+    <text x="80.0" y="446" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">Reads images and video, transcribes</text>
+    <text x="80.0" y="469" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">voice, generates images, sends stickers.</text>
+    <rect x="452.0" y="322" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="476.0" y="322" width="44" height="2" fill="url(#gold)"/>
+    <text x="476.0" y="374" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">05</text>
+    <text x="476.0" y="414" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">Runs on a schedule</text>
+    <text x="476.0" y="446" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">Reminders, recurring tasks and</text>
+    <text x="476.0" y="469" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">follow-ups it promised to come back to.</text>
+    <rect x="848.0" y="322" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="872.0" y="322" width="44" height="2" fill="url(#gold)"/>
+    <text x="872.0" y="374" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">06</text>
+    <text x="872.0" y="414" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">Safe by design</text>
+    <text x="872.0" y="446" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">Keys never leave the host; the sandbox</text>
+    <text x="872.0" y="469" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">can't reach your LAN. Owner controls.</text>
+  </g>
+  <rect x=".5" y=".5" width="1279" height="539" rx="21.5" fill="none" stroke="#2C2A31"/>
+</svg>

@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="540" viewBox="0 0 1280 540" role="img" aria-labelledby="t d">
+  <title id="t">gaoji 亮点</title>
+  <desc id="d">六个亮点：知道什么时候该说话；记得住；在沙箱里真干活；能看、能听、能画；按时执行；安全设计。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#131216"/><stop offset="1" stop-color="#0B0B0D"/></linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#F3E2BC"/><stop offset=".55" stop-color="#D2AE6D"/><stop offset="1" stop-color="#A9824A"/></linearGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#D2AE6D" stop-opacity="0"/><stop offset=".5" stop-color="#D2AE6D" stop-opacity=".55"/><stop offset="1" stop-color="#D2AE6D" stop-opacity="0"/></linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".5" r=".5"><stop stop-color="#D2AE6D" stop-opacity=".16"/><stop offset="1" stop-color="#D2AE6D" stop-opacity="0"/></radialGradient>
+    <radialGradient id="jglow" cx=".5" cy=".5" r=".5"><stop stop-color="#8CC2AE" stop-opacity=".10"/><stop offset="1" stop-color="#8CC2AE" stop-opacity="0"/></radialGradient>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#F4EFE6" fill-opacity=".045"/></pattern>
+    <clipPath id="card"><rect width="1280" height="540" rx="22"/></clipPath>
+    
+  </defs>
+  <g clip-path="url(#card)">
+    <rect width="1280" height="540" fill="url(#bg)"/>
+    <rect width="1280" height="540" fill="url(#dots)"/>
+    <ellipse cx="640" cy="0" rx="560" ry="200" fill="url(#glow)"/>
+    <text x="56" y="62" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="13" fill="#D2AE6D" font-weight="600" letter-spacing="2.4">它能做什么</text>
+    <text x="56" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="28" fill="#F4EFE6" font-weight="600" letter-spacing="1">一个真能把事办成的群成员</text>
+    <rect x="56.0" y="130" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="80.0" y="130" width="44" height="2" fill="url(#gold)"/>
+    <text x="80.0" y="182" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">01</text>
+    <text x="80.0" y="222" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">知道什么时候该说话</text>
+    <text x="80.0" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">@ 它、私聊它，一定回。</text>
+    <text x="80.0" y="277" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">没什么可说的时候就安静。</text>
+    <rect x="452.0" y="130" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="476.0" y="130" width="44" height="2" fill="url(#gold)"/>
+    <text x="476.0" y="182" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">02</text>
+    <text x="476.0" y="222" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">记得住</text>
+    <text x="476.0" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">每个会话独立记忆，能翻原始记录，</text>
+    <text x="476.0" y="277" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">还给群里常来的人各记一张印象卡。</text>
+    <rect x="848.0" y="130" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="872.0" y="130" width="44" height="2" fill="url(#gold)"/>
+    <text x="872.0" y="182" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">03</text>
+    <text x="872.0" y="222" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">真能干活</text>
+    <text x="872.0" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">查资料、写代码、处理文件和视频，</text>
+    <text x="872.0" y="277" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">都在这个会话自己的沙箱容器里跑。</text>
+    <rect x="56.0" y="322" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="80.0" y="322" width="44" height="2" fill="url(#gold)"/>
+    <text x="80.0" y="374" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">04</text>
+    <text x="80.0" y="414" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">能看、能听、能画</text>
+    <text x="80.0" y="446" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">看图看视频、转写语音、</text>
+    <text x="80.0" y="469" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">生成图片、发表情包。</text>
+    <rect x="452.0" y="322" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="476.0" y="322" width="44" height="2" fill="url(#gold)"/>
+    <text x="476.0" y="374" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">05</text>
+    <text x="476.0" y="414" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">按时执行</text>
+    <text x="476.0" y="446" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">一次性提醒、周期任务，</text>
+    <text x="476.0" y="469" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">还有它答应过回头再跟进的事。</text>
+    <rect x="848.0" y="322" width="376.0" height="172" rx="16" fill="#19181D" stroke="#2C2A31"/>
+    <rect x="872.0" y="322" width="44" height="2" fill="url(#gold)"/>
+    <text x="872.0" y="374" font-family="'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Songti SC', 'Noto Serif CJK SC', serif" font-size="30" fill="url(#gold)" font-weight="500" font-style="italic">06</text>
+    <text x="872.0" y="414" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="20" fill="#F4EFE6" font-weight="600">安全设计</text>
+    <text x="872.0" y="446" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">密钥不出宿主，沙箱碰不到内网，</text>
+    <text x="872.0" y="469" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Arial, sans-serif" font-size="14.5" fill="#A8A299">群主和管理员说了算。</text>
+  </g>
+  <rect x=".5" y=".5" width="1279" height="539" rx="21.5" fill="none" stroke="#2C2A31"/>
+</svg>

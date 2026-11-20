@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/gaoji-banner.en.svg" alt="gaoji — chats like a friend in the group, gets to work like an agent. Official QQ, multi-model conversation, persistent memory and Pi background jobs." width="100%" />
+  <img src="docs/assets/gaoji-banner.en.svg" alt="gaoji — chats like a friend, works like an agent. An open-source, multi-model AI member for official QQ groups with memory, tools and a sandboxed background agent." width="100%" />
 </p>
 
 <p align="center">
@@ -7,121 +7,96 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml"><img src="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
-  <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12+" />
-  <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?style=flat-square&amp;logo=postgresql&amp;logoColor=white" alt="PostgreSQL 17" />
-  <img src="https://img.shields.io/badge/Deploy-NixOS-7E7BFF?style=flat-square&amp;logo=nixos&amp;logoColor=white" alt="Deployed with NixOS" />
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22B8A2?style=flat-square" alt="MIT License" /></a>
-</p>
-
-<h3 align="center">Remembers things, gets work done, and knows when to stay quiet.</h3>
-
-<p align="center">
-  A multi-model AI group member for the official QQ bot platform.<br />
-  The foreground agent chats; research, code, file and video tasks go to Pi in an isolated NixOS container.<br />
-  From one sentence to a result you can actually use.
+  <a href="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/zty20040403/gaojibot/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=19181D&amp;color=8CC2AE" alt="CI status" /></a>
+  <img src="https://img.shields.io/badge/Python-3.12%2B-D2AE6D?style=flat-square&amp;logo=python&amp;logoColor=F4EFE6&amp;labelColor=19181D" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/PostgreSQL-17-D2AE6D?style=flat-square&amp;logo=postgresql&amp;logoColor=F4EFE6&amp;labelColor=19181D" alt="PostgreSQL 17" />
+  <img src="https://img.shields.io/badge/Deploy-NixOS-D2AE6D?style=flat-square&amp;logo=nixos&amp;logoColor=F4EFE6&amp;labelColor=19181D" alt="Deploy with NixOS" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-D2AE6D?style=flat-square&amp;labelColor=19181D" alt="MIT License" /></a>
+  <a href="https://github.com/zty20040403/gaojibot/stargazers"><img src="https://img.shields.io/github/stars/zty20040403/gaojibot?style=flat-square&amp;logo=github&amp;logoColor=F4EFE6&amp;label=Stars&amp;labelColor=19181D&amp;color=D2AE6D" alt="GitHub stars" /></a>
 </p>
 
 <p align="center">
-  <a href="#capabilities">Capabilities</a> &nbsp; / &nbsp;
-  <a href="#architecture">Architecture</a> &nbsp; / &nbsp;
-  <a href="#quick-start">Quick start</a> &nbsp; / &nbsp;
-  <a href="#deployment">Deployment</a> &nbsp; / &nbsp;
-  <a href="#documentation">Documentation</a>
+  <b>gaoji</b> is an AI member for your QQ group that talks like a person and works like an agent.<br />
+  It answers when you @ it, stays quiet when it has nothing to add, remembers the group,<br />
+  and hands real work to a coding agent in the chat's own sandboxed container.
 </p>
 
----
+<p align="center">
+  <a href="#highlights">Highlights</a> &nbsp;·&nbsp;
+  <a href="#how-it-works">How it works</a> &nbsp;·&nbsp;
+  <a href="#quick-start">Quick start</a> &nbsp;·&nbsp;
+  <a href="#deploy-with-nixos">NixOS</a> &nbsp;·&nbsp;
+  <a href="#security">Security</a> &nbsp;·&nbsp;
+  <a href="#documentation">Docs</a>
+</p>
 
-<a id="capabilities"></a>
-## 01 · More than chat: it finishes the job
+<br />
 
-| **CONVERSATION** | **MEMORY** | **EXECUTION** |
+<a id="highlights"></a>
+<p align="center">
+  <img src="docs/assets/gaoji-highlights.en.svg" alt="Highlights: knows when to speak; remembers; does real work in a sandbox; sees, hears and draws; runs on a schedule; safe by design." width="100%" />
+</p>
+
+### Why gaoji
+
+|  | A typical chat bot | **gaoji** |
 | :--- | :--- | :--- |
-| Group and private chats, switchable models, replies sent paragraph by paragraph.<br />When it has nothing to add it outputs `[silence]` and sends nothing. | A stable timeline, a `history` tool that reads the original messages, and a separate memory per conversation. Optional host-configured semantic search merges literal and meaning-based matches, rechecks current history visibility, and records actual embedding usage.<br />Notes are tidied every night, so the prompt does not carry the whole history. | Pi runs research, code, file and video tasks in a NixOS container that belongs to the group.<br />You can ask for status, add requirements, answer its questions, or cancel. |
-| **MULTIMODAL** | **AUTOMATION** | **CONTROL** |
-| Vision models receive up to four current/quoted images; `view_image` finds recent images, with descriptions for text-only models. Optional image captions (switches and daily limits isolated per physical conversation) and background video conclusions are searchable in history. Video uses frames/transcription or an explicitly configured host-side video model.<br />Animated stickers and voice replies in Chinese.<br />Attachment import, a browser, PDFs, video transcription and file delivery. | One-off reminders and recurring tasks, all in Asia/Shanghai time.<br />Recurring tasks run in the background, and the foreground agent delivers the result. | `/stop`, `/start` and `/kill` control this conversation, with persistent state and role checks; `/cancel` stays personal. `/config` reads fixed conversation settings; verified group admins or the private peer can change task limits, proactive replies, program quotas and image captions. The admin console offers the same controls alongside chats, usage and jobs.<br />Owner-private jobs can inspect servers and, when explicitly configured, request fixed host operations with ten-minute private approval codes. The console has a read-only operations audit. |
+| **When it talks** | Replies to everything, or only to commands | Always answers @-mentions and DMs; otherwise speaks only when it has something useful |
+| **Memory** | The last few messages | Per-chat memory, full history search, a card for each regular, tidied regularly |
+| **Long tasks** | Blocks the chat or times out | Durable background jobs you can check on, steer or cancel while you keep chatting |
+| **Where code runs** | On the bot's host, or nowhere | In the chat's own NixOS container with a persistent `/work`, no host keys, no LAN |
+| **Delivery** | Fire and forget | A durable outbox with real platform receipts — *generated* is never counted as *delivered* |
+| **Models** | One provider | Multiple providers, chosen per conversation |
 
-> **Chat stays chat, and tasks stay tasks.** The foreground agent is never blocked by a long job. The background agent never posts to the group itself: it hands back a report, and the foreground agent delivers it in the same persona.
+### What it looks like in practice
 
-### What happens when you ask
-
-| What you ask for | How gaoji handles it |
+| You say | gaoji does |
 | :--- | :--- |
-| "Look up recent RAM prices and give me a chart and a CSV." | The foreground agent says it has started → the background agent searches and processes the data → you get conclusions with sources, plus the files. |
-| "What is this video about?" | The attachment is imported → frames are extracted and viewed and the audio is transcribed in the VM → the foreground agent gives a summary. |
-| "Add the other model to that as well." | It finds the running job and steers it, so the same work is not started twice. |
-| "Remind me about the meeting at 3 pm tomorrow." | It creates a one-off reminder, delivered on time through the official message channel. |
+| *"Compare RAM prices this month, chart + CSV please."* | Says it has started → a background job searches and processes the data → posts the conclusion with sources, plus the files. |
+| *"What is this video about?"* | Imports the attachment → samples frames and transcribes the audio in the sandbox → replies with a summary. |
+| *"Also add the other model to that."* | Finds the running job and steers it instead of starting a second one. |
+| *"Remind me about the meeting at 3 pm tomorrow."* | Creates a one-off reminder and delivers it on time. |
 
-<sub>These are examples of capabilities and flows, not platform screenshots or a promise of fixed output. Real results depend on the model, the host configuration and the permissions QQ grants.</sub>
+<sub>Examples of flows, not screenshots. Real results depend on the model, host configuration and the permissions QQ grants.</sub>
 
-<a id="architecture"></a>
-## 02 · The foreground chats, the background works, and the boundary is clear
+<a id="how-it-works"></a>
+## How it works
 
 <p align="center">
-  <img src="docs/assets/gaoji-architecture.en.svg" alt="Architecture: QQ messages enter the foreground agent through the inbound adapter. Complex tasks are stored as jobs and run by Pi in a NixOS container. Model requests go through a host relay. Reports return to the foreground agent and are delivered through the outbox." width="100%" />
+  <img src="docs/assets/gaoji-architecture.en.svg" alt="Architecture: official QQ events reach the foreground agent, which calls multiple models and replies through a durable outbox. Long tasks become durable background jobs that run an agent inside the chat's own container. PostgreSQL keeps the ledger." width="100%" />
 </p>
 
-- **Conversation layer**: official inbound events, binding and permissions → timeline and memory → multi-model agent → one delivery path.
-- **Execution layer**: durable jobs → the host drives Pi → `/work` in the conversation's container → the report wakes the foreground agent.
-- **State layer**: PostgreSQL stores chats, memory, jobs, grants, model requests and delivery receipts.
-
-<details>
-<summary><strong>Runtime limits and security design</strong></summary>
-
-- At most **3** background jobs run at once, with a default **6-hour** limit configurable per conversation (**1–6 hours**) under Tasks & delivery. Existing deadlines never change; `ask_main` waits at most **2 hours**, clipped to the job's remaining time. Jobs can be steered, interrupted and cancelled.
-- Group owners/admins or a host owner can `/stop`, `/start` and `/kill`; an admitted private-chat peer controls only that private chat. Stop survives restart, keeps recording messages and optional image captions, and cancels old replies/jobs. Commands still respond. Start never replays old messages/results; skipped schedule occurrences stay skipped. A request already accepted by QQ cannot be unsent by stopping.
-- `/status` shows this physical conversation's recorded input and output tokens over 24 hours and 7 days, plus your running tasks. `≥` means some usage receipts are missing. Cache rates and costs are not shown in chat. `/usage` remains your completed-turn totals and `/task` your task list. The admin model-usage page now has a separate read-only cost report by physical conversation, background task, resident program and verified initiator. Joint program/command calls are one shared cost, not duplicated per participant; money and large token totals remain exact decimal strings. These dimensions are alternate views of the same bill, not additive totals. Daily budgets are default-off and can be set with `/config daily_budget_usd`; known-fee crossings suppress proactive replies/program wakes, with one bot notice attempt per physical Beijing day. Old work does not replay after restoration; ambiguous notices never retry, and addressed replies still cost money (not a supplier hard cap). The admin conversation page edits budgets using independently versioned, frozen drafts; `/status` shows today's budget and true notice outcome. This F9 work is locally implemented and verified at fixed `77c3055`: 2,028 tests, zero failures, 10 skips; equivalent final PR Linux CI also passed. The existing Windows ACL CI failure remains separate, real-environment acceptance is pending, and resumed changes are not deployed.
-- F8 private questions are locally implemented: owner/verified group admins confirm a directional `/link` at both physical endpoints within one complete bot account; foreground `ask` waits only within its original task, at most two hours. The target uses its own history and may refuse, without inheriting the caller's identity, owner/VM capabilities or reply window; when the target group has confirmed `proactive_state='allowed'` and a ready bot identity, an explicit one-shot `say` can also send one ephemeral group notice without leaking private content. Stop, budget, route and consent changes invalidate old requests. The read-only conversation-question audit page requires a selected account; private bodies are explicit, escaped reads, switching scope or losing authorization clears them, and public target-notice receipts stay separated from private answer consumption (neither implies group members read the message). Fixed snapshot `3c3696e670c806cef2a8b857eae58f4393e2b7a5` passed 2,337 local PostgreSQL tests (0 failures, 10 skips) plus Ruff, import checks, and all 8 admin-ui scripts; real QQ/model acceptance remains pending, and none of these resumed changes are deployed.
-- A conversation reuses its own VM and `/work`. A job that was running when the service restarted is marked as interrupted; its files are kept, and it is not silently resumed.
-- **QQ credentials, model keys and operations credentials stay on the host.** The VM only receives revocable job and conversation-scoped VM tokens, never credentials that can retrieve host secrets.
-- The VM's network cannot reach the host or the internal network. Only the public internet, DNS and the relay ports are allowed. Using a VM is not, by itself, treated as isolation.
-- Background jobs can use VM-scoped `gaoji say/send-file` without QQ credentials or impersonating a human. `history`, search and `ask_main` are called by the host; `ops_read` is available only to jobs started from the owner's private chat.
-- `ops_act` is off by default and only available in a verified owner's private job with unshared history. The host sends a separate one-time approval question; only that owner's authenticated private reply authorizes the exact recipe and parameters. No arbitrary shell or VM operations network. Cancelled/restarted intents and unknown outcomes are not replayed; queued is not succeeded. The operations audit page shows requester, approval, receipt and bounded output without offering an alternative approval button.
-- Personal browser logins belong only in a private conversation VM; group bot-account login requires a verified owner/admin request and a shared-use notice. `/logins` lists this conversation's cookie domains, not proof of valid login; offline VMs are not automatically booted. `/logout <domain>` clears that site's local state; group cleanup requires an owner/admin. Uncertain results are never retried automatically. The admin conversation browser panel lists domains and recent cleanup outcomes, and can clear all local browser data after explicit confirmation. It requires a current VM snapshot and resource version; uncertain outcomes never trigger an automatic replay.
-- A finished job, an uploaded file, a queued message and a platform receipt are separate stages. **A generated result is not counted as delivered.**
-
-See [Sandbox security](docs/sandbox-security.md).
-
-</details>
+- **Foreground** — official QQ events → timeline and memory → multi-model agent → one durable delivery path.
+- **Background** — durable jobs → the host drives a coding agent → `/work` in the chat's container → the report wakes the foreground, which delivers it in the same voice.
+- **State** — PostgreSQL holds the message ledger, memory, jobs, schedules and delivery receipts.
 
 <a id="quick-start"></a>
-## 03 · Run it locally
+## Quick start
 
-**You need**: Python 3.12+, [uv](https://docs.astral.sh/uv/), PostgreSQL 17 with pgvector, official QQ bot credentials and a model API. For the full file, browser and video features, use a Linux host with KVM configured.
-
-**① Get the project and install the locked dependencies**
+**Requirements:** Python 3.12+, [uv](https://docs.astral.sh/uv/), PostgreSQL 17 with pgvector, official QQ bot credentials and a model API. For files, browser and video, use a Linux host with KVM.
 
 ```sh
 git clone https://github.com/zty20040403/gaojibot.git
 cd gaojibot
 uv sync --locked
-cp .env.example .env
-```
-
-**② Configure the host**
-
-Edit `.env`. At minimum, set the database, the model, and the paths of the protected credential files for the official QQ bot. File features also need the host configuration and a VM backend; a single switch does not enable them.
-
-| Where | What it covers |
-| :--- | :--- |
-| [`.env.example`](.env.example) | Database, models, persona, search, VM and background job settings. |
-| [Official QQ integration](docs/qq-official.md) | Connecting the bot, binding, and how official sending behaves. |
-| [Host configuration](docs/qq-official-host-config.md) | Files, media, proactive replies and optional features. |
-
-**③ Migrate the database and start**
-
-```sh
+cp .env.example .env          # database, models, QQ credential file paths
 uv run python -m src.bot_storage.cli upgrade
 uv run python bot.py
 ```
 
+| Configure | Where |
+| :--- | :--- |
+| Database, models, persona, search, sandbox, background jobs | [`.env.example`](.env.example) |
+| Connecting and binding the official QQ bot | [Official QQ integration](docs/qq-official.md) |
+| Files, media and proactive replies | [Host configuration](docs/qq-official-host-config.md) |
+
 > [!IMPORTANT]
-> The AppID, AppSecret and binding pepper are read from private files on the host with mode `0600`. Do not commit secrets, real QQ numbers, openids or group numbers, and do not copy credentials into the VM. Admin identity comes from a verified official private-chat event; a plain QQ number is not an openid.
+> The AppID, AppSecret and binding pepper are read from `0600` files on the host. Never commit secrets, real QQ numbers, openids or group numbers, and never copy credentials into the sandbox.
 
-<a id="deployment"></a>
-## 04 · Deploy with NixOS
+<a id="deploy-with-nixos"></a>
+## Deploy with NixOS
 
-The flake provides the default package and `nixosModules.default`.
+The flake ships the package and `nixosModules.default`.
 
 ```nix
 services.gaoji = {
@@ -137,29 +112,36 @@ services.gaoji = {
 };
 ```
 
-Persistent workspaces run as NixOS containers (`systemd-nspawn`) and need `sandbox.enable = true`, `sandbox.vmRoot`, `systemd.network.enable = true`, and `networking.nftables.enable = true`.
+Per-chat workspaces run as NixOS containers (`systemd-nspawn`) and need `sandbox.enable = true`, `sandbox.vmRoot`, `systemd.network.enable = true` and `networking.nftables.enable = true`. Container root filesystems are rebuilt from the module on restart; `/work` persists. Read [Container sandbox](docs/container-sandbox.md) before going live.
 
-The background model and its reasoning effort can be changed on the console's jobs and delivery page. `voiceAsr.enable` turns on a local transcription fallback for short voice messages. Container root filesystems are rebuilt from the NixOS module on restart while `/work` persists.
+<a id="security"></a>
+## Security
 
-**Read before going live → [Container sandbox](docs/container-sandbox.md) · [Sandbox security](docs/sandbox-security.md)**
+- **Keys stay on the host.** QQ credentials, model keys and operations credentials never enter the sandbox; it only gets revocable, conversation-scoped tokens.
+- **The sandbox can't reach your network.** Only the public internet, DNS and the relay ports are allowed — not the host, not the LAN.
+- **People stay in charge.** Group owners and admins can `/stop`, `/start` and `/kill` the bot in their chat; the admin console shows chats, usage, jobs and audits.
+- **Generated is not delivered.** A finished job, an uploaded file, a queued message and a platform receipt are tracked as separate stages.
+
+More in [Sandbox security](docs/sandbox-security.md).
 
 <a id="documentation"></a>
-## 05 · Documentation
-
-Most documents are currently written in Chinese.
+## Documentation
 
 | I want to know… | Start here |
 | :--- | :--- |
 | How QQ is connected, bound and sent to | [Official QQ integration](docs/qq-official.md) |
-| How files, media and proactive replies are enabled | [Official QQ host configuration](docs/qq-official-host-config.md) |
-| Why the VM cannot reach the host or the internal network | [Sandbox security](docs/sandbox-security.md) |
-| How conversation workspaces run | [Container sandbox](docs/container-sandbox.md) |
+| How files, media and proactive replies are enabled | [Host configuration](docs/qq-official-host-config.md) |
+| Why the sandbox can't reach the host or LAN | [Sandbox security](docs/sandbox-security.md) |
+| How per-chat workspaces run | [Container sandbox](docs/container-sandbox.md) |
+| Why things are designed the way they are | [Architecture decisions](docs/adr/) |
+
+<sub>Most in-depth documents are currently written in Chinese.</sub>
 
 <details>
-<summary><strong>Development checks and contribution rules</strong></summary>
+<summary><strong>Development</strong></summary>
 
 ```sh
-# First set GAOJI_TEST_PASSWORD for the local PostgreSQL test container.
+# Set GAOJI_TEST_PASSWORD for the local PostgreSQL test container first.
 source tools/dev/testenv.sh gaoji_test
 python -m unittest discover -s tests -p 'test_*.py'
 ruff check bot.py src tests tools migrations nix
@@ -167,22 +149,27 @@ python tools/dev/check_unresolved_imports.py src
 cd admin-ui && npm ci && npm run build
 ```
 
-Tests use a separate local database and never the production QQ credentials. Read [AGENTS.md](AGENTS.md) before contributing: each PR does one thing, features are accepted on real behaviour, and a simulated receipt does not count as a real delivery.
+Tests use a separate local database and never production credentials. Read [AGENTS.md](AGENTS.md) before contributing: one change per PR, and features are accepted on real behaviour — a simulated receipt is not a delivery.
 
 </details>
 
-<details>
-<summary><strong>Current scope and older versions</strong></summary>
+## Star history
 
-gaoji currently targets the official QQ platform only. The old OneBot/NapCat adapter, the desktop app, project workspaces, the group wiki, pinned messages, MCP, bridges and multi-role sub-agents have been removed. Their code is kept under the `pre-rework-20261031` tag and is not planned work on the current roadmap.
+<p align="center">
+  <a href="https://star-history.com/#zty20040403/gaojibot&amp;Date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zty20040403/gaojibot&amp;type=Date&amp;theme=dark" />
+      <img src="https://api.star-history.com/svg?repos=zty20040403/gaojibot&amp;type=Date" alt="Star history" width="640" />
+    </picture>
+  </a>
+</p>
 
-Optional host-keyed APIs let background jobs use a GitHub bot account for public repositories: credentials stay on the host, calls have per-conversation limits and an admin audit, and commits use a public noreply identity. The owner must configure the account and keys; real GitHub/VM acceptance is still pending. VM-token API access, direct program speech, quota-limited model wakes, scoped history/web reads, resumable chat events and bounded file sending and a stdlib `gaoji` CLI are wired; resident units now synchronize after boot, with bounded host recovery, idle keepalive and a persistent crash circuit. `/units` and the next chat turn show persisted program state and delivery failures. The resident-program admin page exposes scoped units, failure logs, quotas, switches, fenced recovery and program message receipts. `gaoji run-bg` now admits one-shot VM commands, streams bounded output and attempts a fenced completion wake; `command-status` and `stop-bg` distinguish acceptance, process exit and actual notification delivery. Tasks & delivery now lists and cancels commands and sets per-conversation agent time limits; stop requests remain pending until the guest confirms process exit. Real VM/QQ acceptance is still pending. See [official host configuration](docs/qq-official-host-config.md). Whether long-job results and reminders can be sent proactively also depends on the target group's permissions and the official quota.
-
-</details>
+<p align="center">
+  If gaoji made your group chat a little smarter, a ⭐ helps others find it.
+</p>
 
 ---
 
 <p align="center">
-  <strong>Keep the conversation human. Let the agent do the work.</strong><br />
-  <sub>Built by Kenneth · <a href="LICENSE">MIT License</a> · <a href="https://github.com/zty20040403/gaojibot/issues">Feedback and suggestions</a></sub>
+  <sub>Built by Kenneth · <a href="LICENSE">MIT License</a> · <a href="https://github.com/zty20040403/gaojibot/issues">Issues &amp; ideas</a></sub>
 </p>
