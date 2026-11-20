@@ -82,7 +82,6 @@ class DetailReceiptTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
  make_sender=sender_support.SenderMetricsTests.make_sender
  ensure_current=sender_support.SenderMetricsTests.ensure_current
  enqueue=sender_support.SenderMetricsTests.enqueue
- window=sender_support.SenderMetricsTests.window
  query=sender_support.SenderMetricsTests.query
  async def test_actual_parts_receipts_and_unknown_are_separate_from_execution(self):
   from src.plugins.ai_chat.adapters.qq_official.renderer import render_plan

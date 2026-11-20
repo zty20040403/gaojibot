@@ -61,16 +61,3 @@ class OutboxFixture(unittest.TestCase):
             schema=self.database.schema, clock=lambda: self.now)
         self.addCleanup(lease.close)
         return lease
-
-    def window(self, *, endpoint=None, source="TEST_SOURCE", expires=None, max_replies=5):
-        endpoint = endpoint or self.endpoint
-        window = secrets.token_hex(16)
-        with self.tx() as cursor:
-            cursor.execute("""INSERT INTO qq_official_reply_windows
-                (window_id,account_key,endpoint_key,endpoint_generation,route_epoch,
-                 credential_kind,credential_value,issued_at,received_at,expires_at,
-                 max_replies,state,created_at,updated_at)
-                VALUES (?,?,?,1,1,'msg_id',?,?,?,?,?,'active',?,?)""",
-                (window, endpoint.account.key, endpoint.key, source, self.now, self.now,
-                 expires or self.now + 295, max_replies, self.now, self.now))
-        return window

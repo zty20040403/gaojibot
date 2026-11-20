@@ -6,22 +6,16 @@ from tests import test_qq_official_outbox_migration as migration
 from tools.dev.table_writers import writer_tables
 
 
-READ_ONLY = {
-    'qq_official_reply_windows': 'historical reply windows referenced by legacy approval records',
-}
-
-
 class TableWriterTests(unittest.TestCase):
-    def test_every_business_table_has_a_host_writer_or_read_only_reason(self):
+    def test_every_business_table_has_a_host_writer(self):
         schema = migration.owned_schema()
         self.addCleanup(migration.drop, schema)
         migration.migrate(schema, 'head')
         with migration.connect(schema) as db:
             tables = {name for name, in db.execute('SELECT tablename FROM pg_tables WHERE schemaname=%s', (schema,))}
         business_tables = tables - {'alembic_version'}
-        self.assertEqual(len(business_tables), 57)
-        missing = business_tables - writer_tables(Path(__file__).resolve().parents[1] / 'src')
-        self.assertEqual(missing, set(READ_ONLY), 'inspect new missing writers or remove a stale read-only exception')
+        self.assertEqual(len(business_tables), 55)
+        self.assertFalse(business_tables - writer_tables(Path(__file__).resolve().parents[1] / 'src'))
 
     def test_only_executed_insert_and_update_targets_count(self):
         with TemporaryDirectory() as directory:

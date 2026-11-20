@@ -19,6 +19,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 import psycopg
 from psycopg import sql
+from sqlalchemy.exc import InternalError
 
 from src.bot_storage.schema import HEAD_REVISION
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
@@ -378,6 +379,32 @@ class OfficialOutboxMigrationTests(unittest.TestCase):
         for clause in ('auth_retries_used=2', 'transient_retries_used=-1', "variant='plain_fallback'", 'format_fallback_used=TRUE'):
             self.rejects(lambda: self.connection.execute(f'UPDATE deliveries SET {clause} WHERE delivery_id=%s', (part,)))
         self.connection.execute("UPDATE deliveries SET variant='plain_fallback',format_fallback_used=TRUE,auth_retries_used=1 WHERE delivery_id=%s", (part,))
+
+    def test_window_retirement_preserves_attempt_and_receipt_and_refuses_unknown_reader(self):
+        schema = owned_schema()
+        self.addCleanup(drop, schema)
+        migrate(schema, '0133_retire_console_bindings')
+        with connect(schema) as db:
+            self.connection = db
+            endpoint = self.endpoint()
+            attempt = self.attempt(endpoint, self.delivery(endpoint), window=self.window(endpoint), seq=3,
+                                   state='committed', acceptance='confirmed_yes', window_charge_state='spent')
+            insert(db, 'delivery_receipts', dict(receipt_id='TEST_RECEIPT', attempt_id=attempt,
+                account_key=endpoint.account.key, endpoint_key=endpoint.key, kind='response',
+                native_message_id='TEST_MESSAGE', receipt_digest='a'*64, observed_at=120))
+            attempts = db.execute('SELECT * FROM delivery_attempts').fetchall()
+            receipts = db.execute('SELECT * FROM delivery_receipts').fetchall()
+            db.execute('CREATE VIEW test_window_reader AS SELECT endpoint_key FROM qq_official_reply_windows')
+        with self.assertRaises(InternalError) as rejected:
+            migrate(schema, '0134_retire_reply_windows')
+        self.assertIsInstance(rejected.exception.orig, psycopg.errors.DependentObjectsStillExist)
+        with connect(schema) as db:
+            self.assertEqual(db.execute('SELECT endpoint_key FROM test_window_reader').fetchone(), (endpoint.key,))
+            db.execute('DROP VIEW test_window_reader')
+        migrate(schema, '0134_retire_reply_windows')
+        with connect(schema) as db:
+            self.assertEqual(db.execute('SELECT * FROM delivery_attempts').fetchall(), attempts)
+            self.assertEqual(db.execute('SELECT * FROM delivery_receipts').fetchall(), receipts)
 
     def test_safe_downgrade_rejects_evidence_and_preserves_legacy_on_empty_roundtrip(self):
         schema = owned_schema()

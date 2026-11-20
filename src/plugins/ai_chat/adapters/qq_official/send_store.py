@@ -296,10 +296,6 @@ class OfficialSendStore:
             rows = cursor.execute(f"""SELECT d.delivery_id FROM deliveries d WHERE d.account_key=?
                 AND d.status='pending' AND d.next_attempt_at<=? AND {_ENDPOINT_HEAD}
                 ORDER BY d.delivery_id LIMIT ?""", (token.account_key, now, now, limit)).fetchall()
-            cursor.execute("""UPDATE qq_official_control_decisions c SET state='terminal',updated_at=?
-                FROM deliveries d WHERE c.delivery_id=d.delivery_id AND c.account_key=d.account_key
-                AND c.account_key=? AND c.state<>'terminal'
-                AND d.status IN ('committed','failed','cancelled','ambiguous')""", (now, token.account_key))
         return tuple(row["delivery_id"] for row in rows)
 
     def get(self, token, delivery_id):

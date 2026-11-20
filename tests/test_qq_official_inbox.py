@@ -79,8 +79,7 @@ class OfficialInboxTests(unittest.TestCase):
         return ('qq_official_inbound_events', 'qq_official_inbound_dedup', 'qq_official_gateway_receipts',
                 'qq_official_accounts', 'qq_official_endpoints', 'qq_official_binding_challenges',
                 'qq_official_binding_candidates', 'qq_official_owner_grants', 'qq_official_owner_actor_links',
-                'qq_official_reply_windows', 'qq_official_messages',
-                'qq_official_message_indexes', 'qq_official_control_decisions', 'admin_audit_log', 'durable_jobs', 'messages')
+                'qq_official_messages', 'qq_official_message_indexes', 'admin_audit_log', 'durable_jobs', 'messages')
 
     def persisted_text(self):
         return repr({table: self.query(f'SELECT * FROM {table}') for table in self.persisted_tables()})
@@ -431,7 +430,7 @@ class OfficialInboxTests(unittest.TestCase):
         self.gap_evidence()
         self.store.checkpoint_callback(self.token, None)
         tables = ('qq_official_accounts', 'qq_official_endpoints', 'qq_official_owner_actor_links',
-                  'qq_official_binding_candidates', 'qq_official_binding_challenges', 'qq_official_reply_windows')
+                  'qq_official_binding_candidates', 'qq_official_binding_challenges')
         before = {table: self.query(f'SELECT * FROM {table} ORDER BY 1') for table in tables}
         self.now += 5
         self.store.checkpoint_callback(self.token, None)

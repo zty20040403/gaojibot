@@ -12,7 +12,6 @@ class SenderMetricsTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
  make_sender=original.OfficialSenderTests.make_sender
  ensure_current=original.OfficialSenderTests.ensure_current
  enqueue=original.OfficialSenderTests.enqueue
- window=fixtures.OutboxFixture.window
  query=fixtures.OutboxFixture.query
  async def asyncSetUp(self):
   self.endpoint=EndpointKey(self.account,'group','TEST_GROUP');self.actor=ActorKey(self.account,'group_member','TEST_GROUP','TEST_MEMBER')

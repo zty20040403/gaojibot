@@ -62,7 +62,6 @@ class OfficialProgressIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.query('SELECT COUNT(*) AS n FROM delivery_receipts')[0]['n'], 1)
 
     async def test_verified_proactive_without_window_uses_real_m3(self):
-        self.f.query("UPDATE qq_official_reply_windows SET state='expired'")
         self.f.query("UPDATE qq_official_endpoints SET proactive_state='allowed'")
         self.fake.proactive_allowed[('group', self.f.endpoint.native_conversation_id)] = True
         delivery = await self.enqueue()

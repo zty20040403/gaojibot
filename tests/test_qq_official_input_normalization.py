@@ -150,7 +150,6 @@ class IngressNormalizationTests(OfficialInboxTests):
         self.assertIsNone(row['payload_json'])
         self.assertIsNone(row['turn_text'])
         self.assertNotIn('723891', self.persisted_text())
-        self.assertEqual(self.count('qq_official_reply_windows'), 0)
         self.assertEqual(self.count('messages'), 0)
         self.assertEqual(self.count('durable_jobs'), 0)
 
