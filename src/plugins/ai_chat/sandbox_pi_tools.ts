@@ -21,14 +21,16 @@ export default async function hostToolsExtension(pi: ExtensionAPI): Promise<void
   if (!baseUrl || !token) throw new Error("GAOJI_HOST_URL and GAOJI_JOB_TOKEN are required");
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
-  const response = await fetch(`${baseUrl}/job/tools`, { headers });
+  const response = await fetch(`${baseUrl}/job/tools`, { headers, signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(`GET /job/tools failed with HTTP ${response.status}`);
   const payload = (await response.json()) as { tools: HostTool[] };
   if (!Array.isArray(payload.tools)) throw new Error("Invalid host tool list");
 
   async function call(name: string, args: unknown, signal?: AbortSignal): Promise<HostToolEvent> {
+    const deadline = AbortSignal.timeout(900_000);
     const response = await fetch(`${baseUrl}/job/tool`, {
-      method: "POST", headers, body: JSON.stringify({ name, arguments: args ?? {} }), signal,
+      method: "POST", headers, body: JSON.stringify({ name, arguments: args ?? {} }),
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
     });
     if (!response.ok || !response.body) throw new Error(`Host tool failed with HTTP ${response.status}`);
     const reader = response.body.getReader();

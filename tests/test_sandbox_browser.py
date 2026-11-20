@@ -1,5 +1,6 @@
 """Bounded guest login checks; no site credentials or real external login."""
 import asyncio
+import json
 from pathlib import Path
 import shlex
 import subprocess
@@ -55,6 +56,17 @@ class BrowserLoginTests(unittest.IsolatedAsyncioTestCase):
         for interval in (0,-1,11,True,float('nan')):
             with self.assertRaises(ValueError):
                 await browser.wait_for_login(AsyncMock(),interval=interval)
+
+    def test_js_login_does_not_recheck_or_accept_a_late_result(self):
+        code = '''let calls = 0;
+            const ok = await gaoji.wait_for_login(async () => {
+                calls++; await new Promise(resolve => setTimeout(resolve, 250)); return true;
+            }, { timeout: .03, interval: .01 });
+            return { ok, calls };'''
+        result = subprocess.run(['node', str(Path(browser.__file__).with_name('sandbox_runner.js'))],
+                                input=json.dumps({'tools': [], 'code': code}), text=True,
+                                capture_output=True, timeout=5, check=True)
+        self.assertEqual(json.loads(json.loads(result.stdout)['result']), {'ok': False, 'calls': 1})
 
     def test_container_tools_nix_packages_browser_payload_first_in_pythonpath(self):
         tools_nix = (Path(__file__).parents[1]/'nix/guest/tools.nix').read_text()

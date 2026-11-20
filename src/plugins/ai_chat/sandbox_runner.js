@@ -174,6 +174,7 @@ function loadCredentials(input = {}) {
 async function listHostTools(creds) {
   const resp = await fetch(`${creds.baseUrl}/job/tools`, {
     method: "GET",
+    signal: AbortSignal.timeout(30_000),
     headers: { Authorization: `Bearer ${creds.token}` },
   });
   const data = await resp.json();
@@ -188,7 +189,7 @@ async function callHostTool(creds, name, args, signal) {
   try {
     response = await fetch(`${creds.baseUrl}/job/tool`, {
       method: "POST",
-      signal,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(900_000)]),
       headers: {
         Authorization: `Bearer ${creds.token}`,
         "Content-Type": "application/json",
@@ -303,7 +304,7 @@ async function page() {
         await session.detach();
       }
     }));
-    const list = await (await fetch(`${CDP_URL}/json/list`)).json();
+    const list = await (await fetch(`${CDP_URL}/json/list`, { signal: AbortSignal.timeout(5000) })).json();
     const newest = list.find(t => t.type === "page" && ids.includes(t.id));
     return newest ? pages[ids.indexOf(newest.id)] : pages.at(-1);
   } catch {
@@ -346,16 +347,26 @@ async function wait_for_login(check, { timeout = 180, interval = 3 } = {}) {
       || typeof interval !== "number" || !(interval > 0 && interval <= 10)) {
     throw new RangeError("timeout must be (0, 180]s and interval must be (0, 10]s");
   }
-  const deadline = Date.now() + timeout * 1000;
-  while (Date.now() < deadline) {
-    const ok = await check();
-    if (typeof ok !== "boolean") {
-      throw new TypeError("login check must return a boolean based on a real logged-in indicator");
+  const deadline = performance.now() + timeout * 1000;
+  let timer;
+  const timeoutResult = Symbol();
+  const expired = new Promise(resolve => { timer = setTimeout(resolve, timeout * 1000, timeoutResult); });
+  try {
+    while (performance.now() < deadline) {
+      const ok = await Promise.race([check(), expired]);
+      if (ok === timeoutResult) return false;
+      if (typeof ok !== "boolean") {
+        throw new TypeError("login check must return a boolean based on a real logged-in indicator");
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) return false;
+      if (ok) return true;
+      await new Promise(r => setTimeout(r, Math.min(interval * 1000, remaining)));
     }
-    if (ok) return true;
-    await new Promise(r => setTimeout(r, interval * 1000));
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
-  return false;
 }
 
 function formatResult(value) {
