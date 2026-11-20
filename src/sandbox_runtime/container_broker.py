@@ -84,7 +84,6 @@ class Broker:
             while chunk := await stream.read(1 << 20):
                 size += len(chunk)
                 if size > limit:
-                    process.kill()
                     raise BrokerError("output_limit")
                 chunks.append(chunk)
             return b"".join(chunks)
@@ -95,14 +94,18 @@ class Broker:
                 await process.stdin.drain()
             process.stdin.close()
 
+        pipes = [asyncio.create_task(io) for io in (feed(), drain(process.stdout), drain(process.stderr))]
         try:
             async with asyncio.timeout(timeout):
-                _, out, err = await asyncio.gather(feed(), drain(process.stdout), drain(process.stderr))
+                _, out, err = await asyncio.gather(*pipes)
                 code = await process.wait()
-        except (TimeoutError, BrokerError):
+        except BaseException:
+            for pipe in pipes:
+                pipe.cancel()
             if process.returncode is None:
                 process.kill()
-                await process.wait()
+            await asyncio.gather(*pipes, return_exceptions=True)
+            await process.communicate()
             raise
         return code, out, err
 
@@ -145,11 +148,12 @@ class Broker:
     async def serve_connection(self, reader, writer):
         try:
             try:
-                line = await reader.readuntil(b"\n")
-                if len(line) > MAX_HEADER:
-                    raise BrokerError("header_too_large")
-                request = parse(json.loads(line))
-                stdin = await reader.readexactly(request.get("stdin", 0)) if request.get("stdin") else b""
+                async with asyncio.timeout(60):
+                    line = await reader.readuntil(b"\n")
+                    if len(line) > MAX_HEADER:
+                        raise BrokerError("header_too_large")
+                    request = parse(json.loads(line))
+                    stdin = await reader.readexactly(request["stdin"]) if request.get("stdin") else b""
                 header, out, err = await self.handle(request, stdin)
             except (BrokerError, ValueError, TypeError, asyncio.IncompleteReadError,
                     asyncio.LimitOverrunError) as error:
@@ -158,7 +162,11 @@ class Broker:
                 header, out, err = {"code": -1, "error": "timeout"}, b"", b""
             header.update(stdout=len(out), stderr=len(err))
             writer.write(json.dumps(header).encode() + b"\n" + out + err)
-            await writer.drain()
+            try:
+                async with asyncio.timeout(60):
+                    await writer.drain()
+            except TimeoutError:
+                writer.transport.abort()
         finally:
             writer.close()
 

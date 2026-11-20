@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from src.plugins.ai_chat.container_sandbox import ContainerSandboxManager
 from src.plugins.ai_chat.sandbox import SandboxError
@@ -65,6 +66,30 @@ sys.exit(subprocess.run(sys.argv[sys.argv.index('--')+1:]).returncode)
     async def close(self):
         self.server.close()
         await self.server.wait_closed()
+
+    async def test_partial_request_expires_before_dispatch(self):
+        timeout = asyncio.timeout
+        with patch.object(broker.asyncio, 'timeout', side_effect=lambda s: timeout(.03)):
+            reader, writer = await asyncio.open_unix_connection(str(self.dir / 'b.sock'))
+            try:
+                writer.write(b'{')
+                self.assertEqual(json.loads(await reader.readline())['error'], 'timeout')
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        self.assertFalse(self.log.exists())
+
+    async def test_cancel_reaps_only_the_owned_helper(self):
+        child = script(self.dir, 'child', f'import os,time,pathlib\npathlib.Path({str(self.log)!r}).write_text(str(os.getpid()))\ntime.sleep(15)')
+        task = asyncio.create_task(self.broker._run(child))
+        async with asyncio.timeout(3):
+            while not self.log.exists():
+                await asyncio.sleep(.005)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(self.log.read_text()), 0)
 
     async def test_exec_requires_running_container_and_returns_streams(self):
         with self.assertRaisesRegex(SandboxError, "container_not_running"):
