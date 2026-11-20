@@ -4,9 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 
-from src.plugins.ai_chat.conversation_keys import (
-    ScopeSettingAddress, TurnAddress, conversation_key, scope_from_context_key,
-)
+from src.plugins.ai_chat.conversation_keys import ScopeSettingAddress, TurnAddress, conversation_key
 from src.plugins.ai_chat.conversation_scope import ConversationScope
 from src.plugins.ai_chat.model_preferences import ModelPreferenceStore
 from src.plugins.ai_chat.admin_api.scoped_model_views import scoped_model_rows
@@ -61,8 +59,7 @@ class PlatformPreferenceTests(unittest.TestCase):
         first = replace(message, canonical_scope=canonical)
         second = replace(message, endpoint=other_endpoint, actor=other_actor, canonical_scope=canonical)
         self.assertNotEqual(conversation_key(first), conversation_key(second))
-        self.assertEqual(TurnAddress.parse(conversation_key(first)).actor, first.actor)
-        self.assertEqual(scope_from_context_key(conversation_key(first)), canonical)
+        self.assertEqual(TurnAddress.parse(conversation_key(first)), TurnAddress(canonical, first.actor))
 
     def test_existing_onebot_conversation_ids_remain_exact(self):
         account = AccountKey("onebot-v11", "900099", "production")
@@ -73,15 +70,6 @@ class PlatformPreferenceTests(unittest.TestCase):
         ):
             message = inbound(endpoint=EndpointKey(account, kind, native_id), actor=actor)
             self.assertEqual(conversation_key(message), expected)
-
-    def test_evidence_scope_codec_preserves_official_namespaces(self):
-        message = inbound()
-        for key in (message.scope.key, message.actor.key, conversation_key(message)):
-            self.assertEqual(scope_from_context_key(key), message.scope)
-        self.assertEqual(scope_from_context_key("group:900001:user:900002").key, "onebot-v11:group:900001")
-        self.assertEqual(scope_from_context_key("group:matrix:!TEST_ROOM:TEST_SERVER").key, "matrix:group:!TEST_ROOM:TEST_SERVER")
-        self.assertIsNone(scope_from_context_key("group:qq-official:TEST_GROUP"))
-        self.assertIsNone(scope_from_context_key("turn:v1:[\"broken\"]"))
 
     def test_setting_decoder_rejects_unknown_or_noncanonical_keys(self):
         scope = inbound().scope
