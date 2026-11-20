@@ -116,12 +116,6 @@ class MediaLibraryParsingTests(unittest.TestCase):
             MediaLibrary._supported_source("https://qq.com.example.test/a.jpg")
         )
 
-    def test_only_platform_stickers_enter_the_durable_library(self) -> None:
-        self.assertTrue(MediaLibrary._is_sticker("mface", {}))
-        self.assertTrue(MediaLibrary._is_sticker("image", {"subType": "1"}))
-        self.assertFalse(MediaLibrary._is_sticker("image", {"subType": "0"}))
-        self.assertFalse(MediaLibrary._is_sticker("image", {"summary": "普通照片"}))
-
     def test_catgirl_alias_ranks_cat_ears_above_unrelated_cute_sticker(self) -> None:
         def record(media_id: int, summary: str) -> MediaRecord:
             return MediaRecord(

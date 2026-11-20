@@ -22,7 +22,6 @@ import httpx
 from src.bot_storage import PostgresDatabase
 
 from .cold_archive import ColdArchiveError, copy_verified_file
-from .conversation_scope import ConversationScope
 from .llm_gateway import LLMGateway
 from .model_catalog import ModelCatalog, ModelProfile
 from .semantic_recall import SemanticDocument, SemanticRecallService
@@ -213,98 +212,6 @@ class MediaLibrary:
             )
         for directory in ("blobs", "prepared", "quarantine"):
             (self.root / directory).mkdir(parents=True, exist_ok=True)
-
-    def ingest_message(
-        self,
-        scope: ConversationScope,
-        *,
-        native_message_id: str | int,
-        sender_native_user_id: str | int,
-        segments: Sequence[Mapping[str, object]],
-        canonical_message_id: int | None = None,
-        occurred_at: int | None = None,
-    ) -> int:
-        now = int(occurred_at or time.time())
-        added = 0
-        connection = self.database.store_connection()
-        cursor = connection.cursor()
-        try:
-            for index, segment in enumerate(segments):
-                segment_type = str(segment.get("type") or "")
-                if segment_type not in {"image", "mface"}:
-                    continue
-                raw_data = segment.get("data")
-                data = raw_data if isinstance(raw_data, Mapping) else {}
-                # Ordinary pictures are handled by the transient vision queue.
-                # Only platform-classified stickers may enter durable storage.
-                if not self._is_sticker(segment_type, data):
-                    continue
-                source_url = str(data.get("url") or "").strip()
-                if not self._supported_source(source_url):
-                    continue
-                summary = str(data.get("summary") or "").strip()[:500]
-                conflict = ('(canonical_message_id,segment_index) WHERE canonical_message_id IS NOT NULL'
-                            if canonical_message_id is not None else
-                            '(scope_key,native_message_id,segment_index) WHERE canonical_message_id IS NULL')
-                cursor.execute(
-                    f"""
-                    INSERT INTO message_media (
-                        scope_key, canonical_message_id, native_message_id,
-                        sender_native_user_id, segment_index, media_kind,
-                        source_type, source_url, source_summary, fetch_status,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-                    ON CONFLICT {conflict}
-                    DO UPDATE SET
-                        canonical_message_id = COALESCE(
-                            EXCLUDED.canonical_message_id,
-                            message_media.canonical_message_id
-                        ),
-                        source_url = EXCLUDED.source_url,
-                        source_summary = EXCLUDED.source_summary,
-                        updated_at = EXCLUDED.updated_at
-                    RETURNING message_media_id, fetch_status
-                    """,
-                    (
-                        scope.key,
-                        canonical_message_id,
-                        str(native_message_id),
-                        str(sender_native_user_id),
-                        index,
-                        "sticker",
-                        segment_type,
-                        source_url,
-                        summary,
-                        now,
-                        now,
-                    ),
-                )
-                row = cursor.fetchone()
-                if row is None:
-                    continue
-                message_media_id = int(row["message_media_id"])
-                if str(row["fetch_status"]) == "ready":
-                    continue
-                cursor.execute(
-                    """
-                    INSERT INTO media_jobs (
-                        job_type, message_media_id, status, attempts,
-                        next_attempt_at, created_at, updated_at
-                    ) VALUES ('fetch', ?, 'pending', 0, ?, ?, ?)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    (message_media_id, now, now, now),
-                )
-                added += int(cursor.rowcount > 0)
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-        if added:
-            self._notify_worker()
-        return added
 
     def _notify_worker(self) -> None:
         loop = self._worker_loop
@@ -1459,10 +1366,6 @@ class MediaLibrary:
                 for suffix in QQ_IMAGE_HOST_SUFFIXES
             )
         )
-
-    @staticmethod
-    def _is_sticker(segment_type: str, data: Mapping[str, object]) -> bool:
-        return segment_type == "mface" or str(data.get("subType") or data.get("sub_type") or "") == "1" or "表情" in str(data.get("summary") or "")
 
     @staticmethod
     def _extension(mime_type: str) -> str:
