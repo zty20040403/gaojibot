@@ -34,6 +34,25 @@ _STICKER_MARKER = re.compile(r"\[表情[:：][^\]\n]{0,80}\]")
 _USAGE = ('input_tokens', 'output_tokens', 'cached_tokens', 'total_tokens')
 
 
+_MUST_REPLY_NOTE = "\n\n[宿主提示] 这条是直接 @ 你或私聊你的，必须回复，不能 [silence]。查不到就直说没查到，一两句也行。"
+_MUST_REPLY_FALLBACK = "这条我没弄出结果，换个说法或者说具体点再问我一次？"
+_SHUSH = re.compile(r"闭嘴|别说话|别说了|别回|不用回|安静点|shut\s*up", re.IGNORECASE)
+
+
+def _is_silence(answer) -> bool:
+    stripped = (answer or "").strip()
+    return stripped == "[silence]" or stripped.startswith("[silence:")
+
+
+def _must_reply(inbound: InboundMessage, user_text: str) -> bool:
+    """Private messages and real @-mentions from people, unless they asked for quiet."""
+    from ..adapters.qq_official.peer_bots import SUFFIX
+    if inbound.sender_display.endswith(SUFFIX):
+        return False
+    direct = inbound.endpoint.kind == "private" or inbound.mentions_bot
+    return direct and not _SHUSH.search(user_text or "")
+
+
 class _TurnCheckpoint:
     """Persist only state needed by tools and the final QQ renderer."""
     def __init__(self, turn, media, trace, sink, saved):
@@ -342,6 +361,16 @@ class PlatformChatService:
                     final_stream_state=final_stream_state,
                     approval_checker=lambda _policy, name, arguments: approval_from_user_text(user_text, name, arguments),
                 )
+                if _is_silence(answer) and not turn.delivered and _must_reply(inbound, user_text):
+                    # Someone asked gaoji directly: one short tool-free retry, then a plain fallback.
+                    answer = await self._call_model(
+                        inbound, platform, journal_turn_id, user_text + _MUST_REPLY_NOTE, [], [], execute_tool,
+                        current_user=speaker(inbound), group_context=group_context,
+                        memory_context=memory_context, profile=selected_profile,
+                        tool_context="\n\n".join(context_parts), system_prompt=system, trace=turn_trace,
+                    )
+                    if _is_silence(answer) or not (answer or "").strip():
+                        answer = _MUST_REPLY_FALLBACK
             except (ModelBudgetExceeded, JobDeferred, ChatFailure):
                 raise
             except DeepSeekConfigError as exc:
@@ -366,9 +395,8 @@ class PlatformChatService:
                 if turn.delivered:
                     return "[silence]"
                 raise ChatFailure("模型没有返回内容。", code="empty_response")
-            stripped = answer.strip()
-            if stripped == "[silence]" or stripped.startswith("[silence:"):
-                return stripped
+            if _is_silence(answer):
+                return answer.strip()
             visible = answer
             if final_stream_state is not None and final_stream_state.sent_prefix:
                 # Markers were stripped from both the streamed text and the answer.

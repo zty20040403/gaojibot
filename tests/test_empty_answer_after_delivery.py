@@ -367,3 +367,45 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MustReplyTests(unittest.IsolatedAsyncioTestCase):
+    """A direct @ or private message never ends in silence unless the person asked for quiet."""
+
+    asyncSetUp = EmptyAnswerAfterDeliveryTests.asyncSetUp
+    _service = EmptyAnswerAfterDeliveryTests._service
+    _platform = EmptyAnswerAfterDeliveryTests._platform
+
+    async def _ask(self, answers, *, inbound=None, text="你现在代码规模多少行"):
+        calls = []
+
+        async def llm(user_text, history, tools, execute_tool, **_kwargs):
+            calls.append((user_text, len(tools)))
+            return answers[len(calls) - 1]
+
+        reply = await self._service(llm=llm).ask(
+            inbound or self.inbound, self._platform(), text, selected_profile_override=self.profile)
+        return reply, calls
+
+    async def test_mention_silence_retries_without_tools(self) -> None:
+        reply, calls = await self._ask(["[silence]", "没查到具体行数"])
+        self.assertEqual(reply, "没查到具体行数")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("必须回复", calls[1][0])
+        self.assertEqual(calls[1][1], 0)
+
+    async def test_second_silence_falls_back_to_plain_reply(self) -> None:
+        from src.plugins.ai_chat.application.platform_chat import _MUST_REPLY_FALLBACK
+        reply, calls = await self._ask(["[silence]", "[silence]"])
+        self.assertEqual((reply, len(calls)), (_MUST_REPLY_FALLBACK, 2))
+
+    async def test_quiet_request_bot_sender_and_plain_group_message_stay_silent(self) -> None:
+        cases = {
+            "shush": dict(text="闭嘴吧你"),
+            "bot": dict(inbound=make_inbound(sender_display="别的机器人（机器人）")),
+            "not_mentioned": dict(inbound=make_inbound(mentions_bot=False)),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name):
+                reply, calls = await self._ask(["[silence]"], **kwargs)
+                self.assertEqual((reply, len(calls)), ("[silence]", 1))
