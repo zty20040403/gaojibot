@@ -1008,18 +1008,12 @@ async def ask_deepseek_with_tools(
                         timeout=policy.timeout_seconds,
                     )
             except TimeoutError:
-                tool_result = json.dumps(
-                    {
-                        "ok": False,
-                        "error": f"工具执行超过 {policy.timeout_seconds:g} 秒，已停止等待。",
-                    },
-                    ensure_ascii=False,
-                )
-                completion_state = (
-                    "outcome-unknown"
-                    if any(label.startswith("send:") for label in policy.side_effects)
-                    else "timed-out"
-                )
+                if is_handoff or policy.idempotency != "pure":
+                    tool_result = UNKNOWN_RESULT
+                    completion_state, budget_exhausted, stop_reason = "outcome-unknown", True, unknown_stop_reason
+                else:
+                    tool_result = json.dumps({"ok": False, "error": "工具读取超时，已停止等待。"}, ensure_ascii=False)
+                    completion_state = "timed-out"
                 compensation_result = await _run_tool_compensation(
                     compensate_tool,
                     policy,
@@ -1095,8 +1089,7 @@ async def ask_deepseek_with_tools(
             finally:
                 active_tool_step.reset(step_token)
                 active_tool_call_id.reset(invocation)
-            if name == 'generate_image' and (completion_state == 'timed-out' or
-                    isinstance(tool_result, str) and _result_fields(tool_result).get('code') == 'generation_unknown'):
+            if name == 'generate_image' and isinstance(tool_result, str) and _result_fields(tool_result).get('code') == 'generation_unknown':
                 completion_state, budget_exhausted, stop_reason = 'outcome-unknown', True, unknown_stop_reason
             if name == SAY_TOOL_NAME:
                 receipt = _result_fields(tool_result)

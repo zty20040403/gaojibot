@@ -142,15 +142,15 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
             compensation="cancel-process",
             max_identical_calls=1,
         )
+        command = {"sandbox_id": "s123abc", "command": "sleep 1"}
+        batch = _tool_response("sandbox_exec", command, "call-exec")
+        batch.choices[0].message.tool_calls.extend(_tool_response("sandbox_exec", command, "call-again").choices[0].message.tool_calls)
+        execute = AsyncMock(side_effect=blocked)
         with patch.dict(TOOL_POLICIES, {"sandbox_exec": short_policy}), patch(
             "src.plugins.ai_chat.agent_loop._create_completion",
             new=AsyncMock(
                 side_effect=[
-                    _tool_response(
-                        "sandbox_exec",
-                        {"sandbox_id": "s123abc", "command": "sleep 1"},
-                        "call-exec",
-                    ),
+                    batch,
                     _final("命令超时。"),
                 ]
             ),
@@ -168,13 +168,15 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
                         ["sandbox_id", "command"],
                     )
                 ],
-                blocked,
+                execute,
                 compensate_tool=compensator,
                 event_sink=sink,
             )
 
         self.assertEqual(answer, "命令超时。")
-        self.assertIn("timed-out", [event.state for event in events])
+        execute.assert_awaited_once()
+        self.assertIn("outcome-unknown", [event.state for event in events])
+        self.assertTrue(any(event.kind == 'tool_rejected' and '未知' in event.result for event in events))
         self.assertIn("compensated", [event.state for event in events])
         compensator.assert_awaited_once()
 
