@@ -42,7 +42,7 @@ class ConversationControlTests(unittest.TestCase):
         self.assertIsNotNone(self.ledger.get_in_scope(self.endpoint.scope,during.canonical_message_id))
         self.process(stop)  # Same input must not reapply or repeat its audit.
         self.assertEqual(self.current()['stop_generation'],1)
-        self.assertEqual(len(self.query("SELECT * FROM admin_security_audit WHERE action='qq.conversation.stop'")),1)
+        self.assertEqual(len(self.query("SELECT * FROM admin_audit_log WHERE security_audit_id IS NOT NULL AND action='qq.conversation.stop'")),1)
         self.process(self.message('/start','owner'))
         self.assertFalse(self.current()['stopped'])
         after = self.process(self.message('TEST after',mention=True))
@@ -92,7 +92,7 @@ class ConversationControlTests(unittest.TestCase):
         self.assertFalse(self.current()['stopped'])
         self.assertIsNone(self.receipt(inbox))
         self.assertFalse(self.query('SELECT * FROM messages'))
-        self.assertFalse(self.query('SELECT * FROM admin_security_audit'))
+        self.assertFalse(self.query('SELECT * FROM admin_audit_log'))
 
     def test_kill_cancels_all_members_but_not_a_shared_history_endpoint(self):
         other = EndpointKey(self.account,'group','TEST_OTHER')

@@ -44,8 +44,8 @@ class RetireContextFeedbackTests(unittest.TestCase):
             self.assertEqual(len(traces), 2)
             self.assertEqual(traces[0]['trace_id'], 'a' * 32)
             self.assertEqual(traces[0]['tools'], ['TEST_TOOL'])
-            self.assertEqual(len(control.audit()), 1)
             with migration.connect(schema) as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM admin_audit_log').fetchone(), (1,))
                 before = _schema_snapshot(db, schema)
                 feedback_indexes = {name for name, in db.execute(
                     'SELECT indexname FROM pg_indexes WHERE schemaname=%s AND tablename=%s', (schema, TABLE))}

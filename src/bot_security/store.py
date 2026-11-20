@@ -39,6 +39,12 @@ def lock_admin_security(cursor: StoreCursor) -> None:
     cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended('gaoji-admin-security:' || current_schema(), 0))")
 
 
+def write_security_audit(cursor, account, action, target, detail, now):
+    cursor.execute("""INSERT INTO admin_audit_log(resource_key,security_audit_id,actor,action,target,security_detail,created_at)
+        VALUES ('security',?,?,?,?,?,?)""",
+        (secrets.token_hex(16), account, action, target, detail, now))
+
+
 class SecurityStore(ApprovalQuorum):
     """Keep network and password hashing outside short, serialized security transactions."""
 
@@ -136,8 +142,7 @@ class SecurityStore(ApprovalQuorum):
                 connection.close()
 
     def _audit(self, db, account: str, action: str, target: str = "", detail: str = "") -> None:
-        db.execute("INSERT INTO admin_security_audit VALUES (?, ?, ?, ?, ?, ?)",
-                   (secrets.token_hex(16), account, action, target, detail[:2000], int(self.clock())))
+        write_security_audit(db, account, action, target, detail[:2000], int(self.clock()))
 
     def _limit(self, db, bucket: str, maximum: int, seconds: int) -> None:
         now = int(self.clock())
@@ -557,7 +562,9 @@ class SecurityStore(ApprovalQuorum):
 
     def audit(self) -> list[dict[str, Any]]:
         with self.transaction() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM admin_security_audit ORDER BY created_at DESC LIMIT 200").fetchall()]
+            return [dict(row) for row in db.execute("""SELECT security_audit_id AS audit_id, actor AS account_id,
+                action, target, security_detail AS detail, created_at FROM admin_audit_log WHERE security_audit_id IS NOT NULL
+                ORDER BY created_at DESC, admin_audit_log.audit_id DESC LIMIT 200""").fetchall()]
 
     def record_action(self, account_id: str, action: str, target: str, detail: str = "") -> None:
         with self.transaction() as db:

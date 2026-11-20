@@ -80,7 +80,7 @@ class OfficialInboxTests(unittest.TestCase):
                 'qq_official_accounts', 'qq_official_endpoints', 'qq_official_binding_challenges',
                 'qq_official_binding_candidates', 'qq_official_owner_grants', 'qq_official_owner_actor_links',
                 'qq_official_binding_rate_limits', 'qq_official_reply_windows', 'qq_official_messages',
-                'qq_official_message_indexes', 'qq_official_control_decisions', 'admin_security_audit', 'durable_jobs', 'messages')
+                'qq_official_message_indexes', 'qq_official_control_decisions', 'admin_audit_log', 'durable_jobs', 'messages')
 
     def persisted_text(self):
         return repr({table: self.query(f'SELECT * FROM {table}') for table in self.persisted_tables()})

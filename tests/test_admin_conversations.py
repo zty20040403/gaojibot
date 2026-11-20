@@ -50,7 +50,8 @@ class AdminConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()['resource_version'],1)
         self.notify.assert_called_once()
         self.assertEqual((await self.send()).status_code,409)
-        self.assertEqual(len(self.query('SELECT * FROM admin_audit_log')),1)
+        self.assertCountEqual([row['action'] for row in self.query('SELECT action FROM admin_audit_log')],
+                              ['conversation.stop', 'qq.conversation.stop'])
         self.assertTrue((await self.client.get(self.path)).json()['items'][0]['stopped'])
         self.notify.side_effect = None
         self.assertEqual((await self.send('start',1)).status_code,200)
@@ -60,7 +61,8 @@ class AdminConversationTests(unittest.IsolatedAsyncioTestCase):
         await self.login()
         responses = await asyncio.gather(self.send('stop'),self.send('start'))
         self.assertEqual(sorted(response.status_code for response in responses),[200,409])
-        self.assertEqual(len(self.query('SELECT * FROM admin_audit_log')),1)
+        rows = self.query('SELECT security_audit_id FROM admin_audit_log')
+        self.assertCountEqual([row['security_audit_id'] is None for row in rows], [True, False])
         self.notify.assert_called_once()
 
     async def test_operation_failure_rolls_back_state_version_and_audit(self):
@@ -72,7 +74,7 @@ class AdminConversationTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(conversations,'change',side_effect=fail):
             response = await self.send()
         self.assertEqual(response.status_code,503,response.text)
-        for table in ('conversation_settings','admin_resource_versions','admin_audit_log','admin_security_audit'):
+        for table in ('conversation_settings','admin_resource_versions','admin_audit_log'):
             self.assertFalse(self.query('SELECT * FROM '+table),table)
         self.notify.assert_not_called()
 

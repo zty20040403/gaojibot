@@ -9,6 +9,7 @@ from src.bot_security.passwords import hash_password
 from src.bot_security.store import SecurityError, SecurityStore
 from src.bot_storage.database import DatabaseError, PostgresDatabase
 from src.bot_storage.schema import HEAD_REVISION
+from src.plugins.ai_chat.admin_control import AdminControlStore
 from tests import test_qq_official_outbox_migration as migration
 from tests.test_account_security import BOT, PASSWORD, QQ
 
@@ -17,6 +18,39 @@ class SecurityPostgresTests(unittest.TestCase):
     def setUp(self):
         self.schema = migration.owned_schema()
         self.addCleanup(migration.drop, self.schema)
+
+    def test_merge_keeps_colliding_ids_payloads_and_separate_audit_feeds(self):
+        migration.migrate(self.schema, '0130_retire_share_sources')
+        with migration.connect(self.schema) as db:
+            columns = 'audit_id,resource_key,resource_version,actor,action,target,status,before_json,after_json,error,created_at'
+            public = db.execute(f"""INSERT INTO admin_audit_log(resource_key,resource_version,actor,action,target,
+                status,before_json,after_json,error,created_at) VALUES ('security',2,'TEST_ADMIN','login.failed',
+                'TEST_TARGET','failed','{{ "n":1 }}','[]','TEST_ERROR',3) RETURNING {columns}""").fetchone()
+            keys = ('audit_id', 'account_id', 'action', 'target', 'detail', 'created_at')
+            private = [(str(public[0]), 'TEST_ACCOUNT', 'login.failed', 'TEST_TARGET', '  TEST_私密\n' * 300, 2**53+1),
+                       ('TEST_QQ', '', 'qq.binding.config', 'TEST_REF', '{ "outcome" : "denied" }', 4)]
+            for event in private:
+                db.execute('INSERT INTO admin_security_audit VALUES (%s,%s,%s,%s,%s,%s)', event)
+        migration.migrate(self.schema, '0131_merge_security_audit')
+        with migration.connect(self.schema) as db:
+            self.assertEqual(db.execute(f'SELECT {columns} FROM admin_audit_log WHERE security_audit_id IS NULL').fetchall(), [public])
+            self.assertIsNone(db.execute("SELECT to_regclass('admin_security_audit')").fetchone()[0])
+        migration.migrate(self.schema, HEAD_REVISION)
+        store = self.store()
+        control = AdminControlStore(store._database)
+        self.assertEqual(store.audit(), [dict(zip(keys, event)) for event in private])
+        self.assertEqual([row['audit_id'] for row in control.audit(limit=1)], [public[0]])
+        store.record_action('TEST_LOCAL', 'account.updated', '', 'TEST_NEW_PRIVATE')
+        self.assertEqual(store.audit()[1]['detail'], 'TEST_NEW_PRIVATE')
+        def fail(_):
+            raise RuntimeError('TEST_FAILED')
+        control.mutate('security', expected_version=0, actor='TEST_ADMIN', action='TEST_OK', operation=lambda n: n)
+        with self.assertRaisesRegex(RuntimeError, 'TEST_FAILED'):
+            control.mutate('security', expected_version=1, actor='TEST_ADMIN', action='TEST_FAIL', operation=fail)
+        self.assertEqual(control.version('security'), 1)
+        self.assertEqual([(r['action'], r['status']) for r in control.audit()],
+                         [('TEST_FAIL', 'failed'), ('TEST_OK', 'succeeded'), ('login.failed', 'failed')])
+        self.assertEqual(len(store.audit()), 3)
 
     def test_quorum_upgrade_invalidates_legacy_grants_without_replaying_them(self):
         migration.migrate(self.schema, '0038_task_collaboration')

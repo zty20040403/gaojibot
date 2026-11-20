@@ -5,7 +5,8 @@ come only from the top-level author of the authenticated transport dispatch.
 """
 import hashlib
 import json
-import secrets
+
+from src.bot_security.store import write_security_audit
 
 from ...application.commands import parse_command
 from ...platform_types import EndpointKey
@@ -66,8 +67,7 @@ def change(cursor, endpoint, action, *, now, actor, authorized):
         result.update(status='ok',text=text,generation=state(cursor,endpoint)['stop_generation'])
     detail = json.dumps({'actor_ref':hashlib.sha256(actor.encode()).hexdigest(),'outcome':result['status'],
         'cancelled_jobs':result['cancelled_jobs']},separators=(',',':'))
-    cursor.execute('''INSERT INTO admin_security_audit(audit_id,account_id,action,target,detail,created_at) VALUES (?,'',?,?,?,?)''',
-        (secrets.token_hex(16),'qq.conversation.'+action,hashlib.sha256(endpoint.key.encode()).hexdigest(),detail,now))
+    write_security_audit(cursor, '', 'qq.conversation.' + action, hashlib.sha256(endpoint.key.encode()).hexdigest(), detail, now)
     return result
 
 

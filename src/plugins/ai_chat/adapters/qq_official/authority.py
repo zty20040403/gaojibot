@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from src.bot_security.store import write_security_audit
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 
 
@@ -43,9 +44,7 @@ def audit(cursor, *, account: AccountKey, action: str, actor: str,
     detail = json.dumps({"account_ref": hashlib.sha256(account.key.encode()).hexdigest(),
                          "actor_ref": hashlib.sha256(actor.encode()).hexdigest(),
                          "outcome": outcome}, separators=(",", ":"))
-    cursor.execute("""INSERT INTO admin_security_audit
-        (audit_id,account_id,action,target,detail,created_at) VALUES (?,?,?,?,?,?)""",
-        (secrets.token_hex(16), "", "qq.binding." + action, target, detail, now))
+    write_security_audit(cursor, "", "qq.binding." + action, target, detail, now)
 
 
 def _grant(row) -> OwnerGrant | None:

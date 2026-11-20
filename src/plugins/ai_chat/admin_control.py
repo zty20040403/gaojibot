@@ -97,27 +97,11 @@ class AdminControlStore:
             try:
                 value = operation(next_version)
             except Exception as exc:
-                self._record_audit(
-                    key,
-                    current,
-                    normalized_actor,
-                    normalized_action,
-                    normalized_target,
-                    "failed",
-                    before,
-                    None,
-                    str(exc),
-                )
+                self._record_audit(key, current, normalized_actor, normalized_action, normalized_target,
+                                   "failed", before, None, str(exc))
                 raise
-            self._record_success(
-                key,
-                next_version,
-                normalized_actor,
-                normalized_action,
-                normalized_target,
-                before,
-                value,
-            )
+            self._record_audit(key, next_version, normalized_actor, normalized_action, normalized_target,
+                               "succeeded", before, value, "")
             return MutationResult(value, key, next_version)
 
     def audit(self, *, limit: int = 200) -> list[dict[str, object]]:
@@ -130,7 +114,7 @@ class AdminControlStore:
                 """
                 SELECT audit_id, resource_key, resource_version, actor, action,
                        target, status, before_json, after_json, error, created_at
-                FROM admin_audit_log
+                FROM admin_audit_log WHERE security_audit_id IS NULL
                 ORDER BY audit_id DESC LIMIT ?
                 """,
                 (bounded,),
@@ -239,70 +223,6 @@ class AdminControlStore:
                 connection.close()
         return {"tool_name": name, "enabled": bool(enabled)}
 
-    def _record_success(
-        self,
-        resource_key: str,
-        resource_version: int,
-        actor: str,
-        action: str,
-        target: str,
-        before: object,
-        after: object,
-    ) -> None:
-        now = int(time.time())
-        if self._database is None:
-            self._memory_versions[resource_key] = resource_version
-            self._append_memory_audit(
-                resource_key,
-                resource_version,
-                actor,
-                action,
-                target,
-                "succeeded",
-                before,
-                after,
-                "",
-                now,
-            )
-            return
-        connection = self._database.store_connection()
-        cursor = connection.cursor()
-        try:
-            cursor.execute(
-                """
-                INSERT INTO admin_resource_versions (resource_key, version, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(resource_key) DO UPDATE SET
-                    version = EXCLUDED.version,
-                    updated_at = EXCLUDED.updated_at
-                """,
-                (resource_key, resource_version, now),
-            )
-            cursor.execute(
-                """
-                INSERT INTO admin_audit_log (
-                    resource_key, resource_version, actor, action, target,
-                    status, before_json, after_json, error, created_at
-                ) VALUES (?, ?, ?, ?, ?, 'succeeded', ?, ?, '', ?)
-                """,
-                (
-                    resource_key,
-                    resource_version,
-                    actor,
-                    action,
-                    target,
-                    _encode_json(before),
-                    _encode_json(after),
-                    now,
-                ),
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-
     def _record_audit(
         self,
         resource_key: str,
@@ -317,41 +237,26 @@ class AdminControlStore:
     ) -> None:
         now = int(time.time())
         if self._database is None:
-            self._append_memory_audit(
-                resource_key,
-                resource_version,
-                actor,
-                action,
-                target,
-                status,
-                before,
-                after,
-                error,
-                now,
-            )
+            if status == "succeeded":
+                self._memory_versions[resource_key] = resource_version
+            self._append_memory_audit(resource_key, resource_version, actor, action, target,
+                                      status, before, after, error, now)
             return
         connection = self._database.store_connection()
         try:
-            connection.execute(
-                """
-                INSERT INTO admin_audit_log (
-                    resource_key, resource_version, actor, action, target,
-                    status, before_json, after_json, error, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    resource_key,
-                    resource_version,
-                    actor,
-                    action,
-                    target,
-                    status,
-                    _encode_json(before),
-                    _encode_json(after),
-                    _safe_text(error, 1000),
-                    now,
-                ),
-            )
+            cursor = connection.cursor()
+            if status == "succeeded":
+                cursor.execute("""INSERT INTO admin_resource_versions(resource_key,version,updated_at)
+                    VALUES (?,?,?) ON CONFLICT(resource_key) DO UPDATE SET
+                    version=excluded.version, updated_at=excluded.updated_at""", (resource_key, resource_version, now))
+            cursor.execute("""INSERT INTO admin_audit_log(resource_key,resource_version,actor,action,target,
+                status,before_json,after_json,error,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (resource_key, resource_version, actor, action, target, status, _encode_json(before),
+                 _encode_json(after), _safe_text(error, 1000), now))
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 

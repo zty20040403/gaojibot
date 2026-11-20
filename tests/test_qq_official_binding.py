@@ -72,7 +72,7 @@ class OfficialBindingTests(unittest.TestCase):
             account = cursor.execute('SELECT * FROM qq_official_accounts WHERE account_key=?', (self.account.key,)).fetchone()
             endpoint = cursor.execute('SELECT * FROM qq_official_endpoints WHERE endpoint_key=?', (self.group.key,)).fetchone()
             link = cursor.execute('SELECT * FROM qq_official_owner_actor_links').fetchone()
-            self.assertNotIn('000042', repr((dict(account), dict(link), cursor.execute('SELECT * FROM admin_security_audit').fetchall())))
+            self.assertNotIn('000042', repr((dict(account), dict(link), [dict(row) for row in cursor.execute('SELECT * FROM admin_audit_log').fetchall()])))
             self.assertEqual((endpoint['canonical_scope_key'], link['configured_owner_actor_key'], link['actor_key']),
                              (self.group.scope.key, self.owner.key, self.member.key))
             self.assertIsNone(link['owner_grant_id'])
