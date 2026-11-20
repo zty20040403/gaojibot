@@ -208,40 +208,6 @@ class MessageLedgerTests(unittest.TestCase):
             second_mention.principal_id,  # type: ignore[union-attr]
         )
 
-    def test_rendered_context_contains_canonical_handles_not_native_ids(self) -> None:
-        message = self.record_text(self.group_a, "987654", "hello")
-
-        rendered = self.ledger.render_recent(self.group_a)
-
-        self.assertIn(f"msg#{message.canonical_message_id}", rendered)
-        self.assertIn(f"[mention#{message.sender_principal_id}]", rendered)
-        self.assertNotIn("987654", rendered)
-
-    def test_roster_uses_each_principals_latest_display_name(self) -> None:
-        first = self.ledger.record_message(
-            self.group_a,
-            native_message_id="1",
-            sender_native_user_id="7",
-            sender_display="Old Name",
-            body=MessageBody((TextNode(0, "first"),)),
-            occurred_at=101,
-        )
-        self.ledger.record_message(
-            self.group_a,
-            native_message_id="2",
-            sender_native_user_id="7",
-            sender_display="New Name",
-            body=MessageBody((TextNode(0, "second"),)),
-            occurred_at=102,
-        )
-
-        roster = self.ledger.render_roster(self.group_a)
-
-        self.assertEqual(
-            roster,
-            f"[mention#{first.sender_principal_id}]=New Name",
-        )
-
     def test_roster_registration_and_reverse_identity_lookup(self) -> None:
         principals = self.ledger.ensure_principal_identities(
             "onebot-v11",
@@ -277,10 +243,6 @@ class MessageLedgerTests(unittest.TestCase):
         self.assertEqual(command.rendered_text, "/clear")
         self.assertEqual(command.prompt_text, "")
         self.assertEqual(feedback.prompt_text, "改成方案 B")
-        rendered = self.ledger.render_recent(self.group_a)
-        self.assertNotIn("/clear", rendered)
-        self.assertNotIn("!feedback", rendered)
-        self.assertIn("改成方案 B", rendered)
         self.assertEqual(self.ledger.history(self.group_a, terms=("clear",)), [])
 
     def test_global_index_projection_respects_visibility_and_command_kind(self) -> None:

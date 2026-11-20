@@ -6,7 +6,6 @@ import threading
 import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
-from datetime import datetime
 from typing import Any, Iterable, Iterator, Literal
 
 from src.bot_storage import DatabaseSource, StoreCursor, StoreRow, open_store_connection
@@ -524,114 +523,6 @@ class MessageLedger:
                 (scope.key, int(occurred_at)),
             ).fetchone()
         return int(row["first_id"]) if row is not None and row["first_id"] is not None else None
-
-    def render_recent(
-        self,
-        scope: ConversationScope,
-        *,
-        max_messages: int = 40,
-        max_chars: int = 4000,
-        exclude_native_message_id: str | int | None = None,
-        exclude_canonical_message_ids: tuple[int, ...] = (),
-        exclude_endpoint: EndpointKey | None = None,
-    ) -> str:
-        messages = self.recent_in_scope(scope, max_messages)
-        excluded_canonical_ids = set(
-            int(item) for item in exclude_canonical_message_ids
-        )
-        if excluded_canonical_ids:
-            messages = [
-                message
-                for message in messages
-                if message.canonical_message_id not in excluded_canonical_ids
-            ]
-        if exclude_native_message_id is not None:
-            excluded = str(exclude_native_message_id)
-            source_key = self._source_key(scope, exclude_endpoint)
-            messages = [
-                message
-                for message in messages
-                if message.native_message_id != excluded or message.source_endpoint_key != source_key
-            ]
-        lines: list[str] = []
-        used_chars = 0
-        for message in reversed(messages):
-            if not message.prompt_text:
-                continue
-            sender = (
-                f"[mention#{message.sender_principal_id}] {message.sender_display}"
-                if message.sender_principal_id is not None
-                else message.sender_display
-            )
-            reply = (
-                f" reply:msg#{message.reply_to_canonical_message_id}"
-                if message.reply_to_canonical_message_id is not None
-                else ""
-            )
-            timestamp = datetime.fromtimestamp(message.occurred_at).strftime(
-                "%m-%d %H:%M"
-            )
-            line = (
-                f"[msg#{message.canonical_message_id}{reply} | {timestamp} | "
-                f"{sender}] {message.prompt_text}"
-            )
-            if lines and used_chars + len(line) + 1 > max_chars:
-                break
-            if not lines and len(line) > max_chars:
-                line = line[:max_chars]
-            lines.append(line)
-            used_chars += len(line) + 1
-        return "\n".join(reversed(lines))
-
-    def render_roster(
-        self,
-        scope: ConversationScope,
-        limit: int = 40,
-    ) -> str:
-        return "\n".join(
-            f"[mention#{principal_id}]={display}"
-            for display, principal_id in self.principal_roster(scope, limit)
-        )
-
-    def principal_roster(
-        self,
-        scope: ConversationScope,
-        limit: int = 40,
-    ) -> tuple[tuple[str, int], ...]:
-        limit = min(max(int(limit), 1), 100)
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT
-                    latest.sender_principal_id,
-                    latest.sender_display,
-                    latest.last_message_id
-                FROM (
-                    SELECT
-                        m.sender_principal_id,
-                        m.sender_display,
-                        m.canonical_message_id AS last_message_id,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY m.sender_principal_id
-                            ORDER BY m.canonical_message_id DESC
-                        ) AS roster_rank
-                    FROM messages AS m
-                    JOIN conversations AS c
-                      ON c.conversation_id = m.conversation_id
-                    WHERE c.scope_key = ?
-                      AND m.canonical_message_id >= c.min_canonical_message_id
-                      AND m.sender_principal_id IS NOT NULL
-                ) AS latest
-                WHERE latest.roster_rank = 1
-                ORDER BY last_message_id DESC
-                LIMIT ?
-                """,
-                (scope.key, limit),
-            ).fetchall()
-        return tuple(
-            (str(row["sender_display"]), int(row["sender_principal_id"]))
-            for row in rows
-        )
 
     def principal_label_for_native(
         self,

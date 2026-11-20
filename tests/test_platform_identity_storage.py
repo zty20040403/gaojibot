@@ -80,9 +80,10 @@ class PlatformIdentityStorageTests(unittest.TestCase):
             self.assertEqual(self.ledger.get_in_scope(scope, reply.canonical_message_id).reply_to_canonical_message_id, target.canonical_message_id)
             self.assertEqual(self.ledger.canonical_id_for_native(scope, "same", endpoint=item.endpoint), target.canonical_message_id)
         self.assertIsNone(self.ledger.canonical_id_for_native(scope, "same"))
-        visible = self.ledger.render_recent(scope, exclude_native_message_id="same", exclude_endpoint=a.endpoint)
-        self.assertNotIn("A target", visible)
-        self.assertIn("B target", visible)
+        count, visible = self.ledger.activity_since(scope, 0, exclude_native_message_id="same", exclude_endpoint=a.endpoint)
+        self.assertEqual(count, 3)
+        self.assertEqual({row.canonical_message_id for row in visible},
+                         {reply_a.canonical_message_id, reply_b.canonical_message_id, second.canonical_message_id})
         fresh = inbound()
         with self.assertRaises(ValueError):
             self.ledger.canonical_id_for_native(fresh.scope, "m")
