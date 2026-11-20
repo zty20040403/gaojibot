@@ -33,7 +33,7 @@ GITHUB_LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?')
 GITHUB_REPO = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}')
 TOOL_HEARTBEAT_SECONDS = 25.0
 IDLE_SECONDS = 120
-FALLBACK_STATUSES = frozenset({401, 403, 404, 408, 409, 429, 500, 502, 503, 504, 529})
+FALLBACK_STATUSES = frozenset({401, 403, 404, 409, 429})
 MODEL_400_MARKERS = (
     'not found',
     'not_found',
@@ -120,11 +120,12 @@ class _ModelRequest:
     reject the next request. The response's upstream socket closes even if
     cancellation occurs before the streaming generator starts.
     """
-    def __init__(self, gateway, handler=None, *, vm_only=False, job_only=False, vm_tool=False, write=False):
+    def __init__(self, gateway, handler=None, *, vm_only=False, job_only=False, vm_tool=False, write=False, timeout=None):
         self.gateway = gateway
         self.vm_only, self.job_only, self.vm_tool, self.write = vm_only, job_only, vm_tool, write
         self.handler = handler or gateway._responses
         self.model_request = handler is None
+        self.timeout = IDLE_SECONDS if self.model_request else timeout
 
     async def __call__(self, scope, receive, send):
         request = Request(scope,receive)
@@ -157,9 +158,15 @@ class _ModelRequest:
             started |= message['type']=='http.response.start'
             finished |= message['type']=='http.response.body' and not message.get('more_body',False)
             await send(message)
+        deadline = request.state.deadline = asyncio.timeout(self.timeout)
         try:
-            response = await self.handler(request)
-            await response(scope,receive,tracked_send)
+            async with deadline:
+                response = await self.handler(request)
+                await response(scope,receive,tracked_send)
+        except TimeoutError:
+            if not deadline.expired() or started:
+                raise
+            await JSONResponse({'error': '请求超时，远端结果未知，不要重试'}, 504)(scope,receive,send)
         except asyncio.CancelledError:
             if not channel.revoked:
                 raise
@@ -240,11 +247,11 @@ class JobGateway:
                 app = Starlette(routes=[Route('/v1/models', self._models),
                                         Route('/v1/responses', _ModelRequest(self), methods=['POST']),
                                         Route('/v1/responses/compact', _ModelRequest(self), methods=['POST']),
-                                        Route('/job/tools', _ModelRequest(self, self._job_tools, vm_tool=True), methods=['GET']),
-                                        Route('/job/tool', _ModelRequest(self, self._job_tool, vm_tool=True), methods=['POST']),
+                                        Route('/job/tools', _ModelRequest(self, self._job_tools, vm_tool=True, timeout=30), methods=['GET']),
+                                        Route('/job/tool', _ModelRequest(self, self._job_tool, vm_tool=True, timeout=900), methods=['POST']),
                                         Route('/git/identity', _ModelRequest(self, self._git_identity, vm_tool=True), methods=['GET']),
                                         Route('/git/github/{owner}/{repo}/{rest:path}',
-                                              _ModelRequest(self, self._github_git, vm_tool=True), methods=['GET', 'POST'])])
+                                              _ModelRequest(self, self._github_git, vm_tool=True, timeout=600), methods=['GET', 'POST'])])
                 if self.vm_handler is not None:
                     for path,method,write in (('/vm/say','POST',True),('/vm/wake','POST','wake'),('/vm/send-file','POST',True),('/vm/actions/{action_id}','GET',False),('/vm/actions','GET',False),
                             ('/vm/events','GET',False),('/vm/units','POST',False),('/vm/history','POST',False),('/vm/web-search','POST',False),('/vm/web-fetch','POST',False),
@@ -323,7 +330,7 @@ class JobGateway:
         except ValueError:
             return JSONResponse({'error': f'推送超过 {MAX_GIT_PUSH_BODY // (1024 * 1024)} MiB 上限'}, 413)
         except httpx.HTTPError as error:
-            return JSONResponse({'error': f'GitHub 连接失败：{type(error).__name__}'}, 502)
+            return JSONResponse({'error': f'GitHub 响应未确认：{type(error).__name__}，请核对远端 ref，不要重复推送'}, 502)
         request.state.resources.push_async_callback(upstream.aclose)
         response_headers = {name: upstream.headers[name] for name in ('content-type', 'cache-control')
                             if name in upstream.headers}
@@ -352,9 +359,11 @@ class JobGateway:
     async def _responses(self, request: Request):
         if not self._authorized(request):
             return JSONResponse({'error': 'invalid job token'}, 401)
-        body = await request.body()
-        if len(body) > MAX_BODY:
-            return JSONResponse({'error': 'request too large'}, 413)
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > MAX_BODY:
+                return JSONResponse({'error': 'request too large'}, 413)
+            body.extend(chunk)
         payload = json.loads(body)
         chain, effort = self._model_chain()
         token = request.headers['authorization'][7:]
@@ -400,6 +409,10 @@ class JobGateway:
                     if key:
                         content = content.replace(key.encode(), b'[REDACTED]')
             except (httpx.HTTPError, TimeoutError, OSError) as exc:
+                if not (isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+                        or upstream is not None and upstream.status_code in FALLBACK_STATUSES):
+                    self.failures[token] = '模型响应未确认，远端结果未知，不要重试'
+                    return JSONResponse({'error': self.failures[token]}, 502)
                 if upstream is not None:
                     await upstream.aclose()
                     request.state.model_upstream = None
@@ -464,6 +477,9 @@ class JobGateway:
                         channel.stream_failures = 0
                     await upstream.aclose()
 
+            if upstream.headers.get('content-type', '').split(';')[0].strip().lower() == 'text/event-stream':
+                # SSE lives until read-idle, disconnect, revocation or the job deadline.
+                request.state.deadline.reschedule(None)
             return StreamingResponse(chunks(), upstream.status_code, media_type=upstream.headers.get('content-type'))
 
         self.failures[token] = f'后台模型链全部不可用（最后原因：{last_reason}）'

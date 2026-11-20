@@ -6,6 +6,7 @@ import logging
 import secrets
 import socket
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
@@ -64,6 +65,44 @@ class JobGatewayTests(unittest.IsolatedAsyncioTestCase):
             self.gateway.revoke(token)
             revoked = await client.post(self.base + '/responses', json={}, headers={'Authorization': 'Bearer ' + token})
             self.assertEqual(revoked.status_code, 401)
+
+    async def test_lost_headers_do_not_trigger_a_second_model_post(self):
+        calls = []
+
+        def upstream(request):
+            calls.append(json.loads(request.content)['model'])
+            raise httpx.ReadTimeout('TEST_LOST_HEADERS')
+
+        await self.gateway.client.aclose()
+        self.gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        self.gateway.model = lambda: (['m1', 'm2'], 'high')
+        token, channel = self.gateway.open()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            response = await client.post(self.base + '/responses', json={}, headers={'Authorization': 'Bearer ' + token})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('远端结果未知', response.json()['error'])
+        self.assertEqual((calls, channel.fallbacks), (['m1'], []))
+
+    async def test_tool_deadline_aborts_stream_and_drains_one_tool(self):
+        token, channel = self.gateway.open()
+        cancelled = asyncio.Event()
+
+        async def blocked(*_args):
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        channel.session = Mock(execute_tool=AsyncMock(side_effect=blocked))
+        self.gateway.tool_heartbeat_seconds = .01
+        timeout = asyncio.timeout
+        url = f'http://127.0.0.1:{self.gateway.port}/job/tool'
+        with patch('src.plugins.ai_chat.job_gateway.asyncio.timeout', side_effect=lambda s: timeout(.05 if s == 900 else s)):
+            async with httpx.AsyncClient(trust_env=False) as client:
+                with self.assertRaises(httpx.RemoteProtocolError):
+                    await client.post(url, json={'name': 'TEST_WRITE'}, headers={'Authorization': 'Bearer ' + token})
+        self.assertTrue(cancelled.is_set())
+        channel.session.execute_tool.assert_awaited_once()
 
     async def test_revoke_cancels_request_waiting_for_upstream_headers(self):
         entered,cancelled,release = asyncio.Event(),asyncio.Event(),asyncio.Event()
@@ -492,7 +531,7 @@ class JobGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_fallback_reason_does_not_echo_host_key(self):
         def upstream(request):
             if json.loads(request.content)['model'] == 'm1':
-                return httpx.Response(503, content=b'busy: TEST_REAL_KEY')
+                return httpx.Response(429, content=b'busy: TEST_REAL_KEY')
             return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
                                   headers={'content-type': 'text/event-stream'})
 
@@ -640,7 +679,7 @@ class JobGatewayTests(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(200, content=b'data: {"type":"response.completed"}\n\n',
                                       headers={'content-type': 'text/event-stream'})
             if mode['kind'] == 'all_fail':
-                return httpx.Response(503, content=b'busy')
+                return httpx.Response(429, content=b'busy')
             if mode['kind'] == 'stream_break':
                 if model == 'm1':
                     return httpx.Response(200, stream=BrokenStream(), headers={'content-type': 'text/event-stream'})
@@ -731,7 +770,6 @@ class JobGatewayTests(unittest.IsolatedAsyncioTestCase):
 
 class GitHubGitRelayTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from unittest.mock import patch
         patcher = patch.dict('os.environ', {'AI_GITHUB_LOGIN': 'TEST-LOGIN', 'AI_GITHUB_USER_ID': '123',
                                             'AI_GITHUB_TOKEN': 'TEST_GH_TOKEN'})
         patcher.start()
@@ -757,6 +795,22 @@ class GitHubGitRelayTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(trust_env=False) as client:
             return await client.request(method, self.root + path,
                                         headers={'Authorization': 'Bearer ' + self.token}, **kwargs)
+
+    async def test_push_deadline_cancels_one_exchange_without_replay(self):
+        calls = []
+
+        async def blocked(request):
+            calls.append(request.content)
+            await asyncio.Future()
+
+        await self.gateway.github_client.aclose()
+        self.gateway.github_client = httpx.AsyncClient(transport=httpx.MockTransport(blocked))
+        timeout = asyncio.timeout
+        with patch('src.plugins.ai_chat.job_gateway.asyncio.timeout', side_effect=lambda s: timeout(.05 if s == 600 else s)):
+            result = await self._push()
+        self.assertEqual(result.status_code, 504)
+        self.assertIn('远端结果未知', result.json()['error'])
+        self.assertEqual(calls, [b'TEST_PACK'])
 
     async def test_identity_and_push_use_host_token_only_for_own_repositories(self):
         identity = await self.request('GET', '/git/identity')
@@ -789,7 +843,6 @@ class GitHubGitRelayTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(trust_env=False) as client:
             anonymous = await client.get(self.root + '/git/github/TEST-LOGIN/repo.git/info/refs?service=git-receive-pack')
         self.assertEqual(anonymous.status_code, 401)
-        from unittest.mock import patch
         with patch.dict('os.environ', {'AI_GITHUB_TOKEN': ''}):
             self.assertEqual((await self.request('GET', '/git/github/TEST-LOGIN/repo.git/info/refs?service=git-receive-pack')).status_code, 404)
         with patch.dict('os.environ', {'AI_GITHUB_LOGIN': ''}):

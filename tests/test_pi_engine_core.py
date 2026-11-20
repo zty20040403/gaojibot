@@ -1,5 +1,7 @@
 """Pi --print engine launch, usage, deadline, and bounded stop contract without a real container."""
 import asyncio
+import base64
+import json
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -18,6 +20,8 @@ class PiCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config['models'][0]['thinkingLevelMap'], {'xhigh': 'xhigh', 'max': 'max'})
         self.assertEqual(config['compat'], {'supportsLongCacheRetention': False, 'supportsMaxOutputTokens': False})
         script = launch_script(9, 'secret token', 'high', 18640, 'private prompt', task='do research')
+        settings = next(line.split()[2] for line in script.splitlines() if line.endswith('/settings.json'))
+        self.assertEqual(json.loads(base64.b64decode(settings))['retry'], {'enabled': False, 'provider': {'maxRetries': 0}})
         for item in (
             'PI_CODING_AGENT_DIR=/run/gaoji/jobs/job-9',
             '--print',

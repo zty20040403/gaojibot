@@ -281,7 +281,7 @@ def launch_script(
     conf = f'/run/gaoji/jobs/job-{job_id}'
     unit = f'gaoji-job-{job_id}'
     models = json.dumps(pi_models_json(port, context_window=context_window), ensure_ascii=False).encode()
-    settings = json.dumps({'steeringMode': 'all', 'retry': {'maxRetries': 8}}).encode()
+    settings = json.dumps({'steeringMode': 'all', 'retry': {'enabled': False, 'provider': {'maxRetries': 0}}}).encode()
     web_cfg = json.dumps(pi_web_access_config(), ensure_ascii=False).encode()
     meta = json.dumps({
         'job_id': job_id,
