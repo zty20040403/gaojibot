@@ -30,6 +30,7 @@
     };
   };
   ct = container {};
+  snaps = (container {services.gaoji.sandbox.workSnapshots.enable = true;}).systemd;
   ctOps = container {
     services.gaoji.sandbox.operations = {
       enable = true;
@@ -42,6 +43,17 @@
   ctBot = ct.systemd.services.gaoji;
   tests = {
     defaultBackendIsContainer = ct.services.gaoji.sandbox.backend == "container";
+    workSnapshotsOptIn = !(ct.systemd.timers ? gaoji-work-snapshot)
+      && !(ct.systemd.services ? gaoji-work-snapshot)
+      && snaps.timers.gaoji-work-snapshot.timerConfig.Persistent
+      && snaps.timers.gaoji-work-snapshot.wantedBy == ["timers.target"];
+    workSnapshotsHostOnly = let
+      unit = snaps.services.gaoji-work-snapshot;
+    in unit.serviceConfig.Type == "oneshot"
+      && unit.serviceConfig.ReadWritePaths == ["/data/services/gaoji/backups/work"]
+      && unit.serviceConfig.ProtectSystem == "strict"
+      && !(unit.serviceConfig ? EnvironmentFile)
+      && lib.hasSuffix " /var/lib/gaoji-ct /data/services/gaoji/backups/work" unit.serviceConfig.ExecStart;
     relayPortsDefault = ct.services.gaoji.sandbox.vmHostPorts == [18640 18641];
     opsOffByDefault = !(ct.systemd.services ? gaoji-ops-tailscaled)
       && !(ct.systemd.sockets ? gaoji-ops-relay-18640);

@@ -10,6 +10,27 @@
 - **网络**：网桥 `vz-gaoji`，宿主地址是 `10.0.2.2`。网桥端口隔离，容器之间互相不可见；nftables 只放行公网、DHCP 和宿主中继端口 18640/18641。运维会话的容器加入 `gaoji-ops` 网络命名空间，可通过独立 Tailscale 节点执行 `ssh <主机>`。
 - **元数据**：保存在 `sandbox.vmRoot`（每个沙盒一个 `<编号>/metadata.json`）及宿主文件锁中。
 
+## 宿主 `/work` 快照（可选）
+
+在已启用容器沙盒的宿主上，管理员先确认本机备份卷已挂载、备份父目录可信且路径不含符号链接，再以 root 执行 `install -d -m 0700 -o root -g root /data/services/gaoji/backups/work`。设置 `services.gaoji.sandbox.workSnapshots.enable = true;` 并按正常流程应用宿主配置。`systemctl list-timers gaoji-work-snapshot.timer` 查看下次运行；`systemctl start gaoji-work-snapshot.service` 可立即执行，`journalctl -u gaoji-work-snapshot.service` 查看结果。无需进入、启动或停止容器。
+
+定时器每天 03:00 UTC 执行，关机错过则补跑一次。仅从 `/var/lib/gaoji-ct/s<六位小写十六进制>/work` 读取，不读同级容器根、元数据、数据库或 bot 环境文件。每个 scope 每个 UTC 日最多一份 `编号_YYYY-MM-DD.tar`（root:root，0600），运行时清理超过最近 30 个 UTC 日期的归档，包括已删除的 scope。同日重跑仅在该 scope 写完后原子替换；一个 scope 报错不妨碍其他 scope 发布，失败不改变仍在保留期内的旧归档。
+
+这是在线文件副本，不是应用级一致性快照或异机容灾。普通文件、目录和符号链接入包；链接只存目标文本，不打开目标。跳过设备、FIFO、socket，不保留 uid/gid、ACL、xattr 或特权位。遇到子挂载（包括同设备 bind mount）、多硬链接普通文件（可能从 scope 外链接）或检测到读取中的改动，该 scope 报错而不发布。大工作区请预留未压缩 tar 和单份临时文件的空间。
+
+**恢复演练**：在宿主上选中一个 scope 和日期，以有权读取归档的管理员运行下列命令。只解到全新私有目录，不覆盖线上 `/work`。默认不还原符号链接，避免后续工具意外读取链接指向的其他位置；确有需要时可从归档清单人工核对链接目标后再建立。
+
+```sh
+archive=/data/services/gaoji/backups/work/s000001_2026-01-01.tar  # 替换为实际文件
+restore=$(mktemp -d)
+python3 - "$archive" "$restore" <<'PY'
+import sys, tarfile
+with tarfile.open(sys.argv[1]) as archive:
+    archive.extractall(sys.argv[2], members=[m for m in archive if m.isfile() or m.isdir()], filter='data')
+PY
+ls -la -- "$restore"
+```
+
 ## 已知限制
 
 - 容器和宿主共用内核，隔离边界弱于独立内核虚拟机；宿主 `/nix/store` 对容器只读可见，因此不能把密钥写进 Nix store。

@@ -16,6 +16,7 @@
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
   sandboxCt = cfg.runBot && cfg.sandbox.enable && cfg.sandbox.backend == "container";
   ctBroker = "/run/gaoji-ct/broker.sock";
+  snapshotDir = "/data/services/gaoji/backups/work";
   ctBridge = "vz-gaoji";
   ctResolver = pkgs.writeText "gaoji-ct-resolv.conf" (lib.concatMapStrings (server: "nameserver ${server}\n") cfg.sandbox.containerDns);
   # The operations network: some conversations' containers join a network
@@ -252,6 +253,8 @@ in {
       default = false;
       description = "Allow persistent conversation execution workspaces.";
     };
+
+    sandbox.workSnapshots.enable = lib.mkEnableOption "daily host-only archives of the container work directories";
 
     sandbox.allowedUsers = lib.mkOption {
       type = lib.types.listOf lib.types.ints.unsigned;
@@ -822,6 +825,29 @@ in {
       requires = ["gaoji-ct-broker.socket"];
       path = [config.systemd.package];
       serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 ${../src/sandbox_runtime/container_broker.py}";
+    };
+    systemd.services.gaoji-work-snapshot = lib.mkIf cfg.sandbox.workSnapshots.enable {
+      description = "Archive local conversation workspaces";
+      unitConfig.RequiresMountsFor = [snapshotDir "/var/lib/gaoji-ct"];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.python3}/bin/python3 -I ${./work_snapshot.py} /var/lib/gaoji-ct ${snapshotDir}";
+        UMask = "0077";
+        ProtectSystem = "strict";
+        ReadWritePaths = [snapshotDir];
+        ProtectHome = true;
+        PrivateNetwork = true;
+        PrivateDevices = true;
+        NoNewPrivileges = true;
+        CapabilityBoundingSet = ["CAP_DAC_READ_SEARCH"];
+      };
+    };
+    systemd.timers.gaoji-work-snapshot = lib.mkIf cfg.sandbox.workSnapshots.enable {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnCalendar = "*-*-* 03:00:00 UTC";
+        Persistent = true;
+      };
     };
     systemd.services."gaoji-ct@" = unit "plain";
     systemd.services."gaoji-ct-ops@" = unit "ops";
