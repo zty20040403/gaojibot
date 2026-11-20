@@ -7,12 +7,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/zty20040403/gaojibot/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=19181D&amp;color=8CC2AE" alt="CI status" /></a>
-  <img src="https://img.shields.io/badge/Python-3.12%2B-D2AE6D?style=flat-square&amp;logo=python&amp;logoColor=F4EFE6&amp;labelColor=19181D" alt="Python 3.12+" />
-  <img src="https://img.shields.io/badge/PostgreSQL-17-D2AE6D?style=flat-square&amp;logo=postgresql&amp;logoColor=F4EFE6&amp;labelColor=19181D" alt="PostgreSQL 17" />
-  <img src="https://img.shields.io/badge/Deploy-NixOS-D2AE6D?style=flat-square&amp;logo=nixos&amp;logoColor=F4EFE6&amp;labelColor=19181D" alt="Deploy with NixOS" />
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-D2AE6D?style=flat-square&amp;labelColor=19181D" alt="MIT License" /></a>
-  <a href="https://github.com/zty20040403/gaojibot/stargazers"><img src="https://img.shields.io/github/stars/zty20040403/gaojibot?style=flat-square&amp;logo=github&amp;logoColor=F4EFE6&amp;label=Stars&amp;labelColor=19181D&amp;color=D2AE6D" alt="GitHub stars" /></a>
+  <a href="https://github.com/zty20040403/gaojibot/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/zty20040403/gaojibot/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=0A0D12&amp;color=34D399" alt="CI status" /></a>
+  <img src="https://img.shields.io/badge/Python-3.12%2B-38BDF8?style=flat-square&amp;logo=python&amp;logoColor=EEF2F7&amp;labelColor=0A0D12" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/PostgreSQL-17-38BDF8?style=flat-square&amp;logo=postgresql&amp;logoColor=EEF2F7&amp;labelColor=0A0D12" alt="PostgreSQL 17" />
+  <img src="https://img.shields.io/badge/Deploy-NixOS-38BDF8?style=flat-square&amp;logo=nixos&amp;logoColor=EEF2F7&amp;labelColor=0A0D12" alt="Deploy with NixOS" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-38BDF8?style=flat-square&amp;labelColor=0A0D12" alt="MIT License" /></a>
+  <a href="https://github.com/zty20040403/gaojibot/stargazers"><img src="https://img.shields.io/github/stars/zty20040403/gaojibot?style=flat-square&amp;logo=github&amp;logoColor=EEF2F7&amp;label=Stars&amp;labelColor=0A0D12&amp;color=38BDF8" alt="GitHub stars" /></a>
 </p>
 
 <p align="center">
