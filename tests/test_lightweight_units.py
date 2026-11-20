@@ -217,6 +217,21 @@ class HostResidentAndWakeTests(OutboxFixture, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('TEST_SECRET_TASK', plans[0]['manifest_json'])
         self.assertIn('没跑成', plans[0]['manifest_json'])
 
+    async def test_present_wake_gets_the_foreground_tool_budget(self):
+        model = AsyncMock(return_value='[silence]')
+        with patch(
+            'src.plugins.ai_chat.adapters.qq_official.background_delivery.ask_deepseek_with_tools',
+            new=model,
+        ), patch(
+            'src.plugins.ai_chat.adapters.qq_official.background_delivery.turn_window',
+            return_value=([], '', None),
+        ):
+            await present_wake(self.service, self.endpoint, '[定时任务 #1 到点触发]\n任务要求：TEST_PATROL',
+                               unit='schedule-1')
+        budget = {key: model.await_args.kwargs[key]
+                  for key in ('max_tool_rounds', 'max_total_calls', 'max_calls_per_round')}
+        self.assertEqual(budget, {'max_tool_rounds': 40, 'max_total_calls': 160, 'max_calls_per_round': 24})
+
 
 if __name__ == '__main__':
     unittest.main()

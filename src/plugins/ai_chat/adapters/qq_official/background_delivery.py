@@ -212,9 +212,10 @@ async def present_wake(service, endpoint, text: str, *, unit: str = ''):
                         for name in ('send_file', 'send_file_from_sandbox', 'send_image', 'shell', 'run_code')
                     },
                 ),
-                max_tool_rounds=16,
-                max_total_calls=48,
-                max_calls_per_round=16,
+                # Same budget as a foreground turn: a scheduled patrol ssh-es into several hosts.
+                max_tool_rounds=40,
+                max_total_calls=160,
+                max_calls_per_round=24,
             )
         if not answer or not answer.strip():
             answer = '[silence]' if turn.delivered else ''
