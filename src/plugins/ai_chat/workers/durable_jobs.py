@@ -10,6 +10,7 @@ from typing import Any, Protocol, TypeAlias
 
 from ..storage.jobs import DurableJob, DurableJobStore
 from ..execution_control import RouteAuthorityLost
+from ..llm_gateway import LLMError, classify_llm_failure
 
 
 DurableJobHandler: TypeAlias = Callable[
@@ -185,13 +186,11 @@ class DurableJobWorker:
             self._heartbeat(job, handler_task),
             name=f"durable-job-heartbeat:{job.job_id}",
         )
+        timeout = self._timeouts.get(job.kind)
+        deadline = asyncio.timeout(timeout)
         try:
-            timeout = self._timeouts.get(job.kind)
-            result = (
-                await asyncio.wait_for(handler_task, timeout=timeout)
-                if timeout is not None
-                else await handler_task
-            )
+            async with deadline:
+                result = await handler_task
             safe_result = dict(result or {})
         except JobDeferred as exc:
             await self._database_calls(self.store.defer, job, delay_seconds=exc.delay_seconds, reason=str(exc))
@@ -209,7 +208,7 @@ class DurableJobWorker:
                 self.store.mark_failed,
                 job.job_id,
                 self.worker_id,
-                f"job exceeded {self._timeouts[job.kind]:g} seconds",
+                f"job exceeded {timeout:g} seconds" if deadline.expired() else "external call timed out; outcome unknown",
                 retryable=False,
                 lease_generation=job.lease_generation,
             )
@@ -233,7 +232,9 @@ class DurableJobWorker:
                 )
             raise
         except Exception as exc:
-            retryable = job.attempts < job.max_attempts
+            retryable = job.attempts < job.max_attempts and (
+                not isinstance(exc, LLMError) or classify_llm_failure(exc).retryable
+            )
             if not retryable:
                 await self._compensate(job, "failed")
             changed = await self._database_calls(

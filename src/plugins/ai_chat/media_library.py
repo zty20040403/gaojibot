@@ -22,7 +22,7 @@ import httpx
 from src.bot_storage import PostgresDatabase
 
 from .cold_archive import ColdArchiveError, copy_verified_file
-from .llm_gateway import LLMGateway
+from .llm_gateway import LLMError, LLMGateway, classify_llm_failure
 from .model_catalog import ModelCatalog, ModelProfile
 from .semantic_recall import SemanticDocument, SemanticRecallService
 
@@ -988,7 +988,7 @@ class MediaLibrary:
 
     def fail_job(self, job: MediaJob, error: Exception) -> None:
         now = int(time.time())
-        final = job.attempts >= self.max_attempts
+        final = job.attempts >= self.max_attempts or isinstance(error, LLMError) and not classify_llm_failure(error).retryable
         delay = min(30 * (2 ** max(job.attempts - 1, 0)), 3600)
         connection = self.database.store_connection()
         try:

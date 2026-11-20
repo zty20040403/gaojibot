@@ -218,9 +218,9 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
         await self.run_job()
         self.assertEqual(self.query('SELECT * FROM media_analysis'),[])
         self.assertEqual(len(self.query("SELECT * FROM usage_events WHERE source='image_caption'")),1)
-        self.assertEqual(self.query('SELECT status FROM media_jobs')[0]['status'],'pending')
+        self.assertEqual(self.query('SELECT status FROM media_jobs')[0]['status'],'failed')
 
-    async def test_unknown_provider_cost_is_not_refunded_and_quota_blocks_model(self):
+    async def test_unknown_provider_cost_is_not_refunded_or_replayed(self):
         self.enqueue()
         def uncertain():
             raise RuntimeError('TEST uncertain provider TEST_SECRET')
@@ -230,9 +230,8 @@ class CaptionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(usage),1)
         self.assertGreater(usage[0]['input_tokens'],0)
         self.assertNotIn('TEST_SECRET',self.query('SELECT last_error FROM media_jobs')[0]['last_error'])
-        self.usage.set_override(self.endpoint.scope.key,call_limit=1,input_limit=0,output_limit=0)
         self.query('UPDATE media_jobs SET next_attempt_at=0')
-        await self.run_job()
+        self.assertEqual(await self.calls(self.library.claim_jobs), [])
         self.assertEqual(len(self.model_calls),1)
         self.assertEqual(self.query('SELECT status FROM media_jobs')[0]['status'],'failed')
 

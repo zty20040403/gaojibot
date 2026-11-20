@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 
 
+from src.plugins.ai_chat.llm_gateway import LLMOutcomeUnknownError
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.plugins.ai_chat.workers.durable_jobs import DurableJobWorker
 
@@ -201,6 +202,20 @@ class DurableJobWorkerTests(unittest.IsolatedAsyncioTestCase):
             while store.get(job_id).status != status:
                 await asyncio.sleep(0.01)
         await asyncio.wait_for(wait(), 2)
+
+    async def test_external_timeout_without_job_timer_and_unknown_model_do_not_requeue(self):
+        store = DurableJobStore(postgres_for_test(self))
+        self.addCleanup(store.close)
+        worker = DurableJobWorker(store, logger=RecordingLogger())
+        for error in (TimeoutError(), LLMOutcomeUnknownError('TEST_UNKNOWN')):
+            kind = type(error).__name__
+            def fail(job, error=error):
+                raise error
+            worker.register(kind, fail)
+            job, _ = store.enqueue(kind=kind, idempotency_key=kind, max_attempts=3)
+            await worker.run_once()
+            self.assertEqual(store.get(job.job_id).status, 'failed')
+            self.assertEqual(store.get(job.job_id).attempts, 1)
 
     async def test_queue_recovers_after_claim_errors(self) -> None:
         store = DurableJobStore(postgres_for_test(self))

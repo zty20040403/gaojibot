@@ -69,7 +69,8 @@ class OfficialCaptionWorker:
         except Exception as error:
             # Error text may contain a signed URL or provider request; retain only a fixed category.
             category = str(error) if isinstance(error, MediaDenied) else type(error).__name__
-            await self.app.db_call(self.fail, job, category)
+            # After model admission, another attempt may pay for the same caption twice.
+            await self.app.db_call(self.fail, job, category, retryable=not reservations)
         finally:
             await self.app.db_call(self.settle, reservations)
 
@@ -193,10 +194,10 @@ class OfficialCaptionWorker:
             connection.execute('UPDATE messages SET rendered_text=? WHERE canonical_message_id=?', (text,row['canonical_message_id']))
             connection.execute("UPDATE media_jobs SET status='succeeded',lease_until=NULL,worker_id='',last_error='',finished_at=?,updated_at=? WHERE job_id=?", (now,now,job.job_id))
 
-    def fail(self, job, category):
+    def fail(self, job, category, *, retryable=True):
         now = int(time.time())
         with self.store.transaction() as connection:
-            final = job.attempts >= 2
+            final = not retryable or job.attempts >= 2
             row = connection.execute('''UPDATE media_jobs SET status=?,next_attempt_at=?,lease_until=NULL,worker_id='',last_error=?,updated_at=?,finished_at=?
                 WHERE job_id=? AND status='running' AND worker_id=? AND attempts=? AND lease_until>?
                 RETURNING message_media_id''', ('failed' if final else 'pending',now+30,'caption_'+category[:60],now,now if final else None,
