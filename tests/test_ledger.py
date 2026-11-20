@@ -159,17 +159,12 @@ class MessageLedgerTests(unittest.TestCase):
                 (self.group_a.key,),
             )
 
-        self.assertEqual(self.ledger.visible_message_floor(self.group_a), 1)
         self.assertIsNone(self.ledger.get_in_scope(self.group_a, historical.canonical_message_id))
-        self.assertEqual(self.ledger.recent_in_scope(self.group_a), [])
+        self.assertEqual(self.ledger.history(self.group_a), [])
         self.assertEqual(self.ledger.hide_history(self.group_a), 1)
 
         new = self.record_text(self.group_a, "2", "new history")
-        self.assertEqual(
-            self.ledger.visible_message_floor(self.group_a),
-            historical.canonical_message_id + 1,
-        )
-        self.assertEqual(self.ledger.recent_in_scope(self.group_a), [new])
+        self.assertEqual(self.ledger.history(self.group_a), [new])
 
     def test_new_conversation_stores_explicit_initial_floor(self) -> None:
         self.record_text(self.group_a, "1", "new conversation")
@@ -245,8 +240,8 @@ class MessageLedgerTests(unittest.TestCase):
         self.assertEqual(feedback.prompt_text, "改成方案 B")
         self.assertEqual(self.ledger.history(self.group_a, terms=("clear",)), [])
 
-    def test_global_index_projection_respects_visibility_and_command_kind(self) -> None:
-        hidden = self.record_text(self.group_a, "1", "hidden")
+    def test_scope_listing_and_history_after_clear(self) -> None:
+        self.record_text(self.group_a, "1", "hidden")
         self.ledger.hide_history(self.group_a)
         visible = self.record_text(self.group_a, "2", "visible")
         self.ledger.record_message(
@@ -258,9 +253,8 @@ class MessageLedgerTests(unittest.TestCase):
             message_kind="command",
         )
 
-        indexed = self.ledger.all_visible_messages()
-        self.assertNotIn(hidden.canonical_message_id, [item.canonical_message_id for item in indexed])
-        self.assertEqual([item.canonical_message_id for item in indexed], [visible.canonical_message_id])
+        self.assertEqual(self.ledger.history(self.group_a), [visible])
+        self.assertEqual(self.ledger.history(self.group_b), [])
         self.assertEqual({scope.key for scope in self.ledger.list_scopes()}, {self.group_a.key, self.group_b.key})
 
 

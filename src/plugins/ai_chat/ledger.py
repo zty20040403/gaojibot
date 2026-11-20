@@ -104,24 +104,6 @@ class MessageLedger:
             for row in rows
         ]
 
-    def all_visible_messages(self, *, limit: int = 5000) -> list[CanonicalMessage]:
-        bounded = min(max(int(limit), 1), 20000)
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT m.*, c.scope_key
-                FROM messages_with_captions AS m
-                JOIN conversations AS c
-                  ON c.conversation_id = m.conversation_id
-                WHERE m.canonical_message_id >= c.min_canonical_message_id
-                  AND m.message_kind != 'command'
-                ORDER BY m.canonical_message_id DESC
-                LIMIT ?
-                """,
-                (bounded,),
-            ).fetchall()
-        return [self._row_to_message(row) for row in reversed(rows)]
-
     def record_message(
         self,
         scope: ConversationScope,
@@ -329,30 +311,6 @@ class MessageLedger:
             ).fetchone()
         return self._row_to_message(row) if row is not None else None
 
-    def get_any_in_scope(
-        self,
-        scope: ConversationScope,
-        canonical_message_id: int,
-    ) -> CanonicalMessage | None:
-        """Resolve an immutable message in a scope, including pre-clear rows.
-
-        This is intentionally separate from normal context visibility. Durable
-        references such as pins may survive a clear, but callers still cannot
-        cross the conversation boundary.
-        """
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT m.*, c.scope_key
-                FROM messages AS m
-                JOIN conversations AS c
-                  ON c.conversation_id = m.conversation_id
-                WHERE c.scope_key = ? AND m.canonical_message_id = ?
-                """,
-                (scope.key, int(canonical_message_id)),
-            ).fetchone()
-        return self._row_to_message(row) if row is not None else None
-
     def canonical_id_for_native(
         self,
         scope: ConversationScope,
@@ -376,62 +334,6 @@ class MessageLedger:
                 (scope.key, str(native_message_id), source_key),
             ).fetchone()
         return int(row[0]) if row is not None else None
-
-    def recent_in_scope(
-        self,
-        scope: ConversationScope,
-        limit: int = 40,
-    ) -> list[CanonicalMessage]:
-        limit = min(max(int(limit), 1), 500)
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT * FROM (
-                    SELECT m.*, c.scope_key
-                    FROM messages_with_captions AS m
-                    JOIN conversations AS c
-                      ON c.conversation_id = m.conversation_id
-                    WHERE c.scope_key = ?
-                      AND m.canonical_message_id >= c.min_canonical_message_id
-                    ORDER BY m.occurred_at DESC, m.canonical_message_id DESC
-                    LIMIT ?
-                ) ORDER BY occurred_at ASC, canonical_message_id ASC
-                """,
-                (scope.key, limit),
-            ).fetchall()
-        return [self._row_to_message(row) for row in rows]
-
-    def visible_message_count_after(
-        self,
-        scope: ConversationScope,
-        canonical_message_id: int = 0,
-    ) -> int:
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT COUNT(*)
-                FROM messages AS m
-                JOIN conversations AS c
-                  ON c.conversation_id = m.conversation_id
-                WHERE c.scope_key = ?
-                  AND m.canonical_message_id > ?
-                  AND m.canonical_message_id >= c.min_canonical_message_id
-                """,
-                (scope.key, max(int(canonical_message_id), 0)),
-            ).fetchone()
-        return int(row[0]) if row is not None else 0
-
-    def visible_message_floor(self, scope: ConversationScope) -> int:
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT c.min_canonical_message_id
-                FROM conversations AS c
-                WHERE c.scope_key = ?
-                """,
-                (scope.key,),
-            ).fetchone()
-        return int(row[0]) if row is not None and row[0] is not None else 1
 
     def visible_messages_by_ids(
         self,
