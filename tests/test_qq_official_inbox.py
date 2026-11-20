@@ -79,7 +79,7 @@ class OfficialInboxTests(unittest.TestCase):
         return ('qq_official_inbound_events', 'qq_official_inbound_dedup', 'qq_official_gateway_receipts',
                 'qq_official_accounts', 'qq_official_endpoints', 'qq_official_binding_challenges',
                 'qq_official_binding_candidates', 'qq_official_owner_grants', 'qq_official_owner_actor_links',
-                'qq_official_binding_rate_limits', 'qq_official_reply_windows', 'qq_official_messages',
+                'qq_official_reply_windows', 'qq_official_messages',
                 'qq_official_message_indexes', 'qq_official_control_decisions', 'admin_audit_log', 'durable_jobs', 'messages')
 
     def persisted_text(self):
@@ -270,8 +270,8 @@ class OfficialInboxTests(unittest.TestCase):
             received = self.accept(content=text, private=private)
             row, = self.query('SELECT payload_json,ingest_job_id FROM qq_official_inbound_events WHERE inbox_id=?', (received.inbox_id,))
             self.assertEqual(row, {'payload_json': None, 'ingest_job_id': None})
-        for table in ('qq_official_admin_bindings', 'qq_official_admin_identity_challenges', 'messages'):
-            self.assertEqual(self.query('SELECT count(*) AS n FROM ' + table), [{'n': 0}])
+            self.assertEqual(received.disposition, 'quarantined')
+        self.assertEqual(self.count('messages'), 0)
         self.assertNotIn('b' * 32, self.persisted_text())
 
     def test_owner_binding_entries_are_body_free_and_unbound_group_gets_no_code(self):

@@ -32,8 +32,6 @@ class IdentityHTTPTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
    self.assertEqual((await self.client.post(path,json={})).status_code,404)
    self.assertEqual((await self.client.get(path+'/TEST_ID')).status_code,404)
    self.assertEqual((await self.client.post(path+'/TEST_ID/confirm',json={})).status_code,404)
-  self.assertFalse(self.rows('SELECT * FROM qq_official_admin_identity_challenges'))
-  self.assertFalse(self.rows('SELECT * FROM qq_official_admin_bindings'))
 
  async def test_protected_status_rejects_anonymous_member_and_account_queries(self):
   path='/bot-admin/api/qq-official/status'

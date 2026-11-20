@@ -121,7 +121,6 @@ class OfficialRuntime:
         self.application, self.turn_consumer_factory = application, turn_consumer_factory
         self.migration_factory, self.migration_service = migration_factory, None
         self.background_factory, self.background_service = background_factory, None
-        self.admin_identity_service = None
         self.media_factory = media_factory
         self.media_service = None
         self.file_services_factory = file_services_factory
@@ -566,13 +565,6 @@ class OfficialRuntime:
                                          ensure_current=lambda: self._ensure_current(token)) as gateway, AsyncExitStack() as resources:
             self._gateway = gateway
             gateway.observer = self.observer
-            from .admin_identity import AdminIdentityBinding
-            self.admin_identity_service = AdminIdentityBinding(self, token)
-            self.store.admin_identity_service = self.admin_identity_service
-            async def close_identity():
-                self.store.admin_identity_service = None
-                self.admin_identity_service = None
-            resources.push_async_callback(close_identity)
             if self.migration_factory is not None:
                 from .host_services import OfficialHostSession
                 migration = await self._optional_feature('projects', self.migration_factory, self, token)

@@ -21,7 +21,6 @@ from src.qq_official.events import EventParseError, LIFECYCLE_EVENTS, MESSAGE_EV
 from src.qq_official.gateway import GatewayCheckpoint
 
 from . import peer_bots
-from .admin_identity import command_commitment, prepare_identity_input
 from .authority import OwnerAuthority
 from .binding import BindingCommand, BindingContext, BindingDecision, BindingReducer
 from .codec import DecodedMessage, RejectedMessage, decode_message
@@ -72,7 +71,6 @@ class Acceptance:
     reason: str = ""
     binding: BindingDecision | None = field(default=None, repr=False)
     _native_admission: object = field(default=None, repr=False)
-    _identity_input: object = field(default=None, repr=False)
     _prepared: object = field(default=None, repr=False)
     ingested: IngestResult | None = field(default=None, repr=False)
 
@@ -274,7 +272,6 @@ class OfficialInboxStore:
         self.clock, self.epoch_guard = clock, epoch_guard
         self._lock = threading.RLock()
         self.source_authority = None
-        self.admin_identity_service = None
 
     def close(self):
         with self._lock:
@@ -412,9 +409,6 @@ class OfficialInboxStore:
                 self.source_authority.record(cursor, token=token, proof=result._native_admission,
                     inbox_id=result.inbox_id, session_id=session_id, seq=seq)
                 result = replace(result, _native_admission=None)
-            if result._identity_input is not None and self.admin_identity_service is not None:
-                self.admin_identity_service.observe(cursor, inbox_id=result.inbox_id, command=result._identity_input)
-                result = replace(result, _identity_input=None)
             prepared = result._prepared
             if result._prepared is not None:
                 result = replace(result, _prepared=None)
@@ -586,7 +580,6 @@ class OfficialInboxStore:
                 self._save_aliases(cursor, account, aliases, result.inbox_id, now)
                 return result
         decision = None
-        identity_input = None
         payload = None
         prepared = None
         status, reason, echo = "skipped", "not_admitted", "not_echo"
@@ -606,15 +599,10 @@ class OfficialInboxStore:
                     and cursor.execute('SELECT 1 FROM qq_official_accounts WHERE account_key=? AND owner_link_code_hmac IS NOT NULL',
                                        (account.key,)).fetchone() is not None):
                 command = BindingCommand('owner_entry', code=prepared_input.input_text.strip())
-            identity_command = prepare_identity_input(dispatch)
             if sent is not None:
                 reason, echo = "self_echo", "confirmed_self"
-            elif identity_command.kind != "ordinary":
-                if (identity_command.kind == "control" and endpoint.kind == "private"
-                        and decoded.platform_occurred_at is not None):
-                    status, reason, identity_input = "processed", "admin_identity_control", identity_command
-                else:
-                    status, reason = "quarantined", "input_sensitive_identity"
+            elif '/admin-bind' in dispatch.message.content.lower():
+                status, reason = "quarantined", "input_sensitive_identity"
             elif prepared_input.kind == "quarantine":
                 status, reason = "quarantined", prepared_input.reason
             elif command is not None:
@@ -646,22 +634,15 @@ class OfficialInboxStore:
             native_id=native_id, event_id=event_id, status=status, reason=reason, payload=payload, echo=echo,
             trigger=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending",
         )
-        if identity_input is not None:
-            cursor.execute("""UPDATE qq_official_inbound_events
-                SET identity_control_actor_key=?,identity_control_occurred_at=?,identity_control_commitment=?
-                WHERE inbox_id=?""",
-                (decoded.actor.key, decoded.platform_occurred_at,
-                 command_commitment(self.binding._pepper, inbox_id=inbox_id, endpoint=endpoint,
-                                    actor=decoded.actor, native_id=native_id, command=identity_input), inbox_id))
         if decision is not None:
             cursor.execute("""UPDATE qq_official_inbound_events
                 SET control_actor_key=?,control_action=?,control_decision_code=? WHERE inbox_id=?""",
                 (decoded.actor.key, command.action, decision.status, inbox_id))
         self._save_aliases(cursor, account, aliases, inbox_id, now)
         disposition = ("inbox" if status == "pending" else "quarantined" if status == "quarantined"
-                       else "control" if decision or identity_input or reason == "admin_control_unavailable" else "skipped")
+                       else "control" if decision or reason == "admin_control_unavailable" else "skipped")
         return Acceptance(disposition, inbox_id, reason or "", decision,
-                          native_admission, identity_input, prepared)
+                          native_admission, prepared)
 
     def _lifecycle(self, cursor, account, dispatch, now):
         body = dispatch.data

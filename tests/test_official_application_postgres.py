@@ -17,9 +17,7 @@ from src.bot_security.store import SecurityStore, SecurityError
 from src.plugins.ai_chat.application_runtime import OfficialApplicationRuntime
 from src.plugins.ai_chat.config import settings
 from src.plugins.ai_chat.platform_types import AccountKey, EndpointKey, ActorKey
-from src.plugins.ai_chat.adapters.qq_official.admin_bindings import AdminBindingStore
 from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
-from src.plugins.ai_chat.adapters.qq_official.validation import Denied
 from src.plugins.ai_chat.adapters.qq_official.runtime import OfficialRuntime, open_official_protocol
 from tests.fake_platform import FakePlatform
 from tests.postgres_fixture import isolated_postgres_for_test
@@ -44,10 +42,7 @@ class NativeConsoleTests(unittest.TestCase):
         actor=ActorKey(account,'c2c_user','','TEST_USER')
         with self.store.transaction() as cursor:
             self.assertEqual(cursor.execute('SELECT identity_mode FROM admin_accounts').fetchone()[0],'local_admin')
-            self.assertEqual(cursor.execute('SELECT count(*) FROM qq_official_admin_bindings').fetchone()[0],0)
-            self.assertEqual(cursor.execute('SELECT count(*) FROM qq_official_owner_grants').fetchone()[0],0)
-            with self.assertRaises(Denied):
-                AdminBindingStore(owners=OwnerAuthority(account=account)).resolve_admin(cursor,endpoint=endpoint,actor=actor)
+            self.assertIsNone(OwnerAuthority(account=account).owner_for_actor(cursor,endpoint,actor))
         with self.assertRaises(SecurityError):self.store.bootstrap_local_admin('overwrite','TEST safe password 12345')
         with self.assertRaises(SecurityError):self.store.bootstrap('overwrite','TEST safe password 12345','100001')
 
@@ -58,7 +53,6 @@ class NativeConsoleTests(unittest.TestCase):
         self.assertIsNone(second['qq_id'])
         with self.assertRaises(SecurityError):self.store.add_local_admin('second','TEST replacing password 12345')
         with self.store.transaction() as cursor:
-            self.assertEqual(cursor.execute('SELECT count(*) FROM qq_official_admin_bindings').fetchone()[0],0)
             cursor.execute('UPDATE admin_accounts SET enabled=0')
         with self.assertRaises(SecurityError):self.store.add_local_admin('third','TEST safe password 12345')
 
@@ -176,8 +170,6 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                         await fake.close_connections()
                         await asyncio.wait_for(fake.wait_ready(),10)
                         self.assertTrue(fake.resume_count or fake.identify_count>=2)
-                        with context.delivery_store.transaction() as cursor:
-                            self.assertEqual(cursor.execute('SELECT count(*) FROM qq_official_admin_bindings').fetchone()[0],0)
                     finally:await host.close()
                 self.assertFalse(host.ready)
                 self.assertTrue(host.context._closed)

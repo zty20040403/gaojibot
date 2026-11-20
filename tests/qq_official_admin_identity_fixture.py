@@ -1,14 +1,13 @@
 from contextlib import contextmanager
-import hashlib,secrets
+import secrets
 from types import SimpleNamespace
 from src.bot_security.store import SecurityStore
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
 from src.plugins.ai_chat.platform_types import AccountKey
-from src.plugins.ai_chat.adapters.qq_official.authority import ConsoleAuthorization,OwnerAuthority
+from src.plugins.ai_chat.adapters.qq_official.authority import OwnerAuthority
 from src.plugins.ai_chat.adapters.qq_official.binding import BindingReducer
 from src.plugins.ai_chat.adapters.qq_official.inbox import OfficialInboxStore
 from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease,assert_epoch
-from src.plugins.ai_chat.adapters.qq_official.admin_identity import AdminIdentityBinding
 
 PASSWORD='TEST-bind-password-only-123456'
 class IdentityFixture:
@@ -28,10 +27,7 @@ class IdentityFixture:
   self.store.accept({'op':0,'s':0,'t':'READY','d':{'session_id':self.session}},token=self.token,session_id=self.session)
   self.security=SecurityStore(self.database,b'TEST_SECURITY_PEPPER_12345678901234567',clock=lambda:self.now);self.addCleanup(self.security.close)
   self.admin=self.security.bootstrap_local_admin('test_admin',PASSWORD)
-  self.login=self.security.login('test_admin',PASSWORD,'127.0.0.1')
-  self.auth=ConsoleAuthorization(self.admin['account_id'],self.admin['version'],hashlib.sha256(self.login['session'].encode()).hexdigest())
   self.runtime=SimpleNamespace(_token=self.token,_stopping=False,store=self.store,loaded=SimpleNamespace(account=self.account,binding_pepper=self.pepper))
-  self.service=AdminIdentityBinding(self.runtime,self.token);self.store.admin_identity_service=self.service
  @contextmanager
  def tx(self):
   with self.store.transaction() as c:yield c

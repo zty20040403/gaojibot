@@ -1,4 +1,4 @@
 from __future__ import annotations
 
 
-HEAD_REVISION = "0132_retire_approval_tables"
+HEAD_REVISION = "0133_retire_console_bindings"

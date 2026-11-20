@@ -23,7 +23,8 @@ class DetailTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.assertEqual(value['checkpoint']['fencing_epoch'],self.token.epoch)
   item=value['items'][0];self.assertEqual(item['kind'],'private');self.assertNotIn('admin_binding',item)
   encoded=json.dumps(value)
-  for secret in (self.account.key,self.owner,self.session,self.auth.account_id,self.auth.session_hash,'TEST_MESSAGE','TEST_NATIVE_1'):
+  login=self.security.login('test_admin',identity_support.PASSWORD,'TEST_PEER')
+  for secret in (self.account.key,self.owner,self.session,self.admin['account_id'],login['session'],'TEST_MESSAGE','TEST_NATIVE_1'):
    self.assertNotIn(secret,encoded)
  async def test_bound_pagination_tamper_account_and_expiry(self):
   for i in range(3):

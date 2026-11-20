@@ -13,13 +13,6 @@ from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 
 
 @dataclass(frozen=True)
-class ConsoleAuthorization:
-    account_id: str = field(repr=False)
-    account_version: int
-    session_hash: str = field(repr=False)
-
-
-@dataclass(frozen=True)
 class ConfiguredOwner:
     account_key: str = field(repr=False)
     c2c_actor_key: str = field(repr=False)
@@ -69,24 +62,6 @@ class OwnerAuthority:
     def lock_account(self, cursor, account: AccountKey) -> bool:
         return cursor.execute("SELECT account_key FROM qq_official_accounts WHERE account_key=? FOR UPDATE",
                               (account.key,)).fetchone() is not None
-
-    def console_current(self, cursor, authorization: ConsoleAuthorization) -> bool:
-        if not isinstance(authorization, ConsoleAuthorization):
-            return False
-        return cursor.execute("""SELECT 1 FROM admin_sessions s JOIN admin_accounts a
-            ON a.account_id=s.account_id WHERE s.session_hash=? AND a.account_id=?
-            AND a.version=? AND a.version=s.account_version AND a.enabled=1 AND a.role='admin'
-            AND s.expires_at>? FOR SHARE OF a,s""",
-            (authorization.session_hash, authorization.account_id, authorization.account_version,
-             int(self.clock()))).fetchone() is not None
-
-    def c2c_grant(self, cursor, actor: ActorKey, *, lock: bool = False) -> OwnerGrant | None:
-        if self.configured_owner(actor) is None:
-            return None
-        row = cursor.execute("""SELECT * FROM qq_official_owner_grants
-            WHERE account_key=? AND c2c_actor_key=? AND state='active'""" + (" FOR UPDATE" if lock else ""),
-            (actor.account.key, actor.key)).fetchone()
-        return _grant(row)
 
     def owner_for_actor(self, cursor, endpoint: EndpointKey,
                         actor: ActorKey) -> ConfiguredOwner | None:
