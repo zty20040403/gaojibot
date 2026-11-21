@@ -59,6 +59,8 @@ def input_command(event):
                                                 deltaX=event['dx'], deltaY=event['dy'])
     if kind == 'text':
         return 'Input.insertText', {'text': event['text']}
+    if kind == 'ack':
+        return 'Page.screencastFrameAck', {'sessionId': event['id']}
     if kind in ('keyDown', 'keyUp'):
         key = event['key']
         return 'Input.dispatchKeyEvent', dict(type=kind, key=key, windowsVirtualKeyCode=event['keyCode'],
@@ -66,7 +68,7 @@ def input_command(event):
     raise ValueError('unknown_input')
 
 
-async def mirror(viewer, cdp):
+async def mirror(viewer, cdp, width, height):
     ids = count(1)
 
     async def send(method, params):
@@ -79,8 +81,8 @@ async def mirror(viewer, cdp):
                 raise ValueError('cdp_command_failed')
             if data.get('method') == 'Page.screencastFrame':
                 frame = data['params']
-                await viewer.send_json({'image': frame['data'], 'viewport': frame['metadata']})
-                await send('Page.screencastFrameAck', {'sessionId': frame['sessionId']})
+                # The viewer acks on arrival, so a slow phone link holds one frame, not a backlog.
+                await viewer.send_json({'image': frame['data'], 'viewport': frame['metadata'], 'id': frame['sessionId']})
         raise ValueError('tab_disconnected')
 
     async def input_events():
@@ -90,6 +92,10 @@ async def mirror(viewer, cdp):
                 return
             await send(*input_command(event))
 
+    # Lay the page out at the viewer's size so a phone shows it 1:1; Chrome drops the
+    # override when this CDP connection closes.
+    await send('Emulation.setDeviceMetricsOverride', {'width': width, 'height': height,
+                                                      'deviceScaleFactor': 0, 'mobile': False})
     await send('Page.startScreencast', {'format': 'jpeg', 'quality': 75})
     tasks = [asyncio.create_task(pump()) for pump in (frames, input_events)]
     try:
@@ -120,16 +126,17 @@ def register_takeover(app, context):
         await ws.accept()
         try:
             async with asyncio.timeout(5):
-                entry = context.browser_takeovers.claim(await ws.receive_text())
+                hello = await ws.receive_json()
+                entry = context.browser_takeovers.claim(hello['token'])
             if not entry:
                 await ws.close(code=4403, reason='链接已使用或失效')
                 return
             owner, sid, deadline = entry
             async with asyncio.timeout_at(deadline):
                 async with current_tab(context.sandbox_manager, owner, sid) as cdp:
-                    await mirror(ws, cdp)
+                    await mirror(ws, cdp, int(hello['width']), int(hello['height']))
             await ws.close()
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, RuntimeError):  # RuntimeError: sending after the viewer left.
             return
         except TimeoutError:
             await ws.close(code=4408, reason='接管连接超时')

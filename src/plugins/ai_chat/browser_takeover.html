@@ -25,11 +25,14 @@ el('start').onclick = () => {
   el('start').hidden = true;
   el('status').textContent = '连接中…';
   ws = new WebSocket('wss://' + location.host + location.pathname + '/live');
-  ws.onopen = () => ws.send(token);
+  // Ask for the page at the size this screen shows it, but wide enough for a captcha dialog.
+  ws.onopen = () => ws.send(JSON.stringify({token, width: Math.max(400, innerWidth - 16),
+                                           height: Math.max(480, Math.round(innerHeight * .73))}));
   ws.onmessage = ({data}) => {
     const frame = JSON.parse(data);
     viewport = frame.viewport;
     screen.src = 'data:image/jpeg;base64,' + frame.image;
+    send({type: 'ack', id: frame.id});
     el('controls').hidden = false;
     el('status').textContent = '可点击、拖动或输入。操作结束后点「完成」。';
   };

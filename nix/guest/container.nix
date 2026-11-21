@@ -67,7 +67,11 @@ in {
   systemd.services.gaoji-browser = {
     restartIfChanged = false;
     unitConfig.RequiresMountsFor = "/work";
-    environment.TZ = "Asia/Shanghai";
+    environment = {
+      TZ = "Asia/Shanghai";
+      # Commands get it from environment.variables; services do not, and pages lose CJK glyphs.
+      FONTCONFIG_FILE = "${tools.fontConfig}";
+    };
     serviceConfig = {
       ExecStartPre = [
         "${pkgs.coreutils}/bin/mkdir -p /work/.gaoji/chromium"

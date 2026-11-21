@@ -147,27 +147,29 @@ class ViewerTests(unittest.TestCase):
         with self.assertRaises(WebSocketDisconnect), self.connect('https://TEST_OTHER.invalid'):
             pass
         with self.connect() as ws:
-            ws.send_text(self.token)
-            self.assertEqual(ws.receive_json()['image'], 'TEST_IMAGE')
+            ws.send_json({'token': self.token, 'width': 400, 'height': 600})
+            self.assertEqual(ws.receive_json(), {'image': 'TEST_IMAGE', 'viewport': {}, 'id': 71})
+            ws.send_json({'type': 'ack', 'id': 71})
             for kind in ('mousePressed', 'mouseMoved', 'mouseReleased'):
                 ws.send_json({'type': kind, 'x': 15, 'y': 42})
             ws.send_json({'type': 'done'})
             self.assertEqual(ws.receive()['code'], 1000)
-        self.assertEqual([c['method'] for c in self.commands], ['Page.startScreencast', 'Page.screencastFrameAck',
-                         *['Input.dispatchMouseEvent'] * 3])
-        self.assertEqual(self.commands[1]['params'], {'sessionId': 71})
-        drag = [cmd['params'] for cmd in self.commands[2:]]
+        self.assertEqual([c['method'] for c in self.commands], ['Emulation.setDeviceMetricsOverride', 'Page.startScreencast',
+                         'Page.screencastFrameAck', *['Input.dispatchMouseEvent'] * 3])
+        self.assertEqual(self.commands[0]['params'], {'width': 400, 'height': 600, 'deviceScaleFactor': 0, 'mobile': False})
+        self.assertEqual(self.commands[2]['params'], {'sessionId': 71})
+        drag = [cmd['params'] for cmd in self.commands[3:]]
         self.assertEqual([(e['type'], e['button'], e['buttons']) for e in drag],
                          [('mousePressed', 'left', 1), ('mouseMoved', 'left', 1), ('mouseReleased', 'left', 0)])
         with self.connect() as ws:
-            ws.send_text(self.token)
+            ws.send_json({'token': self.token, 'width': 400, 'height': 600})
             self.assertEqual(ws.receive()['code'], 4403)
 
     def test_deadline_also_ends_an_open_stream(self):
         owner, sid, deadline = self.links.pending[self.token]
         self.links.pending[self.token] = owner, sid, deadline - 599.5
         with self.connect() as ws:
-            ws.send_text(self.token)
+            ws.send_json({'token': self.token, 'width': 400, 'height': 600})
             self.assertEqual(ws.receive_json()['image'], 'TEST_IMAGE')
             self.assertEqual(ws.receive()['code'], 4408)
 
@@ -178,7 +180,7 @@ class ViewerTests(unittest.TestCase):
         for event, method in inputs:
             self.assertEqual(takeover.input_command(event)[0], method)
         with self.connect() as ws:
-            ws.send_text(self.token)
+            ws.send_json({'token': self.token, 'width': 400, 'height': 600})
             ws.receive_json()
             ws.send_json({'type': 'Runtime.evaluate'})
             self.assertEqual(ws.receive()['code'], 1011)
