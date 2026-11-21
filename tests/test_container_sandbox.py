@@ -141,6 +141,21 @@ class ManagerTests(unittest.IsolatedAsyncioTestCase):
         await self.manager._remove("s123456")
         self.assertEqual(self.requests[-1][0], {"op": "remove", "sid": "s123456"})
 
+    async def test_guest_root_commands_get_room_beside_the_resident_browser(self):
+        calls = []
+
+        async def guest(sid, path, args, **kwargs):
+            calls.append(args)
+            return 0, b"", b""
+
+        async def running(owner, sid):
+            return None
+        self.manager._guest_exec, self.manager._owned_running = guest, running
+        await self.manager.exec("TEST_OWNER", "s123456", "true")
+        await self.manager.run_container_command("TEST_OWNER", "s123456", "true")
+        self.assertEqual([a for args in calls for a in args if a.startswith("--nproc=")],
+                         ["--nproc=256:256", "--nproc=1024:1024"])
+
     async def test_unreachable_broker_is_an_error(self):
         manager = ContainerSandboxManager(root=self.manager.root, broker=os.devnull + ".sock")
         with self.assertRaisesRegex(SandboxError, "容器管理服务不可用"):

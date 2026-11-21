@@ -437,7 +437,11 @@ class WorkspaceSandboxManager:
             rel = self._workspace_path(raw_wd).removeprefix("/workspace/")
             wd = "/work/" + rel
         timeout = min(max(timeout_seconds or self.default_timeout_seconds, 1), 300)
-        pids_limit = self.pids_limit
+        # These commands run as guest root, whose RLIMIT_NPROC count includes the
+        # resident Chromium's ~250 threads; the sandbox-user limit left ffmpeg and
+        # other threaded tools unable to start while the browser was open. The
+        # container's TasksMax (8x) still caps everything.
+        pids_limit = self.pids_limit * 4
         activity_id = secrets.token_hex(8)
         activity = SandboxExecutionActivity(
             activity_id=activity_id,
