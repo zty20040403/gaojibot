@@ -860,6 +860,8 @@ in {
     in {
       bindsTo = ["gaoji-ct@%i.service"];
       after = ["gaoji-ct@%i.service"];
+      # socat exits 143 on the SIGTERM sent when the container stops.
+      serviceConfig.SuccessExitStatus = 143;
       serviceConfig.ExecStart = lib.escapeShellArgs [
         "${pkgs.socat}/bin/socat"
         "UNIX-LISTEN:/run/gaoji-ct/cdp-%i.sock,unlink-early,mode=0600,user=${cfg.user},fork"
