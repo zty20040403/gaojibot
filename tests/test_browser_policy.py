@@ -59,5 +59,9 @@ class BrowserPolicyTests(unittest.TestCase):
         self.assertIn('任何个人账号登录都要拒绝',authorized)
         for endpoint in (private,self.endpoint):
             text = instructions(endpoint)
-            for rule in ('三分钟','不索取','提醒撤回','不打印','登记成功不等于已送达'):
+            for rule in ('三分钟','不打印','登记成功不等于已送达'):
                 self.assertIn(rule,text)
+        self.assertIn('照用来登录',instructions(private))
+        self.assertIn('不写进记忆',instructions(private))
+        self.assertNotIn('照用来登录',instructions(self.endpoint))
+        self.assertIn('提醒撤回',instructions(self.endpoint))
