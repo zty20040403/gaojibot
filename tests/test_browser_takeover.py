@@ -63,6 +63,13 @@ class TakeoverToolTests(unittest.IsolatedAsyncioTestCase):
             turn.context.platform.progress.say.assert_not_awaited()
         self.assertFalse(self.links.pending)
 
+    def test_refused_call_can_be_retried_once_after_opening_the_page(self):
+        from src.plugins.ai_chat.agent_loop import _is_repeated_tool_call
+        from src.plugins.ai_chat.tool_policy import policy_for_tool
+        policy = policy_for_tool('browser_takeover')
+        self.assertFalse(_is_repeated_tool_call('TEST_FP', policy, ['TEST_FP', 'TEST_RUN'], {'TEST_FP': 1}))
+        self.assertTrue(_is_repeated_tool_call('TEST_FP', policy, ['TEST_FP', 'TEST_RUN', 'TEST_FP'], {'TEST_FP': 2}))
+
     async def test_member_cannot_claim_group_login_authority(self):
         turn = self.turn('group', 'TEST_GROUP', 's000003')
         with patch('src.plugins.ai_chat.tools.browser_takeover.source_role', return_value='member') as role:

@@ -79,7 +79,6 @@ _SEND_TOOLS = {
     "send_file",
     "send_image",
     "say",
-    "browser_takeover",
     "send_sticker",
     "send_forward_summary",
     "reply_send",
@@ -162,6 +161,16 @@ def _policy_registry() -> dict[str, ToolPolicy]:
             )
             for name in _BROWSER_WRITE_TOOLS
         }
+    )
+    # A refused call (blank tab) is followed by opening the page and calling again
+    # with the same empty arguments. Tokens live in memory, so a replay after a
+    # restart rightly sends a fresh link.
+    policies["browser_takeover"] = ToolPolicy(
+        risk="high",
+        idempotency="idempotent",
+        side_effects=("send:conversation",),
+        timeout_seconds=90.0,
+        max_identical_calls=2,
     )
     policies["sandbox_exec"] = ToolPolicy(
         risk="high",
