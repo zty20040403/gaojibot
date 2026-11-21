@@ -89,6 +89,9 @@ in {
         "--lang=zh-CN"
         "--accept-lang=zh-CN,zh"
         "--window-size=1280,900"
+        # Chromium's own User-Agent without "HeadlessChrome", which sites such
+        # as Xiaohongshu refuse outright as a risky network.
+        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${lib.versions.major pkgs.chromium.version}.0.0.0 Safari/537.36"
         "about:blank"
       ];
       ExecStartPost = pkgs.writeShellScript "gaoji-browser-ready" ''
