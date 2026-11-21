@@ -50,6 +50,18 @@ class TakeoverToolTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.links = takeover.TakeoverLinks()
+        self.url = self.enterContext(patch('src.plugins.ai_chat.tools.browser_takeover.current_url',
+                                           AsyncMock(return_value='https://TEST.invalid/login')))
+
+    async def test_blank_or_stopped_browser_gets_no_link(self):
+        for url in ('about:blank', None):
+            self.url.return_value = url
+            turn = self.turn('private', 'TEST_A', 's000001')
+            result = await neutral_registry_for(turn.context).execute(turn, 'browser_takeover', {})
+            self.assertIn('空白页', json.loads(result)['error'])
+            self.url.assert_awaited_with(turn.agent_executor.sandbox_manager, 's000001')
+            turn.context.platform.progress.say.assert_not_awaited()
+        self.assertFalse(self.links.pending)
 
     async def test_member_cannot_claim_group_login_authority(self):
         turn = self.turn('group', 'TEST_GROUP', 's000003')

@@ -1,5 +1,6 @@
 """Deliver the bearer link via the bound QQ port, not the model or guest."""
 from ..adapters.qq_official.message_roles import source_role
+from ..browser_takeover import current_url
 from . import owned_sandbox, progress
 from .registry import FunctionTool
 
@@ -35,7 +36,10 @@ async def execute(turn, arguments):
     items = await executor._call(executor.sandbox_manager.list, executor.owner)
     if not items or not items[0]['status'].startswith('Up '):
         return '{"ok":false,"error":"请先在本会话打开要接管的网页。"}'
-    token = context.app.browser_takeovers.issue(executor.owner, items[0]['sandbox_id'])
+    sid = items[0]['sandbox_id']
+    if await current_url(executor.sandbox_manager, sid) in (None, 'about:blank'):
+        return '{"ok":false,"error":"浏览器当前是空白页，请先打开要接管的网页再发链接。"}'
+    token = context.app.browser_takeovers.issue(executor.owner, sid)
     link = f'{settings.admin_origin}/browser-takeover#{token}'
     message = '这个登录全群可用。仅用于 bot 公共小号：\n' + link if group else link
     if len(message) > 200:  # say truncates progress messages to 200 characters.

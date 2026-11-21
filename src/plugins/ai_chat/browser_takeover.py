@@ -31,20 +31,37 @@ class TakeoverLinks:
             return entry
 
 
+def cdp_client(manager, sid):
+    socket = Path(manager.broker).with_name(f'cdp-{sid}.sock')
+    return aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(socket)),
+                                 timeout=aiohttp.ClientTimeout(total=10))
+
+
+async def page_targets(client):
+    async with client.get('http://localhost/json/list', allow_redirects=False) as response:
+        response.raise_for_status()
+        return [t for t in await response.json() if t['type'] == 'page']
+
+
+async def current_url(manager, sid):
+    """URL of the tab a takeover would show; None when the browser is not running."""
+    try:
+        async with cdp_client(manager, sid) as client:
+            pages = await page_targets(client)
+    except (aiohttp.ClientError, OSError):
+        return None
+    return pages[0]['url'] if pages else None
+
+
 @asynccontextmanager
 async def current_tab(manager, owner, sid):
-    socket = Path(manager.broker).with_name(f'cdp-{sid}.sock')
-    async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(socket)),
-                                     timeout=aiohttp.ClientTimeout(total=10)) as client:
+    async with cdp_client(manager, sid) as client:
         async with manager.io_lock(sid):
             await manager._owned_running(owner, sid)
-            async with client.get('http://localhost/json/list', allow_redirects=False) as response:
-                response.raise_for_status()
-                targets = await response.json()
-            tab = next((t['id'] for t in targets if t['type'] == 'page'), None)
-            if not tab:
+            pages = await page_targets(client)
+            if not pages:
                 raise ValueError('no_current_tab')
-            cdp = await client.ws_connect('ws://localhost/devtools/page/' + quote(tab, safe=''))
+            cdp = await client.ws_connect('ws://localhost/devtools/page/' + quote(pages[0]['id'], safe=''))
         async with cdp:
             yield cdp
 
