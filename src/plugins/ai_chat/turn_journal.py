@@ -299,7 +299,7 @@ class TurnJournal:
             event_kind="tool",
             state="started",
             tool_name=tool_name,
-            input_json=_safe_json(arguments, self.event_max_chars),
+            input_json=_safe_json(_browser_arguments(tool_name, arguments), self.event_max_chars),
             detail=_safe_json(metadata or {}, min(self.event_max_chars, 2000)),
             effect_labels=effect_labels,
             increment_tool_count=True,
@@ -317,6 +317,8 @@ class TurnJournal:
     ) -> None:
         if state == "started":
             raise ValueError("finished tool event cannot use started state")
+        if self._started_browser_program(turn_id, loop_sequence):
+            result = json.dumps({"browser_program_result": True, "chars": len(result)})
         self._insert_event(
             turn_id=turn_id,
             loop_sequence=loop_sequence,
@@ -344,7 +346,7 @@ class TurnJournal:
             event_kind="tool",
             state="rejected",
             tool_name=tool_name,
-            input_json=_safe_json(arguments, self.event_max_chars),
+            input_json=_safe_json(_browser_arguments(tool_name, arguments), self.event_max_chars),
             result_json=_safe_result(result, self.event_max_chars),
             detail=_safe_json(metadata or {}, min(self.event_max_chars, 2000)),
             effect_labels=effect_labels,
@@ -423,7 +425,7 @@ class TurnJournal:
                 return None
             self._upsert_digest(cursor, row, now)
             if trace_payload and not _contains_secret(trace_payload):
-                self._store_archive(cursor, row, trace_payload, now)
+                self._store_archive(cursor, row, _without_browser_programs(trace_payload), now)
             self._cleanup_archives(cursor, str(row["scope_key"]), now)
             return self._row_to_turn(row)
 
@@ -763,6 +765,18 @@ class TurnJournal:
             turn_row = self._turn_row(cursor, int(turn_id))
             if turn_row is not None:
                 self._upsert_digest(cursor, turn_row, int(time.time()))
+
+    def _started_browser_program(self, turn_id: int, loop_sequence: int) -> bool:
+        with self._transaction() as cursor:
+            row = cursor.execute(
+                """
+                SELECT input_json FROM turn_journal_events
+                WHERE turn_id = ? AND loop_sequence = ? AND event_kind = 'tool' AND state = 'started'
+                ORDER BY event_id DESC LIMIT 1
+                """,
+                (int(turn_id), int(loop_sequence)),
+            ).fetchone()
+        return row is not None and _json_object(str(row["input_json"])).get("browser_program") is True
 
     def _insert_event(
         self,
@@ -1117,6 +1131,53 @@ def _secret_key(key: str) -> bool:
     ):
         return True
     return compact == "apikey" or compact == "token" or compact.endswith("token")
+
+
+# Browser programs often hold accounts, passwords and codes typed in for the
+# user, and page text; like their results they are not kept, only their size.
+_BROWSER_MARKERS = ("gaoji.page(", "gaoji.browser(", "gaoji.snapshot(")
+
+
+def _browser_code(tool_name: str, arguments: Any) -> str | None:
+    code = arguments.get("code") if tool_name == "run_code" and isinstance(arguments, dict) else None
+    if isinstance(code, str) and any(marker in code for marker in _BROWSER_MARKERS):
+        return code
+    return None
+
+
+def _browser_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    code = _browser_code(tool_name, arguments)
+    return arguments if code is None else {"browser_program": True, "code_chars": len(code)}
+
+
+def _without_browser_programs(payload: dict[str, Any]) -> dict[str, Any]:
+    hidden: set[str] = set()
+    messages = []
+    for message in payload.get("messages") or []:
+        if not isinstance(message, dict):
+            messages.append(message)
+            continue
+        if message.get("role") == "tool" and message.get("tool_call_id") in hidden:
+            content = message.get("content")
+            message = {**message, "content": json.dumps({"browser_program_result": True, "chars": len(str(content))})}
+        calls = []
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            raw = function.get("arguments") or "{}"
+            try:
+                arguments = raw if isinstance(raw, dict) else json.loads(raw)
+            except ValueError:
+                arguments = {}
+            if _browser_code(str(function.get("name")), arguments) is not None:
+                hidden.add(call.get("id"))
+                summary = _browser_arguments("run_code", arguments)
+                call = {**call, "function": {**function,
+                                             "arguments": summary if isinstance(raw, dict) else json.dumps(summary)}}
+            calls.append(call)
+        if calls:
+            message = {**message, "tool_calls": calls}
+        messages.append(message)
+    return {**payload, "messages": messages}
 
 
 def _contains_secret(value: Any, depth: int = 0) -> bool:

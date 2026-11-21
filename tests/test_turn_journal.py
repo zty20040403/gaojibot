@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from tests.postgres_fixture import postgres_for_test
 
 import unittest
@@ -205,6 +207,30 @@ class TurnJournalTests(unittest.TestCase):
         self.assertIsNotNone(
             self.journal.get_visible_turn(self.group_a, new.turn_ordinal)
         )
+
+    def test_browser_programs_and_their_output_are_not_kept(self) -> None:
+        turn = self.start(self.group_a)
+        code = "const p = await gaoji.page(); await p.fill('#code', args.code); return document.body.innerText"
+        self.journal.record_tool_started(turn.turn_id, 3, "run_code", {"code": code, "args": {"code": "TEST_SMS_123456"}}, ())
+        self.journal.record_tool_finished(turn.turn_id, 3, "run_code", "succeeded", '{"ok":true,"result":"TEST_PAGE_TEXT"}', ())
+        self.journal.record_tool_started(turn.turn_id, 4, "run_code", {"code": "return 1 + 1"}, ())
+        self.journal.record_tool_finished(turn.turn_id, 4, "run_code", "succeeded", '{"ok":true,"result":2}', ())
+        trace = AgentTrace(model="deepseek-chat")
+        trace.messages += [
+            {"role": "assistant", "tool_calls": [{"id": "TEST_CALL", "type": "function", "function": {
+                "name": "run_code", "arguments": json.dumps({"code": code, "args": {"code": "TEST_SMS_123456"}})}}]},
+            {"role": "tool", "tool_call_id": "TEST_CALL", "content": '{"ok":true,"result":"TEST_PAGE_TEXT"}'},
+            {"role": "assistant", "content": "TEST_REPLY"},
+        ]
+        self.journal.finish_turn(turn.turn_id, status="succeeded", trace_payload=trace.to_payload())
+        stored = json.dumps([(e.input_json, e.result_json) for e in self.journal.events_for_turn(turn.turn_id)])
+        archived = json.dumps(self.journal.archive_payload(turn.turn_id), ensure_ascii=False)
+        for text in (stored, archived):
+            for secret in ("TEST_SMS_123456", "TEST_PAGE_TEXT", "gaoji.page("):
+                self.assertNotIn(secret, text)
+        self.assertIn("browser_program", stored)
+        self.assertIn("return 1 + 1", stored)
+        self.assertIn("TEST_REPLY", archived)
 
     def test_archive_is_compressed_and_secret_turn_is_not_archived(self) -> None:
         safe_turn = self.start(self.group_a)
