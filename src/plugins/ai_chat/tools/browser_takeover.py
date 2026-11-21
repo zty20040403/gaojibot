@@ -26,8 +26,6 @@ async def execute(turn, arguments):
         return '{"ok":false,"error":"当前会话不能接管浏览器。"}'
     executor = context.agent_executor
     settings = context.app.settings
-    if executor.owner in settings.sandbox_operations_owners:
-        return '{"ok":false,"error":"运维容器共用网络，不能接管。"}'
     if not settings.admin_origin.startswith('https://'):
         return '{"ok":false,"error":"尚未配置接管页面的 HTTPS 入口。"}'
     group = context.inbound.endpoint.kind == 'group'
@@ -38,7 +36,7 @@ async def execute(turn, arguments):
         return '{"ok":false,"error":"请先在本会话打开要接管的网页。"}'
     sid = items[0]['sandbox_id']
     if await current_url(executor.sandbox_manager, sid) in (None, 'about:blank'):
-        return '{"ok":false,"error":"浏览器当前是空白页，请先打开要接管的网页再发链接。"}'
+        return '{"ok":false,"error":"浏览器未运行或当前是空白页，请先在本会话打开要接管的网页再发链接。"}'
     token = context.app.browser_takeovers.issue(executor.owner, sid)
     link = f'{settings.admin_origin}/browser-takeover#{token}'
     message = '这个登录全群可用。仅用于 bot 公共小号：\n' + link if group else link

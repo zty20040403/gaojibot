@@ -7,7 +7,8 @@
 - **容器系统**：`nixosConfigurations.gaoji-container`（`nix/guest/container.nix`、`nix/guest/tools.nix`）。所有容器共用同一系统闭包，工具来自宿主只读挂载的 `/nix/store`。宿主部署新版本后，容器下次启动即使用新工具链。
 - **每个会话一个容器**：`gaoji-ct@<编号>.service`（运维会话是 `gaoji-ct-ops@`）。系统根目录每次启动重建，只有 `/var/lib/gaoji-ct/<编号>/work` 保留，在容器里挂载为 `/workspace` 和 `/work`。启用用户命名空间隔离，`/workspace` 用 idmap 挂载，容器里的 `sandbox`（1000）拥有它。内存、CPU、任务数按 `sandbox.memoryMiB`、`cpus`、`pidsLimit` 限制。
 - **代理**：`gaoji-ct-broker`（root）是机器人唯一的特权入口，只做启动、停止、状态查询、在容器里执行命令（`systemd-run --machine`）、删除已停止容器的数据。套接字 `/run/gaoji-ct/broker.sock` 只有机器人的运行用户可连。
-- **网络**：网桥 `vz-gaoji`，宿主地址是 `10.0.2.2`。网桥端口隔离，容器之间互相不可见；nftables 只放行公网、DHCP 和宿主中继端口 18640/18641。运维会话的容器加入 `gaoji-ops` 网络命名空间，可通过独立 Tailscale 节点执行 `ssh <主机>`。
+- **网络**：每个容器有自己的网络命名空间，`127.0.0.1:9222` 只连到本会话的浏览器。普通容器接 `vz-gaoji`，只放行公网、DHCP 和宿主中继 `10.0.2.2:18640/18641`。运维容器接 `vz-gaoji-ops`，也使用 DHCP 和相同的宿主中继。两个桥都禁止容器端口互通。
+- **运维路由**：默认运维网段是 `10.237.0.16/28`，网关 `.17`。宿主 networkd 将来自运维桥的流量送入表 237，经 `gaoji-uplink` 到 `gaoji-ops` 路由命名空间。它通过 `tailscale0` 访问机群，通过原有上联访问公网；容器共享一个 `gaojiops` 出口身份，不共享浏览器。MagicDNS 和 `ssh <主机>` 的客体配置不变。若运维会话还要访问宿主自身，请将 `services.gaoji.sandbox.operations.hostAddress` 设为宿主 `tailscale ip -4` 的值。这样连接宿主也经过 `gaojiops` 和 tailnet ACL，而不是从桥上直连宿主服务；默认 `null` 不启用。
 - **元数据**：保存在 `sandbox.vmRoot`（每个沙盒一个 `<编号>/metadata.json`）及宿主文件锁中。
 
 ## 宿主 `/work` 快照（可选）

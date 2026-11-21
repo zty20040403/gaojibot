@@ -17,8 +17,7 @@ in {
   system.stateVersion = "26.05";
   networking.hostName = "gaoji-sandbox";
 
-  # host0 is the veth into the host's isolated bridge; ops containers share
-  # the operations namespace instead and have no host0.
+  # host0 connects to the plain or operations bridge; both provide DHCP.
   networking.useDHCP = false;
   networking.useNetworkd = true;
   systemd.network.config.networkConfig = {

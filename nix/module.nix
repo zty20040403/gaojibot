@@ -19,14 +19,15 @@
   snapshotDir = "/data/services/gaoji/backups/work";
   ctBridge = "vz-gaoji";
   ctResolver = pkgs.writeText "gaoji-ct-resolv.conf" (lib.concatMapStrings (server: "nameserver ${server}\n") cfg.sandbox.containerDns);
-  # The operations network: some conversations' containers join a network
-  # namespace with a Tailscale node of its own, so `ssh <host>` in them reaches
-  # the fleet as gaoji (Tailscale SSH, no key in the container). Other
-  # containers stay on the filtered public-only bridge.
+  # Each operations container has its own loopback. Only its router and
+  # tailnet identity are shared; no Tailscale state enters a container.
   ops = cfg.sandbox.operations;
   sandboxOps = sandboxCt && ops.enable;
   opsName = "${serviceName}-ops";
   opsNetns = opsName;
+  opsBridge = "vz-gaoji-ops";
+  opsSubnet = "${ops.uplink}.16/28";
+  opsTable = 237;
   opsUplink = "${serviceName}-uplink";
   opsHost = "${ops.uplink}.1";
   opsPeer = "${ops.uplink}.2";
@@ -331,6 +332,11 @@ in {
         default = "gaojiops";
         description = "The operations node's name in the tailnet.";
       };
+      hostAddress = lib.mkOption {
+        type = lib.types.nullOr (lib.types.strMatching "[0-9]{1,3}(\\.[0-9]{1,3}){3}");
+        default = null;
+        description = "The host's own tailnet IPv4 (tailscale ip -4). When set, operations containers reach it through their tailnet node.";
+      };
       authKeyFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -339,7 +345,7 @@ in {
       uplink = lib.mkOption {
         type = lib.types.strMatching "[0-9]+\\.[0-9]+\\.[0-9]+";
         default = "10.237.0";
-        description = "The /30 between the host (.1) and the namespace (.2), without its last octet.";
+        description = "Three octets for the operations network: .0/30 connects host and router; .16/28 serves containers.";
       };
       dns = lib.mkOption {
         type = lib.types.listOf lib.types.str;
@@ -590,12 +596,8 @@ in {
     systemd.services."${opsName}-network" = lib.mkIf sandboxOps {
       description = "gaoji operations network namespace";
       wantedBy = ["multi-user.target"];
-      # Relay sockets in sockets.target (before basic.target) depend on this
-      # namespace; omit implicit After=basic.target to avoid an ordering cycle.
-      unitConfig.DefaultDependencies = false;
-      conflicts = ["shutdown.target"];
-      after = ["sysinit.target" "nftables.service"];
-      before = ["shutdown.target" "${opsName}-tailscaled.service"];
+      after = ["nftables.service" "systemd-networkd.service"];
+      before = ["${opsName}-tailscaled.service"];
       path = [pkgs.iproute2 pkgs.nftables pkgs.procps];
       serviceConfig = {
         Type = "oneshot";
@@ -608,28 +610,37 @@ in {
         if ! ip link show dev ${opsUplink} >/dev/null 2>&1; then
           ip link add ${opsUplink} type veth peer name uplink netns ${opsNetns}
         fi
-        ip address replace ${opsHost}/30 dev ${opsUplink}
-        ip link set dev ${opsUplink} up
         ip -n ${opsNetns} link set lo up
         ip -n ${opsNetns} address replace ${opsPeer}/30 dev uplink
         ip -n ${opsNetns} link set uplink up
         ip -n ${opsNetns} route replace default via ${opsHost}
-        # Containers on this network share the namespace and reach the
-        # host's relay at 10.0.2.2, as every guest does.
-        ip -n ${opsNetns} address replace 10.0.2.2/32 dev lo
-        # Nothing in the namespace takes a connection from the uplink.
+        ip -n ${opsNetns} route replace ${opsSubnet} via ${opsHost}
+        ip netns exec ${opsNetns} sysctl -qw net.ipv4.ip_forward=1 \
+          net.ipv4.conf.all.send_redirects=0 net.ipv4.conf.uplink.send_redirects=0
         ip netns exec ${opsNetns} nft -f - <<EOF
         table inet ${opsNetns}
         delete table inet ${opsNetns}
         table inet ${opsNetns} {
+          ${lib.optionalString (ops.hostAddress != null) ''
+            chain prerouting {
+              type nat hook prerouting priority dstnat; policy accept;
+              iifname "uplink" ip saddr ${opsSubnet} ip daddr ${opsPeer} dnat ip to ${ops.hostAddress}
+            }
+          ''}
           chain input {
             type filter hook input priority filter; policy accept;
             iifname "uplink" ct state { established, related } accept
             iifname "uplink" drop
           }
-          chain output {
-            type filter hook output priority mangle; policy accept;
-            oifname "tailscale0" tcp flags syn tcp option maxseg size set rt mtu
+          chain forward {
+            type filter hook forward priority mangle; policy drop;
+            ct state { established, related } accept
+            iifname "uplink" ip saddr ${opsSubnet} oifname "tailscale0" tcp flags syn tcp option maxseg size set rt mtu
+            iifname "uplink" ip saddr ${opsSubnet} oifname { "tailscale0", "uplink" } accept
+          }
+          chain postrouting {
+            type nat hook postrouting priority srcnat; policy accept;
+            ip saddr ${opsSubnet} oifname { "tailscale0", "uplink" } masquerade
           }
         }
         EOF
@@ -640,8 +651,12 @@ in {
       '';
     };
 
-    # The namespace reaches the internet and nothing private on the host's side.
+    networking.firewall.interfaces.${opsBridge} = lib.mkIf sandboxOps {
+      allowedTCPPorts = cfg.sandbox.vmHostPorts;
+      allowedUDPPorts = [67];
+    };
     networking.firewall.extraForwardRules = lib.mkIf sandboxOps ''
+      iifname "${opsBridge}" oifname "${opsUplink}" accept
       iifname "${opsUplink}" accept
     '';
     networking.nftables.tables.${opsName} = lib.mkIf sandboxOps {
@@ -657,13 +672,29 @@ in {
             198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4
           }
         }
+        ${lib.optionalString (ops.hostAddress != null) ''
+          # Bypass the host's local route; the namespace restores the tailnet destination.
+          chain prerouting {
+            type nat hook prerouting priority dstnat; policy accept;
+            iifname "${opsBridge}" ip saddr ${opsSubnet} ip daddr ${ops.hostAddress} dnat ip to ${opsPeer}
+          }
+        ''}
         chain input {
           type filter hook input priority -10; policy accept;
+          iifname "${opsBridge}" udp sport 68 udp dport 67 accept
+          iifname "${opsBridge}" ip saddr ${opsSubnet} ip daddr 10.0.2.2 tcp dport { ${lib.concatMapStringsSep ", " toString cfg.sandbox.vmHostPorts} } accept
+          iifname "${opsBridge}" counter reject with icmpx type admin-prohibited
           iifname "${opsUplink}" ct state { established, related } accept
           iifname "${opsUplink}" counter reject with icmpx type admin-prohibited
         }
         chain forward {
           type filter hook forward priority -10; policy accept;
+          # Fail closed even while networkd is reconfiguring the policy route.
+          iifname "${opsBridge}" ip saddr ${opsSubnet} oifname "${opsUplink}" accept
+          iifname "${opsBridge}" counter drop
+          oifname "${opsBridge}" iifname != "${opsUplink}" counter drop
+          oifname "${opsBridge}" ct state != { established, related } counter drop
+          iifname "${opsUplink}" oifname "tailscale*" counter drop
           iifname "${opsUplink}" ct state { established, related } accept
           iifname "${opsUplink}" meta nfproto ipv6 counter drop
           iifname "${opsUplink}" ip saddr != ${opsPeer} counter drop
@@ -716,32 +747,39 @@ in {
       ];
   }
   (lib.mkIf sandboxOps {
-      # The VMs' relay ports (10.0.2.2 → 127.0.0.1) are the host's: listen on
-      # the namespace's loopback and forward to the host's.
-      systemd.sockets = (lib.listToAttrs (map (port:
-        lib.nameValuePair "${opsName}-relay-${toString port}" {
-          description = "gaoji operations network relay port ${toString port}";
-          wantedBy = ["sockets.target"];
-          requires = ["${opsName}-network.service"];
-          after = ["${opsName}-network.service"];
-          socketConfig = {
-            ListenStream = ["127.0.0.1:${toString port}" "10.0.2.2:${toString port}"];
-            FreeBind = true;
-            NetworkNamespacePath = "/run/netns/${opsNetns}";
-          };
-        })
-      cfg.sandbox.vmHostPorts));
-      systemd.services = (lib.listToAttrs (map (port:
-        lib.nameValuePair "${opsName}-relay-${toString port}" {
-          description = "gaoji operations network relay port ${toString port}";
-          requires = ["${opsName}-relay-${toString port}.socket"];
-          serviceConfig = {
-            ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString port}";
-            DynamicUser = true;
-            PrivateTmp = true;
-          };
-        })
-      cfg.sandbox.vmHostPorts));
+    systemd.network.netdevs."60-${opsBridge}".netdevConfig = {
+      Kind = "bridge";
+      Name = opsBridge;
+    };
+    systemd.network.networks."60-${opsBridge}" = {
+      matchConfig.Name = opsBridge;
+      address = ["${ops.uplink}.17/28"];
+      networkConfig = {
+        DHCPServer = true;
+        ConfigureWithoutCarrier = true;
+      };
+      dhcpServerConfig = {
+        PoolOffset = 2;
+        PoolSize = 13;
+        EmitDNS = false;
+      };
+      linkConfig.RequiredForOnline = "no";
+      routingPolicyRules = [{ From = opsSubnet; IncomingInterface = opsBridge; Table = opsTable; Priority = opsTable; }];
+      # Keep the table closed when its veth is absent.
+      routes = [{ Destination = "0.0.0.0/0"; Type = "unreachable"; Table = opsTable; Metric = 32767; }];
+    };
+    systemd.network.networks."61-gaoji-ct-ops-ports" = {
+      matchConfig.Name = "ve-gct-*";
+      networkConfig.Bridge = opsBridge;
+      bridgeConfig.Isolated = true;
+      linkConfig.RequiredForOnline = "no";
+    };
+    systemd.network.networks."60-${opsUplink}" = {
+      matchConfig.Name = opsUplink;
+      address = ["${opsHost}/30"];
+      routes = [{ Gateway = opsPeer; Table = opsTable; }];
+      linkConfig.RequiredForOnline = "no";
+    };
   })
   (lib.mkIf sandboxCt (let
     # One root script starts every conversation container. The root is
@@ -758,44 +796,58 @@ in {
       install -d -m 0755 "$base/root" "$base/root/etc" "$base/root/usr" "$base/root/var/lib"
       touch "$base/root/etc/os-release"
       if [ "$mode" = ops ]; then
-        net=(); resolv=${opsGuestResolver}
+        # ve-gct-* is attached by networkd; plain bridge ports are vb-gct-*.
+        net=--network-veth; resolv=${opsGuestResolver}
       else
-        net=(--network-bridge=${ctBridge}); resolv=${ctResolver}
+        net=--network-bridge=${ctBridge}; resolv=${ctResolver}
       fi
       exec ${config.systemd.package}/bin/systemd-nspawn --quiet --keep-unit --register=yes \
         --machine="gct-$id" --notify-ready=yes --kill-signal=SIGRTMIN+3 \
         --directory="$base/root" --private-users=pick --private-users-ownership=auto \
         --link-journal=no --resolv-conf=off --timezone=off --bind-ro=/nix/store \
         --bind="$base/work:/workspace:idmap" --bind="$base/work:/work:idmap" \
-        --bind-ro="$resolv:/etc/resolv.conf" "''${net[@]}" \
+        --bind-ro="$resolv:/etc/resolv.conf" "$net" \
         ${cfg.sandbox.containerSystem}/init
     '';
     unit = mode: {
       description = "gaoji conversation container %i (${mode})";
-      wants = lib.optional (mode == "plain") "gaoji-ct-cdp@%i.service";
+      wants = ["gaoji-ct-cdp${lib.optionalString (mode == "ops") "-ops"}@%i.service"];
       restartIfChanged = false;
-      requires = lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
-      after = ["network.target"] ++ lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
-      serviceConfig =
-        {
-          Type = "notify";
-          NotifyAccess = "all";
-          ExecStart = "${start} %i ${mode}";
-          KillMode = "mixed";
-          Delegate = true;
-          Slice = "machine.slice";
-          DevicePolicy = "closed";
-          DeviceAllow = ["char-pts rwm" "/dev/net/tun rwm"];
-          TimeoutStartSec = 180;
-          TimeoutStopSec = 60;
-          SuccessExitStatus = 133;
-          MemoryMax = "${toString cfg.sandbox.memoryMiB}M";
-          CPUQuota = "${toString (cfg.sandbox.cpus * 100)}%";
-          TasksMax = cfg.sandbox.pidsLimit * 8;
-        }
-        // lib.optionalAttrs (mode == "ops") {
-          NetworkNamespacePath = "/run/netns/${opsNetns}";
-        };
+      requires = lib.optionals (mode == "ops") ["nftables.service" "${opsName}-network.service" "${opsName}-tailscaled.service"];
+      after = ["network.target"] ++ lib.optionals (mode == "ops") ["nftables.service" "${opsName}-network.service" "${opsName}-tailscaled.service"];
+      serviceConfig = {
+        Type = "notify";
+        NotifyAccess = "all";
+        ExecStart = "${start} %i ${mode}";
+        KillMode = "mixed";
+        Delegate = true;
+        Slice = "machine.slice";
+        DevicePolicy = "closed";
+        DeviceAllow = ["char-pts rwm" "/dev/net/tun rwm"];
+        TimeoutStartSec = 180;
+        TimeoutStopSec = 60;
+        SuccessExitStatus = 133;
+        MemoryMax = "${toString cfg.sandbox.memoryMiB}M";
+        CPUQuota = "${toString (cfg.sandbox.cpus * 100)}%";
+        TasksMax = cfg.sandbox.pidsLimit * 8;
+      };
+    };
+    cdpUnit = container: let
+      pipe = pkgs.writeShellScript "gaoji-cdp-pipe" ''
+        exec ${config.systemd.package}/bin/systemd-run --machine="gct-$1" --pipe --quiet --wait --collect \
+          --property=RuntimeMaxSec=610 -- /bin/sh -c \
+          '${pkgs.coreutils}/bin/touch /run/gaoji-browser.used && exec ${pkgs.socat}/bin/socat STDIO TCP4:127.0.0.1:9222'
+      '';
+    in {
+      bindsTo = ["${container}@%i.service"];
+      after = ["${container}@%i.service"];
+      # socat exits 143 on the SIGTERM sent when the container stops.
+      serviceConfig.SuccessExitStatus = 143;
+      serviceConfig.ExecStart = lib.escapeShellArgs [
+        "${pkgs.socat}/bin/socat"
+        "UNIX-LISTEN:/run/gaoji-ct/cdp-%i.sock,unlink-early,mode=0600,user=${cfg.user},fork"
+        "EXEC:${pipe} %i"
+      ];
     };
   in lib.mkMerge [{
     assertions = [
@@ -850,24 +902,8 @@ in {
         Persistent = true;
       };
     };
-    # Ops containers share loopback. Only plain containers get a per-machine CDP socket.
-    systemd.services."gaoji-ct-cdp@" = let
-      pipe = pkgs.writeShellScript "gaoji-cdp-pipe" ''
-        exec ${config.systemd.package}/bin/systemd-run --machine="gct-$1" --pipe --quiet --wait --collect \
-          --property=RuntimeMaxSec=610 -- /bin/sh -c \
-          '${pkgs.coreutils}/bin/touch /run/gaoji-browser.used && exec ${pkgs.socat}/bin/socat STDIO TCP4:127.0.0.1:9222'
-      '';
-    in {
-      bindsTo = ["gaoji-ct@%i.service"];
-      after = ["gaoji-ct@%i.service"];
-      # socat exits 143 on the SIGTERM sent when the container stops.
-      serviceConfig.SuccessExitStatus = 143;
-      serviceConfig.ExecStart = lib.escapeShellArgs [
-        "${pkgs.socat}/bin/socat"
-        "UNIX-LISTEN:/run/gaoji-ct/cdp-%i.sock,unlink-early,mode=0600,user=${cfg.user},fork"
-        "EXEC:${pipe} %i"
-      ];
-    };
+    systemd.services."gaoji-ct-cdp@" = cdpUnit "gaoji-ct";
+    systemd.services."gaoji-ct-cdp-ops@" = cdpUnit "gaoji-ct-ops";
     systemd.services."gaoji-ct@" = unit "plain";
     systemd.services."gaoji-ct-ops@" = unit "ops";
     systemd.tmpfiles.rules = ["d /var/lib/gaoji-ct 0700 root root -"];

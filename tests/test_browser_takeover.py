@@ -122,12 +122,11 @@ class TakeoverToolTests(unittest.IsolatedAsyncioTestCase):
                 manager._owned_running.assert_awaited_with('TEST_OWNER', 's000001')
                 client.ws_connect.assert_awaited_once_with('ws://localhost/devtools/page/TEST_CURRENT')
 
-    async def test_ops_namespace_refused_and_unclaimed_link_expires(self):
-        for kind in ('group', 'private'):
-            turn = self.turn(kind, 'TEST_OPS', 's000001')
-            turn.context.app.settings.sandbox_operations_owners.add(turn.agent_executor.owner)
-            self.assertFalse(json.loads(await neutral_registry_for(turn.context).execute(turn, 'browser_takeover', {}))['ok'])
-            turn.context.platform.progress.say.assert_not_awaited()
+    async def test_ops_conversation_gets_a_link_and_unclaimed_link_expires(self):
+        turn = self.turn('private', 'TEST_OPS', 's000001')
+        turn.context.app.settings.sandbox_operations_owners.add(turn.agent_executor.owner)
+        result = await neutral_registry_for(turn.context).execute(turn, 'browser_takeover', {})
+        self.assertEqual(json.loads(result), {'ok': True, 'status': 'enqueued'})
         loop = asyncio.get_running_loop()
         with patch.object(loop, 'time', return_value=100):
             token = self.links.issue('TEST_OWNER', 's000001')
