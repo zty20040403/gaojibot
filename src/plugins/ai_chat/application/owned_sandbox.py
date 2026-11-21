@@ -104,6 +104,12 @@ class ArtifactDeliveryPort(Protocol):
                        logical_request_key: str, draft: bool, draft_reason: str) -> ArtifactRegistration: ...
 
 
+# The model kept exporting login cookies (for yt-dlp) despite the browser skill;
+# refuse code that reads browser cookies, storage or the profile directory.
+_BROWSER_SECRETS = re.compile(
+    r'\.cookies\s*\(|document\.cookie|storage_?state|cookies-from-browser|\.gaoji/chromium', re.I)
+
+
 def _json(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 
@@ -597,6 +603,10 @@ class OwnedSandboxExecutor:
         try:
             if not isinstance(arguments, dict) or not set(arguments) <= allowed[name]:
                 raise GenerationError('invalid_tool_arguments')
+            if name in {'shell', 'run_code', 'sandbox_exec'} and _BROWSER_SECRETS.search(
+                    str(arguments.get('code') or arguments.get('command') or '')):
+                return _json({'ok': False, 'code': 'browser_state_blocked',
+                              'error': '浏览器 cookie、存储和资料目录不能读取或导出。下载媒体请直接请求页面里的媒体地址或用 page.request。'})
             await self._fence()
             if name == 'shell':
                 return await self._execute_shell(arguments)

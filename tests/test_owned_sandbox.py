@@ -183,6 +183,17 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
             active_tool_call_id.reset(token)
 
 
+    async def test_code_reading_browser_login_state_is_refused(self):
+        attempts = [('run_code', {'code': 'const c = await (await gaoji.browser()).cookies(); return c;'}),
+                    ('run_code', {'code': 'return await p.evaluate(() => document.cookie);'}),
+                    ('shell', {'command': 'yt-dlp --cookies-from-browser chromium:/work/.gaoji/chromium TEST_URL'}),
+                    ('shell', {'command': 'cp /work/.gaoji/chromium/Default/Cookies /tmp/'}),
+                    ('run_code', {'code': 'await ctx.storageState({ path: "/work/s.json" });'})]
+        for name, arguments in attempts:
+            result = json.loads(await self.executor.execute(name, arguments))
+            self.assertEqual(result['code'], 'browser_state_blocked', arguments)
+        self.assertEqual(self.manager.calls, [])
+
     async def test_invalid_export_is_unsent_and_allows_workspace_cleanup(self):
         class UnknownExport(FakeManager):
             async def export_artifact(self, owner, sandbox_id, path, *, file_only=False, max_bytes=None):
