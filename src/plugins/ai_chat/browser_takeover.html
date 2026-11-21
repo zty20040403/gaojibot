@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>会话浏览器接管</title>
+<style>
+body { margin: .5rem; background: #161616; color: white; font: 16px system-ui; text-align: center }
+button,input { font: inherit; padding: .4rem } img { display: block; margin: .5rem auto; max-width: 100%; max-height: 73dvh; touch-action: none; user-select: none }
+[hidden] { display: none }
+</style>
+<p id="status" role="status">接管原会话的当前标签页。群内仅用 bot 公共小号，请勿转发链接。</p>
+<button id="start">开始接管</button>
+<div id="controls" hidden>
+  <button id="done">完成</button>
+  <input id="text" size="12" placeholder="输入到网页" aria-label="输入到网页" autocomplete="off"><button id="insert">输入</button>
+  <img id="screen" tabindex="0" draggable="false" alt="实时浏览器画面">
+</div>
+<script>
+const el = id => document.getElementById(id);
+const screen = el('screen'), text = el('text');
+const token = location.hash.slice(1);
+history.replaceState(null, '', location.pathname);
+let ws, viewport, pointer = null;
+const send = data => ws.send(JSON.stringify(data));
+
+el('start').onclick = () => {
+  el('start').hidden = true;
+  el('status').textContent = '连接中…';
+  ws = new WebSocket('wss://' + location.host + location.pathname + '/live');
+  ws.onopen = () => ws.send(token);
+  ws.onmessage = ({data}) => {
+    const frame = JSON.parse(data);
+    viewport = frame.viewport;
+    screen.src = 'data:image/jpeg;base64,' + frame.image;
+    el('controls').hidden = false;
+    el('status').textContent = '可点击、拖动或输入。操作结束后点「完成」。';
+  };
+  ws.onclose = e => {
+    el('controls').hidden = true;
+    screen.removeAttribute('src');
+    text.value = '';
+    el('status').textContent = e.code === 1000 ? '接管已结束，请回原会话告知结果。' : (e.reason || '连接已断开，请回原会话。');
+  };
+};
+el('done').onclick = () => send({type: 'done'});
+
+function point(rect, view, clientX, clientY) {
+  return {
+    x: (clientX - rect.left) / rect.width * view.deviceWidth / view.pageScaleFactor,
+    y: ((clientY - rect.top) / rect.height * view.deviceHeight - view.offsetTop) / view.pageScaleFactor,
+  };
+}
+const coords = e => point(screen.getBoundingClientRect(), viewport, e.clientX, e.clientY);
+for (const [name, type] of [
+  ['pointerdown', 'mousePressed'], ['pointermove', 'mouseMoved'],
+  ['pointerup', 'mouseReleased'], ['pointercancel', 'mouseReleased'],
+]) {
+  screen.addEventListener(name, e => {
+    if (name === 'pointerdown' && pointer === null && e.button === 0) {
+      pointer = e.pointerId;
+      screen.setPointerCapture(pointer);
+      screen.focus();
+    }
+    if (pointer !== e.pointerId) return;
+    send({type, ...coords(e)});
+    if (name === 'pointerup' || name === 'pointercancel') pointer = null;
+    e.preventDefault();
+  });
+}
+screen.onwheel = e => {
+  e.preventDefault(); send({type: 'wheel', ...coords(e), dx: e.deltaX, dy: e.deltaY});
+};
+screen.onkeydown = e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+  if (e.key.length === 1) send({type: 'text', text: e.key});
+  else for (const type of ['keyDown', 'keyUp']) send({type, key: e.key, keyCode: e.keyCode});
+};
+el('insert').onclick = () => { if (text.value) send({type: 'text', text: text.value}); text.value = ''; };
+</script>
+</html>

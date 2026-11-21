@@ -14,6 +14,7 @@ from src.bot_storage import DatabaseCalls, DatabaseError, PostgresDatabase
 from src.bot_storage.schema import HEAD_REVISION
 
 from .application_construction import ConstructionResources
+from .browser_takeover import TakeoverLinks
 from .cold_archive import ColdArchiveService
 from .config import Settings
 from .conversation_window import ConversationStore
@@ -81,6 +82,7 @@ class AppContext:
     self_source: SelfSource
     skill_registry: SkillRegistry
     sandbox_manager: ContainerSandboxManager
+    browser_takeovers: TakeoverLinks = field(default_factory=TakeoverLinks, init=False, repr=False)
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None
     conversations: ConversationStore | None = None

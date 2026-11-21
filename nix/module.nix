@@ -772,6 +772,7 @@ in {
     '';
     unit = mode: {
       description = "gaoji conversation container %i (${mode})";
+      wants = lib.optional (mode == "plain") "gaoji-ct-cdp@%i.service";
       restartIfChanged = false;
       requires = lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
       after = ["network.target"] ++ lib.optionals (mode == "ops") ["${opsName}-network.service" "${opsName}-tailscaled.service"];
@@ -848,6 +849,22 @@ in {
         OnCalendar = "*-*-* 03:00:00 UTC";
         Persistent = true;
       };
+    };
+    # Ops containers share loopback. Only plain containers get a per-machine CDP socket.
+    systemd.services."gaoji-ct-cdp@" = let
+      pipe = pkgs.writeShellScript "gaoji-cdp-pipe" ''
+        exec ${config.systemd.package}/bin/systemd-run --machine="gct-$1" --pipe --quiet --wait --collect \
+          --property=RuntimeMaxSec=610 -- /bin/sh -c \
+          '${pkgs.coreutils}/bin/touch /run/gaoji-browser.used && exec ${pkgs.socat}/bin/socat STDIO TCP4:127.0.0.1:9222'
+      '';
+    in {
+      bindsTo = ["gaoji-ct@%i.service"];
+      after = ["gaoji-ct@%i.service"];
+      serviceConfig.ExecStart = lib.escapeShellArgs [
+        "${pkgs.socat}/bin/socat"
+        "UNIX-LISTEN:/run/gaoji-ct/cdp-%i.sock,unlink-early,mode=0600,user=${cfg.user},fork"
+        "EXEC:${pipe} %i"
+      ];
     };
     systemd.services."gaoji-ct@" = unit "plain";
     systemd.services."gaoji-ct-ops@" = unit "ops";

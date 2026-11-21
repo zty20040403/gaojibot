@@ -79,6 +79,7 @@ _SEND_TOOLS = {
     "send_file",
     "send_image",
     "say",
+    "browser_takeover",
     "send_sticker",
     "send_forward_summary",
     "reply_send",
