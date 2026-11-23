@@ -83,6 +83,7 @@ class AppContext:
     skill_registry: SkillRegistry
     sandbox_manager: ContainerSandboxManager
     browser_takeovers: TakeoverLinks = field(default_factory=TakeoverLinks, init=False, repr=False)
+    voice_calls: TakeoverLinks = field(default_factory=TakeoverLinks, init=False, repr=False)
     local_model: LocalModelRuntime | None = field(default=None, repr=False)
     message_ledger: MessageLedger | None = None
     conversations: ConversationStore | None = None

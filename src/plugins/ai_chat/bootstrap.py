@@ -1,6 +1,7 @@
 from __future__ import annotations
 from .background_jobs import BackgroundJobs
 from .browser_takeover import register_takeover
+from .voice_call import register_voice_call
 
 from typing import Any, Protocol
 
@@ -40,6 +41,7 @@ def register_http_surfaces(
             logger.error(f"Observability endpoint could not be registered: {exc}")
 
     register_takeover(app, context)
+    register_voice_call(app, context)
 
     # The official classified media library has its own authenticated API.
     sticker_inventory = None

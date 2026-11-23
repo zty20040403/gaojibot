@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>和 gaoji 语音通话</title>
+<style>
+body { max-width: 28rem; margin: 15vh auto; padding: 1rem; background: #161616; color: white; font: 18px system-ui; text-align: center }
+button { font: inherit; padding: .85rem 2rem }
+</style>
+<h1>和 gaoji 语音通话</h1>
+<p id="status" role="status">点「开始通话」并允许使用麦克风。通话链接仅限使用一次。</p>
+<button id="start">开始通话</button><button id="end" hidden>结束通话</button>
+<script type="module">
+const el = id => document.getElementById(id);
+const status = text => { el('status').textContent = text; };
+let token = location.hash.slice(1);
+history.replaceState(null, '', location.pathname);
+let ended = false, ctx, stream, ws, mic, capture;
+let ack, turn = 0, pending = 0, receiving = 0, playAt = 0;
+const playing = new Set();
+let frames = [], speaking = false, quiet = 0;
+
+// Downsample the mono input at its actual device rate. Keep the partial sample
+// across render quanta; each port message contains exactly 10 ms of PCM16LE.
+const processor = `class Capture extends AudioWorkletProcessor {
+  ratio = sampleRate / 16000; left = this.ratio; sum = 0;
+  block = new DataView(new ArrayBuffer(320)); offset = 0;
+  process(inputs) {
+    for (const value of inputs[0][0] || []) {
+      let weight = 1;
+      while (weight > 0) {
+        const take = Math.min(this.left, weight);
+        this.sum += value * take; this.left -= take; weight -= take;
+        if (this.left < 1e-9) {
+          const sample = Math.round(32768 * this.sum / this.ratio);
+          this.block.setInt16(this.offset, Math.max(-32768, Math.min(32767, sample)), true);
+          this.sum = 0; this.left = this.ratio; this.offset += 2;
+          if (this.offset === 320) {
+            this.port.postMessage(this.block.buffer, [this.block.buffer]);
+            this.block = new DataView(new ArrayBuffer(320)); this.offset = 0;
+          }
+        }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('voice-capture', Capture);`;
+
+function listenStatus() {
+  if (!ended && ack && !speaking && !pending && !playing.size) status('在听');
+}
+function dropAudio() {
+  for (const source of playing) { source.onended = null; source.stop(); source.disconnect(); }
+  playing.clear(); playAt = 0;
+}
+function decodePCM(bytes) {
+  if (!bytes.byteLength || bytes.byteLength % 2) throw new Error('收到的语音格式不正确');
+  const data = new DataView(bytes), buffer = ctx.createBuffer(1, bytes.byteLength / 2, 24000);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < channel.length; i++) channel[i] = data.getInt16(2 * i, true) / 32768;
+  return buffer;
+}
+function queueAudio(buffer) {
+  const source = ctx.createBufferSource();
+  source.buffer = buffer; source.connect(ctx.destination);
+  playAt = Math.max(ctx.currentTime, playAt);
+  source.start(playAt); playAt += buffer.duration; playing.add(source);
+  source.onended = () => { playing.delete(source); source.disconnect(); listenStatus(); };
+}
+function onMicFrame({data}) {
+  if (ended || !ack) return;
+  const samples = new DataView(data);
+  let energy = 0;
+  for (let i = 0; i < samples.byteLength; i += 2) energy += (samples.getInt16(i, true) / 32768) ** 2;
+  const loud = Math.sqrt(energy / (samples.byteLength / 2)) >= .02;
+  if (!speaking && !loud) { frames = []; return; }
+  frames.push(new Uint8Array(data));
+  if (!speaking && frames.length === 15) {
+    speaking = true;
+    if (pending || playing.size) {
+      pending = 0; dropAudio(); ws.send(JSON.stringify({type: 'interrupt'}));
+    }
+    status('在听');
+  }
+  quiet = loud ? 0 : quiet + 1;
+  if (speaking && quiet === 50) {
+    const utterance = new Uint8Array((frames.length - quiet) * data.byteLength);
+    frames.slice(0, -quiet).forEach((frame, i) => utterance.set(frame, i * data.byteLength));
+    frames = []; speaking = false; quiet = 0;
+    pending = ++turn; ws.send(utterance.buffer); queueAudio(ack);
+    status('在想');
+  }
+}
+function stop(reason) {
+  if (ended) return;
+  ended = true; token = ''; frames = []; ack = null;
+  dropAudio(); mic?.disconnect(); capture?.disconnect(); capture?.port.close();
+  stream?.getTracks().forEach(track => track.stop());
+  if (ctx && ctx.state !== 'closed') void ctx.close();
+  if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, '结束通话');
+  el('start').hidden = el('end').hidden = true;
+  status('已结束：' + reason);
+}
+function onMessage({data}) {
+  if (ended) return;
+  if (typeof data === 'string') {
+    const msg = JSON.parse(data);
+    if (msg.type === 'error') stop(msg.message || '语音服务出错。');
+    if (msg.type === 'reply') receiving = msg.turn;
+    if (msg.type === 'done' && msg.turn === pending) { pending = 0; listenStatus(); }
+  } else if (!ack) {
+    ack = decodePCM(data); listenStatus();
+  } else if (pending && receiving === pending) {
+    queueAudio(decodePCM(data)); status('在说');
+  }
+}
+const guarded = handler => event => {
+  try { handler(event); } catch (err) { stop('通话出错：' + err.message); }
+};
+el('start').onclick = async () => {
+  if (ended || ctx) return;
+  el('start').hidden = true; el('end').hidden = false;
+  status('正在打开麦克风…');
+  try {
+    if (!token) throw new Error('通话链接缺少凭证，请重新获取链接');
+    ctx = new AudioContext();
+    const resume = ctx.resume();
+    const silence = ctx.createBufferSource();
+    silence.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+    silence.connect(ctx.destination); silence.start();
+    const permission = navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}})
+      .then(media => {
+        if (ended) media.getTracks().forEach(track => track.stop());
+        else {
+          stream = media;
+          stream.getAudioTracks()[0].onended = () => stop('麦克风已断开。');
+        }
+      });
+    await Promise.all([resume, permission]);
+    if (ended) return;
+    const url = URL.createObjectURL(new Blob([processor], {type: 'text/javascript'}));
+    try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+    if (ended) return;
+    capture = new AudioWorkletNode(ctx, 'voice-capture', {channelCount: 1, channelCountMode: 'explicit'});
+    capture.port.onmessage = guarded(onMicFrame);
+    capture.onprocessorerror = () => stop('麦克风音频处理失败。');
+    mic = ctx.createMediaStreamSource(stream); mic.connect(capture); capture.connect(ctx.destination);
+    status('连接中');
+    ws = new WebSocket('wss://' + location.host + '/voice-call/live');
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = guarded(() => { if (!ended) { ws.send(JSON.stringify({token})); token = ''; } });
+    ws.onmessage = guarded(onMessage);
+    ws.onclose = e => stop(e.reason || (e.code === 1000 ? '通话已结束。' : '连接已断开，请重新获取链接。'));
+  } catch (err) { stop('无法开始通话：' + err.message); }
+};
+el('end').onclick = () => stop('已挂断');
+window.addEventListener('pagehide', () => stop('通话已结束。'));
+</script>
+</html>

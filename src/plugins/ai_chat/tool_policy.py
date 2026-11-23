@@ -172,6 +172,7 @@ def _policy_registry() -> dict[str, ToolPolicy]:
         timeout_seconds=90.0,
         max_identical_calls=2,
     )
+    policies["voice_call"] = policies["browser_takeover"]
     policies["sandbox_exec"] = ToolPolicy(
         risk="high",
         idempotency="non-idempotent",

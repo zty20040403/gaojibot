@@ -17,17 +17,17 @@ class TakeoverLinks:
     def __init__(self):
         self.pending = {}
 
-    def issue(self, owner, sid):
+    def issue(self, *payload):
         loop = asyncio.get_running_loop()
         token = secrets.token_urlsafe(32)
         deadline = loop.time() + 600
-        self.pending[token] = (owner, sid, deadline)
+        self.pending[token] = (*payload, deadline)
         loop.call_at(deadline, self.pending.pop, token, None)
         return token
 
     def claim(self, token):
         entry = self.pending.pop(token, None)
-        if entry and asyncio.get_running_loop().time() < entry[2]:
+        if entry and asyncio.get_running_loop().time() < entry[-1]:
             return entry
 
 

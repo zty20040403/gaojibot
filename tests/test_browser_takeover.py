@@ -41,7 +41,8 @@ class TakeoverToolTests(unittest.IsolatedAsyncioTestCase):
         platform = SimpleNamespace(account=endpoint.account, features=PlatformFeatures(), progress=progress,
                                    progress_enabled=True, execution=SimpleNamespace(handle=SimpleNamespace(canonical_message_id=7)))
         app = SimpleNamespace(browser_takeovers=self.links, db_call=AsyncMock(side_effect=lambda fn,*args: fn(*args)),
-                              settings=SimpleNamespace(admin_origin=ORIGIN, sandbox_operations_owners=set()))
+                              settings=SimpleNamespace(admin_origin=ORIGIN, sandbox_operations_owners=set(),
+                                                       voice_app_id='', voice_access_key=''))
         if kind == 'group':
             app.official_runtime = SimpleNamespace(store=MagicMock())
             app.official_runtime.store.authority.owner_for_actor.return_value = None

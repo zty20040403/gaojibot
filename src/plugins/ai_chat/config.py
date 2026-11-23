@@ -166,6 +166,10 @@ class Settings:
     media_lease_seconds: int
     media_batch_size: int
     media_worker_concurrency: int
+    voice_app_id: str
+    voice_access_key: str = field(repr=False)
+    voice_speaker: str
+    voice_profile: str
     video_profile: str
     video_whisper_model_path: str
     video_whisper_threads: int
@@ -396,6 +400,10 @@ class Settings:
             media_worker_concurrency=min(
                 max(integer("AI_MEDIA_WORKER_CONCURRENCY", 2), 1), 8
             ),
+            voice_app_id=environment.get('AI_VOICE_APP_ID', '').strip(),
+            voice_access_key=environment.get('AI_VOICE_ACCESS_KEY', '').strip(),
+            voice_speaker=environment.get('AI_VOICE_SPEAKER', 'zh_female_vv_uranus_bigtts').strip(),
+            voice_profile=environment.get('AI_VOICE_PROFILE', 'gemini-3.8-flash-high').strip(),
             video_profile=environment.get('AI_VIDEO_PROFILE', '').strip(),
             video_whisper_model_path=environment.get(
                 "AI_VIDEO_WHISPER_MODEL_PATH", ""
