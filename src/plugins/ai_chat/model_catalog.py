@@ -38,6 +38,8 @@ class ModelCapabilities:
     model_listing: bool = True
     vision: bool = False
     video: bool = False
+    # Some gateways (agy) reject system messages after the first non-system one.
+    mid_system: bool = True
 
     @classmethod
     def defaults_for(
@@ -57,10 +59,10 @@ class ModelCapabilities:
             )
         video = (
             protocol == "openai-chat"
-            and provider == "cliproxy"
+            and provider in {"cliproxy", "agy"}
             and model.lower().startswith("gemini")
         )
-        return cls(video=video)
+        return cls(video=video, mid_system=provider != "agy")
 
     @classmethod
     def from_mapping(
@@ -84,6 +86,7 @@ class ModelCapabilities:
             "model_listing",
             "vision",
             "video",
+            "mid_system",
         }
         unknown = sorted(str(key) for key in raw if str(key) not in supported)
         if unknown:
@@ -106,6 +109,7 @@ class ModelCapabilities:
             ),
             vision=_mapping_bool(raw, "vision", defaults.vision),
             video=_mapping_bool(raw, "video", defaults.video),
+            mid_system=_mapping_bool(raw, "mid_system", defaults.mid_system),
         )
 
 

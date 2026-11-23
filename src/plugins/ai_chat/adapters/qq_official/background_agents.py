@@ -13,7 +13,7 @@ from ...background_jobs import BackgroundJobs, BackgroundRunner, outcome_of
 from ...background_reports import text_report
 from ...background_tools import BackgroundToolSession, VM_ACTION_TOOLS, workspace_owner
 from ...job_gateway import JobGateway
-from ...pi_engine import BackgroundModelSettings, PiEngine, upstream_profile
+from ...pi_engine import BackgroundModelSettings, PiEngine, background_route, upstream_profile
 from ...conversation_scope import ConversationScope
 from ...message_ir import body_from_json, render_fallback_text
 from ...prompt_context import quote_evidence
@@ -109,6 +109,7 @@ class OfficialBackgroundAgents:
         self.gateway = JobGateway(
             port=settings.background_gateway_port,
             upstream=upstream,
+            route=lambda candidate: background_route(app.model_catalog, candidate),
             model=lambda: (self.model_settings.chain(), self.model_settings.get()[1]),
             logger=app.logger,
             billing=self.billing,

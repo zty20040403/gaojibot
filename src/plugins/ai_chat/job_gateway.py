@@ -204,10 +204,13 @@ class _Server(uvicorn.Server):
 
 
 class JobGateway:
-    def __init__(self, *, port, upstream, model, logger, client=None, vm_authority=None, vm_handler=None, vm_tool_session=None, billing=None, tool_heartbeat_seconds=TOOL_HEARTBEAT_SECONDS):
+    def __init__(self, *, port, upstream, model, logger, client=None, vm_authority=None, vm_handler=None, vm_tool_session=None, billing=None, tool_heartbeat_seconds=TOOL_HEARTBEAT_SECONDS, route=None):
         # upstream() -> ModelProfile; model() -> (model, effort). One snapshot
         # provides both the actual route/key and its optional price.
+        # route(candidate) -> ModelProfile | None sends a chain entry that names
+        # a configured profile to that profile's own endpoint, key and model.
         self.port, self.upstream, self.model, self.logger = port, upstream, model, logger
+        self.route = route
         self.billing = billing
         self.tool_heartbeat_seconds = tool_heartbeat_seconds
         self.vm_authority, self.vm_handler, self.vm_tool_session = vm_authority, vm_handler, vm_tool_session
@@ -378,14 +381,33 @@ class JobGateway:
         context = self.billing(channel) if self.billing is not None else None
         start_idx = min(channel.model_index, len(chain) - 1)
         last_reason = ''
+        compact = request.url.path.endswith('/compact')
         for idx in range(start_idx, len(chain)):
             if channel.current is not None:
                 await channel.current()
             candidate = chain[idx]
-            attempt_payload = dict(payload, model=candidate)
-            if effort:
+            routed = self.route(candidate) if self.route is not None else None
+            target = routed or profile
+            native = target.provider == 'agy'
+            if compact and native:
+                # agy's Responses is stateless and has no compaction endpoint.
+                last_reason = f'{candidate} 不支持上下文压缩'
+                continue
+            base_url, key = target.base_url, target.api_key
+            model_id = routed.model if routed is not None else candidate
+            attempt_payload = dict(payload, model=model_id)
+            if native:
+                # The Gemini model ID is the thinking preset; a separate effort
+                # would contradict it.
+                reasoning = {k: v for k, v in (attempt_payload.get('reasoning') or {}).items() if k != 'effort'}
+                if reasoning:
+                    attempt_payload['reasoning'] = reasoning
+                else:
+                    attempt_payload.pop('reasoning', None)
+            elif effort:
                 attempt_payload['reasoning'] = {**(attempt_payload.get('reasoning') or {}), 'effort': effort}
-            receipt = context.request(profile.with_model(candidate)) if context is not None else None
+            priced = routed if routed is not None else profile.with_model(candidate)
+            receipt = context.request(priced) if context is not None else None
             # Publish ownership before awaiting start: a cancelled DB insert can
             # still commit, so the ASGI finally must be able to finish it.
             request.state.model_receipt = receipt

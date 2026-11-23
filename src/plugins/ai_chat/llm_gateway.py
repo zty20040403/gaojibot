@@ -386,6 +386,30 @@ class CompletionProvider(Protocol):
     async def close(self) -> None: ...
 
 
+def _leading_system_only(messages: list[Any]) -> list[Any]:
+    """Keep the opening system block; later system notes become user turns.
+
+    Gateways such as agy refuse a system message after the conversation has
+    started instead of silently moving it, so the note is sent where it was
+    written, as a clearly labelled user message.
+    """
+    result: list[Any] = []
+    opening = True
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") in {"system", "developer"}:
+            if not opening:
+                content = message.get("content")
+                if isinstance(content, str):
+                    content = "[系统提示]\n" + content
+                elif isinstance(content, list):
+                    content = [{"type": "text", "text": "[系统提示]"}, *content]
+                message = {**message, "role": "user", "content": content}
+        else:
+            opening = False
+        result.append(message)
+    return result
+
+
 class OpenAIChatProvider:
     def __init__(self) -> None:
         self._clients: dict[str, AsyncOpenAI] = {}
@@ -410,6 +434,8 @@ class OpenAIChatProvider:
     ) -> Any:
         client = self._client(profile).with_options(max_retries=0)
         request = {key: value for key, value in kwargs.items() if value is not None}
+        if not profile.capabilities.mid_system and isinstance(request.get("messages"), list):
+            request["messages"] = _leading_system_only(request["messages"])
         if profile.max_output_tokens > 0 and not {"max_tokens", "max_completion_tokens"} & request.keys():
             request["max_tokens"] = profile.max_output_tokens
         try:

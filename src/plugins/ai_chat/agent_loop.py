@@ -432,11 +432,20 @@ def _assistant_tool_message(message: Any) -> ChatMessage:
             _model_dump(call) for call in (getattr(message, "tool_calls", None) or [])
         ],
     }
-    dumped = _model_dump(message)
-    reasoning_content = dumped.get("reasoning_content")
-    if reasoning_content is not None:
-        payload["reasoning_content"] = reasoning_content
+    _copy_replay_fields(_model_dump(message), payload)
     return payload
+
+
+# Gateway fields the next request must carry back unchanged: reasoning text,
+# and agy's native Gemini parts with their thought signatures.
+_REPLAY_FIELDS = ("reasoning_content", "extra_content")
+
+
+def _copy_replay_fields(dumped: dict[str, Any], payload: ChatMessage) -> None:
+    for name in _REPLAY_FIELDS:
+        value = dumped.get(name)
+        if value is not None:
+            payload[name] = value
 
 
 def _parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
@@ -1424,6 +1433,9 @@ async def _create_streaming_completion(
     finish_reason: str | None = None
     usage: Any = None
     calls: dict[int, dict[str, str]] = {}
+    # agy sends replay metadata once, on the candidate's terminal chunk.
+    extra_content: Any = None
+    call_extras: dict[int, Any] = {}
     try:
         async for chunk in stream:
             if getattr(chunk, "usage", None) is not None:
@@ -1443,8 +1455,13 @@ async def _create_streaming_completion(
             reasoning_piece = dumped_delta.get("reasoning_content")
             if isinstance(reasoning_piece, str):
                 reasoning += reasoning_piece
+            if dumped_delta.get("extra_content") is not None:
+                extra_content = dumped_delta["extra_content"]
             for raw_call in list(getattr(delta, "tool_calls", None) or []):
                 index = int(getattr(raw_call, "index", 0) or 0)
+                call_extra = _model_dump(raw_call).get("extra_content")
+                if call_extra is not None:
+                    call_extras[index] = call_extra
                 current = calls.setdefault(
                     index,
                     {"id": "", "type": "function", "name": "", "arguments": ""},
@@ -1482,14 +1499,16 @@ async def _create_streaming_completion(
                 # Some providers omit argument deltas for parameterless tools.
                 arguments=value["arguments"] or "{}",
             ),
+            **({"extra_content": call_extras[index]} if index in call_extras else {}),
         )
-        for _index, value in sorted(calls.items())
+        for index, value in sorted(calls.items())
     ]
     message = SimpleNamespace(
         role="assistant",
         content=content,
         tool_calls=tool_calls,
         reasoning_content=reasoning or None,
+        extra_content=extra_content,
     )
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
@@ -1535,10 +1554,7 @@ def _assistant_final_message(message: Any) -> ChatMessage:
         "role": "assistant",
         "content": getattr(message, "content", None) or "",
     }
-    dumped = _model_dump(message)
-    reasoning_content = dumped.get("reasoning_content")
-    if reasoning_content is not None:
-        payload["reasoning_content"] = reasoning_content
+    _copy_replay_fields(_model_dump(message), payload)
     return payload
 
 

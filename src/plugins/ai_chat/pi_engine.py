@@ -71,6 +71,19 @@ def upstream_profile(catalog, settings):
     raise RuntimeError('没有可用于后台任务的模型端点，请设置 AI_BACKGROUND_UPSTREAM_PROFILE。')
 
 
+# Endpoints known to serve the OpenAI Responses API the background relay speaks.
+_RESPONSES_PROVIDERS = frozenset({'cliproxy', 'openai', 'agy'})
+
+
+def background_route(catalog, candidate):
+    """The configured profile a background chain entry names, if it has its own endpoint."""
+    profile = catalog.try_resolve(candidate)
+    if (profile is None or not profile.configured or profile.protocol != 'openai-chat'
+            or profile.provider not in _RESPONSES_PROVIDERS):
+        return None
+    return profile
+
+
 def notes_slug(workdir: str) -> str:
     raw = str(PurePosixPath('/' + (workdir or '/work').lstrip('/'))).lstrip('/')
     slug = re.sub(r'[^A-Za-z0-9]', '-', raw)[:120]
