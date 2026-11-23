@@ -65,7 +65,7 @@ async def _present(service, row, *, question=None):
             '只有需要用户补充时才向用户提问，提醒用户可以直接告诉你补充要求。')
         with scoped(app,inbound.endpoint,'background_agent',inbound.actor,background_job_id=row['job_id'],
                 current=lambda:service.calls(current)):
-            answer = await ask_deepseek_with_tools(prompt, [], tools, execute, profile=profile, trace=trace,
+            answer = await ask_deepseek_with_tools(prompt, tools, execute, profile=profile, trace=trace,
                 group_context=history, memory_context=memory, system_prompt=system_prompt(app.settings.system_prompt, examples=app.settings.style_examples),
                 tool_catalog=ToolCatalog(tools, ignore_unknown_fields=True),
                 max_tool_rounds=24, max_total_calls=80, max_calls_per_round=24)
@@ -196,7 +196,6 @@ async def present_wake(service, endpoint, text: str, *, unit: str = ''):
         with scoped(app, endpoint, 'background_agent', requester):
             answer = await ask_deepseek_with_tools(
                 prompt,
-                [],
                 tools,
                 execute,
                 profile=profile,

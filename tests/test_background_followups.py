@@ -53,7 +53,7 @@ class BackgroundFollowupTests(unittest.IsolatedAsyncioTestCase):
     async def ask(self, text, *tool_calls):
         results = []
 
-        async def llm(user_text, history, tools, execute_tool, **kwargs):
+        async def llm(user_text, tools, execute_tool, **kwargs):
             self.assertEqual(user_text, text)
             self.prompts.append(kwargs)
             self.assertIn('agent_status', {tool['function']['name'] for tool in tools})

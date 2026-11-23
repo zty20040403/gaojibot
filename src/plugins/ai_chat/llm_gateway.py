@@ -1245,8 +1245,6 @@ def _anthropic_request(
 def _convert_anthropic_messages(
     messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    from .prompt_context import GROUP_CONTEXT_PREFIX
-
     system_parts: list[str] = []
     converted: list[dict[str, Any]] = []
     for message in messages:
@@ -1303,13 +1301,7 @@ def _convert_anthropic_messages(
             converted.append({"role": "assistant", "content": blocks})
             continue
 
-        text = _content_text(content)
-        if role == "user" and not converted and text.startswith(GROUP_CONTEXT_PREFIX):
-            converted.append({"role": role, "content": [
-                {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}},
-            ]})
-        else:
-            converted.append({"role": role, "content": text})
+        converted.append({"role": role, "content": _content_text(content)})
     system = ([{"type": "text", "text": "\n\n".join(system_parts),
                 "cache_control": {"type": "ephemeral"}}] if system_parts else [])
     return system, converted

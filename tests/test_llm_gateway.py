@@ -588,8 +588,8 @@ class LLMGatewayTests(unittest.IsolatedAsyncioTestCase):
             patch.object(agent, "_llm_gateway", gateway),
         ):
             answers = await asyncio.gather(
-                agent.ask_deepseek("one", [], profile=first),
-                agent.ask_deepseek("two", [], profile=second),
+                agent.ask_deepseek("one", system_prompt="TEST", profile=first),
+                agent.ask_deepseek("two", system_prompt="TEST", profile=second),
             )
 
         self.assertEqual(answers, ["first", "second"])

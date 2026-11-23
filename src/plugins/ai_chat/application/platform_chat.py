@@ -178,34 +178,19 @@ class PlatformChatService:
 
     async def ask(
         self, inbound: InboundMessage, platform: TurnPlatform, user_text: str, *,
-        force_search: bool = False, force_ocr: bool = False,
-        force_voice_reply: bool = False, force_voice_transcription: bool = False,
-        available_image_sources=None, available_voice_message_id=None,
+        force_search: bool = False,
         journal_turn_id: int | None = None, turn_trace: AgentTrace | None = None,
         turn_context: str = "", selected_model_override: str | None = None,
         selected_profile_override: ModelProfile | None = None,
         feedback_provider=None, final_stream_sink=None, final_stream_state=None,
         checkpoint_state=None, checkpoint_sink=None, idempotency_key_prefix="",
-        task_mode: bool = False, simple_chat_profile: str = "", resume_task_id=None,
-        _approved_call=None, routine_execution=None, _mcp_execution=None,
+        simple_chat_profile: str = "",
     ) -> str:
-        """Prepare a structured text turn for the same context and agent core.
-
-        Text delegation is available only through the trusted runtime factory.
-        Optional file/task host factories supply their exact current
-        source authority. Other host/media and revision continuations remain
-        unavailable through this foreground entry point.
-        """
+        """Prepare a structured text turn for the same context and agent core."""
         if platform.account != inbound.endpoint.account:
             raise ValueError("turn platform does not own inbound endpoint")
         if inbound.endpoint.account.platform != "qq-official":
             raise ValueError("structured preparation currently supports qq-official only")
-        if any((task_mode, resume_task_id is not None, routine_execution is not None,
-                _mcp_execution is not None, _approved_call is not None)):
-            raise ChatFailure("当前平台尚未开放此任务续接入口和宿主操作。", code="platform_capability")
-        if any((force_ocr, force_voice_reply, force_voice_transcription,
-                available_image_sources, available_voice_message_id is not None)):
-            raise ChatFailure("当前平台尚未开放这项媒体能力。", code="platform_capability")
         if inbound.endpoint.kind == "group" and not await self.context.db_call(
             self.scope_enabled, inbound.endpoint.scope,
         ):
@@ -333,7 +318,7 @@ class PlatformChatService:
                     self.context.settings.style_examples,
                 )
                 answer = await self._call_model(
-                    inbound, platform, journal_turn_id, user_text, [], tools, execute_tool,
+                    inbound, platform, journal_turn_id, user_text, tools, execute_tool,
                     current_user=speaker(inbound),
                     group_context=group_context, memory_context=memory_context,
                     tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",
@@ -364,7 +349,7 @@ class PlatformChatService:
                 if _is_silence(answer) and not turn.delivered and _must_reply(inbound, user_text):
                     # Someone asked gaoji directly: one short tool-free retry, then a plain fallback.
                     answer = await self._call_model(
-                        inbound, platform, journal_turn_id, user_text + _MUST_REPLY_NOTE, [], [], execute_tool,
+                        inbound, platform, journal_turn_id, user_text + _MUST_REPLY_NOTE, [], execute_tool,
                         current_user=speaker(inbound), group_context=group_context,
                         memory_context=memory_context, profile=selected_profile,
                         tool_context="\n\n".join(context_parts), system_prompt=system, trace=turn_trace,

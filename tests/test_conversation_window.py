@@ -108,7 +108,7 @@ class WindowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("后面的没加载", render_memory("\n".join("- 条目" + "字" * 50 for _ in range(200))))
 
     def test_chat_layout_puts_stable_parts_first_and_new_message_last(self):
-        messages = _build_messages("在吗", [], group_context="[08-11 12:00 小明 #1] hi",
+        messages = _build_messages("在吗", group_context="[08-11 12:00 小明 #1] hi",
             memory_context="- 小明：x", current_user="小红", system_prompt=system_prompt())
         self.assertEqual([m["role"] for m in messages], ["system", "user", "user"])
         self.assertIn("[silence]", messages[0]["content"])

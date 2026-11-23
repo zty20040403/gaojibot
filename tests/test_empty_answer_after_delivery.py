@@ -104,7 +104,7 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        async def llm(user_text, history, tools, execute_tool, **_kwargs) -> str:
+        async def llm(user_text, tools, execute_tool, **_kwargs) -> str:
             res = json.loads(await execute_tool("reply_with_voice", {"text": "你好"}))
             self.assertTrue(res["ok"])
             return ""
@@ -141,7 +141,7 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
             reply_with_voice=AsyncMock(side_effect=MediaDenied("voice_failed")),
         )
 
-        async def llm(user_text, history, tools, execute_tool, **_kwargs) -> str:
+        async def llm(user_text, tools, execute_tool, **_kwargs) -> str:
             res = json.loads(await execute_tool("reply_with_voice", {"text": "你好"}))
             self.assertFalse(res["ok"])
             return ""
@@ -168,7 +168,7 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
             async def say(self, text):
                 return {"ok": True, "status": "enqueued"}
 
-        async def llm_say(_user_text, _history, _tools, execute_tool, **_kwargs) -> str:
+        async def llm_say(_user_text, _tools, execute_tool, **_kwargs) -> str:
             res = json.loads(await execute_tool("say", {"text": "正在发"}))
             self.assertTrue(res["ok"])
             return ""
@@ -203,7 +203,7 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
             mark_sent=Mock(),
         )
 
-        async def llm(_user_text, _history, _tools, execute_tool, **_kwargs) -> str:
+        async def llm(_user_text, _tools, execute_tool, **_kwargs) -> str:
             res = json.loads(await execute_tool("send_sticker", {"query": "笑死"}))
             self.assertTrue(res["ok"])
             return ""
@@ -243,7 +243,7 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
             finish=lambda answer: f"{answer}\n\n待发送的转发摘要",
         )
 
-        async def llm(_user_text, _history, _tools, execute_tool, **_kwargs):
+        async def llm(_user_text, _tools, execute_tool, **_kwargs):
             await execute_tool("say", {"text": "正在处理"})
             return ""
 
@@ -263,7 +263,7 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
             input_images=AsyncMock(return_value=((), '')), current=AsyncMock(), finish=lambda answer: answer,
             forward=AsyncMock(return_value={'state': 'stored', 'artifact_id': 'art-forward'}),
         )
-        async def llm(_user_text, _history, _tools, execute_tool, **_kwargs):
+        async def llm(_user_text, _tools, execute_tool, **_kwargs):
             result = json.loads(await execute_tool('send_forward_summary', {}))
             self.assertTrue(result['ok'])
             return ''
@@ -297,7 +297,7 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
             input_images=AsyncMock(return_value=((), '')), current=AsyncMock(), forward=forward,
             finish=lambda answer: '\n\n'.join([answer, *pending]),
         )
-        async def llm(_user_text, _history, _tools, execute_tool, **_kwargs):
+        async def llm(_user_text, _tools, execute_tool, **_kwargs):
             self.assertTrue(json.loads(await execute_tool('send_forward_summary', {}))['ok'])
             return ''
         service = self._service(llm=llm, media_session=media,
@@ -338,7 +338,7 @@ class EmptyAnswerAfterDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 close=AsyncMock(),
             )
 
-        async def llm_file(_user_text, _history, _tools, execute_tool, **_kwargs) -> str:
+        async def llm_file(_user_text, _tools, execute_tool, **_kwargs) -> str:
             res = json.loads(await execute_tool("send_file_from_sandbox", {"path": "out.png"}))
             self.assertTrue(res["ok"])
             return ""
@@ -379,7 +379,7 @@ class MustReplyTests(unittest.IsolatedAsyncioTestCase):
     async def _ask(self, answers, *, inbound=None, text="你现在代码规模多少行"):
         calls = []
 
-        async def llm(user_text, history, tools, execute_tool, **_kwargs):
+        async def llm(user_text, tools, execute_tool, **_kwargs):
             calls.append((user_text, len(tools)))
             return answers[len(calls) - 1]
 

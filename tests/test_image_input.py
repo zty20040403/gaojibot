@@ -47,8 +47,8 @@ class ImageInputTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(images), 4)
         self.assertEqual(len(self.requests), 4)
         self.assertIn('view_image', warning)
-        baseline = _build_messages('TEST', [], group_context='TEST stable tail', system_prompt='TEST stable system')
-        actual = _build_messages('TEST', [], group_context='TEST stable tail', system_prompt='TEST stable system', input_images=images)
+        baseline = _build_messages('TEST', group_context='TEST stable tail', system_prompt='TEST stable system')
+        actual = _build_messages('TEST', group_context='TEST stable tail', system_prompt='TEST stable system', input_images=images)
         self.assertEqual(actual[:-1], baseline[:-1])
         self.assertEqual(sum(p['type'] == 'image_url' for p in actual[-1]['content']), 4)
         self.assertIn('<untrusted', str(actual[-1]))
@@ -94,7 +94,7 @@ class ImageInputTests(unittest.IsolatedAsyncioTestCase):
                                api_key_required=False, capabilities=ModelCapabilities(vision=True, tools=False))
         image = ToolImage('TEST image', 'data:image/png;base64,TEST')
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=complete):
-            await ask_deepseek_with_tools('TEST', [], [], None, profile=profile,
+            await ask_deepseek_with_tools('TEST', [], None, profile=profile,
                                          system_prompt='TEST system', input_images=(image,))
         self.assertIn(image.data_url, str(calls[0]['messages'][-1]))
 

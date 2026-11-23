@@ -121,7 +121,7 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
                 call.function.arguments = json.dumps(brief)
             with patch('src.plugins.ai_chat.agent_loop._create_completion',
                        new=AsyncMock(side_effect=[batch('lookup'), handoff, final()])) as model:
-                await ask_deepseek_with_tools('TEST request', [], [tool('lookup'), DEFINITIONS[0]], execute,
+                await ask_deepseek_with_tools('TEST request', [tool('lookup'), DEFINITIONS[0]], execute,
                     system_prompt='TEST', profile=replace(profile, max_input_tokens=20_000, max_output_tokens=1000),
                     max_tool_rounds=40, foreground_quiet_calls=12)
             closing = model.await_args_list[1].kwargs
@@ -171,7 +171,7 @@ class OfficialBackgroundTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await feedback(), ['TEST extra detail'])
             if question:
                 async def reply(*args, **kwargs):
-                    self.assertEqual(await args[3]('agent_steer', {'message': 'TEST answer'}), '{"ok":true}')
+                    self.assertEqual(await args[2]('agent_steer', {'message': 'TEST answer'}), '{"ok":true}')
                     return '[silence]'
                 with patch('src.plugins.ai_chat.adapters.qq_official.background_delivery.ask_deepseek_with_tools', side_effect=reply):
                     await present(service, row, question='TEST question')

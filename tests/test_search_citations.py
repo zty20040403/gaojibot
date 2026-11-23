@@ -103,7 +103,7 @@ class CitationStreamingTests(unittest.IsolatedAsyncioTestCase):
 
         registry.execute = execute
 
-        async def llm(_text, _history, _tools, execute_tool, **kwargs):
+        async def llm(_text, _tools, execute_tool, **kwargs):
             if with_sources:
                 await execute_tool("web_search", {"queries": ["TEST"]})
             content = "第一段引用[3]。\n\n第二段引用[1]。" if with_sources else "普通第一段。\n\n普通第二段。"

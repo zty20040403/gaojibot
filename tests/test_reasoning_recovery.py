@@ -68,7 +68,7 @@ class ReasoningRecoveryTests(unittest.IsolatedAsyncioTestCase):
         provider, runtime = self.runtime([completion(), completion("323", reasoning="", finish="stop")])
         trace = agent.AgentTrace()
         with runtime:
-            answer = await agent.ask_deepseek("17 * 19", [], profile=self.qwen, trace=trace)
+            answer = await agent.ask_deepseek("17 * 19", system_prompt="TEST", profile=self.qwen, trace=trace)
         self.assertEqual(answer, "323")
         self.assertEqual(len(provider.calls), 2)
         self.assertEqual(provider.calls[0][1]["extra_body"], {"enable_thinking": True})
@@ -83,7 +83,7 @@ class ReasoningRecoveryTests(unittest.IsolatedAsyncioTestCase):
         provider, runtime = self.runtime([completion(), completion(), completion("answer", reasoning="", finish="stop")])
         trace = agent.AgentTrace()
         with runtime:
-            answer = await agent.ask_deepseek("question", [], profile=self.qwen, trace=trace)
+            answer = await agent.ask_deepseek("question", system_prompt="TEST", profile=self.qwen, trace=trace)
         self.assertEqual(answer, "answer")
         self.assertEqual([name for name, _ in provider.calls], ["qwen-local", "qwen-local", "luna"])
         self.assertNotIn("excluded_profiles", provider.calls[-1][1])
@@ -94,7 +94,7 @@ class ReasoningRecoveryTests(unittest.IsolatedAsyncioTestCase):
         provider, runtime = self.runtime([completion(), completion(), completion()])
         trace = agent.AgentTrace()
         with runtime, self.assertRaises(LLMEmptyResponseError):
-            await agent.ask_deepseek("question", [], profile=self.qwen, trace=trace)
+            await agent.ask_deepseek("question", system_prompt="TEST", profile=self.qwen, trace=trace)
         self.assertEqual(len(provider.calls), 3)
         self.assertEqual(trace.output_tokens, 24)
         self.assertEqual(trace.model_routing[-1]["actual_profile"], "")
@@ -108,7 +108,7 @@ class ReasoningRecoveryTests(unittest.IsolatedAsyncioTestCase):
         execute = AsyncMock(return_value="2026-09-03")
         tools = [{"type":"function", "function":{"name":"get_current_time", "description":"Read time", "parameters":{"type":"object", "properties":{}}}}]
         with runtime:
-            answer = await agent.ask_deepseek_with_tools("time", [], tools, execute, profile=self.qwen)
+            answer = await agent.ask_deepseek_with_tools("time", tools, execute, system_prompt="TEST", profile=self.qwen)
         self.assertEqual(answer, "done")
         execute.assert_awaited_once()
         self.assertEqual(provider.calls[-1][1]["tool_choice"], "none")
@@ -119,13 +119,13 @@ class ReasoningRecoveryTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(finish=initial.choices[0].finish_reason):
                 provider, runtime = self.runtime([initial])
                 with runtime:
-                    await agent.ask_deepseek("question", [], profile=self.qwen)
+                    await agent.ask_deepseek("question", system_prompt="TEST", profile=self.qwen)
                 self.assertEqual(len(provider.calls), 1)
 
     async def test_cancellation_does_not_start_fallback(self):
         provider, runtime = self.runtime([completion(), asyncio.CancelledError()])
         with runtime, self.assertRaises(asyncio.CancelledError):
-            await agent.ask_deepseek("question", [], profile=self.qwen)
+            await agent.ask_deepseek("question", system_prompt="TEST", profile=self.qwen)
         self.assertEqual(len(provider.calls), 2)
 
     async def test_streamed_reasoning_is_not_sent_and_stream_is_closed(self):

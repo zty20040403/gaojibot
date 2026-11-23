@@ -77,9 +77,9 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
         ):
             answer = await ask_deepseek_with_tools(
                 "帮我看看网页",
-                [],
                 [_tool("browser_clear")],
                 execute,
+                system_prompt="TEST",
                 approval_checker=lambda _policy, name, arguments: (
                     approval_from_user_text("帮我看看网页", name, arguments)
                 ),
@@ -110,9 +110,9 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
         ):
             await ask_deepseek_with_tools(
                 "处理任务",
-                [],
                 [_tool("say", {"text": {"type": "string"}}, ["text"])],
                 execute,
+                system_prompt="TEST",
                 event_sink=sink,
                 max_tool_rounds=4,
             )
@@ -157,7 +157,6 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
         ):
             answer = await ask_deepseek_with_tools(
                 "运行命令",
-                [],
                 [
                     _tool(
                         "sandbox_exec",
@@ -169,6 +168,7 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
                     )
                 ],
                 execute,
+                system_prompt="TEST",
                 compensate_tool=compensator,
                 event_sink=sink,
             )
@@ -209,7 +209,6 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
         ):
             await ask_deepseek_with_tools(
                 "后台构建",
-                [],
                 [
                     _tool(
                         "sandbox_exec",
@@ -222,6 +221,7 @@ class AgentKernelTests(unittest.IsolatedAsyncioTestCase):
                     )
                 ],
                 execute,
+                system_prompt="TEST",
                 handoff_tool=handoff,
                 event_sink=sink,
             )

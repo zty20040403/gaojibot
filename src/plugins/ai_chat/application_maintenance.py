@@ -70,7 +70,7 @@ class ApplicationMaintenance:
         trace = AgentTrace()
         profile = self.context.model_catalog.resolve_runtime(
             profile=self.context.settings.dream_profile or None, model=None)
-        tidied = (await ask_deepseek(content, [], profile=profile, trace=trace, system_prompt=TIDY_PROMPT)).strip()
+        tidied = (await ask_deepseek(content, profile=profile, trace=trace, system_prompt=TIDY_PROMPT)).strip()
         if self.context.usage_store is not None and (trace.input_tokens or trace.output_tokens):
             await self.context.db_call(self.context.usage_store.record, scope_key=scope_key, source="memory-tidy",
                 provider=trace.provider, model=trace.model, input_tokens=trace.input_tokens,
@@ -123,7 +123,7 @@ class ApplicationMaintenance:
         profile = self.context.model_catalog.resolve_runtime(
             profile=self.context.settings.dream_profile or None, model=None
         )
-        raw = await ask_deepseek(prompt_text, [], profile=profile, trace=trace, system_prompt=CONSOLIDATE_PROMPT)
+        raw = await ask_deepseek(prompt_text, profile=profile, trace=trace, system_prompt=CONSOLIDATE_PROMPT)
         if self.context.usage_store is not None and (trace.input_tokens or trace.output_tokens):
             await self.context.db_call(
                 self.context.usage_store.record,

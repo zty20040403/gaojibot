@@ -44,7 +44,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         events = []
         async def event(item):
             events.append((item.kind, item.sequence))
-        args = dict(user_text='private base prompt', history=[], tools=[tool('one'), tool('two')],
+        args = dict(user_text='private base prompt', system_prompt='TEST', tools=[tool('one'), tool('two')],
                     execute_tool=execute, checkpoint_sink=store.save, idempotency_key_prefix='turn-1', event_sink=event)
         blocked = Store(lambda s: s['phase'] == 'inflight')
         await self.interrupted({**args, 'checkpoint_sink': blocked.save}, batch('one', 'two'))
@@ -69,7 +69,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         store = Store()
         async def interrupted(*_):
             raise asyncio.CancelledError()
-        args = dict(user_text='x', history=[], tools=[tool('shell'), tool('other')],
+        args = dict(user_text='x', system_prompt='TEST', tools=[tool('shell'), tool('other')],
                     execute_tool=interrupted, checkpoint_sink=store.save, idempotency_key_prefix='turn-2', foreground_quiet_calls=1)
         await self.interrupted(args, batch('shell', 'other'), asyncio.CancelledError)
         self.assertEqual(store.state['phase'], 'inflight')
@@ -88,7 +88,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         execute = AsyncMock(return_value='{"ok":false,"code":"generation_unknown"}')
         model = AsyncMock(side_effect=[batch('generate_image', 'generate_image'), final('unknown')])
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=model):
-            answer = await ask_deepseek_with_tools(user_text='test', history=[], tools=[tool('generate_image')], execute_tool=execute)
+            answer = await ask_deepseek_with_tools(user_text='test', system_prompt='TEST', tools=[tool('generate_image')], execute_tool=execute)
         self.assertEqual(answer, 'unknown')
         execute.assert_awaited_once()
         self.assertNotIn('tools', model.await_args.kwargs)
@@ -97,7 +97,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         store = Store(lambda s: s['phase'] == 'batch' and s['next_index'] == 1)
         feedback = AsyncMock(side_effect=[['remember this'], []])
         execute = AsyncMock(return_value='ok')
-        args = dict(user_text='x', history=[], tools=[tool('one'), tool('two')], execute_tool=execute,
+        args = dict(user_text='x', system_prompt='TEST', tools=[tool('one'), tool('two')], execute_tool=execute,
                     max_total_calls=1, feedback_provider=feedback, checkpoint_sink=store.save, idempotency_key_prefix='turn-3', foreground_quiet_calls=2)
         await self.interrupted(args, batch('one', 'two'))
         store.stop = None
@@ -112,7 +112,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         store = Store(lambda s: s['phase'] == 'batch' and s['next_index'] == 1)
         secret = 'TEST_SECRET_VALUE'
         execute = AsyncMock(return_value=json.dumps({'password': secret, 'image': 'data:image/png;base64,AAAA'}))
-        args = dict(user_text='x', history=[], tools=[tool('one')], execute_tool=execute,
+        args = dict(user_text='x', system_prompt='TEST', tools=[tool('one')], execute_tool=execute,
                     checkpoint_sink=store.save, idempotency_key_prefix='turn-4')
         await self.interrupted(args, batch('one'))
         self.assertNotIn(secret, json.dumps(store.state))
@@ -128,7 +128,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         from src.plugins.ai_chat.tool_images import ToolImage
         store = Store(lambda s: s['phase'] == 'batch' and s['next_index'] == 1)
         execute = AsyncMock(return_value=ToolImage('caption', 'data:image/png;base64,TEST_IMAGE_DATA'))
-        args = dict(user_text='x', history=[], tools=[tool('one')], execute_tool=execute,
+        args = dict(user_text='x', system_prompt='TEST', tools=[tool('one')], execute_tool=execute,
                     checkpoint_sink=store.save, idempotency_key_prefix='turn-image')
         await self.interrupted(args, batch('one'))
         self.assertNotIn('TEST_IMAGE_DATA', json.dumps(store.state))
@@ -141,7 +141,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_completed_fingerprint_blocks_repeat_in_later_round(self):
         store = Store(lambda s: s['phase'] == 'between')
         execute = AsyncMock(return_value='ok')
-        args = dict(user_text='x', history=[], tools=[tool('say')], execute_tool=execute,
+        args = dict(user_text='x', system_prompt='TEST', tools=[tool('say')], execute_tool=execute,
                     checkpoint_sink=store.save, idempotency_key_prefix='turn-repeat')
         await self.interrupted(args, batch('say'))
         store.stop = None
@@ -156,7 +156,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         names = tuple(f'tool-{index}' for index in range(13))
         store = Store(lambda state: state['phase'] == 'batch' and state['next_index'] == 11)
         execute = AsyncMock(side_effect=['ok'] * 12 + ['<&' * 12_000])
-        args = dict(user_text='x', history=[], tools=[tool(name) for name in names],
+        args = dict(user_text='x', system_prompt='TEST', tools=[tool(name) for name in names],
                     execute_tool=execute, max_calls_per_round=24, foreground_quiet_calls=12,
                     checkpoint_sink=store.save, idempotency_key_prefix='turn-quiet')
         await self.interrupted(args, batch(*names))
@@ -179,7 +179,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         profile = ModelProfile('TEST', 'test', 'openai-chat', 'TEST', '', max_input_tokens=20_000, max_output_tokens=10_000)
         store = Store(lambda s: s['phase'] == 'model' and s['tool_round'] == 2)
         execute = AsyncMock(return_value='ok')
-        args = dict(user_text='x', history=[], system_prompt='TEST', profile=profile, execute_tool=execute,
+        args = dict(user_text='x', system_prompt='TEST', profile=profile, execute_tool=execute,
                     tools=[tool('lookup'), tool('say')], foreground_quiet_calls=12, max_tool_rounds=40,
                     checkpoint_sink=store.save, idempotency_key_prefix='TEST_WRAP')
         response = batch('lookup')
@@ -199,7 +199,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         for size, expected_calls in ((4300, 1), (7000, 0)):
             with self.subTest(size=size), patch('src.plugins.ai_chat.agent_loop._create_completion', new=AsyncMock(return_value=final())) as model:
                 execute = AsyncMock()
-                await ask_deepseek_with_tools('测' * size, [], [tool('say')], execute, system_prompt='TEST', profile=profile,
+                await ask_deepseek_with_tools('测' * size, [tool('say')], execute, system_prompt='TEST', profile=profile,
                                               foreground_quiet_calls=12, max_tool_rounds=40)
                 execute.assert_not_called()
                 self.assertEqual(model.await_count, expected_calls)
@@ -210,7 +210,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         names = [f'tool-{i}' for i in range(18)]
         execute = AsyncMock(return_value='ok')
         with patch('src.plugins.ai_chat.agent_loop._create_completion', new=AsyncMock(side_effect=[*(batch(n) for n in names), final()])) as model:
-            await ask_deepseek_with_tools('x', [], [tool(n) for n in names], execute, foreground_quiet_calls=12, max_tool_rounds=40)
+            await ask_deepseek_with_tools('x', [tool(n) for n in names], execute, system_prompt='TEST', foreground_quiet_calls=12, max_tool_rounds=40)
         self.assertEqual(execute.await_count, 18)
         self.assertNotIn('[前台收尾]', str(model.await_args.kwargs['messages']))
 
@@ -222,7 +222,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
             replies = [batch(*names), batch('say', start=11), final()]
             with self.subTest(status=status), patch('src.plugins.ai_chat.agent_loop._create_completion',
                     new=AsyncMock(side_effect=replies)) as model:
-                await ask_deepseek_with_tools('x', [], [tool(n) for n in [*names, 'say']], execute,
+                await ask_deepseek_with_tools('x', [tool(n) for n in [*names, 'say']], execute, system_prompt='TEST',
                                               max_calls_per_round=24, foreground_quiet_calls=12)
                 self.assertEqual(str(model.await_args.kwargs['messages']).count('[进度提醒]'), int(not ok))
 
@@ -230,7 +230,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         store = Store(lambda s: s['phase'] == 'batch')
         call = batch('one')
         call.choices[0].message.tool_calls[0].function.arguments = '{"password":"TEST_SECRET"}'
-        args = dict(user_text='x', history=[], tools=[tool('one')], execute_tool=AsyncMock(),
+        args = dict(user_text='x', system_prompt='TEST', tools=[tool('one')], execute_tool=AsyncMock(),
                     checkpoint_sink=store.save, idempotency_key_prefix='turn-5')
         await self.interrupted(args, call)
         self.assertNotIn('TEST_SECRET', json.dumps(store.state))
