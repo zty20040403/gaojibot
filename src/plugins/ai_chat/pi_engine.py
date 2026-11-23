@@ -61,6 +61,11 @@ class BackgroundModelSettings:
         self.preferences.set('background:model', models[0])
         self.preferences.set('background:effort', effort)
 
+    def reset(self):
+        """Back to the host's AI_BACKGROUND_MODELS and AI_BACKGROUND_EFFORT."""
+        for key in ('background:models', 'background:model', 'background:effort'):
+            self.preferences.clear(key)
+
 
 def upstream_profile(catalog, settings):
     """The profile whose endpoint and key relay background calls (cliproxy by default)."""

@@ -772,12 +772,15 @@ def build_turn_consumer(runtime, token, app):
         from .config_commands import command as config_command
         from .persona_commands import command as persona_command
         from .status_commands import command as status_command
+        from .background_commands import command as background_command
         services = CommandServices(
             running_tasks=tasks, config=config_command(runtime, life, app), status=status_command(runtime, life, app),
             persona=persona_command(runtime, life, app),
             model_preferences=app.model_preferences, reasoning_preferences=app.reasoning_preferences,
             host_policy=host_policy, usage=usage_callback(runtime.deliveries.transaction, runtime._calls),
             browser=browser if agents is not None and agents.vm_lifecycle is not None else None,
+            background=(background_command(runtime, life, app, agents)
+                        if getattr(agents, 'model_settings', None) is not None else None),
         )
         return guarded_services(services, inbound, effect_scope=effect_scope, database_call=runtime._calls)
 
