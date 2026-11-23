@@ -29,6 +29,7 @@ from src.plugins.ai_chat.timeline import render_line
 
 from .commands import guarded_services, route_command, usage_callback
 from .conversation_control import permitted
+from .inbox import ReplyTarget, resolve_reply_target
 from .lease import LeaseLost, assert_epoch
 from .renderer import render_plan
 from .sections import ReplyStream
@@ -125,36 +126,23 @@ def begin_execution(cursor, *, token, handle: ExecutionHandle, now: int, admissi
                    (journal_turn_id, now, now, row["execution_id"]))
 
 
-def _current_reply(cursor, handle: ExecutionHandle, message):
-    expected = message["reply_to_native_message_id"]
-    if not expected:
+def _current_reply(cursor, endpoint: EndpointKey, scope_key: str, message) -> ReplyTarget | None:
+    if not message["reply_to_native_message_id"]:
         return None
     source = cursor.execute("""SELECT ref_msg_idx FROM qq_official_messages
         WHERE account_key=? AND endpoint_key=? AND native_message_id=?
           AND canonical_message_id=? AND direction='inbound'""",
-        (handle.endpoint.account.key, handle.endpoint.key, message["native_message_id"],
-         handle.canonical_message_id)).fetchone()
-    if source is None or not source["ref_msg_idx"]:
-        return None
-    targets = cursor.execute("""SELECT i.native_message_id,i.canonical_message_id,i.ambiguous,
-        q.canonical_message_id AS mapped_id,m.source_endpoint_key,m.native_message_id AS ledger_native
-        FROM qq_official_message_indexes i LEFT JOIN qq_official_messages q
-          ON q.account_key=i.account_key AND q.endpoint_key=i.endpoint_key AND q.native_message_id=i.native_message_id
-        LEFT JOIN messages m ON m.canonical_message_id=i.canonical_message_id
-        WHERE i.account_key=? AND i.endpoint_key=? AND i.index_value=? AND i.index_kind IN ('msg_idx','ref_idx')""",
-        (handle.endpoint.account.key, handle.endpoint.key, source["ref_msg_idx"])).fetchall()
-    if not targets or any(
-        row["ambiguous"] or row["native_message_id"] != expected or row["canonical_message_id"] is None
-        or row["mapped_id"] != row["canonical_message_id"] or row["source_endpoint_key"] != handle.endpoint.key
-        or row["ledger_native"] != expected for row in targets
-    ):
-        return None
-    return expected
+        (endpoint.account.key, endpoint.key, message["native_message_id"], message["canonical_message_id"])).fetchone()
+    target = resolve_reply_target(cursor, endpoint, scope_key, source["ref_msg_idx"]) if source else None
+    if (target is not None and target.native_message_id == message["reply_to_native_message_id"]
+            and target.canonical_message_id == message["reply_to_canonical_message_id"]):
+        return target
+    return None
 
 
 def load_turn_input(cursor, *, token, handle: ExecutionHandle, now: int, admission) -> InboundMessage:
     assert_execution_current(cursor, token=token, handle=handle, now=now, admission=admission)
-    row = cursor.execute("""SELECT m.*,i.event_id,i.received_at,i.trigger_requested
+    row = cursor.execute("""SELECT m.*,i.event_id,i.explicit_mention
         FROM messages m JOIN qq_official_inbound_events i ON i.canonical_message_id=m.canonical_message_id
         WHERE i.inbox_id=? AND i.account_key=? AND i.endpoint_key=? AND m.canonical_message_id=?""",
         (handle.inbox_id, token.account_key, handle.endpoint.key, handle.canonical_message_id)).fetchone()
@@ -167,11 +155,13 @@ def load_turn_input(cursor, *, token, handle: ExecutionHandle, now: int, admissi
         scope = ConversationScope.from_key(handle.scope_key)
     except (TypeError, ValueError):
         raise TurnInputError("turn_source_body_invalid") from None
+    reply = _current_reply(cursor, handle.endpoint, handle.scope_key, row)
     return InboundMessage(
         endpoint=handle.endpoint, actor=handle.actor, event_id=row["event_id"],
         native_message_id=row["native_message_id"], sender_display=row["sender_display"],
-        platform_role="", body=body, mentions_bot=bool(row["trigger_requested"]),
-        reply_to_native_message_id=_current_reply(cursor, handle, row),
+        platform_role="", body=body,
+        mentions_bot=handle.endpoint.kind == "group" and (row["explicit_mention"] or bool(reply and reply.is_bot)),
+        reply_to_native_message_id=reply.native_message_id if reply else None,
         occurred_at=row["occurred_at"], reply_credential=None,
         canonical_scope=scope if scope != handle.endpoint.scope else None,
         route_epoch=handle.route_epoch,
@@ -468,6 +458,10 @@ class OfficialTurnConsumer:
                     if (message.scope_key != inbound.scope.key or message.source_endpoint_key != inbound.endpoint.key
                             or message.sender_actor_key != inbound.actor.key or message.direction != "inbound"):
                         raise ExecutionError("batch_source_mismatch")
+                    if message.reply_to_native_message_id and not _current_reply(
+                        cursor, inbound.endpoint, inbound.scope.key, message_row,
+                    ):
+                        message = replace(message, reply_to_canonical_message_id=None)
                     lines.append(render_line(message))
                 text = ("[连续消息，请合起来回答一次]\n" if batch_ids else "") + "\n".join(lines)
                 inbound = replace(inbound, batch_message_ids=batch_ids)
@@ -484,7 +478,7 @@ class OfficialTurnConsumer:
                 if not item_inbox:
                     continue
                 row = cursor.execute(
-                    """SELECT i.canonical_message_id, i.trigger_requested
+                    """SELECT i.canonical_message_id, i.explicit_mention
                        FROM qq_official_inbound_events i
                        WHERE i.inbox_id=? AND i.account_key=? AND i.endpoint_key=?""",
                     (item_inbox, self.token.account_key, handle.endpoint.key),
@@ -498,16 +492,15 @@ class OfficialTurnConsumer:
                 if msg_row is None:
                     continue
                 msg = MessageLedger._row_to_message(msg_row)
-                if msg.direction != "inbound":
+                if msg.direction != "inbound" or msg.scope_key != handle.scope_key:
                     continue
+                reply = _current_reply(cursor, handle.endpoint, handle.scope_key, msg_row)
+                if reply is None:
+                    msg = replace(msg, reply_to_canonical_message_id=None)
+                addressed = handle.endpoint.kind == "group" and (row["explicit_mention"] or bool(reply and reply.is_bot))
                 reason = str(getattr(item, "proactive_reason", "") or "").strip()
-                rendered = render_line(msg, max_chars=2000)
-                if reason:
-                    lines.append(f"[判定：{reason}]\n{rendered}")
-                elif row["trigger_requested"] and handle.endpoint.kind == "group":
-                    lines.append(f"{rendered}（@你）")
-                else:
-                    lines.append(rendered)
+                rendered = render_line(msg, max_chars=2000, mentions_bot=addressed)
+                lines.append(f"[判定：{reason}]\n{rendered}" if reason else rendered)
         return lines
 
     async def __call__(self, source):

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from ..conversation_window import MEMORY_TOKENS, build_tail
+from ..ledger import CanonicalMessage
 from ..message_ir import render_prompt_text
 from ..platform_types import InboundMessage
 from ..prompt_context import quote_evidence
 from ..stances import render_stances, verified_stances
 from ..status_line import compute_status_line
-from ..timeline import estimate_tokens, render_line
+from ..timeline import estimate_tokens
 from ..turn_journal import tool_effect_labels
 
 
@@ -35,14 +36,18 @@ def render_memory(text: str) -> str:
     return "\n".join(kept) + "\n（后面的没加载：记忆超过上限了，尽快用 memory_write 整理精简。）"
 
 
-def speaker(inbound: InboundMessage) -> str:
+def speaker(inbound: InboundMessage, *, reply_to_id: int | None = None) -> str:
     """The new message's speaker; in a group, marks one that @'s or replies to the bot.
 
     The @ itself is stripped from the text, so without the mark the model cannot
     tell an insult aimed at it from one between members.
     """
     name = inbound.sender_display or "群友"
-    return name + "（@你）" if inbound.mentions_bot and inbound.endpoint.kind == "group" else name
+    if inbound.mentions_bot and inbound.endpoint.kind == "group":
+        name += "（@你）"
+    if reply_to_id is not None:
+        name += f" 回复#{reply_to_id}"
+    return name
 
 
 def build_roster(ledger, inbound: InboundMessage, *, limit: int = 80) -> str:
@@ -73,10 +78,10 @@ def build_roster(ledger, inbound: InboundMessage, *, limit: int = 80) -> str:
 
 def turn_window(
     app, inbound: InboundMessage, profile, *, extra_exclude_ids: frozenset[int] = frozenset(),
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, CanonicalMessage | None]:
     ledger, store = app.message_ledger, getattr(app, "conversations", None)
     if ledger is None or store is None:
-        return "", "", ""
+        return "", "", "", None
     scope = inbound.scope
     current = ledger.canonical_id_for_native(scope, inbound.native_message_id, endpoint=inbound.endpoint)
     exclude = frozenset((*inbound.batch_message_ids, *extra_exclude_ids, *((current,) if current is not None else ())))
@@ -93,13 +98,12 @@ def turn_window(
     roster = build_roster(ledger, inbound)
     if roster:
         parts.append(roster)
+    reply = None
     if inbound.reply_to_native_message_id is not None:
         target = ledger.canonical_id_for_native(scope, inbound.reply_to_native_message_id, endpoint=inbound.endpoint)
-        message = ledger.get_in_scope(scope, target) if target is not None else None
-        if message is not None:
-            parts.append("[引用的消息]\n" + render_line(message, max_chars=4000))
-            if message.direction == "inbound":
-                speakers.append((message.sender_actor_key, message.sender_display))
+        reply = ledger.get_in_scope(scope, target) if target is not None else None
+        if reply is not None and reply.direction == "inbound":
+            speakers.append((reply.sender_actor_key, reply.sender_display))
     self_files = getattr(app, "self_files", None)
     if self_files is not None:
         cards = self_files.select_impressions_for_batch(scope.key, speakers)
@@ -124,7 +128,7 @@ def turn_window(
     )
     if status:
         parts.append("[状态]\n" + status)
-    return tail, render_memory(store.memory(scope.key)), "\n\n".join(parts)
+    return tail, render_memory(store.memory(scope.key)), "\n\n".join(parts), reply
 
 
 async def record_loop_event(app, turn_id: int, event) -> None:

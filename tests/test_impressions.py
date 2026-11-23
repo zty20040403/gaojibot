@@ -125,7 +125,7 @@ class ImpressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("懂Rust", res_read)
 
         # turn_window includes Alice's card in G1, not in G2
-        _, _, extra1 = turn_window(app, inbound, SimpleNamespace(max_input_tokens=128_000))
+        _, _, extra1, _ = turn_window(app, inbound, SimpleNamespace(max_input_tokens=128_000))
         self.assertIn("[对说话人的印象]", extra1)
         self.assertIn("懂Rust", extra1)
 
@@ -142,7 +142,7 @@ class ImpressionTests(unittest.IsolatedAsyncioTestCase):
             occurred_at=1000,
             reply_credential=None,
         )
-        _, _, extra2 = turn_window(app, inbound_g2, SimpleNamespace(max_input_tokens=128_000))
+        _, _, extra2, _ = turn_window(app, inbound_g2, SimpleNamespace(max_input_tokens=128_000))
         self.assertNotIn("懂Rust", extra2)
 
         # Forget deletes the card in G1

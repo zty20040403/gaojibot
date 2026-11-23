@@ -81,6 +81,16 @@ class StatusLineTests(unittest.TestCase):
 
         self.assertEqual(compute_status_line(Broken(), self.scope, now=1020), "")
 
+    def test_human_quote_does_not_make_nearby_pushback_about_the_bot(self):
+        ledger = _FakeLedger([
+            _FakeMessage(1, "outbound", 1900, "查好了"),
+            _FakeMessage(2, "inbound", 1920, "我觉得还行"),
+            _FakeMessage(3, "inbound", 1940, "闭嘴吧你", reply_to_canonical_message_id=2),
+        ])
+        status = compute_status_line(ledger, self.scope, now=1950)
+        self.assertIn("被 @/点名 0 次", status)
+        self.assertNotIn("被怼", status)
+
     def test_turn_window_appends_status_line_without_changing_prefix(self):
         from types import SimpleNamespace
         from src.plugins.ai_chat.application.turn_context import turn_window
@@ -123,7 +133,7 @@ class StatusLineTests(unittest.TestCase):
             ]),
             conversations=_Store(),
         )
-        tail, memory, extra = turn_window(app, inbound, SimpleNamespace(max_input_tokens=128_000))
+        _, memory, extra, _ = turn_window(app, inbound, SimpleNamespace(max_input_tokens=128_000))
         self.assertEqual(memory, "")
         self.assertIn("[状态]", extra)
         self.assertIn("被夸了 1 次", extra)

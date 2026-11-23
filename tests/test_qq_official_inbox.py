@@ -13,6 +13,8 @@ from src.plugins.ai_chat.adapters.qq_official.binding import BindingContext, Bin
 from src.plugins.ai_chat.adapters.qq_official.inbox import IngressError, OfficialInboxStore, record_pending_inbox
 from src.plugins.ai_chat.adapters.qq_official.lease import DedicatedAccountLease, assert_epoch
 from src.plugins.ai_chat.adapters.qq_official.keys import account_job_kind
+from src.plugins.ai_chat.adapters.qq_official.turns import claim_execution, load_turn_input
+from src.plugins.ai_chat.application.turn_context import speaker
 from src.plugins.ai_chat.ledger import MessageLedger
 from src.plugins.ai_chat.platform_types import AccountKey, ActorKey, EndpointKey
 from src.plugins.ai_chat.storage.jobs import DurableJobStore
@@ -462,6 +464,36 @@ class OfficialInboxTests(unittest.TestCase):
         self.assertEqual(self.count('qq_official_messages'), 1)
         self.assertEqual(self.count('durable_jobs'), 0)
 
+    def test_pending_member_quote_is_not_a_bot_address_even_if_dispatched(self):
+        self.activate_group()
+        target = self.ingest(self.accept(actor='TEST_BOB', native='TEST_QUOTED',
+            message_scene={'ext': {'msg_idx': 'TEST_QUOTED_IDX'}}).inbox_id)
+        accepted = self.accept(actor='TEST_ALICE', message_scene={'ext': {'ref_msg_idx': 'TEST_QUOTED_IDX'}})
+        result = self.ingest(accepted.inbox_id)
+        self.assertFalse(result.reply_requested)
+        with self.tx() as cursor:
+            row = cursor.execute("""SELECT i.trigger_requested,m.reply_to_canonical_message_id
+                FROM qq_official_inbound_events i JOIN messages m USING(canonical_message_id)
+                WHERE i.inbox_id=?""", (accepted.inbox_id,)).fetchone()
+            self.assertFalse(row['trigger_requested'])
+            self.assertEqual(row['reply_to_canonical_message_id'], target.canonical_message_id)
+            # Even historical dispatch intent isn't evidence of addressing the bot.
+            cursor.execute('UPDATE qq_official_inbound_events SET trigger_requested=TRUE WHERE inbox_id=?',
+                           (accepted.inbox_id,))
+            decision = claim_execution(cursor, token=self.token, inbox_id=accepted.inbox_id,
+                now=self.now, deadline_at=self.now+60, admission=self.store.admitted)
+            inbound = load_turn_input(cursor, token=self.token, handle=decision.handle,
+                                     now=self.now, admission=self.store.admitted)
+        self.assertEqual(inbound.reply_to_native_message_id, 'TEST_QUOTED')
+        self.assertFalse(inbound.mentions_bot)
+        self.assertEqual(speaker(inbound, reply_to_id=target.canonical_message_id),
+                         f'{inbound.sender_display} 回复#{target.canonical_message_id}')
+        with self.tx() as cursor:
+            cursor.execute("UPDATE qq_official_message_indexes SET ambiguous=TRUE WHERE index_value='TEST_QUOTED_IDX'")
+            inbound = load_turn_input(cursor, token=self.token, handle=decision.handle,
+                                     now=self.now, admission=self.store.admitted)
+        self.assertIsNone(inbound.reply_to_native_message_id)
+
     def test_late_at_adds_one_intent_without_rewriting_body_or_window(self):
         self.activate_group()
         accepted = self.accept(native='TEST_LATE_AT_MESSAGE', content='first accepted body')
@@ -475,6 +507,7 @@ class OfficialInboxTests(unittest.TestCase):
             self.assertEqual(replay.inbox_id, accepted.inbox_id)
         row = self.query('SELECT * FROM qq_official_inbound_events WHERE inbox_id=?', (accepted.inbox_id,))[0]
         self.assertTrue(row['trigger_requested'])
+        self.assertTrue(row['explicit_mention'])
         self.assertIsNone(row['dispatch_job_id'])
         self.assertEqual(self.count('durable_jobs'), 0)
         self.assertEqual(self.query('SELECT * FROM messages'), before_messages)

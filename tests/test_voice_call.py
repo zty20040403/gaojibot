@@ -258,7 +258,7 @@ class CallTests(unittest.IsolatedAsyncioTestCase):
         prior, transcript = ledger.history(self.source.scope)
         self.assertEqual((transcript.direction, transcript.message_kind), ('system', 'system'))
         self.assertRegex(transcript.rendered_text, r'^\[语音通话 \d\d:\d\d–\d\d:\d\d\]\n你：一句\ngaoji：TEST_FIRST\n你：二句\n你：三句\n你：四句\ngaoji：TEST_LAST$')
-        tail, _, _ = turn_window(self.app, replace(self.source, native_message_id='TEST_NEXT'), calls[0].args[0])
+        tail, _, _, _ = turn_window(self.app, replace(self.source, native_message_id='TEST_NEXT'), calls[0].args[0])
         self.assertIn(transcript.rendered_text, tail)
         self.app.model_preferences.get_scope_persona.assert_called_once_with(self.source.endpoint.scope)
 

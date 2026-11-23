@@ -83,13 +83,21 @@ def _ledger_body(decoded: DecodedMessage) -> MessageBody:
     ))
 
 
-def _reply_target(cursor: StoreCursor, decoded: DecodedMessage, scope_key: str) -> str | None:
-    reference = decoded.reference
-    if reference.conflicting or reference.referenced_index is None:
+@dataclass(frozen=True)
+class ReplyTarget:
+    native_message_id: str
+    canonical_message_id: int
+    is_bot: bool
+
+
+def resolve_reply_target(
+    cursor: StoreCursor, endpoint: EndpointKey, scope_key: str, index: str | None,
+) -> ReplyTarget | None:
+    if index is None:
         return None
     rows = cursor.execute("""SELECT i.native_message_id,i.canonical_message_id,i.ambiguous,
-            m.canonical_message_id AS mapped_canonical,
-            c.native_message_id AS ledger_native,c.source_endpoint_key,v.scope_key
+            m.canonical_message_id AS mapped_canonical,m.direction,
+            c.native_message_id AS ledger_native,c.direction AS ledger_direction,c.source_endpoint_key,v.scope_key
         FROM qq_official_message_indexes i JOIN qq_official_messages m
           ON m.endpoint_key=i.endpoint_key AND m.native_message_id=i.native_message_id
             AND m.account_key=i.account_key
@@ -97,19 +105,16 @@ def _reply_target(cursor: StoreCursor, decoded: DecodedMessage, scope_key: str) 
         LEFT JOIN conversations v ON v.conversation_id=c.conversation_id
         WHERE i.account_key=? AND i.endpoint_key=? AND i.index_value=?
           AND i.index_kind IN ('msg_idx','ref_idx')""",
-        (decoded.endpoint.account.key, decoded.endpoint.key, reference.referenced_index)).fetchall()
+        (endpoint.account.key, endpoint.key, index)).fetchall()
     targets = set()
     for row in rows:
-        if row["ambiguous"] or row["canonical_message_id"] != row["mapped_canonical"]:
+        canonical = row["canonical_message_id"]
+        if (row["ambiguous"] or canonical is None or canonical != row["mapped_canonical"]
+                or row["source_endpoint_key"] != endpoint.key or row["scope_key"] != scope_key
+                or row["ledger_native"] != row["native_message_id"] or row["ledger_direction"] != row["direction"]):
             return None
-        if row["canonical_message_id"] is not None and (
-            row["source_endpoint_key"] != decoded.endpoint.key
-            or row["scope_key"] != scope_key
-            or row["ledger_native"] != row["native_message_id"]
-        ):
-            return None
-        targets.add((str(row["native_message_id"]), row["canonical_message_id"]))
-    return next(iter(targets))[0] if len(targets) == 1 else None
+        targets.add(ReplyTarget(row["native_message_id"], canonical, row["direction"] == "outbound"))
+    return next(iter(targets)) if len(targets) == 1 else None
 
 
 def _record_index(cursor: StoreCursor, decoded: DecodedMessage, canonical: int, now: int) -> None:
@@ -133,15 +138,19 @@ def _record_index(cursor: StoreCursor, decoded: DecodedMessage, canonical: int, 
 def _write_to_ledger(
     cursor: StoreCursor, *, inbox_id: str, account: AccountKey, endpoint: EndpointKey,
     endpoint_row, decoded: DecodedMessage, input_text: str, input_version: int,
-    trigger_requested: bool, ledger: MessageLedger, now: int, owner_authority=None,
+    explicit_mention: bool, ledger: MessageLedger, now: int, owner_authority=None,
 ) -> IngestResult:
     scope_key = str(endpoint_row["canonical_scope_key"])
-    reply_target = _reply_target(cursor, decoded, scope_key)
+    reference = decoded.reference
+    ref_index = reference.referenced_index if not reference.conflicting else None
+    reply_target = resolve_reply_target(cursor, endpoint, scope_key, ref_index)
+    explicit_mention = explicit_mention or decoded.mentions_bot
     recorded = ledger.record_message(
         ConversationScope.from_key(scope_key), native_message_id=decoded.native_message_id,
         sender_native_user_id=decoded.actor.native_user_id, sender_display=peer_bots.display(decoded),
         body=_ledger_body(decoded), occurred_at=decoded.occurred_at,
-        reply_to_native_message_id=reply_target, actor=decoded.actor, source_endpoint=endpoint,
+        reply_to_native_message_id=reply_target.native_message_id if reply_target else None,
+        actor=decoded.actor, source_endpoint=endpoint,
         raw_event={"source": "qq-official", "message_type": decoded.evidence.message_type,
                    "reference_conflict": decoded.reference.conflicting,
                    "codec_warnings": list(decoded.evidence.warnings), "truncated": decoded.evidence.truncated,
@@ -165,12 +174,12 @@ def _write_to_ledger(
         cursor, inbox_id=inbox_id, decoded=decoded, text=input_text, now=now, authority=owner_authority,
     )
     command = input_text.lstrip().startswith(("/", "!"))
-    reply = endpoint.kind == "private" or trigger_requested or decoded.mentions_bot or reply_target is not None
-    reply = bool(receipt) or bool(reply and (not current["stopped"] or command))
+    addressed = explicit_mention or (reply_target is not None and reply_target.is_bot)
+    reply = bool(receipt) or ((endpoint.kind == "private" or addressed) and (not current["stopped"] or command))
     if reply and decoded.sender_is_bot and peer_bots.exchange_exhausted(cursor, endpoint.key, now):
         reply = False
-    cursor.execute("UPDATE qq_official_inbound_events SET trigger_requested=? WHERE inbox_id=? AND account_key=?",
-                   (reply, inbox_id, account.key))
+    cursor.execute("""UPDATE qq_official_inbound_events SET trigger_requested=?,explicit_mention=?
+                   WHERE inbox_id=? AND account_key=?""", (reply, explicit_mention, inbox_id, account.key))
     record_group_activity(cursor, endpoint, canonical, now, direct=reply or command or current['stopped'])
     return IngestResult(
         "processed", "", canonical, echo_state="not_echo", reply_requested=reply,
@@ -247,7 +256,7 @@ def record_pending_inbox(
     return _write_to_ledger(
         cursor, inbox_id=inbox_id, account=account, endpoint=endpoint, endpoint_row=endpoint_row,
         decoded=decoded, input_text=prepared_input.input_text, input_version=prepared_input.version,
-        trigger_requested=bool(row["trigger_requested"]), ledger=ledger, now=timestamp,
+        explicit_mention=row["explicit_mention"], ledger=ledger, now=timestamp,
         owner_authority=owner_authority,
     )
 
@@ -418,7 +427,7 @@ class OfficialInboxStore:
                     ingested = _write_to_ledger(
                         cursor, inbox_id=result.inbox_id, account=account, endpoint=endpoint,
                         endpoint_row=endpoint_row, decoded=decoded, input_text=prepared_input.input_text,
-                        input_version=prepared_input.version, trigger_requested=decoded.mentions_bot,
+                        input_version=prepared_input.version, explicit_mention=decoded.mentions_bot,
                         ledger=active_ledger, now=now, owner_authority=self.authority,
                     )
                 else:
@@ -472,7 +481,7 @@ class OfficialInboxStore:
         return aliases
 
     def _duplicate(self, cursor, account, aliases, now, *, event_type, endpoint, native_id=None,
-                   actor=None, trigger_requested=False):
+                   actor=None, explicit_mention=False):
         inbox_ids = set()
         for key, kind, alias_endpoint, native in aliases:
             row = cursor.execute("SELECT * FROM qq_official_inbound_dedup WHERE dedup_key=?", (key,)).fetchone()
@@ -496,7 +505,7 @@ class OfficialInboxStore:
             if not isinstance(first, DecodedMessage) or first.actor != actor:
                 return self._terminal(cursor, account, event_type, now, "conflicting_message_aliases")
         self._save_aliases(cursor, account, aliases, inbox_id, now)
-        if (trigger_requested and not original["trigger_requested"] and actor is not None
+        if (explicit_mention and not original["explicit_mention"] and actor is not None
                 and original["echo_state"] == "not_echo" and original["payload_json"] is not None
                 and original["payload_expires_at"] is not None and original["payload_expires_at"] > now
                 and original["status"] in {"pending", "processed"}
@@ -514,8 +523,10 @@ class OfficialInboxStore:
                                                             actor=actor, operation="ingest")
                     except MigrationDenied:
                         return Acceptance("duplicate", inbox_id, "migration_route_unavailable")
-                cursor.execute("UPDATE qq_official_inbound_events SET trigger_requested=TRUE,updated_at=? WHERE inbox_id=?",
-                               (now, inbox_id))
+                cursor.execute("""UPDATE qq_official_inbound_events
+                    SET trigger_requested=TRUE,explicit_mention=TRUE,updated_at=? WHERE inbox_id=?""", (now, inbox_id))
+                if original["trigger_requested"]:
+                    return Acceptance("duplicate", inbox_id, "duplicate_message")
                 if original['status'] == 'processed':
                     record_group_activity(cursor, endpoint, original['canonical_message_id'], now, direct=True)
                 return Acceptance("inbox", inbox_id, "new_at_event")
@@ -530,15 +541,17 @@ class OfficialInboxStore:
                 (key, account.key, kind, endpoint, native, inbox_id, now))
 
     def _insert(self, cursor, account, event_type, now, *, endpoint=None, endpoint_row=None,
-                native_id=None, event_id=None, status="pending", reason=None, payload=None, echo="unknown", trigger=False):
+                native_id=None, event_id=None, status="pending", reason=None, payload=None, echo="unknown",
+                explicit_mention=False):
         inbox_id = secrets.token_hex(16)
         cursor.execute("""INSERT INTO qq_official_inbound_events
             (inbox_id,account_key,endpoint_key,endpoint_generation,route_epoch,event_type,native_message_id,event_id,
-             payload_json,status,reason_code,echo_state,trigger_requested,received_at,payload_expires_at,created_at,updated_at,processed_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             payload_json,status,reason_code,echo_state,trigger_requested,explicit_mention,
+             received_at,payload_expires_at,created_at,updated_at,processed_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (inbox_id, account.key, endpoint.key if endpoint else None,
              endpoint_row["generation"] if endpoint else None, endpoint_row["route_epoch"] if endpoint else None,
-             event_type, native_id, event_id, payload, status, reason, echo, trigger, now,
+             event_type, native_id, event_id, payload, status, reason, echo, explicit_mention, explicit_mention, now,
              now + self.payload_retention_seconds if payload is not None else None, now, now,
              None if status == "pending" else now))
         return inbox_id
@@ -556,7 +569,7 @@ class OfficialInboxStore:
         duplicate = self._duplicate(
             cursor, account, aliases, now, event_type=dispatch.event_type, endpoint=endpoint, native_id=native_id,
             actor=decoded.actor if isinstance(decoded, DecodedMessage) else None,
-            trigger_requested=decoded.mentions_bot if isinstance(decoded, DecodedMessage) else False,
+            explicit_mention=decoded.mentions_bot if isinstance(decoded, DecodedMessage) else False,
         )
         if duplicate is not None:
             return duplicate
@@ -632,7 +645,7 @@ class OfficialInboxStore:
         inbox_id = self._insert(
             cursor, account, dispatch.event_type, now, endpoint=endpoint, endpoint_row=endpoint_row,
             native_id=native_id, event_id=event_id, status=status, reason=reason, payload=payload, echo=echo,
-            trigger=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending",
+            explicit_mention=isinstance(decoded, DecodedMessage) and decoded.mentions_bot and status == "pending",
         )
         if decision is not None:
             cursor.execute("""UPDATE qq_official_inbound_events

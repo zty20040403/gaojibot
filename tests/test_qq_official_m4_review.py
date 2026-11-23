@@ -41,16 +41,16 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                 cursor.execute("UPDATE qq_official_owner_actor_links SET state='revoked' WHERE endpoint_key=?",(endpoint.key,))
         return endpoint
 
-    async def group_message(self, fake, native, content, *, reference=None):
+    async def group_message(self, fake, native, content, *, reference=None, member="TEST_MEMBER", at=False):
         # This fixture explicitly models a platform that permits a passive
         # reply to a received non-mention message; production is not inferred.
         fake.nonmention_reply_allowed = True
         ext = {"msg_idx": "TEST_IDX_" + native}
         if reference is not None:
             ext["ref_msg_idx"] = reference
-        await fake.emit("GROUP_MESSAGE_CREATE", {
+        await fake.emit("GROUP_AT_MESSAGE_CREATE" if at else "GROUP_MESSAGE_CREATE", {
             "id": native, "content": content, "group_openid": "TEST_GROUP",
-            "author": {"member_openid": "TEST_MEMBER"},
+            "author": {"member_openid": member, "nickname": member},
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "message_scene": {"ext": ext},
         })
@@ -91,14 +91,25 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
             async with verified_ready_platform() as fake:
                 runtime = await self.open_runtime(fake, app)
                 await self.bound_group(fake, runtime)
-                await self.group_message(fake, "TEST_AMBIENT", "TEST_AMBIENT_VISIBLE_EVIDENCE")
-                await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id='TEST_AMBIENT' AND status='processed'")
+                await self.group_message(fake, "TEST_AMBIENT", "TEST_AMBIENT_VISIBLE_EVIDENCE", member="TEST_BOB")
+                bob = (await self.wait_db("SELECT canonical_message_id FROM qq_official_inbound_events "
+                                          "WHERE native_message_id='TEST_AMBIENT' AND status='processed'"))[0]
+                bob_id = bob["canonical_message_id"]
+                bob_index = "TEST_IDX_TEST_AMBIENT"
+                await self.group_message(fake, "TEST_MEMBER_QUOTE", "TEST talking to Bob",
+                                         reference=bob_index, member="TEST_ALICE")
+                member_quote = (await self.wait_db("""SELECT i.trigger_requested,m.reply_to_canonical_message_id
+                    FROM qq_official_inbound_events i JOIN messages m USING(canonical_message_id)
+                    WHERE i.native_message_id='TEST_MEMBER_QUOTE' AND i.status='processed'"""))[0]
+                self.assertFalse(member_quote["trigger_requested"])
+                self.assertEqual(member_quote["reply_to_canonical_message_id"], bob_id)
                 self.assertEqual(calls, [])
                 await self.emit(fake, native="TEST_REVIEW_AT", content="TEST summarize recent discussion", group=True)
                 await self.complete("TEST_REVIEW_AT")
                 self.assertIn("TEST_AMBIENT_VISIBLE_EVIDENCE", json.dumps(calls[0], ensure_ascii=False, default=str))
                 reply = next(item["receipt"] for item in fake.received if item["payload"].get("msg_id") == "TEST_REVIEW_AT")
-                await self.group_message(fake, "TEST_REVIEW_QUOTE", "TEST explain the previous answer", reference=reply["ext_info"]["ref_idx"])
+                await self.group_message(fake, "TEST_REVIEW_QUOTE", "TEST explain the previous answer",
+                                         reference=reply["ext_info"]["ref_idx"], member="TEST_ALICE")
                 try:
                     await self.complete("TEST_REVIEW_QUOTE", timeout=15)
                 except TimeoutError:
@@ -111,13 +122,28 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                         "model_calls": len(calls),
                     }
                     self.fail(json.dumps(details, default=str))
-                await runtime.stop()
                 self.assertEqual(len(calls), 2)
-                self.assertIn("TEST answer 1", json.dumps(calls[1], ensure_ascii=False, default=str))
                 sent = next(item for item in fake.received if item["payload"].get("msg_id") == "TEST_REVIEW_QUOTE")
                 self.assertEqual(sent["payload"]["msg_seq"], 1)
+                bot_id = self.query("SELECT canonical_message_id FROM messages WHERE native_message_id=?", (reply["id"],))[0]["canonical_message_id"]
                 source = self.query("SELECT reply_to_native_message_id FROM messages WHERE native_message_id='TEST_REVIEW_QUOTE'")[0]
                 self.assertEqual(source["reply_to_native_message_id"], reply["id"])
+                prompt = calls[1]["messages"][-1]["content"]
+                self.assertIn("被 @/点名 2 次", prompt)  # original @ and the bot quote, not the member quote
+                self.assertRegex(prompt, rf"\[引用的消息\]\n\[[^\n]* 你 #{bot_id}\] TEST answer 1\n\n"
+                                 rf"\[新消息\]\nTEST_ALICE（@你） 回复#{bot_id}：TEST explain the previous answer$")
+
+                await self.group_message(fake, "TEST_MEMBER_QUOTE_AT", "TEST ask about Bob",
+                                         reference=bob_index, member="TEST_ALICE", at=True)
+                await self.complete("TEST_MEMBER_QUOTE_AT")
+                await runtime.stop()
+                self.assertEqual(len(calls), 3)
+                prompt = calls[2]["messages"][-1]["content"]
+                self.assertIn("被 @/点名 3 次", prompt)
+                self.assertRegex(prompt, rf"\[引用的消息\]\n\[[^\n]* TEST_BOB #{bob_id}\] TEST_AMBIENT_VISIBLE_EVIDENCE\n\n"
+                                 rf"\[新消息\]\nTEST_ALICE（@你） 回复#{bob_id}：TEST ask about Bob$")
+                self.assertFalse(self.query("""SELECT 1 FROM qq_official_turn_executions
+                    WHERE source_native_message_id='TEST_MEMBER_QUOTE'"""))
 
     async def test_explicit_disable_and_revocation_cannot_be_bypassed_by_enable_override(self):
         app = self.application()

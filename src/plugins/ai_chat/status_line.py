@@ -21,14 +21,14 @@ _PUSHBACK_RE = re.compile(
 _NAME_RE = re.compile(r"(?:\bgaoji\b|高寄)", re.IGNORECASE)
 
 
-def _triggered_ids(ledger, message_ids: list[int]) -> set[int]:
+def _explicit_mentions(ledger, message_ids: list[int]) -> set[int]:
     if not message_ids or not hasattr(ledger, "_connection"):
         return set()
     try:
         placeholders = ",".join("?" for _ in message_ids)
         rows = ledger._connection.execute(
             f"SELECT canonical_message_id FROM qq_official_inbound_events "
-            f"WHERE canonical_message_id IN ({placeholders}) AND trigger_requested = TRUE",
+            f"WHERE canonical_message_id IN ({placeholders}) AND explicit_mention = TRUE",
             tuple(message_ids),
         ).fetchall()
         return {int(row["canonical_message_id"]) for row in rows if row["canonical_message_id"] is not None}
@@ -64,7 +64,7 @@ def compute_status_line(
 
     outbound_ids = {int(row.canonical_message_id) for row in rows if row.direction == "outbound"}
     inbound_rows = [row for row in recent if row.direction == "inbound"]
-    triggered = _triggered_ids(ledger, [int(row.canonical_message_id) for row in inbound_rows])
+    mentioned = _explicit_mentions(ledger, [int(row.canonical_message_id) for row in inbound_rows])
 
     inbound_count = len(inbound_rows)
     mention_count = 0
@@ -84,14 +84,15 @@ def compute_status_line(
             saw_current = True
         text = str(row.prompt_text or row.rendered_text or "")
         to_bot = (
-            cid in triggered
+            cid in mentioned
             or (row.reply_to_canonical_message_id in outbound_ids)
             or bool(_NAME_RE.search(text))
             or (current_message_id is not None and cid == current_message_id and mentions_bot)
         )
         if to_bot:
             mention_count += 1
-        near_bot = last_bot_at is not None and 0 <= int(row.occurred_at or 0) - last_bot_at <= 180
+        near_bot = (row.reply_to_canonical_message_id is None and last_bot_at is not None
+                    and 0 <= int(row.occurred_at or 0) - last_bot_at <= 180)
         if to_bot or near_bot:
             if _PUSHBACK_RE.search(text):
                 pushback_count += 1

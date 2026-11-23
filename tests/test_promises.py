@@ -137,7 +137,7 @@ class PromiseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sb.execs), 2)
 
         # turn_window surfaces the open promise because it is due within 24h
-        _, _, extra = turn_window(app, inbound, SimpleNamespace(max_input_tokens=128_000))
+        _, _, extra, _ = turn_window(app, inbound, SimpleNamespace(max_input_tokens=128_000))
         self.assertIn("[未兑现的承诺]", extra)
         self.assertIn("看部署日志", extra)
 
@@ -147,7 +147,7 @@ class PromiseTests(unittest.IsolatedAsyncioTestCase):
 
         done = json.loads(await promise(turn, {"action": "done", "id": pid}))
         self.assertTrue(done["done"])
-        _, _, extra_after = turn_window(app, inbound, SimpleNamespace(max_input_tokens=128_000))
+        _, _, extra_after, _ = turn_window(app, inbound, SimpleNamespace(max_input_tokens=128_000))
         self.assertNotIn("看部署日志", extra_after)
 
         # Graceful degradation when sandbox is disabled/broken

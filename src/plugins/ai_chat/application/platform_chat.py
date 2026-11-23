@@ -20,6 +20,7 @@ from ..observability import telemetry
 from ..platform_types import InboundMessage, TurnPlatform
 from ..prompt import system_prompt
 from ..prompt_context import quote_evidence
+from ..timeline import render_line
 from ..tool_policy import ToolCatalog, approval_from_user_text, policy_for_tool
 from ..tools import neutral_registry_for
 from ..tools.background import task_context as background_task_context
@@ -34,7 +35,7 @@ _STICKER_MARKER = re.compile(r"\[表情[:：][^\]\n]{0,80}\]")
 _USAGE = ('input_tokens', 'output_tokens', 'cached_tokens', 'total_tokens')
 
 
-_MUST_REPLY_NOTE = "\n\n[宿主提示] 这条是直接 @ 你或私聊你的，必须回复，不能 [silence]。查不到就直说没查到，一两句也行。"
+_MUST_REPLY_NOTE = "\n\n[宿主提示] 这条是直接 @ 你、回复你或私聊你的，必须回复，不能 [silence]。查不到就直说没查到，一两句也行。"
 _MUST_REPLY_FALLBACK = "这条我没弄出结果，换个说法或者说具体点再问我一次？"
 _SHUSH = re.compile(r"闭嘴|别说话|别说了|别回|不用回|安静点|shut\s*up", re.IGNORECASE)
 
@@ -45,7 +46,7 @@ def _is_silence(answer) -> bool:
 
 
 def _must_reply(inbound: InboundMessage, user_text: str) -> bool:
-    """Private messages and real @-mentions from people, unless they asked for quiet."""
+    """Private messages and direct group addresses, unless they asked for quiet."""
     from ..adapters.qq_official.peer_bots import SUFFIX
     if inbound.sender_display.endswith(SUFFIX):
         return False
@@ -296,9 +297,9 @@ class PlatformChatService:
             try:
                 checkpoint = (_TurnCheckpoint(turn, media_session, turn_trace, checkpoint_sink, checkpoint_state)
                               if checkpoint_sink is not None else None)
-                group_context, memory_context, quoted = await self.context.db_call(
+                group_context, memory_context, extra, reply = await self.context.db_call(
                     turn_window, self.context, inbound, selected_profile)
-                context_parts = [quoted] if quoted else []
+                context_parts = [extra] if extra else []
                 input_images, image_warnings = await media_session.input_images() if media_session is not None else ((), '')
                 if image_warnings:
                     context_parts.append(quote_evidence(image_warnings, 'image_load_status'))
@@ -332,9 +333,13 @@ class PlatformChatService:
                     skill_index,
                     self.context.settings.style_examples,
                 )
+                # Keep the quote beside [新消息]; both use the same resolved message ID.
+                if reply is not None:
+                    context_parts.append("[引用的消息]\n" + render_line(reply, max_chars=4000))
+                current_user = speaker(inbound, reply_to_id=reply.canonical_message_id if reply else None)
                 answer = await self._call_model(
                     inbound, platform, journal_turn_id, user_text, [], tools, execute_tool,
-                    current_user=speaker(inbound),
+                    current_user=current_user,
                     group_context=group_context, memory_context=memory_context,
                     tool_choice=force_tool(WEB_SEARCH_TOOL_NAME) if force_search else "auto",
                     profile=selected_profile, input_images=input_images,
@@ -365,7 +370,7 @@ class PlatformChatService:
                     # Someone asked gaoji directly: one short tool-free retry, then a plain fallback.
                     answer = await self._call_model(
                         inbound, platform, journal_turn_id, user_text + _MUST_REPLY_NOTE, [], [], execute_tool,
-                        current_user=speaker(inbound), group_context=group_context,
+                        current_user=current_user, group_context=group_context,
                         memory_context=memory_context, profile=selected_profile,
                         tool_context="\n\n".join(context_parts), system_prompt=system, trace=turn_trace,
                     )
