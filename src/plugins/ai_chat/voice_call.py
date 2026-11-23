@@ -173,17 +173,20 @@ class VoiceCall:
         ended = datetime.now()
         parts = [msg['content'][0] for msg in self.turns if msg['role'] == 'user']
         lines = [f'[语音通话 {self.started:%H:%M}–{ended:%H:%M}]']
-        try:
-            transcription = await self.complete([
-                {'role': 'system', 'content': '按顺序转写每段用户语音，一段一行，只输出原话，不要编号、角色、解释或空行。听不清的一段写「听不清」。'},
-                {'role': 'user', 'content': parts},
-            ])
-            spoken = [line.strip() for line in transcription.splitlines() if line.strip()]
-            if len(spoken) != len(parts):
-                raise VoiceError('转写行数与语音段数不符')
-        except (LLMError, VoiceError) as exc:
-            LOG.error('Voice transcription failed: %s', type(exc).__name__)
-            spoken = ['（转写失败）'] * len(parts)
+        # One request per utterance: given several clips at once the model merges
+        # them into one line, so their order cannot be matched back (seen live).
+        results = await asyncio.gather(*(self.complete([
+            {'role': 'system', 'content': '逐字转写这段语音，只输出原话，不要解释。听不清就写「听不清」。'},
+            {'role': 'user', 'content': [part]},
+        ]) for part in parts), return_exceptions=True)
+        spoken = []
+        for result in results:
+            if isinstance(result, (LLMError, VoiceError)):
+                LOG.error('Voice transcription failed: %s', type(result).__name__)
+                result = '（转写失败）'
+            elif isinstance(result, BaseException):
+                raise result
+            spoken.append(' '.join(result.split()))
         utterances = iter(spoken)
         for msg in self.turns:
             lines.append('你：' + next(utterances) if msg['role'] == 'user' else 'gaoji：' + msg['content'])

@@ -192,9 +192,15 @@ class CallTests(unittest.IsolatedAsyncioTestCase):
             source_endpoint=self.source.endpoint, actor=self.source.actor, sender_native_user_id=self.source.actor.native_user_id,
             sender_display=self.source.sender_display)
         thinking, cancelled = asyncio.Event(), asyncio.Event()
-        replies = iter(['TEST_FIRST', None, 'TEST_INTERRUPTED_TTS', 'TEST_LAST', '一句\n二句\n三句\n四句'])
+        replies = iter(['TEST_FIRST', None, 'TEST_INTERRUPTED_TTS', 'TEST_LAST'])
+        heard = {1: '一句', 2: '二句', 3: '三句', 4: '四句'}
 
         async def model(profile, **request):
+            content = request['messages'][-1]['content']
+            if request['messages'][0]['content'].startswith('逐字转写'):
+                self.assertEqual(len(content), 1)
+                with wave.open(BytesIO(base64.b64decode(content[0]['input_audio']['data']))) as wav:
+                    return self.response(heard[wav.readframes(1)[0]])
             text = next(replies)
             if text is None:
                 thinking.set()
@@ -229,7 +235,7 @@ class CallTests(unittest.IsolatedAsyncioTestCase):
             await task
 
         calls = self.provider.create_completion.await_args_list
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 8)  # four replies, then one transcription per utterance
         for call in calls:
             self.assertEqual(call.kwargs['reasoning_effort'], 'high')
             self.assertNotIn('tools', call.kwargs)
@@ -237,7 +243,7 @@ class CallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('TEST_CUSTOM_PERSONA', messages[0]['content'])
         self.assertIn('TEST_HISTORY', messages[1]['content'])
         self.assertEqual([m['content'] for m in messages if m['role'] == 'assistant'], ['TEST_FIRST'])
-        parts = calls[-1].kwargs['messages'][-1]['content']
+        parts = [call.kwargs['messages'][-1]['content'][0] for call in calls[4:]]
         self.assertEqual(parts, [m['content'][0] for m in messages[2:] if m['role'] == 'user'])
         for i, part in enumerate(parts, 1):
             self.assertEqual((part['type'], part['input_audio']['format']), ('input_audio', 'wav'))
@@ -269,17 +275,24 @@ class CallTests(unittest.IsolatedAsyncioTestCase):
         body = self.app.message_ledger.record_message.call_args.kwargs['body']
         self.assertEqual(body.nodes[0].text.splitlines()[1:], ['你：TEST_SPOKEN'])
 
-    async def test_transcription_mismatch_does_not_misattribute_words_or_retry(self):
+    async def test_one_failed_utterance_does_not_hide_the_others(self):
         call = voice.VoiceCall(self.app, self.source)
-        call.turns = [{'role': 'user', 'content': [voice.audio_part(b'\0\0')]},
-                      {'role': 'assistant', 'content': 'TEST_REPLY'}]
-        self.provider.create_completion.return_value = self.response('TEST_ONE\nTEST_TWO')
+        call.turns = [{'role': 'user', 'content': [voice.audio_part(b'\1\0')]},
+                      {'role': 'assistant', 'content': 'TEST_REPLY'},
+                      {'role': 'user', 'content': [voice.audio_part(b'\2\0')]}]
+
+        async def model(profile, **request):
+            part = request['messages'][-1]['content'][0]
+            with wave.open(BytesIO(base64.b64decode(part['input_audio']['data']))) as wav:
+                return self.response('TEST_ONE\n' if wav.readframes(1)[0] == 1 else '')
+        self.provider.create_completion.side_effect = model
         with self.assertLogs(voice.LOG, level='ERROR'):
             await call.record_transcript()
-        self.provider.create_completion.assert_awaited_once()
+        self.assertEqual(self.provider.create_completion.await_count, 2)
         record = self.app.message_ledger.record_message
         record.assert_called_once()
-        self.assertEqual(record.call_args.kwargs['body'].nodes[0].text.splitlines()[1:], ['你：（转写失败）', 'gaoji：TEST_REPLY'])
+        self.assertEqual(record.call_args.kwargs['body'].nodes[0].text.splitlines()[1:],
+                         ['你：TEST_ONE', 'gaoji：TEST_REPLY', '你：（转写失败）'])
 
     async def test_origin_link_replay_and_page_headers(self):
         with TestClient(self.api) as client:
