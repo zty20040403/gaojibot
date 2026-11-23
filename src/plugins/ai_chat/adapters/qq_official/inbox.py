@@ -83,12 +83,13 @@ def _ledger_body(decoded: DecodedMessage) -> MessageBody:
     ))
 
 
-def _reply_target(cursor: StoreCursor, decoded: DecodedMessage, scope_key: str) -> str | None:
+def _reply_target(cursor: StoreCursor, decoded: DecodedMessage, scope_key: str) -> tuple[str, bool] | None:
+    """The quoted message's native ID, and whether gaoji sent it."""
     reference = decoded.reference
     if reference.conflicting or reference.referenced_index is None:
         return None
     rows = cursor.execute("""SELECT i.native_message_id,i.canonical_message_id,i.ambiguous,
-            m.canonical_message_id AS mapped_canonical,
+            m.canonical_message_id AS mapped_canonical,m.direction,
             c.native_message_id AS ledger_native,c.source_endpoint_key,v.scope_key
         FROM qq_official_message_indexes i JOIN qq_official_messages m
           ON m.endpoint_key=i.endpoint_key AND m.native_message_id=i.native_message_id
@@ -108,8 +109,11 @@ def _reply_target(cursor: StoreCursor, decoded: DecodedMessage, scope_key: str) 
             or row["ledger_native"] != row["native_message_id"]
         ):
             return None
-        targets.add((str(row["native_message_id"]), row["canonical_message_id"]))
-    return next(iter(targets))[0] if len(targets) == 1 else None
+        targets.add((str(row["native_message_id"]), row["canonical_message_id"], row["direction"] == "outbound"))
+    if len(targets) != 1:
+        return None
+    native, _canonical, from_bot = next(iter(targets))
+    return native, from_bot
 
 
 def _record_index(cursor: StoreCursor, decoded: DecodedMessage, canonical: int, now: int) -> None:
@@ -141,7 +145,8 @@ def _write_to_ledger(
         ConversationScope.from_key(scope_key), native_message_id=decoded.native_message_id,
         sender_native_user_id=decoded.actor.native_user_id, sender_display=peer_bots.display(decoded),
         body=_ledger_body(decoded), occurred_at=decoded.occurred_at,
-        reply_to_native_message_id=reply_target, actor=decoded.actor, source_endpoint=endpoint,
+        reply_to_native_message_id=reply_target[0] if reply_target else None, actor=decoded.actor,
+        source_endpoint=endpoint,
         raw_event={"source": "qq-official", "message_type": decoded.evidence.message_type,
                    "reference_conflict": decoded.reference.conflicting,
                    "codec_warnings": list(decoded.evidence.warnings), "truncated": decoded.evidence.truncated,
@@ -165,7 +170,9 @@ def _write_to_ledger(
         cursor, inbox_id=inbox_id, decoded=decoded, text=input_text, now=now, authority=owner_authority,
     )
     command = input_text.lstrip().startswith(("/", "!"))
-    reply = endpoint.kind == "private" or trigger_requested or decoded.mentions_bot or reply_target is not None
+    # Quoting a member's message is not addressing gaoji; only quoting gaoji's own is.
+    replies_to_bot = reply_target is not None and reply_target[1]
+    reply = endpoint.kind == "private" or trigger_requested or decoded.mentions_bot or replies_to_bot
     reply = bool(receipt) or bool(reply and (not current["stopped"] or command))
     if reply and decoded.sender_is_bot and peer_bots.exchange_exhausted(cursor, endpoint.key, now):
         reply = False

@@ -93,6 +93,13 @@ class M4ReviewTests(unittest.IsolatedAsyncioTestCase):
                 await self.bound_group(fake, runtime)
                 await self.group_message(fake, "TEST_AMBIENT", "TEST_AMBIENT_VISIBLE_EVIDENCE")
                 await self.wait_db("SELECT inbox_id FROM qq_official_inbound_events WHERE native_message_id='TEST_AMBIENT' AND status='processed'")
+                # Quoting another member is recorded as a reply but does not address gaoji.
+                await self.group_message(fake, "TEST_MEMBER_QUOTE", "TEST replying to a member", reference="TEST_IDX_TEST_AMBIENT")
+                member_quote = (await self.wait_db("""SELECT i.trigger_requested,m.reply_to_native_message_id
+                    FROM qq_official_inbound_events i JOIN messages m USING(canonical_message_id)
+                    WHERE i.native_message_id='TEST_MEMBER_QUOTE' AND i.status='processed'"""))[0]
+                self.assertEqual((member_quote["trigger_requested"], member_quote["reply_to_native_message_id"]),
+                                 (False, "TEST_AMBIENT"))
                 self.assertEqual(calls, [])
                 await self.emit(fake, native="TEST_REVIEW_AT", content="TEST summarize recent discussion", group=True)
                 await self.complete("TEST_REVIEW_AT")
