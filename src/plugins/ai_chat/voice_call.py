@@ -66,8 +66,9 @@ async def synthesize(settings, text):
                 heard = True
                 yield payload
             elif event == 152:
+                # A successful session finishes with an empty object; only failures carry a status.
                 result = json.loads(payload)
-                if result['status_code'] != 20000000:
+                if result and result['status_code'] != 20000000:
                     raise VoiceError(f"豆包语音错误 {result['status_code']}：{result['message']}")
                 if not heard:
                     raise VoiceError('豆包语音没有返回音频')

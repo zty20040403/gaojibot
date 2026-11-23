@@ -147,8 +147,9 @@ class CallTests(unittest.IsolatedAsyncioTestCase):
                     return ws
                 await ws.send_bytes(frame(352, b'\x33\x00'))
             await ws.send_bytes(frame(351, b'{}'))
-            status = 42 if text == 'TEST_ERROR' else 20000000
-            await ws.send_bytes(frame(152, json.dumps({'status_code': status, 'message': text}).encode()))
+            # The real service ends a successful session with {} (checked live); failures carry a status.
+            finished = {'status_code': 42, 'message': text} if text == 'TEST_ERROR' else {}
+            await ws.send_bytes(frame(152, json.dumps(finished).encode()))
             return ws
 
         tts = web.Application()
