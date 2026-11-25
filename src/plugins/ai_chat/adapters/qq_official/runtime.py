@@ -151,7 +151,7 @@ class OfficialRuntime:
         self.active_conversation_turns = {}
         self.wake_proactive_turn = None
         self.control_changed = None
-        self._message_gap = False
+        self._message_gap_at = None
         self.state = "disabled"
         self.reason = "not_started"
 
@@ -560,6 +560,7 @@ class OfficialRuntime:
                                          ensure_current=lambda: self._ensure_current(token)) as gateway, AsyncExitStack() as resources:
             self._gateway = gateway
             gateway.observer = self.observer
+            gateway.message_gap_at = self._message_gap_at
             if self.migration_factory is not None:
                 from .host_services import OfficialHostSession
                 migration = await self._optional_feature('projects', self.migration_factory, self, token)
@@ -669,9 +670,7 @@ class OfficialRuntime:
                         if not task.done():
                             task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
-                    health = getattr(gateway, "health", {})
-                    if isinstance(health, dict):
-                        self._message_gap = self._message_gap or health.get("message_gap") is True
+                    self._message_gap_at = gateway.message_gap_at
                     self.sender = None
                     self.turn_consumer = None
                     self.agent_service = None

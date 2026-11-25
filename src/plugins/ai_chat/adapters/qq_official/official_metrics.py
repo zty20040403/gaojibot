@@ -35,7 +35,7 @@ class OfficialMetrics:
         self.backlog = Gauge('gaoji_qq_official_backlog','Current durable rows by bounded stage.',
             ('domain','state'),registry=registry)
         self.health = Gauge('gaoji_qq_official_healthy','Fresh actual lease/gateway/sender readiness.',registry=registry)
-        self.message_gap = Gauge('gaoji_qq_official_message_gap','Unresolved historical message gap in this process.',registry=registry)
+        self.message_gap = Gauge('gaoji_qq_official_message_gap','QQ events were lost within the last ten minutes.',registry=registry)
         self.cleanup_deleted = Counter('gaoji_qq_official_cleanup_deleted_total','Confirmed cleanup items by type; tombstones do not imply deleted bytes.',
             ('kind',),registry=registry)
         self.migration_failures=Counter('gaoji_qq_official_migration_failures_total','Authenticated migration operations that failed.',('action',),registry=registry)

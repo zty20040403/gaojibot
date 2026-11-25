@@ -27,6 +27,7 @@ from .credentials import validate_gateway_url
 from .errors import QQAPIError
 
 GROUP_AND_C2C = 1 << 25
+MESSAGE_GAP_SECONDS = 600
 logger = logging.getLogger(__name__)
 
 
@@ -191,7 +192,7 @@ class GatewayConnection:
         self.reason = "not_started"
         self.last_close_code: int | None = None
         self.last_rest_error: dict | None = None
-        self.message_gap = False
+        self.message_gap_at: float | None = None
         self.budget = IdentifyBudget()
         self._stop = asyncio.Event()
         self._socket = None
@@ -216,6 +217,11 @@ class GatewayConnection:
         if previous != value and observer is not None:
             try: observer.observe('gateway', value)
             except Exception: pass
+
+    @property
+    def message_gap(self) -> bool:
+        return (self.message_gap_at is not None
+                and self.clock() - self.message_gap_at < MESSAGE_GAP_SECONDS)
 
     @property
     def health(self) -> dict:
@@ -287,7 +293,7 @@ class GatewayConnection:
 
     async def _clear_checkpoint(self) -> None:
         if self.checkpoint is not None:
-            self.message_gap = True
+            self.message_gap_at = self.clock()
         if self.on_checkpoint is not None:
             try:
                 await self.on_checkpoint(None)
@@ -364,10 +370,9 @@ class GatewayConnection:
             raise GatewayError("unexpected RESUMED for current session")
         # A duplicate is still handed to the durable inbox, which owns dedup.
         previous = self.checkpoint.seq if self.checkpoint else None
-        # Tencent's Resume acknowledgement can jump over sequence numbers
-        # without replaying a message for each one (observed 108 -> 141).
-        if event != "RESUMED" and previous is not None and seq > previous + 1:
-            self.message_gap = True
+        missing = seq - previous - 1 if previous is not None else 0
+        if event != "RESUMED" and missing > 0:
+            self.message_gap_at = self.clock()
             self.reason = "noncontiguous_dispatch"
             raise GatewaySequenceGap()
         try:
@@ -380,6 +385,11 @@ class GatewayConnection:
             raise GatewayCallbackError("durable dispatch acknowledgement failed") from None
         self.checkpoint = next_checkpoint
         self._observed_seq = seq
+        if event == "RESUMED" and missing > 0:
+            # Tencent acknowledges Resume past events it never replays
+            # (observed 108 -> 141); they cannot be fetched again.
+            self.message_gap_at = self.clock()
+            logger.warning("QQ gateway resume skipped events: count=%s", missing)
         if event in ("READY", "RESUMED"):
             self.state, self.reason = "ready", "connected"
             self._ready_at = self.clock()
@@ -568,7 +578,8 @@ class GatewayConnection:
                 self.reason = policy.reason
                 logger.warning("QQ gateway reconnect: reason=%s close_code=%s attempt=%s",
                             policy.reason, self.last_close_code, attempts)
-                self.message_gap = self.message_gap or policy.gap
+                if policy.gap:
+                    self.message_gap_at = self.clock()
                 if policy.action == "stop":
                     break
                 if policy.action in {"refresh", "http_auth_retry"}:
@@ -583,12 +594,15 @@ class GatewayConnection:
                 if policy.action in ("identify", "refresh"):
                     await self._clear_checkpoint()
                 # Brief READY-then-close loops must still exhaust the budget.
-                if self._ready_at is not None and self.clock() - self._ready_at >= 60:
+                stable = self._ready_at is not None and self.clock() - self._ready_at >= 60
+                if stable:
                     attempts = auth_failures = 0
                 if self.max_reconnects is not None and attempts >= self.max_reconnects:
                     self.reason = "reconnect_budget_exhausted"
                     break
-                base = min(60.0, 2.0 ** min(attempts, 6))
+                # Events sent while disconnected are lost, so the first Resume
+                # after a stable session does not wait.
+                base = 0.0 if stable and policy.action == "resume" else min(60.0, 2.0 ** min(attempts, 6))
                 delay = max(policy.minimum_delay, base * (0.5 + 0.5 * self.random()))
                 attempts += 1
                 await self._pause(delay)

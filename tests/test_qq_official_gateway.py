@@ -201,7 +201,45 @@ class GatewayUnitTests(unittest.IsolatedAsyncioTestCase):
         await gateway.run(callback)
         self.assertEqual(observed, [142])
         self.assertEqual(checkpoints, [141, 142])
+        self.assertTrue(gateway.message_gap)
+        clock.now += 599
+        self.assertTrue(gateway.message_gap)
+        clock.now += 1
+        self.assertFalse(gateway.health["message_gap"])
+
+    async def test_resumed_taking_only_its_own_sequence_is_not_a_gap(self):
+        socket = ScriptSocket([HELLO, {"op": 0, "t": "RESUMED", "s": 109, "d": {}},
+                               {"op": 0, "t": "GROUP_AT_MESSAGE_CREATE", "s": 110, "d": {}}])
+        clock = FastClock()
+        gateway = GatewayConnection(StubRest(), checkpoint=GatewayCheckpoint("TEST_SESSION", 108),
+                                    connector=connector_for([socket]), clock=clock, sleep=clock.sleep,
+                                    max_reconnects=0)
+        async def callback(_):
+            await gateway.stop()
+        await gateway.run(callback)
         self.assertFalse(gateway.message_gap)
+
+    async def test_stable_session_resumes_immediately_then_backs_off(self):
+        clock = FastClock()
+        class StableSocket(ScriptSocket):
+            async def receive(self):
+                if not self.frames:
+                    while gateway.state != "ready":
+                        await asyncio.sleep(0)
+                    clock.now += 60
+                    raise GatewayDisconnected(1000)
+                return await super().receive()
+        resumed = {"op": 0, "t": "RESUMED", "s": 109, "d": {}}
+        sockets = [StableSocket([HELLO, resumed]),
+                   ScriptSocket([HELLO, GatewayDisconnected(1000)]),
+                   ScriptSocket([HELLO, GatewayDisconnected(1000)])]
+        gateway = GatewayConnection(StubRest(), checkpoint=GatewayCheckpoint("TEST_SESSION", 108),
+                                    connector=connector_for(sockets), clock=clock, sleep=clock.sleep,
+                                    max_reconnects=2, random=lambda: 0)
+        async def callback(_):
+            pass
+        await gateway.run(callback)
+        self.assertEqual(clock.delays, [0.0, 1.0])
 
     async def test_callback_failure_does_not_advance_resume(self):
         event = {"op": 0, "t": "GROUP_MESSAGE_CREATE", "s": 1, "id": "TEST_EVENT_1", "d": {"id": "TEST_MESSAGE_1"}}

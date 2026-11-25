@@ -32,8 +32,6 @@ class HealthTests(IdentityFixture,unittest.IsolatedAsyncioTestCase):
   self.assertEqual(value['reason'],'ready_with_message_gap')
   self.assertTrue(value['gateway']['message_gap'])
   self.assertIn('gaoji_qq_official_message_gap 1.0',generate_latest(self.registry).decode())
-  self.runtime._message_gap=True;self.runtime._gateway.health['message_gap']=False
-  self.assertEqual((await self.service.sample())['reason'],'ready_with_message_gap')
   self.runtime._gateway.health['state']='connecting'
   self.assertEqual((await self.service.sample())['reason'],'gateway_unavailable')
   self.runtime._gateway.health['state']='ready';self.runtime.sender._running=False

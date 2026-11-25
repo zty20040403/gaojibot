@@ -107,7 +107,6 @@ class OfficialObservability:
                 try:value=await runtime._calls(self._read,runtime,token,now)
                 except Exception:value=_disabled(now,True,'diagnostics_unavailable')
             else:value['reason']='lease_unavailable';value['state']='degraded'
-            value['gateway']['message_gap'] |= getattr(runtime,'_message_gap',False) is True
             # Replacement/stop during the query cannot produce a healthy result.
             if runtime is not getattr(self.context,'official_runtime',None) or token is not getattr(runtime,'_token',None):
                 value['healthy']=False;value['state']='degraded';value['reason']='runtime_changed'
@@ -149,14 +148,14 @@ class OfficialObservability:
         health=getattr(getattr(runtime,'_gateway',None),'health',{})
         if type(health) is not dict:health={}
         value['gateway']={'state':finite(health.get('state'),GATEWAY_STATES,'closed'),
-            'message_gap':health.get('message_gap') is True or getattr(runtime,'_message_gap',False) is True,
+            'message_gap':health.get('message_gap') is True,
             'queue_depth':_count(health.get('dispatch_queue_depth')),
             'queue_limit':_count(health.get('dispatch_queue_limit'))}
         sender=getattr(runtime,'sender',None)
         value['sender']={'running':getattr(sender,'_running',False) is True,
             'active':len(getattr(sender,'_tasks',())),
             'unrecorded':len(getattr(sender,'_unrecorded',()))}
-        # A historical gap is retained as a warning, not a claim that a new
+        # A recent gap is a warning, not a claim that a new
         # READY session is offline (nor that missing messages were replayed).
         healthy=(current and health.get('state')=='ready' and value['sender']['running']
             and not getattr(runtime,'_stopping',False))
