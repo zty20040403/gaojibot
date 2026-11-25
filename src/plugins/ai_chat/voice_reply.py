@@ -10,7 +10,7 @@ import pysilk
 async def synthesize(text):
     async with asyncio.timeout(60):
         audio = bytearray()
-        async for chunk in edge_tts.Communicate(text, 'zh-CN-XiaoxiaoNeural').stream():
+        async for chunk in edge_tts.Communicate(text, 'zh-CN-liaoning-XiaobeiNeural').stream():
             if chunk['type'] == 'audio':
                 audio.extend(chunk['data'])
     if not audio:
