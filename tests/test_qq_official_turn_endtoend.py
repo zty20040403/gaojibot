@@ -287,6 +287,28 @@ class OfficialTurnEndToEndTests(OfficialTurnFixture, unittest.IsolatedAsyncioTes
                 self.assertEqual(app.running_tasks.list_all(), [])
                 await runtime.stop()
 
+    async def test_overlong_final_reply_is_sent_not_dropped(self):
+        app = self.application()
+        long_text = "\n\n".join(f"TEST paragraph {index} " + "长" * 1900 for index in range(6))
+
+        async def completion(**kwargs):
+            from src.plugins.ai_chat.agent_loop import REPLY_SUMMARY_PROMPT
+            summary = REPLY_SUMMARY_PROMPT in json.dumps(kwargs["messages"], ensure_ascii=False)
+            return model_response("TEST summary" if summary else long_text, [], kwargs)
+
+        # In production the loop's catalog is the application's; the summary resolves the profile by name.
+        with patch("src.plugins.ai_chat.agent_loop._create_completion", new=completion), \
+                patch("src.plugins.ai_chat.agent_loop._model_catalog", app.model_catalog):
+            async with verified_ready_platform() as fake:
+                runtime = await self.open_runtime(fake, app)
+                await self.emit(fake, native="TEST_LONG_TURN", content="TEST question")
+                row = (await self.complete("TEST_LONG_TURN"))[0]
+                self.assertEqual(row["state"], "handed_off")
+                content = fake.received[0]["payload"]["markdown"]["content"]
+                self.assertTrue(content.startswith("TEST summary\n"))
+                self.assertIn("回答太长", content)
+                await runtime.stop()
+
     async def test_command_uses_existing_router_and_never_calls_model(self):
         app = self.application()
         with patch("src.plugins.ai_chat.agent_loop._create_completion", side_effect=AssertionError("command called model")):

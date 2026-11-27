@@ -146,6 +146,64 @@ class PlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.f.query("SELECT * FROM delivery_plans"))
         self.assertFalse(self.platform.features.native_files)
 
+    def long_reply(self):
+        return "\n\n".join(f"TEST paragraph {index} " + "长" * 1900 for index in range(6))
+
+    async def test_reply_that_fits_is_sent_unchanged(self):
+        files = Mock()
+        platform = self.make_platform(file_provider=lambda: files)
+        self.assertEqual(await platform.fit_reply("TEST short reply"), "TEST short reply")
+        self.assertEqual(platform.pending_media, [])
+        files.send_bytes.assert_not_called()
+
+    async def test_overlong_reply_sends_a_summary_and_the_whole_text_as_a_file(self):
+        sent, deferred = [], object()
+        class Files:
+            async def send_bytes(self, **kwargs):
+                sent.append(kwargs)
+                return deferred
+        platform = self.make_platform(file_provider=Files)
+        text = self.long_reply()
+        summarized = []
+        async def summarize(full):
+            summarized.append(full)
+            return "TEST summary"
+        reply = await platform.fit_reply(text, summarize=summarize)
+        self.assertEqual(summarized, [text])
+        self.assertTrue(reply.startswith("TEST summary\n"))
+        self.assertIn("完整回答.md", reply)
+        self.assertNotIn("TEST paragraph", reply)
+        self.assertEqual(platform.pending_media, [deferred])
+        self.assertEqual(sent[0]["content"], text.encode())
+        self.assertTrue(sent[0]["defer"])
+        self.assertEqual(sent[0]["requester"], self.f.actor)
+        with self.f.tx() as cursor:
+            platform.enqueue_reply(cursor, MessageBody((TextNode(0, reply),)), now=self.f.now)
+        self.assertEqual(self.manifest()["status"], "ready")
+
+    async def test_failed_summary_falls_back_to_the_opening(self):
+        async def broken(_):
+            raise RuntimeError("TEST model failed")
+        for summarize in (None, broken):
+            with self.subTest(summarize=summarize):
+                platform = self.make_platform(file_provider=lambda: None)
+                reply = await platform.fit_reply(self.long_reply(), summarize=summarize)
+                self.assertTrue(reply.startswith("TEST paragraph 0 "))
+                self.assertNotIn("TEST paragraph 1 ", reply)
+
+    async def test_overlong_reply_without_files_still_sends_its_opening(self):
+        from src.plugins.ai_chat.adapters.qq_official.file_upload import FileUploadError
+        class Failing:
+            async def send_bytes(self, **_):
+                raise FileUploadError("TEST upload failed")
+        for provider in (None, Failing):
+            with self.subTest(provider=provider):
+                platform = self.make_platform(file_provider=provider)
+                reply = await platform.fit_reply(self.long_reply())
+                self.assertTrue(reply.startswith("TEST paragraph 0 "))
+                self.assertIn("回答太长", reply)
+                self.assertEqual(platform.pending_media, [])
+
     async def test_sdk_free_module_import_does_not_open_network_or_credentials(self):
         script = r"""
 import importlib.abc, sys

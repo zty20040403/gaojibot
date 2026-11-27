@@ -434,6 +434,17 @@ async def ask_deepseek(
     return (content or "").strip()
 
 
+REPLY_SUMMARY_PROMPT = (
+    "下面是你刚写好的一条回答，太长了，一条消息发不下；完整版会作为 Markdown 文件跟在后面发出。"
+    "用原回答的语气和人称写一段摘要，600 字以内：先给结论，再列最要紧的几点。"
+    "不要提文件，系统会自己附上说明。只输出摘要。"
+)
+
+
+async def summarize_reply(text: str, *, profile: ModelProfile | str | None = None) -> str:
+    return await ask_deepseek(text, system_prompt=REPLY_SUMMARY_PROMPT, profile=profile)
+
+
 async def ask_deepseek_json(
     system_prompt: str,
     user_text: str,

@@ -120,6 +120,24 @@ class ExecutionBinding:
         return "qq-turn-result:" + self.handle.execution_id
 
 
+OVERFLOW_HEAD_CHARS = 1500
+OVERFLOW_FILENAME = "完整回答.md"
+
+
+async def _summary(text: str, summarize) -> str:
+    if summarize is not None:
+        try:
+            summary = (await summarize(text)).strip()
+        except Exception:
+            # Any model failure falls back to the opening; the reply must still go out.
+            summary = ""
+        if summary:
+            return summary[:OVERFLOW_HEAD_CHARS]
+    head = text[:OVERFLOW_HEAD_CHARS]
+    cut = head.rfind("\n\n")
+    return head[:cut] if cut > 0 else head
+
+
 class OfficialTurnPlatform:
     features = PlatformFeatures(markdown=True)
     stream_enabled = True
@@ -127,7 +145,7 @@ class OfficialTurnPlatform:
 
     def __init__(self, inbound: InboundMessage, *, execution: ExecutionBinding,
                  outbox, database_calls, transport_state, sender_wake=None,
-                 policy=None, clock=time.time, rest_provider=None):
+                 policy=None, clock=time.time, rest_provider=None, file_provider=None):
         if not isinstance(inbound, InboundMessage) or not isinstance(execution, ExecutionBinding):
             raise PlatformBoundaryError("invalid_turn_binding")
         handle = execution.handle
@@ -145,6 +163,7 @@ class OfficialTurnPlatform:
         self._transport_state, self._clock = transport_state, clock
         self._sender_wake = sender_wake or (lambda: None)
         self._rest_provider = rest_provider
+        self._file_provider = file_provider
         self.policy = policy or TurnDeliveryPolicy()
         if not isinstance(self.policy, TurnDeliveryPolicy):
             raise PlatformBoundaryError("invalid_delivery_policy")
@@ -225,13 +244,7 @@ class OfficialTurnPlatform:
             return str(current["plan_id"])
         if now >= handle.deadline_at:
             raise PlatformBoundaryError("delivery_expired")
-        rendered = render_plan(
-            body, self.endpoint, markdown=self.policy.markdown,
-            max_chars=self.policy.max_chars, max_parts=self.policy.max_parts,
-            max_bytes=self.policy.max_bytes,
-            allowed_mentions=self.outbox.mention_authority(cursor, self.endpoint),
-            paragraphs=True, math_mode="dollar_delimiters",
-        )
+        rendered = self._render(cursor, body)
         if rendered.status != "ready":
             raise PlatformBoundaryError("needs_attachment")
         ref = self.outbox.enqueue(
@@ -245,6 +258,53 @@ class OfficialTurnPlatform:
         cursor.execute("UPDATE qq_official_turn_executions SET checkpoint_json=NULL,state='handed_off',plan_id=?,handed_off_at=?,updated_at=? WHERE execution_id=?",
                        (ref.plan_id, now, now, handle.execution_id))
         return ref.plan_id
+
+    def _render(self, cursor, body: MessageBody):
+        return render_plan(
+            body, self.endpoint, markdown=self.policy.markdown,
+            max_chars=self.policy.max_chars, max_parts=self.policy.max_parts,
+            max_bytes=self.policy.max_bytes,
+            allowed_mentions=self.outbox.mention_authority(cursor, self.endpoint),
+            paragraphs=True, math_mode="dollar_delimiters",
+        )
+
+    async def fit_reply(self, text: str, summarize=None) -> str:
+        """A reply longer than one passive answer allows goes out as a summary, with the
+        whole text following as a Markdown file (queued after the text, like a sticker)."""
+        from .file_upload import FileUploadError
+        from .mentions import parse_mention_body
+
+        def meta():
+            from .conversation_control import state
+            now = int(self._clock())
+            with self.outbox.deliveries.transaction() as cursor:
+                if self._render(cursor, parse_mention_body(cursor, self.endpoint, text)).status == "ready":
+                    return None
+                row = self.execution.current(cursor, now)
+                return row["deadline_at"], row["journal_turn_id"], state(cursor, self.endpoint)["stop_generation"]
+
+        found = await self._calls(meta)
+        if found is None:
+            return text
+        head = await _summary(text, summarize)
+        files = self._file_provider() if self._file_provider is not None else None
+        if files is None:
+            return head + "\n（回答太长，后面的发不出来；让我分几次说或者写成文件。）"
+        deadline_at, turn_id, generation = found
+        handle = self.execution.handle
+        try:
+            enqueue = await files.send_bytes(
+                endpoint=self.endpoint, requester=handle.actor, content=text.encode(),
+                filename=OVERFLOW_FILENAME, logical_key="official-media:turn:" + handle.execution_id + ":reply",
+                source_scope_key=handle.scope_key, expires_at=deadline_at,
+                source_native_message_id=self.inbound.native_message_id,
+                source_canonical_message_id=handle.canonical_message_id,
+                turn_id=turn_id, source_generation=generation, defer=True,
+            )
+        except FileUploadError:
+            return head + "\n（回答太长，完整内容的文件也没发出去；让我分几次说。）"
+        self.pending_media.append(enqueue)
+        return head + f"\n（回答太长，完整内容在文件「{OVERFLOW_FILENAME}」里。）"
 
     def _enqueue_fragment(self, text, index):
         from .mentions import parse_mention_body

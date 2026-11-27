@@ -12,7 +12,7 @@ import secrets
 import time
 import traceback
 
-from src.plugins.ai_chat.agent_loop import FinalStreamState
+from src.plugins.ai_chat.agent_loop import FinalStreamState, summarize_reply
 from src.plugins.ai_chat.background_tools import workspace_owner
 from src.plugins.ai_chat.scope_lease import ScopeLeaseBusy, claim_scope, renew_scope
 from src.plugins.ai_chat.application.commands import CommandPolicy, CommandServices
@@ -271,6 +271,9 @@ class OfficialTurnLifecycle:
         if scope_key != self.handle.scope_key or not isinstance(final_text, str):
             raise LifecycleError("execution_result_mismatch")
         silent = status in {"silence", "aborted", "cancelled"} or not final_text.strip()
+        profile = trace.profile if trace is not None and trace.profile else None
+        reply_text = final_text if silent or self.platform is None else await self.platform.fit_reply(
+            final_text, summarize=lambda text: summarize_reply(text, profile=profile))
 
         def run():
             now = int(self.clock())
@@ -317,7 +320,7 @@ class OfficialTurnLifecycle:
                     return bool(pending) and status == "silence"
                 try:
                     from .mentions import parse_mention_body
-                    self.platform.enqueue_reply(cursor, parse_mention_body(cursor, self.handle.endpoint, final_text),
+                    self.platform.enqueue_reply(cursor, parse_mention_body(cursor, self.handle.endpoint, reply_text),
                                                 now=now, turn_id=turn_id)
                 except PlatformBoundaryError as exc:
                     if str(exc) in {"needs_attachment", "delivery_expired"}:
@@ -389,7 +392,8 @@ class OfficialTurnConsumer:
     def __init__(self, *, token, store, outbox, journal, database_calls,
                  orchestrator, command_services, transport_state, usage=None,
                  sender_wake=None, policy=None, clock=time.time,
-                 model_timeout_seconds=600, business_services=None, rest_provider=None, operations_owners=frozenset(), shutting_down=lambda: False):
+                 model_timeout_seconds=600, business_services=None, rest_provider=None, file_provider=None,
+                 operations_owners=frozenset(), shutting_down=lambda: False):
         if type(model_timeout_seconds) is not int or not 1 <= model_timeout_seconds <= 3600:
             raise ValueError("invalid_model_timeout")
         self.token, self.store, self.outbox = token, store, outbox
@@ -399,6 +403,7 @@ class OfficialTurnConsumer:
         self.model_timeout_seconds = model_timeout_seconds
         self.business_services = business_services
         self.rest_provider = rest_provider
+        self.file_provider = file_provider
         self.operations_owners = operations_owners
         self.shutting_down = shutting_down
 
@@ -612,6 +617,7 @@ class OfficialTurnConsumer:
             inbound, execution=binding, outbox=self.outbox, database_calls=self._calls,
             transport_state=self.transport_state, sender_wake=self.sender_wake,
             policy=self.policy, clock=self.clock, rest_provider=self.rest_provider,
+            file_provider=self.file_provider,
         )
         life.platform = platform
         if await platform.ready(inbound.endpoint) is not None:
@@ -800,4 +806,5 @@ def build_turn_consumer(runtime, token, app):
         usage=app.usage_store, sender_wake=lambda: runtime.sender.wake() if runtime.sender is not None else None,
         clock=runtime.store.clock,
         rest_provider=lambda: runtime.sender.rest if runtime.sender is not None else None,
+        file_provider=lambda: runtime.file_service,
     )
