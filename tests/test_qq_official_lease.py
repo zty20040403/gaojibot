@@ -63,6 +63,17 @@ class _LeaseFixture(unittest.TestCase):
 
 
 class LeaseTests(_LeaseFixture):
+    def test_pool_and_lease_set_server_tcp_timeouts(self):
+        lease = self.lease()
+        self.assertIsNotNone(lease.acquire())
+        with self.database._pool.connection() as pooled:
+            for name, connection in (("pool", pooled), ("lease", lease._connection)):
+                with self.subTest(connection=name):
+                    self.assertEqual(connection.execute("SHOW tcp_keepalives_idle").fetchone(), ("10",))
+                    self.assertEqual(connection.execute("SHOW tcp_keepalives_interval").fetchone(), ("5",))
+                    self.assertEqual(connection.execute("SHOW tcp_keepalives_count").fetchone(), ("3",))
+                    self.assertEqual(connection.execute("SHOW tcp_user_timeout").fetchone(), ("15000",))
+
     def test_competition_release_and_epoch_increment_preserve_checkpoint(self):
         with self.tx() as cursor:
             cursor.execute("UPDATE qq_official_accounts SET session_id=?,durable_seq=7 WHERE account_key=?",

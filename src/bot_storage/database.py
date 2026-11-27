@@ -136,6 +136,11 @@ class PostgresDatabase:
             "keepalives_count": "3",
             "tcp_user_timeout": "15000",
         }
+        # Probe from the server too, so a dead client does not retain session locks.
+        connection_defaults["options"] = (
+            "-c tcp_keepalives_idle={keepalives_idle} -c tcp_keepalives_interval={keepalives_interval} "
+            "-c tcp_keepalives_count={keepalives_count} -c tcp_user_timeout={tcp_user_timeout}"
+        ).format_map(connection_defaults)
         try:
             configured = conninfo_to_dict(self.dsn)
             self.dsn = make_conninfo(

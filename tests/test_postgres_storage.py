@@ -39,12 +39,14 @@ class PostgresCompatibilityTests(unittest.TestCase):
             database.close()
 
             database = PostgresDatabase(
-                "host=example.test dbname=db connect_timeout=8 tcp_user_timeout=40000 keepalives_idle=20"
+                "host=TEST_HOST dbname=TEST_DB connect_timeout=8 tcp_user_timeout=40000 "
+                "keepalives_idle=20 options='-c tcp_keepalives_idle=30'"
             )
             options = conninfo_to_dict(pool.call_args.kwargs["conninfo"])
             self.assertEqual(options["connect_timeout"], "8")
             self.assertEqual(options["tcp_user_timeout"], "40000")
             self.assertEqual(options["keepalives_idle"], "20")
+            self.assertEqual(options["options"], "-c tcp_keepalives_idle=30")
             database.close()
 
     def test_pool_rejects_a_connection_demoted_to_read_only(self) -> None:
